@@ -209,6 +209,16 @@ _CONTACT_ADD_WORDS = frozenset({"add", "contact", "contacts", "save"})
 _CONTACT_CHANGE_WORDS = _CONTACT_ADD_WORDS | {"change", "new", "update"}
 
 
+def _sent_by(email: str, senders: dict[str, str], full_name: str) -> bool:
+    """Whether ``email`` sent mail this turn read under the contact's name: a
+    word of ``full_name`` in the sender's display name or the address's local
+    part ("priya.shah@"), so another sender can't lend them its address."""
+    if email not in senders:
+        return False
+    local = email.split("@", 1)[0].replace(".", " ").replace("_", " ")
+    return bool(_name_words(full_name) & _name_words(f"{senders[email]} {local}"))
+
+
 def speaker_named_contact(tool_input: Any) -> bool:
     """Whether an ``upsert_person`` call on a turn that read the owner's
     mail is one they asked for themselves: a contact (new, or already one),
@@ -217,7 +227,7 @@ def speaker_named_contact(tool_input: Any) -> bool:
     that asks for a roster change (``_CONTACT_ADD_WORDS``). The roster is
     what every send check trusts, so mail must not add to it. A new
     contact's address is one they typed or one that sent the mail this turn
-    read (``TurnDelegation.mail_senders``), never one a mail's text only
+    read under the contact's name (``_sent_by``), never one a mail's text only
     mentions; on an update a changed address must be one they typed, so mail
     can't redirect someone they already have. Plain code, no model: fails
     closed."""
@@ -249,7 +259,7 @@ def speaker_named_contact(tool_input: Any) -> bool:
             return (
                 not email
                 or email in typed_addresses(pinned.speaker_text)
-                or email in pinned.mail_senders
+                or _sent_by(email, pinned.mail_senders, str(tool_input.get("full_name", "")))
             )
         from openexecutive.people import store as people_store
 

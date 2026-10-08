@@ -250,9 +250,10 @@ def _note_senders(writer: Any, senders: list[str]) -> None:
     from email.utils import parseaddr
 
     for sender in senders:
-        address = parseaddr(str(sender or ""))[1].strip().lower()
+        name, address = parseaddr(str(sender or ""))
+        address = address.strip().lower()
         if "@" in address:
-            writer.pinned.mail_senders.add(address)
+            writer.pinned.mail_senders[address] = name.strip()
 
 
 def _id_refusal(writer: Any, value: str, what: str) -> str | None:
@@ -437,7 +438,7 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
         shown = messages[-READ_MESSAGES:]
         first = len(messages) - len(shown) + 1
         _remember_read(writer, thread.id, messages[0])
-        _note_senders(writer, [m.from_addr for m in shown])
+        _note_senders(writer, [_sender(m) for m in shown])
         return json.dumps({
             "status": "ok",
             "thread_id": thread.id,

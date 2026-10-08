@@ -102,10 +102,11 @@ class TurnDelegation:
     # (``delegation.lockdown.carried_withholds``). Once that turn scrolls out
     # of view nothing from the mail is left in the turn, and it lifts.
     mail_in_view: bool = False
-    # The addresses that sent the mail this turn read (``mail_read_tools``):
-    # a new contact's address may be one of them, never one the mail's text
+    # Who sent the mail this turn read, address to display name
+    # (``mail_read_tools``): a new contact's address may be one of them, when
+    # its name or address matches the contact's, never one the mail's text
     # only mentions (``delegation.lockdown.speaker_named_contact``).
-    mail_senders: set[str] = field(default_factory=set)
+    mail_senders: dict[str, str] = field(default_factory=dict)
     # Drafts made this turn, against the per-turn cap.
     drafts: int = 0
     # Searches and thread reads of their mailbox this turn, against the

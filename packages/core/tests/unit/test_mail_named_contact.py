@@ -37,7 +37,7 @@ def said() -> Iterator[Any]:
     session = Session()
     pinned = TurnDelegation(
         offered=True, touched_mail=True, read_mail=True, session_id=session.session_id,
-        mail_senders={"jamie@firm.example"},
+        mail_senders={"jamie@firm.example": "Jamie Rivera", "billing@evil.example": "Accounts"},
     )
     session.turn_delegation = pinned  # type: ignore[attr-defined]
     token = current_session.set(session)
@@ -119,7 +119,7 @@ def test_everyday_words_the_speaker_typed_name_no_one(said: Any) -> None:
     said("Find Priya's email and add Priya as a contact")
     for name in ("Email Billing", "Contact Desk", "Add Find", "As Is"):
         assert lockdown.mail_touched_withholds("upsert_person", _add(full_name=name)), name
-    assert not lockdown.mail_touched_withholds("upsert_person", _add(full_name="Priya Shah"))
+    assert not lockdown.mail_touched_withholds("upsert_person", _add(full_name="Priya Shah", email=None))
 
 
 
@@ -138,6 +138,8 @@ def test_a_new_contacts_address_is_a_sender_or_typed(said: Any) -> None:
     assert not lockdown.mail_touched_withholds("upsert_person", _add())
     # One the mail's text only mentions: refused.
     assert lockdown.mail_touched_withholds("upsert_person", _add(email="jamie@evil.example"))
+    # Another sender's address, under neither the contact's name nor theirs: refused.
+    assert lockdown.mail_touched_withholds("upsert_person", _add(email="billing@evil.example"))
     # No address at all, or one they typed: fine.
     assert not lockdown.mail_touched_withholds("upsert_person", _add(email=None))
     said("add jamie as a contact, jamie@newfirm.example")
@@ -151,4 +153,13 @@ def test_reading_mail_notes_who_sent_it() -> None:
 
     writer = SimpleNamespace(pinned=TurnDelegation())
     _note_senders(writer, ["Jamie Rivera <Jamie@Firm.example>", "ops@co.example", "", "no address"])
-    assert writer.pinned.mail_senders == {"jamie@firm.example", "ops@co.example"}
+    assert writer.pinned.mail_senders == {"jamie@firm.example": "Jamie Rivera", "ops@co.example": ""}
+
+
+def test_a_senders_address_matches_by_name_or_local_part() -> None:
+    senders = {"jamie@firm.example": "", "j.rivera@firm.example": "", "ops@co.example": "Jamie Rivera"}
+    assert lockdown._sent_by("jamie@firm.example", senders, "Jamie Rivera")
+    assert lockdown._sent_by("j.rivera@firm.example", senders, "Jamie Rivera")
+    assert lockdown._sent_by("ops@co.example", senders, "Jamie Rivera")
+    assert not lockdown._sent_by("jamie@firm.example", senders, "Morgan Blake")
+    assert not lockdown._sent_by("other@firm.example", senders, "Jamie Rivera")

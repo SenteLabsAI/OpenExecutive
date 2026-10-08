@@ -9273,7 +9273,8 @@ delegation:
     leave and response fields; a word of the name in their own words, in
     a message that asks to add, save or change someone; a new contact's
     address one they typed or one that sent the mail this turn read
-    (TurnDelegation.mail_senders, noted by mail_read_tools), never one the
+    under the contact's name (TurnDelegation.mail_senders, noted by
+    mail_read_tools; lockdown._sent_by), never one the
     mail's text only mentions; on an
     update the stored name too, and a changed address must be one they
     typed), because the roster is what every send check trusts. What an
