@@ -1696,7 +1696,7 @@ def test_a_workflow_owner_moved_to_contacts_is_not_asked_to_approve(
 # --- Peer memory: the principal's is theirs alone ---------------------------
 
 
-def test_ask_about_the_principal_answers_only_the_principal(
+def test_ask_about_the_principal_answers_only_the_principal_unless_shared(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from openexecutive.orchestrator import people_tools
@@ -1707,14 +1707,97 @@ def test_ask_about_the_principal_answers_only_the_principal(
                      Session(from_web_chat=True, caller_person_id=roster.teammate))
     unattended = _tool(people_tools.handle_ask_about_person, question, None)
     principal = _tool(people_tools.handle_ask_about_person, question, _principal_web(roster))
-    empty = {"person_id": roster.principal, "target_person_id": None, "answer": "", "found": False}
-    assert teammate == empty and unattended == empty
+    for result in (teammate, unattended):
+        assert result["answer"] == "" and result["found"] is False and result["shared"] is False
     assert principal["answer"] == "Renewing Acme"
     # A teammate's own view of the principal is the teammate's memory.
     own_view = _tool(people_tools.handle_ask_about_person,
                      {"person_id": roster.teammate, "target_person_id": roster.principal,
                       "question": "?"}, Session(from_web_chat=True, caller_person_id=roster.teammate))
     assert own_view["found"] is True
+
+
+def test_ask_about_someone_who_shares_their_work_style(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the principal shares their work style, a teammate gets an answer
+    framed to how they work; turning it off, or a solo workspace, takes it
+    back."""
+    from openexecutive.memory import history, workspace_settings
+    from openexecutive.orchestrator import people_tools
+
+    chat = AsyncMock(return_value="Prefers a short note before 10am")
+    monkeypatch.setattr(people_tools, "directional_chat", chat)
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="team"))
+    question = {"person_id": roster.principal, "question": "How does Olivia like updates?"}
+    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
+
+    history.set_shares_work_style(roster.principal, True, by="test")
+    shared = _tool(people_tools.handle_ask_about_person, question, teammate)
+    assert shared["answer"] == "Prefers a short note before 10am"
+    assert chat.await_args is not None
+    assert chat.await_args.args[1].startswith("Answer only about how this person works")
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="solo"))
+    solo = _tool(people_tools.handle_ask_about_person, question, teammate)
+    assert solo["shared"] is False and solo["answer"] == ""
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="team"))
+    history.set_shares_work_style(roster.principal, False, by="test")
+    off = _tool(people_tools.handle_ask_about_person, question, teammate)
+    assert off["shared"] is False and "Olivia hasn't chosen to share" in off["note"]
+
+
+def test_a_shared_answer_never_names_the_principals_contacts(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sharing the principal's work style doesn't open their contacts: a
+    question naming one isn't asked, an answer naming one is withheld."""
+    from openexecutive.memory import history, workspace_settings
+    from openexecutive.orchestrator import people_tools
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="team"))
+    history.set_shares_work_style(roster.principal, True, by="test")
+    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
+    chat = AsyncMock(return_value="Olivia is renewing with Jordan Client at Acme this week.")
+    monkeypatch.setattr(people_tools, "directional_chat", chat)
+
+    named = _tool(people_tools.handle_ask_about_person,
+                  {"person_id": roster.principal, "question": "What is she doing with Jordan Client?"}, teammate)
+    assert named["answer"] == "" and named["found"] is False
+    assert chat.await_count == 0
+
+    leaked = _tool(people_tools.handle_ask_about_person,
+                   {"person_id": roster.principal, "question": "What is she focused on?"}, teammate)
+    assert leaked["answer"] == "" and "outside what this person shares" in leaked["note"]
+
+    # The principal asking about themselves sees their own memory as it is.
+    own = _tool(people_tools.handle_ask_about_person,
+                {"person_id": roster.principal, "question": "What am I focused on?"}, _principal_web(roster))
+    assert "Jordan Client" in own["answer"]
+
+
+def test_not_shared_names_only_team_members(roster: SimpleNamespace) -> None:
+    """A contact reads exactly like an unknown id, so asking can't confirm one
+    exists or learn their name."""
+    from openexecutive.orchestrator import people_tools
+
+    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
+    contact = _tool(people_tools.handle_ask_about_person, {"person_id": roster.contact, "question": "?"}, teammate)
+    unknown = _tool(people_tools.handle_ask_about_person, {"person_id": 99999, "question": "?"}, teammate)
+    assert contact["note"] == unknown["note"]
+    assert contact["note"].startswith("This person")
+
+
+def test_a_contact_cannot_share_their_work_style(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory import history, workspace_settings
+    from openexecutive.people.store import get_person
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="team"))
+    assert history.can_share_work_style(get_person(roster.teammate)) is True
+    assert history.can_share_work_style(get_person(roster.contact)) is False
 
 
 def test_memories_people_shows_each_caller_only_their_own_entry(

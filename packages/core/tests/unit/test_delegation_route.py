@@ -125,6 +125,21 @@ def test_on_and_off_are_audited_privately(
     assert client.put("/delegation", json={"enabled": True}, headers=TEAMMATE).status_code == 403
 
 
+def test_turning_it_off_forgets_the_emails_it_opened(
+    client: TestClient, ids: dict[str, int], gmail: dict[str, str]
+) -> None:
+    from openexecutive.delegation import mail_reads
+
+    mail_reads.record(ids["principal"], "olivia@co.example", "t1", subject="Pilot", sender="Dana")
+    mail_reads.record(ids["teammate"], "ben@co.example", "t2", subject="Ops", sender="Sam")
+    gmail["status"] = "connected"
+    client.put("/delegation", json={"enabled": True}, headers=OWNER)
+    assert len(mail_reads.recent(ids["principal"], "olivia@co.example")) == 1
+    client.put("/delegation", json={"enabled": False}, headers=OWNER)
+    assert mail_reads.recent(ids["principal"], "olivia@co.example") == []
+    assert len(mail_reads.recent(ids["teammate"], "ben@co.example")) == 1
+
+
 def test_extra_fields_are_rejected(client: TestClient, ids: dict[str, int]) -> None:
     resp = client.put("/delegation", json={"enabled": False, "person_id": 99}, headers=OWNER)
     assert resp.status_code == 422

@@ -38,6 +38,10 @@ export interface HistoryState {
   /** Whether notes from their email replies can come too (Act as me). */
   can_note_replies: boolean;
   can_set_company_retention: boolean;
+  /** "Share my work style with the team": their own switch. */
+  share_work_style?: boolean;
+  /** Whether they may turn it on: a team member, in a team workspace. */
+  can_share_work_style?: boolean;
 }
 
 /** "30 days", "1 year", or "until forgotten" for null. */

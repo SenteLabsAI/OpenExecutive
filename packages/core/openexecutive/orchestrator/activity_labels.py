@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from openexecutive.orchestrator import tool_labels
+
 # Shown when a round contains only tools with no entry in `_LABELS`. Going
 # silent is not an option — a round with no label is the exact failure this
 # event exists to fix, and the UI would fall back to its own placeholder.
@@ -34,6 +36,7 @@ SPECIALIST_LABEL = "Consulting specialists…"
 # here rather than trusted. React escapes the value, but a 4KB name or an
 # embedded newline would still wreck a one-line indicator.
 _MCP_NAME_MAX = 48
+_LABEL_MAX = 60
 _MCP_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.:\- ]")
 
 # Canonical tool name -> present-progressive phrase. Every entry ends in an
@@ -125,6 +128,7 @@ _LABELS: dict[str, str] = {
     "remind_me": "Setting a reminder…",
     "propose_actions": "Leaving you a card to approve…",
     "my_email_awaiting_reply": "Checking what's waiting on a reply…",
+    "my_email_read_before": "Finding the email you mean…",
 
     # Always in the loop: the speaker's own notes
     "recall_history": "Checking your notes…",
@@ -203,17 +207,25 @@ def _mcp_label(tool_input: Any) -> tuple[str, str]:
     """Label an MCP `call_tool` from the underlying tool it wraps.
 
     The real tool name lives in `tool_input["name"]` — the same field
-    `action_chips.summarize_action` reads to surface the true tool on an MCP
-    chip. A static label here would be useless, which matters because MCP is
-    the case that made the old indicator wrong most visibly.
+    `action_chips.summarize_action` reads. Both take their wording from
+    `tool_labels`, so the line and the finished chip say the same thing in
+    plain words, never the raw `server__tool` name. The second element stays
+    the (sanitized) raw name so clients can still tell tools apart.
     """
     raw = tool_input.get("name") if isinstance(tool_input, dict) else None
     if not isinstance(raw, str):
-        return "Using a connected tool…", "call_tool"
+        return f"{tool_labels.GENERIC_DOING}…", "call_tool"
     name = _MCP_NAME_UNSAFE.sub("", raw).strip()[:_MCP_NAME_MAX].strip()
     if not name:
-        return "Using a connected tool…", "call_tool"
-    return f"Using {name}…", name
+        return f"{tool_labels.GENERIC_DOING}…", "call_tool"
+    # Label from the full name: the 48-char cut is for `tool` only, and a
+    # cut name would miss the table the chip reads (and the two would differ).
+    doing = tool_labels.labels_for(raw, tool_input.get("arguments"))[1]
+    # One line beside the dots: the fallback for an unlisted tool can run
+    # long, so the whole label (ellipsis included) stays within _LABEL_MAX.
+    if len(doing) >= _LABEL_MAX:
+        doing = doing[: _LABEL_MAX - 1].rstrip()
+    return f"{doing}…", name
 
 
 def _label_for(tool_use: dict[str, Any]) -> tuple[str, str]:

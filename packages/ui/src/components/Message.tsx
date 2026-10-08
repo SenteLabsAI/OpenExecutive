@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,6 +8,7 @@ import AnswerSourcesFooter from "@/components/AnswerSourcesFooter";
 import BrandMark from "@/components/BrandMark";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
+import { groupActions, opensDetails, type ChipGroup } from "@/lib/actionChips";
 import { loadsInline } from "@/lib/markdownImages";
 import { isMailboxLink } from "@/lib/replyCards";
 import { hostOf } from "@/lib/url";
@@ -80,36 +81,146 @@ function FeedbackButtons({
   );
 }
 
-function ActionChip({ action }: { action: ActionTaken }) {
-  const inner = (
+function ChipBody({ summary, count }: { summary: string; count: number }) {
+  return (
     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
       <span aria-hidden="true" className="text-[10px]">✓</span>
-      <span>{action.summary}</span>
+      <span>{summary}</span>
+      {count > 1 && (
+        <span className="rounded-full bg-emerald-400/20 px-1.5 font-semibold tabular-nums">
+          ×{count}
+        </span>
+      )}
     </span>
   );
-  if (action.link) {
-    // A draft in your own mailbox (Act as me) opens in a new tab; every other
-    // chip links inside the app.
-    if (isMailboxLink(action.link)) {
-      return (
-        <a
-          href={action.link}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity"
-        >
-          <FeatureName feature="act_as_me" className="text-[11px]" />
-          {inner}
-        </a>
-      );
-    }
+}
+
+function ChipLink({ link, children }: { link: string; children: ReactNode }) {
+  // A draft in your own mailbox (Act as me) opens in a new tab; every other
+  // chip links inside the app.
+  if (isMailboxLink(link)) {
     return (
-      <Link href={action.link} className="hover:opacity-80 transition-opacity">
-        {inner}
-      </Link>
+      <a
+        href={link}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+      >
+        <FeatureName feature="act_as_me" className="text-[11px]" />
+        {children}
+      </a>
     );
   }
-  return inner;
+  return (
+    <Link href={link} className="hover:opacity-80 transition-opacity">
+      {children}
+    </Link>
+  );
+}
+
+// What each run of a chip looked at. A bottom sheet on a phone, a card under
+// the chips from the tablet breakpoint up.
+function ChipDetails({ group, onClose }: { group: ChipGroup; onClose: () => void }) {
+  const count = group.runs.length;
+  const rows = group.runs.filter((run) => run.target || run.link);
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        onClick={onClose}
+        className="fixed inset-0 z-40 bg-black/40 sm:hidden"
+      />
+      <div
+        role="dialog"
+        aria-label={group.summary}
+        className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-border bg-surface-elevated p-4 pb-[calc(1rem+env(safe-area-inset-bottom,0px))] shadow-2xl sm:static sm:z-auto sm:mt-2 sm:max-w-sm sm:rounded-xl sm:border sm:p-3 sm:shadow-lg"
+      >
+        <div aria-hidden="true" className="mx-auto mb-3 h-1 w-10 rounded-full bg-fg-muted/40 sm:hidden" />
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold text-fg">
+            {group.summary}
+            {count > 1 && <span className="font-normal text-fg-muted"> · {count} times</span>}
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="min-h-[2rem] min-w-[2rem] rounded-md text-fg-muted hover:text-fg"
+          >
+            ✕
+          </button>
+        </div>
+        {rows.length > 0 && (
+          <ul className="mt-2 divide-y divide-border text-sm">
+            {rows.map((run, i) => (
+              <li key={i} className="py-2 break-words">
+                {run.link ? (
+                  <ChipLink link={run.link}>
+                    <span className="text-accent">{run.target || "Open"}</span>
+                  </ChipLink>
+                ) : (
+                  <span className="text-fg">{run.target}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
+function ActionChips({ actions }: { actions: ActionTaken[] }) {
+  const groups = useMemo(() => groupActions(actions), [actions]);
+  const [open, setOpen] = useState<string | null>(null);
+  const openGroup = groups.find((g) => g.key === open) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div className="mt-3">
+      <div
+        className="flex flex-wrap gap-1.5"
+        aria-label={`${actions.length} action${actions.length === 1 ? "" : "s"} taken`}
+      >
+        {groups.map((group) => {
+          const body = <ChipBody summary={group.summary} count={group.runs.length} />;
+          if (opensDetails(group)) {
+            const isOpen = open === group.key;
+            return (
+              <button
+                key={group.key}
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setOpen(isOpen ? null : group.key)}
+                className={`rounded-full transition-opacity hover:opacity-80 ${
+                  isOpen ? "ring-2 ring-emerald-400/70 ring-offset-1 ring-offset-surface" : ""
+                }`}
+              >
+                {body}
+              </button>
+            );
+          }
+          const link = group.runs[0]?.link;
+          return link ? (
+            <ChipLink key={group.key} link={link}>
+              {body}
+            </ChipLink>
+          ) : (
+            <span key={group.key}>{body}</span>
+          );
+        })}
+      </div>
+      {openGroup && <ChipDetails group={openGroup} onClose={() => setOpen(null)} />}
+    </div>
+  );
 }
 
 export default function Message({
@@ -178,16 +289,7 @@ export default function Message({
 
         {status && <div className="mt-3">{status}</div>}
 
-        {actions && actions.length > 0 && (
-          <div
-            className="mt-3 flex flex-wrap gap-1.5"
-            aria-label={`${actions.length} action${actions.length === 1 ? "" : "s"} taken`}
-          >
-            {actions.map((action, i) => (
-              <ActionChip key={`${action.tool}-${i}`} action={action} />
-            ))}
-          </div>
-        )}
+        {actions && actions.length > 0 && <ActionChips actions={actions} />}
 
         {sources && !isStreaming && <AnswerSourcesFooter sources={sources} />}
 

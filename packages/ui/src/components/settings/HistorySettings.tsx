@@ -117,6 +117,34 @@ export function KeepTrackCard() {
   );
 }
 
+/** "Share my work style with the team": the person's own switch. When on,
+ * the Executive answers teammates about how they work and uses it to help
+ * them. Nothing for someone who can't have it (a contact, a solo workspace),
+ * unless it is still on, so they can turn it off. */
+export function ShareWorkStyleCard() {
+  const { state, save, busy, error } = useHistoryState();
+  if (state === "loading" || state === null || state === "error") return null;
+  const on = state.share_work_style === true;
+  if (!state.can_share_work_style && !on) return null;
+  return (
+    <SettingsCard
+      title="Share my work style with the team"
+      titleId="share-work-style-label"
+      description="When this is on, the Executive shares how you work with your teammates: what you've told it and what it has learned about your role, your focus, how you like updates and your working style. It answers when they ask, and uses it to help them work with you. Off by default."
+      action={
+        <Switch
+          checked={on}
+          onChange={() => void save({ share_work_style: !on })}
+          disabled={busy || (!on && !state.can_share_work_style)}
+          labelledBy="share-work-style-label"
+        />
+      }
+    >
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </SettingsCard>
+  );
+}
+
 /** Memory → how long notes last for everyone: the owner picks, everyone else
  * reads it. */
 export function CompanyRetentionCard() {

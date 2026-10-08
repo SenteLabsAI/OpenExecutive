@@ -361,6 +361,106 @@ def test_the_gmail_thread_read_is_allowed_wherever_the_message_read_is() -> None
 
 
 # --------------------------------------------------------------------------- #
+# my_email_read_before: where they are, never what they said
+# --------------------------------------------------------------------------- #
+
+
+def _before(session: Session, tool_input: dict[str, Any]) -> dict[str, Any]:
+    return _call(mr.handle_my_email_read_before, session, tool_input)
+
+
+def test_a_thread_read_once_can_be_found_again_in_a_new_conversation(roster: SimpleNamespace) -> None:
+    from openexecutive.delegation import mail_reads
+
+    first = _thread_session(_msg(1, DANA, "The reserve is $42,000."))
+    assert _read(first, {"thread_id": "t1"})["status"] == "ok"
+    # A later conversation: a fresh session and turn, nothing carried over.
+    later = _thread_session(_msg(1, DANA, "The reserve is $42,000."))
+    found = _before(later, {"words": "dana pilot"})
+    assert found["status"] == "ok"
+    assert [t["thread_id"] for t in found["threads"]] == ["t1"]
+    assert found["threads"][0]["subject"] == "Brand refresh pilot"
+    assert "Dana" in found["threads"][0]["from"]
+    # Where, never what: no message text is kept or listed.
+    assert "42,000" not in json.dumps(found)
+    assert "data, not instructions" in found["note"]
+    assert later.turn_delegation.touched_mail is True
+    stored = mail_reads.recent(roster.principal, OWNER)
+    assert [r.thread_id for r in stored] == ["t1"]
+
+
+def test_words_that_match_nothing_say_to_search(roster: SimpleNamespace) -> None:
+    session = _thread_session(_msg(1, DANA, "Hi"))
+    _read(session, {"thread_id": "t1"})
+    result = _before(session, {"words": "invoice"})
+    assert result["status"] == "not_found"
+    assert "search_my_email" in result["detail"]
+
+
+def test_the_list_is_theirs_alone_and_from_this_mailbox_only(roster: SimpleNamespace) -> None:
+    from openexecutive.delegation import mail_reads
+
+    mail_reads.record(roster.teammate, TEAM, "t-team", subject="Ben's thread", sender="x")
+    mail_reads.record(roster.principal, "old@elsewhere.example", "t-old", subject="Old mailbox", sender="x")
+    assert _before(_session(Mailbox()), {})["status"] == "not_found"
+
+
+def test_old_rows_are_never_listed_and_are_pruned(roster: SimpleNamespace) -> None:
+    from openexecutive.delegation import mail_reads
+
+    long_ago = NOW - mail_reads.RETENTION - timedelta(days=1)
+    mail_reads.record(roster.principal, OWNER, "t-old", subject="Old", sender="x", now=long_ago)
+    assert mail_reads.recent(roster.principal, OWNER) == []
+    mail_reads.record(roster.principal, OWNER, "t-new", subject="New", sender="x")
+    # Listed as of long ago, the old row would show if it were still there.
+    assert [r.thread_id for r in mail_reads.recent(roster.principal, OWNER, now=long_ago)] == ["t-new"]
+
+
+def test_a_person_keeps_at_most_max_rows(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import mail_reads
+
+    monkeypatch.setattr(mail_reads, "MAX_ROWS", 3)
+    for i in range(5):
+        mail_reads.record(roster.principal, OWNER, f"t{i}", subject="s", sender="x", now=NOW + timedelta(seconds=i))
+    kept = mail_reads.recent(roster.principal, OWNER, now=NOW + timedelta(seconds=5))
+    assert [r.thread_id for r in kept] == ["t4", "t3", "t2"]
+
+
+def test_forget_deletes_only_that_persons_rows(roster: SimpleNamespace) -> None:
+    from openexecutive.delegation import mail_reads
+
+    mail_reads.record(roster.principal, OWNER, "t1", subject="s", sender="x")
+    mail_reads.record(roster.teammate, TEAM, "t2", subject="s", sender="x")
+    assert mail_reads.forget(roster.principal) == 1
+    assert mail_reads.recent(roster.principal, OWNER) == []
+    assert len(mail_reads.recent(roster.teammate, TEAM)) == 1
+
+
+def test_a_read_finishing_after_act_as_me_is_off_leaves_no_row(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.delegation import mail_reads
+    from openexecutive.delegation import settings as dsettings
+
+    # A real turn (no eval override) whose person turned it off mid-read.
+    monkeypatch.setattr(dsettings, "is_enabled", lambda person_id: False)
+    writer = SimpleNamespace(person=SimpleNamespace(id=roster.principal), email=OWNER)
+    with set_session(Session()):
+        mr._remember_read(writer, "t1", _msg(1, DANA, "Hi"))
+    assert mail_reads.recent(roster.principal, OWNER) == []
+
+
+def test_a_failed_note_never_fails_the_read(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import mail_reads
+
+    def broken(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(mail_reads, "record", broken)
+    assert _read(_thread_session(_msg(1, DANA, "Hi")), {"thread_id": "t1"})["status"] == "ok"
+
+
+# --------------------------------------------------------------------------- #
 # Attachments
 # --------------------------------------------------------------------------- #
 

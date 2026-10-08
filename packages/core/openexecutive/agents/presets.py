@@ -30,7 +30,7 @@ PRESET_IDS: tuple[PresetId, ...] = ("fast", "balanced", "thorough")
 _STATUS_ORDER: tuple[PresetId, ...] = ("balanced", "fast", "thorough")
 
 # Preferred models, best first. The first one the install allows wins.
-_FAST_MODELS: tuple[str, ...] = ("claude-haiku-4-5",)
+_FAST_MODELS: tuple[str, ...] = ("claude-haiku-5-5", "claude-haiku-4-5")
 _THOROUGH_MODELS: tuple[str, ...] = ("claude-opus-5-5", "claude-opus-5")
 
 

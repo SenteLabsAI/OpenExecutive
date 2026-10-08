@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
+from openexecutive.orchestrator import tool_labels
+
 logger = logging.getLogger(__name__)
 
 
@@ -438,15 +440,17 @@ def summarize_action(
         )
         payload["target"] = str(alert_id) if alert_id is not None else None
     elif tool_name == "call_tool":
-        # MCP — the underlying tool name lives in tool_input["name"]. We
-        # can't tell from here whether the underlying call was a read or a
-        # write, so emit a generic chip with the tool name. Users will
-        # naturally tolerate "Called google_workspace__send_gmail_message" (or
-        # "Called microsoft_365__send-mail") when that's what just happened.
+        # MCP — the underlying tool name lives in tool_input["name"]. The chip
+        # names it in plain words (tool_labels) and keeps the raw name in
+        # `tool`, so the UI can collapse repeats of the same tool into one
+        # chip. `target` says what this one call looked at, for the chip's
+        # tap-to-see list.
         mcp_name = tool_input.get("name", "tool")
-        payload["tool"] = mcp_name  # surface the real tool for UI mapping
-        payload["summary"] = f"Called {mcp_name}"
-        payload["target"] = mcp_name
+        payload["tool"] = mcp_name if isinstance(mcp_name, str) else "call_tool"
+        payload["summary"] = tool_labels.labels_for(mcp_name, tool_input.get("arguments"))[0]
+        payload["target"] = tool_labels.detail_for(
+            mcp_name, tool_input.get("arguments"), tool_result
+        )
     elif tool_name == "send_department_message":
         slug = tool_input.get("department_slug", "")
         integration = tool_input.get("integration", "")

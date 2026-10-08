@@ -86,7 +86,7 @@ COPY packages/core/pyproject.toml packages/core/uv.lock ./
 # the system interpreter's prefix, so the packages land in system
 # site-packages exactly as before: the model bakes below and the runtime CMD
 # rely on that.
-# (The fastembed install further down is a separate, unpinned resolution into
+# (The fastembed install further down is a separate resolution into
 # the same env; today it moves nothing because the locked versions already
 # satisfy its constraints.)
 RUN UV_PROJECT_ENVIRONMENT=/usr/local \
@@ -116,8 +116,14 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # load the model from disk (offline, see HF_HUB_OFFLINE below) instead of the
 # network. No `|| true`: if the bake can't fetch, fail the build rather than ship
 # an image that silently re-downloads — the model is deterministic.
+# Pin the SAME fastembed the gateway's uvx env resolves under its
+# --exclude-newer cutoff (orchestrator/mcp_gateway.py), not a floating one: a
+# cache baked by fastembed 0.9.0 can't be loaded offline by 0.8.1, so when
+# 0.9.0 shipped the gateway hung at startup, timed out, and the
+# deployment came up with no MCP tools (Google included). Bump this together
+# with the cutoff.
 ENV FASTEMBED_CACHE_PATH=/opt/fastembed-cache
-RUN uv pip install --system "fastembed>=0.6.0" \
+RUN uv pip install --system "fastembed==0.8.1" \
     && python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2')"
 
 # Google Workspace MCP server, run co-located as a stdio child of the MCP gateway

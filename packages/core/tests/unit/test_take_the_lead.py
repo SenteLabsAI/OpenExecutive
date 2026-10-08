@@ -213,10 +213,16 @@ def test_reads_are_not_wrapped(owner: Any) -> None:
     assert ttl.gated_handlers(handlers, source="research")["list_people"] is handlers["list_people"]
 
 
+def _teammate() -> int:
+    person = people_store.upsert_person(full_name="Sam Teammate", email=SAM)
+    people_registry.invalidate()
+    return person
+
+
 def test_a_held_action_waits_on_today_for_the_principal(owner: Any) -> None:
     calls: list[Any] = []
     gated = ttl.gated_handlers(_handlers(calls), source="reflection")
-    result = json.loads(asyncio.run(gated["message_person"]({"person_id": owner.id, "text": "Pay the invoice"})))
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": _teammate(), "text": "Pay the invoice"})))
     assert result["status"] == "waiting_for_approval" and calls == []
     [decision] = ledger.list_instances(ttl.DECISION_CLASS)
     assert decision.approver_person_id == owner.id and decision.status == ledger.STATUS_PROPOSED
@@ -348,8 +354,48 @@ def test_the_gate_fails_closed(owner: Any, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(ttl, "list_rules", broken)
     calls: list[Any] = []
     gated = ttl.gated_handlers(_handlers(calls), source="reflection")
-    result = json.loads(asyncio.run(gated["message_person"]({"person_id": owner.id, "text": "hi"})))
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": _teammate(), "text": "hi"})))
     assert result["status"] == "waiting_for_approval" and calls == []
+
+
+def test_a_message_only_to_the_principal_just_goes_to_them(owner: Any) -> None:
+    # They're who it would wait for: approving it would only show them what it says.
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    text = "Heads up: the supplier agreement renewal needs your signature by Friday."
+    assert ttl.check("message_person", {"person_id": owner.id, "text": text}, lead=_lead(), rules=[]) is not None
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": owner.id, "text": text})))
+    assert result["status"] == "sent" and calls == [("message_person", {"person_id": owner.id, "text": text})]
+    assert ledger.list_instances(ttl.DECISION_CLASS) == [] and alerts_store.list_alerts(limit=10) == []
+    [line] = ttl.done([ttl.SCOPE_EXECUTIVE])
+    assert line.status == "done"
+
+
+def test_the_same_message_to_anyone_else_still_waits(owner: Any) -> None:
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    client = people_store.upsert_person(full_name="Cleo Client", email="cleo@client.example", kind="contact")
+    people_registry.invalidate()
+    text = "The supplier agreement renewal needs a signature by Friday."
+    for person_id in (_teammate(), client, 9999):
+        result = json.loads(asyncio.run(gated["message_person"]({"person_id": person_id, "text": text})))
+        assert result["status"] == "waiting_for_approval"
+    assert calls == []
+
+
+def test_only_a_direct_message_to_the_principal_skips_the_gate(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert ttl._only_to_principal("message_person", {"person_id": owner.id, "text": "Sign the NDA"})
+    # Acting on them, or reaching others through them, is not a message to them.
+    assert not ttl._only_to_principal("assign_open_loop", {"person_id": owner.id, "text": "Sign the NDA"})
+    assert not ttl._only_to_principal("archive_person", {"person_id": owner.id})
+    assert not ttl._only_to_principal("send_company_broadcast", {"text": "Sign the NDA"})
+    assert not ttl._only_to_principal("message_person", {"text": "Sign the NDA"})
+
+    def broken(person_id: int) -> Any:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(people_store, "get_person", broken)
+    assert not ttl._only_to_principal("message_person", {"person_id": owner.id, "text": "Sign the NDA"})
 
 
 def test_mcp_reads_pass_and_sends_are_gated(owner: Any) -> None:

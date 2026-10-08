@@ -36,6 +36,7 @@ ANTHROPIC_DIRECT_MODELS: list[str] = [
     "claude-opus-5",
     "claude-sonnet-5-5",
     "claude-sonnet-5",
+    "claude-haiku-5-5",
     "claude-haiku-4-5",
 ]
 

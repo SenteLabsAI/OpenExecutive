@@ -50,7 +50,7 @@ Synthesized executive response
 
 **Knowledge** — Two retrieval layers per specialist call: (1) built-in MBA-level Markdown (`knowledge/builtin/`, git-tracked) seeded into ChromaDB at startup, and (2) your uploaded company documents chunked and stored in a separate `company_docs` collection. RAG context is injected into the user turn, never the cached system prompt.
 
-**Episodic memory** — After every response, a background `claude-haiku-4-5` pass extracts key decisions, initiatives, and advice into SQLite. The next session opens with a `<past_decisions>` block so the Executive remembers what it recommended last month.
+**Episodic memory** — After every response, a background `claude-haiku-5-5` pass extracts key decisions, initiatives, and advice into SQLite. The next session opens with a `<past_decisions>` block so the Executive remembers what it recommended last month.
 
 **Always in the loop** — Each person can turn on "Keep track of what happens" (Settings → Memory). The Executive then keeps private, dated notes of what they said, in chat where it can confirm it's them (the web app signed in, their own Slack or Discord, Telegram with a webhook secret) and in Act as me replies they send. Every note rests on their own words, checked word for word. Only they see it, in Memories → History, where they can correct, pin or forget it. Notes are read back only to them, in a private chat, and expire after 90 days by default (the owner can change this). The owner's morning brief and evening digest include what the owner's own notes say is due, and anyone with notes on gets a short reminder on the day something they promised by email is due. It needs no setup and no extra service.
 
@@ -379,12 +379,12 @@ the app refuses to start.
 | `ANTHROPIC_API_KEY` | Yes¹ | — | Anthropic API key |
 | `ANTHROPIC_WORKSPACE_ID` | No | — | Required only for an organisation-scoped Anthropic key; sent as the `anthropic-workspace-id` header. Workspace-scoped keys need no value |
 | `DEFAULT_MODEL` | No | `claude-sonnet-5-5` | Executive + most specialists |
-| `DEEP_REASONING_MODEL` | No | `claude-opus-5-5` | CSO, CFO, GC, Board |
+| `DEEP_REASONING_MODEL` | No | `claude-sonnet-5-5` | CSO, CFO, GC, Board (deep reasoning on) |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB directory |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory |
 | `COMPANY_PROFILE_PATH` | No | `./company/profile.yaml` | Company profile |
 | `ENABLE_CACHING` | No | `true` | Anthropic prompt caching |
-| `ROUTING_MODEL` | No | `claude-haiku-4-5` | Model for intent routing |
+| `ROUTING_MODEL` | No | `claude-haiku-5-5` | Model for intent routing |
 | `SLACK_BOT_TOKEN` | No | — | Slack bot OAuth token |
 | `SLACK_APP_TOKEN` | No | — | Slack socket mode token |
 | `EXEC_EMAIL_ADDRESS` | No | — | The Executive's own mailbox (Gmail via Google Workspace MCP, or Outlook via Microsoft 365 MCP) |

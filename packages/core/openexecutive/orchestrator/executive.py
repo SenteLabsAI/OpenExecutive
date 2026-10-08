@@ -313,6 +313,80 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int) -> Any:
     return text[:shown] + marker(shown, pct)
 
 
+# The history breakpoint lives an hour: people answer in minutes, not
+# seconds, and a 5m entry would be gone before most next messages.
+_HISTORY_CACHE_CONTROL: dict[str, str] = {"type": "ephemeral", "ttl": "1h"}
+
+
+def _apply_history_cache_marker(
+    system_blocks: list[dict[str, Any]], messages: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Cache the conversation so far, so the next message reads it back.
+
+    Marks the newest non-empty message before the caller's last one (the
+    turn being answered): normally the previous reply. History turns are
+    stored as plain text and rebuilt identically every turn, so on the next
+    message everything up to that point is a cache read, and only what is
+    new (the last exchange, this turn's context) is written. Without it the
+    loop marker (``_apply_loop_cache_marker``) writes the whole history again
+    on every turn, because the previous turn's cached prefix ended inside
+    that turn's own context and tool calls, which history does not keep.
+
+    The API allows four breakpoints and the other three are spoken for, so
+    the history marker takes the slot of the 5m company-profile block's.
+    That block still sits in the cached prefix (covered by this marker),
+    and dropping its 5m marker keeps the TTLs in the order the API requires:
+    tools 1h, persona 1h, history 1h, then the 5m loop marker.
+
+    Returns new lists; the caller's blocks and messages are left as they
+    were. With no history (a first message, an unattended run) both come
+    back unchanged.
+    """
+    target = -1
+    for i in range(len(messages) - 2, -1, -1):
+        content = messages[i].get("content")
+        if isinstance(content, str) and content:
+            target = i
+            break
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "text" and b.get("text") for b in content
+        ):
+            target = i
+            break
+    if target < 0:
+        return system_blocks, messages
+
+    content = messages[target]["content"]
+    if isinstance(content, str):
+        marked_content: list[dict[str, Any]] = [
+            {"type": "text", "text": content, "cache_control": dict(_HISTORY_CACHE_CONTROL)}
+        ]
+    else:
+        marked_content = [
+            {k: v for k, v in b.items() if k != "cache_control"} if isinstance(b, dict) else b
+            for b in content
+        ]
+        last_text = max(
+            j for j, b in enumerate(marked_content)
+            if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+        )
+        marked_content[last_text] = {
+            **marked_content[last_text], "cache_control": dict(_HISTORY_CACHE_CONTROL)
+        }
+    new_messages = list(messages)
+    new_messages[target] = {**messages[target], "content": marked_content}
+
+    new_system = [
+        {k: v for k, v in b.items() if k != "cache_control"}
+        if isinstance(b, dict)
+        and isinstance(b.get("cache_control"), dict)
+        and b["cache_control"].get("ttl") != "1h"
+        else b
+        for b in system_blocks
+    ]
+    return new_system, new_messages
+
+
 def _apply_loop_cache_marker(
     messages: list[dict[str, Any]], start: int = 0
 ) -> None:
@@ -577,11 +651,15 @@ def _system_block_names(blocks: list[dict[str, Any]]) -> list[str]:
     the timeline can show which cached blocks were live during each step.
     Block layout in cache_manager.build_system_blocks() is fixed:
       0 = persona + knowledge_index (1h TTL)
-      1 = company_profile + org_context (5m TTL)
+      1 = company_profile + org_context (5m TTL, or unmarked when the
+          agent loop's history marker took its slot)
     """
     names: list[str] = []
     for i, b in enumerate(blocks):
-        ttl = (b.get("cache_control") or {}).get("ttl", "5m")
+        cc = b.get("cache_control")
+        # No marker: the block rides inside a later breakpoint's prefix (the
+        # history marker takes the company block's slot).
+        ttl = cc.get("ttl", "5m") if isinstance(cc, dict) else "none"
         if i == 0:
             names.append(f"persona+knowledge_index (ttl={ttl})")
         elif i == 1:
@@ -737,15 +815,12 @@ class Executive:
         history = session.get_recent_history()
 
         for turn in history:
-            # No cache_control on history turns. The breakpoint budget is 4
-            # per request and the other three are always spoken for: two
-            # system blocks (cache_manager.build_system_blocks) plus the tool
-            # block, leaving exactly one for the agent loop's intra-turn
-            # marker (_apply_loop_cache_marker). A rolling marker here used
-            # to claim a latent fifth, which Anthropic rejects outright on
-            # the direct path; it never earned its slot anyway, since history
-            # turns are flat strings and the system + tool blocks already
-            # cover the expensive stable prefix.
+            # No cache_control here. The agent loop marks the newest history
+            # turn itself (_apply_history_cache_marker), taking the company
+            # block's slot so the request stays at the API's 4 breakpoints;
+            # other users of these messages (the committee revision) keep
+            # the plain layout. A rolling marker on every history turn used
+            # to claim a latent fifth, which Anthropic rejects outright.
             prev = messages[-1] if messages else None
             if (
                 prev is not None
@@ -1809,6 +1884,10 @@ class Executive:
         if origin and not unattended_withheld:
             take_the_lead.wake(f"a message on {origin}")
         current_messages = list(messages)
+        if self._settings.enable_caching:
+            system_blocks, current_messages = _apply_history_cache_marker(
+                system_blocks, current_messages
+            )
         # Tool calls this turn's scripts have made, in all and per own tool
         # (settings.chat_script_max_calls, step_script.CHAT_OWN_TOOL_CAPS).
         script_counts: dict[str, int] = {}

@@ -114,16 +114,31 @@ def test_legacy_budget_tokens_becomes_reasoning_max_tokens() -> None:
 
 @pytest.mark.parametrize(
     "thinking",
-    [None, {"type": "disabled"}, "adaptive", {}],
-    ids=["absent", "disabled", "not-a-dict", "no-type"],
+    [None, "adaptive", {}],
+    ids=["absent", "not-a-dict", "no-type"],
 )
-def test_no_reasoning_field_when_thinking_is_off_or_malformed(thinking: Any) -> None:
+def test_no_reasoning_field_when_thinking_is_absent_or_malformed(thinking: Any) -> None:
     kwargs = _deep_kwargs("x")
     if thinking is None:
         del kwargs["thinking"]
     else:
         kwargs["thinking"] = thinking
     assert "reasoning" not in to_openai_request("x", kwargs)
+
+
+def test_disabled_thinking_turns_reasoning_off_for_claude() -> None:
+    # A model that thinks by default (Haiku 5.5) must be told not to.
+    kwargs = _deep_kwargs("x", "medium")
+    kwargs["thinking"] = {"type": "disabled"}
+    body = to_openai_request("anthropic/claude-haiku-5.5", kwargs)
+    assert body["reasoning"] == {"enabled": False}
+
+
+def test_disabled_thinking_sends_no_reasoning_field_elsewhere() -> None:
+    kwargs = _deep_kwargs("x", "medium")
+    kwargs["thinking"] = {"type": "disabled"}
+    assert "reasoning" not in to_openai_request("openai/gpt-5", kwargs)
+    assert "reasoning" not in to_openai_request("llama3.3", kwargs)
 
 
 @pytest.mark.parametrize("budget", [0, -1, None, True, "4096"])

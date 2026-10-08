@@ -44,7 +44,7 @@ openexecutive/
 | LLM backbone | Anthropic Claude API | Native tool use, prompt caching, streaming |
 | Default model | `claude-sonnet-4-6` | Best speed/quality ratio for most queries |
 | Deep reasoning | `claude-opus-4-7` | Strategy, finance, legal, board — high-stakes decisions |
-| Routing / extraction | `claude-haiku-4-5-20251001` | Intent routing and background memory extraction |
+| Routing / extraction | `claude-haiku-5-5` | Intent routing and background memory extraction |
 | Backend | Python + FastAPI | Async-native, Pydantic models, auto OpenAPI docs |
 | Package manager | `uv` | Fast, reproducible |
 | Vector store | ChromaDB (local) | Zero-config embedded DB |
@@ -239,13 +239,13 @@ scheduled_actions (id, title, prompt, scheduled_for, status, channel_ref, ...)
 
 **Read path:** `format_for_prompt()` returns the 8 most recent decisions and all active initiatives as a `<past_decisions>` block, injected into the user turn at session start.
 
-**Write path — LLM extraction:** After every Executive response, `schedule_extraction()` fires a background task that calls `claude-haiku-4-5-20251001` with a structured `store_memories` tool. Haiku decides whether the turn contains anything worth remembering and extracts it into typed fields. Results are written to SQLite without blocking the response stream.
+**Write path — LLM extraction:** After every Executive response, `schedule_extraction()` fires a background task that calls `claude-haiku-5-5` with a structured `store_memories` tool. Haiku decides whether the turn contains anything worth remembering and extracts it into typed fields. Results are written to SQLite without blocking the response stream.
 
 ```
 User message + Executive response
         │
         ▼ (background, non-blocking)
-claude-haiku-4-5-20251001 (tool_choice: auto)
+claude-haiku-5-5 (tool_choice: auto)
         │
         └── store_memories tool call (if anything worth keeping)
                 ├── decisions[]   → store_decision()
@@ -318,7 +318,7 @@ AlertEvent (source, subject, body, external_id)
         │
         ▼ store.is_duplicate(external_id) → skip if seen
         │
-        ▼ TriageAgent.evaluate(event)  [claude-haiku-4-5-20251001]
+        ▼ TriageAgent.evaluate(event)  [claude-haiku-5-5]
         │   → TriageDecision(alert=bool, severity, summary, suggested_action)
         │
         ▼ alert=True → store.create_alert() → dispatcher.send(channels)
@@ -562,8 +562,8 @@ All settings via environment variables (`.env` file in `packages/core/`).
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key |
 | `DEFAULT_MODEL` | No | `claude-sonnet-4-6` | Model for Executive + most specialists |
-| `DEEP_REASONING_MODEL` | No | `claude-opus-4-7` | Model for CSO, CFO, GC, Board |
-| `ROUTING_MODEL` | No | `claude-haiku-4-5-20251001` | Model for intent routing and memory extraction |
+| `DEEP_REASONING_MODEL` | No | `claude-sonnet-5-5` | Model for CSO, CFO, GC, Board |
+| `ROUTING_MODEL` | No | `claude-haiku-5-5` | Model for intent routing and memory extraction |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB persistence directory |
 | `COMPANY_PROFILE_PATH` | No | `./company/profile.yaml` | Company profile location |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory, alerts, audit, scheduler |

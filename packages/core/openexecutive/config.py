@@ -108,8 +108,12 @@ class Settings(BaseSettings):
     anthropic_workspace_id: str | None = Field(None, alias="ANTHROPIC_WORKSPACE_ID")
 
     default_model: str = Field("claude-sonnet-5-5", alias="DEFAULT_MODEL")
-    deep_reasoning_model: str = Field("claude-opus-5-5", alias="DEEP_REASONING_MODEL")
-    routing_model: str = Field("claude-haiku-4-5", alias="ROUTING_MODEL")
+    # The model the specialists with deep reasoning on by default (CFO, legal,
+    # strategy, board comms) run on. Deep reasoning stays on whatever it is;
+    # set DEEP_REASONING_MODEL=claude-opus-5-5 (or apply the Council's
+    # Thorough preset) to put them on the largest model.
+    deep_reasoning_model: str = Field("claude-sonnet-5-5", alias="DEEP_REASONING_MODEL")
+    routing_model: str = Field("claude-haiku-5-5", alias="ROUTING_MODEL")
     # Model for the executive_research specialist fan-out (research-mode turn
     # only — the chat path still uses each agent's deep_reasoning_model). The
     # research turn is retrieve-from-web-search + summarize, which does not

@@ -1349,3 +1349,43 @@ def test_uncached_request_keeps_the_legacy_flat_string_shape() -> None:
     for m in body["messages"]:
         if m.get("role") == "tool":
             assert isinstance(m["content"], str)
+
+
+# --- history breakpoint on an assistant turn --------------------------------
+
+
+def _history_request(marked: bool) -> list[dict]:
+    reply: object = (
+        [{"type": "text", "text": "second answer", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
+        if marked
+        else "second answer"
+    )
+    return [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "second question"},
+        {"role": "assistant", "content": reply},
+        {"role": "user", "content": "third question"},
+    ]
+
+
+def test_history_marker_on_a_reply_survives_translation() -> None:
+    """The Executive's history breakpoint sits on the previous reply; OpenRouter
+    only forwards it to Anthropic on a typed text part."""
+    from openexecutive.providers.translator import _anthropic_messages_to_openai
+
+    out = _anthropic_messages_to_openai(_history_request(marked=True))
+    assert out[3]["content"] == [
+        {"type": "text", "text": "second answer", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    ]
+    # Every assistant turn takes the same typed shape in that request, so the
+    # reply marked now reads back byte-identical when it is unmarked history.
+    assert out[1]["content"] == [{"type": "text", "text": "first answer"}]
+
+
+def test_assistant_turns_stay_flat_without_a_history_marker() -> None:
+    from openexecutive.providers.translator import _anthropic_messages_to_openai
+
+    out = _anthropic_messages_to_openai(_history_request(marked=False))
+    assert out[1]["content"] == "first answer"
+    assert out[3]["content"] == "second answer"

@@ -16,6 +16,7 @@ from openexecutive.providers.anthropic_provider import AnthropicProvider
 from openexecutive.providers.feature_gate import (
     FeatureSpec,
     apply_feature_gates,
+    fit_claude_generation,
     rejects_forced_tool_choice,
     relax_forced_tool_choice,
 )
@@ -252,3 +253,56 @@ def test_anthropic_provider_relaxes_before_calling_the_sdk() -> None:
         model="claude-opus-5-5", tool_choice={"type": "tool", "name": "emit"},
     ))
     assert seen["tool_choice"] == {"type": "auto"}
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5", "anthropic/claude-haiku-5.5"],
+)
+def test_newer_claude_models_drop_sampling_fields(model: str) -> None:
+    kwargs = {"temperature": 0, "top_p": 0.5, "top_k": 5, "max_tokens": 32}
+    out = fit_claude_generation(model, kwargs)
+    assert "temperature" not in out and "top_p" not in out and "top_k" not in out
+    assert out["max_tokens"] == 32
+    assert kwargs["temperature"] == 0  # the caller's dict is untouched
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "llama3.3", "openai/gpt-5"])
+def test_older_and_other_models_keep_sampling_fields(model: str) -> None:
+    kwargs = {"temperature": 0, "max_tokens": 32}
+    assert fit_claude_generation(model, kwargs) is kwargs
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "anthropic/claude-haiku-5.5"])
+def test_haiku_5_5_thinks_only_when_asked(model: str) -> None:
+    kwargs = {"max_tokens": 32}
+    assert fit_claude_generation(model, kwargs)["thinking"] == {"type": "disabled"}
+    asked = {"max_tokens": 4096, "thinking": {"type": "adaptive"}}
+    assert fit_claude_generation(model, asked) is asked
+
+
+def test_haiku_5_5_keeps_thinking_at_efforts_that_require_it() -> None:
+    kwargs = {"output_config": {"effort": "max"}}
+    assert "thinking" not in fit_claude_generation("claude-haiku-5-5", kwargs)
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-haiku-4-5"])
+def test_other_models_get_no_thinking_field(model: str) -> None:
+    assert "thinking" not in fit_claude_generation(model, {"max_tokens": 32})
+
+
+def test_anthropic_provider_fits_the_request_before_calling_the_sdk() -> None:
+    seen: dict[str, object] = {}
+
+    class _Messages:
+        async def create(self, **kw: object) -> object:
+            seen.update(kw)
+            return None
+
+    provider = AnthropicProvider(api_key="test")
+    provider._client = type("C", (), {"messages": _Messages()})()  # type: ignore[assignment]
+    asyncio.run(provider.messages_create(
+        model="claude-haiku-5-5", max_tokens=32, temperature=0,
+    ))
+    assert "temperature" not in seen
+    assert seen["thinking"] == {"type": "disabled"}

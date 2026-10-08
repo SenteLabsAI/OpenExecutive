@@ -55,6 +55,7 @@ from openexecutive.memory.history_schema import (
     PASSES_TABLE,
     PERSON_TABLE,
     REMINDERS_TABLE,
+    SHARING_TABLE,
     ensure_schema,
 )
 
@@ -316,6 +317,60 @@ def set_person_settings(
     if retention_days is not ...:
         _reapply_expiry(person_id, db_path=db_path)
     return PersonSettings(reply_notes=notes, retention_days=days)
+
+
+def can_share_work_style(person: Any) -> bool:
+    """Whether ``person`` may turn "Share my work style with the team" on:
+    anyone who may keep notes, in a workspace set up for a team. A solo
+    workspace has nobody to share with."""
+    if not can_keep_notes(person):
+        return False
+    try:
+        from openexecutive.memory.workspace_settings import get_workspace
+
+        return get_workspace().mode == "team"
+    except Exception:
+        logger.warning("history: couldn't read the workspace mode — sharing unavailable", exc_info=True)
+        return False
+
+
+def shares_work_style(person_id: int | None, *, db_path: Path | None = None) -> bool:
+    """Whether ``person_id`` turned "Share my work style with the team" on.
+    Off when unset or unreadable (fails closed)."""
+    if person_id is None or not _db_path(db_path).exists():
+        return False
+    try:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                f"SELECT enabled FROM {SHARING_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
+                (person_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("history: couldn't read a person's sharing switch — treating it as off", exc_info=True)
+        return False
+    return bool(row is not None and row[0])
+
+
+def set_shares_work_style(
+    person_id: int, enabled: bool, *, by: str, db_path: Path | None = None, now: datetime | None = None,
+) -> bool:
+    """Turn a person's own "Share my work style with the team" on or off.
+    Returns the switch now in force."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"INSERT INTO {SHARING_TABLE} (person_id, enabled, updated_at, updated_by) "  # noqa: S608 — constant table name
+            "VALUES (?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET enabled = excluded.enabled, "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (person_id, int(bool(enabled)), _now(now).isoformat(), by),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return bool(enabled)
 
 
 def effective_retention(person_id: int, *, db_path: Path | None = None) -> int | None:
