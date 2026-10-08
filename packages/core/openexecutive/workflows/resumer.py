@@ -229,10 +229,15 @@ def _abandon_resume(run_id: str, reason: str, db_path: Path | None = None) -> No
     # terminal row to the default DB while clearing the payload in the real
     # one, leaving the run `running` with no payload — in neither queue, which
     # is precisely the stranding this function exists to prevent.
+    failed = False
     with contextlib.suppress(Exception):
-        _wf_persistence.fail_run(run_id, reason, db_path=db_path)
-    with contextlib.suppress(Exception):
-        _wf_persistence.clear_resume_state(run_id, db_path=db_path)
+        failed = bool(_wf_persistence.fail_run(run_id, reason, db_path=db_path))
+    # Only clear the resume payload when we actually terminalised the row —
+    # otherwise a superseded claim could leave `awaiting_human`/`resolved`
+    # with no payload (in neither queue).
+    if failed:
+        with contextlib.suppress(Exception):
+            _wf_persistence.clear_resume_state(run_id, db_path=db_path)
 
 
 def _kick_resume(run_id: str, db_path: Path | None = None) -> None:
@@ -667,9 +672,8 @@ async def _handle_timeout(run: dict, now: datetime) -> None:
         await apply_resolution(run_id, auto_resolution)
 
     else:  # "fail"
-        # Same race as the escalate branch: `fail_run` has no status guard, so
-        # check the transition first rather than overwriting a resolution that
-        # landed in the gap.
+        # Same race as the escalate branch: mark_timed_out is the claim fence;
+        # fail_run then accepts `timed_out` (not `awaiting_human` / `done`).
         if not _wf_persistence.mark_timed_out(run_id):
             logger.info(
                 "resumer: run %s was answered before its timeout was applied "
@@ -677,11 +681,11 @@ async def _handle_timeout(run: dict, now: datetime) -> None:
                 run_id,
             )
             return
-        _wf_persistence.fail_run(
+        if _wf_persistence.fail_run(
             run_id,
             f"WaitForHuman timed out (on_timeout=fail) at {now.isoformat()}",
-        )
-        _wf_persistence.clear_resume_state(run_id)
+        ):
+            _wf_persistence.clear_resume_state(run_id)
 
 
 async def sweep_stale_awaiting(db_path: Path | None = None) -> int:

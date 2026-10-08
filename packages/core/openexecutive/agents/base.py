@@ -9,6 +9,10 @@ from openexecutive.config import get_settings
 from openexecutive.providers import get_provider, model_supports_deep_reasoning
 
 _SPECIALIST_TIMEOUT = 180.0
+# Actor string the Executive's chat-turn consult_specialist path passes
+# (orchestrator.router.route_parallel). Kept here so the chat deep-reasoning
+# cost gate and the router cannot drift apart.
+CHAT_SPECIALIST_ACTOR = "specialist"
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,31 @@ class BaseAgent(ABC):
             return ov.use_deep_reasoning
         return self.use_deep_reasoning
 
+    def resolve_use_deep_reasoning(
+        self,
+        *,
+        deep_reasoning_override: bool | None,
+        actor: str,
+        specialist_chat_deep_reasoning: bool,
+    ) -> bool:
+        """Pick deep-reasoning for one call.
+
+        Precedence: explicit kwarg → Council override → (for chat consults
+        only) ``SPECIALIST_CHAT_DEEP_REASONING`` → class default. Chat
+        consults use ``actor == CHAT_SPECIALIST_ACTOR``; workflows default to
+        ``specialist_workflow`` and keep the class flag.
+        """
+        if deep_reasoning_override is not None:
+            return deep_reasoning_override
+        from openexecutive.agents.overrides import get_override
+
+        ov = get_override(self.name)
+        if ov is not None and ov.use_deep_reasoning is not None:
+            return ov.use_deep_reasoning
+        if actor == CHAT_SPECIALIST_ACTOR and not specialist_chat_deep_reasoning:
+            return False
+        return self.use_deep_reasoning
+
     async def analyze(
         self,
         query: str,
@@ -105,10 +134,10 @@ class BaseAgent(ABC):
             if model_override is not None
             else self.effective_model()
         )
-        use_deep = (
-            deep_reasoning_override
-            if deep_reasoning_override is not None
-            else self.effective_use_deep_reasoning()
+        use_deep = self.resolve_use_deep_reasoning(
+            deep_reasoning_override=deep_reasoning_override,
+            actor=actor,
+            specialist_chat_deep_reasoning=settings.specialist_chat_deep_reasoning,
         )
 
         user_content = query
@@ -261,10 +290,10 @@ class BaseAgent(ABC):
             if model_override is not None
             else self.effective_model()
         )
-        use_deep = (
-            deep_reasoning_override
-            if deep_reasoning_override is not None
-            else self.effective_use_deep_reasoning()
+        use_deep = self.resolve_use_deep_reasoning(
+            deep_reasoning_override=deep_reasoning_override,
+            actor=actor,
+            specialist_chat_deep_reasoning=settings.specialist_chat_deep_reasoning,
         )
 
         create_kwargs: dict[str, Any] = {

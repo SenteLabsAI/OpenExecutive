@@ -15,7 +15,7 @@ system:
   one_liner: A multi-agent AI system acting as a virtual corporate executive team.
   stack:
     backend: Python 3.11+ · FastAPI · Anthropic Claude SDK · ChromaDB · SQLite
-    frontend: Next.js 15 · React 19 · TailwindCSS · Mermaid.js
+    frontend: Next.js 16 · React 19 · TailwindCSS · Mermaid.js
   models:
     default: claude-sonnet-5-5
     deep_reasoning: claude-sonnet-5-5
@@ -358,8 +358,13 @@ providers:
     openrouter_catalog.supports_reasoning); unknown slugs (hardcoded
     fallback list, or outside the catalog) keep thinking OFF.
   deep_reasoning: |
-    The Council "Deep reasoning" toggle (BaseAgent.use_deep_reasoning /
-    agent_overrides.use_deep_reasoning) adds Anthropic-native
+    Chat-turn consult_specialist calls (actor="specialist") keep adaptive
+    deep reasoning OFF by default even when the agent class sets
+    use_deep_reasoning=True. Opt in with SPECIALIST_CHAT_DEEP_REASONING=true
+    or a Council pin on that agent. Workflow / MCP actors still honour the
+    class default. Separately: the Council "Deep reasoning" toggle
+    (BaseAgent.use_deep_reasoning / agent_overrides.use_deep_reasoning) adds
+    Anthropic-native
     ``thinking={"type":"adaptive"}`` + ``output_config.effort``
     (SPECIALIST_EFFORT) to the call. It is honoured on: Claude Opus/Sonnet
     via Anthropic direct; Claude via OpenRouter; and every non-Claude

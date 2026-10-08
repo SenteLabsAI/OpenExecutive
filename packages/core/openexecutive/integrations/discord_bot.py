@@ -822,8 +822,6 @@ async def _handle_message(
         attach_briefing_context,
         build_channel_context_block,
     )
-    from openexecutive.knowledge.retriever import retrieve
-    from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import (
         create_session,
         load_messages,
@@ -913,8 +911,11 @@ async def _handle_message(
             if is_dm and discord_user_id:
                 session.seen_channel_refs.add(("discord_dm", discord_user_id))
 
-            retrieved_context = retrieve(query=text)
-            episodic_context = format_for_prompt(session_id=session_id)
+            from openexecutive.integrations.turn_context import fetch_turn_context
+
+            retrieved_context, episodic_context = await fetch_turn_context(
+                text, session_id=session_id
+            )
 
             # Sender was already resolved at the roster gate above; reuse it
             # so we don't hit the DB twice in the hot path.

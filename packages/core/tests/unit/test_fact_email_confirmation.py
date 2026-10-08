@@ -652,7 +652,7 @@ def test_the_poller_marks_the_session_with_the_sender_and_authentication(
         patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
               return_value=SimpleNamespace(is_empty=lambda: True)),
         patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
-        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda **_: ""),
         patch.object(poller, "get_settings",
                      return_value=SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)),
         patch("openexecutive.config.get_settings",
@@ -692,7 +692,7 @@ def test_a_failed_principal_lookup_leaves_the_email_turn_unauthenticated_not_los
         patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
               return_value=SimpleNamespace(is_empty=lambda: True)),
         patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
-        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda **_: ""),
         patch.object(poller, "get_settings",
                      return_value=SimpleNamespace(exec_email_address=EXEC, email_poll_interval_seconds=60)),
     ):

@@ -71,18 +71,44 @@ export default function DynamicSection({ id, title, sub, basePath = 'architectur
     }
   }, [id, basePath]);
 
-  // Lazy load on first appearance — every section reads its own static
-  // file. Re-fetches if the source (basePath/id) changes; the key guard
-  // skips the redundant second call React fires in StrictMode.
+  const sectionRef = useRef<HTMLElement | null>(null);
+
+  // Fetch only when the section enters (or nears) the viewport — the
+  // architecture/guide pages mount every section at once, so an eager
+  // fetch was ~20 parallel API calls on first paint. Re-fetches if the
+  // source (basePath/id) changes; the key guard skips the redundant
+  // second call React fires in StrictMode.
   useEffect(() => {
     const key = `${basePath}/${id}`;
-    if (loadedKeyRef.current === key) return;
-    loadedKeyRef.current = key;
-    load();
+    const el = sectionRef.current;
+    if (!el) return;
+
+    const start = () => {
+      if (loadedKeyRef.current === key) return;
+      loadedKeyRef.current = key;
+      load();
+    };
+
+    if (typeof IntersectionObserver === 'undefined') {
+      start();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          start();
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '200px 0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [load, basePath, id]);
 
   return (
-    <section className="space-y-4">
+    <section ref={sectionRef} className="space-y-4">
       <div className="mb-6 flex items-start justify-between gap-4" id={id}>
         <div>
           <h2 className="text-lg font-semibold text-fg">{title}</h2>

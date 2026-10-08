@@ -2,27 +2,40 @@
 
 ## Project Overview
 
-Open Executive is a multi-agent AI system acting as a virtual corporate executive. Python backend (FastAPI) + Next.js 15 frontend. The "Executive" is a single coherent persona backed by 8 specialist sub-agents, all powered by the Anthropic Claude API.
+Open Executive is a multi-agent AI system acting as a virtual corporate executive. Python backend (FastAPI) + Next.js 16 frontend. The "Executive" is a single coherent persona backed by a specialist council (see **Specialist counts** below), all powered by the Anthropic Claude API.
 
 ## Repository Layout
 
 ```
 packages/core/          Python: all agent logic, API, CLI
-packages/ui/            Next.js 15 web UI
+packages/ui/            Next.js 16 web UI
 knowledge/              Curated MBA knowledge base (git-tracked Markdown)
 evals/                  Eval scenarios + LLM-as-judge runner
 docker/                 Dockerfile + docker-compose.yml
 .github/workflows/      CI + eval pipeline
 ```
 
+## Specialist counts (7 / 9 / 10)
+
+Three overlapping numbers appear in docs and code — they are intentional:
+
+| Count | Meaning |
+|------:|---------|
+| **10** | Full `SPECIALIST_REGISTRY` keys (`cso`, `cfo`, `chro`, `gc`, `coo`, `cmo`, `cpo`, `sales`, `board_comms`, `triage`) |
+| **9** | Core Council agents (`visibility = "core"`) — everything except `triage` |
+| **7** | Typical research / watchlist fan-out subset (domain specialists without triage / board / sales, depending on the workflow) |
+
+When writing overview copy or CLAUDE notes, name which count you mean.
+
 ## Key Commands
 
 ```bash
 make dev          # Start FastAPI (port 8000) + Next.js (port 3000)
-make test         # Run pytest
+make test         # Run pytest (unit + integration)
+make test-unit    # Unit tests only (closest to the old CI unit job)
 make lint         # ruff check + mypy
 make test-changed # fast loop: only the tests that cover what this branch changed
-make check        # everything CI checks: lint, unit tests, UI build (if touched), PR rules
+make check        # everything CI checks: lint, unit+integration, UI build (if touched), PR rules
 make eval         # Run eval suite against localhost
 make docker       # docker compose up --build
 ```

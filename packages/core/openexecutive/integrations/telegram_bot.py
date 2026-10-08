@@ -247,8 +247,6 @@ async def _process_and_reply(
         attach_briefing_context,
         build_channel_context_block,
     )
-    from openexecutive.knowledge.retriever import retrieve
-    from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import (
         create_session,
         load_messages,
@@ -278,8 +276,11 @@ async def _process_and_reply(
             # Record this channel_ref as user-initiated so the Executive may
             # schedule follow-ups back to this chat.
             session.seen_channel_refs.add(("telegram", str(chat_id)))
-            retrieved_context = retrieve(query=message_text)
-            episodic_context = format_for_prompt(session_id=session_id)
+            from openexecutive.integrations.turn_context import fetch_turn_context
+
+            retrieved_context, episodic_context = await fetch_turn_context(
+                message_text, session_id=session_id
+            )
 
             # Look up the OE Person record so Honcho can key per-person
             # memory off Person.id (shared across channels). No match →
@@ -484,20 +485,29 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=503, detail="Telegram integration not configured")
 
-    # Verify the secret token Telegram sends in the header (set when registering the webhook).
-    if settings.telegram_webhook_secret:
-        if not settings.telegram_webhook_secret_valid:
-            # Telegram can never send such a value (setWebhook refuses it), so
-            # the only request that could match it is a forged one.
-            logger.warning(
-                "Telegram: TELEGRAM_WEBHOOK_SECRET is not a value Telegram can send "
-                "(1-256 of A-Z a-z 0-9 _ -); refusing every update until it is fixed"
-            )
-            raise HTTPException(status_code=401, detail="Invalid webhook secret")
-        sent = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(sent, settings.telegram_webhook_secret):
-            logger.warning("Telegram: webhook secret mismatch")
-            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    # Fail-closed: a token without a valid secret would accept anyone's POST
+    # (the shared-secret gate exempts this path when the webhook verifies
+    # itself). Empty → 503 (not configured); junk that Telegram cannot send →
+    # 401 (misconfigured); mismatch → 401.
+    if not settings.telegram_webhook_secret:
+        logger.warning(
+            "Telegram: TELEGRAM_WEBHOOK_SECRET unset; refusing every update "
+            "until it is set to a value Telegram can send"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Telegram webhook secret not configured",
+        )
+    if not settings.telegram_webhook_secret_valid:
+        logger.warning(
+            "Telegram: TELEGRAM_WEBHOOK_SECRET is not a value Telegram can send "
+            "(1-256 of A-Z a-z 0-9 _ -); refusing every update until it is fixed"
+        )
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    sent = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not hmac.compare_digest(sent, settings.telegram_webhook_secret):
+        logger.warning("Telegram: webhook secret mismatch")
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
     # Parse body — return 200 on failure so Telegram doesn't retry bad payloads.
     try:

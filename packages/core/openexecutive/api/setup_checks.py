@@ -643,11 +643,11 @@ async def check_telegram(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "Use 1–256 letters, digits, _ or - (openssl rand -hex 32 makes one), restart the app, "
             "and register the webhook again with it (docs/telegram_setup.md).",
         )
-    if snap.local_login and not secret:
+    if not secret:
         return _result(
             "telegram",
             "error",
-            "Local login turns away Telegram messages unless TELEGRAM_WEBHOOK_SECRET is set.",
+            "TELEGRAM_WEBHOOK_SECRET isn't set, so the webhook refuses every update.",
             _TELEGRAM_REREGISTER,
         )
 
@@ -702,14 +702,6 @@ async def check_telegram(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "A 401 means the secret registered with setWebhook doesn't match "
             "TELEGRAM_WEBHOOK_SECRET — register the webhook again (docs/telegram_setup.md). "
             "Otherwise, check this app can be reached at that address.",
-        )
-    if not secret:
-        return _result(
-            "telegram",
-            "warn",
-            f"{bot_name} is receiving messages, but anyone who finds the webhook address can send fake ones: "
-            "TELEGRAM_WEBHOOK_SECRET isn't set.",
-            _TELEGRAM_REREGISTER,
         )
     return _channel_ready(
         snap,

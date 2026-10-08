@@ -46,8 +46,10 @@ WORKDIR /app
 # libstdc++6 is what the copied-in Node binary (ms365 stage below) links
 # against; python:*-slim does not ship it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl libstdc++6 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends git curl libstdc++6 gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 1001 openexec \
+    && useradd --system --uid 1001 --gid openexec --home-dir /app --shell /usr/sbin/nologin openexec
 
 RUN pip install uv
 
@@ -239,6 +241,16 @@ ENV DELEGATION_GOOGLE_CREDENTIALS_DIR=/data/delegation_google
 ENV MS365_MCP_CREDENTIALS_DIR=/data/ms365_credentials
 ENV MS365_MCP_USE_KEYTAR=0
 
+# Runtime user matches the UI image (uid 1001). Baked caches and /app stay
+# readable; /data is chowned on start by docker/api-entrypoint.sh because a
+# fresh named volume is often root-owned.
+RUN mkdir -p /data \
+    && chown -R openexec:openexec /app /data /opt/hf-cache /opt/fastembed-cache \
+       /opt/workspace-mcp /opt/pysandbox
+COPY docker/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh
+RUN chmod +x /usr/local/bin/api-entrypoint.sh
+
 EXPOSE 8000
 
+ENTRYPOINT ["/usr/local/bin/api-entrypoint.sh"]
 CMD ["uvicorn", "openexecutive.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

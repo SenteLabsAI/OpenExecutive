@@ -52,7 +52,7 @@ def test_run_executive_does_not_force_committee_review() -> None:
         ),
         patch(
             "openexecutive.memory.episodic.format_for_prompt",
-            new=lambda: "",
+            new=lambda **_: "",
         ),
         patch.object(poller, "get_settings", return_value=_settings()),
     ):
