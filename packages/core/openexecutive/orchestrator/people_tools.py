@@ -1087,6 +1087,12 @@ WORK_STYLE_FRAME = (
     "working style. Leave out their health, family, personal life and "
     "feelings, and do not quote what they said. Question: {question}"
 )
+# The tool result when a shared answer would name one of the principal's
+# contacts, who are private to the principal.
+OUTSIDE_SHARED_NOTE = (
+    "That's outside what this person shares about how they work. Say you can't "
+    "answer that one and suggest asking them directly."
+)
 # The tool result for someone who hasn't shared, the same whether or not
 # anything is known about them.
 NOT_SHARED_NOTE = (
@@ -1190,7 +1196,33 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
             return json.dumps({
                 "error": "Only how this person works can be asked, not what they think of someone else.",
             })
-        question = WORK_STYLE_FRAME.format(question=question)
+        # The principal's contacts are theirs alone: a question naming one is
+        # not asked, and an answer naming one is withheld (full name or
+        # address, as `_names_a_contact` matches them everywhere else).
+        guard_contacts = not contacts_reachable_now()
+        if guard_contacts and _names_a_contact((question,)):
+            return json.dumps(
+                {"person_id": person_id, "target_person_id": None,
+                 "answer": "", "found": False, "shared": True, "note": OUTSIDE_SHARED_NOTE},
+                ensure_ascii=False,
+            )
+        answer = await directional_chat(
+            person_id,
+            WORK_STYLE_FRAME.format(question=question),
+            target_person_id=None,
+            reasoning_level=reasoning_level,
+        )
+        if guard_contacts and answer and _names_a_contact((answer,)):
+            return json.dumps(
+                {"person_id": person_id, "target_person_id": None,
+                 "answer": "", "found": False, "shared": True, "note": OUTSIDE_SHARED_NOTE},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"person_id": person_id, "target_person_id": None,
+             "answer": answer, "found": bool(answer), "shared": True},
+            ensure_ascii=False,
+        )
     answer = await directional_chat(
         person_id,
         question,

@@ -1748,6 +1748,35 @@ def test_ask_about_someone_who_shares_their_work_style(
     assert off["shared"] is False and "Olivia hasn't chosen to share" in off["note"]
 
 
+def test_a_shared_answer_never_names_the_principals_contacts(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sharing the principal's work style doesn't open their contacts: a
+    question naming one isn't asked, an answer naming one is withheld."""
+    from openexecutive.memory import history, workspace_settings
+    from openexecutive.orchestrator import people_tools
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="team"))
+    history.set_shares_work_style(roster.principal, True, by="test")
+    teammate = Session(from_web_chat=True, caller_person_id=roster.teammate)
+    chat = AsyncMock(return_value="Olivia is renewing with Jordan Client at Acme this week.")
+    monkeypatch.setattr(people_tools, "directional_chat", chat)
+
+    named = _tool(people_tools.handle_ask_about_person,
+                  {"person_id": roster.principal, "question": "What is she doing with Jordan Client?"}, teammate)
+    assert named["answer"] == "" and named["found"] is False
+    assert chat.await_count == 0
+
+    leaked = _tool(people_tools.handle_ask_about_person,
+                   {"person_id": roster.principal, "question": "What is she focused on?"}, teammate)
+    assert leaked["answer"] == "" and "outside what this person shares" in leaked["note"]
+
+    # The principal asking about themselves sees their own memory as it is.
+    own = _tool(people_tools.handle_ask_about_person,
+                {"person_id": roster.principal, "question": "What am I focused on?"}, _principal_web(roster))
+    assert "Jordan Client" in own["answer"]
+
+
 def test_not_shared_names_only_team_members(roster: SimpleNamespace) -> None:
     """A contact reads exactly like an unknown id, so asking can't confirm one
     exists or learn their name."""

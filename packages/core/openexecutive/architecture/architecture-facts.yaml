@@ -3837,7 +3837,8 @@ people:
     they work, the question wrapped in `people_tools.WORK_STYLE_FRAME` (role,
     focus, how they like updates, working style; no health, family,
     personal life or quotes; prompt guidance, not a filter) and
-    `target_person_id` refused. Not shared answers `shared: false` with the
+    `target_person_id` refused; off a contacts-reachable turn, a question or
+    answer naming a contact (`_names_a_contact`) is refused or withheld. Not shared answers `shared: false` with the
     same note whether or not anything is known. Still open: a row on the
     principal's own turn that names a contact some other way than their
     address, full name, person id or chat id (a first name, a nickname)
