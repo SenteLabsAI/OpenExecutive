@@ -537,6 +537,13 @@ async def _carry_out_lead(
                 status_code=403,
                 detail="Only the account owner can allow this, from a signed-in session on this server.",
             )
+        # Checked before anything is done, so a full list refuses the allow
+        # instead of failing after the action went out.
+        if not take_the_lead.room_for(str(grant.get("key"))):
+            raise HTTPException(
+                status_code=409,
+                detail=f"It can learn at most {take_the_lead.ALLOWED_MAX} things. Remove one in Settings first.",
+            )
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
     try:

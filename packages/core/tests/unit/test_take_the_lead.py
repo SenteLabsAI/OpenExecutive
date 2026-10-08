@@ -1102,3 +1102,16 @@ def test_only_the_principal_edits_a_card(client: TestClient, owner: Any, monkeyp
     monkeypatch.setattr(decisions_route, "_resolver", lambda instance, request: owner.id)
     response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"input": {"text": "Pay it elsewhere"}}})
     assert response.status_code == 403 and done == []
+
+
+def test_a_full_list_refuses_the_allow_before_acting(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    monkeypatch.setattr(ttl, "ALLOWED_MAX", 1)
+    ttl.allow("take_the_lead|workflow|x", "Start the x workflow", created_by="t")
+    decision_id, _ = _training_card(owner)
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"allow": True}})
+    assert response.status_code == 409 and done == []
+    assert ledger.get_decision_instance(decision_id).status == ledger.STATUS_PROPOSED  # type: ignore[union-attr]

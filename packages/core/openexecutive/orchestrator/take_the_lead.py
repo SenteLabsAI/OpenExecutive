@@ -831,6 +831,17 @@ def allow(
     return found
 
 
+def room_for(key: str, *, db_path: Path | None = None) -> bool:
+    """Whether ``key`` can be allowed: already allowed, or under ``ALLOWED_MAX``."""
+    conn = _connect(db_path)
+    try:
+        if conn.execute(f"SELECT 1 FROM {ALLOWED_TABLE} WHERE key = ?", (key,)).fetchone() is not None:  # noqa: S608
+            return True
+        return conn.execute(f"SELECT COUNT(*) FROM {ALLOWED_TABLE}").fetchone()[0] < ALLOWED_MAX  # noqa: S608
+    finally:
+        conn.close()
+
+
 def disallow(allowed_id: int, *, db_path: Path | None = None) -> bool:
     conn = _connect(db_path)
     try:
