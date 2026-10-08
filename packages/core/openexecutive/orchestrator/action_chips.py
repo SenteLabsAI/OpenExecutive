@@ -435,7 +435,7 @@ def summarize_action(
         # tap-to-see list.
         mcp_name = tool_input.get("name", "tool")
         payload["tool"] = mcp_name if isinstance(mcp_name, str) else "call_tool"
-        payload["summary"] = tool_labels.labels_for(mcp_name)[0]
+        payload["summary"] = tool_labels.labels_for(mcp_name, tool_input.get("arguments"))[0]
         payload["target"] = tool_labels.detail_for(
             mcp_name, tool_input.get("arguments"), tool_result
         )

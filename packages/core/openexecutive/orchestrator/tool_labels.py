@@ -174,11 +174,22 @@ def _clean(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def labels_for(raw_name: Any) -> tuple[str, str]:
-    """(done, doing) phrases for an MCP tool name. Never returns the raw name."""
+def labels_for(raw_name: Any, arguments: Any = None) -> tuple[str, str]:
+    """(done, doing) phrases for an MCP tool name. Never returns the raw name.
+
+    `arguments` matters only for a tool whose action depends on them, such
+    as Google's `manage_event`, which also deletes: a deletion must not read
+    as "Updated your calendar".
+    """
     if not isinstance(raw_name, str) or not raw_name.strip():
         return GENERIC_DONE, GENERIC_DOING
     server, tool = _split(raw_name.strip())
+    if (
+        tool == "manage_event"
+        and isinstance(arguments, dict)
+        and str(arguments.get("action", "")).lower() == "delete"
+    ):
+        return _LABELS["delete_calendar_event"]
     if tool in _LABELS:
         return _LABELS[tool]
     words = [w for w in tool.split("_") if w]

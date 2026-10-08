@@ -218,7 +218,7 @@ def _mcp_label(tool_input: Any) -> tuple[str, str]:
         return f"{tool_labels.GENERIC_DOING}…", "call_tool"
     # Label from the full name: the 48-char cut is for `tool` only, and a
     # cut name would miss the table the chip reads (and the two would differ).
-    doing = tool_labels.labels_for(raw)[1]
+    doing = tool_labels.labels_for(raw, tool_input.get("arguments"))[1]
     # One line beside the dots: the fallback for an unlisted tool can run
     # long, so the whole label (ellipsis included) stays within _LABEL_MAX.
     if len(doing) >= _LABEL_MAX:

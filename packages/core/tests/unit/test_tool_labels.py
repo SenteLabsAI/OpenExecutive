@@ -139,3 +139,15 @@ def test_a_long_unlisted_tool_keeps_the_progress_line_short() -> None:
     assert activity is not None
     assert len(activity["label"]) <= 60
     assert activity["label"].endswith("…")
+
+
+def test_a_calendar_delete_through_manage_event_says_so() -> None:
+    tool_input = {"name": "google_workspace__manage_event", "arguments": {"action": "delete", "event_id": "e1"}}
+    chip = summarize_action(tool_name="call_tool", tool_input=tool_input, tool_result="ok")
+    activity = summarize_activity([{"id": "t", "name": "call_tool", "input": tool_input}])
+    assert chip is not None and activity is not None
+    assert chip["summary"] == "Removed a calendar event"
+    assert activity["label"] == "Removing a calendar event…"
+    assert tool_labels.labels_for("google_workspace__manage_event", {"action": "update"})[0] == (
+        "Updated your calendar"
+    )
