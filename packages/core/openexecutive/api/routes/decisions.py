@@ -570,8 +570,11 @@ async def _carry_out_lead(
                 str(grant.get("key")), str(grant.get("label") or ""), example=changed or None,
                 created_by=f"person:{resolver}" if resolver is not None else "principal", decision_id=instance.id,
             )
-        except take_the_lead.RuleError as exc:
-            raise HTTPException(status_code=409, detail=f"Done, but it couldn't learn it: {exc}") from None
+        except take_the_lead.RuleError:
+            # It's done; only the learning failed (the list filled up since
+            # the check above). Say so in the log rather than fail a sent card.
+            logger.warning("decisions/approve: Take the lead action %d done but not allowed", instance.id)
+            return _refresh(instance.id)
         _audit_allowed(str(grant.get("label") or ""), instance.id, bool(changed))
     return _refresh(instance.id)
 
