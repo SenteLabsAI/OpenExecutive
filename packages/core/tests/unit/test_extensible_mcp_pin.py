@@ -81,3 +81,28 @@ def test_dockerfile_prewarm_matches_the_gateway_launch() -> None:
         f"{mcp_gateway._EXTENSIBLE_MCP_LAUNCH_ARGS}; the image would cache one set of packages "
         "and resolve another at every start"
     )
+
+
+# fastembed releases and their PyPI upload times. The gateway's uvx env runs
+# the newest one published before the cutoff; add a release here when you
+# move the cutoff past it.
+_FASTEMBED_RELEASES = {
+    "0.8.1": _FASTEMBED_0_8_1_PUBLISHED,
+    "0.9.0": "2026-10-07T16:38:49Z",
+}
+FASTEMBED_BAKE = re.compile(r'uv pip install --system "fastembed([^"]*)"')
+
+
+def test_dockerfile_bakes_the_model_with_the_runtime_fastembed() -> None:
+    args = mcp_gateway._EXTENSIBLE_MCP_LAUNCH_ARGS
+    cutoff = args[args.index("--exclude-newer") + 1]
+    runtime = max(
+        (v for v, published in _FASTEMBED_RELEASES.items() if published < cutoff),
+        key=lambda v: _FASTEMBED_RELEASES[v],
+    )
+    bakes = FASTEMBED_BAKE.findall(DOCKERFILE.read_text(encoding="utf-8"))
+    assert bakes == [f"=={runtime}"], (
+        f"docker/Dockerfile bakes the tool-search model with fastembed{bakes} but the gateway "
+        f"runs fastembed {runtime}; a cache baked by another version may not load offline, and "
+        "then the gateway times out at startup with no MCP tools"
+    )
