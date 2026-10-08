@@ -124,6 +124,8 @@ def test_everyday_words_the_speaker_typed_name_no_one(said: Any) -> None:
 
 def test_a_name_without_an_ask_to_add_anyone_is_refused(said: Any) -> None:
     # "jamie" is typed, but nothing asks to change the roster.
-    said("reply to jamie about the invoice")
-    for withholds in BOTH:
-        assert withholds("upsert_person", _add(email="billing@evil.example"))
+    for text in ("reply to jamie about the invoice", "any new mail from jamie?",
+                 "did jamie update the deck?"):
+        said(text)
+        for withholds in BOTH:
+            assert withholds("upsert_person", _add(email="billing@evil.example")), text

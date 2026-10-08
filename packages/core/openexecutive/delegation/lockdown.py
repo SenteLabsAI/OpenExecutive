@@ -202,10 +202,11 @@ CARRIED_REFUSAL = (
 
 
 # A word that asks for a roster change: "add Jamie as a contact", "save her
-# address". Without one ("reply to Jamie"), a name alone is no request.
-_CONTACT_ASK_WORDS = frozenset({
-    "add", "change", "contact", "contacts", "new", "save", "update",
-})
+# address". Without one ("reply to Jamie", "any new mail from Jamie?"), a name
+# alone is no request. Changing a contact they already have may also be asked
+# as "update", "change" or "new" (a changed address must still be typed).
+_CONTACT_ADD_WORDS = frozenset({"add", "contact", "contacts", "save"})
+_CONTACT_CHANGE_WORDS = _CONTACT_ADD_WORDS | {"change", "new", "update"}
 
 
 def speaker_named_contact(tool_input: Any) -> bool:
@@ -213,7 +214,7 @@ def speaker_named_contact(tool_input: Any) -> bool:
     mail is one they asked for themselves: a contact (new, or already one),
     only ``_CONTACT_FIELDS``, and a name with a word the speaker typed this
     turn (``own_words``), for the stored name too on an update, in a message
-    that asks for a roster change (``_CONTACT_ASK_WORDS``). The roster is
+    that asks for a roster change (``_CONTACT_ADD_WORDS``). The roster is
     what every send check trusts, so mail must not add to it. An address may
     come from the conversation, as the Executive found it; on an update a
     changed address must be one they typed, so mail can't redirect someone
@@ -232,7 +233,9 @@ def speaker_named_contact(tool_input: Any) -> bool:
         words = own_words(pinned.speaker_text)
         if not words:
             return False
-        if not {w.lower() for w in _NAME_WORD.findall(words)} & _CONTACT_ASK_WORDS:
+        asked = {w.lower() for w in _NAME_WORD.findall(words)}
+        new = tool_input.get("person_id") is None
+        if not asked & (_CONTACT_ADD_WORDS if new else _CONTACT_CHANGE_WORDS):
             return False
         typed = _name_words(words)
         if not _name_words(str(tool_input.get("full_name", ""))) & typed:
