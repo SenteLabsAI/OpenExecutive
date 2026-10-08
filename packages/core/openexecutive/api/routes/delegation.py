@@ -525,6 +525,10 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
         # The inbox watcher needs Act as me; off here, it starts from scratch
         # (watch_since) when turned on again, never catching up.
         _set_inbox(person_id, False)
+        # Where their emails are (read_my_email's list): only kept while it's on.
+        from openexecutive.delegation import mail_reads
+
+        mail_reads.forget(person_id)
     if before != body.enabled:
         set_enabled(person_id, body.enabled, updated_by=f"person:{person_id}")
         if body.enabled:

@@ -1,7 +1,7 @@
 id: delegation_009
 domain: delegation
 workspace_mode: solo
-description: "Act as me, whose mailbox: in a new conversation the principal refers to an email a client sent them earlier and asks what it said. The email is in the principal's own mailbox, not the Executive's, so the Executive searches their mailbox (search_my_email), opens the thread (read_my_email) and answers from it, instead of saying it can't find the email."
+description: "Act as me, whose mailbox: in a new conversation the principal refers to an email a client sent them earlier and asks what it said. The email is in the principal's own mailbox, not the Executive's, so the Executive looks in their mailbox (my_email_read_before, then search_my_email), opens the thread (read_my_email) and answers from it, instead of saying it can't find the email."
 company_context:
   name: Fernway Studio
   industry: Design consultancy
@@ -25,6 +25,7 @@ delegation:
           Priya
 query: "Earlier I had you look at Priya's email about the reserves. What were the two balances she gave me again?"
 expected_tool_calls:
+  - my_email_read_before
   - search_my_email
   - read_my_email
 expected_topics:

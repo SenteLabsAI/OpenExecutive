@@ -1,5 +1,7 @@
 """Act as me: read the speaker's own mailbox from chat — ``search_my_email``,
-``read_my_email``, ``read_my_email_attachment`` and ``my_email_awaiting_reply``
+``read_my_email``, ``read_my_email_attachment``, ``my_email_awaiting_reply``
+and ``my_email_read_before`` (the threads ``read_my_email`` opened for them
+before, ``delegation.mail_reads``: where, never what)
 (Gmail or Outlook, through the same per-person credential ``ghostwrite_email``
 uses).
 
@@ -40,6 +42,7 @@ SEARCH_MY_EMAIL = "search_my_email"
 READ_MY_EMAIL = "read_my_email"
 MY_EMAIL_AWAITING_REPLY = "my_email_awaiting_reply"
 READ_MY_EMAIL_ATTACHMENT = "read_my_email_attachment"
+MY_EMAIL_READ_BEFORE = "my_email_read_before"
 
 SEARCHES_PER_TURN = 10
 THREADS_PER_TURN = 20
@@ -81,7 +84,7 @@ SEARCH_MY_EMAIL_TOOL: dict[str, Any] = {
         "or Outlook, mail they sent included. Use it when they ask about their "
         "email: find a message, check what someone sent them, see what came in. "
         "Mail sent to them is here, not in your own mailbox (the Gmail or "
-        "Outlook tools of your own account), so search here first. "
+        "Outlook tools of your own account), so search here. "
         "`query` is a Gmail-style search: words, from:, to:, subject:, "
         "newer_than:14d (Outlook ignores other operators). Leave `query` empty "
         "to list what reached their inbox in the last `days` days. Returns "
@@ -169,8 +172,32 @@ READ_MY_EMAIL_ATTACHMENT_TOOL: dict[str, Any] = {
     },
 }
 
+MY_EMAIL_READ_BEFORE_TOOL: dict[str, Any] = {
+    "name": MY_EMAIL_READ_BEFORE,
+    "description": (
+        "Emails in the mailbox of the person you are speaking with that you "
+        "opened for them before, in this conversation or an earlier one (the "
+        "last 30 days), newest first: thread_id, subject, from, read_at. Only "
+        "where they are, never what they said: open one again with "
+        "read_my_email. Use it when they mention an email you read for them "
+        "before ('the email from Priya I had you read'), so they don't have to "
+        "search for it again. `words` narrows it to subjects or senders "
+        "holding all of them. Read-only."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "words": {
+                "type": "string",
+                "description": "Optional words from the subject or sender, e.g. 'Priya reserves'.",
+            },
+        },
+    },
+}
+
 MAIL_READ_TOOLS: list[dict[str, Any]] = [
     MY_EMAIL_AWAITING_REPLY_TOOL,
+    MY_EMAIL_READ_BEFORE_TOOL,
     READ_MY_EMAIL_TOOL,
     READ_MY_EMAIL_ATTACHMENT_TOOL,
     SEARCH_MY_EMAIL_TOOL,
@@ -396,6 +423,7 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
             return json.dumps({"status": "not_found", "detail": "That thread has no messages."})
         shown = messages[-READ_MESSAGES:]
         first = len(messages) - len(shown) + 1
+        _remember_read(writer, thread.id, messages[0])
         return json.dumps({
             "status": "ok",
             "thread_id": thread.id,
@@ -414,6 +442,43 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
         read,
         lambda writer: _id_refusal(writer, thread_id, "thread"),
     )
+
+
+def _remember_read(writer: Any, thread_id: str, first: Any) -> None:
+    """Note where this thread is (``delegation.mail_reads``), so a later
+    conversation can open it again. Best-effort: the read never fails on it."""
+    from openexecutive.delegation import mail_reads
+
+    try:
+        mail_reads.record(
+            writer.person.id, writer.email, thread_id, subject=first.subject or "", sender=_sender(first)
+        )
+    except Exception:
+        logger.warning("read_my_email: couldn't note the thread for later", exc_info=True)
+
+
+async def handle_my_email_read_before(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation import mail_reads
+
+    words = str(tool_input.get("words") or "").strip()[:200]
+
+    async def read(writer: Any) -> str:
+        found = mail_reads.recent(writer.person.id, writer.email, words=words)
+        if not found:
+            return json.dumps({
+                "status": "not_found",
+                "detail": (
+                    "You haven't opened an email like that for them in the last 30 days. "
+                    "Search their mailbox with search_my_email."
+                ),
+            })
+        threads = [
+            {"thread_id": r.thread_id, "subject": r.subject, "from": r.sender, "read_at": r.read_at[:16]}
+            for r in found
+        ]
+        return json.dumps({"status": "ok", "threads": threads, "note": _DATA_NOTE})
+
+    return await _run(MY_EMAIL_READ_BEFORE, ("searches", SEARCHES_PER_TURN, "searches"), read)
 
 
 async def handle_my_email_awaiting_reply(tool_input: dict[str, Any]) -> str:
@@ -545,6 +610,7 @@ async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
 
 MAIL_READ_TOOL_HANDLERS: dict[str, Any] = {
     MY_EMAIL_AWAITING_REPLY: handle_my_email_awaiting_reply,
+    MY_EMAIL_READ_BEFORE: handle_my_email_read_before,
     READ_MY_EMAIL: handle_read_my_email,
     READ_MY_EMAIL_ATTACHMENT: handle_read_my_email_attachment,
     SEARCH_MY_EMAIL: handle_search_my_email,

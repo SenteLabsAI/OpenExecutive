@@ -19,6 +19,7 @@ TEAM_TABLE = "delegation_team"
 HANDLE_IT_TABLE = "delegation_handle_it"
 HANDLED_TABLE = "delegation_handled"
 REMINDERS_TABLE = "delegation_reminders"
+MAIL_READ_TABLE = "delegation_mail_read"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -31,6 +32,7 @@ TABLES: tuple[str, ...] = (
     HANDLE_IT_TABLE,
     HANDLED_TABLE,
     REMINDERS_TABLE,
+    MAIL_READ_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -157,6 +159,23 @@ _DDL: tuple[str, ...] = (
     ")",
     f"CREATE INDEX IF NOT EXISTS idx_{REMINDERS_TABLE}_due "
     f"ON {REMINDERS_TABLE}(claimed_at, cancelled_at, due_at)",
+    # The threads of someone's own mailbox read_my_email opened for them
+    # (delegation.mail_reads): where, never what. One row per thread, the
+    # subject and sender as one line each and never a message's text, so a
+    # later conversation can open it again; mailbox is the address it was
+    # read from, so a list never points into another mailbox.
+    f"CREATE TABLE IF NOT EXISTS {MAIL_READ_TABLE} ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  person_id INTEGER NOT NULL,"
+    "  mailbox TEXT NOT NULL,"
+    "  thread_id TEXT NOT NULL,"
+    "  subject TEXT NOT NULL DEFAULT '',"
+    "  sender TEXT NOT NULL DEFAULT '',"
+    "  read_at TEXT NOT NULL,"
+    "  UNIQUE(person_id, mailbox, thread_id)"
+    ")",
+    f"CREATE INDEX IF NOT EXISTS idx_{MAIL_READ_TABLE}_person_read "
+    f"ON {MAIL_READ_TABLE}(person_id, read_at)",
 )
 
 

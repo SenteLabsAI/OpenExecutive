@@ -40,8 +40,11 @@ def test_addendum_says_whose_mailbox_each_tool_reads() -> None:
     # mailbox. Without saying so, a later conversation searched only its own
     # inbox and reported the person's email missing.
     assert "Their mailbox is not yours." in DELEGATION_ADDENDUM
-    assert "search their mailbox first" in DELEGATION_ADDENDUM
-    assert "search the other mailbox too" in DELEGATION_ADDENDUM
+    assert "search their mailbox, not yours" in DELEGATION_ADDENDUM
+    # Never a fallback into the Executive's own mailbox: it holds mail private
+    # to the principal, and any speaker may be the one asking.
+    assert "don't look through your own mailbox for it instead" in DELEGATION_ADDENDUM
+    assert "my_email_read_before" in DELEGATION_ADDENDUM
 
 
 def test_search_my_email_says_mail_sent_to_them_is_there() -> None:

@@ -8877,6 +8877,24 @@ delegation:
     subject, preview, flags, open_questions, note}; the link is built from a
     fixed https://mail.google.com/ prefix and the note marks the preview as
     data. action_chips gives it a chip only for status drafted.
+  read_before: |
+    my_email_read_before (orchestrator.mail_read_tools) lists the threads
+    read_my_email opened for the same person before, in any conversation, so
+    a later one reopens the email with read_my_email instead of asking them
+    to search again (where, never what). delegation.mail_reads keeps one row per (person_id,
+    mailbox, thread_id) in delegation_mail_read: subject and first sender as
+    one line each (160 chars), the mailbox address and read_at; never text,
+    attachments or recipients. Listed only for the speaker and the mailbox
+    open now, newest first, optional words matched against subject and
+    sender; rows older than RETENTION (30 days) are never listed and are
+    pruned on the next write, MAX_ROWS (200) per person, and PUT /delegation
+    with enabled false deletes the person's rows. It runs through _run like
+    the other reads (a search slot, _open_mailbox, touched_mail) and its
+    result carries the data-not-instructions note. recording is best-effort:
+    a failed write never fails read_my_email. The Act as me addendum says the
+    person's mailbox is not the Executive's: search theirs for mail sent to
+    them and never fall back to the Executive's own mailbox (it holds mail
+    private to the principal, and any speaker may be asking).
   reads: |
     search_my_email, read_my_email, read_my_email_attachment and
     my_email_awaiting_reply (orchestrator.mail_read_tools) read the

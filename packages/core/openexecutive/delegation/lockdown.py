@@ -59,6 +59,7 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "remind_me",
     # Reads of the owner's own mailbox (mail_read_tools).
     "my_email_awaiting_reply",
+    "my_email_read_before",
     "read_my_email",
     "read_my_email_attachment",
     "search_my_email",
