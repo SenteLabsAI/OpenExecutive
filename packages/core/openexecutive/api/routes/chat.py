@@ -28,6 +28,7 @@ from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.turn_inbox import TurnInbox
 from openexecutive.workflows import turn_files
+from openexecutive.workflows.python_job import available as python_job_available
 from openexecutive.workflows.turn_files import bind as bind_turn_files
 
 # Per-file size cap. Mirrors `_DEFAULT_MAX_BYTES` in
@@ -802,6 +803,10 @@ async def _run_chat_turn(
     principal_turn = is_principal_on_verified_surface(
         SimpleNamespace(from_web_chat=True, caller_person_id=caller_person_id)
     )
+    # Only a principal's turn can run a Python job, so only there are the
+    # uploads kept for the turn; anyone else's are dropped here.
+    if turn_files and not (principal_turn and python_job_available()):
+        turn_files = None
     # A client-supplied id must be the caller's own chat; any other id the
     # turn can't use is swapped for a fresh chat before the stop switch arms.
     requested_id = _clean_session_id(session_id)

@@ -166,6 +166,12 @@ def test_upload_binds_the_files_as_sent_for_that_turn_only(
         return f"[{filename}] text", []
 
     monkeypatch.setattr(chat_route, "build_attachment_output", _fake_output)
+    monkeypatch.setattr(chat_route, "python_job_available", lambda: True)
+    principal = {"is": True}
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.people_tools.is_principal_on_verified_surface",
+        lambda _ctx: principal["is"],
+    )
     resp = client.post(
         "/chat/upload",
         data={"message": "Split this"},
@@ -177,4 +183,11 @@ def test_upload_binds_the_files_as_sent_for_that_turn_only(
     assert turn_files.names() == []
     # A plain chat turn carries none.
     client.post("/chat", json={"message": "and again?"}).text
+    assert captured["turn_files"] == {}
+    # Nor does anyone else's upload: only the principal can run a job.
+    principal["is"] = False
+    client.post(
+        "/chat/upload", data={"message": "Split this"},
+        files=[("files", ("x.pdf", b"%PDF", "application/pdf"))],
+    ).text
     assert captured["turn_files"] == {}

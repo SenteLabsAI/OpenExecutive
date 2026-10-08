@@ -49,11 +49,14 @@ def collect(uploads: list[tuple[str, bytes]]) -> dict[str, bytes]:
 
 @contextlib.contextmanager
 def bind(files: dict[str, bytes] | None) -> Iterator[None]:
-    token = _files.set(dict(files) if files else None)
+    # Save/restore rather than Token.reset(), as set_session and set_turn do:
+    # the SSE route can exit this in a different Context than it entered.
+    prior = _files.get()
+    _files.set(dict(files) if files else None)
     try:
         yield
     finally:
-        _files.reset(token)
+        _files.set(prior)
 
 
 def get(name: str) -> bytes | None:
