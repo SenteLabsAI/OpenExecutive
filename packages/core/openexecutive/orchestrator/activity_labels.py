@@ -121,6 +121,7 @@ _LABELS: dict[str, str] = {
     "search_my_email": "Searching your email…",
     "read_my_email": "Reading your email…",
     "read_my_email_attachment": "Reading an attachment…",
+    "remind_me": "Setting a reminder…",
     "my_email_awaiting_reply": "Checking what's waiting on a reply…",
 
     # Always in the loop: the speaker's own notes

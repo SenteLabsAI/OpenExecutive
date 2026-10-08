@@ -18,6 +18,7 @@ INBOX_MESSAGES_TABLE = "delegation_inbox_messages"
 TEAM_TABLE = "delegation_team"
 HANDLE_IT_TABLE = "delegation_handle_it"
 HANDLED_TABLE = "delegation_handled"
+REMINDERS_TABLE = "delegation_reminders"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -29,6 +30,7 @@ TABLES: tuple[str, ...] = (
     TEAM_TABLE,
     HANDLE_IT_TABLE,
     HANDLED_TABLE,
+    REMINDERS_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -140,6 +142,21 @@ _DDL: tuple[str, ...] = (
     ")",
     f"CREATE INDEX IF NOT EXISTS idx_{HANDLED_TABLE}_person_sent "
     f"ON {HANDLED_TABLE}(person_id, sent_at)",
+    # remind_me: plain text sent to the person who asked, when it is due
+    # (delegation.reminders). Never a scheduled_actions row: that list is
+    # everyone's, and its rows run an Executive turn when they fire.
+    f"CREATE TABLE IF NOT EXISTS {REMINDERS_TABLE} ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  person_id INTEGER NOT NULL,"
+    "  text TEXT NOT NULL,"
+    "  due_at TEXT NOT NULL,"
+    "  created_at TEXT NOT NULL,"
+    "  claimed_at TEXT,"
+    "  sent_at TEXT,"
+    "  cancelled_at TEXT"
+    ")",
+    f"CREATE INDEX IF NOT EXISTS idx_{REMINDERS_TABLE}_due "
+    f"ON {REMINDERS_TABLE}(claimed_at, cancelled_at, due_at)",
 )
 
 

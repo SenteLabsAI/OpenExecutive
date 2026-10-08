@@ -76,6 +76,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "load_mcp_server",
     # Act as me: a draft saved in the speaker's own Gmail (nothing sent)
     "ghostwrite_email",
+    # Act as me: a reminder to the speaker alone
+    "remind_me",
 })
 
 
@@ -233,6 +235,13 @@ def summarize_action(
         # Built server-side from a fixed prefix (delegation.gmail.mailbox_link).
         if isinstance(link, str) and link.startswith(MAILBOX_LINK_PREFIXES):
             payload["link"] = link
+    elif tool_name == "remind_me":
+        # Only a stored reminder earns a chip.
+        if (parsed or {}).get("status") != "set":
+            return None
+        when = str((parsed or {}).get("when") or "")
+        payload["summary"] = f"Reminder set for {when}" if when else "Reminder set"
+        payload["target"] = None
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")
         payload["summary"] = (

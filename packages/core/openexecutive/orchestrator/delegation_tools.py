@@ -37,6 +37,7 @@ from typing import Any
 
 from openexecutive.delegation.threads import MAX_RECIPIENTS, plan_reply, thread_text, writer_said
 from openexecutive.orchestrator.mail_read_tools import MAIL_READ_TOOL_HANDLERS, MAIL_READ_TOOLS
+from openexecutive.orchestrator.reminder_tools import REMINDER_TOOL_HANDLERS, REMINDER_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +103,11 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
 
 # The reads of their own mailbox ride with it: offered, fenced and private
 # the same way (``mail_read_tools``).
-DELEGATION_TOOLS: list[dict[str, Any]] = [GHOSTWRITE_EMAIL_TOOL, *MAIL_READ_TOOLS]
+DELEGATION_TOOLS: list[dict[str, Any]] = [GHOSTWRITE_EMAIL_TOOL, *MAIL_READ_TOOLS, *REMINDER_TOOLS]
 DELEGATION_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in DELEGATION_TOOLS)
+# The ones that open the speaker's mailbox: a round that calls any of them
+# counts as having read their mail (delegation.lockdown). remind_me doesn't.
+MAILBOX_TOOL_NAMES: frozenset[str] = frozenset({GHOSTWRITE_EMAIL, *(t["name"] for t in MAIL_READ_TOOLS)})
 
 
 def _error(message: str, **extra: Any) -> str:
@@ -476,4 +480,5 @@ async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
 DELEGATION_TOOL_HANDLERS: dict[str, Any] = {
     GHOSTWRITE_EMAIL: handle_ghostwrite_email,
     **MAIL_READ_TOOL_HANDLERS,
+    **REMINDER_TOOL_HANDLERS,
 }

@@ -90,6 +90,8 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_reply_dismissed",   # they dismissed a card; details.draft says whether the draft was deleted
     "delegation_reply_closed",      # a card closed because Gmail settled it (sent, deleted, replied, expired)
     "delegation_reply_sent",        # the person tapped Send and their draft went, exactly as it was in Gmail
+    "delegation_reminder_set",      # remind_me stored a reminder for the person who asked (no text in the row)
+    "delegation_reminder_sent",     # a reminder went to the person who set it, as its stored text
     "fact_retired",                 # the principal (or the teammate who recorded it) retired a standing fact from the Pulse page (memory/facts.py)
     "fact_reviewed",                # the principal approved or declined a teammate's proposed standing fact
     "fact_approval_changed",        # the principal turned "needs my approval" on or off for a teammate's standing facts

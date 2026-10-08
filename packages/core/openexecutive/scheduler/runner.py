@@ -154,6 +154,19 @@ def _maybe_remind_notes(now: datetime) -> bool:
         return False
 
 
+def _maybe_send_reminders(now: datetime) -> bool:
+    """Act as me's remind_me: plain text to the person who set it, when it
+    is due (delegation/reminders.py). A hook, like the note reminders, so no
+    reminder is a scheduled_actions row or runs a turn. Never raises."""
+    try:
+        from openexecutive.delegation.reminders import maybe_send
+
+        return maybe_send(now)
+    except Exception:
+        logger.exception("scheduler: reminders failed to start")
+        return False
+
+
 def _maybe_sweep_alerts(now: datetime) -> int:
     """Run the expiry sweep if the interval has elapsed. Returns rows expired.
 
@@ -315,6 +328,7 @@ async def run_scheduler(
             _maybe_refresh_narrative(now)
             _maybe_scan_inbox(now)
             _maybe_remind_notes(now)
+            _maybe_send_reminders(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))

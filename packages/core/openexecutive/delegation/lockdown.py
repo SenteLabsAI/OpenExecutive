@@ -54,6 +54,9 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "list_workflows",
     "load_skill",
     "lookup_person",
+    # A reminder to the speaker alone, as fixed text with no links; nothing
+    # runs when it fires (reminder_tools).
+    "remind_me",
     # Reads of the owner's own mailbox (mail_read_tools).
     "my_email_awaiting_reply",
     "read_my_email",

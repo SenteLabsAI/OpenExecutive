@@ -77,6 +77,7 @@ from openexecutive.orchestrator.delegation_tools import (
     DELEGATION_TOOL_HANDLERS,
     DELEGATION_TOOL_NAMES,
     DELEGATION_TOOLS,
+    MAILBOX_TOOL_NAMES,
 )
 from openexecutive.orchestrator.department_tools import (
     DEPARTMENT_TOOL_HANDLERS,
@@ -2003,7 +2004,7 @@ class Executive:
             refusal_for: Callable[[str], str] = mail_touched_withheld_error
             if pinned_delegation is not None and (
                 pinned_delegation.read_mail
-                or any(tu["name"] in DELEGATION_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
+                or any(tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
             ):
                 mail_touched_uses = [
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
