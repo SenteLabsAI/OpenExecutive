@@ -50,15 +50,20 @@ GOOGLE_TOOL_MANIFEST: dict[str, tuple[str, ...]] = {
     "Drive": (
         "google_workspace__search_drive_files",
         "google_workspace__get_drive_file_content",
+        "google_workspace__list_drive_items",
         "google_workspace__create_drive_file",
     ),
     "Docs": (
         "google_workspace__search_docs",
         "google_workspace__get_doc_content",
+        "google_workspace__list_docs_in_folder",
         "google_workspace__create_doc",
     ),
     "Sheets": (
         "google_workspace__read_sheet_values",
+        "google_workspace__list_spreadsheets",
+        "google_workspace__get_spreadsheet_info",
+        "google_workspace__list_sheet_tables",
         "google_workspace__modify_sheet_values",
         "google_workspace__create_spreadsheet",
     ),

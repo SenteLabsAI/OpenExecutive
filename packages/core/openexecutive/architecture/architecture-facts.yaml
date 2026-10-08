@@ -4456,7 +4456,7 @@ chat:
   sse_event_types:
     - "chunk — one text delta from the assistant response stream. Fields: type, content, session_id."
     - "thinking — keepalive emitted at the start of EVERY tool-use round, not just specialist ones. Fields: type, session_id. It carries no tool information, so the UI uses it purely as an in-flight boolean and takes the wording from the `activity` event that immediately precedes it. It used to be the sole driver of a hardcoded 'Consulting specialists…' string, which is why an MCP or calendar round looked like a specialist fan-out."
-    - "activity — names the tool round that is in flight. Fields: type, label, tool, iteration. Emitted once per tool-use iteration, always immediately before `thinking`, so an ordered consumer has the label before it turns its indicator on. `label` is present-progressive, already ends in an ellipsis, and is capped at 60 chars for the one-line indicator — render it verbatim. `tool` is the canonical tool behind the label; for MCP `call_tool` it is the UNDERLYING tool name (matching the `action_taken` convention), sanitized and truncated to 48 chars because it is model-authored text bound for the DOM. Labels come from `openexecutive.orchestrator.activity_labels._LABELS`; an unmapped tool falls back to 'Working…' rather than going silent. A mixed round collapses to ONE label by priority rank (`_PRIORITY`), never by joining clauses — the indicator is a single muted line. Rank 0 is `consult_specialist`, so a round containing a real fan-out always renders the generic 'Consulting specialists…' and NEVER names an individual specialist (the one-voice invariant). Ephemeral: unlike `action_taken` it is progress only and is never persisted with the assistant message."
+    - "activity — names the tool round that is in flight. Fields: type, label, tool, iteration. Emitted once per tool-use iteration, always immediately before `thinking`, so an ordered consumer has the label before it turns its indicator on. `label` is present-progressive, already ends in an ellipsis, and is capped at 60 chars for the one-line indicator — render it verbatim. `tool` is the canonical tool behind the label; for MCP `call_tool` the label comes from `orchestrator/tool_labels.py` in plain words (never the raw name) and `tool` is the UNDERLYING tool name (matching the `action_taken` convention), sanitized and truncated to 48 chars because it is model-authored text bound for the DOM. Labels come from `openexecutive.orchestrator.activity_labels._LABELS`; an unmapped tool falls back to 'Working…' rather than going silent. A mixed round collapses to ONE label by priority rank (`_PRIORITY`), never by joining clauses — the indicator is a single muted line. Rank 0 is `consult_specialist`, so a round containing a real fan-out always renders the generic 'Consulting specialists…' and NEVER names an individual specialist (the one-voice invariant). Ephemeral: unlike `action_taken` it is progress only and is never persisted with the assistant message."
     - "phase — committee phase transition (drafting | reviewing | finalizing) when committee_review=true. Fields: type, phase, session_id."
     - "committee_critique — severity preview from a committee reviewer. Fields: type, reviewer, severity."
     - "action_taken — emitted whenever the Executive's tool-use loop completes a side-effecting tool call. Fields: type, tool, summary (≤80 chars, human-readable), target (person / channel ref / resource), link (optional in-app path the UI drills into), iteration. See `openexecutive.orchestrator.action_chips.SIDE_EFFECTING_TOOLS` for the canonical instrumented set; read-only tools (consult_specialist, lookup_person, list_people, search_skills, load_skill, search_tools, web_search, ask_about_person, list_workflows) never emit this event. The chip is suppressed when the handler returned an error payload — no green ✓ over a red outcome."
@@ -4669,6 +4669,25 @@ chat:
     the pills (legacy rows that predate the column stay chip-less). The
     audit log remains the independent durable record (every
     side-effecting tool also emits a `tool_invocation` row).
+
+    Chips with the same summary collapse into one chip with a count
+    (`packages/ui/src/lib/actionChips.ts`); tapping a repeat, or a single
+    connected-tool chip that has a target, lists what each run looked at
+    (its `target` and `link`): a bottom sheet on a phone, a card under the
+    chips on wider screens. Saved rows from before connected tools had
+    plain names ("Called server__tool") are turned into words client-side.
+
+  connected_tool_labels: |
+    A connected (MCP) tool reaches the Executive as `call_tool` wrapping a
+    raw name like `google_workspace__search_drive_files`. Users never see
+    that name: `orchestrator/tool_labels.py` holds one table of
+    (done, doing) phrases ("Searched Drive" / "Searching Drive"), read by
+    both `action_chips` (the chip summary) and `activity_labels` (the
+    progress line), so the two always agree. An unlisted tool is turned
+    into words with its service ("Listed task lists · Google"). The chip's
+    `tool` keeps the raw name; its `target` comes from
+    `tool_labels.detail_for`: the search words, the Drive file it opened,
+    or an email subject, cleaned to one short line.
 
 audit:
   purpose: Persistent, searchable record of valuable events. Separate from episodic memory (which biases future LLM behaviour) — audit is for humans to inspect what the system did.
@@ -7601,8 +7620,12 @@ integrations:
     result is rewritten from base64 to the file's text
     (_onedrive_content_as_text: drive_sync._extract on PDF / docx / xlsx /
     txt / md / csv, 20 MB, 200k chars; any other type gets a note pointing at
-    the ?format=pdf target). search-onedrive-files is in
-    PRIVATE_TURN_MCP_TOOLS beside search_drive_files. Not yet in
+    the ?format=pdf target). search-onedrive-files, list-drives,
+    get-drive-root-item, list-folder-files and get-drive-item are in
+    PRIVATE_TURN_MCP_TOOLS beside the Google Drive reads, and download-bytes
+    runs on a private or mail-touched turn only with a OneDrive content
+    target (schedule_tools.is_onedrive_file_read; mail attachments stay out,
+    as Gmail's do). Not yet in
     memory.drive_reads (Google only).
     OneDrive sync token: `ms365-mcp-launch.sh --access-token` (only argument
     allowed; after the placeholder scrub and cache-path defaults) execs
@@ -7952,8 +7975,12 @@ integrations:
     exact allow-list: the Google Workspace reads the code already uses or
     documents (search_gmail_messages and get_gmail_message_content from the
     email poller; get_events, list_calendars and query_freebusy from the
-    calendar surface below and the decisions route; search_drive_files, a
-    read in the Drive gate's tests) and the two gated Gmail tools
+    calendar surface below and the decisions route; the Drive, Docs and
+    Sheets reads search_drive_files, get_drive_file_content,
+    list_drive_items, search_docs, get_doc_content, list_docs_in_folder,
+    list_spreadsheets, get_spreadsheet_info, read_sheet_values and
+    list_sheet_tables, each marked read-only by workspace-mcp and run with a
+    read-only scope) and the two gated Gmail tools
     (send_gmail_message, draft_gmail_message), which the Gmail gate narrows
     to the principal on such a turn. Not a server prefix: at the complete
     tier much of Google Workspace reaches people with no recipient check —
@@ -9191,9 +9218,16 @@ delegation:
     later turns read (the roster, goals, skills, alerts, open loops,
     decisions, standing facts, artifacts). Through MCP call_tool only the
     Google Workspace reads stay — Gmail message and thread content, Gmail
-    search, calendar and Drive search, and their Microsoft 365 twins
-    (MAIL_TOUCHED_MCP_READS, a subset of
-    PRIVATE_TURN_MCP_TOOLS). Every tool the Executive can be offered is in
+    search, calendar, and Drive, Docs and Sheets search and file reads, and
+    their Microsoft 365 twins, OneDrive file content included
+    (MAIL_TOUCHED_MCP_READS, a subset of PRIVATE_TURN_MCP_TOOLS). File reads
+    stay so "check my mail against the statements on the Drive" works in one
+    conversation: in the reading turn nothing they return can reach anyone,
+    and Drive reads are not remembered on such a turn
+    (drive_reads.may_remember). Accepted residual: opening a file someone
+    else owns registers a view in their file activity, so mail planted to
+    steer which shared file opens could signal a few bits per read; no file
+    content leaves. Every tool the Executive can be offered is in
     exactly one of MAIL_TOUCHED_ALLOWED_TOOLS / MAIL_TOUCHED_WITHHELD_TOOLS
     (a test fails on an unclassified one) and an unclassified name is
     withheld. The dispatch guard in executive._stream_agent_loop refuses at

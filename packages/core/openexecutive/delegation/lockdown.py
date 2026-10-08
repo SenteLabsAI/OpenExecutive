@@ -124,23 +124,43 @@ MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 })
 
 # The Google Workspace reads call_tool may still run: never a draft, a send or
-# a change (each of these is also in PRIVATE_TURN_MCP_TOOLS).
+# a change (each of these is also in PRIVATE_TURN_MCP_TOOLS). Drive, Docs and
+# Sheets reads stay so "check my mail against the file on the Drive" works in
+# one conversation: what they return can reach no one while the lockdown holds,
+# and Drive reads are not remembered on such a turn (drive_reads.may_remember).
+# Accepted residual: opening a file someone else owns shows in their file
+# activity, so mail that steers which file opens could signal a few bits.
 MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
+    "google_workspace__get_doc_content",
+    "google_workspace__get_drive_file_content",
     "google_workspace__get_events",
     "google_workspace__get_gmail_message_content",
     "google_workspace__get_gmail_thread_content",
+    "google_workspace__get_spreadsheet_info",
     "google_workspace__list_calendars",
+    "google_workspace__list_docs_in_folder",
+    "google_workspace__list_drive_items",
+    "google_workspace__list_sheet_tables",
+    "google_workspace__list_spreadsheets",
     "google_workspace__query_freebusy",
+    "google_workspace__read_sheet_values",
+    "google_workspace__search_docs",
     "google_workspace__search_drive_files",
     "google_workspace__search_gmail_messages",
-    # The same reads of an Outlook mailbox (EMAIL_PROVIDER=microsoft).
+    # The same reads of an Outlook mailbox and OneDrive (EMAIL_PROVIDER=microsoft);
+    # a OneDrive file opens through download-bytes (is_onedrive_file_read).
     "microsoft_365__get-calendar-event",
     "microsoft_365__get-calendar-view",
+    "microsoft_365__get-drive-item",
+    "microsoft_365__get-drive-root-item",
     "microsoft_365__get-mail-message",
     "microsoft_365__list-calendar-events",
     "microsoft_365__list-calendars",
+    "microsoft_365__list-drives",
+    "microsoft_365__list-folder-files",
     "microsoft_365__list-mail-folder-messages",
     "microsoft_365__list-mail-messages",
+    "microsoft_365__search-onedrive-files",
 })
 
 # What a later turn of a conversation that once read the owner's mail may do
@@ -185,8 +205,13 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
     """Whether a call to ``tool_name`` is refused once the turn has read the
     owner's mail. Anything unclassified is (fail closed)."""
     if tool_name == "call_tool":
+        from openexecutive.orchestrator.schedule_tools import is_onedrive_file_read
+
         inner = tool_input.get("name") if isinstance(tool_input, dict) else None
-        return not (isinstance(inner, str) and inner in MAIL_TOUCHED_MCP_READS)
+        return not (
+            (isinstance(inner, str) and inner in MAIL_TOUCHED_MCP_READS)
+            or is_onedrive_file_read(tool_input)
+        )
     return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS
 
 
@@ -194,10 +219,9 @@ def carried_withholds(tool_name: str, tool_input: Any) -> bool:
     """Whether a call to ``tool_name`` is refused in a conversation that once
     read the owner's mail (every later turn, not only the reading one)."""
     if tool_name == "call_tool":
-        from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS
+        from openexecutive.orchestrator.schedule_tools import private_turn_allows_mcp_call
 
-        inner = tool_input.get("name") if isinstance(tool_input, dict) else None
-        return not (isinstance(inner, str) and inner in PRIVATE_TURN_MCP_TOOLS)
+        return not private_turn_allows_mcp_call(tool_input)
     # Fail closed: anything neither a read nor released stays refused.
     return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS and tool_name not in CARRIED_RELEASED_TOOLS
 

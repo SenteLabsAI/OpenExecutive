@@ -26,7 +26,7 @@ from openexecutive.memory.company_profile import CompanyProfile
 
 MCP_ACTIVITY: dict[str, Any] = {
     "type": "activity",
-    "label": "Using google_workspace__send_gmail_message…",
+    "label": "Sending an email…",
     "tool": "google_workspace__send_gmail_message",
     "iteration": 1,
 }

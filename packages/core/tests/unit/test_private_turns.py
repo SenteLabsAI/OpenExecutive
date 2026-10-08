@@ -1333,6 +1333,11 @@ def test_the_private_turn_allow_list_is_reads_and_gated_gmail_only() -> None:
     ("google_workspace__list_calendars", True),
     ("google_workspace__query_freebusy", True),
     ("google_workspace__search_drive_files", True),
+    ("google_workspace__get_drive_file_content", True),
+    ("google_workspace__get_doc_content", True),
+    ("google_workspace__read_sheet_values", True),
+    ("microsoft_365__list-folder-files", True),
+    ("microsoft_365__download-bytes", False),  # only with a OneDrive file's target
     *((tool, False) for tool, _ in _REFUSED_CALLS),
     ("google_workspace__modify_gmail_message_labels", False),
     ("google_workspace__manage_drive_access", False),
@@ -1354,6 +1359,23 @@ def test_which_mcp_tools_a_private_turn_may_call(name: Any, allowed: bool) -> No
     # search_tools is not a call; load_mcp_server is withheld whatever it names.
     assert private_turn_withholds("search_tools", {"query": "x"}) is False
     assert private_turn_withholds("load_mcp_server", {"name": name}) is True
+
+
+@pytest.mark.parametrize(("target", "allowed"), [
+    ("/drives/d1/items/i1/content", True),
+    ("/drives/d1/items/i1/content?format=pdf", True),
+    ("/me/messages/m1/attachments/a1/$value", False),
+    ("/drives/%2e%2e/items/i1/content", False),
+    ("/me/messages/m1/$value", False),
+    (None, False),
+])
+def test_a_private_turn_opens_a_onedrive_file_and_nothing_else_with_download_bytes(
+    target: Any, allowed: bool
+) -> None:
+    from openexecutive.orchestrator.schedule_tools import private_turn_withholds
+
+    call = {"name": "microsoft_365__download-bytes", "arguments": {"target": target}}
+    assert private_turn_withholds("call_tool", call) is not allowed
 
 
 def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -> None:

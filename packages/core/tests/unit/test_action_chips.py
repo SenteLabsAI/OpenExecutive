@@ -261,7 +261,8 @@ def test_call_tool_chip_uses_underlying_name() -> None:
     assert chip is not None
     # `tool` field reflects the actual MCP tool, not "call_tool" — UI can map.
     assert chip["tool"] == "google_workspace__send_gmail_message"
-    assert "google_workspace__send_gmail_message" in chip["summary"]
+    # The chip reads in plain words, never the raw server__tool name.
+    assert chip["summary"] == "Sent an email"
 
 
 # ---------------------------------------------------------------------------
