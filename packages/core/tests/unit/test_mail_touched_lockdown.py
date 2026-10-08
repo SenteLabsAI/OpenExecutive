@@ -514,7 +514,8 @@ def test_a_contact_the_speaker_names_is_added_after_reading_mail(
     monkeypatch: pytest.MonkeyPatch, reads_mail: bool
 ) -> None:
     # "Add Jamie as a contact" is the person's own ask, checked against what
-    # they typed; a contact only the mail named is not added.
+    # they typed; a contact only the mail named is not added, and nor is an
+    # address no mail read this turn was sent from.
     added: list[dict[str, Any]] = []
 
     async def upsert(tool_input: dict[str, Any]) -> str:
@@ -524,7 +525,12 @@ def test_a_contact_the_speaker_names_is_added_after_reading_mail(
     monkeypatch.setitem(ex._ALL_SKILL_HANDLERS, "upsert_person", upsert)
     jamie = {"full_name": "Jamie Rivera", "kind": "contact", "email": "jamie@firm.example"}
     stranger = {"full_name": "Morgan Blake", "kind": "contact", "email": "m@evil.example"}
-    adds = [ToolUseBlock("tu2", "upsert_person", jamie), ToolUseBlock("tu3", "upsert_person", stranger)]
+    planted = {"full_name": "Jamie Rivera", "kind": "contact", "email": "jamie@evil.example"}
+    adds = [
+        ToolUseBlock("tu2", "upsert_person", jamie),
+        ToolUseBlock("tu3", "upsert_person", stranger),
+        ToolUseBlock("tu4", "upsert_person", planted),
+    ]
     rounds = [[ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)], adds] if reads_mail else [adds]
-    _turn(*rounds, message="Can you add jamie as a contact?")
-    assert added == ([jamie] if reads_mail else [jamie, stranger])
+    _turn(*rounds, message="Can you add jamie as a contact? jamie@firm.example")
+    assert added == ([jamie] if reads_mail else [jamie, stranger, planted])

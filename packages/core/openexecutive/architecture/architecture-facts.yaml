@@ -9271,7 +9271,10 @@ delegation:
     upsert_person runs only for a contact the speaker named this turn
     (lockdown.speaker_named_contact: kind contact, only name, role, email,
     leave and response fields; a word of the name in their own words, in
-    a message that asks to add, save or change someone; on an
+    a message that asks to add, save or change someone; a new contact's
+    address one they typed or one that sent the mail this turn read
+    (TurnDelegation.mail_senders, noted by mail_read_tools), never one the
+    mail's text only mentions; on an
     update the stored name too, and a changed address must be one they
     typed), because the roster is what every send check trusts. What an
     email itself asks for (a meeting, a message, a new contact) is still

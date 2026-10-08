@@ -215,10 +215,12 @@ def speaker_named_contact(tool_input: Any) -> bool:
     only ``_CONTACT_FIELDS``, and a name with a word the speaker typed this
     turn (``own_words``), for the stored name too on an update, in a message
     that asks for a roster change (``_CONTACT_ADD_WORDS``). The roster is
-    what every send check trusts, so mail must not add to it. An address may
-    come from the conversation, as the Executive found it; on an update a
-    changed address must be one they typed, so mail can't redirect someone
-    they already have. Plain code, no model: fails closed."""
+    what every send check trusts, so mail must not add to it. A new
+    contact's address is one they typed or one that sent the mail this turn
+    read (``TurnDelegation.mail_senders``), never one a mail's text only
+    mentions; on an update a changed address must be one they typed, so mail
+    can't redirect someone they already have. Plain code, no model: fails
+    closed."""
     from openexecutive.delegation.settings import own_words, turn_delegation, typed_addresses
     from openexecutive.orchestrator.schedule_tools import current_session
 
@@ -241,7 +243,14 @@ def speaker_named_contact(tool_input: Any) -> bool:
         if not _name_words(str(tool_input.get("full_name", ""))) & typed:
             return False
         if tool_input.get("person_id") is None:
-            return str(tool_input.get("kind", "")).strip().lower() == "contact"
+            if str(tool_input.get("kind", "")).strip().lower() != "contact":
+                return False
+            email = str(tool_input.get("email") or "").strip().lower()
+            return (
+                not email
+                or email in typed_addresses(pinned.speaker_text)
+                or email in pinned.mail_senders
+            )
         from openexecutive.people import store as people_store
 
         existing = people_store.get_person(int(tool_input["person_id"]))

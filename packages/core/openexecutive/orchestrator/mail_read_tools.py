@@ -244,6 +244,17 @@ def _sender(message: Any) -> str:
     return f"{name} <{message.from_addr}>" if name else message.from_addr
 
 
+def _note_senders(writer: Any, senders: list[str]) -> None:
+    """Remember who sent the mail this turn read, so a contact the speaker
+    asks to add may take one of these addresses (``mail_senders``)."""
+    from email.utils import parseaddr
+
+    for sender in senders:
+        address = parseaddr(str(sender or ""))[1].strip().lower()
+        if "@" in address:
+            writer.pinned.mail_senders.add(address)
+
+
 def _id_refusal(writer: Any, value: str, what: str) -> str | None:
     """Why ``value`` can't be one of their mailbox's ids (each mailbox has its
     own id shape, Gmail's or Outlook's), or None when it can."""
@@ -342,6 +353,7 @@ async def handle_search_my_email(tool_input: dict[str, Any]) -> str:
             ]
         else:
             threads = await _recent_inbox(writer.mailbox, days, limit)
+        _note_senders(writer, [t["from"] for t in threads])
         if not threads:
             return json.dumps({
                 "status": "not_found",
@@ -425,6 +437,7 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
         shown = messages[-READ_MESSAGES:]
         first = len(messages) - len(shown) + 1
         _remember_read(writer, thread.id, messages[0])
+        _note_senders(writer, [m.from_addr for m in shown])
         return json.dumps({
             "status": "ok",
             "thread_id": thread.id,

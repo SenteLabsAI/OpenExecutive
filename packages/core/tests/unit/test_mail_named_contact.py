@@ -37,6 +37,7 @@ def said() -> Iterator[Any]:
     session = Session()
     pinned = TurnDelegation(
         offered=True, touched_mail=True, read_mail=True, session_id=session.session_id,
+        mail_senders={"jamie@firm.example"},
     )
     session.turn_delegation = pinned  # type: ignore[attr-defined]
     token = current_session.set(session)
@@ -129,3 +130,25 @@ def test_a_name_without_an_ask_to_add_anyone_is_refused(said: Any) -> None:
         said(text)
         for withholds in BOTH:
             assert withholds("upsert_person", _add(email="billing@evil.example")), text
+
+
+def test_a_new_contacts_address_is_a_sender_or_typed(said: Any) -> None:
+    said("add jamie as a contact")
+    # The address that sent the mail read this turn: fine.
+    assert not lockdown.mail_touched_withholds("upsert_person", _add())
+    # One the mail's text only mentions: refused.
+    assert lockdown.mail_touched_withholds("upsert_person", _add(email="jamie@evil.example"))
+    # No address at all, or one they typed: fine.
+    assert not lockdown.mail_touched_withholds("upsert_person", _add(email=None))
+    said("add jamie as a contact, jamie@newfirm.example")
+    assert not lockdown.mail_touched_withholds("upsert_person", _add(email="Jamie@newfirm.example"))
+
+
+def test_reading_mail_notes_who_sent_it() -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.orchestrator.mail_read_tools import _note_senders
+
+    writer = SimpleNamespace(pinned=TurnDelegation())
+    _note_senders(writer, ["Jamie Rivera <Jamie@Firm.example>", "ops@co.example", "", "no address"])
+    assert writer.pinned.mail_senders == {"jamie@firm.example", "ops@co.example"}

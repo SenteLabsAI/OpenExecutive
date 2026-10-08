@@ -54,7 +54,7 @@ import contextvars
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -102,6 +102,10 @@ class TurnDelegation:
     # (``delegation.lockdown.carried_withholds``). Once that turn scrolls out
     # of view nothing from the mail is left in the turn, and it lifts.
     mail_in_view: bool = False
+    # The addresses that sent the mail this turn read (``mail_read_tools``):
+    # a new contact's address may be one of them, never one the mail's text
+    # only mentions (``delegation.lockdown.speaker_named_contact``).
+    mail_senders: set[str] = field(default_factory=set)
     # Drafts made this turn, against the per-turn cap.
     drafts: int = 0
     # Searches and thread reads of their mailbox this turn, against the
