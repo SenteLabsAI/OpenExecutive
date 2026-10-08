@@ -132,6 +132,47 @@ def test_retention_only_shorter_and_company_wide_only_for_the_principal(
     assert resp.status_code == 422
 
 
+def test_share_work_style_is_each_persons_own_switch(
+    client: TestClient, ids: dict[str, int], audit: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.memory import history, workspace_settings
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="team"))
+    before = client.get("/memories/history", headers=TEAMMATE).json()
+    assert before["share_work_style"] is False and before["can_share_work_style"] is True
+    body = client.put("/memories/history/settings", json={"share_work_style": True}, headers=TEAMMATE).json()
+    assert body["share_work_style"] is True
+    assert history.shares_work_style(ids["teammate"]) is True
+    # The owner's own switch is untouched by a teammate's.
+    assert client.get("/memories/history", headers=OWNER).json()["share_work_style"] is False
+    assert any(kw["details"].get("share_work_style") is True for _s, kw in audit)
+    # A contact may not turn it on.
+    people_store.upsert_person(full_name="Carla Contact", email="carla@x.example", kind="contact")
+    people_registry.invalidate()
+    resp = client.put(
+        "/memories/history/settings", json={"share_work_style": True}, headers={"x-caller-email": "carla@x.example"},
+    )
+    assert resp.status_code == 403
+
+
+def test_share_work_style_is_unavailable_in_a_solo_workspace(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.memory import workspace_settings
+
+    monkeypatch.setattr(workspace_settings, "get_workspace", lambda *a, **k: SimpleNamespace(mode="solo"))
+    assert client.get("/memories/history", headers=OWNER).json()["can_share_work_style"] is False
+    resp = client.put("/memories/history/settings", json={"share_work_style": True}, headers=OWNER)
+    assert resp.status_code == 403
+    # Turning it off is always allowed.
+    assert client.put("/memories/history/settings", json={"share_work_style": False}, headers=OWNER).status_code == 200
+
+
 def test_pin_correct_and_forget_only_your_own(client: TestClient, ids: dict[str, int]) -> None:
     nid = _add(ids["principal"])
     assert client.patch(f"/memories/history/{nid}", json={"pinned": True}, headers=TEAMMATE).status_code == 404

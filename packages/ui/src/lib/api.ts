@@ -1811,6 +1811,7 @@ export async function updateHistorySettings(patch: {
   reply_notes?: boolean;
   retention_days?: number | null;
   company_retention_days?: number | null;
+  share_work_style?: boolean;
 }): Promise<HistoryState> {
   const res = await fetch(`${API_BASE}/memories/history/settings`, {
     method: "PUT",

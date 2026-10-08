@@ -10,7 +10,8 @@ local login, as the principal. Anyone else gets 403.
 
 Routes:
   GET    /memories/history                   — the caller's notes (``?q=`` to narrow) and switches
-  PUT    /memories/history/settings          — the caller's switches; the principal also the company retention
+  PUT    /memories/history/settings          — the caller's switches (notes, "Share my work style with the team");
+                                               the principal also the company retention
   PATCH  /memories/history/{id}              — pin or unpin, correct or clear a correction
   DELETE /memories/history/{id}              — forget one note
   POST   /memories/history/{id}/forget-conversation — "Don't remember this": forget every note
@@ -68,6 +69,10 @@ class HistoryOut(BaseModel):
     can_keep_notes: bool
     can_note_replies: bool
     can_set_company_retention: bool
+    # "Share my work style with the team": the caller's own switch, and
+    # whether they may turn it on (a team member, in a team workspace).
+    share_work_style: bool = False
+    can_share_work_style: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -80,6 +85,7 @@ class SettingsUpdate(BaseModel):
     reply_notes: bool | None = None
     retention_days: int | None = None
     company_retention_days: int | None = None
+    share_work_style: bool | None = None
 
 
 class NoteUpdate(BaseModel):
@@ -153,6 +159,8 @@ def _state(person: Person, query: str | None = None) -> HistoryOut:
         can_keep_notes=history.can_keep_notes(person),
         can_note_replies=_can_note_replies(person),
         can_set_company_retention=bool(person.is_principal),
+        share_work_style=history.shares_work_style(person.id),
+        can_share_work_style=history.can_share_work_style(person),
     )
 
 
@@ -169,6 +177,7 @@ async def update_history_settings(request: Request, body: SettingsUpdate) -> His
     fields = body.model_fields_set
     company_change = "company_retention_days" in fields
     own_change = "reply_notes" in fields or "retention_days" in fields
+    sharing_change = "share_work_style" in fields and body.share_work_style is not None
     # Check everything before changing anything, so a refusal never leaves
     # half the request applied.
     if company_change and not person.is_principal:
@@ -177,6 +186,11 @@ async def update_history_settings(request: Request, body: SettingsUpdate) -> His
         raise _refuse(
             403, "not_available",
             "Notes are kept for team members on the People list.",
+        )
+    if sharing_change and body.share_work_style and not history.can_share_work_style(person):
+        raise _refuse(
+            403, "not_available",
+            "Sharing your work style is for team members in a team workspace.",
         )
     try:
         company = (
@@ -206,6 +220,13 @@ async def update_history_settings(request: Request, body: SettingsUpdate) -> His
         _audit(
             "history_settings_changed", f"Note settings changed by person {person.id}",
             {"person_id": person.id, **kwargs},
+        )
+    if sharing_change:
+        assert body.share_work_style is not None
+        history.set_shares_work_style(person.id, body.share_work_style, by=f"person:{person.id}")
+        _audit(
+            "history_settings_changed", f"Work style sharing changed by person {person.id}",
+            {"person_id": person.id, "share_work_style": body.share_work_style},
         )
     return _state(person)
 

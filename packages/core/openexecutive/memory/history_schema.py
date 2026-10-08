@@ -17,9 +17,11 @@ PERSON_TABLE = "history_person_settings"
 EXCLUDED_TABLE = "history_excluded"
 PASSES_TABLE = "history_chat_passes"
 REMINDERS_TABLE = "history_reminders"
+SHARING_TABLE = "history_work_style_sharing"
 
 TABLES: tuple[str, ...] = (
     NOTES_TABLE, COMPANY_TABLE, PERSON_TABLE, EXCLUDED_TABLE, PASSES_TABLE, REMINDERS_TABLE,
+    SHARING_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -93,6 +95,14 @@ _DDL: tuple[str, ...] = (
     "  day TEXT NOT NULL,"
     "  sent_at TEXT NOT NULL,"
     "  PRIMARY KEY (person_id, day)"
+    ")",
+    # "Share my work style with the team": one row per person who has ever
+    # set it. Absent means off.
+    f"CREATE TABLE IF NOT EXISTS {SHARING_TABLE} ("
+    "  person_id INTEGER PRIMARY KEY,"
+    "  enabled INTEGER NOT NULL DEFAULT 0,"
+    "  updated_at TEXT,"
+    "  updated_by TEXT"
     ")",
 )
 

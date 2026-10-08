@@ -3814,10 +3814,18 @@ people:
     exactly like an unknown id, with no name; no outbound reply linkage is
     recorded for a contact (their reply would otherwise be hydrated with
     the principal's conversation). PEER MEMORY: a private turn writes
-    nothing to peer or department memory, and the principal's own peer
-    memory answers only the principal (`ask_about_person` returns the empty
-    answer on anyone else's turn; `/memories/people` and `/conclusions`
-    show each caller only their own entry, the principal included). Still open: a row on the
+    nothing to peer or department memory, and a person's peer memory
+    answers only them (`ask_about_person` answers fully only when
+    `person_id` is the verified asker; `/memories/people` and
+    `/conclusions` show each caller only their own entry, the principal
+    included), unless they turned on "Share my work style with the team"
+    (Settings → About you, `history_work_style_sharing`, a team member in a
+    team workspace, off by default): then anyone's turn may ask how they
+    work, the question wrapped in `people_tools.WORK_STYLE_FRAME` (role,
+    focus, how they like updates, working style; no health, family,
+    personal life or quotes; prompt guidance, not a filter) and
+    `target_person_id` refused. Not shared answers `shared: false` with the
+    same note whether or not anything is known. Still open: a row on the
     principal's own turn that names a contact some other way than their
     address, full name, person id or chat id (a first name, a nickname)
     is not recognised and stays readable by everyone.

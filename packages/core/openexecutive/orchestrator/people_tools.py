@@ -214,6 +214,10 @@ ASK_ABOUT_PERSON_TOOL: dict[str, Any] = {
         "Do NOT call when the inline `<peer_memory>` block already answers the "
         "question — that block costs nothing extra; this tool spends an extra "
         "Honcho LLM call.\n"
+        "Someone else's memory answers only if they share their work style with "
+        "the team, and then only about how they work (no `target_person_id`). "
+        "When the result says `shared: false`, tell the asker that person hasn't "
+        "chosen to share it and suggest asking them directly.\n"
         "Returns the synthesized answer, or an empty string if Honcho is disabled / no data."
     ),
     "input_schema": {
@@ -1075,16 +1079,64 @@ async def handle_set_department_head(tool_input: dict[str, Any]) -> str:
     })
 
 
-def _is_principal_person(person_id: int) -> bool:
-    """Whether ``person_id`` is a principal row. Fails closed (True)."""
+# What ask_about_person sends Honcho about someone who shared their work
+# style: how they work, nothing else.
+WORK_STYLE_FRAME = (
+    "Answer only about how this person works: their role, what they are "
+    "focused on, how they like to get updates and work with others, and their "
+    "working style. Leave out their health, family, personal life and "
+    "feelings, and do not quote what they said. Question: {question}"
+)
+# The tool result for someone who hasn't shared, the same whether or not
+# anything is known about them.
+NOT_SHARED_NOTE = (
+    "{name} hasn't chosen to share how they work. Say so plainly and suggest "
+    "asking them directly; don't guess or describe them from anything else."
+)
+
+
+def _verified_asker_id() -> int | None:
+    """The person asking this turn, on a surface that verified it is them:
+    the principal, or a rostered teammate. None otherwise (an inbound email,
+    an unattended run, an unverified surface). Fails closed."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    try:
+        if is_principal_on_verified_surface(session):
+            from openexecutive.people.store import find_principal_person
+
+            principal = find_principal_person()
+            return principal.id if principal is not None else None
+        teammate = teammate_on_verified_surface(session)
+        return teammate.id if teammate is not None else None
+    except Exception:
+        logger.warning("ask_about_person: asker lookup failed — treating as someone else", exc_info=True)
+        return None
+
+
+def _shares_work_style(person_id: int) -> bool:
+    """Whether ``person_id`` shares how they work with the team: their switch
+    is on and they still may (a team member, in a team workspace). Fails closed."""
+    try:
+        from openexecutive.memory import history
+        from openexecutive.people.store import get_person
+
+        return history.shares_work_style(person_id) and history.can_share_work_style(get_person(person_id))
+    except Exception:
+        logger.warning("ask_about_person: sharing lookup failed — not shared", exc_info=True)
+        return False
+
+
+def _person_name(person_id: int) -> str:
     try:
         from openexecutive.people.store import get_person
 
         person = get_person(person_id)
     except Exception:
-        logger.exception("ask_about_person: principal lookup failed — answering nothing")
-        return True
-    return bool(person is not None and person.is_principal)
+        person = None
+    name = str(getattr(person, "full_name", "") or "").strip()
+    return name.split()[0] if name else "This person"
 
 
 async def handle_ask_about_person(input: dict[str, Any]) -> str:
@@ -1114,17 +1166,25 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
     reasoning_level = input.get("reasoning_level", "medium")
     if reasoning_level not in ("minimal", "low", "medium", "high", "max"):
         reasoning_level = "medium"
-    # The principal's own peer memory is drawn from all their conversations,
-    # including about their contacts, which are private to them: it answers
-    # only on the principal's own verified turn. Anyone else gets exactly the
-    # "no data" answer (``target_person_id`` = the principal is someone
-    # else's view of them — their memory, not the principal's).
-    if _is_principal_person(person_id) and not contacts_reachable_now():
-        return json.dumps(
-            {"person_id": person_id, "target_person_id": target_person_id,
-             "answer": "", "found": False},
-            ensure_ascii=False,
-        )
+    # Whose memory this is decides who may read it. A person's own, on a
+    # surface that verified it is them: as it is. Anyone else's only when that
+    # person turned on "Share my work style with the team" (memory.history),
+    # framed to how they work, and never their view of someone else. Every
+    # other caller (another teammate, an inbound email, an unattended run)
+    # gets the same "not shared" answer, whether or not anything is known.
+    if person_id != _verified_asker_id():
+        if not _shares_work_style(person_id):
+            return json.dumps(
+                {"person_id": person_id, "target_person_id": target_person_id,
+                 "answer": "", "found": False, "shared": False,
+                 "note": NOT_SHARED_NOTE.format(name=_person_name(person_id))},
+                ensure_ascii=False,
+            )
+        if target_person_id is not None:
+            return json.dumps({
+                "error": "Only how this person works can be asked, not what they think of someone else.",
+            })
+        question = WORK_STYLE_FRAME.format(question=question)
     answer = await directional_chat(
         person_id,
         question,
