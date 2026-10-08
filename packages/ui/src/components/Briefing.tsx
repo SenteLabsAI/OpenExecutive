@@ -37,6 +37,7 @@ import {
   inFlightNext,
 } from "./briefing/AwarenessPanels";
 import NarrativeBody from "./briefing/Narrative";
+import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
 import {
   NEEDS_YOU_DISMISS_OLDER_THAN_DAYS,
@@ -230,9 +231,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     const prev = actedAlertIds;
     setActedAlertIds(new Set(prev).add(proposal.alert_id));
     try {
-      // A roster request was already answered by its own card (which also
-      // clears the companion alert): only hide it and re-sync.
-      if (proposal.roster_request) {
+      // A roster request or a Take the lead training card was already
+      // answered on its own card (which also clears the companion alert):
+      // only hide it and re-sync.
+      if (proposal.roster_request || isLeadTraining(proposal)) {
         refreshToday();
         return;
       }

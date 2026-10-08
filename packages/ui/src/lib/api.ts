@@ -4981,10 +4981,29 @@ export interface LeadRule {
   value: string;
 }
 
+// An action it was allowed in training, and the edit it keeps as an example.
+export interface LeadLearned {
+  id: number;
+  label: string;
+  example: Record<string, string>;
+  uses: number;
+  created_at: string;
+}
+
+// An action you approved unchanged often enough that it suggests allowing it.
+export interface LeadSuggested {
+  key: string;
+  label: string;
+  approvals: number;
+}
+
 export interface TakeTheLead {
   enabled: boolean;
+  training: boolean;
   ask_first: { kind: string; label: string; hint: string; on: boolean }[];
   rules: LeadRule[];
+  learned: LeadLearned[];
+  suggested: LeadSuggested[];
   available: boolean;
   paused: boolean;
 }
@@ -5010,6 +5029,7 @@ export async function getTakeTheLead(signal?: AbortSignal): Promise<TakeTheLead 
 
 export async function setTakeTheLead(update: {
   enabled?: boolean;
+  training?: boolean;
   ask_first?: Record<string, boolean>;
 }): Promise<TakeTheLead> {
   const res = await fetch(`${API_BASE}/take-the-lead`, {
@@ -5034,6 +5054,69 @@ export async function addCompanyLeadRule(kind: LeadRuleKind, value: string): Pro
 export async function deleteCompanyLeadRule(id: number): Promise<TakeTheLead> {
   const res = await fetch(`${API_BASE}/take-the-lead/rules/${id}`, { method: "DELETE" });
   if (!res.ok) throw await leadError(res, "Couldn't remove the rule.");
+  return res.json();
+}
+
+export async function allowLeadSuggestion(key: string): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead/learned`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  });
+  if (!res.ok) throw await leadError(res, "Couldn't allow it.");
+  return res.json();
+}
+
+export async function removeLeadLearned(id: number): Promise<TakeTheLead> {
+  const res = await fetch(`${API_BASE}/take-the-lead/learned/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await leadError(res, "Couldn't remove it.");
+  return res.json();
+}
+
+// A field a Take the lead card lets you change before approving.
+export interface LeadCardField {
+  field: string;
+  label: string;
+  long: boolean;
+  value: string;
+}
+
+// What a Take the lead card holds (its decision's payload), for the card's
+// Edit and Approve + allow. Only its approver and the owner can read it.
+export interface LeadCardPayload {
+  summary: string;
+  reason: string;
+  kind: string;
+  fields: LeadCardField[];
+  allow?: { key: string; label: string };
+}
+
+export async function getLeadCard(id: number, signal?: AbortSignal): Promise<LeadCardPayload> {
+  const res = await fetch(`${API_BASE}/decisions/${id}`, { signal });
+  if (!res.ok) throw await leadError(res, "Couldn't load this card.");
+  const instance: DecisionInstance = await res.json();
+  const payload = JSON.parse(instance.proposed_payload_json || "{}");
+  return {
+    summary: String(payload.summary ?? ""),
+    reason: String(payload.reason ?? ""),
+    kind: String(payload.kind ?? ""),
+    fields: Array.isArray(payload.fields) ? payload.fields : [],
+    allow: payload.allow && typeof payload.allow.key === "string" ? payload.allow : undefined,
+  };
+}
+
+// Approve a Take the lead card: ``input`` changes its editable fields first,
+// ``allow`` (training cards, the owner's) lets it do this from now on.
+export async function approveLeadCard(
+  id: number,
+  edits: { input?: Record<string, string>; allow?: boolean },
+): Promise<DecisionInstance> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits }),
+  });
+  if (!res.ok) throw await leadError(res, "Couldn't approve it.");
   return res.json();
 }
 

@@ -13,6 +13,7 @@ import { MEMORY_ACTIONS, briefingMemoryLine, nudgeAction } from "@/lib/briefing-
 import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
 import { hostOf } from "@/lib/url";
 
+import LeadTrainingCard, { isLeadTraining } from "./LeadTrainingCard";
 import { Chip, TONE_TEXT, buildMonitoringSeed, type ContinueHandler } from "./shared";
 
 // A proposal body longer than about half this (chars) is clamped to two
@@ -216,6 +217,11 @@ export default function ProposalCard({
         onResolved={() => onDismiss?.(proposal)}
       />
     );
+  }
+  // A Take the lead card from training is answered on its own card too:
+  // Approve, Approve + allow, Edit and Decline (LeadTrainingCard).
+  if (isLeadTraining(proposal)) {
+    return <LeadTrainingCard proposal={proposal} emphasized={emphasized} onResolved={() => onDismiss?.(proposal)} />;
   }
   function startEditing() {
     setEditedBody(proposal.body || proposal.headline);
