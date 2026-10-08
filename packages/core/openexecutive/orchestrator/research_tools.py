@@ -59,9 +59,9 @@ RUN_EXECUTIVE_RESEARCH_TOOL: dict[str, Any] = {
 async def handle_run_executive_research(
     tool_input: dict[str, Any],
 ) -> str:
-    from openexecutive.delegation.lockdown import mail_touched_refusal
+    from openexecutive.delegation.lockdown import outside_reach_refusal
 
-    if (refused := mail_touched_refusal('run_executive_research')) is not None:
+    if (refused := outside_reach_refusal('run_executive_research')) is not None:
         return refused
 
     from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody

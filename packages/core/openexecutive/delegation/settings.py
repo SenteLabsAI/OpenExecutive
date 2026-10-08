@@ -86,11 +86,23 @@ class TurnDelegation:
 
     enabled: bool = False
     offered: bool = False
-    # Set by ``ghostwrite_email`` before it reads the mailbox: from then on
-    # every audit row the turn writes is private (``people_tools``).
+    # The turn is its speaker's alone: every audit row it writes is private
+    # (``people_tools``) and it teaches no memory. Set before a read of their
+    # mailbox or notes, and from the start of every turn in a conversation
+    # that once read them (``_carry_kept_private``).
     touched_mail: bool = False
+    # This turn itself read their mailbox or notes (set before the read, with
+    # ``touched_mail``): nothing that reaches anyone else runs for the rest of
+    # it (``delegation.lockdown``). Never carried into the next turn: what
+    # the mail said reaches a later turn only as the Executive's own reply.
+    read_mail: bool = False
     # Drafts made this turn, against the per-turn cap.
     drafts: int = 0
+    # Searches and thread reads of their mailbox this turn, against the
+    # per-turn caps (``orchestrator.mail_read_tools``).
+    searches: int = 0
+    threads_read: int = 0
+    attachments_read: int = 0
     # The speaker's own words this turn (``executive._speaker_text``): a new
     # email may go to an address they typed. Pinned here because the turn's
     # message joins the session history only once the turn ends.
@@ -401,9 +413,11 @@ def pin_turn_delegation(session: Any, speaker_text: str) -> TurnDelegation:
 
 def _carry_kept_private(pinned: TurnDelegation) -> None:
     """A conversation that once read someone's mail (``mark_mail_private``)
-    stays theirs on every later turn: the turn starts as if it had touched the
-    mail, so its rows are private to them, it teaches no memory and the
-    lockdown holds, however it is answered. Nobody else drafts in it. Fails
+    stays theirs on every later turn: its rows are private to them and it
+    teaches no memory, however it is answered (``touched_mail``). Nobody else
+    drafts in it. The lockdown is not carried (``read_mail``): history keeps
+    only the speaker's words and the Executive's replies, never the mail a
+    tool returned, so a later turn locks only if it reads mail itself. Fails
     closed: a flag that can't be read counts as set."""
     if not pinned.session_id:
         return
@@ -480,9 +494,22 @@ def typed_addresses(speaker_text: str) -> set[str]:
     return {m.group(0).lower() for m in _ADDRESS.finditer(words)}
 
 
+def turn_read_delegate_mail(session: Any = None) -> bool:
+    """Whether the current turn has itself read the speaker's mailbox or
+    notes, which locks it down (``delegation.lockdown``). ``session``
+    defaults to the bound one."""
+    if session is None:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        session = current_session.get()
+    pinned = turn_delegation(session)
+    return pinned is not None and pinned.read_mail
+
+
 def turn_touched_delegate_mail(session: Any = None) -> bool:
-    """Whether the current turn has touched the speaker's mailbox (the tool
-    sets it before its first read). ``session`` defaults to the bound one."""
+    """Whether the current turn is its speaker's alone: it read their
+    mailbox, or runs in a conversation that did (private rows, no memory).
+    ``session`` defaults to the bound one."""
     if session is None:
         from openexecutive.orchestrator.schedule_tools import current_session
 

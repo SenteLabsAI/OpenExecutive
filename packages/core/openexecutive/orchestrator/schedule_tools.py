@@ -679,9 +679,9 @@ def _is_principal_recipient(
 
 
 async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
-    from openexecutive.delegation.lockdown import mail_touched_refusal
+    from openexecutive.delegation.lockdown import outside_reach_refusal
 
-    if (refused := mail_touched_refusal('schedule_followup')) is not None:
+    if (refused := outside_reach_refusal('schedule_followup')) is not None:
         return refused
 
     from openexecutive.config import get_settings
@@ -1841,6 +1841,7 @@ PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
     "google_workspace__draft_gmail_message",
     "google_workspace__get_events",
     "google_workspace__get_gmail_message_content",
+    "google_workspace__get_gmail_thread_content",
     "google_workspace__list_calendars",
     "google_workspace__query_freebusy",
     "google_workspace__search_drive_files",
@@ -2031,9 +2032,9 @@ async def handle_suggest_workflow(tool_input: dict[str, Any]) -> str:
     link to the pre-populated form. Reuses `insert_scheduled_action` —
     no new schema, no scheduler-runner change.
     """
-    from openexecutive.delegation.lockdown import mail_touched_refusal
+    from openexecutive.delegation.lockdown import outside_reach_refusal
 
-    if (refused := mail_touched_refusal('suggest_workflow')) is not None:
+    if (refused := outside_reach_refusal('suggest_workflow')) is not None:
         return refused
 
     from openexecutive.config import get_settings

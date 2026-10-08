@@ -284,7 +284,11 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
 async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
+    from openexecutive.delegation.lockdown import outside_reach_refusal
     from openexecutive.workflows.dynamic_store import get_definition, save_if_unchanged
+
+    if (refused := outside_reach_refusal("save_workflow")) is not None:
+        return refused
 
     definition = tool_input.get("definition")
     provided_token = str(tool_input.get("confirm_token", ""))

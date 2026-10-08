@@ -327,6 +327,11 @@ _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "search_tools",
     # workflow_run_tools — catalog read (run_workflow is in SIDE_EFFECTING_TOOLS)
     "list_workflows",
+    # mail_read_tools — reads of the speaker's own mailbox (Act as me)
+    "search_my_email",
+    "read_my_email",
+    "read_my_email_attachment",
+    "my_email_awaiting_reply",
 })
 
 

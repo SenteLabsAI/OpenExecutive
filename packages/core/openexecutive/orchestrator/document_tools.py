@@ -111,6 +111,10 @@ async def _read_pages(path: Path, first: int, last: int) -> tuple[Any, str]:
 
 async def handle_read_document(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
+    if (refused := outside_reach_refusal("read_document")) is not None:
+        return refused
     from openexecutive.knowledge.loader import read_document_text
     from openexecutive.workflows.tool_catalog import resolve_readable_file
 

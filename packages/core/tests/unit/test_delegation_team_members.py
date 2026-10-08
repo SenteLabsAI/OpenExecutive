@@ -297,6 +297,8 @@ def test_a_later_turn_in_their_conversation_stays_theirs(
     # Answered from history, with no mailbox call: still private and theirs.
     pinned = pin_turn_delegation(session, "what did she ask?")
     assert pinned.touched_mail is True and pinned.person_id == roster.teammate and pinned.offered is True
+    # Private, but not locked down: this turn has read no mail itself.
+    assert pinned.read_mail is False
 
 
 def test_nobody_else_drafts_in_a_conversation_that_is_someone_elses(

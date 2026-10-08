@@ -1,6 +1,9 @@
 """Act as me: what a turn may still do once it has read the owner's own mail.
 
-``ghostwrite_email`` reads mail other people wrote to the owner. From the
+``ghostwrite_email`` and the reads of the owner's mailbox
+(``search_my_email``, ``read_my_email``, ``read_my_email_attachment``,
+``my_email_awaiting_reply``) read
+mail other people wrote to the owner. From the
 round it runs in until the turn ends, nothing that reaches anyone else runs:
 no message, post, broadcast or invite, no queued or started work, no fetch of
 an outside address, and no write to state other people read (the roster,
@@ -14,14 +17,18 @@ until a new tool is), and anything unclassified is withheld. Through MCP
 
 The dispatch guard in ``orchestrator.executive`` refuses a withheld call
 without changing the offered tool list (the cached prefix stays the same all
-turn), and treats a round that calls ``ghostwrite_email`` as already touched,
+turn), and treats a round that calls any of them as already touched,
 because a round's tools run concurrently. The send paths check again
 (``mail_touched_refusal``) so nothing that reaches them in such a turn runs.
 The server-side ``web_search`` stays, as on a turn private to the owner: it
-cannot be refused at dispatch without a cache miss. The lockdown lasts for
-the turn; the owner's next message starts afresh, except in a conversation
-that has read their mail (``sessions.mail_private``), where every turn
-starts touched (``settings.pin_turn_delegation``).
+cannot be refused at dispatch without a cache miss. A later turn of that
+conversation releases only ``CARRIED_RELEASED_TOOLS`` (messages and invites
+to people on the roster) and refuses the rest of what the reading turn
+refuses, and any ``call_tool`` outside ``PRIVATE_TURN_MCP_TOOLS``. The lockdown lasts for
+the turn (``TurnDelegation.read_mail``); the owner's next message starts
+afresh, even in a conversation that read their mail: it stays private to
+them (``touched_mail``), but history carries only their words and the
+Executive's replies, never the mail a tool returned.
 """
 from __future__ import annotations
 
@@ -47,6 +54,11 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "list_workflows",
     "load_skill",
     "lookup_person",
+    # Reads of the owner's own mailbox (mail_read_tools).
+    "my_email_awaiting_reply",
+    "read_my_email",
+    "read_my_email_attachment",
+    "search_my_email",
     "propose_form_values",
     # The speaker's own notes (Always in the loop): a read, kept to the turn.
     "recall_history",
@@ -112,6 +124,7 @@ MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "google_workspace__get_events",
     "google_workspace__get_gmail_message_content",
+    "google_workspace__get_gmail_thread_content",
     "google_workspace__list_calendars",
     "google_workspace__query_freebusy",
     "google_workspace__search_drive_files",
@@ -125,6 +138,36 @@ MAIL_TOUCHED_MCP_READS: frozenset[str] = frozenset({
     "microsoft_365__list-mail-folder-messages",
     "microsoft_365__list-mail-messages",
 })
+
+# What a later turn of a conversation that once read the owner's mail may do
+# again: only what reaches people the roster allows, each checked in its
+# handler (the DMs and message_person by the roster, calendar invites by
+# their attendees' person ids). The turn holds the mail only as the
+# Executive's own replies, but a reply can repeat text the mail planted, so
+# everything else the reading turn refuses stays refused for the whole
+# conversation: outside fetches and scripts (a URL could carry it anywhere),
+# broadcasts and channel posts (no named recipient), queued work (it runs
+# later unattended, where it may fetch and research) and writes to state
+# others or later turns read (facts, skills, the profile, the roster,
+# documents), which would keep the planted text. Through ``call_tool``, only
+# ``PRIVATE_TURN_MCP_TOOLS``: reads, and sends whose every recipient the
+# gateway checks.
+CARRIED_RELEASED_TOOLS: frozenset[str] = frozenset({
+    "cancel_calendar_event",
+    "create_calendar_event",
+    "create_instant_meeting",
+    "message_person",
+    "send_discord_dm",
+    "send_slack_dm",
+    "send_telegram_message",
+})
+
+CARRIED_REFUSAL = (
+    "This conversation read the user's own mail, so the only actions that run "
+    "in it are messages and invites to people on their roster: anything else "
+    "could carry what the mail said elsewhere, or keep it. Tell the user to "
+    "ask for it in a new conversation. Do not retry it here."
+)
 
 REFUSAL = (
     "This turn read the user's own mail, so nothing that reaches anyone else "
@@ -143,6 +186,44 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
     return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS
 
 
+def carried_withholds(tool_name: str, tool_input: Any) -> bool:
+    """Whether a call to ``tool_name`` is refused in a conversation that once
+    read the owner's mail (every later turn, not only the reading one)."""
+    if tool_name == "call_tool":
+        from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_MCP_TOOLS
+
+        inner = tool_input.get("name") if isinstance(tool_input, dict) else None
+        return not (isinstance(inner, str) and inner in PRIVATE_TURN_MCP_TOOLS)
+    # Fail closed: anything neither a read nor released stays refused.
+    return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS and tool_name not in CARRIED_RELEASED_TOOLS
+
+
+def carried_withheld_error(label: str) -> str:
+    return json.dumps({"error": f"{label} was not run. {CARRIED_REFUSAL}"})
+
+
+def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:
+    """For a handler that can reach an outside address: the refusal when this
+    turn read the owner's mail, or runs in a conversation that did, else
+    None. ``tool_name`` and ``tool_input`` (for ``call_tool``) narrow it to
+    what ``mail_touched_withholds`` / ``carried_withholds`` refuse; by
+    default ``label`` is the tool. Never raises; fails closed."""
+    from openexecutive.delegation.settings import (
+        turn_read_delegate_mail,
+        turn_touched_delegate_mail,
+    )
+
+    name = tool_name or label
+    try:
+        if turn_read_delegate_mail():
+            return mail_touched_withheld_error(label) if mail_touched_withholds(name, tool_input) else None
+        if turn_touched_delegate_mail():
+            return carried_withheld_error(label) if carried_withholds(name, tool_input) else None
+        return None
+    except Exception:
+        return mail_touched_withheld_error(label)
+
+
 def mail_touched_withheld_error(label: str) -> str:
     """The JSON error tool_result for a refused call (``label`` is the tool,
     or for call_tool the tool it asked for)."""
@@ -153,10 +234,10 @@ def mail_touched_refusal(label: str) -> str | None:
     """For a send path's own check: the refusal when the current turn has
     read the owner's mail, else None. Never raises, and fails closed: a pin
     that can't be read counts as touched."""
-    from openexecutive.delegation.settings import turn_touched_delegate_mail
+    from openexecutive.delegation.settings import turn_read_delegate_mail
 
     try:
-        touched = turn_touched_delegate_mail()
+        touched = turn_read_delegate_mail()
     except Exception:
         touched = True
     return mail_touched_withheld_error(label) if touched else None

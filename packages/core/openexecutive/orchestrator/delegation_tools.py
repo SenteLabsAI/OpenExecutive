@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from openexecutive.delegation.threads import MAX_RECIPIENTS, plan_reply, thread_text, writer_said
+from openexecutive.orchestrator.mail_read_tools import MAIL_READ_TOOL_HANDLERS, MAIL_READ_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,9 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
     },
 }
 
-DELEGATION_TOOLS: list[dict[str, Any]] = [GHOSTWRITE_EMAIL_TOOL]
+# The reads of their own mailbox ride with it: offered, fenced and private
+# the same way (``mail_read_tools``).
+DELEGATION_TOOLS: list[dict[str, Any]] = [GHOSTWRITE_EMAIL_TOOL, *MAIL_READ_TOOLS]
 DELEGATION_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in DELEGATION_TOOLS)
 
 
@@ -207,10 +210,10 @@ def _keep_conversation_private(writer: _Writer) -> bool:
     try:
         owner = mark_mail_private(str(session_id), writer.person.id)
     except Exception:
-        logger.exception("ghostwrite_email: couldn't mark the conversation private")
+        logger.exception("delegation_tools: couldn't mark the conversation private")
         return False
     if owner is not None and owner != writer.person.id:
-        logger.warning("ghostwrite_email: the conversation belongs to someone else — mailbox left unread")
+        logger.warning("delegation_tools: the conversation belongs to someone else — mailbox left unread")
         return False
     return True
 
@@ -226,7 +229,7 @@ class _Writer:
     mailbox: Any
 
 
-def _writer() -> _Writer | str:
+def _writer(tool_name: str = GHOSTWRITE_EMAIL) -> _Writer | str:
     """The speaker and their mailbox for this call, or the refusal to return."""
     from openexecutive.delegation.gmail import gmail_for, normalize_email
     from openexecutive.delegation.settings import (
@@ -237,7 +240,7 @@ def _writer() -> _Writer | str:
     from openexecutive.orchestrator.schedule_tools import current_session
     from openexecutive.people.store import get_person
 
-    unavailable = _error(f"{GHOSTWRITE_EMAIL} is not available on this turn. Do not retry.")
+    unavailable = _error(f"{tool_name} is not available on this turn. Do not retry.")
     session = current_session.get()
     pinned = turn_delegation(session)
     if pinned is None or not pinned.offered:
@@ -255,6 +258,23 @@ def _writer() -> _Writer | str:
         return _error("I can't tell whose mailbox this is. Do not retry.")
     email = normalize_email(person.email)
     return _Writer(pinned, person, email, mailbox if mailbox is not None else gmail_for(email))
+
+
+async def _open_mailbox(writer: _Writer) -> str | None:
+    """Get the speaker's mailbox ready to read, or return why it can't be.
+
+    From here on the turn has touched their mailbox: every audit row it
+    writes is private, it teaches no memory, and the conversation is theirs
+    alone (the principal included) before anything is read."""
+    from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
+
+    writer.pinned.touched_mail = writer.pinned.read_mail = True
+    if not _keep_conversation_private(writer):
+        return _error("I couldn't keep this conversation private, so I didn't open your mailbox. Try again.")
+    status = await gmail_status(writer.email, gmail=writer.mailbox)
+    if status != "connected":
+        return _error(STATUS_MESSAGES[status], status=status)
+    return None
 
 
 async def _find_thread(client: Any, tool_input: dict[str, Any]) -> tuple[Any, str | None]:
@@ -424,12 +444,7 @@ def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, 
 async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import ComposeError
-    from openexecutive.delegation.gmail import (
-        STATUS_MESSAGES,
-        GmailAuthError,
-        GmailError,
-        gmail_status,
-    )
+    from openexecutive.delegation.gmail import STATUS_MESSAGES, GmailAuthError, GmailError
 
     writer = _writer()
     if isinstance(writer, str):
@@ -444,15 +459,9 @@ async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
         return refused
     saved = False
     try:
-        # From here on the turn has touched their mailbox: every audit row it
-        # writes is private, it teaches no memory, and the conversation is
-        # theirs alone (the principal included) before anything is read.
-        writer.pinned.touched_mail = True
-        if not _keep_conversation_private(writer):
-            return _error("I couldn't keep this conversation private, so I didn't open your mailbox. Try again.")
-        status = await gmail_status(writer.email, gmail=writer.mailbox)
-        if status != "connected":
-            return _error(STATUS_MESSAGES[status], status=status)
+        refused = await _open_mailbox(writer)
+        if refused is not None:
+            return refused
         result, saved = await _draft(writer, intent, tool_input)
         return result
     except GmailAuthError:
@@ -464,4 +473,7 @@ async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
         _release_draft(writer.pinned, writer.person.id, saved=saved)
 
 
-DELEGATION_TOOL_HANDLERS: dict[str, Any] = {GHOSTWRITE_EMAIL: handle_ghostwrite_email}
+DELEGATION_TOOL_HANDLERS: dict[str, Any] = {
+    GHOSTWRITE_EMAIL: handle_ghostwrite_email,
+    **MAIL_READ_TOOL_HANDLERS,
+}

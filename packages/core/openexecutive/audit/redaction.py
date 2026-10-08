@@ -70,6 +70,9 @@ _SENSITIVE_SUBSTRINGS = (
     # (delegation.settings.turn_touched_delegate_mail); this keeps the text
     # out of them too — the tool writes its own metadata-only row.
     "ghostwrite",
+    # Act as me: search_my_email, read_my_email, read_my_email_attachment and
+    # my_email_awaiting_reply return the speaker's own mail.
+    "my_email",
     # Always in the loop: recall_history returns the speaker's own notes,
     # private to them.
     "recall_history",

@@ -8,7 +8,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from openexecutive.audit import bind_turn, clear_turn, private_rows, set_turn
@@ -23,6 +23,8 @@ from openexecutive.audit.redaction import (
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.delegation.lockdown import (
+    carried_withheld_error,
+    carried_withholds,
     mail_touched_withheld_error,
     mail_touched_withholds,
 )
@@ -208,6 +210,18 @@ def _loggable_tool(label: str) -> str:
     anything not shaped like a tool name is logged as unlisted (the private
     audit row keeps it)."""
     return label if _LOGGABLE_TOOL_RE.fullmatch(label) else "call_tool:<unlisted>"
+
+
+def _log_value(tool_name: str, value: Any) -> str:
+    """A tool's input or result for the process log, which is not private to
+    anyone: withheld for the tools that read the speaker's own mailbox or
+    notes, and for every tool once the turn has read their mail (the private
+    audit row keeps it)."""
+    from openexecutive.delegation.settings import turn_touched_delegate_mail
+
+    if tool_name in DELEGATION_TOOL_NAMES or tool_name in HISTORY_TOOL_NAMES or turn_touched_delegate_mail():
+        return "<private>"
+    return _trunc(value)
 
 
 def _trunc(value: Any, limit: int = 200) -> str:
@@ -1983,23 +1997,34 @@ class Executive:
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
                 withheld_uses = [*withheld_uses, *withheld_mcp_uses]
             # Act as me: once the turn has read the principal's own mail (in
-            # an earlier round, or with a ghostwrite_email or recall_history
-            # in this one — a round's tools run together), nothing that reaches anyone else
-            # runs for the rest of the turn (delegation.lockdown). The offered
-            # list stays as it is, so the cached prefix never changes mid-turn.
+            # an earlier round, or with a ghostwrite_email, a mailbox read or
+            # recall_history in this one — a round's tools run together),
+            # nothing that reaches anyone else runs for the rest of the turn
+            # (delegation.lockdown). A later turn of that conversation
+            # (touched_mail, not read_mail) refuses only what reaches an
+            # outside address with no recipient check (carried_withholds).
+            # The offered list stays as it is, so the cached prefix never
+            # changes mid-turn.
             mail_touched_uses: list[dict[str, Any]] = []
+            refusal_for: Callable[[str], str] = mail_touched_withheld_error
             if pinned_delegation is not None and (
-                pinned_delegation.touched_mail
+                pinned_delegation.read_mail
                 or any(tu["name"] in DELEGATION_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
             ):
                 mail_touched_uses = [
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
                     if mail_touched_withholds(tu["name"], tu["input"])
                 ]
-                if mail_touched_uses:
-                    skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
-                    mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
-                    script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
+            elif pinned_delegation is not None and pinned_delegation.touched_mail:
+                refusal_for = carried_withheld_error
+                mail_touched_uses = [
+                    tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
+                    if carried_withholds(tu["name"], tu["input"])
+                ]
+            if mail_touched_uses:
+                skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
+                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
+                script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
 
             specialist_calls = [
                 {
@@ -2111,7 +2136,7 @@ class Executive:
                     },
                     private=True,
                 )
-                results_by_id[tu["id"]] = mail_touched_withheld_error(label)
+                results_by_id[tu["id"]] = refusal_for(label)
             for tu in withheld_uses:
                 if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to
@@ -2266,7 +2291,7 @@ class Executive:
 
             if skill_tool_uses:
                 for tu in skill_tool_uses:
-                    logger.info("→ skill:%s  input=%s", tu["name"], _trunc(tu["input"]))
+                    logger.info("→ skill:%s  input=%s", tu["name"], _log_value(tu["name"], tu["input"]))
                 # return_exceptions=True: one crashing handler must not abort
                 # the whole turn. See `_tool_error_result`.
                 skill_results = await asyncio.gather(
@@ -2312,7 +2337,7 @@ class Executive:
                         results_by_id[tu["id"]] = _tool_error_result(tu["name"], raw)
                         continue
                     result = raw
-                    logger.info("← skill:%s  result=%s", tu["name"], _trunc(result))
+                    logger.info("← skill:%s  result=%s", tu["name"], _log_value(tu["name"], result))
                     results_by_id[tu["id"]] = result
                     # Inline action chip for side-effecting tools. None
                     # when the tool is read-only (search_skills, load_skill,
@@ -2384,10 +2409,10 @@ class Executive:
                         logger.info(
                             "→ %s  args=%s",
                             tu["input"].get("name", "call_tool"),
-                            _trunc(tu["input"].get("arguments", "")),
+                            _log_value(tu["name"], tu["input"].get("arguments", "")),
                         )
                     else:
-                        logger.info("→ %s  input=%s", tu["name"], _trunc(tu["input"]))
+                        logger.info("→ %s  input=%s", tu["name"], _log_value(tu["name"], tu["input"]))
                 # Same isolation as the skill gather above: a gateway crash on
                 # one tool must not take the turn down with it.
                 mcp_results = await asyncio.gather(
@@ -2424,7 +2449,7 @@ class Executive:
                     if private_turn and tu["name"] == "search_tools":
                         # Offer a private turn PRIVATE_TURN_MCP_TOOLS only.
                         result = filter_search_results(result, private_turn_allows_mcp_tool)
-                    logger.info("← %s  result=%s", tool_label, _trunc(result))
+                    logger.info("← %s  result=%s", tool_label, _log_value(tool_label, result))
                     results_by_id[tu["id"]] = result
                     # MCP chip emission. search_tools is read-only (gets
                     # filtered out by summarize_action's allowlist);
