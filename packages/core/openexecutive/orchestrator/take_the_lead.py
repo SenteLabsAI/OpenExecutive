@@ -94,6 +94,9 @@ SUGGEST_AFTER = 3
 SUGGEST_DAYS = 30
 # Training cards carry this tag, so Today shows Approve + allow and Edit.
 TRAINING_TAG = "take_the_lead:training"
+# What it's learned is one list for every feature that trains (each key
+# starts with its feature); Take the lead is the first.
+FEATURE = "take_the_lead"
 
 KIND_LABELS: dict[str, str] = {
     MONEY: "Money",
@@ -220,6 +223,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {ALLOWED_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, label TEXT NOT NULL, "
+        "feature TEXT NOT NULL DEFAULT 'take_the_lead', "
         "example TEXT NOT NULL DEFAULT '', uses INTEGER NOT NULL DEFAULT 0, last_used_at TEXT, "
         "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER)"
     )
@@ -667,17 +671,17 @@ def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tu
         bare = tool.split("__", 1)[-1].replace("_", " ").strip().capitalize()
         what = _first_text(tool_input, _MCP_NAME_KEYS)
         label = _connected_label(tool, tool_input, recipient=False) or (f"{bare}: {what}" if what else bare)
-        return f"mcp|{tool}|{what.lower()}", label[:200]
+        return f"{FEATURE}|mcp|{tool}|{what.lower()}", label[:200]
     if tool in _DIRECT_MESSAGE_TOOLS:
         person = _target_person(tool, tool_input)
         if person is None or person.id is None:
             return None
-        return f"message|person:{person.id}", f"Message {person.full_name or person.email}"[:200]
+        return f"{FEATURE}|message|person:{person.id}", f"Message {person.full_name or person.email}"[:200]
     if tool == "assign_open_loop":
         name = _name(tool_input.get("person_id"))
         if name is None:
             return None
-        return f"assign|person:{int(tool_input['person_id'])}", f"Assign things to {name}"[:200]
+        return f"{FEATURE}|assign|person:{int(tool_input['person_id'])}", f"Assign things to {name}"[:200]
     if tool in _BOOK_TOOLS:
         raw = tool_input.get("attendee_person_ids")
         if not isinstance(raw, list):
@@ -690,13 +694,13 @@ def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tu
         if any(n is None for n in names):
             return None
         who = f" with {_names([n for n in names if n])}" if names else ""
-        return f"book|people:{','.join(str(i) for i in ids)}", f"Book meetings{who}"[:200]
+        return f"{FEATURE}|book|people:{','.join(str(i) for i in ids)}", f"Book meetings{who}"[:200]
     if tool == "run_workflow" and isinstance(tool_input.get("workflow_id"), str) and tool_input["workflow_id"]:
         workflow = str(tool_input["workflow_id"])
-        return f"workflow|{workflow}", f"Start the {workflow} workflow"[:200]
+        return f"{FEATURE}|workflow|{workflow}", f"Start the {workflow} workflow"[:200]
     if tool == "send_department_message" and isinstance(tool_input.get("department_slug"), str):
         slug = str(tool_input["department_slug"])
-        return f"department|{slug}", f"Message the {slug} department"[:200]
+        return f"{FEATURE}|department|{slug}", f"Message the {slug} department"[:200]
     return None
 
 
@@ -757,6 +761,7 @@ class Allowed:
     id: int
     key: str
     label: str
+    feature: str
     example: str
     uses: int
     last_used_at: str | None
@@ -767,7 +772,7 @@ def list_allowed(*, db_path: Path | None = None) -> list[Allowed]:
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            f"SELECT id, key, label, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
+            f"SELECT id, key, label, feature, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
             "ORDER BY created_at DESC, id DESC",
         ).fetchall()
     finally:
@@ -779,7 +784,7 @@ def find_allowed(key: str, *, db_path: Path | None = None) -> Allowed | None:
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            f"SELECT id, key, label, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
+            f"SELECT id, key, label, feature, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
             "WHERE key = ?", (key,),
         ).fetchone()
     finally:
@@ -804,10 +809,10 @@ def allow(
             if count >= ALLOWED_MAX:
                 raise RuleError(f"It can learn at most {ALLOWED_MAX} things. Remove one first.")
         conn.execute(
-            f"INSERT INTO {ALLOWED_TABLE} (key, label, example, created_by, created_at, decision_id) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label = excluded.label, "
+            f"INSERT INTO {ALLOWED_TABLE} (key, label, feature, example, created_by, created_at, decision_id) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label = excluded.label, "
             "example = CASE WHEN excluded.example != '' THEN excluded.example ELSE example END",
-            (key, label[:200], text, created_by, datetime.now(UTC).isoformat(), decision_id),
+            (key, label[:200], key.split("|", 1)[0], text, created_by, datetime.now(UTC).isoformat(), decision_id),
         )
         conn.commit()
     finally:

@@ -9676,6 +9676,30 @@ delegation:
     take_the_lead_log feeds Recent activity (kind took_the_lead, named not
     quoted); /today/activity adds the caller's own Handle it sends
     (sent_as_you). No separate What I did list.
+    In training (the executive row's training column; Settings shows Off /
+    In training / On): an action check() lets through still waits as a
+    training hold (Hit kind "training", always the principal's, alert tag
+    take_the_lead:training) unless take_the_lead_allowed has its allowance
+    key: action + who, <feature>|message|person:<id> for any direct message
+    channel, |book|people:<ids> for exactly those attendees, |assign|,
+    |workflow|<id>, |department|<slug>, |mcp|<tool>|<file name>; someone off
+    the People list gives no key (keeps asking). The card's payload carries
+    allow {key, label} and fields (editable_fields: message text; a
+    meeting's title, start, end, description; a task and due date).
+    /decisions/{id}/approve edits.input applies only those fields
+    (apply_edits, EditError → 422) and finishes approved_with_edit;
+    edits.allow on a training card (only) needs the principal on a provable
+    request (403) and stores the allowance with the changed fields as its
+    example. Owner's choice: an edit with "Do it like this next time" both
+    keeps the example and allows at once. learned_note() (training flag +
+    the examples, the principal's own edited text only) is appended to the
+    reflection and research user turns. suggestions(): training cards
+    approved unchanged SUGGEST_AFTER (3) times in 30 days and not allowed;
+    POST /take-the-lead/learned allows only a current suggestion, DELETE
+    removes one (tightening, no proof needed). Leaving training while on is
+    loosening (provable owner). The allowed list is shared across features
+    (feature column, owner's choice: one list, a switch per feature); Act as
+    me joins it next.
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,

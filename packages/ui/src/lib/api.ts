@@ -4985,6 +4985,8 @@ export interface LeadRule {
 export interface LeadLearned {
   id: number;
   label: string;
+  // The feature it learned it in ("take_the_lead" for now).
+  feature: string;
   example: Record<string, string>;
   uses: number;
   created_at: string;

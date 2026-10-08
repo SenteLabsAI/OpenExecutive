@@ -875,3 +875,210 @@ def test_connected_tools_are_named_by_file_not_content(
     tool: str, arguments: dict[str, Any], quote: bool, expected: str,
 ) -> None:
     assert ttl.summarize(tool, arguments, mcp=True, quote=quote) == expected
+
+
+# ── in training ───────────────────────────────────────────────────────────────
+
+
+def _training() -> None:
+    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, updated_by="t")
+
+
+def test_in_training_a_clean_action_waits_for_the_principal(owner: Any) -> None:
+    _training()
+    sam = _teammate()
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": sam, "text": "Are we on for Thursday?"})))
+    assert result["status"] == "waiting_for_approval" and calls == []
+    [decision] = ledger.list_instances(ttl.DECISION_CLASS)
+    payload = json.loads(decision.proposed_payload_json)
+    assert payload["kind"] == ttl.TRAINING and decision.approver_person_id == owner.id
+    assert payload["allow"] == {"key": f"take_the_lead|message|person:{sam}", "label": "Message Sam Teammate"}
+    assert payload["fields"] == [
+        {"field": "text", "label": "Message", "long": True, "value": "Are we on for Thursday?"},
+    ]
+    [alert] = alerts_store.list_alerts(limit=10)
+    assert ttl.TRAINING_TAG in alert.topic_tags and "private:principal" in alert.topic_tags
+
+
+def test_in_training_an_allowed_action_goes_and_is_counted(owner: Any) -> None:
+    _training()
+    sam = _teammate()
+    key, label = ttl.allowance("message_person", {"person_id": sam, "text": "x"})  # type: ignore[misc]
+    ttl.allow(key, label, created_by="t")
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    asyncio.run(gated["message_person"]({"person_id": sam, "text": "Are we on for Thursday?"}))
+    assert len(calls) == 1
+    [line] = ttl.done([ttl.SCOPE_EXECUTIVE])
+    assert line.status == "done" and "You allowed this: Message Sam Teammate." in line.why
+    [learned] = ttl.list_allowed()
+    assert learned.uses == 1 and learned.feature == "take_the_lead"
+
+
+def test_allowing_never_lets_the_six_kinds_or_rules_through(owner: Any) -> None:
+    _training()
+    sam = _teammate()
+    key, label = ttl.allowance("message_person", {"person_id": sam, "text": "x"})  # type: ignore[misc]
+    ttl.allow(key, label, created_by="t")
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    result = json.loads(asyncio.run(gated["message_person"]({"person_id": sam, "text": "Pay the invoice"})))
+    assert result["status"] == "waiting_for_approval" and calls == []
+    payload = json.loads(ledger.list_instances(ttl.DECISION_CLASS)[0].proposed_payload_json)
+    assert payload["kind"] == "money" and "allow" not in payload
+
+
+def test_on_without_training_nothing_extra_waits(owner: Any) -> None:
+    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=False, updated_by="t")
+    calls: list[Any] = []
+    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
+    asyncio.run(gated["message_person"]({"person_id": _teammate(), "text": "Are we on for Thursday?"}))
+    assert len(calls) == 1
+
+
+def test_what_one_allow_covers(owner: Any) -> None:
+    sam = _teammate()
+    # Any channel that reaches Sam is one "Message Sam".
+    assert ttl.allowance("message_person", {"person_id": sam})[0] == f"take_the_lead|message|person:{sam}"  # type: ignore[index]
+    book = ttl.allowance("create_calendar_event", {"attendee_person_ids": [sam, owner.id]})
+    assert book == (f"take_the_lead|book|people:{min(sam, owner.id)},{max(sam, owner.id)}",
+                    "Book meetings with " + " and ".join(
+                        ["Olivia Owner", "Sam Teammate"] if owner.id < sam else ["Sam Teammate", "Olivia Owner"]))
+    # Someone not on the People list can't be allowed.
+    assert ttl.allowance("message_person", {"person_id": 9999}) is None
+    assert ttl.allowance("create_calendar_event", {"attendee_person_ids": [9999]}) is None
+    assert ttl.allowance("run_workflow", {"workflow_id": "weekly_review"}) == (
+        "take_the_lead|workflow|weekly_review", "Start the weekly_review workflow")
+
+
+def test_edits_change_only_editable_fields() -> None:
+    tool_input = {"person_id": 3, "text": "Hi"}
+    out, changed = ttl.apply_edits("message_person", tool_input, {"text": " Hi Sam, Thursday? "})
+    assert out == {"person_id": 3, "text": "Hi Sam, Thursday?"} and changed == {"text": "Hi Sam, Thursday?"}
+    assert ttl.apply_edits("message_person", tool_input, {"text": "Hi"}) == (tool_input, {})
+    for bad in ({"person_id": "4"}, {"text": ""}, {"text": 5}, {"text": "x" * (ttl.EDIT_MAX + 1)}, ["text"]):
+        with pytest.raises(ttl.EditError):
+            ttl.apply_edits("message_person", tool_input, bad)
+    with pytest.raises(ttl.EditError):
+        ttl.apply_edits("gsheets__update", {"title": "x"}, {"title": "y"}, mcp=True)
+
+
+def _training_card(owner: Any) -> tuple[int, int]:
+    _training()
+    sam = _teammate()
+    decision_id = ttl.hold("message_person", {"person_id": sam, "text": "Thursday?"},
+                           ttl.Hit(ttl.TRAINING, "it's in training"), source="reflection", mcp=False)
+    return decision_id, sam
+
+
+def _carry_out_into(done: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+    async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
+        done.append(payload)
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setattr(ttl, "carry_out", carry_out)
+
+
+def test_approve_and_allow(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id, _ = _training_card(owner)
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"allow": True}})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == ledger.STATUS_APPROVED_UNCHANGED and len(done) == 1
+    [learned] = client.get("/take-the-lead").json()["learned"]
+    assert learned["label"] == "Message Sam Teammate" and learned["example"] == {}
+
+
+def test_edit_then_do_it_like_this(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id, _ = _training_card(owner)
+    edits = {"input": {"text": "Hi Sam, still on for Thursday at 2? Olivia"}, "allow": True}
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": edits})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == ledger.STATUS_APPROVED_WITH_EDIT
+    assert done[0]["input"]["text"] == "Hi Sam, still on for Thursday at 2? Olivia"
+    [learned] = client.get("/take-the-lead").json()["learned"]
+    assert learned["example"] == {"text": "Hi Sam, still on for Thursday at 2? Olivia"}
+    # The acting passes read it as an example.
+    note = ttl.learned_note()
+    assert "in training" in note and "Message Sam Teammate" in note and "still on for Thursday" in note
+
+
+def test_a_bad_edit_is_refused_before_anything_happens(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id, _ = _training_card(owner)
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"input": {"person_id": 1}}})
+    assert response.status_code == 422 and done == []
+    assert ledger.get_decision_instance(decision_id).status == ledger.STATUS_PROPOSED  # type: ignore[union-attr]
+
+
+def test_only_training_cards_can_be_allowed(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id = _held(owner)  # held for money
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"allow": True}})
+    assert response.status_code == 422 and done == [] and ttl.list_allowed() == []
+
+
+def test_allowing_needs_a_provable_owner(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id, _ = _training_card(owner)
+    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"allow": True}})
+    assert response.status_code == 403 and done == [] and ttl.list_allowed() == []
+
+
+def test_suggests_after_unchanged_approvals_and_allows_from_settings(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _carry_out_into([], monkeypatch)
+    sam = _teammate()
+    _training()
+    for n in range(ttl.SUGGEST_AFTER):
+        decision_id = ttl.hold("message_person", {"person_id": sam, "text": f"Note {n}"},
+                               ttl.Hit(ttl.TRAINING, "it's in training"), source="reflection", mcp=False)
+        assert client.post(f"/decisions/{decision_id}/approve", json={}).status_code == 200
+    [suggested] = client.get("/take-the-lead").json()["suggested"]
+    assert suggested["label"] == "Message Sam Teammate" and suggested["approvals"] == ttl.SUGGEST_AFTER
+    assert client.post("/take-the-lead/learned", json={"key": "take_the_lead|message|person:1"}).status_code == 404
+    body = client.post("/take-the-lead/learned", json={"key": suggested["key"]}).json()
+    assert body["suggested"] == [] and [a["label"] for a in body["learned"]] == ["Message Sam Teammate"]
+    assert client.delete(f"/take-the-lead/learned/{body['learned'][0]['id']}").json()["learned"] == []
+
+
+def test_the_three_positions(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    body = client.put("/take-the-lead", json={"enabled": True, "training": True}).json()
+    assert body["enabled"] is True and body["training"] is True
+    monkeypatch.delenv("OE_LOCAL_LOGIN", raising=False)
+    # Leaving training lets more go on its own: it needs a provable owner…
+    assert client.put("/take-the-lead", json={"training": False}).status_code == 409
+    # …going back into training or off doesn't.
+    assert client.put("/take-the-lead", json={"enabled": False}).status_code == 200
+    assert client.put("/take-the-lead", json={"training": True}).status_code == 200
+
+
+def test_learned_note_is_empty_while_off() -> None:
+    ttl.allow("take_the_lead|workflow|x", "Start the x workflow", example={"text": "y"}, created_by="t")
+    assert ttl.learned_note() == ""
+
+
+def test_an_older_switch_table_gains_training(db: Path) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(f"DROP TABLE IF EXISTS {ttl.LEAD_TABLE}")
+    conn.execute(
+        f"CREATE TABLE {ttl.LEAD_TABLE} (scope TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
+        "updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)"
+    )
+    conn.execute(f"INSERT INTO {ttl.LEAD_TABLE} VALUES ('executive', 1, 'now', 't')")
+    conn.commit()
+    conn.close()
+    lead = ttl.get(ttl.SCOPE_EXECUTIVE)
+    assert lead.enabled is True and lead.training is False
