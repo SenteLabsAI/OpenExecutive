@@ -163,10 +163,23 @@ def test_haiku_5_5_slug_gets_thinking_off_and_no_temperature() -> None:
         base_url="https://gateway.example/v1",
         api_key="k",
         slug_lookup={"claude-haiku-5-5": "anthropic/claude-haiku-5.5"},
-        spec_lookup={"anthropic/claude-haiku-5.5": FeatureSpec()},
+        spec_lookup={"claude-haiku-5-5": FeatureSpec()},
     )
     captured = _run_create(provider, model="claude-haiku-5-5", temperature=0)
     body = captured["json"]
     assert body["model"] == "anthropic/claude-haiku-5.5"
     assert body["reasoning"] == {"enabled": False}
+    assert "temperature" not in body
+
+
+def test_backend_without_thinking_gets_no_reasoning_field_for_haiku_5_5() -> None:
+    """A local gateway serving a Claude slug takes no thinking fields, so the
+    turned-off thinking added for Haiku 5.5 must not reach it as ``reasoning``."""
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:4000/v1",
+        api_key=None,
+        spec_lookup={"claude-haiku-5-5": _LOCAL_SPEC},
+    )
+    body = _run_create(provider, model="claude-haiku-5-5", temperature=0)["json"]
+    assert "reasoning" not in body
     assert "temperature" not in body

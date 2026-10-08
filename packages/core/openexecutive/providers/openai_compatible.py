@@ -192,8 +192,10 @@ class OpenAICompatibleProvider:
         request_timeout = kwargs.pop("timeout", None)
         model = kwargs.pop("model", "")
         slug, spec = self._resolve(model)
-        gated = fit_claude_generation(
-            slug, relax_forced_tool_choice(slug, apply_feature_gates(spec, kwargs))
+        # Fitted before the gate, so a backend whose spec takes no thinking
+        # (a local gateway serving a Claude slug) drops the added field too.
+        gated = apply_feature_gates(
+            spec, fit_claude_generation(slug, relax_forced_tool_choice(slug, kwargs))
         )
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
@@ -223,8 +225,10 @@ class OpenAICompatibleProvider:
         request_timeout = kwargs.pop("timeout", None)
         model = kwargs.pop("model", "")
         slug, spec = self._resolve(model)
-        gated = fit_claude_generation(
-            slug, relax_forced_tool_choice(slug, apply_feature_gates(spec, kwargs))
+        # Fitted before the gate, so a backend whose spec takes no thinking
+        # (a local gateway serving a Claude slug) drops the added field too.
+        gated = apply_feature_gates(
+            spec, fit_claude_generation(slug, relax_forced_tool_choice(slug, kwargs))
         )
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
