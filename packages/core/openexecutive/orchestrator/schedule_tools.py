@@ -1835,30 +1835,46 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # refuses a `call_tool` naming anything else. Names are exact, as the
 # gateway's own gates match them; each is one the code already calls or
 # documents: the poller's Gmail reads (`email_poller`), the calendar reads in
-# the gateway notes and `decisions` (free/busy), and the Drive search the
-# Drive gate's tests treat as a read. Add a name only for a tool that reads,
-# or whose every recipient the gateway checks.
+# the gateway notes and `decisions` (free/busy), and the Drive, Docs and
+# Sheets reads (workspace-mcp marks each read-only and calls it with a
+# read-only scope). Add a name only for a tool that reads, or whose every
+# recipient the gateway checks.
 PRIVATE_TURN_MCP_TOOLS: frozenset[str] = frozenset({
     "google_workspace__draft_gmail_message",
+    "google_workspace__get_doc_content",
+    "google_workspace__get_drive_file_content",
     "google_workspace__get_events",
     "google_workspace__get_gmail_message_content",
     "google_workspace__get_gmail_thread_content",
+    "google_workspace__get_spreadsheet_info",
     "google_workspace__list_calendars",
+    "google_workspace__list_docs_in_folder",
+    "google_workspace__list_drive_items",
+    "google_workspace__list_sheet_tables",
+    "google_workspace__list_spreadsheets",
     "google_workspace__query_freebusy",
+    "google_workspace__read_sheet_values",
+    "google_workspace__search_docs",
     "google_workspace__search_drive_files",
     "google_workspace__search_gmail_messages",
     "google_workspace__send_gmail_message",
     # The Microsoft 365 twins, for an Executive whose mailbox is Outlook
-    # (EMAIL_PROVIDER=microsoft): its mail, calendar and OneDrive search reads, and the two
+    # (EMAIL_PROVIDER=microsoft): its mail, calendar and OneDrive reads, and the two
     # mail writes whose every recipient `_check_m365_recipients` checks
     # against the same narrowed `_roster_allow_set`. Hyphenated, exactly as
-    # ms-365-mcp-server names them.
+    # ms-365-mcp-server names them. Opening a OneDrive file goes through
+    # `download-bytes`, allowed only for a file's content
+    # (`private_turn_allows_mcp_call`).
     "microsoft_365__create-draft-email",
     "microsoft_365__get-calendar-event",
     "microsoft_365__get-calendar-view",
+    "microsoft_365__get-drive-item",
+    "microsoft_365__get-drive-root-item",
     "microsoft_365__get-mail-message",
     "microsoft_365__list-calendar-events",
     "microsoft_365__list-calendars",
+    "microsoft_365__list-drives",
+    "microsoft_365__list-folder-files",
     "microsoft_365__list-mail-folder-messages",
     "microsoft_365__list-mail-messages",
     "microsoft_365__search-onedrive-files",
@@ -1873,16 +1889,43 @@ def private_turn_allows_mcp_tool(tool_name: object) -> bool:
     return isinstance(tool_name, str) and tool_name in PRIVATE_TURN_MCP_TOOLS
 
 
+def is_onedrive_file_read(call_input: Any) -> bool:
+    """Whether a ``call_tool`` input is ``download-bytes`` fetching one
+    OneDrive file's content, the twin of ``get_drive_file_content`` and the
+    only shape a private turn may run it with. Its other target, a mail
+    attachment, stays out, as Gmail's attachment read does."""
+    from openexecutive.orchestrator.mcp_gateway import (
+        _M365_DOWNLOAD_TOOL,
+        _M365_DRIVE_CONTENT_TARGET_RE,
+        _normalize_tool_name,
+        _unsafe_id_segment,
+    )
+
+    name = call_input.get("name") if isinstance(call_input, dict) else None
+    if not isinstance(name, str) or _normalize_tool_name(name) != _M365_DOWNLOAD_TOOL:
+        return False
+    arguments = call_input.get("arguments")
+    target = arguments.get("target") if isinstance(arguments, dict) else None
+    match = _M365_DRIVE_CONTENT_TARGET_RE.fullmatch(target) if isinstance(target, str) else None
+    return match is not None and not any(_unsafe_id_segment(g) for g in match.groups()[:2])
+
+
+def private_turn_allows_mcp_call(call_input: Any) -> bool:
+    """Whether a turn private to the principal may run this ``call_tool``
+    input: a tool in ``PRIVATE_TURN_MCP_TOOLS``, or a OneDrive file read."""
+    named = call_input.get("name") if isinstance(call_input, dict) else None
+    return private_turn_allows_mcp_tool(named) or is_onedrive_file_read(call_input)
+
+
 def private_turn_withholds(tool_name: str, tool_input: Any) -> bool:
     """Whether a turn private to the principal may not run this tool use: a
     tool in ``PRIVATE_TURN_WITHHELD_TOOLS``, or a gateway ``call_tool`` that
-    names a tool outside ``PRIVATE_TURN_MCP_TOOLS``."""
+    ``private_turn_allows_mcp_call`` does not allow."""
     if tool_name in PRIVATE_TURN_WITHHELD_TOOLS:
         return True
     if tool_name != "call_tool":
         return False
-    named = tool_input.get("name") if isinstance(tool_input, dict) else None
-    return not private_turn_allows_mcp_tool(named)
+    return not private_turn_allows_mcp_call(tool_input)
 
 
 def private_turn_withheld_error(tool_name: str) -> str:

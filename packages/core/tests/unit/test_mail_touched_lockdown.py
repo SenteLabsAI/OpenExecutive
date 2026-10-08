@@ -297,6 +297,72 @@ def test_the_gateway_runs_only_reads_after_the_turn_read_mail() -> None:
         current_session.reset(token)
 
 
+_FILE_READS = (
+    "google_workspace__get_drive_file_content",
+    "google_workspace__list_drive_items",
+    "google_workspace__get_doc_content",
+    "google_workspace__search_docs",
+    "google_workspace__read_sheet_values",
+    "google_workspace__get_spreadsheet_info",
+    "microsoft_365__list-folder-files",
+    "microsoft_365__search-onedrive-files",
+)
+_ONEDRIVE_FILE = {
+    "name": "microsoft_365__download-bytes",
+    "arguments": {"target": "/drives/d1/items/i1/content"},
+}
+
+
+@pytest.mark.parametrize("name", _FILE_READS)
+def test_opening_a_file_runs_after_the_turn_read_mail_and_later_in_the_conversation(name: str) -> None:
+    # "Check my mail against the statements on the Drive": the files open in
+    # the reading turn and in every later turn of that conversation.
+    assert not lockdown.mail_touched_withholds("call_tool", {"name": name})
+    assert not lockdown.carried_withholds("call_tool", {"name": name})
+
+
+def test_a_onedrive_file_opens_but_a_mail_attachment_does_not() -> None:
+    attachment = {
+        "name": "microsoft_365__download-bytes",
+        "arguments": {"target": "/me/messages/m1/attachments/a1/$value"},
+    }
+    escaped = {
+        "name": "microsoft_365__download-bytes",
+        "arguments": {"target": "/drives/../items/i1/content"},
+    }
+    for withholds in (lockdown.mail_touched_withholds, lockdown.carried_withholds):
+        assert not withholds("call_tool", _ONEDRIVE_FILE)
+        assert not withholds("call_tool", {**_ONEDRIVE_FILE, "name": "microsoft_365__download_bytes"})
+        assert withholds("call_tool", attachment)
+        assert withholds("call_tool", escaped)
+        assert withholds("call_tool", {"name": "microsoft_365__download-bytes"})
+        assert withholds("call_tool", {**_ONEDRIVE_FILE, "arguments": "not a dict"})
+
+
+@pytest.mark.parametrize("read_mail", [True, False])
+def test_the_gateway_opens_a_drive_file_in_a_conversation_that_read_mail(read_mail: bool) -> None:
+    from openexecutive.orchestrator.mcp_gateway import MCPGateway
+
+    gateway = MCPGateway.__new__(MCPGateway)
+    session = Session()
+    session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
+        enabled=True, offered=True, touched_mail=True, read_mail=read_mail, session_id=session.session_id,
+    )
+    token = current_session.set(session)
+    try:
+        with patch.object(MCPGateway, "_require_session", side_effect=AssertionError("reached the server")):
+            with pytest.raises(AssertionError, match="reached the server"):
+                asyncio.run(gateway.call_tool({
+                    "name": "google_workspace__get_drive_file_content", "arguments": {"file_id": "f1"},
+                }))
+            send = asyncio.run(gateway.call_tool({
+                "name": "fetch__fetch_url", "arguments": {"url": "https://x.example/"},
+            }))
+            assert "read the user's own mail" in json.loads(send)["error"]
+    finally:
+        current_session.reset(token)
+
+
 class _Collect(logging.Handler):
     def __init__(self) -> None:
         super().__init__(logging.WARNING)
