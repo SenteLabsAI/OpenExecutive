@@ -553,7 +553,7 @@ def test_get_shows_the_switch(client: TestClient, owner: Any) -> None:
     assert body["handle_it"] == {
         "enabled": False, "mode": "balanced",
         "available": True, "sent_today": 0,
-        "lead": False, "lead_available": True,
+        "lead": False, "lead_available": True, "learned": [],
     }
 
 

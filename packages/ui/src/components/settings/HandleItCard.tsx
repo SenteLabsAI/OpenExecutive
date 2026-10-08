@@ -10,6 +10,7 @@ import {
   getDelegation,
   getHandledReplies,
   getMyLeadRules,
+  removeHandleItLearned,
   setHandleIt,
   setLeadAsYou,
   type DelegationSettings,
@@ -23,7 +24,9 @@ import { formatAgo } from "@/lib/setupStatus";
 // Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
 // decides each one (delegation/handle_it.py). One dial says how much goes
-// without you: Off, Easy ones, People I know, Most mail, and for the owner
+// without you: Off, In training (every reply waits, and Send + allow on a
+// card lets replies to that person go; delegation/training.py), Easy ones,
+// People I know, Most mail, and for the owner
 // Everything, which uses Take the lead
 // (PUT /delegation/take-the-lead), where links, the topics that always wait and
 // the added rules hold a reply back. Anything it won't send waits on Today as
@@ -90,6 +93,10 @@ export default function HandleItCard() {
 type Step = "off" | HandleItMode | "lead";
 
 const OFF_STEP = { label: "Off", text: "Every reply waits for you to tap Send." };
+const TRAINING_STEP = {
+  label: "In training",
+  text: "Every reply waits for you. Tap Send + allow on one, and replies to that person go on their own from then on. Follow-ups always wait.",
+};
 const LEAD_STEP = {
   label: "Everything",
   text: "Uses Take the lead. It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
@@ -151,8 +158,22 @@ export function HandleItSection({
     }
   };
 
+  const learned = handleIt.learned ?? [];
+  const forget = async (id: number) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSettings(await removeHandleItLearned(id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove that.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const steps: { step: Step; label: string; lines: string[] }[] = [
     { step: "off", label: OFF_STEP.label, lines: [OFF_STEP.text] },
+    { step: "training", label: TRAINING_STEP.label, lines: [TRAINING_STEP.text] },
     ...HANDLE_IT_MODES.map((m) => ({
       step: m.mode as Step,
       label: m.label,
@@ -212,6 +233,43 @@ export function HandleItSection({
             Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to anyone
             the email didn&apos;t go to.
           </p>
+        )}
+        {(step === "training" || learned.length > 0) && (
+          <div>
+            <h3 className="text-[15px] font-semibold text-fg">What it&apos;s learned</h3>
+            <p className="mt-1 text-sm text-fg-muted">
+              {step === "training"
+                ? "People it replies to on its own. Use Send + allow on a reply to add someone."
+                : "People you allowed in training. They count only while the dial is on In training."}
+            </p>
+            {learned.length === 0 ? (
+              <p className="mt-3 text-sm text-fg-muted">Nobody yet.</p>
+            ) : (
+              <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
+                {learned.map((item) => (
+                  <li key={item.id} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
+                    <span className="min-w-0">
+                      <span className="block text-[15px] font-medium break-words">{item.label}</span>
+                      <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted line-clamp-2">
+                        Allowed {new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                        {item.uses > 0 ? ` · replied ${item.uses} ${item.uses === 1 ? "time" : "times"} since` : ""}
+                        {item.example ? ` · writes like “${item.example}”` : ""}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void forget(item.id)}
+                      className="flex-shrink-0 min-h-touch text-sm font-semibold text-accent hover:underline disabled:opacity-60"
+                      aria-label={`Remove ${item.label}`}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
         {lead && (
           <div>

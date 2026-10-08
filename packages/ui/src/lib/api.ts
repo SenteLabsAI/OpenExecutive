@@ -1667,7 +1667,19 @@ export interface InboxWatch {
 // decided by plain code (delegation/handle_it.py). Each kind of reply has a
 // level; "ask" leaves a card as before.
 // How much Handle it for me sends on its own (delegation/handle_it.py RULES).
-export type HandleItMode = "careful" | "balanced" | "bold";
+// "training": every reply waits on its card, which adds Send + allow.
+export type HandleItMode = "training" | "careful" | "balanced" | "bold";
+
+// A sender Handle it for me may reply to on its own, allowed with Send +
+// allow in training; yours alone (DELETE /delegation/learned/{id}).
+export interface HandleItLearned {
+  id: number;
+  label: string;
+  // The reply you sent after changing the draft, kept as an example ("").
+  example: string;
+  uses: number;
+  created_at: string;
+}
 
 export interface HandleIt {
   enabled: boolean;
@@ -1680,6 +1692,7 @@ export interface HandleIt {
   // owner can have it for now (lead_available).
   lead?: boolean;
   lead_available?: boolean;
+  learned?: HandleItLearned[];
 }
 
 // One reply sent on its own, yours alone (GET /delegation/handled).
@@ -1726,6 +1739,8 @@ export interface ReplyCard {
   waited_because?: string;
   // "follow_up": the draft chases your own unanswered email.
   source?: string;
+  // In training: Send + allow is offered (replies to them aren't allowed yet).
+  can_allow?: boolean;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.
@@ -1880,6 +1895,13 @@ export async function setInboxWatch(enabled: boolean): Promise<DelegationSetting
   return res.json();
 }
 
+// Ask again before replying to a sender it learned in training.
+export async function removeHandleItLearned(id: number): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/learned/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await delegationError(res, "Couldn't remove that.");
+  return (await res.json()) as DelegationSettings;
+}
+
 export async function setHandleIt(update: {
   enabled?: boolean;
   mode?: HandleItMode;
@@ -1942,9 +1964,11 @@ function strings(value: unknown): string[] {
 // Send the reply's draft from your Gmail, exactly as it is there (POST
 // /decisions/{id}/approve). `confirm` is your second yes: the recipients you
 // were shown, and that a newer message in the thread is fine.
+// `allow` is Send + allow in training: replies to this sender go on their own
+// from now on; `example` keeps your sent version when you changed the draft.
 export async function sendReplyCard(
   id: number,
-  confirm?: { recipients: string[]; thread_moved_on?: boolean },
+  confirm?: { recipients: string[]; thread_moved_on?: boolean; allow?: boolean; example?: boolean },
 ): Promise<SendReplyResult> {
   const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
     method: "POST",

@@ -132,11 +132,12 @@ export default function TakeTheLeadCard() {
             );
           })}
         </div>
-        {lead.enabled && (lead.learned.length > 0 || lead.suggested.length > 0 || mode === "training") && (
+        {(lead.learned.length > 0 || (lead.enabled && (lead.suggested.length > 0 || mode === "training"))) && (
           <div>
             <h3 className="text-[15px] font-semibold text-fg">What it&apos;s learned</h3>
             <p className="mt-1 text-sm text-fg-muted">
-              In training it does these on its own. Use Approve + allow on a card to add one.
+              In training it does these on its own. Use Approve + allow on a card, or Send + allow on an Act as me
+              reply, to add one.
             </p>
             {lead.learned.length === 0 && lead.suggested.length === 0 ? (
               <p className="mt-3 text-sm text-fg-muted">Nothing yet.</p>
@@ -149,6 +150,7 @@ export default function TakeTheLeadCard() {
                       <span className="min-w-0">
                         <span className="block text-[15px] font-medium">{item.label}</span>
                         <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted line-clamp-2">
+                          {item.feature === "act_as_me" ? "Act as me · " : ""}
                           Allowed {new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                           {item.uses > 0 ? ` · done ${item.uses} ${item.uses === 1 ? "time" : "times"} since` : ""}
                           {example ? ` · like “${example}”` : ""}

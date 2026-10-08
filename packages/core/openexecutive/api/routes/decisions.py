@@ -67,7 +67,9 @@ class ApproveBody(BaseModel):
     For a reply card (``delegation_reply``) nothing is edited here: the draft
     is sent as it is in Gmail. ``edits`` carries the person's second yes when
     something changed since the card was made: ``recipients`` (the list they
-    were shown) and ``thread_moved_on: true``.
+    were shown) and ``thread_moved_on: true``; and Send + allow in training:
+    ``allow: true``, with ``example: true`` to keep an edited draft as an
+    example (``delegation.training``).
     """
     edits: dict[str, Any] | None = None
 
@@ -466,9 +468,15 @@ async def _send_reply(
     (``delegation.reply_send``, which checks everything again first)."""
     from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
 
+    # Send + allow, in training: ``edits.allow`` (and ``edits.example``, keep
+    # an edited draft as an example). The rest is the second yes.
+    confirm = dict(body.edits or {})
+    allow = confirm.pop("allow", None)
+    example = confirm.pop("example", None)
     try:
         await send_approved_reply(
-            instance, caller=api_caller.caller(request), resolver=resolver, confirm=body.edits,
+            instance, caller=api_caller.caller(request), resolver=resolver, confirm=confirm,
+            learn={"example": example is True} if allow is True else None,
         )
     except SendRefused as refused:
         raise HTTPException(

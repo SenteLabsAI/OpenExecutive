@@ -716,6 +716,7 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
         plan["flags"].append("asks_if_ai")
     stored = get_voice(person.id)
     names = (person.full_name or "").split()
+    from openexecutive.delegation.training import example_for
     from openexecutive.memory.history_drafts import notes_for_draft
     exec_address = (get_settings().exec_email_address or "").strip().lower()
     # Everyone else the email went to, never the person's own addresses or
@@ -742,6 +743,7 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
         thread_text=thread_text(thread, email),
         writer_said=writer_said(thread, email),
         writer_noted=notes_for_draft(person.id, [message.from_addr, *cc]),
+        writer_example=example_for(person.id, message.from_addr),
         reply_subject=plan["subject"],
         intent=INBOX_HOLDING_INTENT if relation == "stranger" else INBOX_REPLY_INTENT,
         recipients=[

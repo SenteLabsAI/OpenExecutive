@@ -4815,6 +4815,8 @@ audit:
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
     - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and mode. Always private.
     - delegation_reply_handled — Handle it for me sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
+    - delegation_reply_allowed — Send + allow in training: the person allowed replies to a sender after sending one. details carry person_id, decision_id, allowed_id and example (whether a changed draft was kept). Always private.
+    - delegation_learned_removed — a person removed a sender Handle it for me had learned (DELETE /delegation/learned/{id}). details carry person_id and allowed_id. Always private.
     - take_the_lead_changed — a Take the lead switch, Ask first switch or company rule changed (PUT /take-the-lead, its rules, PUT /delegation/take-the-lead). actor "user"; details carry the scope and what changed.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
@@ -9539,6 +9541,19 @@ delegation:
     Card payload source follow_up (from_email = first recipient); the
     reconciler closes it "answered" and deletes its unedited draft when
     anyone else writes in the thread.
+    In training (mode training, delegation.training): every reply waits
+    (handle_it_reason training) unless the person allowed its sender with
+    Send + allow on a card (POST /decisions/{id}/approve edits.allow, plus
+    edits.example to keep a draft they edited in the mailbox). The
+    allowance is a take_the_lead_allowed row, feature act_as_me, key
+    act_as_me|person:<id>|reply|<address>, person_id set: theirs alone,
+    capped per person, never in learned_note. An allowed sender's reply
+    still passes every refusal check under the training Rules (balanced
+    limits, strangers allowed because the person named them), and is
+    checked again at send time (removed since: handle_it_off). Follow-ups
+    always wait; Take the lead as you is turned off and lifts nothing.
+    The kept example goes to the ghostwriter as <writer_example> (style
+    only, untrusted block) when it next writes to that sender.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
