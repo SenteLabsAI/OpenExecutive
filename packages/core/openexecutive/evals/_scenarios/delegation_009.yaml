@@ -1,0 +1,36 @@
+id: delegation_009
+domain: delegation
+workspace_mode: solo
+description: "Act as me, whose mailbox: in a new conversation the principal refers to an email a client sent them earlier and asks what it said. The email is in the principal's own mailbox, not the Executive's, so the Executive searches their mailbox (search_my_email), opens the thread (read_my_email) and answers from it, instead of saying it can't find the email."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 2
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-reserves
+    subject: Reserve balances for Q3
+    messages:
+      - from: "Priya Client <priya@harbourline.example>"
+        date: "Tue, 6 Oct 2026"
+        text: |
+          Hi Olivia, the operating reserve stood at $42,000 at the end of
+          September and the replacement reserve at $18,500. Can you confirm
+          these match your bank statements before Friday?
+
+          Priya
+query: "Earlier I had you look at Priya's email about the reserves. What were the two balances she gave me again?"
+expected_tool_calls:
+  - search_my_email
+  - read_my_email
+expected_topics:
+  - operating_reserve_42000
+  - replacement_reserve_18500
+quality_criteria:
+  answers_from_the_principals_own_mailbox: true
+  does_not_say_it_cannot_find_the_email: true
+  brief: true

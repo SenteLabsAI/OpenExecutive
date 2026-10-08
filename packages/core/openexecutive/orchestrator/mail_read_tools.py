@@ -80,6 +80,8 @@ SEARCH_MY_EMAIL_TOOL: dict[str, Any] = {
         "Search the mailbox of the person you are speaking with — their own Gmail "
         "or Outlook, mail they sent included. Use it when they ask about their "
         "email: find a message, check what someone sent them, see what came in. "
+        "Mail sent to them is here, not in your own mailbox (the Gmail or "
+        "Outlook tools of your own account), so search here first. "
         "`query` is a Gmail-style search: words, from:, to:, subject:, "
         "newer_than:14d (Outlook ignores other operators). Leave `query` empty "
         "to list what reached their inbox in the last `days` days. Returns "
