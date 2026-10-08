@@ -55,6 +55,23 @@ def test_the_carried_lock_lifts_once_the_reading_turn_is_out_of_view() -> None:
     assert dsettings.mail_still_in_view(0, None)
 
 
+def test_a_conversation_that_read_mail_before_the_column_counts_from_now(db: Path) -> None:
+    import sqlite3
+
+    session_store.mark_mail_private("old", 7, db_path=db)
+    session_store.mark_mail_private("other", 7, db_path=db, history_len=3)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO chat_messages (session_id, role, content, created_at) VALUES ('old', 'user', ?, '')",
+            [(str(i),) for i in range(42)],
+        )
+        conn.execute("ALTER TABLE sessions DROP COLUMN mail_read_at")
+    episodic.initialize_db(db)
+    # Read "now": 42 messages in, so the hold lifts some 20 to 30 later.
+    assert session_store.mail_read_at("old", db_path=db) == 42
+    assert session_store.mail_read_at("other", db_path=db) == 0
+
+
 def test_mark_mail_private_stores_when_the_mail_was_read(db: Path) -> None:
     assert session_store.mail_read_at("s1", db_path=db) is None
     session_store.mark_mail_private("s1", 7, db_path=db, history_len=12)

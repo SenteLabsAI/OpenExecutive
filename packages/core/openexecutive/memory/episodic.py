@@ -475,13 +475,20 @@ def initialize_db(db_path: Path | None = None) -> None:
         # How many history messages the conversation held when a turn last
         # read that mail: the lockdown is carried only while that turn is in
         # the model's view (session_store.mail_read_at). NULL = unknown, so it
-        # is always carried.
+        # is always carried. A conversation that read mail before the column
+        # existed counts as having read it now, so its hold lifts 20 to 30
+        # messages on instead of never.
         if "mail_read_at" not in _sessions_existing:
             try:
                 conn.execute("ALTER TABLE sessions ADD COLUMN mail_read_at INTEGER")
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+            conn.execute(
+                "UPDATE sessions SET mail_read_at = (SELECT COUNT(*) FROM chat_messages "
+                "WHERE chat_messages.session_id = sessions.session_id) "
+                "WHERE mail_private = 1 AND mail_read_at IS NULL"
+            )
 
         # Trust-ledger tables (first-climb autonomy, Build 1+2).
         # `decision_instances` is the correlation unit: links a proposal, its
