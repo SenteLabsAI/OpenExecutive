@@ -6123,6 +6123,14 @@ workflows:
     and kills the process then; the exit code no longer counts once a result
     parsed. _prune runs under a lock and treats a vanished folder as gone
     (concurrent prunes raised FileNotFoundError and lost the reply's links).
+    Remote runner (PYTHON_JOB_RUNNER_URL + PYTHON_JOB_RUNNER_KEY): run_job
+    POSTs {code, inputs, files b64, max_*, timeout_s, memory_mb} with the key
+    as a bearer token and no redirects; the reply is read up to
+    _MAX_STDOUT_BYTES and only result/error/printed (length-capped), files,
+    skipped and usage {peak_mb, cpu_ms} are kept; HTTP errors, timeouts and
+    unreadable replies become job errors. available() is true with a runner
+    and no local sandbox. URL must be https, or http to localhost/.internal/
+    .flycast. The runner is trusted to isolate jobs.
     Kept jobs, attachments, metering: run_python_job takes save_as +
     description (kept as saved_tools kind 'python', tools [], code as the
     script; only when the job worked) and tool + inputs to run one again

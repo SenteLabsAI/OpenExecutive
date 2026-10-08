@@ -398,3 +398,99 @@ def test_the_real_sandbox_reads_inputs_and_reports_its_usage(company: Path) -> N
     ))
     assert body["result"] == "42"
     assert body["_usage"]["peak_mb"] > 50 and body["_usage"]["cpu_ms"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# A remote runner (PYTHON_JOB_RUNNER_URL)
+# --------------------------------------------------------------------------- #
+
+
+def _runner(monkeypatch: pytest.MonkeyPatch, handler: Any) -> list[Any]:
+    import httpx
+
+    seen: list[Any] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", "https://runner.example.com/run")
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_KEY", "k-123")
+    monkeypatch.setattr(
+        python_job, "_runner_client",
+        lambda timeout_s: httpx.AsyncClient(transport=httpx.MockTransport(record), timeout=timeout_s),
+    )
+    return seen
+
+
+def test_a_runner_makes_jobs_available_without_the_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHON_SANDBOX_DIR", str(tmp_path / "nothing"))
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", "https://runner.example.com/run")
+    assert python_job.available() is True
+    monkeypatch.setenv("PYTHON_JOBS_ENABLED", "false")
+    assert python_job.available() is False
+
+
+def test_the_job_goes_to_the_runner_and_its_result_comes_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    seen = _runner(monkeypatch, lambda r: httpx.Response(200, json={
+        "result": "3", "printed": "hi\n", "files": {"out.txt": "ZG9uZQ=="}, "skipped": ["big.bin"],
+        "usage": {"peak_mb": 120, "cpu_ms": 900}, "extra": "dropped",
+    }))
+    body = asyncio.run(python_job.run_job("1+2", {"a.csv": b"x"}, timeout_s=30, inputs={"n": 1}))
+    [req] = seen
+    assert req.headers["authorization"] == "Bearer k-123"
+    sent = json.loads(req.content)
+    assert sent["code"] == "1+2" and sent["inputs"] == {"n": 1} and sent["timeout_s"] == 30
+    assert base64.b64decode(sent["files"]["a.csv"]) == b"x"
+    assert "pyodide" not in sent and "wheels" not in sent
+    assert body == {
+        "result": "3", "printed": "hi\n", "files": {"out.txt": "ZG9uZQ=="}, "skipped": ["big.bin"],
+        "_usage": {"peak_mb": 120, "cpu_ms": 900},
+    }
+
+
+@pytest.mark.parametrize(("response", "message"), [
+    ("status", "could not run the job (HTTP 503)"),
+    ("garbage", "unreadable"),
+    ("huge", "too large"),
+    ("timeout", "ran past its 30 s limit"),
+    ("down", "could not be reached"),
+])
+def test_a_runner_failure_is_a_job_error(monkeypatch: pytest.MonkeyPatch, response: str, message: str) -> None:
+    import httpx
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if response == "status":
+            return httpx.Response(503)
+        if response == "garbage":
+            return httpx.Response(200, content=b"[1, 2]")
+        if response == "huge":
+            return httpx.Response(200, content=b"x" * (python_job._MAX_STDOUT_BYTES + 1))
+        if response == "timeout":
+            raise httpx.ReadTimeout("slow", request=request)
+        raise httpx.ConnectError("refused", request=request)
+
+    _runner(monkeypatch, answer)
+    body = asyncio.run(python_job.run_job("1", {}, timeout_s=30))
+    assert message in body["error"]
+    assert body["_usage"] == {"peak_mb": None, "cpu_ms": None}
+
+
+@pytest.mark.parametrize("url", [
+    "http://runner.example.com/run", "ftp://runner.example.com", "https://", "file:///etc/passwd",
+])
+def test_the_runner_url_must_be_https_or_private(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    from openexecutive.config import Settings
+
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", url)
+    with pytest.raises(ValueError):
+        Settings()  # type: ignore[call-arg]
+
+
+def test_plain_http_is_allowed_on_a_private_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.config import Settings
+
+    monkeypatch.setenv("PYTHON_JOB_RUNNER_URL", "http://runner.flycast/run")
+    assert Settings().python_job_runner_url == "http://runner.flycast/run"  # type: ignore[call-arg]
