@@ -158,8 +158,23 @@ class Session:
     def add_assistant_message(self, content: str | list[dict[str, Any]]) -> None:
         self.conversation_history.append({"role": "assistant", "content": content})
 
-    def get_recent_history(self, max_turns: int = 20) -> list[dict[str, Any]]:
-        history = self.conversation_history[-(max_turns * 2):]
+    def get_recent_history(self, max_turns: int = 20, step_turns: int = 10) -> list[dict[str, Any]]:
+        """The last ``max_turns`` turns, give or take ``step_turns``.
+
+        The window's start moves in steps of ``step_turns`` rather than one
+        turn at a time, so a long conversation keeps between ``max_turns``
+        and ``max_turns + step_turns`` turns. A window that slid every turn
+        would change the first history message on every request, and the
+        prompt cache (``orchestrator.executive._apply_history_cache_marker``)
+        would miss and re-write the whole conversation each time.
+        """
+        total = len(self.conversation_history)
+        keep = max_turns * 2
+        start = 0
+        if total > keep:
+            step = max(1, step_turns) * 2
+            start = ((total - keep) // step) * step
+        history = self.conversation_history[start:]
         # Anthropic requires messages to start with a user turn.
         # Drop a leading assistant message if history length is odd (can happen on error recovery).
         if history and history[0]["role"] != "user":

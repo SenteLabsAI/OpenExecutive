@@ -93,7 +93,7 @@ system:
     - A global operator pause (scheduler.pause, `executive_control` table) gates every autonomous loop — the scheduler, the Gmail poller and the workflow resumer. Inbound conversations (web chat, Slack, Discord, Telegram, Google Chat) are never gated. Pausing holds work, never cancels it.
     - Each specialist gets its own RAG fetch filtered by its declared domain alias.
     - System-prompt blocks marked with cache_control must remain byte-identical across turns — any dynamic content in them breaks Anthropic prompt caching and roughly 10× the cost.
-    - Total cache_control blocks must stay ≤ 4 (the Anthropic API hard limit). The current layout uses 2 of those slots for the system prompt (see `caching.block_order`), leaving headroom for the rolling-history ephemeral marker on the penultimate assistant turn.
+    - Total cache_control blocks must stay ≤ 4 (the Anthropic API hard limit), with longer TTLs before shorter ones. The layout is tools 1h, persona 1h, then company 5m on a first message or the history marker 1h once there is history, then the agent loop's 5m marker (see `caching.breakpoint_budget`).
     - Tool definitions are sorted by name before being sent to the API so cache hits survive across processes.
     - Company-specific data lives under packages/core/company/ and is gitignored. Never commit it.
     - Audit writes never break a chat turn or tool call — exceptions are swallowed with a warning.
@@ -130,15 +130,32 @@ caching:
     ephemeral markers the request uses).
   breakpoint_budget: |
     The full 4-block budget, and why none of it is spare:
-      1. persona + knowledge (1h)      — system block 0
-      2. company + org (5m, optional)  — system block 1
-      3. last client tool (1h)         — executive tool list
+      1. last client tool (1h)         — executive tool list
+      2. persona + knowledge (1h)      — system block 0
+      3. company + org (5m, optional)  — system block 1, on a turn with no
+         history; with history the slot goes to the history marker (1h) on
+         the newest non-empty history turn (normally the previous reply)
       4. newest tool_result (5m)       — the agent loop's intra-turn marker
-    History turns deliberately carry NO marker. A rolling marker on the
-    penultimate assistant turn used to claim a latent fifth breakpoint,
-    which Anthropic rejects outright on the direct (non-OpenRouter) path.
-    It never earned its slot: history turns are flat strings, and the
-    system + tool blocks already cover the expensive stable prefix.
+    The history marker (executive._apply_history_cache_marker, applied by
+    the agent loop, never by _build_messages) is what lets the next message
+    read the conversation back. History turns are rebuilt from plain text,
+    so the previous turn's loop entries (which ended inside that turn's
+    retrieved context and tool calls) never match; without the marker every
+    message re-wrote the whole history into the cache. The
+    company block keeps its place in the prefix, covered by the history
+    marker, and losing its own 5m marker keeps the TTLs in the order the API
+    requires (1h before 5m). 1h because people reply in minutes; a 5m entry
+    would mostly be gone. Session.get_recent_history moves its window's
+    start in steps of 10 turns (20 to 30 turns kept) so the first history
+    message, and with it the cached prefix, stays put between steps.
+    On OpenRouter the translator keeps every assistant turn as typed text
+    parts when a request carries the history marker
+    (translator._request_caches_assistant_text), so the marker is forwarded
+    and a reply has one shape whether marked or not.
+    The committee revision call reuses the turn's messages without the
+    history marker, so its request keeps the plain two-system-marker layout.
+    A rolling marker on every history turn used to claim a latent fifth
+    breakpoint, which Anthropic rejects outright on the direct path.
   block_order:
     - id: persona_and_knowledge
       ttl: 1h

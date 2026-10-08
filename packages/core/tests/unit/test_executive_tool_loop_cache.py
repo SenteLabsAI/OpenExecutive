@@ -24,7 +24,10 @@ The contract pinned here:
   4. the loop marker is 5m (no `ttl` key) — the turn is over in seconds,
      so a 1h TTL would only double the write premium;
   5. `enable_caching=False` emits no marker at all;
-  6. the caller's `messages` list is never mutated.
+  6. the caller's `messages` list is never mutated;
+  7. with history, the previous reply carries a 1h marker that takes the
+     5m company block's slot, so the next message reads the conversation
+     back instead of writing it again (still 4 markers, TTLs 1h before 5m).
 """
 from __future__ import annotations
 
@@ -405,3 +408,148 @@ def test_non_string_tool_result_content_is_still_markable() -> None:
     ]
     _apply_loop_cache_marker(messages)
     assert messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+# --------------------------------------------------------------------- #
+# History breakpoint (_apply_history_cache_marker)
+# --------------------------------------------------------------------- #
+
+
+def _history_messages() -> list[dict[str, Any]]:
+    return [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+        {"role": "user", "content": [{"type": "text", "text": "do the thing"}]},
+    ]
+
+
+def _real_system_blocks() -> list[dict[str, Any]]:
+    from openexecutive.memory.company_profile import CompanyProfile
+    from openexecutive.prompts.cache_manager import build_system_blocks
+
+    return build_system_blocks(
+        company_profile=CompanyProfile(name="Test Co", industry="Testing"),
+    )
+
+
+def _ttls_in_wire_order(call: dict[str, Any]) -> list[str]:
+    """Marker TTLs in the order the API reads them: tools, system, messages."""
+    out: list[str] = []
+    blocks: list[Any] = [*(call.get("tools") or []), *(call.get("system") or [])]
+    for msg in call.get("messages") or []:
+        if isinstance(msg.get("content"), list):
+            blocks.extend(msg["content"])
+    for b in blocks:
+        if isinstance(b, dict) and isinstance(b.get("cache_control"), dict):
+            out.append(b["cache_control"].get("ttl", "5m"))
+    return out
+
+
+def test_previous_reply_carries_a_one_hour_history_marker() -> None:
+    """Without it every message re-writes the whole conversation into the
+    cache: the previous turn's cached prefix ended inside that turn's own
+    context and tool calls, which the rebuilt history does not keep."""
+    provider = _scripted_three_iterations()
+    _run_loop(provider, messages=_history_messages(), system_blocks=_real_system_blocks())
+
+    for call in provider.calls:
+        reply = call["messages"][1]
+        assert reply["role"] == "assistant"
+        assert reply["content"] == [
+            {
+                "type": "text",
+                "text": "earlier answer",
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }
+        ]
+
+
+def test_history_marker_takes_the_company_blocks_slot() -> None:
+    """Four breakpoints at most, and longer TTLs before shorter ones: the
+    5m company block gives up its marker (it stays inside the history
+    marker's prefix), so the order is tools 1h, persona 1h, history 1h,
+    loop 5m."""
+    provider = _scripted_three_iterations()
+    _run_loop(provider, messages=_history_messages(), system_blocks=_real_system_blocks())
+
+    for i, call in enumerate(provider.calls):
+        assert _count_all_markers(call) <= 4, f"call {i} exceeded the 4-block limit"
+        system = call["system"]
+        assert "cache_control" in system[0]
+        assert "cache_control" not in system[1]
+    assert _ttls_in_wire_order(provider.calls[1]) == ["1h", "1h", "1h", "5m"]
+
+
+def test_no_history_keeps_the_company_block_marker() -> None:
+    provider = _scripted_three_iterations()
+    _run_loop(provider, system_blocks=_real_system_blocks())
+    for call in provider.calls:
+        assert "cache_control" in call["system"][1]
+
+
+def test_history_marker_leaves_caller_lists_alone() -> None:
+    messages = _history_messages()
+    system_blocks = _real_system_blocks()
+    before = (copy.deepcopy(messages), copy.deepcopy(system_blocks))
+    provider = _scripted_three_iterations()
+    _run_loop(provider, messages=messages, system_blocks=system_blocks)
+    assert (messages, system_blocks) == before
+
+
+def test_no_history_marker_when_caching_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    exec_ = Executive()
+    monkeypatch.setattr(exec_._settings, "enable_caching", False)
+    provider = _scripted_three_iterations()
+    _run_loop(provider, messages=_history_messages(), executive=exec_)
+    assert provider.calls[0]["messages"][1]["content"] == "earlier answer"
+
+
+def test_history_marker_skips_an_empty_reply() -> None:
+    """An empty text block with cache_control is a 400; mark the newest
+    turn that has words instead."""
+    from openexecutive.orchestrator.executive import _apply_history_cache_marker
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "do the thing"},
+    ]
+    _, out = _apply_history_cache_marker([], messages)
+    assert out[0]["content"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert out[1]["content"] == ""
+
+
+def test_history_marker_on_a_typed_reply_marks_its_last_text_block() -> None:
+    from openexecutive.orchestrator.executive import _apply_history_cache_marker
+
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]},
+        {"role": "user", "content": "do the thing"},
+    ]
+    _, out = _apply_history_cache_marker([], messages)
+    assert "cache_control" not in out[1]["content"][0]
+    assert out[1]["content"][1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert "cache_control" not in messages[1]["content"][1]
+
+
+def test_history_window_moves_in_steps() -> None:
+    """A window that slid one turn at a time would change the first history
+    message on every request past turn 20, and the cache would miss on all
+    of them."""
+    from openexecutive.orchestrator.session import Session
+
+    session = Session(session_id="s-window")
+    firsts: list[str] = []
+    for n in range(1, 61):
+        session.add_user_message(f"q{n}")
+        session.add_assistant_message(f"a{n}")
+        history = session.get_recent_history()
+        assert history[0]["role"] == "user"
+        assert 20 <= len(history) // 2 <= 30 or n < 20
+        firsts.append(history[0]["content"])
+    # Past turn 20 the start moves once every 10 turns (at turns 30, 40,
+    # 50 and 60), never on consecutive turns.
+    changes = [i for i in range(1, len(firsts)) if firsts[i] != firsts[i - 1]]
+    assert all(b - a >= 10 for a, b in zip(changes, changes[1:], strict=False))
+    assert len(changes) == 4

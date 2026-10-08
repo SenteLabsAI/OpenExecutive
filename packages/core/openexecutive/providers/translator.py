@@ -193,6 +193,28 @@ def _request_caches_tool_results(messages: list[Any]) -> bool:
     return False
 
 
+def _request_caches_assistant_text(messages: list[Any]) -> bool:
+    """True iff an assistant text block in the request carries a marker.
+
+    That is the history breakpoint (``executive._apply_history_cache_marker``),
+    normally on the previous reply. Like ``_request_caches_tool_results`` it
+    sets one shape for every assistant turn in the request: the marker moves
+    to the newest reply each message, so a reply typed while marked and
+    flattened afterwards would change the cached prefix under the breakpoint
+    meant to read it.
+    """
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        content = m.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("cache_control"), dict)
+            for b in content
+        ):
+            return True
+    return False
+
+
 def _anthropic_messages_to_openai(messages: list[Any]) -> list[dict[str, Any]]:
     """Convert Anthropic ``messages`` to OpenAI chat-completions ``messages``.
 
@@ -203,13 +225,14 @@ def _anthropic_messages_to_openai(messages: list[Any]) -> list[dict[str, Any]]:
     """
     out: list[dict[str, Any]] = []
     typed_tool_results = _request_caches_tool_results(messages)
+    typed_assistant_text = _request_caches_assistant_text(messages)
     for m in messages:
         role = m.get("role")
         content = m.get("content")
         if role == "user":
             out.extend(_user_content_to_openai(content, typed_tool_results))
         elif role == "assistant":
-            out.append(_assistant_content_to_openai(content))
+            out.append(_assistant_content_to_openai(content, typed_assistant_text))
         else:
             # Unknown role — preserve as best-effort.
             out.append({"role": role, "content": _content_to_text(content)})
@@ -328,14 +351,22 @@ def _user_content_to_openai(
     return msgs
 
 
-def _assistant_content_to_openai(content: Any) -> dict[str, Any]:
+def _assistant_content_to_openai(content: Any, typed_text: bool = False) -> dict[str, Any]:
     """Assistant-turn content: collapse text blocks; lift tool_use blocks to
-    OpenAI ``tool_calls``."""
+    OpenAI ``tool_calls``.
+
+    ``typed_text`` (the request carries the history breakpoint, see
+    ``_request_caches_assistant_text``) keeps the text as typed parts, each
+    with its own ``cache_control``, so the marker reaches Anthropic through
+    OpenRouter instead of being collapsed away."""
     if isinstance(content, str):
+        if typed_text and content:
+            return {"role": "assistant", "content": [{"type": "text", "text": content}]}
         return {"role": "assistant", "content": content}
     if not isinstance(content, list):
         return {"role": "assistant", "content": str(content)}
 
+    typed_parts: list[dict[str, Any]] = []
     text_chunks: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     reasoning_details: list[Any] = []
@@ -347,6 +378,9 @@ def _assistant_content_to_openai(content: Any) -> dict[str, Any]:
             txt = block.get("text", "")
             if isinstance(txt, str) and txt:
                 text_chunks.append(txt)
+                part = _typed_text_with_cc(txt, block.get("cache_control"))
+                if part is not None:
+                    typed_parts.append(part)
         elif btype == OPENROUTER_REASONING_BLOCK:
             details = block.get("reasoning_details")
             if isinstance(details, list):
@@ -364,7 +398,10 @@ def _assistant_content_to_openai(content: Any) -> dict[str, Any]:
             )
 
     out: dict[str, Any] = {"role": "assistant"}
-    out["content"] = "\n\n".join(text_chunks) if text_chunks else None
+    if typed_text and typed_parts:
+        out["content"] = typed_parts
+    else:
+        out["content"] = "\n\n".join(text_chunks) if text_chunks else None
     if reasoning_details:
         out["reasoning_details"] = reasoning_details
     if tool_calls:
