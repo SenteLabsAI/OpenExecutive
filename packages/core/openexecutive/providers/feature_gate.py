@@ -70,6 +70,48 @@ def relax_forced_tool_choice(model: str, kwargs: dict[str, Any]) -> dict[str, An
     return {**kwargs, "tool_choice": relaxed}
 
 
+# Claude ids and OpenRouter slugs with their major version, for the
+# per-generation request rules below (``claude-haiku-5-5``,
+# ``anthropic/claude-haiku-5.5``, ``claude-opus-5-20260315``).
+_CLAUDE_MAJOR_RE = re.compile(
+    r"^(?:anthropic/)?claude-[a-z]+-(?P<major>\d{1,3})(?:[-.]\d{1,3})?(?:-\d{8})?$"
+)
+# Claude models from the 5 generation on reject a non-default ``temperature``
+# / ``top_p`` / ``top_k`` with HTTP 400; the defaults are what they run on
+# anyway, so the fields are dropped rather than sent.
+_SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+# Haiku 5.5 thinks unless a request turns it off, where Haiku 4.5 thought
+# only when asked. The helpers that run on the routing model are sized for a
+# reply without thinking (a title gets 32 tokens), so a request that says
+# nothing about thinking gets it turned off. Anthropic accepts that only up
+# to effort ``high``.
+_THINKS_UNLESS_TOLD_RE = re.compile(r"^(?:anthropic/)?claude-haiku-5[-.]5(?:-\d{8})?$")
+_EFFORTS_THAT_KEEP_THINKING = frozenset({"xhigh", "max"})
+
+
+def fit_claude_generation(model: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Shape a request to the rules of the Claude generation it goes to.
+
+    Drops sampling fields a 5-generation model would reject, and turns
+    thinking off on a model that otherwise thinks by default when the caller
+    set none. Returns ``kwargs`` itself when nothing changes, else a shallow
+    copy; the caller's dict is never mutated.
+    """
+    lowered = model.lower()
+    m = _CLAUDE_MAJOR_RE.match(lowered)
+    if m is None:
+        return kwargs
+    out = kwargs
+    if int(m.group("major")) >= 5 and any(k in kwargs for k in _SAMPLING_PARAMS):
+        out = {k: v for k, v in kwargs.items() if k not in _SAMPLING_PARAMS}
+    if "thinking" not in out and _THINKS_UNLESS_TOLD_RE.match(lowered):
+        output_config = out.get("output_config")
+        effort = output_config.get("effort") if isinstance(output_config, dict) else None
+        if effort not in _EFFORTS_THAT_KEEP_THINKING:
+            out = {**out, "thinking": {"type": "disabled"}}
+    return out
+
+
 # What a PDF becomes for a model that cannot read one: said, never dropped.
 PDF_OMITTED_NOTE = "[PDF omitted: this model can't read PDF files]"
 

@@ -6,7 +6,10 @@ from typing import Any
 
 import anthropic
 
-from openexecutive.providers.feature_gate import relax_forced_tool_choice
+from openexecutive.providers.feature_gate import (
+    fit_claude_generation,
+    relax_forced_tool_choice,
+)
 
 
 def _client_kwargs(
@@ -79,9 +82,11 @@ class AnthropicProvider:
         )
 
     def messages_create(self, **kwargs: Any) -> Awaitable[Any]:
-        kwargs = relax_forced_tool_choice(str(kwargs.get("model", "")), kwargs)
+        model = str(kwargs.get("model", ""))
+        kwargs = fit_claude_generation(model, relax_forced_tool_choice(model, kwargs))
         return self._client.messages.create(**kwargs)
 
     def messages_stream(self, **kwargs: Any) -> AbstractAsyncContextManager[Any]:
-        kwargs = relax_forced_tool_choice(str(kwargs.get("model", "")), kwargs)
+        model = str(kwargs.get("model", ""))
+        kwargs = fit_claude_generation(model, relax_forced_tool_choice(model, kwargs))
         return self._client.messages.stream(**kwargs)

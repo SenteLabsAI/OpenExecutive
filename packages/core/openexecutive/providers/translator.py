@@ -517,19 +517,26 @@ _OPENROUTER_EFFORT_LEVELS = frozenset(
 _DEFAULT_REASONING_EFFORT = "low"
 
 
-def _translate_reasoning(anthropic_kwargs: dict[str, Any]) -> dict[str, Any] | None:
+def _translate_reasoning(
+    anthropic_kwargs: dict[str, Any], *, claude: bool = False
+) -> dict[str, Any] | None:
     """Anthropic ``thinking`` + ``output_config.effort`` → OpenRouter ``reasoning``.
 
     * ``{"type": "adaptive"}`` (current models) → ``{"effort": <level>}`` where
       the level comes from ``output_config.effort``, defaulting to "low".
     * ``{"type": "enabled", "budget_tokens": N}`` (pre-4.6 models) →
       ``{"max_tokens": N}``.
-    * ``{"type": "disabled"}``, absent, or malformed → ``None`` (no field).
+    * ``{"type": "disabled"}`` on a Claude slug → ``{"enabled": False}``, so
+      a model that thinks by default (Haiku 5.5) is told not to, as on the
+      Anthropic path. Anywhere else → ``None``, as before.
+    * Absent or malformed → ``None`` (no field).
     """
     thinking = anthropic_kwargs.get("thinking")
     if not isinstance(thinking, dict):
         return None
     kind = thinking.get("type")
+    if kind == "disabled":
+        return {"enabled": False} if claude else None
     if kind == "enabled":
         budget = thinking.get("budget_tokens")
         if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
@@ -590,7 +597,9 @@ def to_openai_request(
     # Deep reasoning: the Council checkbox sets Anthropic-native ``thinking``
     # + ``output_config.effort``; feature_gate leaves them in place only for
     # models that can reason, and here they become OpenRouter's ``reasoning``.
-    reasoning = _translate_reasoning(anthropic_kwargs)
+    reasoning = _translate_reasoning(
+        anthropic_kwargs, claude=model_slug.lower().startswith(("anthropic/claude-", "claude-"))
+    )
     if reasoning is not None:
         body["reasoning"] = reasoning
 
