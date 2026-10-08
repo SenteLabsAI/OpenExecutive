@@ -108,3 +108,26 @@ def test_chip_and_progress_line_agree() -> None:
     assert chip["target"] == '"lpa"'
     assert chip["tool"] == "google_workspace__search_drive_files"
     assert activity["label"] == "Searching Drive…"
+
+
+def test_long_tool_names_still_agree_between_chip_and_line() -> None:
+    raw = "google_workspace__get_gmail_messages_content_batch"
+    assert len(raw) > 48  # longer than the progress line's `tool` cap
+    tool_input = {"name": raw, "arguments": {}}
+    chip = summarize_action(tool_name="call_tool", tool_input=tool_input, tool_result="ok")
+    activity = summarize_activity([{"id": "t", "name": "call_tool", "input": tool_input}])
+    assert chip is not None and activity is not None
+    assert chip["summary"] == "Read an email"
+    assert activity["label"] == "Reading an email…"
+
+
+def test_a_subject_line_in_a_body_is_not_the_target() -> None:
+    result = "Message ID: 1\nFrom: sam@example.com\n\nFwd:\nSubject: Wire transfer approved"
+    assert tool_labels.detail_for(
+        "google_workspace__get_gmail_message_content", {"message_id": "1"}, result
+    ) is None
+
+
+def test_a_subject_is_read_only_from_mail_tools() -> None:
+    result = "Subject: Wire transfer approved\n\nbody"
+    assert tool_labels.detail_for("google_workspace__get_doc_content", {"document_id": "d"}, result) is None

@@ -151,6 +151,14 @@ _DETAIL_KEYS = (
     "file_name", "filename", "name", "summary",
 )
 _SUBJECT_RE = re.compile(r"^Subject:[ \t]*(.+)$", re.MULTILINE)
+# The tools whose result is one email, the only ones a subject is read from.
+_MAIL_READS = frozenset({
+    "get_gmail_message_content",
+    "get_gmail_thread_content",
+    "get_mail_message",
+})
+# Larger results are not parsed just to find a subject.
+_JSON_MAX = 200_000
 
 
 def _split(raw: str) -> tuple[str, str]:
@@ -202,18 +210,21 @@ def detail_for(raw_name: Any, arguments: Any, result: str) -> str | None:
                 cleaned = _clean(value, _DETAIL_MAX)
                 if cleaned:
                     return f'"{cleaned}"' if key in ("query", "q", "search", "search_query") else cleaned
-    if isinstance(result, str) and result:
-        head = result[:4000]
-        m = _SUBJECT_RE.search(head)
+    if tool in _MAIL_READS and isinstance(result, str) and result:
+        # Only an email's own header block names it: a "Subject:" line in a
+        # body or forwarded text must not become the chip's target.
+        header = result[:4000].split("\n\n", 1)[0]
+        m = _SUBJECT_RE.search(header)
         if m:
             return _clean(m.group(1), _DETAIL_MAX) or None
-        try:
-            parsed = json.loads(result)
-        except (ValueError, TypeError):
-            parsed = None
+        parsed = None
+        if len(result) <= _JSON_MAX:
+            try:
+                parsed = json.loads(result)
+            except (ValueError, TypeError):
+                parsed = None
         if isinstance(parsed, dict):
-            for key in ("subject", "name", "title"):
-                value = parsed.get(key)
-                if isinstance(value, str) and value.strip():
-                    return _clean(value, _DETAIL_MAX) or None
+            value = parsed.get("subject")
+            if isinstance(value, str) and value.strip():
+                return _clean(value, _DETAIL_MAX) or None
     return None

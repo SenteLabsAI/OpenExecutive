@@ -215,7 +215,9 @@ def _mcp_label(tool_input: Any) -> tuple[str, str]:
     name = _MCP_NAME_UNSAFE.sub("", raw).strip()[:_MCP_NAME_MAX].strip()
     if not name:
         return f"{tool_labels.GENERIC_DOING}…", "call_tool"
-    return f"{tool_labels.labels_for(name)[1]}…", name
+    # Label from the full name: the 48-char cut is for `tool` only, and a
+    # cut name would miss the table the chip reads (and the two would differ).
+    return f"{tool_labels.labels_for(raw)[1]}…", name
 
 
 def _label_for(tool_use: dict[str, Any]) -> tuple[str, str]:
