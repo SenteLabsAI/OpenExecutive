@@ -88,6 +88,8 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "propose_actions",
     "propose_form_values",
     "draft_workflow",
+    # A document kept for the person this turn is for, never published on a
+    # turn private to the principal (artifact_tools.handle_draft_artifact).
     "draft_artifact",
     "create_skill",
     "update_skill",

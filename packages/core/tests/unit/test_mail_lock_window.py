@@ -44,6 +44,11 @@ def test_the_carried_lock_lifts_once_the_reading_turn_is_out_of_view() -> None:
     assert not dsettings.mail_still_in_view(100, 180)
     # Unknown (a conversation marked before the column): always in view.
     assert dsettings.mail_still_in_view(None, 10_000)
+    # A read mid-conversation (30 messages before it) holds until the window
+    # starts past its last message.
+    for total in (40, 50, 59, 60, 79):
+        assert dsettings.mail_still_in_view(30, total), total
+    assert history_window_start(80) == 40 and not dsettings.mail_still_in_view(30, 80)
     # A history that can't be measured stores and reads as unknown too.
     assert dsettings.history_len(object()) is None
     assert dsettings.history_len(Session()) == 0
