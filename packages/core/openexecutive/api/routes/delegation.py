@@ -276,6 +276,27 @@ class RepliesOut(BaseModel):
     cards: list[ReplyCardOut]
 
 
+class CardActionOut(BaseModel):
+    index: int
+    # invite, message or add_contact.
+    kind: str
+    summary: str
+    # A message's text as it will be sent, or a meeting's description.
+    text: str
+
+
+class ActionCardOut(BaseModel):
+    decision_id: int
+    status: str
+    created_at: str
+    why: str
+    actions: list[CardActionOut]
+
+
+class ActionCardsOut(BaseModel):
+    cards: list[ActionCardOut]
+
+
 class DelegationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -636,6 +657,28 @@ def get_delegation_replies(request: Request) -> RepliesOut:
         raise _refuse(503, "unavailable", "Couldn't read the replies waiting for you.") from exc
     return RepliesOut(cards=[
         ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+        for card in found
+    ])
+
+
+@router.get("/delegation/actions", response_model=ActionCardsOut)
+def get_delegation_actions(request: Request) -> ActionCardsOut:
+    """The action cards waiting for the caller to approve. Their own only:
+    everyone else gets the 403 every route here gives."""
+    from openexecutive.delegation.action_cards import cards
+
+    person = _caller(request)
+    _person_id(person)
+    try:
+        found = cards(person)
+    except Exception as exc:
+        logger.exception("delegation: reading the action cards failed")
+        raise _refuse(503, "unavailable", "Couldn't read the cards waiting for you.") from exc
+    return ActionCardsOut(cards=[
+        ActionCardOut(
+            decision_id=card.decision_id, status=card.status, created_at=card.created_at, why=card.why,
+            actions=[CardActionOut(**asdict(a)) for a in card.actions],
+        )
         for card in found
     ])
 

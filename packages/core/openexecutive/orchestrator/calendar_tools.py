@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +33,24 @@ _INSTANT_START_LEAD = timedelta(minutes=1)
 _POST_MEETING_FOLLOWUP_DELAY = timedelta(minutes=5)
 # A single calendar event can't sensibly run longer than a day.
 _MAX_INSTANT_DURATION_MINUTES = 24 * 60
+
+# The Person who already approved this booking on an approval card
+# (``delegation.action_cards``). When they are also the person the meeting
+# gate would ask, it is booked now instead of asking them twice; anyone else's
+# approval still goes to the gate's approver.
+_approved_by: ContextVar[int | None] = ContextVar("calendar_approved_by", default=None)
+
+
+@contextmanager
+def approved_by(person_id: int) -> Iterator[None]:
+    """Book inside this block as already approved by ``person_id``. Only for
+    code that has itself established that person approved this exact
+    meeting (the decisions approve route, after the signed-caller check)."""
+    token = _approved_by.set(person_id)
+    try:
+        yield
+    finally:
+        _approved_by.reset(token)
 
 # ---------------------------------------------------------------------------
 # Tool definitions (Anthropic tool-use schema)
@@ -700,8 +721,11 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         logger.exception("calendar_tools: failed to create decision_instance")
         return json.dumps({"error": "internal error recording proposal"})
 
-    # 12. Execute or propose.
-    if gate_decision.action == "execute" and class_mode == "auto_execute":
+    # 12. Execute or propose. A booking its approver already approved on a
+    # card is booked now: asking them again would only repeat the question.
+    approved = _approved_by.get()
+    already_approved = approved is not None and approved == approver_person_id
+    if (gate_decision.action == "execute" and class_mode == "auto_execute") or already_approved:
         # Auto-execute path (Build 3 — only reachable after promotion). The
         # booking happens now, so there is nothing to approve — deliberately
         # NO briefing alert here.

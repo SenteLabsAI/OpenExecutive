@@ -391,6 +391,37 @@ def _call_with_gate(
     return json.loads(raw)
 
 
+def test_a_booking_its_approver_already_approved_is_booked_now() -> None:
+    """An invite approved on an action card (delegation.action_cards) by the
+    person the gate would ask is booked, not proposed to them again."""
+    from openexecutive.orchestrator.calendar_tools import approved_by
+
+    pid = _add_person("Alice", "alice@example.com")
+    approver = _add_person("Boss", "boss@example.com")
+    with approved_by(approver):
+        result = _call_with_gate(
+            {"title": "Pilot kickoff", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+             "attendee_person_ids": [pid], "confidence": 1.0},
+            action="propose", assignee_person_id=approver,
+        )
+    assert result["status"] == "created"
+
+
+def test_a_booking_someone_else_approved_still_goes_to_its_approver() -> None:
+    from openexecutive.orchestrator.calendar_tools import approved_by
+
+    pid = _add_person("Alice", "alice@example.com")
+    approver = _add_person("Boss", "boss@example.com")
+    teammate = _add_person("Ben", "ben@example.com")
+    with approved_by(teammate):
+        result = _call_with_gate(
+            {"title": "Pilot kickoff", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+             "attendee_person_ids": [pid], "confidence": 1.0},
+            action="propose", assignee_person_id=approver,
+        )
+    assert result["status"] == "proposed"
+
+
 def test_propose_creates_linked_briefing_alert(_isolated: Path) -> None:
     from openexecutive.alerts.store import get_alert_by_external
 

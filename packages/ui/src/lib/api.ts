@@ -1961,6 +1961,72 @@ export async function sendReplyCard(
   throw new ReplySendError(message, code);
 }
 
+// A card of actions the Executive suggested from your email (Act as me),
+// yours alone. Nothing on it happens until you approve it here: Approve
+// (POST /decisions/{id}/approve) does the ticked actions exactly as shown;
+// Dismiss (POST /decisions/{id}/reject) drops it.
+export interface ActionCardAction {
+  index: number;
+  // invite, message or add_contact.
+  kind: string;
+  summary: string;
+  // A message's text as it will be sent, or a meeting's description.
+  text: string;
+}
+
+export interface ActionCard {
+  decision_id: number;
+  status: string;
+  created_at: string;
+  why: string;
+  actions: ActionCardAction[];
+}
+
+// What happened to one action: done, waiting (sent to whoever approves
+// meetings), failed or skipped (you unticked it).
+export interface ActionCardResult {
+  index: number;
+  status: string;
+  detail: string;
+}
+
+// null when this viewer has none to see (403) or the backend predates them (404).
+export async function getActionCards(signal?: AbortSignal): Promise<ActionCard[] | null> {
+  const res = await fetch(`${API_BASE}/delegation/actions`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load the cards waiting for you.");
+  const body = (await res.json()) as { cards: ActionCard[] };
+  return body.cards;
+}
+
+// Do the ticked actions (`only`, by index) of an action card. Returns what
+// happened to each.
+export async function approveActionCard(id: number, only: number[]): Promise<ActionCardResult[]> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits: { only } }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't do that.");
+  const body = (await res.json()) as { final_payload_json?: string | null };
+  try {
+    const payload = JSON.parse(body.final_payload_json ?? "{}") as { results?: ActionCardResult[] };
+    return Array.isArray(payload.results) ? payload.results : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function dismissActionCard(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "" }),
+  });
+  if (res.status === 404 || res.status === 409) return; // already gone or handled
+  if (!res.ok) throw await delegationError(res, "Couldn't dismiss that card.");
+}
+
 // Dismiss a reply card. Its draft is deleted from your Gmail unless you
 // edited it there.
 export async function dismissReplyCard(id: number): Promise<void> {

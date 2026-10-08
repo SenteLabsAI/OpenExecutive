@@ -8925,6 +8925,29 @@ delegation:
     The Slack and Discord DMs it may ride turn link previews off
     (unfurl_links/unfurl_media False; Discord flags SUPPRESS_EMBEDS). A
     forward's subject never goes into the composer's intent.
+  approval_cards: |
+    orchestrator.action_card_tools.propose_actions (in DELEGATION_TOOLS and
+    MAIL_TOUCHED_ALLOWED_TOOLS; not a MAILBOX_TOOL_NAMES tool) leaves the
+    speaker a card of up to 5 actions: invite (create_calendar_event input,
+    roster attendees), message (message_person: person_id + text as sent),
+    add_contact (principal's cards only). delegation.action_cards.check
+    validates each (roster, not archived, contacts only on the principal's
+    card, not themselves, times ahead) at propose and again at approve. A card
+    is a delegation_actions decision, approver = speaker, approver_only (404 to
+    everyone else, the principal too), never an alert; same actions still
+    waiting dedupe to one card. Caps: TurnDelegation.action_cards 3 a turn,
+    OPEN_CARDS_MAX 25 waiting, CARD_TTL 7 days. GET /delegation/actions lists
+    them. POST /decisions/{id}/approve (edits.only = indexes): caller_refusal
+    (signed caller is the card's person), Act as me on, not expired, then
+    claim_for_execution (once), each ticked action run as stored with no model
+    call in Session(unattended=True), grant_contact_egress for the principal.
+    An invite runs inside calendar_tools.approved_by(person): the meeting gate
+    books it now when its approver is that same person, else proposes to its
+    approver as usual (no authority widened). finish_execution keeps
+    final_payload.results (done | waiting | failed | skipped). Reject does
+    nothing else. Audit: delegation_actions_proposed / _approved / _dismissed,
+    private, kinds and outcomes only. Approved on the web only (chat apps
+    have no buttons); a card can come from any Act as me surface.
   ghostwriter: |
     delegation.ghostwriter.compose — the only text the Executive produces
     under someone else's name. System = the constant GHOSTWRITER_PROMPT +

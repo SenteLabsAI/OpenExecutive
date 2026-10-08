@@ -26,6 +26,7 @@ import {
 } from "@/lib/narrativeFreshness";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import InfoTip from "./InfoTip";
+import { ACTION_CARDS_TIP, ActionCardItem, useActionCards } from "./ActionCards";
 import { REPLIES_WAITING_TIP, ReplyCardItem, useReplyCards } from "./RepliesWaiting";
 import Icon from "./Icon";
 import {
@@ -335,6 +336,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   // Replies the Executive drafted in the owner's own mailbox (Act as me):
   // cards in Needs you. Empty for everyone else.
   const replies = useReplyCards();
+  // Actions it suggested from the caller's email, to approve (Act as me).
+  const actionCards = useActionCards();
   // Solo's own sections load on their own, so their tiles can count them.
   const principalId = solo ? principalIdOf(today?.people ?? []) : null;
   const projects = useActiveProjects(solo);
@@ -375,6 +378,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     today !== null &&
     today.proposals.length === 0 &&
     replies.cards.length === 0 &&
+    actionCards.cards.length === 0 &&
     activeDepts.every((d) => d.at_risk_count === 0 && d.off_track_count === 0 && d.awaiting_count === 0) &&
     today.people.every((p) => p.awaiting_count === 0);
 
@@ -424,7 +428,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   // The top three words a commitment as the owner's ("you").
   const principalName =
     (principalId != null && today?.people.find((p) => p.id === principalId)?.full_name) || "";
-  const needsYouCount = mineProposals.length + replies.cards.length;
+  const needsYouCount = mineProposals.length + replies.cards.length + actionCards.cards.length;
   const summary: SummaryPart[] = today
     ? briefingSummary({
         needsYou: needsYouCount,
@@ -540,6 +544,12 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
       key: `reply-${card.decision_id}`,
       render: (emphasized: boolean) => (
         <ReplyCardItem card={card} onGone={replies.gone} onRefresh={replies.refresh} emphasized={emphasized} />
+      ),
+    })),
+    ...actionCards.cards.map((card) => ({
+      key: `actions-${card.decision_id}`,
+      render: (emphasized: boolean) => (
+        <ActionCardItem card={card} onGone={actionCards.gone} emphasized={emphasized} />
       ),
     })),
     ...mineProposals.map((p) => ({
@@ -694,6 +704,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                     {needsYouCount > 0 && <span className="ml-1.5 font-normal text-fg-muted">({needsYouCount})</span>}
                   </h2>
                   {replies.cards.length > 0 && <InfoTip align="left">{REPLIES_WAITING_TIP}</InfoTip>}
+                  {actionCards.cards.length > 0 && <InfoTip align="left">{ACTION_CARDS_TIP}</InfoTip>}
                   <div className="ml-auto flex items-center gap-1">
                     {hasBrief && (
                       <button

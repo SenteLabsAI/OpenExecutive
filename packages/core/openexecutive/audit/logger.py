@@ -92,6 +92,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_reply_sent",        # the person tapped Send and their draft went, exactly as it was in Gmail
     "delegation_reminder_set",      # remind_me stored a reminder for the person who asked (no text in the row)
     "delegation_reminder_sent",     # a reminder went to the person who set it, as its stored text
+    "delegation_actions_proposed",  # propose_actions left a person a card of actions to approve (kinds only)
+    "delegation_actions_approved",  # the person approved an action card; details.outcomes says what each did
+    "delegation_actions_dismissed", # the person dismissed an action card
     "fact_retired",                 # the principal (or the teammate who recorded it) retired a standing fact from the Pulse page (memory/facts.py)
     "fact_reviewed",                # the principal approved or declined a teammate's proposed standing fact
     "fact_approval_changed",        # the principal turned "needs my approval" on or off for a teammate's standing facts

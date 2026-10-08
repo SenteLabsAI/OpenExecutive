@@ -546,8 +546,47 @@ _TAKE_THE_LEAD = DecisionClassSpec(
     after_reject=_lead_declined,
 )
 
+async def _carry_out_actions(
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
+) -> DecisionInstance:
+    """Do an action card's actions, exactly as stored, on its person's tap
+    (``delegation.action_cards``, which checks the caller and each action
+    again first). ``edits.only`` picks which of them."""
+    from openexecutive.delegation.action_cards import ApproveRefused, approve
+
+    try:
+        await approve(
+            instance, caller=api_caller.caller(request), resolver=resolver,
+            only=(body.edits or {}).get("only"),
+        )
+    except ApproveRefused as refused:
+        raise HTTPException(
+            status_code=refused.status, detail={"code": refused.code, "message": refused.message},
+        ) from None
+    return _refresh(instance.id)
+
+
+async def _actions_dismissed(instance: DecisionInstance) -> None:
+    from openexecutive.delegation.action_cards import dismissed
+
+    await dismissed(instance)
+
+
+# A card of actions the Executive suggested on a turn about someone's mail
+# (delegation.action_cards): theirs alone, like a reply card, and never an
+# alert.
+_DELEGATED_ACTIONS = DecisionClassSpec(
+    name="delegation_actions",
+    principal_only=False,
+    approver_only=True,
+    alert_source=None,
+    approve=_carry_out_actions,
+    after_reject=_actions_dismissed,
+)
+
 DECISION_CLASSES: dict[str, DecisionClassSpec] = {
-    spec.name: spec for spec in (_MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD)
+    spec.name: spec
+    for spec in (_MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD, _DELEGATED_ACTIONS)
 }
 
 

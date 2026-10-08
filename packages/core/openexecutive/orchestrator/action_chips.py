@@ -78,6 +78,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "ghostwrite_email",
     # Act as me: a reminder to the speaker alone
     "remind_me",
+    # Act as me: a card of actions left for the speaker to approve
+    "propose_actions",
 })
 
 
@@ -245,6 +247,16 @@ def summarize_action(
         summary = f"Reminder set for {when}" if when else "Reminder set"
         payload["summary"] = f"{summary}: {text}" if text else summary
         payload["target"] = None
+    elif tool_name == "propose_actions":
+        # Only a stored card earns a chip; it says nothing has happened yet.
+        if (parsed or {}).get("status") != "waiting_for_approval":
+            return None
+        actions = (parsed or {}).get("actions")
+        count = len(actions) if isinstance(actions, list) else 0
+        noun = "action" if count == 1 else "actions"
+        payload["summary"] = f"Waiting for your approval: {count} {noun}" if count else "Waiting for your approval"
+        payload["target"] = None
+        payload["link"] = "/today"
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")
         payload["summary"] = (
