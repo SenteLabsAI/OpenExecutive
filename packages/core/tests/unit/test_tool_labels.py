@@ -131,3 +131,11 @@ def test_a_subject_line_in_a_body_is_not_the_target() -> None:
 def test_a_subject_is_read_only_from_mail_tools() -> None:
     result = "Subject: Wire transfer approved\n\nbody"
     assert tool_labels.detail_for("google_workspace__get_doc_content", {"document_id": "d"}, result) is None
+
+
+def test_a_long_unlisted_tool_keeps_the_progress_line_short() -> None:
+    raw = "microsoft_365__list-" + "very-long-resource-name-" * 3
+    activity = summarize_activity([{"id": "t", "name": "call_tool", "input": {"name": raw}}])
+    assert activity is not None
+    assert len(activity["label"]) <= 60
+    assert activity["label"].endswith("…")
