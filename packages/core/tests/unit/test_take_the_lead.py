@@ -1115,3 +1115,18 @@ def test_a_full_list_refuses_the_allow_before_acting(
     response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"allow": True}})
     assert response.status_code == 409 and done == []
     assert ledger.get_decision_instance(decision_id).status == ledger.STATUS_PROPOSED  # type: ignore[union-attr]
+
+
+def test_the_learned_note_keeps_wording_only_and_stays_short() -> None:
+    _training()
+    ttl.allow("take_the_lead|book|people:1", "Book meetings with Priya Nair",
+              example={"start": "2026-10-09T15:00", "title": "Weekly 1:1"}, created_by="t")
+    ttl.allow("take_the_lead|message|person:2", "Message Sam Lee",
+              example={"text": "x" * 3000}, created_by="t")
+    ttl.allow("take_the_lead|message|person:3", "Message Ana Diaz", created_by="t")
+    stored = {a.label: a.example for a in ttl.list_allowed()}
+    assert json.loads(stored["Book meetings with Priya Nair"]) == {"title": "Weekly 1:1"}
+    assert len(json.loads(stored["Message Sam Lee"])["text"]) <= ttl.EXAMPLE_MAX
+    note = ttl.learned_note()
+    assert "in training" in note and "Weekly 1:1" in note and "2026-10-09" not in note
+    assert "Message Ana Diaz" not in note  # nothing to show without an example

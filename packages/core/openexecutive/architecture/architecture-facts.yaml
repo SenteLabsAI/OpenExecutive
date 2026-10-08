@@ -9692,7 +9692,8 @@ delegation:
     (apply_edits, EditError → 422) and finishes approved_with_edit;
     edits.allow on a training card (only) needs the principal on a provable
     request (403) and stores the allowance with the changed fields as its
-    example. Owner's choice: an edit with "Do it like this next time" both
+    example (the wording fields only: text, title, description, task).
+    Owner's choice: an edit with "Do it like this next time" both
     keeps the example and allows at once. learned_note() (training flag +
     the examples, the principal's own edited text only) is appended to the
     reflection and research user turns. suggestions(): training cards

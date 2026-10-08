@@ -724,6 +724,8 @@ _EDITABLE: dict[str, tuple[tuple[str, str, bool], ...]] = {
     "assign_open_loop": (("task", "Task", True), ("due_date", "Due", False)),
 }
 EDIT_MAX = 4000
+# The edited fields kept as an example of how it's wanted: the wording.
+_STYLE_FIELDS = frozenset({"text", "title", "description", "task"})
 
 
 class EditError(ValueError):
@@ -806,11 +808,14 @@ def allow(
     decision_id: int | None = None, db_path: Path | None = None,
 ) -> Allowed:
     """Allow an action from now on (callers authorize first: the principal's
-    alone). Allowing it again keeps it, with the newer example when there is one."""
-    text = json.dumps(example, ensure_ascii=False) if example else ""
-    if len(text) > EXAMPLE_MAX:
-        text = json.dumps({k: v[: EXAMPLE_MAX // max(1, len(example or {})) - 20] for k, v in (example or {}).items()},
-                          ensure_ascii=False)
+    alone). Allowing it again keeps it, with the newer example when there is
+    one. Only the wording is an example (``_STYLE_FIELDS``): a time or a due
+    date is that one action's, not how it's wanted."""
+    kept = {k: v for k, v in (example or {}).items() if k in _STYLE_FIELDS}
+    if kept:
+        share = max(40, EXAMPLE_MAX // len(kept) - 20)
+        kept = {k: v if len(v) <= share else v[: share - 1] + "…" for k, v in kept.items()}
+    text = json.dumps(kept, ensure_ascii=False) if kept else ""
     conn = _connect(db_path)
     try:
         if conn.execute(f"SELECT 1 FROM {ALLOWED_TABLE} WHERE key = ?", (key,)).fetchone() is None:  # noqa: S608
