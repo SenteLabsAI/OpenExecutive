@@ -9699,7 +9699,8 @@ delegation:
     reflection and research user turns. suggestions(): training cards
     approved unchanged SUGGEST_AFTER (3) times in 30 days and not allowed;
     POST /take-the-lead/learned allows only a current suggestion, DELETE
-    removes one (tightening, no proof needed). Leaving training while on is
+    removes one (tightening, no proof needed; the row keeps removed_at so
+    only approvals after it count toward suggesting it again). Leaving training while on is
     loosening (provable owner). The allowed list is shared across features
     (feature column, owner's choice: one list, a switch per feature); Act as
     me joins it next.

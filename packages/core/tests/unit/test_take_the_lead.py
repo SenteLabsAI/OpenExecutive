@@ -1149,3 +1149,30 @@ def test_examples_are_fenced_as_quoted_data() -> None:
     note = ttl.learned_note()
     assert note.count("<owner_examples>") == 1 and note.count("</owner_examples>") == 1
     assert note.rstrip().endswith("</owner_examples>")
+
+
+def test_a_removed_one_isnt_suggested_straight_back(
+    client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _carry_out_into([], monkeypatch)
+    sam = _teammate()
+    _training()
+
+    def approve(n: int, **edits: Any) -> None:
+        decision_id = ttl.hold("message_person", {"person_id": sam, "text": f"Note {n}"},
+                               ttl.Hit(ttl.TRAINING, "it's in training"), source="reflection", mcp=False)
+        assert client.post(f"/decisions/{decision_id}/approve", json={"edits": edits}).status_code == 200
+
+    for n in range(ttl.SUGGEST_AFTER - 1):
+        approve(n)
+    approve(99, allow=True)
+    [learned] = client.get("/take-the-lead").json()["learned"]
+    body = client.delete(f"/take-the-lead/learned/{learned['id']}").json()
+    assert body["learned"] == [] and body["suggested"] == []
+    for n in range(ttl.SUGGEST_AFTER):
+        approve(100 + n)
+    assert [s["approvals"] for s in client.get("/take-the-lead").json()["suggested"]] == [ttl.SUGGEST_AFTER]
+    # Allowing it again starts fresh.
+    approve(200, allow=True)
+    [again] = client.get("/take-the-lead").json()["learned"]
+    assert again["uses"] == 0 and again["example"] == {}

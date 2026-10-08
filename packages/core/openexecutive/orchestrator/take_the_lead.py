@@ -225,7 +225,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, label TEXT NOT NULL, "
         "feature TEXT NOT NULL DEFAULT 'take_the_lead', "
         "example TEXT NOT NULL DEFAULT '', uses INTEGER NOT NULL DEFAULT 0, last_used_at TEXT, "
-        "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER)"
+        "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER, removed_at TEXT)"
     )
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {RULES_TABLE} ("  # noqa: S608
@@ -790,7 +790,7 @@ def list_allowed(*, db_path: Path | None = None) -> list[Allowed]:
     try:
         rows = conn.execute(
             f"SELECT id, key, label, feature, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
-            "ORDER BY created_at DESC, id DESC",
+            "WHERE removed_at IS NULL ORDER BY created_at DESC, id DESC",
         ).fetchall()
     finally:
         conn.close()
@@ -802,7 +802,7 @@ def find_allowed(key: str, *, db_path: Path | None = None) -> Allowed | None:
     try:
         row = conn.execute(
             f"SELECT id, key, label, feature, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
-            "WHERE key = ?", (key,),
+            "WHERE key = ? AND removed_at IS NULL", (key,),
         ).fetchone()
     finally:
         conn.close()
@@ -824,14 +824,18 @@ def allow(
     text = json.dumps(kept, ensure_ascii=False) if kept else ""
     conn = _connect(db_path)
     try:
-        if conn.execute(f"SELECT 1 FROM {ALLOWED_TABLE} WHERE key = ?", (key,)).fetchone() is None:  # noqa: S608
-            count = conn.execute(f"SELECT COUNT(*) FROM {ALLOWED_TABLE}").fetchone()[0]  # noqa: S608
+        if not _is_allowed(conn, key):
+            count = _allowed_count(conn)
             if count >= ALLOWED_MAX:
                 raise RuleError(f"It can learn at most {ALLOWED_MAX} things. Remove one first.")
         conn.execute(
             f"INSERT INTO {ALLOWED_TABLE} (key, label, feature, example, created_by, created_at, decision_id) "  # noqa: S608
             "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label = excluded.label, "
-            "example = CASE WHEN excluded.example != '' THEN excluded.example ELSE example END",
+            "example = CASE WHEN excluded.example != '' OR removed_at IS NOT NULL THEN excluded.example "
+            "ELSE example END, "
+            "uses = CASE WHEN removed_at IS NOT NULL THEN 0 ELSE uses END, "
+            "created_at = CASE WHEN removed_at IS NOT NULL THEN excluded.created_at ELSE created_at END, "
+            "removed_at = NULL",
             (key, label[:200], key.split("|", 1)[0], text, created_by, datetime.now(UTC).isoformat(), decision_id),
         )
         conn.commit()
@@ -842,13 +846,32 @@ def allow(
     return found
 
 
+def _is_allowed(conn: sqlite3.Connection, key: str) -> bool:
+    return conn.execute(
+        f"SELECT 1 FROM {ALLOWED_TABLE} WHERE key = ? AND removed_at IS NULL", (key,),  # noqa: S608
+    ).fetchone() is not None
+
+
+def _allowed_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {ALLOWED_TABLE} WHERE removed_at IS NULL").fetchone()[0])  # noqa: S608
+
+
+def _removed(*, db_path: Path | None = None) -> dict[str, str]:
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT key, removed_at FROM {ALLOWED_TABLE} WHERE removed_at IS NOT NULL",  # noqa: S608
+        ).fetchall()
+    finally:
+        conn.close()
+    return {r["key"]: r["removed_at"] for r in rows}
+
+
 def room_for(key: str, *, db_path: Path | None = None) -> bool:
     """Whether ``key`` can be allowed: already allowed, or under ``ALLOWED_MAX``."""
     conn = _connect(db_path)
     try:
-        if conn.execute(f"SELECT 1 FROM {ALLOWED_TABLE} WHERE key = ?", (key,)).fetchone() is not None:  # noqa: S608
-            return True
-        return conn.execute(f"SELECT COUNT(*) FROM {ALLOWED_TABLE}").fetchone()[0] < ALLOWED_MAX  # noqa: S608
+        return _is_allowed(conn, key) or _allowed_count(conn) < ALLOWED_MAX
     finally:
         conn.close()
 
@@ -856,7 +879,13 @@ def room_for(key: str, *, db_path: Path | None = None) -> bool:
 def disallow(allowed_id: int, *, db_path: Path | None = None) -> bool:
     conn = _connect(db_path)
     try:
-        cur = conn.execute(f"DELETE FROM {ALLOWED_TABLE} WHERE id = ?", (allowed_id,))  # noqa: S608
+        # Kept, marked removed: Settings suggests it again only after new
+        # approvals (``suggestions``), and its example is dropped.
+        cur = conn.execute(
+            f"UPDATE {ALLOWED_TABLE} SET removed_at = ?, example = '' "  # noqa: S608
+            "WHERE id = ? AND removed_at IS NULL",
+            (datetime.now(UTC).isoformat(), allowed_id),
+        )
         conn.commit()
         return cur.rowcount > 0
     finally:
@@ -887,12 +916,15 @@ class Suggestion:
 
 def suggestions(*, db_path: Path | None = None) -> list[Suggestion]:
     """Training cards approved unchanged ``SUGGEST_AFTER`` times or more in
-    the last ``SUGGEST_DAYS`` days, for actions not allowed yet."""
+    the last ``SUGGEST_DAYS`` days, for actions not allowed yet. After a
+    removal only approvals since count, so a removed one isn't suggested
+    straight back."""
     from openexecutive.memory.decision_ledger import STATUS_APPROVED_UNCHANGED, list_instances
 
     since = (datetime.now(UTC) - timedelta(days=SUGGEST_DAYS)).isoformat()
     counts: dict[str, int] = {}
     labels: dict[str, str] = {}
+    removed = _removed(db_path=db_path)
     for instance in list_instances(
         DECISION_CLASS, status=STATUS_APPROVED_UNCHANGED, resolved_since=since, limit=500, db_path=db_path,
     ):
@@ -903,6 +935,8 @@ def suggestions(*, db_path: Path | None = None) -> list[Suggestion]:
         if not isinstance(grant, dict) or not isinstance(grant.get("key"), str):
             continue
         key = grant["key"]
+        if key in removed and (instance.resolved_at or "") <= removed[key]:
+            continue
         counts[key] = counts.get(key, 0) + 1
         labels.setdefault(key, str(grant.get("label") or key))
     allowed = {a.key for a in list_allowed(db_path=db_path)}
