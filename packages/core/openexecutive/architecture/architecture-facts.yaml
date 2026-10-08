@@ -9574,7 +9574,12 @@ delegation:
     person by id (message_person, assign_open_loop, the Slack / Telegram /
     Discord DMs), that person's addresses and name (_targets); an id the
     People list doesn't have counts as someone new. A name rule matches
-    whole words.
+    whole words. A direct message (message_person or a Slack / Telegram /
+    Discord DM) whose only recipient is the principal skips the gate and is
+    sent (_only_to_principal): the principal is who it would wait for, so a
+    card would only ask them to approve a message to themselves. Anything
+    that reaches or acts on anyone else is checked; an unreadable roster is
+    not the principal.
     Structured only: no model reads a rule. A held action is a
     take_the_lead_action decision (principal_and_approver: only the
     principal and its approver see or resolve it) with a Today card,
