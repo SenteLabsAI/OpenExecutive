@@ -448,8 +448,15 @@ def _remember_read(writer: Any, thread_id: str, first: Any) -> None:
     """Note where this thread is (``delegation.mail_reads``), so a later
     conversation can open it again. Best-effort: the read never fails on it."""
     from openexecutive.delegation import mail_reads
+    from openexecutive.delegation.settings import DelegationOverride, is_enabled
+    from openexecutive.orchestrator.schedule_tools import current_session
 
     try:
+        # Turned off while this read ran: its forget already happened, so
+        # don't leave a row behind it. (An eval's override has no setting.)
+        override = getattr(current_session.get(), "delegation_override", None)
+        if not isinstance(override, DelegationOverride) and not is_enabled(writer.person.id):
+            return
         mail_reads.record(
             writer.person.id, writer.email, thread_id, subject=first.subject or "", sender=_sender(first)
         )

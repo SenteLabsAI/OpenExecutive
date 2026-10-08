@@ -436,6 +436,20 @@ def test_forget_deletes_only_that_persons_rows(roster: SimpleNamespace) -> None:
     assert len(mail_reads.recent(roster.teammate, TEAM)) == 1
 
 
+def test_a_read_finishing_after_act_as_me_is_off_leaves_no_row(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.delegation import mail_reads
+    from openexecutive.delegation import settings as dsettings
+
+    # A real turn (no eval override) whose person turned it off mid-read.
+    monkeypatch.setattr(dsettings, "is_enabled", lambda person_id: False)
+    writer = SimpleNamespace(person=SimpleNamespace(id=roster.principal), email=OWNER)
+    with set_session(Session()):
+        mr._remember_read(writer, "t1", _msg(1, DANA, "Hi"))
+    assert mail_reads.recent(roster.principal, OWNER) == []
+
+
 def test_a_failed_note_never_fails_the_read(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import mail_reads
 

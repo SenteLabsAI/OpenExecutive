@@ -526,9 +526,13 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
         # (watch_since) when turned on again, never catching up.
         _set_inbox(person_id, False)
         # Where their emails are (read_my_email's list): only kept while it's on.
+        # Best-effort, so a failure here never keeps Act as me on.
         from openexecutive.delegation import mail_reads
 
-        mail_reads.forget(person_id)
+        try:
+            mail_reads.forget(person_id)
+        except Exception:
+            logger.warning("delegation: couldn't forget the emails it opened for person %s", person_id, exc_info=True)
     if before != body.enabled:
         set_enabled(person_id, body.enabled, updated_by=f"person:{person_id}")
         if body.enabled:
