@@ -18,7 +18,8 @@ with its own Ask first switch (all on to start): money, contracts, people
 decisions, deleting or sharing, someone new, and big sends. On top of them
 the company (set by the principal) and each person (for their own As you)
 add rules: a person or address, a domain, words, or an amount. Added rules
-always hold. A held action becomes a ``take_the_lead_action`` decision for
+always hold. A message only to the principal skips the gate: they are who
+it would wait for (``_only_to_principal``). A held action becomes a ``take_the_lead_action`` decision for
 the person whose authority covers it (``people.store.find_approvers``, the
 same scopes the department approval levels use), else the principal, with a
 companion card on Today; approving it carries the exact call out
@@ -45,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from openexecutive.people.models import AuthorityScope
+    from openexecutive.people.models import AuthorityScope, Person
 
 logger = logging.getLogger(__name__)
 
@@ -464,6 +465,29 @@ _TARGET_KEYS: dict[str, tuple[str, str]] = {
 }
 
 
+def _target_person(tool: str, tool_input: dict[str, Any]) -> Person | None:
+    """The person an id-addressed tool reaches, or None (no id, not on the
+    People list, or the list couldn't be read)."""
+    spec = _TARGET_KEYS.get(tool)
+    if spec is None:
+        return None
+    raw = tool_input.get(spec[0])
+    if raw is None or raw == "":
+        return None
+    from openexecutive.people import store
+
+    try:
+        if spec[1] == "person":
+            return store.get_person(int(raw))
+        if spec[1] == "slack":
+            return store.find_person_by_slack_id(str(raw), include_contacts=True)
+        if spec[1] == "telegram":
+            return store.find_person_by_telegram_chat_id(str(raw), include_contacts=True)
+        return store.find_person_by_discord_id(str(raw), include_contacts=True)
+    except Exception:
+        return None
+
+
 def _targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str]]:
     """The addresses and names of the person an id-addressed tool reaches,
     so person, domain and Someone new rules see them. Someone the People
@@ -474,23 +498,29 @@ def _targets(tool: str, tool_input: dict[str, Any]) -> tuple[list[str], list[str
     raw = tool_input.get(spec[0])
     if raw is None or raw == "":
         return [], []
-    from openexecutive.people import store
-
-    try:
-        if spec[1] == "person":
-            person = store.get_person(int(raw))
-        elif spec[1] == "slack":
-            person = store.find_person_by_slack_id(str(raw), include_contacts=True)
-        elif spec[1] == "telegram":
-            person = store.find_person_by_telegram_chat_id(str(raw), include_contacts=True)
-        else:
-            person = store.find_person_by_discord_id(str(raw), include_contacts=True)
-    except Exception:
-        person = None
+    person = _target_person(tool, tool_input)
     if person is None:
         return [f"unknown-{spec[1]}:{raw}"], []
     addresses = [a for a in [person.email, *person.email_aliases] if a]
     return addresses, [person.full_name] if person.full_name else []
+
+
+# The tools that only send one person a message: the one they name by id.
+_DIRECT_MESSAGE_TOOLS = frozenset({"message_person", "send_slack_dm", "send_telegram_message", "send_discord_dm"})
+
+
+def _only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
+    """Whether the action only sends the principal a message. The principal
+    is who a held action would wait for, so approving it would only show
+    them what it says: there's nothing to approve, and it goes straight to
+    them (as solo mode's unattended passes already do without Take the
+    lead, ``schedule_tools.principal_only_handlers``). Anything that reaches
+    or acts on someone else still goes through the gate. Fails closed: a
+    roster that can't be read is not the principal."""
+    if tool not in _DIRECT_MESSAGE_TOOLS:
+        return False
+    person = _target_person(tool, tool_input)
+    return person is not None and bool(person.is_principal) and person.kind == "team"
 
 
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
@@ -934,9 +964,12 @@ _Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
     try:
-        lead = get(SCOPE_EXECUTIVE)
-        rules = list_rules([SCOPE_COMPANY])
-        hit = check(name, tool_input, lead=lead, rules=rules, mcp=mcp)
+        if not mcp and _only_to_principal(name, tool_input):
+            hit = None
+        else:
+            lead = get(SCOPE_EXECUTIVE)
+            rules = list_rules([SCOPE_COMPANY])
+            hit = check(name, tool_input, lead=lead, rules=rules, mcp=mcp)
     except Exception:
         logger.warning("take_the_lead: the gate failed — holding the action", exc_info=True)
         hit = Hit("rule", "its rules couldn't be read")
