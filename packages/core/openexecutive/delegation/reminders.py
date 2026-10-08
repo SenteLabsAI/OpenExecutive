@@ -25,7 +25,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from openexecutive.delegation.schema import REMINDERS_TABLE, ensure_schema
@@ -39,7 +39,16 @@ SCAN_EVERY = timedelta(minutes=1)
 # A reminder missed by more than this (the API was down) is dropped, not sent late.
 STALE_AFTER = timedelta(days=2)
 
-_URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)\S+|\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/\S*")
+# Anything a chat app could turn into a link: a URL of any scheme, an email
+# address, a domain-like word (``evil.example``, ``x.evil.example?d=1``), a
+# host with a port, an IPv4 address. Each with whatever path or query follows.
+_URL_RE = re.compile(
+    r"(?i)\b[a-z][\w+.-]*://\S+"
+    r"|\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"
+    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b(?::\d+)?(?:[/?#]\S*)?"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.[a-z][\w-]+\b(?::\d+)?(?:[/?#]\S*)?"
+    r"|\b[a-z][\w-]*:\d{2,5}(?:[/?#]\S*)?"
+)
 
 _last_scan_at: datetime | None = None
 _task: asyncio.Task[int] | None = None
@@ -51,6 +60,7 @@ class Reminder:
     person_id: int
     text: str
     due_at: str
+    created_at: str
 
 
 def clean_text(text: str) -> str:
@@ -99,7 +109,8 @@ def add(person_id: int, text: str, due_at: datetime, *, now: datetime, db_path: 
         cur = conn.execute(
             f"INSERT INTO {REMINDERS_TABLE} (person_id, text, due_at, created_at) "  # noqa: S608
             "VALUES (?, ?, ?, ?)",
-            (person_id, text, due_at.isoformat(), now.isoformat()),
+            # UTC, so ``_due``'s string comparison orders them by time.
+            (person_id, text, due_at.astimezone(UTC).isoformat(), now.astimezone(UTC).isoformat()),
         )
         conn.commit()
         return int(cur.lastrowid or 0)
@@ -111,13 +122,13 @@ def _due(now: datetime, db_path: Path | None) -> list[Reminder]:
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            f"SELECT id, person_id, text, due_at FROM {REMINDERS_TABLE} "  # noqa: S608
+            f"SELECT id, person_id, text, due_at, created_at FROM {REMINDERS_TABLE} "  # noqa: S608
             "WHERE claimed_at IS NULL AND cancelled_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50",
-            (now.isoformat(),),
+            (now.astimezone(UTC).isoformat(),),
         ).fetchall()
     finally:
         conn.close()
-    return [Reminder(int(r[0]), int(r[1]), str(r[2]), str(r[3])) for r in rows]
+    return [Reminder(int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4])) for r in rows]
 
 
 def _claim(reminder_id: int, now: datetime, db_path: Path | None) -> bool:
@@ -147,8 +158,16 @@ def _mark_sent(reminder_id: int, now: datetime, db_path: Path | None) -> None:
         conn.close()
 
 
-def message(text: str) -> str:
-    return f"Reminder: {text}"
+def message(text: str, created_at: str) -> str:
+    """The reminder as sent, saying when they set it, so it reads as theirs."""
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    try:
+        set_at = datetime.fromisoformat(created_at).astimezone(get_user_timezone())
+        when = f"{set_at:%b} {set_at.day}"
+    except ValueError:
+        return f"Reminder you set: {text}"
+    return f"Reminder you set on {when}: {text}"
 
 
 async def send_due(now: datetime, *, db_path: Path | None = None) -> int:
@@ -178,7 +197,8 @@ async def send_due(now: datetime, *, db_path: Path | None = None) -> int:
                 continue
             rows = private_rows() if person.is_principal else rows_for_person(reminder.person_id)
             with rows:
-                delivery = await deliver_to_person(person, message(reminder.text), label="Reminder")
+                text = message(reminder.text, reminder.created_at)
+                delivery = await deliver_to_person(person, text, label="Reminder")
         except Exception:
             logger.warning("reminders: sending reminder %s failed", reminder.id, exc_info=True)
             continue

@@ -240,7 +240,10 @@ def summarize_action(
         if (parsed or {}).get("status") != "set":
             return None
         when = str((parsed or {}).get("when") or "")
-        payload["summary"] = f"Reminder set for {when}" if when else "Reminder set"
+        # The text as stored (already cleaned), so the speaker sees what will be sent.
+        text = str((parsed or {}).get("text") or "")[:120]
+        summary = f"Reminder set for {when}" if when else "Reminder set"
+        payload["summary"] = f"{summary}: {text}" if text else summary
         payload["target"] = None
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")

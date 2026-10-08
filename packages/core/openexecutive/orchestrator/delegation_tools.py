@@ -396,7 +396,8 @@ async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> 
         voice_block=render_voice_block(stored.profile, first_name=names[0] if names else "them"),
         thread_text=None,
         reply_subject=None,
-        intent=f"A short note above an email being forwarded (\"{subject}\"). {intent}",
+        # The forwarded email's subject is someone else's words: not in the intent.
+        intent=f"A short note above an email being forwarded. {intent}",
         recipients=[_recipient(a, roster) for a in to],
         signature=stored.profile.signature,
         exec_name=get_settings().exec_display_name,

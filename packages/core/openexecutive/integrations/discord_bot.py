@@ -1588,6 +1588,9 @@ def create_discord_bot():
     return bot
 
 
+_SUPPRESS_EMBEDS = 1 << 2
+
+
 async def send_dm(discord_user_id: str, text: str) -> str | None:
     """Send a Discord direct message to a specific user.
 
@@ -1634,7 +1637,8 @@ async def send_dm(discord_user_id: str, text: str) -> str | None:
             resp = await client.post(
                 f"https://discord.com/api/v10/channels/{channel_id}/messages",
                 headers=headers,
-                json={"content": chunk},
+                # SUPPRESS_EMBEDS: Discord would fetch a link in the text for its preview.
+                json={"content": chunk, "flags": _SUPPRESS_EMBEDS},
             )
             resp.raise_for_status()
             try:

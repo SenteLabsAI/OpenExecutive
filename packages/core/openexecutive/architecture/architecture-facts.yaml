@@ -8847,7 +8847,9 @@ delegation:
     remind_me(text, when) (orchestrator.reminder_tools) is in
     DELEGATION_TOOLS but not MAILBOX_TOOL_NAMES: it opens no mailbox and
     never sets touched_mail/read_mail. delegation.reminders.clean_text makes
-    the text one line, replaces links/addresses with [link], caps 300; when
+    the text one line, replaces anything a chat app could link (a URL of
+    any scheme, an address, a domain-like word, host:port, IPv4) with
+    [link], caps 300; when
     is read in the workspace timezone (a date alone is 9:00), at least a
     minute ahead and within a year. Caps: TurnDelegation.reminders 5 a turn,
     MAX_PENDING 25 waiting; refused when delivery_order finds no channel.
@@ -8855,10 +8857,15 @@ delegation:
     claimed_at, sent_at, cancelled_at), never scheduled_actions. The
     scheduler hook _maybe_send_reminders -> reminders.maybe_send (once a
     minute) -> send_due claims each due row (claimed_at compare-and-set),
-    drops it when over two days late, and sends "Reminder: <text>" through
+    drops it when over two days late, and sends "Reminder you set on <date>:
+    <text>" through
     deliver_to_person to the setter alone, private audit rows
     (delegation_reminder_set / _sent). In MAIL_TOUCHED_ALLOWED_TOOLS: it
     reaches only the speaker, as fixed text, and nothing runs at fire time.
+    due_at is stored in UTC so _due's string comparison is in time order.
+    The Slack and Discord DMs it may ride turn link previews off
+    (unfurl_links/unfurl_media False; Discord flags SUPPRESS_EMBEDS). A
+    forward's subject never goes into the composer's intent.
   ghostwriter: |
     delegation.ghostwriter.compose — the only text the Executive produces
     under someone else's name. System = the constant GHOSTWRITER_PROMPT +

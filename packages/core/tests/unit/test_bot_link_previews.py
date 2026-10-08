@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -47,3 +48,22 @@ def test_discord_replies_suppress_embeds() -> None:
         assert send in source
     assert "message.channel.send(text)\n" not in source
     assert "message.reply(text)\n" not in source
+
+
+def test_discord_dms_suppress_embeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    posted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        body = json.loads(request.content)
+        posted.append(body)
+        return httpx.Response(200, json={"id": "c1"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: SimpleNamespace(discord_bot_token="t"))
+    asyncio.run(discord_bot.send_dm("42", "see evil.example"))
+    assert posted[-1] == {"content": "see evil.example", "flags": 4}

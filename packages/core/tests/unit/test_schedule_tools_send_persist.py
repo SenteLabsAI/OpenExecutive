@@ -115,11 +115,14 @@ def test_send_discord_dm_roster_gate_does_not_persist(monkeypatch: pytest.Monkey
 # --------------------------------------------------------------------------- #
 
 def test_send_slack_dm_persists_done_row() -> None:
+    sent: list[dict] = []
+
     class _FakeClient:
         def __init__(self, token: str) -> None:
             self.token = token
 
-        async def chat_postMessage(self, channel: str, text: str) -> dict:
+        async def chat_postMessage(self, **kw: object) -> dict:
+            sent.append(kw)
             return {"ok": True, "ts": "1.0"}
 
     with patch(
@@ -131,6 +134,8 @@ def test_send_slack_dm_persists_done_row() -> None:
             )
         )
     assert json.loads(result)["status"] == "sent"
+    # No previews: Slack would fetch a link in the text (reminders ride this DM).
+    assert sent[0]["unfurl_links"] is False and sent[0]["unfurl_media"] is False
 
     rows = _done_rows()
     assert len(rows) == 1

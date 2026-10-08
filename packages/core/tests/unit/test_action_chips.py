@@ -208,6 +208,16 @@ def test_create_alert_chip() -> None:
     assert "Burn trending high" in chip["summary"]
 
 
+def test_remind_me_chip_shows_what_will_be_sent() -> None:
+    chip = summarize_action(
+        tool_name="remind_me",
+        tool_input={"text": "Reply to Dana", "when": "2026-10-09T10:00"},
+        tool_result=json.dumps({"status": "set", "when": "Fri Oct 9, 10:00", "text": "Reply to [link]"}),
+    )
+    assert chip is not None
+    assert chip["summary"] == "Reminder set for Fri Oct 9, 10:00: Reply to [link]"
+
+
 def test_send_department_message_chip() -> None:
     chip = summarize_action(
         tool_name="send_department_message",

@@ -71,6 +71,30 @@ def test_the_text_loses_links_and_addresses_and_stays_short() -> None:
     assert len(text) <= reminders.MAX_TEXT
 
 
+@pytest.mark.parametrize("planted", [
+    "evil.example?d=secret", "x.evil.example", "secret.evil.example/p", "evil.example:8080/x",
+    "localhost:8080/x", "10.0.0.1", "10.0.0.1:80/x", "ftp://evil.example/x", "hxxp://x",
+])
+def test_anything_a_chat_app_could_link_is_stripped(planted: str) -> None:
+    text = reminders.clean_text(f"Call Dana {planted} at 10:30")
+    assert text == "Call Dana [link] at 10:30"
+
+
+def test_a_reminder_set_outside_utc_fires_at_its_own_time(
+    roster: SimpleNamespace, delivered: list[tuple[int, str]]
+) -> None:
+    from zoneinfo import ZoneInfo
+
+    tokyo = ZoneInfo("Asia/Tokyo")
+    # 20:00 in Tokyo is 11:00 UTC, an hour before NOW: due.
+    reminders.add(roster.principal, "Due", datetime(2026, 10, 7, 20, 0, tzinfo=tokyo), now=NOW)
+    # 22:00 in Los Angeles is 05:00 UTC tomorrow: not yet, though "22" > "12".
+    la = ZoneInfo("America/Los_Angeles")
+    reminders.add(roster.principal, "Not yet", datetime(2026, 10, 7, 22, 0, tzinfo=la), now=NOW)
+    assert asyncio.run(reminders.send_due(NOW)) == 1
+    assert [text for _, text in delivered] == ["Reminder you set on Oct 7: Due"]
+
+
 def test_when_is_read_in_local_time_and_kept_ahead() -> None:
     assert rt.parse_when("2026-10-10T08:30", NOW) == datetime(2026, 10, 10, 8, 30, tzinfo=UTC)
     assert rt.parse_when("2026-10-10", NOW) == datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
@@ -143,7 +167,7 @@ def test_a_due_reminder_goes_once_to_its_person_as_stored(
     reminders.add(roster.principal, "Reply to Dana", NOW - timedelta(minutes=1), now=NOW)
     reminders.add(roster.principal, "Later", NOW + timedelta(days=1), now=NOW)
     assert asyncio.run(reminders.send_due(NOW)) == 1
-    assert delivered == [(roster.principal, "Reminder: Reply to Dana")]
+    assert delivered == [(roster.principal, "Reminder you set on Oct 7: Reply to Dana")]
     assert asyncio.run(reminders.send_due(NOW)) == 0  # claimed: never twice
     assert reminders.pending_count(roster.principal) == 1
 

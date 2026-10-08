@@ -966,7 +966,8 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
 
     client = AsyncWebClient(token=settings.slack_bot_token)
     try:
-        result = await client.chat_postMessage(channel=user_id, text=text)
+        # No previews: Slack would fetch a link in the text to unfurl it.
+        result = await client.chat_postMessage(channel=user_id, text=text, unfurl_links=False, unfurl_media=False)
     except Exception as exc:
         logger.exception("send_slack_dm: send failed")
         return json.dumps({"error": f"send failed: {exc}"})
