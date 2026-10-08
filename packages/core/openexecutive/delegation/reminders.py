@@ -46,7 +46,8 @@ _URL_RE = re.compile(
     r"(?i)\b[a-z][\w+.-]*://\S+"
     r"|\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b"
     r"|\b\d{1,3}(?:\.\d{1,3}){3}\b(?::\d+)?(?:[/?#]\S*)?"
-    r"|\b[\w-]+(?:\.[\w-]+)*\.[a-z][\w-]+\b(?::\d+)?(?:[/?#]\S*)?"
+    # The last label starts with any letter, so a non-ASCII TLD (.рф) counts too.
+    r"|\b[\w-]+(?:\.[\w-]+)*\.[^\W\d_][\w-]+\b(?::\d+)?(?:[/?#]\S*)?"
     r"|\b[a-z][\w-]*:\d{2,5}(?:[/?#]\S*)?"
 )
 

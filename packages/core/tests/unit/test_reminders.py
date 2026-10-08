@@ -74,10 +74,16 @@ def test_the_text_loses_links_and_addresses_and_stays_short() -> None:
 @pytest.mark.parametrize("planted", [
     "evil.example?d=secret", "x.evil.example", "secret.evil.example/p", "evil.example:8080/x",
     "localhost:8080/x", "10.0.0.1", "10.0.0.1:80/x", "ftp://evil.example/x", "hxxp://x",
+    "evil.рф", "secret.evil.рф/p?d=1",
 ])
 def test_anything_a_chat_app_could_link_is_stripped(planted: str) -> None:
     text = reminders.clean_text(f"Call Dana {planted} at 10:30")
     assert text == "Call Dana [link] at 10:30"
+
+
+def test_ordinary_words_with_dots_are_left_alone() -> None:
+    text = "e.g. ask Mr. Smith about v2.0 at 10.30 for Q3.2026"
+    assert reminders.clean_text(text) == text
 
 
 def test_a_reminder_set_outside_utc_fires_at_its_own_time(
