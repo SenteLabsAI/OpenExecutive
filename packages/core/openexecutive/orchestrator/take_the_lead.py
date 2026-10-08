@@ -679,8 +679,14 @@ def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tu
         what = _first_text(tool_input, _MCP_NAME_KEYS)
         if not what:
             return None
+        # Bound to the call's shape too: the same tool on the same file with
+        # an argument it didn't have before (a share setting, a link) is a
+        # different action and asks again.
+        if any(_MCP_REACH_ARG_RE.search(str(k)) for k in tool_input):
+            return None
+        shape = ",".join(sorted(str(k) for k in tool_input))
         label = _connected_label(tool, tool_input, recipient=False) or (f"{bare}: {what}" if what else bare)
-        return f"{FEATURE}|mcp|{tool}|{what.lower()}", label[:200]
+        return f"{FEATURE}|mcp|{tool}|{what.lower()}|{shape}", label[:200]
     if tool in _DIRECT_MESSAGE_TOOLS:
         person = _target_person(tool, tool_input)
         if person is None or person.id is None:
@@ -1035,6 +1041,10 @@ _MCP_APPS: tuple[tuple[re.Pattern[str], str, str], ...] = tuple(
     )
 )
 _MCP_NAME_KEYS = ("title", "name", "file_name", "filename", "document_title", "spreadsheet_title", "sheet_title")
+# An argument whose name says the call reaches or opens to someone.
+_MCP_REACH_ARG_RE = re.compile(
+    r"share|permission|anyone|public|domain|link|access|invite|recipient|email|notify|role|grant", re.IGNORECASE,
+)
 # More arguments that name who a connected tool reaches.
 _MCP_PEOPLE_KEYS = ("to", "cc", "bcc", "attendees", "participants", "members", "users", "user", "role", "type")
 _MCP_RECIPIENT_KEYS = ("email_address", "email", "emails", "share_with", "recipient", "recipients", "user_email")

@@ -1091,7 +1091,14 @@ def test_a_connected_tool_that_reaches_people_is_never_allowed() -> None:
     assert ttl.allowance("gdrive__share_file", {"title": "Plan", "email_address": "a@b.example"}, mcp=True) is None
     assert ttl.allowance("gsheets__update_values", {"values": [[1]]}, mcp=True) is None
     key, _ = ttl.allowance("gsheets__update_values", {"title": "Supplier deliveries"}, mcp=True)  # type: ignore[misc]
-    assert key == "take_the_lead|mcp|gsheets__update_values|supplier deliveries"
+    assert key == "take_the_lead|mcp|gsheets__update_values|supplier deliveries|title"
+    # The same file with an argument that opens it up is never allowed…
+    for extra in ({"share_with_domain": "example.com"}, {"anyone_with_link": True}, {"permission": "writer"}):
+        assert ttl.allowance("gdocs__update", {"title": "Budget", **extra}, mcp=True) is None
+    # …and with any other new argument it's a different action.
+    plain = ttl.allowance("gdocs__update", {"title": "Budget", "body": "x"}, mcp=True)
+    more = ttl.allowance("gdocs__update", {"title": "Budget", "body": "x", "folder": "y"}, mcp=True)
+    assert plain is not None and more is not None and plain[0] != more[0]
 
 
 def test_only_the_principal_edits_a_card(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
