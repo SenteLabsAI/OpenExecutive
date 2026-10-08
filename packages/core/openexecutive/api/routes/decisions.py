@@ -501,11 +501,38 @@ async def _carry_out_lead(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
     """Take the lead: do the exact action that waited, once (claimed first),
-    then record it in Recent activity."""
+    then record it in Recent activity.
+
+    ``edits.input`` changes the card's editable fields first (the message,
+    a meeting's title or time; ``take_the_lead.apply_edits``). ``edits.allow``
+    on a training card also allows that action from now on, keeping any
+    edit as an example of how it's wanted: the principal's alone, and only
+    from a request the API can tie to them, like turning Take the lead on."""
     from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
     from openexecutive.orchestrator import take_the_lead
 
     payload = _parse_payload(instance)
+    edits = body.edits or {}
+    changed: dict[str, str] = {}
+    if edits.get("input") is not None:
+        source: dict[str, Any] = payload["input"] if isinstance(payload.get("input"), dict) else {}
+        try:
+            new_input, changed = take_the_lead.apply_edits(
+                str(payload.get("tool") or ""), source, edits["input"], mcp=bool(payload.get("mcp")),
+            )
+        except take_the_lead.EditError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        payload = {**payload, "input": new_input}
+    grant = payload.get("allow") if isinstance(payload.get("allow"), dict) else None
+    allowing = edits.get("allow") is True
+    if allowing:
+        if grant is None or payload.get("kind") != take_the_lead.TRAINING:
+            raise HTTPException(status_code=422, detail="This one can't be allowed from its card.")
+        if not _approver_is_principal(request) or not _provably_principal(request):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the account owner can allow this, from a signed-in session on this server.",
+            )
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
     try:
@@ -518,14 +545,49 @@ async def _carry_out_lead(
         raise HTTPException(status_code=502, detail="Something went wrong, so it may not have gone through. Check before trying again.") from None
     failed = take_the_lead.result_failed(result)
     finish_execution(
-        instance.id, STATUS_FAILED if failed else STATUS_APPROVED_UNCHANGED,
+        instance.id,
+        STATUS_FAILED if failed else STATUS_APPROVED_WITH_EDIT if changed else STATUS_APPROVED_UNCHANGED,
         final_payload={**payload, "result": result[:2000]},
     )
     take_the_lead.resolved(instance.id, "failed" if failed else "approved")
     _clear_decision_alert(instance.id, "dismissed" if failed else "ack")
     if failed:
         raise HTTPException(status_code=502, detail=f"It couldn't do that: {result[:300]}")
+    if allowing and grant is not None:
+        try:
+            take_the_lead.allow(
+                str(grant.get("key")), str(grant.get("label") or ""), example=changed or None,
+                created_by=f"person:{resolver}" if resolver is not None else "principal", decision_id=instance.id,
+            )
+        except take_the_lead.RuleError as exc:
+            raise HTTPException(status_code=409, detail=f"Done, but it couldn't learn it: {exc}") from None
+        _audit_allowed(str(grant.get("label") or ""), instance.id, bool(changed))
     return _refresh(instance.id)
+
+
+def _provably_principal(request: Request) -> bool:
+    """Whether this request is tied to the principal (signed sign-ins or
+    local login), as turning Take the lead on needs."""
+    from openexecutive.api.routes.take_the_lead import _provably_theirs
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+    except Exception:
+        return False
+    return principal is not None and _provably_theirs(request, principal)
+
+
+def _audit_allowed(label: str, decision_id: int, edited: bool) -> None:
+    from openexecutive.audit import log_event
+
+    try:
+        log_event(
+            "take_the_lead_changed", f"Allowed from a card: {label}", actor="user",
+            details={"allowed": label, "decision_id": decision_id, "with_example": edited},
+        )
+    except Exception:
+        logger.warning("decisions: couldn't audit an allowance", exc_info=True)
 
 
 async def _lead_declined(instance: DecisionInstance) -> None:

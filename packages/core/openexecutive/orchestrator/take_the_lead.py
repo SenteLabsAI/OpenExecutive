@@ -25,6 +25,17 @@ same scopes the department approval levels use), else the principal, with a
 companion card on Today; approving it carries the exact call out
 (``carry_out``) and declining drops it.
 
+**In training** (the Executive's switch has three positions: Off, In
+training, On). In training, everything the gate would let through still
+waits, as a ``training`` card for the principal, unless the principal has
+allowed that action with that person or thing (``allowance``: "Message
+Priya Nair", "Book meetings with Priya Nair and Sam Lee"). Approving a card
+can allow it from then on, and editing one first can also keep the edit as
+an example of how they want it done (``learned_note``, read by the passes
+that act). Allowing only ever comes from the principal; the six kinds and
+the added rules hold whatever is allowed. After ``SUGGEST_AFTER`` approvals
+of the same action unchanged, Settings suggests allowing it (``suggestions``).
+
 Pausing the Executive stops all of it: every pass above runs behind the
 scheduler's pause gate. A person approving a held action is their own act,
 so it works while paused.
@@ -59,9 +70,10 @@ _PERSON_PREFIX = "person:"
 LEAD_TABLE = "take_the_lead"
 RULES_TABLE = "take_the_lead_rules"
 LOG_TABLE = "take_the_lead_log"
+ALLOWED_TABLE = "take_the_lead_allowed"
 # Per company, like the roster the switches are keyed on (clients.slots,
 # cli.fixture_loader.reset_all_state).
-TABLES: tuple[str, ...] = (LEAD_TABLE, RULES_TABLE, LOG_TABLE)
+TABLES: tuple[str, ...] = (LEAD_TABLE, RULES_TABLE, LOG_TABLE, ALLOWED_TABLE)
 
 MONEY = "money"
 CONTRACTS = "contracts"
@@ -72,6 +84,16 @@ BIG_SEND = "big_send"
 KINDS: tuple[str, ...] = (MONEY, CONTRACTS, PEOPLE_DECISIONS, DELETE_SHARE, SOMEONE_NEW, BIG_SEND)
 # More people than this on one action is a big send.
 BIG_SEND_RECIPIENTS = 5
+# The kind of a hold in training: nothing else held it, it just isn't allowed yet.
+TRAINING = "training"
+# What it's learned: at most this many allowed actions, each example this long.
+ALLOWED_MAX = 200
+EXAMPLE_MAX = 1000
+# Approved unchanged this many times (in SUGGEST_DAYS) → Settings suggests allowing it.
+SUGGEST_AFTER = 3
+SUGGEST_DAYS = 30
+# Training cards carry this tag, so Today shows Approve + allow and Edit.
+TRAINING_TAG = "take_the_lead:training"
 
 KIND_LABELS: dict[str, str] = {
     MONEY: "Money",
@@ -186,7 +208,20 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {LEAD_TABLE} ("  # noqa: S608 — constant table name
         "scope TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
-        "updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)"
+        "updated_at TEXT NOT NULL, updated_by TEXT NOT NULL, training INTEGER NOT NULL DEFAULT 0)"
+    )
+    columns = {r[1] for r in conn.execute(f"PRAGMA table_info({LEAD_TABLE})")}  # noqa: S608
+    if "training" not in columns:
+        try:
+            conn.execute(f"ALTER TABLE {LEAD_TABLE} ADD COLUMN training INTEGER NOT NULL DEFAULT 0")  # noqa: S608
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {ALLOWED_TABLE} ("  # noqa: S608
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, label TEXT NOT NULL, "
+        "example TEXT NOT NULL DEFAULT '', uses INTEGER NOT NULL DEFAULT 0, last_used_at TEXT, "
+        "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER)"
     )
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {RULES_TABLE} ("  # noqa: S608
@@ -212,6 +247,8 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 class Lead:
     scope: str
     enabled: bool = False
+    # In training: everything not allowed waits (the Executive's scope only).
+    training: bool = False
     ask_first: dict[str, bool] = field(default_factory=lambda: dict.fromkeys(KINDS, True))
 
     def asks_first(self, kind: str) -> bool:
@@ -244,40 +281,45 @@ def get(scope: str, *, db_path: Path | None = None) -> Lead:
         conn = _connect(db_path)
         try:
             row = conn.execute(
-                f"SELECT enabled FROM {LEAD_TABLE} WHERE scope = ?", (scope,),  # noqa: S608
+                f"SELECT enabled, training FROM {LEAD_TABLE} WHERE scope = ?", (scope,),  # noqa: S608
             ).fetchone()
         finally:
             conn.close()
     except Exception:
         logger.warning("take_the_lead: couldn't read the switch — treating it as off", exc_info=True)
         return Lead(scope=scope, ask_first=_ask_first(db_path))
-    return Lead(scope=scope, enabled=bool(row and row["enabled"]), ask_first=_ask_first(db_path))
+    return Lead(
+        scope=scope, enabled=bool(row and row["enabled"]), training=bool(row and row["training"]),
+        ask_first=_ask_first(db_path),
+    )
 
 
 def set_(
     scope: str,
     *,
     enabled: bool | None = None,
+    training: bool | None = None,
     ask_first: dict[str, bool] | None = None,
     updated_by: str,
     db_path: Path | None = None,
 ) -> Lead:
-    """Change ``scope``'s switch and/or its Ask first switches (callers
-    authorize first). Unknown kinds are ignored."""
+    """Change ``scope``'s switch, whether it is in training, and/or its Ask
+    first switches (callers authorize first). Unknown kinds are ignored."""
     from openexecutive.memory.decision_ledger import set_class_mode
 
     current = get(scope, db_path=db_path)
     new_enabled = current.enabled if enabled is None else enabled
+    new_training = current.training if training is None else training
     for kind, value in (ask_first or {}).items():
         if kind in KINDS and isinstance(value, bool) and value != current.asks_first(kind):
             set_class_mode(kind_class(kind), "propose" if value else "auto_execute", db_path=db_path)
     conn = _connect(db_path)
     try:
         conn.execute(
-            f"INSERT INTO {LEAD_TABLE} (scope, enabled, updated_at, updated_by) "  # noqa: S608
-            "VALUES (?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET enabled = excluded.enabled, "
-            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-            (scope, 1 if new_enabled else 0, datetime.now(UTC).isoformat(), updated_by),
+            f"INSERT INTO {LEAD_TABLE} (scope, enabled, training, updated_at, updated_by) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET enabled = excluded.enabled, "
+            "training = excluded.training, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (scope, 1 if new_enabled else 0, 1 if new_training else 0, datetime.now(UTC).isoformat(), updated_by),
         )
         conn.commit()
     finally:
@@ -593,6 +635,290 @@ def reply_hit(person_id: int, texts: list[str], recipients: list[str], *, db_pat
 
 
 # --------------------------------------------------------------------------- #
+# Training: what it's allowed, and how you want it done
+# --------------------------------------------------------------------------- #
+
+_BOOK_TOOLS = frozenset({"create_calendar_event", "create_instant_meeting"})
+
+
+def _name(person_id: Any) -> str | None:
+    from openexecutive.people.store import get_person
+
+    try:
+        person = get_person(int(person_id))
+    except Exception:
+        return None
+    if person is None:
+        return None
+    return person.full_name or person.email or None
+
+
+def _names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tuple[str, str] | None:
+    """The action and who (or what) it is for, as ``(key, label)``: what one
+    Allow covers. "Message Priya Nair" covers any message to her on any
+    channel; "Book meetings with Priya Nair and Sam Lee" meetings with
+    exactly them. None when it can't be pinned to someone or something on
+    the People list (nothing to allow, so it keeps asking)."""
+    if mcp:
+        bare = tool.split("__", 1)[-1].replace("_", " ").strip().capitalize()
+        what = _first_text(tool_input, _MCP_NAME_KEYS)
+        label = _connected_label(tool, tool_input, recipient=False) or (f"{bare}: {what}" if what else bare)
+        return f"mcp|{tool}|{what.lower()}", label[:200]
+    if tool in _DIRECT_MESSAGE_TOOLS:
+        person = _target_person(tool, tool_input)
+        if person is None or person.id is None:
+            return None
+        return f"message|person:{person.id}", f"Message {person.full_name or person.email}"[:200]
+    if tool == "assign_open_loop":
+        name = _name(tool_input.get("person_id"))
+        if name is None:
+            return None
+        return f"assign|person:{int(tool_input['person_id'])}", f"Assign things to {name}"[:200]
+    if tool in _BOOK_TOOLS:
+        raw = tool_input.get("attendee_person_ids")
+        if not isinstance(raw, list):
+            return None
+        try:
+            ids = sorted({int(i) for i in raw})
+        except (TypeError, ValueError):
+            return None
+        names = [_name(i) for i in ids]
+        if any(n is None for n in names):
+            return None
+        who = f" with {_names([n for n in names if n])}" if names else ""
+        return f"book|people:{','.join(str(i) for i in ids)}", f"Book meetings{who}"[:200]
+    if tool == "run_workflow" and isinstance(tool_input.get("workflow_id"), str) and tool_input["workflow_id"]:
+        workflow = str(tool_input["workflow_id"])
+        return f"workflow|{workflow}", f"Start the {workflow} workflow"[:200]
+    if tool == "send_department_message" and isinstance(tool_input.get("department_slug"), str):
+        slug = str(tool_input["department_slug"])
+        return f"department|{slug}", f"Message the {slug} department"[:200]
+    return None
+
+
+# What a card lets you change before approving, per tool: (field, label, long).
+_EDITABLE: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    **{t: (("text", "Message", True),) for t in _DIRECT_MESSAGE_TOOLS},
+    "create_calendar_event": (
+        ("title", "Title", False), ("start", "Starts", False), ("end", "Ends", False),
+        ("description", "Description", True),
+    ),
+    "create_instant_meeting": (("title", "Title", False), ("description", "Description", True)),
+    "assign_open_loop": (("task", "Task", True), ("due_date", "Due", False)),
+}
+EDIT_MAX = 4000
+
+
+class EditError(ValueError):
+    """An edit that can't be applied, with a sentence saying why."""
+
+
+def editable_fields(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> list[dict[str, Any]]:
+    """The fields a person may change on this action's card, with their values."""
+    if mcp:
+        return []
+    return [
+        {"field": f, "label": label, "long": long, "value": str(tool_input.get(f) or "")}
+        for f, label, long in _EDITABLE.get(tool, ())
+        if isinstance(tool_input.get(f), str) or f in ("description", "due_date")
+    ]
+
+
+def apply_edits(
+    tool: str, tool_input: dict[str, Any], edits: Any, *, mcp: bool = False,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """``tool_input`` with a person's edits, and the fields they changed.
+    Only a card's editable fields, as text; anything else is an EditError."""
+    if not isinstance(edits, dict):
+        raise EditError("The changes must be a set of fields.")
+    allowed = {f["field"]: f for f in editable_fields(tool, tool_input, mcp=mcp)}
+    out = dict(tool_input)
+    changed: dict[str, str] = {}
+    for key, value in edits.items():
+        if key not in allowed:
+            raise EditError(f"{key} can't be changed on this card.")
+        if not isinstance(value, str) or len(value) > EDIT_MAX:
+            raise EditError(f"{allowed[key]['label']} must be text of at most {EDIT_MAX} characters.")
+        value = value.strip()
+        if not value and key not in ("description", "due_date"):
+            raise EditError(f"{allowed[key]['label']} can't be empty.")
+        if value != str(tool_input.get(key) or "").strip():
+            changed[key] = value
+            out[key] = value
+    return out, changed
+
+
+@dataclass(frozen=True)
+class Allowed:
+    id: int
+    key: str
+    label: str
+    example: str
+    uses: int
+    last_used_at: str | None
+    created_at: str
+
+
+def list_allowed(*, db_path: Path | None = None) -> list[Allowed]:
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT id, key, label, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
+            "ORDER BY created_at DESC, id DESC",
+        ).fetchall()
+    finally:
+        conn.close()
+    return [Allowed(**dict(r)) for r in rows]
+
+
+def find_allowed(key: str, *, db_path: Path | None = None) -> Allowed | None:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT id, key, label, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
+            "WHERE key = ?", (key,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return Allowed(**dict(row)) if row else None
+
+
+def allow(
+    key: str, label: str, *, example: dict[str, str] | None = None, created_by: str,
+    decision_id: int | None = None, db_path: Path | None = None,
+) -> Allowed:
+    """Allow an action from now on (callers authorize first: the principal's
+    alone). Allowing it again keeps it, with the newer example when there is one."""
+    text = json.dumps(example, ensure_ascii=False) if example else ""
+    if len(text) > EXAMPLE_MAX:
+        text = json.dumps({k: v[: EXAMPLE_MAX // max(1, len(example or {})) - 20] for k, v in (example or {}).items()},
+                          ensure_ascii=False)
+    conn = _connect(db_path)
+    try:
+        if conn.execute(f"SELECT 1 FROM {ALLOWED_TABLE} WHERE key = ?", (key,)).fetchone() is None:  # noqa: S608
+            count = conn.execute(f"SELECT COUNT(*) FROM {ALLOWED_TABLE}").fetchone()[0]  # noqa: S608
+            if count >= ALLOWED_MAX:
+                raise RuleError(f"It can learn at most {ALLOWED_MAX} things. Remove one first.")
+        conn.execute(
+            f"INSERT INTO {ALLOWED_TABLE} (key, label, example, created_by, created_at, decision_id) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label = excluded.label, "
+            "example = CASE WHEN excluded.example != '' THEN excluded.example ELSE example END",
+            (key, label[:200], text, created_by, datetime.now(UTC).isoformat(), decision_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    found = find_allowed(key, db_path=db_path)
+    assert found is not None
+    return found
+
+
+def disallow(allowed_id: int, *, db_path: Path | None = None) -> bool:
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(f"DELETE FROM {ALLOWED_TABLE} WHERE id = ?", (allowed_id,))  # noqa: S608
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _used(allowed_id: int, *, db_path: Path | None = None) -> None:
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute(
+                f"UPDATE {ALLOWED_TABLE} SET uses = uses + 1, last_used_at = ? WHERE id = ?",  # noqa: S608
+                (datetime.now(UTC).isoformat(), allowed_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("take_the_lead: couldn't count a use", exc_info=True)
+
+
+@dataclass(frozen=True)
+class Suggestion:
+    key: str
+    label: str
+    approvals: int
+
+
+def suggestions(*, db_path: Path | None = None) -> list[Suggestion]:
+    """Training cards approved unchanged ``SUGGEST_AFTER`` times or more in
+    the last ``SUGGEST_DAYS`` days, for actions not allowed yet."""
+    from openexecutive.memory.decision_ledger import STATUS_APPROVED_UNCHANGED, list_instances
+
+    since = (datetime.now(UTC) - timedelta(days=SUGGEST_DAYS)).isoformat()
+    counts: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    for instance in list_instances(
+        DECISION_CLASS, status=STATUS_APPROVED_UNCHANGED, resolved_since=since, limit=500, db_path=db_path,
+    ):
+        try:
+            grant = json.loads(instance.proposed_payload_json).get("allow")
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not isinstance(grant, dict) or not isinstance(grant.get("key"), str):
+            continue
+        key = grant["key"]
+        counts[key] = counts.get(key, 0) + 1
+        labels.setdefault(key, str(grant.get("label") or key))
+    allowed = {a.key for a in list_allowed(db_path=db_path)}
+    out = [
+        Suggestion(key=k, label=labels[k], approvals=n)
+        for k, n in counts.items() if n >= SUGGEST_AFTER and k not in allowed
+    ]
+    return sorted(out, key=lambda s: (-s.approvals, s.label))
+
+
+_LEARNED_SHOWN = 20
+
+
+def learned_note(*, db_path: Path | None = None) -> str:
+    """For the passes that act with Take the lead on: whether it's in
+    training, and the principal's own edits on earlier cards, as examples of
+    how they want those done. Only the edited text, which the principal
+    wrote or approved word for word. Empty when there's nothing to say."""
+    try:
+        lead = get(SCOPE_EXECUTIVE, db_path=db_path)
+        if not lead.enabled:
+            return ""
+        examples = [a for a in list_allowed(db_path=db_path) if a.example][:_LEARNED_SHOWN]
+    except Exception:
+        logger.warning("take_the_lead: couldn't read what it's learned", exc_info=True)
+        return ""
+    parts: list[str] = []
+    if lead.training:
+        parts.append(
+            "\n\nTake the lead is in training: whatever you do waits for a yes on its own card, "
+            "except what the owner has allowed. Still act as you would; each action becomes a card."
+        )
+    if examples:
+        lines = []
+        for a in examples:
+            try:
+                fields = json.loads(a.example)
+            except ValueError:
+                continue
+            if not isinstance(fields, dict):
+                continue
+            shown = "; ".join(f"{k}: “{' '.join(str(v).split())}”" for k, v in fields.items())
+            lines.append(f"- {a.label}: {shown}")
+        if lines:
+            parts.append(
+                "\n\nHow the owner wants these done (their own edits on earlier cards; "
+                "match the style, don't copy the details):\n" + "\n".join(lines)
+            )
+    return "".join(parts)
+
+
+# --------------------------------------------------------------------------- #
 # Acting under the gate
 # --------------------------------------------------------------------------- #
 
@@ -894,7 +1220,12 @@ def hold(
             idem = key
             break
     summary = summarize(tool, tool_input, mcp=mcp)
-    if _team_only(tool, tool_input):
+    training = hit.kind == TRAINING
+    grant = allowance(tool, tool_input, mcp=mcp) if training else None
+    if training:
+        # Teaching it is the principal's: only they can allow anything.
+        approver = _principal_id()
+    elif _team_only(tool, tool_input):
         approver = _approver_for(hit.kind, "\n".join(_strings(tool_input)), hit.reason)
     else:
         approver = _principal_id()
@@ -906,6 +1237,8 @@ def hold(
     payload = {
         "tool": tool, "input": tool_input, "mcp": mcp, "kind": hit.kind, "rule_id": hit.rule_id,
         "reason": hit.reason, "summary": summary, "source": source,
+        "fields": editable_fields(tool, tool_input, mcp=mcp),
+        **({"allow": {"key": grant[0], "label": grant[1]}} if grant is not None else {}),
     }
     decision_id = create_decision_instance(
         decision_class=DECISION_CLASS,
@@ -925,7 +1258,8 @@ def hold(
             external_id=external_id,
             severity="medium",
             headline=f"The Executive wants to: {shown}"[:160],
-            body=f"{shown}\n\nIt waited because {hit.reason}.",
+            body=f"{shown}\n\nIt waited because {hit.reason}."
+            + (f" Approve + allow lets it do this from now on: {grant[1]}." if grant is not None else ""),
             suggested_action=shown,
             topic_tags=[
                 decision_instance_tag(decision_id),
@@ -934,6 +1268,7 @@ def hold(
                 # teammate for their area is on the team's Today like any
                 # department approval (authority.propose_via_alert).
                 *([PRIVATE_ALERT_TAG] if private else []),
+                *([TRAINING_TAG] if training else []),
             ],
             dedup_key=external_id,
             routed_to_person_id=approver,
@@ -963,6 +1298,7 @@ _Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
+    allowed: Allowed | None = None
     try:
         if not mcp and _only_to_principal(name, tool_input):
             hit = None
@@ -970,6 +1306,11 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
             lead = get(SCOPE_EXECUTIVE)
             rules = list_rules([SCOPE_COMPANY])
             hit = check(name, tool_input, lead=lead, rules=rules, mcp=mcp)
+            if hit is None and lead.training:
+                grant = allowance(name, tool_input, mcp=mcp)
+                allowed = find_allowed(grant[0]) if grant is not None else None
+                if allowed is None:
+                    hit = Hit(TRAINING, "it's in training and you haven't allowed this yet")
     except Exception:
         logger.warning("take_the_lead: the gate failed — holding the action", exc_info=True)
         hit = Hit("rule", "its rules couldn't be read")
@@ -990,8 +1331,13 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
     result = await inner(tool_input)
     text = result if isinstance(result, str) else json.dumps(result) if isinstance(result, dict) else str(result)
     failed = result_failed(text)
+    why = _SOURCE_WHY.get(source, "")
+    if allowed is not None:
+        why = f"{why} You allowed this: {allowed.label}.".strip()
+        if not failed:
+            _used(allowed.id)
     record(scope=SCOPE_EXECUTIVE, source=source, tool=name, summary=summarize(name, tool_input, mcp=mcp, quote=False),
-           status="failed" if failed else "done", why=_SOURCE_WHY.get(source, ""))
+           status="failed" if failed else "done", why=why)
     return text
 
 
