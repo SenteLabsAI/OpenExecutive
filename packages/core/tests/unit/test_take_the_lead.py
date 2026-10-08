@@ -1082,3 +1082,23 @@ def test_an_older_switch_table_gains_training(db: Path) -> None:
     conn.close()
     lead = ttl.get(ttl.SCOPE_EXECUTIVE)
     assert lead.enabled is True and lead.training is False
+
+
+def test_a_connected_tool_that_reaches_people_is_never_allowed() -> None:
+    # A mail send names no file and reaches whoever it's sent to: no Allow.
+    assert ttl.allowance("google_workspace__send_gmail_message",
+                         {"to": "sam@co.example", "subject": "Hi", "body": "x"}, mcp=True) is None
+    assert ttl.allowance("gdrive__share_file", {"title": "Plan", "email_address": "a@b.example"}, mcp=True) is None
+    assert ttl.allowance("gsheets__update_values", {"values": [[1]]}, mcp=True) is None
+    key, _ = ttl.allowance("gsheets__update_values", {"title": "Supplier deliveries"}, mcp=True)  # type: ignore[misc]
+    assert key == "take_the_lead|mcp|gsheets__update_values|supplier deliveries"
+
+
+def test_only_the_principal_edits_a_card(client: TestClient, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    done: list[dict[str, Any]] = []
+    _carry_out_into(done, monkeypatch)
+    decision_id = _held(owner)
+    monkeypatch.setattr(decisions_route, "_approver_is_principal", lambda request: False)
+    monkeypatch.setattr(decisions_route, "_resolver", lambda instance, request: owner.id)
+    response = client.post(f"/decisions/{decision_id}/approve", json={"edits": {"input": {"text": "Pay it elsewhere"}}})
+    assert response.status_code == 403 and done == []

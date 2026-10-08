@@ -668,8 +668,17 @@ def allowance(tool: str, tool_input: dict[str, Any], *, mcp: bool = False) -> tu
     exactly them. None when it can't be pinned to someone or something on
     the People list (nothing to allow, so it keeps asking)."""
     if mcp:
+        # A connected tool is allowed for one named file or record, and
+        # never when it reaches people: who it reaches isn't on the People
+        # list, so one Allow would cover anyone (a mail send, a share).
+        if any(tool_input.get(k) for k in (*_MCP_RECIPIENT_KEYS, *_MCP_PEOPLE_KEYS)) or _EMAIL_RE.search(
+            "\n".join(_strings(tool_input))
+        ):
+            return None
         bare = tool.split("__", 1)[-1].replace("_", " ").strip().capitalize()
         what = _first_text(tool_input, _MCP_NAME_KEYS)
+        if not what:
+            return None
         label = _connected_label(tool, tool_input, recipient=False) or (f"{bare}: {what}" if what else bare)
         return f"{FEATURE}|mcp|{tool}|{what.lower()}", label[:200]
     if tool in _DIRECT_MESSAGE_TOOLS:
@@ -967,6 +976,8 @@ _MCP_APPS: tuple[tuple[re.Pattern[str], str, str], ...] = tuple(
     )
 )
 _MCP_NAME_KEYS = ("title", "name", "file_name", "filename", "document_title", "spreadsheet_title", "sheet_title")
+# More arguments that name who a connected tool reaches.
+_MCP_PEOPLE_KEYS = ("to", "cc", "bcc", "attendees", "participants", "members", "users", "user", "role", "type")
 _MCP_RECIPIENT_KEYS = ("email_address", "email", "emails", "share_with", "recipient", "recipients", "user_email")
 
 

@@ -515,6 +515,10 @@ async def _carry_out_lead(
     edits = body.edits or {}
     changed: dict[str, str] = {}
     if edits.get("input") is not None:
+        # Changing what the Executive says or books is the principal's: an
+        # area approver says yes or no to what it would do, as it stands.
+        if not _approver_is_principal(request):
+            raise HTTPException(status_code=403, detail="Only the account owner can change this before approving.")
         source: dict[str, Any] = payload["input"] if isinstance(payload.get("input"), dict) else {}
         try:
             new_input, changed = take_the_lead.apply_edits(

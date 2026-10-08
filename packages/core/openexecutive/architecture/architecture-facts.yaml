@@ -9682,8 +9682,10 @@ delegation:
     take_the_lead:training) unless take_the_lead_allowed has its allowance
     key: action + who, <feature>|message|person:<id> for any direct message
     channel, |book|people:<ids> for exactly those attendees, |assign|,
-    |workflow|<id>, |department|<slug>, |mcp|<tool>|<file name>; someone off
-    the People list gives no key (keeps asking). The card's payload carries
+    |workflow|<id>, |department|<slug>, |mcp|<tool>|<file name> (none
+    for a connected tool with no file name or that reaches people: to/cc,
+    recipient keys, any address in it); someone off the People list gives
+    no key (keeps asking). edits.input is the principal's alone (403). The card's payload carries
     allow {key, label} and fields (editable_fields: message text; a
     meeting's title, start, end, description; a task and due date).
     /decisions/{id}/approve edits.input applies only those fields
