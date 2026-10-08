@@ -146,7 +146,7 @@ def test_mcp_call_tool_uses_the_underlying_tool_name() -> None:
         [_tu("call_tool", name="google_workspace__send_gmail_message", arguments={})]
     )
     assert evt is not None
-    assert evt["label"] == "Using google_workspace__send_gmail_message…"
+    assert evt["label"] == "Sending an email…"
     assert evt["tool"] == "google_workspace__send_gmail_message"
 
 

@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from openexecutive.orchestrator import tool_labels
+
 # Shown when a round contains only tools with no entry in `_LABELS`. Going
 # silent is not an option — a round with no label is the exact failure this
 # event exists to fix, and the UI would fall back to its own placeholder.
@@ -202,17 +204,18 @@ def _mcp_label(tool_input: Any) -> tuple[str, str]:
     """Label an MCP `call_tool` from the underlying tool it wraps.
 
     The real tool name lives in `tool_input["name"]` — the same field
-    `action_chips.summarize_action` reads to surface the true tool on an MCP
-    chip. A static label here would be useless, which matters because MCP is
-    the case that made the old indicator wrong most visibly.
+    `action_chips.summarize_action` reads. Both take their wording from
+    `tool_labels`, so the line and the finished chip say the same thing in
+    plain words, never the raw `server__tool` name. The second element stays
+    the (sanitized) raw name so clients can still tell tools apart.
     """
     raw = tool_input.get("name") if isinstance(tool_input, dict) else None
     if not isinstance(raw, str):
-        return "Using a connected tool…", "call_tool"
+        return f"{tool_labels.GENERIC_DOING}…", "call_tool"
     name = _MCP_NAME_UNSAFE.sub("", raw).strip()[:_MCP_NAME_MAX].strip()
     if not name:
-        return "Using a connected tool…", "call_tool"
-    return f"Using {name}…", name
+        return f"{tool_labels.GENERIC_DOING}…", "call_tool"
+    return f"{tool_labels.labels_for(name)[1]}…", name
 
 
 def _label_for(tool_use: dict[str, Any]) -> tuple[str, str]:
