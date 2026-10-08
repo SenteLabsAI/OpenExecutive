@@ -1,0 +1,87 @@
+name: Merge conflict notice
+
+# After every push to the default branch, comments on each open PR into that
+# branch that the push left with merge conflicts. GitHub runs no CI on a
+# conflicted PR, so without a notice its author (or an agent watching the PR)
+# can wait on checks that will never start.
+#
+# One comment per conflict: the comment carries a hidden marker with the PR's
+# head SHA, and a PR whose current head already has one is skipped. Pushing a
+# resolution (or anything else) to the PR resets it, so a later conflict gets
+# a fresh notice.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Queue rather than cancel: two quick merges must not race into two comments.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Comment on PRs with new merge conflicts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.repository.default_branch }}
+          PUSHED: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          prs=$(gh api --paginate "repos/$REPO/pulls?state=open&base=$BASE&per_page=100" --jq '.[].number')
+          if [ -z "$prs" ]; then
+            echo "No open PRs into $BASE."
+            exit 0
+          fi
+
+          # GitHub computes mergeability lazily: reading each PR starts the
+          # computation, and "mergeable" stays null until it finishes.
+          for n in $prs; do
+            gh api "repos/$REPO/pulls/$n" --jq '.number' > /dev/null
+          done
+          sleep 15
+
+          for n in $prs; do
+            mergeable=null
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              pr=$(gh api "repos/$REPO/pulls/$n")
+              mergeable=$(jq -r '.mergeable' <<< "$pr")
+              [ "$mergeable" != "null" ] && break
+              sleep 10
+            done
+
+            if [ "$mergeable" = "null" ]; then
+              echo "#$n: mergeability still unknown, skipping."
+              continue
+            fi
+            if [ "$mergeable" != "false" ]; then
+              echo "#$n: no conflicts."
+              continue
+            fi
+
+            head=$(jq -r '.head.sha' <<< "$pr")
+            marker="<!-- merge-conflict-notice head=$head -->"
+            # Read all comments first: grep -q exiting early would fail the
+            # pipe under pipefail and hide a match.
+            comments=$(gh api --paginate "repos/$REPO/issues/$n/comments?per_page=100" --jq '.[].body')
+            if grep -qF "$marker" <<< "$comments"; then
+              echo "#$n: conflicts already reported for head $head."
+              continue
+            fi
+
+            body="This pull request now has merge conflicts with \`$BASE\` (after ${PUSHED:0:7}). GitHub won't run CI until they're resolved: merge \`$BASE\` into this branch, fix the conflicts and push.
+
+          $marker"
+            gh api "repos/$REPO/issues/$n/comments" -f body="$body" --jq '.html_url'
+          done
