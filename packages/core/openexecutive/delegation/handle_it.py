@@ -9,6 +9,10 @@ one setting, like the Agent Council's quality (``MODES``, ``RULES``):
 - ``balanced`` (where it starts): replies to people they know.
 - ``bold``: also replies to strangers, longer ones, and replies with a link
   or an amount when it's very sure.
+- ``training`` (In training, right after Off): every reply waits on its card,
+  which adds Send + allow (``delegation.training``); replies to a sender the
+  person allowed that way go on their own, under ``balanced``'s limits and
+  every check below. Follow-ups always wait.
 
 Every other email waits on a card for the person to tap Send, as it did
 before. Only the person turns it on, from a session the API knows is theirs
@@ -77,7 +81,8 @@ LEVEL_HANDLE = "handle"
 MODE_CAREFUL = "careful"
 MODE_BALANCED = "balanced"
 MODE_BOLD = "bold"
-MODES: tuple[str, ...] = (MODE_CAREFUL, MODE_BALANCED, MODE_BOLD)
+MODE_TRAINING = "training"
+MODES: tuple[str, ...] = (MODE_TRAINING, MODE_CAREFUL, MODE_BALANCED, MODE_BOLD)
 DEFAULT_MODE = MODE_BALANCED
 
 
@@ -105,6 +110,9 @@ RULES: dict[str, Rules] = {
         strangers=True, max_body_chars=2000, min_confidence=0.8, details_confidence=0.9,
         follow_up_to=frozenset({"team", "contact", "correspondent"}),
     ),
+    # Only for a sender the person allowed (``delegation.training``), who
+    # may be someone they didn't know yet.
+    MODE_TRAINING: Rules(strangers=True, max_body_chars=1200, min_confidence=0.8),
 }
 # A follow-up is a nudge: never longer than this, whatever the setting.
 FOLLOW_UP_MAX_CHARS = 600
@@ -168,6 +176,8 @@ REASONS: dict[str, str] = {
     "follow_up_level": "On this setting, a follow-up to this person waits for you to send it.",
     # Take the lead as you (orchestrator.take_the_lead).
     "lead_rule": "One of the rules you or your company added says this waits for you.",
+    # In training (delegation.training).
+    "training": "Handle it for me is in training, and you haven't allowed replies to them yet.",
 }
 
 # Take the lead as you lifts the setting's limits, but not this ceiling.
@@ -183,6 +193,14 @@ def leading(person_id: int, *, db_path: Path | None = None) -> bool:
         return take_the_lead.as_you_on(person_id, db_path=db_path)
     except Exception:
         return False
+
+
+def allowed_in_training(person_id: int, sender: str, *, db_path: Path | None = None) -> bool:
+    """Whether, in training, ``person_id`` allowed replies to ``sender``
+    (Send + allow). Never raises: unreadable is no."""
+    from openexecutive.delegation import training
+
+    return training.allowed_sender(person_id, sender, db_path=db_path) is not None
 
 
 def _lead_rule(person_id: int, texts: list[str], going: list[str], db_path: Path | None) -> bool:
@@ -201,9 +219,15 @@ class HandleIt:
     def rules(self) -> Rules:
         return RULES.get(self.mode, RULES[DEFAULT_MODE])
 
+    @property
+    def training(self) -> bool:
+        return self.enabled and self.mode == MODE_TRAINING
+
     def level(self, kind: str) -> str:
-        """``handle`` when a reply to this kind of sender may go on its own."""
-        if not self.enabled or (kind != KIND_REPLY_KNOWN and not self.rules.strangers):
+        """``handle`` when a reply to this kind of sender may go on its own.
+        In training no kind does: only a sender the person allowed
+        (``allowed_in_training``)."""
+        if not self.enabled or self.training or (kind != KIND_REPLY_KNOWN and not self.rules.strangers):
             return LEVEL_ASK
         return LEVEL_HANDLE
 
@@ -380,8 +404,13 @@ def _refusal(
     from openexecutive.integrations.email_poller import sender_new_text
 
     settings = get(person_id, db_path=db_path)
-    lead = settings.enabled and leading(person_id, db_path=db_path)
-    if not lead and settings.level(kind_for(relation)) != LEVEL_HANDLE:
+    # In training only Send + allow lets a reply go: Take the lead as you
+    # doesn't lift its limits.
+    lead = settings.enabled and not settings.training and leading(person_id, db_path=db_path)
+    if settings.training:
+        if not allowed_in_training(person_id, message.from_addr, db_path=db_path):
+            return "training"
+    elif not lead and settings.level(kind_for(relation)) != LEVEL_HANDLE:
         return "level"
     if not signing_ok():
         return "signing_off"
@@ -470,7 +499,7 @@ def _follow_up_refusal(
     from openexecutive.integrations.email_poller import sender_new_text
 
     settings = get(person_id, db_path=db_path)
-    lead = settings.enabled and leading(person_id, db_path=db_path)
+    lead = settings.enabled and not settings.training and leading(person_id, db_path=db_path)
     if not lead and not settings.follows_up(relation):
         return "follow_up_level"
     if not signing_ok():

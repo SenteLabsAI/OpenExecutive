@@ -12,8 +12,9 @@ Settings → Your Executive. What it did shows in Recent activity
   DELETE /take-the-lead/learned/{id} — ask first again for an allowed one
 
 What it's learned (``learned``: actions allowed in training, from a card or
-a suggestion, with any edit kept as an example) and what it suggests
-allowing (``suggested``) come with the switch.
+a suggestion, with any edit kept as an example, then the owner's own Act as
+me replies allowed with Send + allow) and what it suggests allowing
+(``suggested``) come with the switch.
 
 Changing anything that lets more happen on its own needs a request the API
 can tie to the principal (signed sign-ins or local login, as Send does);
@@ -139,13 +140,18 @@ def _paused() -> bool:
     return is_paused()
 
 
-def _out() -> LeadOut:
+def _out(principal: Any) -> LeadOut:
     from openexecutive.orchestrator import take_the_lead
 
     lead = take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE)
     try:
         rules = take_the_lead.list_rules([take_the_lead.SCOPE_COMPANY])
-        learned = take_the_lead.list_allowed()
+        # One list for every feature that trains: the Executive's, then the
+        # owner's own Act as me (nobody else's ever shows here).
+        learned = [
+            *take_the_lead.list_allowed(feature=take_the_lead.FEATURE),
+            *take_the_lead.list_allowed(feature=take_the_lead.FEATURE_ACT_AS_ME, person_id=principal.id),
+        ]
         suggested = take_the_lead.suggestions()
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Couldn't read the rules.") from exc
@@ -191,8 +197,7 @@ def _audit(summary: str, details: dict[str, Any]) -> None:
 
 @router.get("/take-the-lead", response_model=LeadOut)
 def get_take_the_lead(request: Request) -> LeadOut:
-    _principal(request)
-    return _out()
+    return _out(_principal(request))
 
 
 @router.put("/take-the-lead", response_model=LeadOut)
@@ -226,7 +231,7 @@ def update_take_the_lead(request: Request, body: LeadUpdate) -> LeadOut:
             f"Take the lead as the Executive {'in training' if after.enabled and after.training else 'on' if after.enabled else 'off'}",
             {"scope": "executive", "enabled": after.enabled, "training": after.training, "ask_first": after.ask_first},
         )
-    return _out()
+    return _out(principal)
 
 
 @router.post("/take-the-lead/rules", response_model=LeadOut)
@@ -241,7 +246,7 @@ def add_company_rule(request: Request, body: RuleIn) -> LeadOut:
     except take_the_lead.RuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     _audit("Added a Take the lead rule", {"scope": "company", "kind": rule.kind, "value": rule.value})
-    return _out()
+    return _out(principal)
 
 
 @router.delete("/take-the-lead/rules/{rule_id}", response_model=LeadOut)
@@ -257,7 +262,7 @@ def delete_company_rule(request: Request, rule_id: int) -> LeadOut:
     if not take_the_lead.delete_rule(rule_id, take_the_lead.SCOPE_COMPANY):
         raise HTTPException(status_code=404, detail="That rule isn't there.")
     _audit("Removed a Take the lead rule", {"scope": "company", "rule_id": rule_id})
-    return _out()
+    return _out(principal)
 
 
 @router.post("/take-the-lead/learned", response_model=LeadOut)
@@ -280,7 +285,7 @@ def allow_suggested(request: Request, body: LearnIn) -> LeadOut:
     except take_the_lead.RuleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     _audit(f"Allowed a suggestion: {match.label}", {"scope": "executive", "allowed": match.label})
-    return _out()
+    return _out(principal)
 
 
 @router.delete("/take-the-lead/learned/{allowed_id}", response_model=LeadOut)
@@ -289,8 +294,8 @@ def remove_learned(request: Request, allowed_id: int) -> LeadOut:
     no signed sign-in needed)."""
     from openexecutive.orchestrator import take_the_lead
 
-    _principal(request)
-    if not take_the_lead.disallow(allowed_id):
+    principal = _principal(request)
+    if not take_the_lead.disallow(allowed_id, person_id=principal.id):
         raise HTTPException(status_code=404, detail="That isn't there.")
     _audit("Removed something it learned", {"scope": "executive", "allowed_id": allowed_id})
-    return _out()
+    return _out(principal)

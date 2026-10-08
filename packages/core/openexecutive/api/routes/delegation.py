@@ -38,6 +38,9 @@ Routes:
                                     turning it on needs Draft replies to my
                                     inbox on (409). Turning the inbox watcher
                                     off turns it off too
+  DELETE /delegation/learned/{id} — ask again before replying to a sender
+                                    allowed with Send + allow (in training;
+                                    delegation.training). The caller's own only
   PUT    /delegation/take-the-lead — {enabled}: Take the lead as you, the
                                     owner's alone for now: Handle it for
                                     me's setting gives way to the added rules
@@ -163,6 +166,15 @@ class TeamOut(BaseModel):
     members: list[TeamMemberUse]
 
 
+class LearnedReplyOut(BaseModel):
+    id: int
+    label: str
+    # The reply they sent after changing the draft, kept as an example ("").
+    example: str
+    uses: int
+    created_at: str
+
+
 class HandleItOut(BaseModel):
     """Handle it for me: the switch and its setting (careful, balanced, bold)."""
 
@@ -176,6 +188,8 @@ class HandleItOut(BaseModel):
     # (orchestrator.take_the_lead). Only the owner can have it in this build.
     lead: bool = False
     lead_available: bool = False
+    # In training: the senders allowed with Send + allow, the caller's own.
+    learned: list[LearnedReplyOut] = []
 
 
 class LeadUpdate(BaseModel):
@@ -270,6 +284,8 @@ class ReplyCardOut(BaseModel):
     waited_because: str = ""
     # "follow_up": the draft chases the caller's own unanswered email.
     source: str = ""
+    # In training: Send + allow is offered (delegation.training).
+    can_allow: bool = False
 
 
 class RepliesOut(BaseModel):
@@ -480,7 +496,7 @@ async def _state(person: Person) -> DelegationOut:
 def _handle_it_out(person_id: int) -> HandleItOut:
     from datetime import UTC, datetime
 
-    from openexecutive.delegation import handle_it
+    from openexecutive.delegation import handle_it, training
     from openexecutive.people.store import get_person
 
     stored = handle_it.get(person_id)
@@ -493,10 +509,31 @@ def _handle_it_out(person_id: int) -> HandleItOut:
         principal = bool(found is not None and found.is_principal)
     except Exception:
         principal = False
+    try:
+        learned = [
+            LearnedReplyOut(
+                id=a.id, label=a.label, example=_example_text(a.example), uses=a.uses, created_at=a.created_at,
+            )
+            for a in training.learned(person_id)
+        ]
+    except Exception:
+        logger.warning("delegation: couldn't read what Handle it for me learned", exc_info=True)
+        learned = []
     return HandleItOut(
         enabled=stored.enabled, mode=stored.mode, available=handle_it.signing_ok(), sent_today=today,
-        lead=principal and stored.enabled and handle_it.leading(person_id), lead_available=principal,
+        lead=principal and stored.enabled and not stored.training and handle_it.leading(person_id),
+        lead_available=principal, learned=learned,
     )
+
+
+def _example_text(stored: str) -> str:
+    import json
+
+    try:
+        text = json.loads(stored).get("text") if stored else ""
+    except (ValueError, AttributeError):
+        return ""
+    return text if isinstance(text, str) else ""
 
 
 def _audit(event_type: str, summary: str, details: dict[str, Any]) -> None:
@@ -695,9 +732,10 @@ def _set_handle_it(person_id: int, *, enabled: bool | None, mode: str | None) ->
     from openexecutive.delegation import handle_it
     from openexecutive.orchestrator import take_the_lead
 
-    if enabled is False:
+    if enabled is False or mode == handle_it.MODE_TRAINING:
         # Take the lead as you rides on Handle it; turning it back on later
-        # starts from the dial, not from the lead.
+        # starts from the dial, not from the lead. In training only what the
+        # person allowed goes, so the lead is off there too.
         scope = take_the_lead.person_scope(person_id)
         if take_the_lead.get(scope).enabled:
             take_the_lead.set_(scope, enabled=False, updated_by=f"person:{person_id}")
@@ -741,6 +779,23 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
         if not inbox.get_watch(person_id).enabled:
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
     _set_handle_it(person_id, enabled=body.enabled, mode=body.mode)
+    return await _state(person)
+
+
+@router.delete("/delegation/learned/{allowed_id}", response_model=DelegationOut)
+async def delete_delegation_learned(request: Request, allowed_id: int) -> DelegationOut:
+    """Ask again before replying to a sender allowed with Send + allow. Only
+    the caller's own; holding more back, so no signed sign-in needed."""
+    from openexecutive.delegation import training
+
+    person = _signed_caller(request, narrowing=True)
+    person_id = _person_id(person)
+    if not training.forget(person_id, allowed_id):
+        raise _refuse(404, "not_found", "That isn't there.")
+    _audit(
+        "delegation_learned_removed", f"Person {person_id} removed a sender Handle it for me had learned",
+        {"person_id": person_id, "allowed_id": allowed_id},
+    )
     return await _state(person)
 
 

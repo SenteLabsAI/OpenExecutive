@@ -97,6 +97,9 @@ TRAINING_TAG = "take_the_lead:training"
 # What it's learned is one list for every feature that trains (each key
 # starts with its feature); Take the lead is the first.
 FEATURE = "take_the_lead"
+# Act as me's Handle it for me, in training (delegation.training): each
+# person's own, by person_id.
+FEATURE_ACT_AS_ME = "act_as_me"
 
 KIND_LABELS: dict[str, str] = {
     MONEY: "Money",
@@ -225,8 +228,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, label TEXT NOT NULL, "
         "feature TEXT NOT NULL DEFAULT 'take_the_lead', "
         "example TEXT NOT NULL DEFAULT '', uses INTEGER NOT NULL DEFAULT 0, last_used_at TEXT, "
-        "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER, removed_at TEXT)"
+        "created_by TEXT NOT NULL, created_at TEXT NOT NULL, decision_id INTEGER, removed_at TEXT, "
+        "person_id INTEGER)"
     )
+    allowed_columns = {r[1] for r in conn.execute(f"PRAGMA table_info({ALLOWED_TABLE})")}  # noqa: S608
+    if "person_id" not in allowed_columns:
+        try:
+            conn.execute(f"ALTER TABLE {ALLOWED_TABLE} ADD COLUMN person_id INTEGER")  # noqa: S608
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {RULES_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, kind TEXT NOT NULL, "
@@ -798,14 +809,31 @@ class Allowed:
     uses: int
     last_used_at: str | None
     created_at: str
+    # Whose it is, for a feature that learns per person (Act as me); None
+    # for Take the lead as the Executive.
+    person_id: int | None = None
 
 
-def list_allowed(*, db_path: Path | None = None) -> list[Allowed]:
+_ALLOWED_COLUMNS = "id, key, label, feature, example, uses, last_used_at, created_at, person_id"
+
+
+def list_allowed(
+    *, feature: str | None = None, person_id: int | None = None, db_path: Path | None = None,
+) -> list[Allowed]:
+    """What's allowed, newest first: one ``feature``'s when given, and with
+    ``person_id`` only that person's (otherwise only the rows that belong to
+    no one person). Someone's own (Act as me) are theirs alone to see."""
+    where = ["removed_at IS NULL", "person_id IS ?"]
+    params: list[Any] = [person_id]
+    if feature is not None:
+        where.append("feature = ?")
+        params.append(feature)
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            f"SELECT id, key, label, feature, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
-            "WHERE removed_at IS NULL ORDER BY created_at DESC, id DESC",
+            f"SELECT {_ALLOWED_COLUMNS} FROM {ALLOWED_TABLE} "  # noqa: S608
+            f"WHERE {' AND '.join(where)} ORDER BY created_at DESC, id DESC",
+            params,
         ).fetchall()
     finally:
         conn.close()
@@ -816,7 +844,7 @@ def find_allowed(key: str, *, db_path: Path | None = None) -> Allowed | None:
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            f"SELECT id, key, label, feature, example, uses, last_used_at, created_at FROM {ALLOWED_TABLE} "  # noqa: S608
+            f"SELECT {_ALLOWED_COLUMNS} FROM {ALLOWED_TABLE} "  # noqa: S608
             "WHERE key = ? AND removed_at IS NULL", (key,),
         ).fetchone()
     finally:
@@ -826,12 +854,14 @@ def find_allowed(key: str, *, db_path: Path | None = None) -> Allowed | None:
 
 def allow(
     key: str, label: str, *, example: dict[str, str] | None = None, created_by: str,
-    decision_id: int | None = None, db_path: Path | None = None,
+    decision_id: int | None = None, person_id: int | None = None, db_path: Path | None = None,
 ) -> Allowed:
     """Allow an action from now on (callers authorize first: the principal's
-    alone). Allowing it again keeps it, with the newer example when there is
-    one. Only the wording is an example (``_STYLE_FIELDS``): a time or a due
-    date is that one action's, not how it's wanted."""
+    alone, or for ``person_id``'s own, that person's). Allowing it again
+    keeps it, with the newer example when there is one. Only the wording is
+    an example (``_STYLE_FIELDS``): a time or a due date is that one
+    action's, not how it's wanted. ``ALLOWED_MAX`` counts per feature and
+    person, so one person's list never crowds out another's."""
     kept = {k: v for k, v in (example or {}).items() if k in _STYLE_FIELDS}
     if kept:
         share = max(40, EXAMPLE_MAX // len(kept) - 20)
@@ -839,19 +869,21 @@ def allow(
     text = json.dumps(kept, ensure_ascii=False) if kept else ""
     conn = _connect(db_path)
     try:
+        feature = key.split("|", 1)[0]
         if not _is_allowed(conn, key):
-            count = _allowed_count(conn)
+            count = _allowed_count(conn, feature, person_id)
             if count >= ALLOWED_MAX:
                 raise RuleError(f"It can learn at most {ALLOWED_MAX} things. Remove one first.")
         conn.execute(
-            f"INSERT INTO {ALLOWED_TABLE} (key, label, feature, example, created_by, created_at, decision_id) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label = excluded.label, "
+            f"INSERT INTO {ALLOWED_TABLE} "  # noqa: S608
+            "(key, label, feature, example, created_by, created_at, decision_id, person_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET label = excluded.label, "
             "example = CASE WHEN excluded.example != '' OR removed_at IS NOT NULL THEN excluded.example "
             "ELSE example END, "
             "uses = CASE WHEN removed_at IS NOT NULL THEN 0 ELSE uses END, "
             "created_at = CASE WHEN removed_at IS NOT NULL THEN excluded.created_at ELSE created_at END, "
             "removed_at = NULL",
-            (key, label[:200], key.split("|", 1)[0], text, created_by, datetime.now(UTC).isoformat(), decision_id),
+            (key, label[:200], feature, text, created_by, datetime.now(UTC).isoformat(), decision_id, person_id),
         )
         conn.commit()
     finally:
@@ -867,8 +899,11 @@ def _is_allowed(conn: sqlite3.Connection, key: str) -> bool:
     ).fetchone() is not None
 
 
-def _allowed_count(conn: sqlite3.Connection) -> int:
-    return int(conn.execute(f"SELECT COUNT(*) FROM {ALLOWED_TABLE} WHERE removed_at IS NULL").fetchone()[0])  # noqa: S608
+def _allowed_count(conn: sqlite3.Connection, feature: str, person_id: int | None) -> int:
+    return int(conn.execute(
+        f"SELECT COUNT(*) FROM {ALLOWED_TABLE} "  # noqa: S608
+        "WHERE removed_at IS NULL AND feature = ? AND person_id IS ?", (feature, person_id),
+    ).fetchone()[0])
 
 
 def _removed(*, db_path: Path | None = None) -> dict[str, str]:
@@ -882,24 +917,31 @@ def _removed(*, db_path: Path | None = None) -> dict[str, str]:
     return {r["key"]: r["removed_at"] for r in rows}
 
 
-def room_for(key: str, *, db_path: Path | None = None) -> bool:
+def room_for(key: str, *, person_id: int | None = None, db_path: Path | None = None) -> bool:
     """Whether ``key`` can be allowed: already allowed, or under ``ALLOWED_MAX``."""
     conn = _connect(db_path)
     try:
-        return _is_allowed(conn, key) or _allowed_count(conn) < ALLOWED_MAX
+        return _is_allowed(conn, key) or (
+            _allowed_count(conn, key.split("|", 1)[0], person_id) < ALLOWED_MAX
+        )
     finally:
         conn.close()
 
 
-def disallow(allowed_id: int, *, db_path: Path | None = None) -> bool:
+def disallow(
+    allowed_id: int, *, person_id: int | None = None, shared: bool = True, db_path: Path | None = None,
+) -> bool:
+    """Ask first again for one that was allowed: one that belongs to no one
+    person (``shared``), or ``person_id``'s own. Anyone else's is left as it
+    is (False, as if it weren't there)."""
     conn = _connect(db_path)
     try:
         # Kept, marked removed: Settings suggests it again only after new
         # approvals (``suggestions``), and its example is dropped.
         cur = conn.execute(
             f"UPDATE {ALLOWED_TABLE} SET removed_at = ?, example = '' "  # noqa: S608
-            "WHERE id = ? AND removed_at IS NULL",
-            (datetime.now(UTC).isoformat(), allowed_id),
+            "WHERE id = ? AND removed_at IS NULL AND ((person_id IS NULL AND ?) OR person_id = ?)",
+            (datetime.now(UTC).isoformat(), allowed_id, 1 if shared else 0, person_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -954,7 +996,7 @@ def suggestions(*, db_path: Path | None = None) -> list[Suggestion]:
             continue
         counts[key] = counts.get(key, 0) + 1
         labels.setdefault(key, str(grant.get("label") or key))
-    allowed = {a.key for a in list_allowed(db_path=db_path)}
+    allowed = {a.key for a in list_allowed(feature=FEATURE, db_path=db_path)}
     out = [
         Suggestion(key=k, label=labels[k], approvals=n)
         for k, n in counts.items() if n >= SUGGEST_AFTER and k not in allowed
@@ -974,7 +1016,7 @@ def learned_note(*, db_path: Path | None = None) -> str:
         lead = get(SCOPE_EXECUTIVE, db_path=db_path)
         if not lead.enabled:
             return ""
-        examples = [a for a in list_allowed(db_path=db_path) if a.example][:_LEARNED_SHOWN]
+        examples = [a for a in list_allowed(feature=FEATURE, db_path=db_path) if a.example][:_LEARNED_SHOWN]
     except Exception:
         logger.warning("take_the_lead: couldn't read what it's learned", exc_info=True)
         return ""

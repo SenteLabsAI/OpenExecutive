@@ -608,6 +608,36 @@ class Settings(BaseSettings):
     # The sandbox process's data limit (RLIMIT_DATA): measured, pandas plus a
     # chart needs about 1.5 GB of it; 1 GB is too little.
     python_job_memory_mb: int = Field(1536, alias="PYTHON_JOB_MEMORY_MB", ge=512, le=16384)
+    # Run Python jobs on a separate runner instead of the local sandbox: each
+    # job is POSTed there (workflows/python_job.py, _run_remote) with this key
+    # as a bearer token, and the local sandbox isn't needed. https only, or
+    # plain http to localhost or a .internal / .flycast name. The key is
+    # required with the URL.
+    python_job_runner_url: str | None = Field(None, alias="PYTHON_JOB_RUNNER_URL")
+    python_job_runner_key: str | None = Field(None, alias="PYTHON_JOB_RUNNER_KEY")
+
+    @field_validator("python_job_runner_url")
+    @classmethod
+    def _validate_python_job_runner_url(cls, v: str | None) -> str | None:
+        from urllib.parse import urlparse
+        v = (v or "").strip()
+        if not v:
+            return None
+        parsed = urlparse(v)
+        host = (parsed.hostname or "").lower()
+        private = host in {"localhost", "127.0.0.1", "::1"} or host.endswith((".internal", ".flycast"))
+        if not host or not (parsed.scheme == "https" or (parsed.scheme == "http" and private)):
+            raise ValueError(
+                "PYTHON_JOB_RUNNER_URL must be an https URL (plain http only to localhost, .internal or .flycast)"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_python_job_runner_key(self) -> "Settings":
+        # Without a key every job (code and files) would go out unauthenticated.
+        if self.python_job_runner_url and not (self.python_job_runner_key or "").strip():
+            raise ValueError("PYTHON_JOB_RUNNER_URL requires PYTHON_JOB_RUNNER_KEY")
+        return self
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.
