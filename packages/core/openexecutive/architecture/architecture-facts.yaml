@@ -8940,7 +8940,10 @@ delegation:
     them. POST /decisions/{id}/approve (edits.only = indexes): caller_refusal
     (signed caller is the card's person), Act as me on, not expired, then
     claim_for_execution (once), each ticked action run as stored with no model
-    call in Session(unattended=True), grant_contact_egress for the principal.
+    call in Session(unattended=True) under rows_for_person(person) (audit rows
+    theirs, no activity-rail row), grant_contact_egress for the principal;
+    message via schedule_tools.message_person(alert_fallback=False), so no
+    team-visible alert; approve also needs can_delegate.
     An invite runs inside calendar_tools.approved_by(person): the meeting gate
     books it now when its approver is that same person, else proposes to its
     approver as usual (no authority widened). finish_execution keeps

@@ -286,7 +286,12 @@ def propose(speaker: Any, actions: list[dict[str, Any]], why: str, *, session_id
     for card in open_cards(speaker.id):
         if _payload(card).get("digest") == digest:
             return int(card.id)
-    payload = {"person_id": speaker.id, "why": _one_line(why, WHY_MAX), "digest": digest, "actions": actions}
+    payload = {
+        # A card is its person's alone (approver_only hides the class); this
+        # keeps every reader that checks the payload in step, as reply cards do.
+        "private": True,
+        "person_id": speaker.id, "why": _one_line(why, WHY_MAX), "digest": digest, "actions": actions,
+    }
     return create_decision_instance(
         decision_class=DECISION_CLASS,
         department="executive",
@@ -348,13 +353,13 @@ async def _do(action: dict[str, Any], person: Any) -> dict[str, str]:
             return {"status": "failed", "detail": checked.split(": ", 1)[-1]}
         tool_input = checked[0]["input"]
         if kind == "message":
-            from openexecutive.orchestrator.schedule_tools import handle_message_person
+            from openexecutive.orchestrator.schedule_tools import message_person
 
-            result = _result(await handle_message_person(tool_input))
+            # A direct message or nothing: never the Briefing alert
+            # message_person falls back to, which more people than them read.
+            result = _result(await message_person(tool_input, alert_fallback=False))
             if result.get("status") == "sent":
                 return {"status": "done", "detail": "Sent."}
-            if result.get("status") == "alerted":
-                return {"status": "done", "detail": "No chat channel reached them, so it's on their Briefing."}
             return {"status": "failed", "detail": str(result.get("error") or result.get("reason") or "Not sent.")[:300]}
         if kind == "invite":
             from openexecutive.orchestrator.calendar_tools import (
@@ -390,8 +395,9 @@ async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any
     its person, once. Raises ``ApproveRefused``."""
     from contextlib import nullcontext
 
+    from openexecutive.audit import rows_for_person
     from openexecutive.delegation.gmail import normalize_email
-    from openexecutive.delegation.settings import is_enabled
+    from openexecutive.delegation.settings import can_delegate, is_enabled
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
     from openexecutive.memory.decision_ledger import (
         STATUS_APPROVED_UNCHANGED,
@@ -417,7 +423,7 @@ async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any
             409, "caller_signing_required",
             "Approving needs signed sign-ins on this server, so that nobody else can approve it for you.",
         )
-    if not is_enabled(person.id):
+    if not can_delegate(person) or not is_enabled(person.id):
         raise ApproveRefused(409, "act_as_me_off", "Act as me is off, so this card can't be approved.")
     if not _live(instance, datetime.now(UTC)):
         raise ApproveRefused(409, "expired", "This card is more than a week old. Ask again if it still needs doing.")
@@ -434,8 +440,10 @@ async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any
     results: list[dict[str, Any]] = []
     token = current_session.set(Session(unattended=True))
     try:
-        # Only the principal reaches their contacts.
-        with grant_contact_egress() if person.is_principal else nullcontext():
+        # What the actions say came from their mail: every row the handlers
+        # write (audit, the activity rail) is theirs alone, as on their own
+        # turn. Only the principal reaches their contacts.
+        with rows_for_person(person.id), grant_contact_egress() if person.is_principal else nullcontext():
             for i, action in enumerate(actions):
                 if i not in chosen:
                     results.append({"index": i, "status": "skipped", "detail": "Left out."})

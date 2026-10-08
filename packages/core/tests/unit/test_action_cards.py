@@ -178,15 +178,19 @@ def sends(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any], An
     """Stand-ins for the real handlers, recording what ran and who had approved it."""
     ran: list[tuple[str, dict[str, Any], Any]] = []
 
-    async def message(tool_input: dict[str, Any]) -> str:
-        ran.append(("message", tool_input, None))
+    async def message(tool_input: dict[str, Any], *, alert_fallback: bool = True) -> str:
+        from openexecutive.audit.context import rows_owner, rows_private
+
+        # A direct message or nothing, and every row it writes is theirs.
+        assert alert_fallback is False
+        ran.append(("message", tool_input, (rows_private(), rows_owner())))
         return json.dumps({"status": "sent"})
 
     async def invite(tool_input: dict[str, Any]) -> str:
         ran.append(("invite", tool_input, calendar_tools._approved_by.get()))
         return json.dumps({"status": "created", "event_id": "e1"})
 
-    monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", message)
+    monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.message_person", message)
     monkeypatch.setattr(calendar_tools, "handle_create_calendar_event", invite)
     return ran
 
@@ -219,6 +223,7 @@ def test_approving_does_each_action_exactly_as_shown_once(
     results = _approve(card)
     assert [r["status"] for r in results] == ["done", "done", "done"]
     assert [(k, i.get("text")) for k, i, _ in sends] == [("invite", None), ("message", "Can you check the pilot dates?")]
+    assert sends[1][2] == (True, roster.principal)
     # The meeting is booked as already approved by the person who tapped.
     assert sends[0][2] == roster.principal
     added = people_store.find_person_by_email("sam@northpeak.example", include_contacts=True)
@@ -252,6 +257,42 @@ def test_approving_needs_them_signed_in_with_act_as_me_on(
         _approve(card)
     assert off.value.code == "act_as_me_off"
     assert sends == [] and get_decision_instance(card.id).status == "proposed"
+
+
+def test_a_card_is_private_in_its_payload_too(roster: SimpleNamespace) -> None:
+    card = _card(_session(FakeMailbox()), [_message(roster.teammate)])
+    assert json.loads(card.proposed_payload_json)["private"] is True
+
+
+def test_a_team_member_the_owner_no_longer_lets_use_act_as_me_cant_approve(
+    roster: SimpleNamespace, sends: list[Any], signed: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("openexecutive.delegation.settings.team_members_enabled", lambda **_: True)
+    set_enabled(roster.teammate, True, updated_by="t")
+    card = _card(_teammate_session(), [_message(roster.principal)])
+    monkeypatch.setattr("openexecutive.delegation.settings.team_members_enabled", lambda **_: False)
+    with pytest.raises(action_cards.ApproveRefused) as refused:
+        _approve(card)
+    assert refused.value.code == "act_as_me_off" and sends == []
+
+
+def test_a_message_that_reaches_nobody_is_not_turned_into_an_alert(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import schedule_tools
+
+    monkeypatch.setattr(schedule_tools, "configured_integrations", lambda _s: set())
+    alerted: list[Any] = []
+
+    async def alert(*a: Any, **kw: Any) -> str:
+        alerted.append(a)
+        return json.dumps({"status": "alerted"})
+
+    monkeypatch.setattr(schedule_tools, "_alert_undeliverable_person", alert)
+    result = json.loads(asyncio.run(schedule_tools.message_person(
+        {"person_id": roster.teammate, "text": "hi"}, alert_fallback=False,
+    )))
+    assert "could not deliver" in result["error"] and alerted == []
 
 
 def test_an_action_that_no_longer_holds_fails_alone(

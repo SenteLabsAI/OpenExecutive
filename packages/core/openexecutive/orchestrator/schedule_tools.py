@@ -1347,6 +1347,10 @@ MESSAGE_PERSON_TOOL: dict[str, Any] = {
 
 
 async def handle_message_person(tool_input: dict[str, Any]) -> str:
+    return await message_person(tool_input)
+
+
+async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = True) -> str:
     """Send a DM to a rostered person, resolving the channel + real channel id
     server-side from their person_id.
 
@@ -1468,6 +1472,13 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
             "instead if they have an address."
         )})
 
+    if not alert_fallback:
+        # The caller promised a direct message (an approval card), and an
+        # alert is read by more people than its recipient.
+        return json.dumps({"error": (
+            f"could not deliver to {person.full_name!r} on any configured chat "
+            f"channel ({last_error or 'no reachable channel'})"
+        )})
     # No channel delivered (none usable, or every attempt failed). Don't drop
     # the finding — surface it as a briefing alert routed to that person so it
     # still reaches their / the principal's "Needs you" queue.
