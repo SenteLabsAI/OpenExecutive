@@ -537,9 +537,11 @@ LIST_SAVED_TOOLS_DEFINITION: dict[str, Any] = {
     "name": LIST_SAVED_TOOLS_TOOL,
     "description": (
         "List the saved tools: scripts kept earlier with run_script(save_as=...) "
-        "that run_script(tool=<name>, inputs={...}) can run again. Each entry has "
-        "its name, what it does and the tools it calls. Check here before writing "
-        "a script for a job you have done before."
+        "and Python jobs kept with run_python_job(save_as=...). Each entry has its "
+        "name, what it does, the tools it calls and run_with, the tool that runs "
+        "it again: run_script(tool=<name>, inputs={...}) or "
+        "run_python_job(tool=<name>, inputs={...}, plus its files). Check here "
+        "before writing a script or a job you have done before."
     ),
     "input_schema": {"type": "object", "properties": {}},
 }
@@ -670,6 +672,11 @@ async def run_script_tool(
             return
         if saved is None or not saved.enabled:
             yield _done({"error": f"no saved tool named {str(tool_name)[:60]!r} is turned on"}, True)
+            return
+        if saved.kind != "script":
+            yield _done({
+                "error": f"{saved.name!r} is a Python tool: run it with run_python_job(tool=...)",
+            }, True)
             return
         if tools is not None and not set(saved.tools) <= set(tools):
             missing = sorted(set(saved.tools) - set(tools))

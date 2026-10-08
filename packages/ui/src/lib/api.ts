@@ -3358,6 +3358,27 @@ export interface UsageSummary {
   by_source?: UsageBySource[];
   // Sandboxed scripts (run_script). Absent on an older backend.
   scripts?: ScriptUsage;
+  // Python jobs (run_python_job). Absent on an older backend.
+  python_jobs?: PythonJobUsage;
+}
+
+export interface PythonJobUsage {
+  jobs: number;
+  ok: number;
+  saved_runs: number;
+  attachments: number;
+  duration_ms: number;
+  cpu_ms: number;
+  // The largest peak memory of any one job, in MB.
+  peak_mb_max: number;
+  bytes_in: number;
+  bytes_out: number;
+  // Model usage on the turns that ran a job (the whole turn, not just the job).
+  turns: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cost_usd: number;
 }
 
 export interface ScriptUsage {
@@ -4995,6 +5016,8 @@ export interface SavedTool {
   updated_at: string;
   // The version workflows may run (the owner turned it on), or null.
   workflow_version?: number | null;
+  // "script" or "python" (a kept Python job: chat only). Absent on an older backend.
+  kind?: "script" | "python";
 }
 
 export interface SavedToolVersion {

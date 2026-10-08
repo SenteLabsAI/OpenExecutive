@@ -6024,6 +6024,62 @@ workflows:
     turning off doesn't. Prompted by the automated review: a principal turn
     that read an injected email could keep an attacker-shaped tool that a
     workflow then ran unattended.
+    Python jobs (workflows/python_job.py, run_python_job): Pyodide 314 in Deno,
+    one process per job (asyncio.Semaphore(1)), deno run --no-prompt --quiet
+    --no-remote --allow-read=<PYTHON_SANDBOX_DIR>,<worker>, env stripped to
+    PATH/HOME/DENO_DIR. Spike: under plain Node a job read all env vars, host
+    files and the network; Node --permission can't load Pyodide; Deno denied
+    env, fs, writes, run and net (incl. 127.0.0.1 and 169.254.169.254).
+    Job JSON on stdin {code, files b64, pyodide dir, wheels}; result on
+    stdout. Inputs: Knowledge files by plain name (company/docs) and
+    text_files; outputs kept 7 days in company/python_jobs/<uuid>/ and served
+    by GET /python-jobs/{id}/{name} (principal only). Image: npm pyodide +
+    deno, compiled wheels from cdn.jsdelivr.net/pyodide/v<ver>/full verified
+    by lock sha256 (docker/pysandbox-fetch.mjs), pip-pinned pypdf/openpyxl,
+    build smoke runs a job. Measured: ~2.2 s start, 4 s PDF split (214 MB),
+    11 s pandas+matplotlib (446 MB); image +~130 MB.
+    Security review fixes: memory capped by RLIMIT_DATA (PYTHON_JOB_MEMORY_MB,
+    default 1536; 1 GB broke pandas) plus --max-old-space-size=256 and
+    --wasm-max-mem-pages=12288; worker caps output at 20 files / 25 MB and
+    the API's stdout read is capped, sizes checked before base64 decoding;
+    withheld on unattended passes (UNATTENDED_WITHHELD_TOOLS); downloads are
+    no-store; npm deps via package-lock + npm ci, pip wheels --require-hashes;
+    links URL-encode the file name.
+    Documents: python-docx, python-pptx, fpdf2 (2.8.8; 2.8.9 was a week old),
+    XlsxWriter and defusedxml are pip-pinned with hashes; their compiled deps
+    come from Pyodide (lxml, pillow, fonttools, typing-extensions), which
+    loadPackagesFromImports can't infer for non-Pyodide packages, so the
+    worker's NEEDS map loads them per import (find_imports). One job writing
+    a docx, a pptx with a chart, a PDF table and an xlsxwriter chart: 7 s.
+    Second review: Deno writes v8/dep-analysis caches to DENO_DIR regardless
+    of job permissions and a job could feed it data: modules (330 MB in one
+    job, never pruned) -> per-job tempfile.mkdtemp DENO_DIR removed after the
+    job, --no-code-cache, _prune drops the old company/python_jobs/.deno.
+    stdout past the cap now kills at once (gather used to wait on stderr EOF
+    while Deno blocked on the full pipe); worker Deno.exit(0) after its result
+    so a leftover Worker can't hold the slot. Resources: preexec sets
+    oom_score_adj=1000 and nice 10 (2 GB shared-cpu machines: a ~900 MB worst
+    job plus the API); kept results capped at 200 MB total, oldest first.
+    Recheck: job code could undo the worker's Deno.exit or close stdout and
+    keep running, so the API reads only the result line (one line of JSON)
+    and kills the process then; the exit code no longer counts once a result
+    parsed. _prune runs under a lock and treats a vanished folder as gone
+    (concurrent prunes raised FileNotFoundError and lost the reply's links).
+    Kept jobs, attachments, metering: run_python_job takes save_as +
+    description (kept as saved_tools kind 'python', tools [], code as the
+    script; only when the job worked) and tool + inputs to run one again
+    (record_run with calls 0). Python tools are chat-only: _SELECT_WORKFLOW
+    filters kind 'script', set_workflows raises, PUT /saved-tools 409s,
+    run_script refuses them. attachment_files: POST /chat/upload binds the
+    uploads as sent (workflows/turn_files.py ContextVar, safe names, '(2)' on
+    repeats) for the whole SSE turn, so the model no longer retypes an
+    attachment (~$0.30 per 100 KB of output tokens) and can split an attached
+    PDF. inputs reach the code as a Python dict global. Each job logs a
+    python_job audit row (ok, duration_ms, cpu_ms and peak_mb from
+    /proc/<pid> just before the kill, bytes, attachments, saved_tool); the
+    worker now reads its job as one stdin line and waits on stdin after its
+    result so the API can measure it. GET /audit/usage python_jobs sums them
+    plus the cache_event usage of the turns that ran a job.
     Fan-out nudge: after a round whose results hold a list of >= 5 items
     (step_script.lists_many: top level or up to two levels into a JSON
     object, not an error), with run_script offered and unused that round

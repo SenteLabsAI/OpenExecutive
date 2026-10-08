@@ -94,6 +94,8 @@ MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # A sandboxed script over the gateway tools: most of what it can call
     # reaches someone, so the whole script is refused (fail closed).
     "run_script",
+    # Library work on files, whose results are kept for later download.
+    "run_python_job",
     # Fetches of an outside address.
     "read_document",
     "load_mcp_server",

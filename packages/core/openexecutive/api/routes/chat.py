@@ -27,6 +27,9 @@ from openexecutive.integrations.attachments import build_attachment_output
 from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.turn_inbox import TurnInbox
+from openexecutive.workflows import turn_files
+from openexecutive.workflows.python_job import available as python_job_available
+from openexecutive.workflows.turn_files import bind as bind_turn_files
 
 # Per-file size cap. Mirrors `_DEFAULT_MAX_BYTES` in
 # `openexecutive/integrations/attachments.py` so the web chat behaves the same
@@ -754,6 +757,7 @@ async def _run_chat_turn(
     page_context: PageContext | None = None,
     client_turn_id: str | None = None,
     memory_text: str | None = None,
+    turn_files: dict[str, bytes] | None = None,
 ) -> StreamingResponse:
     """Shared streaming-chat handler for both the JSON and multipart routes.
 
@@ -762,7 +766,8 @@ async def _run_chat_turn(
     image content blocks; document text is expected to already be inlined in
     `message` by the caller. `memory_text`, when set, is what peer memory
     records as the caller's words instead of `message` (see
-    `Executive.stream_chat`).
+    `Executive.stream_chat`). `turn_files` are the uploads as sent, which a
+    Python job may take by name for this turn (workflows/turn_files.py).
     """
     from openexecutive.config import get_settings
     from openexecutive.knowledge.retriever import retrieve
@@ -798,6 +803,10 @@ async def _run_chat_turn(
     principal_turn = is_principal_on_verified_surface(
         SimpleNamespace(from_web_chat=True, caller_person_id=caller_person_id)
     )
+    # Only a principal's turn can run a Python job, so only there are the
+    # uploads kept for the turn; anyone else's are dropped here.
+    if turn_files and not (principal_turn and python_job_available()):
+        turn_files = None
     # A client-supplied id must be the caller's own chat; any other id the
     # turn can't use is swapped for a fresh chat before the stop switch arms.
     requested_id = _clean_session_id(session_id)
@@ -1125,6 +1134,7 @@ async def _run_chat_turn(
             set_turn(session_id=session.session_id, turn_id=turn_id),
             set_session(session),
             principal_turn_rows(principal_turn),
+            bind_turn_files(turn_files),
         ):
             async with contextlib.aclosing(_sse_body()) as body:
                 async for evt in body:
@@ -1635,6 +1645,7 @@ async def chat_upload(
     text_parts: list[str] = []
     image_blocks: list[dict[str, Any]] = []
     filenames: list[str] = []
+    uploads: list[tuple[str, bytes]] = []
 
     for upload in files:
         filename = upload.filename or "attachment"
@@ -1649,6 +1660,7 @@ async def chat_upload(
                     f"(limit {_MAX_BYTES_PER_FILE // (1024 * 1024)} MB)"
                 ),
             )
+        uploads.append((filename, data))
 
         try:
             # The signed-in user sent it, so it is not metered as inbound.
@@ -1682,6 +1694,7 @@ async def chat_upload(
         # "(Attached files: …)", not the "[Attached: …]" label that marks
         # inlined document text — the open-loop pass skips turns carrying that.
         memory_text=f"{message}\n\n(Attached files: {', '.join(filenames)})",
+        turn_files=turn_files.collect(uploads),
     )
 
 

@@ -103,6 +103,7 @@ function ToolCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleId = `saved-tool-${tool.name}`;
+  const python = tool.kind === "python";
 
   const apply = (next: SavedToolDetail) => {
     setDetail(next);
@@ -146,43 +147,51 @@ function ToolCard({
         Version {tool.version} · saved from {originLabel(tool.origin)} · updated {when(tool.updated_at)}
       </p>
       <p className="mt-1 text-sm text-fg-muted">
-        Uses:{" "}
-        {tool.uses_tools.length ? (
-          <span className="font-mono text-xs">{tool.uses_tools.join(", ")}</span>
+        {python ? (
+          "Works on files with Python. Runs only when you ask in chat, never in workflows."
         ) : (
-          "no other tools"
+          <>
+            Uses:{" "}
+            {tool.uses_tools.length ? (
+              <span className="font-mono text-xs">{tool.uses_tools.join(", ")}</span>
+            ) : (
+              "no other tools"
+            )}
+          </>
         )}
       </p>
-      <div className="mt-3 flex items-start justify-between gap-4 rounded-xl border border-line px-3 py-2.5">
-        <div className="min-w-0">
-          <p id={`${titleId}-workflows`} className="text-sm font-medium text-fg">
-            Use in workflows
-          </p>
-          <p className="text-xs text-fg-muted">
-            {tool.workflow_version == null
-              ? "Off. Workflows can't run this until you turn it on."
-              : tool.workflow_version === tool.version
-                ? `On: workflows run version ${tool.workflow_version}.`
-                : `Workflows still run version ${tool.workflow_version}, which you turned on.`}
-          </p>
-          {tool.workflow_version != null && tool.workflow_version !== tool.version && (
-            <Button
-              size="sm"
-              className="mt-2"
-              disabled={busy || !tool.enabled}
-              onClick={() => run(() => setSavedToolWorkflows(tool.name, tool.version))}
-            >
-              Use version {tool.version} in workflows
-            </Button>
-          )}
+      {!python && (
+        <div className="mt-3 flex items-start justify-between gap-4 rounded-xl border border-line px-3 py-2.5">
+          <div className="min-w-0">
+            <p id={`${titleId}-workflows`} className="text-sm font-medium text-fg">
+              Use in workflows
+            </p>
+            <p className="text-xs text-fg-muted">
+              {tool.workflow_version == null
+                ? "Off. Workflows can't run this until you turn it on."
+                : tool.workflow_version === tool.version
+                  ? `On: workflows run version ${tool.workflow_version}.`
+                  : `Workflows still run version ${tool.workflow_version}, which you turned on.`}
+            </p>
+            {tool.workflow_version != null && tool.workflow_version !== tool.version && (
+              <Button
+                size="sm"
+                className="mt-2"
+                disabled={busy || !tool.enabled}
+                onClick={() => run(() => setSavedToolWorkflows(tool.name, tool.version))}
+              >
+                Use version {tool.version} in workflows
+              </Button>
+            )}
+          </div>
+          <Switch
+            checked={tool.workflow_version != null}
+            disabled={busy || !tool.enabled}
+            labelledBy={`${titleId}-workflows`}
+            onChange={(on) => run(() => setSavedToolWorkflows(tool.name, on ? tool.version : null))}
+          />
         </div>
-        <Switch
-          checked={tool.workflow_version != null}
-          disabled={busy || !tool.enabled}
-          labelledBy={`${titleId}-workflows`}
-          onChange={(on) => run(() => setSavedToolWorkflows(tool.name, on ? tool.version : null))}
-        />
-      </div>
+      )}
       <div className="mt-3">
         <Button size="sm" variant="ghost" onClick={toggleOpen} aria-expanded={open}>
           {open ? "Hide details" : "Details, versions and runs"}
@@ -235,7 +244,7 @@ export default function SavedToolsSettingsPage() {
   return (
     <SettingsSubpage
       title="Custom tools"
-      description="When the Executive needs a tool it doesn't have, it builds one, and keeps the ones it will need again. A custom tool can only do what the conversation or workflow using it is already allowed to do. Turn one off to stop it running, or switch it back to an earlier version."
+      description="When the Executive needs a tool it doesn't have, it builds one, and keeps the ones it will need again: ones that combine its other tools, and ones that work on files. A custom tool can only do what the conversation or workflow using it is already allowed to do. Turn one off to stop it running, or switch it back to an earlier version."
     >
       {state.kind === "loading" && <p className="text-sm text-fg-muted">Loading…</p>}
       {state.kind === "forbidden" && (

@@ -1719,6 +1719,9 @@ SOLO_UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
 # person's own request, never something stored text talks an unattended run
 # into (its handler refuses an unattended session too).
 UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    # Library work on files (workflows/python_job.py): the principal's own
+    # turns only; research synthesis and reflection build from the full list.
+    "run_python_job",
     "assign_open_loop",
     "create_goal",
     "forget_fact",
@@ -1802,6 +1805,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # A sandboxed script over the gateway tools (workflows/step_script.py):
     # each of its calls would be checked, but the turn is simply not offered it.
     "run_script",
+    "run_python_job",
     "list_saved_tools",
     "run_workflow",
     "save_workflow",

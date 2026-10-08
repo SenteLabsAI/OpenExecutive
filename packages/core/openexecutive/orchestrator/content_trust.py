@@ -79,7 +79,12 @@ UNTRUSTED_NOTICE = (
 # verified surface. Each changes the install for every later turn and has no
 # speaker check of its own — or, for list_saved_tools, shows the principal's
 # own saved automations (run_script refuses tool= on the same turns).
-PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({"list_saved_tools", "load_mcp_server"})
+PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({
+    "list_saved_tools", "load_mcp_server",
+    # Reads the Knowledge library's files and keeps result files only the
+    # principal can download.
+    "run_python_job",
+})
 
 # Inside a block the tag's own name is renamed outright, in any case and
 # spacing, so no form of it — "</untrusted_content>", "< /UNTRUSTED_CONTENT",
