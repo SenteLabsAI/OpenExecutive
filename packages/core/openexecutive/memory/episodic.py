@@ -13,6 +13,8 @@ from typing import Any, NamedTuple
 
 from pydantic import BaseModel
 
+from openexecutive.memory.conversation_ids import family_clause, family_params
+
 logger = logging.getLogger(__name__)
 
 # Holds strong references to background tasks so GC cannot cancel them mid-flight.
@@ -753,10 +755,12 @@ def get_recent_advice(
         return []
     with _get_conn(resolved) as conn:
         if session_id:
+            # Every conversation of a chat app's stream shares what it
+            # decided (memory.conversation_ids).
             rows = conn.execute(
-                "SELECT * FROM advice_given WHERE session_id = ?"
+                f"SELECT * FROM advice_given WHERE {family_clause()}"
                 " ORDER BY timestamp DESC LIMIT ?",
-                (session_id, limit),
+                (*family_params(session_id), limit),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -775,10 +779,12 @@ def get_recent_decisions(
         return []
     with _get_conn(resolved) as conn:
         if session_id:
+            # Every conversation of a chat app's stream shares what it
+            # decided (memory.conversation_ids).
             rows = conn.execute(
-                "SELECT * FROM decisions WHERE session_id = ?"
+                f"SELECT * FROM decisions WHERE {family_clause()}"
                 " ORDER BY timestamp DESC LIMIT ?",
-                (session_id, limit),
+                (*family_params(session_id), limit),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -1896,7 +1902,8 @@ def format_for_prompt(
     """Render recent decisions, active initiatives, and recent advice for prompt injection.
 
     When `session_id` is non-empty, decisions and advice are scoped to that
-    session only — used by Discord/Telegram/Slack/email thread handlers so
+    session only (for a chat app, every conversation of its stream —
+    `memory.conversation_ids`) — used by Discord/Telegram/Slack/email thread handlers so
     each conversation sees its own extracted context rather than a global mix
     from unrelated conversations. Initiatives are always global (company-wide).
 

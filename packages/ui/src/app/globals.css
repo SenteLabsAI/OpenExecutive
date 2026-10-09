@@ -185,3 +185,9 @@
     overflow-x: auto;
   }
 }
+
+/* Words found in an opened chat (components/Chat.tsx, CSS Custom Highlight API). */
+::highlight(chat-find) {
+  background-color: rgb(99 102 241 / 0.35);
+  color: inherit;
+}

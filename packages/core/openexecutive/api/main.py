@@ -442,6 +442,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "cancelled %d orphaned talent/onboarding reminder(s) on startup", _swept
             )
 
+    # One-shot: cut each chat app's saved stream into conversations by the
+    # same quiet-gap rule new messages follow (memory.conversations).
+    from openexecutive.memory.conversations import split_existing_streams
+    try:
+        split_existing_streams()
+    except Exception:
+        logging.getLogger("openexecutive").exception("chat-app conversation split failed")
+
     # Departments: persistent state layer over the 8 specialist agents. Init
     # AFTER episodic_db so the additive ALTERs (department column on decisions,
     # initiatives, advice_given, scheduled_actions) have already run by the

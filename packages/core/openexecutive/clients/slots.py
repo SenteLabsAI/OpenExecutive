@@ -605,6 +605,12 @@ def _ensure_schemas() -> None:
     else:
         if swept:
             logger.info("client-slots: cancelled %d orphaned talent reminder(s)", swept)
+    try:
+        from openexecutive.memory.conversations import split_existing_streams
+
+        split_existing_streams(db_path=db_path)
+    except Exception:
+        logger.exception("client-slots: chat-app conversation split failed")
     init_alerts(db_path)
     init_fixtures(db_path)
     initialize_overrides_db(db_path)

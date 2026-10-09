@@ -31,7 +31,7 @@ from openexecutive.audit.logger import EVENT_TYPES
 # come from third-party webhooks, so reflecting an unvalidated value into the
 # response body would let an attacker shape stored XSS via a malformed inbound.
 # 256 chars is generous (longest observed in practice is ~80).
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=]{1,256}$")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=~]{1,256}$")
 
 router = APIRouter()
 

@@ -44,6 +44,8 @@ export default function HomePage() {
   const { sessions, loaded: sessionsLoaded, refresh: refreshSessions } = useSessions();
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
+  // Words to find in the chat opened from a Chats-page search (`?find=`).
+  const [activeFind, setActiveFind] = useState<string | undefined>();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // Briefing-first landing: default to "briefing" so opening the app shows
   // what's been happening, not an empty chat. Switches to "chat" when the
@@ -72,11 +74,12 @@ export default function HomePage() {
   // yanking them into the old chat mid-turn.
   const selectGenRef = useRef(0);
 
-  const handleSelectSession = useCallback(async (sessionId: string) => {
+  const handleSelectSession = useCallback(async (sessionId: string, find?: string) => {
     const gen = ++selectGenRef.current;
     try {
       const msgs = await getSessionMessages(sessionId);
       if (gen !== selectGenRef.current) return;
+      setActiveFind(find);
       setActiveSessionId(sessionId);
       setActiveMessages(msgs);
       setDebugEvents([]);
@@ -157,7 +160,7 @@ export default function HomePage() {
   // wrapped in <Suspense>, and the chat home is a heavy static page we
   // want to keep prerendered. The effect runs client-only anyway.
   const router = useRouter();
-  const deepLinkRef = useRef<{ sessionId: string; gen: number } | null>(null);
+  const deepLinkRef = useRef<{ sessionId: string; gen: number; find?: string } | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -171,7 +174,11 @@ export default function HomePage() {
       }
       router.replace("/");
     } else if (sessionParam) {
-      deepLinkRef.current = { sessionId: sessionParam, gen: selectGenRef.current };
+      deepLinkRef.current = {
+        sessionId: sessionParam,
+        gen: selectGenRef.current,
+        find: params.get("find")?.slice(0, 200) || undefined,
+      };
       router.replace("/");
     }
   }, [handleNewChat, router]);
@@ -182,7 +189,7 @@ export default function HomePage() {
     deepLinkRef.current = null;
     if (pending.gen !== selectGenRef.current) return;
     if (sessions.some((s) => s.session_id === pending.sessionId)) {
-      void handleSelectSession(pending.sessionId);
+      void handleSelectSession(pending.sessionId, pending.find);
     }
   }, [sessions, sessionsLoaded, handleSelectSession]);
 
@@ -321,6 +328,7 @@ export default function HomePage() {
               onDebugEvent={handleDebugEvent}
               initialMessages={activeMessages}
               initialSessionId={activeSessionId}
+              initialFind={activeFind}
               initialInput={pendingPrompt}
               // Briefing handoffs (Discuss / Approve / Dismiss / Edit&Approve)
               // are commitments, not drafts, so they auto-fire the first

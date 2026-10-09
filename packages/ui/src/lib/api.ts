@@ -1063,11 +1063,22 @@ export interface SessionSummary {
   created_at: string;
   updated_at: string;
   message_count: number;
+  /** Search results only: messages containing the words (0 = title match). */
+  match_count?: number;
+  /** Search results only: the newest matching message around the match. */
+  snippet?: string;
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
   const res = await fetch(`${API_BASE}/sessions`);
   if (!res.ok) throw new Error("Failed to list sessions");
+  return res.json();
+}
+
+/** The caller's own chats whose title or messages contain `query`. */
+export async function searchSessions(query: string, signal?: AbortSignal): Promise<SessionSummary[]> {
+  const res = await fetch(`${API_BASE}/sessions?q=${encodeURIComponent(query)}`, { signal });
+  if (!res.ok) throw new Error("Failed to search sessions");
   return res.json();
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Message from "./Message";
 import BrandMark from "./BrandMark";
@@ -25,6 +25,7 @@ import {
   streamChat,
 } from "@/lib/api";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
+import { matchingMessages } from "@/lib/chatSearch";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
 import {
   composerText,
@@ -57,7 +58,15 @@ interface ChatProps {
   initialMemoryText?: string;
   onTurnComplete?: (sessionId: string) => void;
   onTurnStart?: () => void;
+  // Words to find in the opened chat (it was opened from a search on the
+  // Chats page): the chat starts at the newest message containing them and
+  // steps through the others.
+  initialFind?: string;
 }
+
+// The browser's own highlight for found words, where it has one
+// (CSS Custom Highlight API); elsewhere only the message is outlined.
+const FIND_HIGHLIGHT = "chat-find";
 
 // Static fallbacks used only when the /chat/suggested-prompts fetch fails
 // entirely (network error, aborted, etc). The backend always returns these
@@ -82,7 +91,7 @@ function endsOnReply(messages: ChatMessage[] | undefined): boolean {
 const FALLBACK_SUBTITLE =
   "Pick up where we left off — decisions to revisit, drafts to push forward, people to pull in.";
 
-export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart }: ChatProps) {
+export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart, initialFind }: ChatProps) {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
 
@@ -124,6 +133,18 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   }
   // The running turn's id, which addresses it for POST /chat/add.
   const turnIdRef = useRef<string | null>(null);
+  // Find-in-chat (opened from a search). `findPos` indexes `findHits`; null
+  // means "the newest", so a chat opens on the match its snippet showed.
+  const [find, setFind] = useState<string | null>(initialFind?.trim() || null);
+  const [findPos, setFindPos] = useState<number | null>(null);
+  const findHits = useMemo(() => (find ? matchingMessages(messages, find) : []), [find, messages]);
+  const findIndex = findHits.length ? (findPos ?? findHits.length - 1) : -1;
+  const findMessage = findIndex >= 0 ? findHits[findIndex] : -1;
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const closeFind = () => {
+    setFind(null);
+    setFindPos(null);
+  };
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -180,14 +201,45 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setMessages(initialMessages ?? []);
     setSessionId(initialSessionId);
     setStreamingContent("");
+    setFind(initialFind?.trim() || null);
+    setFindPos(null);
     clearFollowup();
     if (initialSessionId && endsOnReply(initialMessages)) loadFollowup(initialSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSessionId]);
 
   useEffect(() => {
+    // While finding, the chat stays on the match instead.
+    if (find) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, find]);
+
+  // Bring the current match into view and mark every occurrence of the words.
+  useEffect(() => {
+    const root = messagesRef.current;
+    if (!root || !find || findMessage < 0) return;
+    root
+      .querySelector(`[data-msg-index="${findMessage}"]`)
+      ?.scrollIntoView({ block: "center" });
+    const highlights = typeof CSS !== "undefined" ? CSS.highlights : undefined;
+    if (!highlights || typeof Highlight === "undefined") return;
+    const needle = find.toLowerCase();
+    const ranges: Range[] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = (node.textContent ?? "").toLowerCase();
+      for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + needle.length);
+        ranges.push(range);
+      }
+    }
+    highlights.set(FIND_HIGHLIGHT, new Highlight(...ranges));
+    return () => {
+      highlights.delete(FIND_HIGHLIGHT);
+    };
+  }, [find, findMessage, messages]);
 
   // One-shot auto-submit of the initialInput on mount when the parent
   // requests it (briefing handoffs). Guarded by a ref so prop churn can't
@@ -258,6 +310,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // `queuedFollowup`: the leftovers of a turn, sent on their own. They carry
   // no files and leave alone whatever is being typed in the composer now.
   async function handleSend(text?: string, memoryText?: string, queuedFollowup = false) {
+    // Carrying on in the chat ends the find, so the reply scrolls into view.
+    closeFind();
     if (isLoading && text === undefined) {
       addWhileWorking();
       return;
@@ -579,7 +633,51 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     <div className="flex flex-col h-full">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {find && (
+          <div
+            role="status"
+            className="sticky top-0 z-10 border-b border-line bg-surface/95 backdrop-blur"
+          >
+            <div className="max-w-3xl mx-auto px-4 sm:px-6 py-2 flex items-center gap-2 text-sm">
+              <span className="mr-auto min-w-0 truncate text-fg-muted">
+                {findHits.length === 0
+                  ? `\u201c${find}\u201d isn't in this chat`
+                  : `\u201c${find}\u201d \u00b7 match ${findIndex + 1} of ${findHits.length}`}
+              </span>
+              {findHits.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous match"
+                    onClick={() => setFindPos(Math.max(0, findIndex - 1))}
+                    disabled={findIndex <= 0}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-fg-muted hover:bg-surface-overlay hover:text-fg disabled:opacity-40 cursor-pointer"
+                  >
+                    <Icon name="chevron-right" size="w-4 h-4" className="-rotate-90" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next match"
+                    onClick={() => setFindPos(Math.min(findHits.length - 1, findIndex + 1))}
+                    disabled={findIndex >= findHits.length - 1}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-fg-muted hover:bg-surface-overlay hover:text-fg disabled:opacity-40 cursor-pointer"
+                  >
+                    <Icon name="chevron-right" size="w-4 h-4" className="rotate-90" />
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                aria-label="Stop finding"
+                onClick={closeFind}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-fg-muted hover:bg-surface-overlay hover:text-fg cursor-pointer"
+              >
+                <Icon name="close" size="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+        <div ref={messagesRef} className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
           {isEmpty ? (
             /* Empty state */
             <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
@@ -623,8 +721,16 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           ) : (
             <>
               {messages.map((msg, i) => (
-                <Message
+                <div
                   key={i}
+                  data-msg-index={i}
+                  className={
+                    i === findMessage
+                      ? "rounded-2xl ring-2 ring-accent/40 ring-offset-4 ring-offset-surface"
+                      : undefined
+                  }
+                >
+                <Message
                   role={msg.role}
                   content={msg.content}
                   actions={msg.role === "assistant" ? msg.actions : undefined}
@@ -637,6 +743,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                       : undefined
                   }
                 />
+                </div>
               ))}
 
               {queued.map((q) => (
