@@ -206,6 +206,9 @@ class ArtifactRecord:
     # Whose it is (module docstring); None on a draft = the principal's, on
     # a workflow output = the team's.
     owner_person_id: int | None = None
+    # The extension collection a drafted artifact belongs to
+    # (orchestrator/extensions.py), or None.
+    collection: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +272,9 @@ def parse_artifact_id(composite_id: str) -> tuple[str, str]:
 
 
 def _record_from_alert(alert: Alert) -> ArtifactRecord:
+    from openexecutive.orchestrator.extensions import collection_for_tags
+
+    collection = collection_for_tags(alert.topic_tags)
     return ArtifactRecord(
         id=f"alert:{alert.id}",
         kind="draft",
@@ -285,6 +291,7 @@ def _record_from_alert(alert: Alert) -> ArtifactRecord:
         link_label=alert.artifact_link_label,
         supersedes_id=alert.supersedes_id,
         owner_person_id=alert.owner_person_id,
+        collection=collection.name if collection is not None else None,
     )
 
 

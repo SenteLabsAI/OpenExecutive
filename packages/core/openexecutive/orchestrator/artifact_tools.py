@@ -286,9 +286,14 @@ async def handle_draft_artifact(tool_input: dict[str, Any]) -> str:
     supersedes = str(tool_input.get("supersedes") or "").strip()
     if supersedes:
         try:
-            prior_id = load_artifact(supersedes, viewer=viewer).id
+            prior = load_artifact(supersedes, viewer=viewer)
         except (MalformedArtifactId, ArtifactNotFound) as exc:
             return _err(f"supersedes: {exc}")
+        # An extension's document (orchestrator/extensions.py) changes only
+        # through that extension's own tools, which hear about it.
+        if prior.collection is not None:
+            return _err("supersedes: that document can't be replaced with draft_artifact")
+        prior_id = prior.id
 
     severity_raw = str(tool_input.get("severity") or "medium").strip().lower()
     try:

@@ -320,6 +320,28 @@ async def test_supersedes_refuses_non_artifact_alert(db: Path, audit_calls: list
     assert inbound is not None and inbound.archived_at is None
 
 
+async def test_supersedes_refuses_an_extension_collections_document(
+    db: Path, audit_calls: list[dict], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import extensions
+
+    extensions._reset_for_tests()
+    monkeypatch.setattr(extensions, "_loaded", True)
+    extensions.register_collection(extensions.Collection(name="widgets", label="Widgets"))
+    try:
+        widget = alerts_store.insert_alert(
+            source="artifact", external_id="w", severity="low", headline="Board", body="x",
+            topic_tags=["artifact", "collection:widgets"], owner_person_id=_principal_id(db),
+            db_path=db,
+        )
+        result = await _draft(supersedes=f"alert:{widget}")
+        assert "error" in result and "draft_artifact" in result["error"]
+        kept = alerts_store.get_alert(widget or 0, db_path=db)
+        assert kept is not None and kept.archived_at is None
+    finally:
+        extensions._reset_for_tests()
+
+
 async def test_list_artifacts_filters_and_limits(
     runs_db: Path, audit_calls: list[dict],
 ) -> None:

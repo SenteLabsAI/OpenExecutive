@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -532,3 +533,84 @@ async def test_routes_show_each_caller_only_their_own(
     alert = alerts_store.get_alert(sams, db_path=db)
     assert alert is not None and alert.archived_at is None
     assert wf_persistence.get_run("sams-run", db_path=db) is not None
+
+
+# --------------------------------------------------------------------------- #
+# Extension collections (orchestrator/extensions.py)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def widgets(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from openexecutive.orchestrator import extensions
+
+    extensions._reset_for_tests()
+    monkeypatch.setattr(extensions, "_loaded", True)
+    seen: list[tuple[str, str]] = []
+    refuse: set[str] = set()
+
+    async def on_change(artifact_id: str, change: str) -> None:
+        if change in refuse:
+            raise RuntimeError("no")
+        seen.append((artifact_id, change))
+
+    extensions.register_collection(
+        extensions.Collection(name="widgets", label="Widgets", on_change=on_change)
+    )
+
+    async def _noop(*_a: Any) -> None:
+        return None
+
+    monkeypatch.setattr("openexecutive.orchestrator.artifact_tools.unindex_artifact", _noop)
+    monkeypatch.setattr("openexecutive.orchestrator.artifact_tools.index_artifact", _noop)
+    yield SimpleNamespace(seen=seen, refuse=refuse)
+    extensions._reset_for_tests()
+
+
+def _seed_widget(db: Path) -> int:
+    aid = alerts_store.insert_alert(
+        source="artifact", external_id="w-1", severity="medium",
+        headline="Hiring board", body="A board.", topic_tags=["artifact", "collection:widgets"],
+        artifact_format="link", artifact_url="https://w.example/1", artifact_link_label="Widget",
+        db_path=db,
+    )
+    assert aid is not None
+    return aid
+
+
+async def test_a_collection_document_carries_its_collection(db: Path, widgets: Any) -> None:
+    aid = _seed_widget(db)
+    plain = _seed_draft(db, "d-plain", "Memo")
+    by_id = {a.id: a for a in (await artifacts_route.list_artifacts(_REQ))["artifacts"]}
+    assert (by_id[f"alert:{aid}"].collection, by_id[f"alert:{aid}"].collection_label) == ("widgets", "Widgets")
+    assert by_id[f"alert:{plain}"].collection is None
+
+
+async def test_an_unregistered_collection_tag_is_a_plain_draft(db: Path) -> None:
+    from openexecutive.orchestrator import extensions
+
+    extensions._reset_for_tests()
+    aid = _seed_widget(db)
+    detail = await artifacts_route.get_artifact(f"alert:{aid}", _REQ)
+    assert detail.collection is None and detail.collection_label is None
+
+
+async def test_the_collection_hears_each_change_first(db: Path, widgets: Any) -> None:
+    aid = _seed_widget(db)
+    await artifacts_route.archive_artifact(f"alert:{aid}", _REQ)
+    await artifacts_route.restore_artifact(f"alert:{aid}", _REQ)
+    await artifacts_route.delete_artifact(f"alert:{aid}", _REQ)
+    assert widgets.seen == [
+        (f"alert:{aid}", "archived"), (f"alert:{aid}", "restored"), (f"alert:{aid}", "deleted"),
+    ]
+
+
+async def test_a_refused_change_does_not_happen(db: Path, widgets: Any) -> None:
+    aid = _seed_widget(db)
+    widgets.refuse.update({"archived", "deleted"})
+    for mutate in (artifacts_route.archive_artifact, artifacts_route.delete_artifact):
+        with pytest.raises(HTTPException) as exc:
+            await mutate(f"alert:{aid}", _REQ)
+        assert exc.value.status_code == 502
+    detail = await artifacts_route.get_artifact(f"alert:{aid}", _REQ)
+    assert detail.archived_at is None

@@ -17,7 +17,14 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
-type KindFilter = "all" | "draft" | "workflow";
+// "c:<name>" is an installed extension's collection (e.g. its own kind of
+// document); drafts in a collection show under it, not under Drafts.
+type KindFilter = "all" | "draft" | "workflow" | `c:${string}`;
+
+function filterKey(a: ArtifactSummary): KindFilter {
+  if (a.collection) return `c:${a.collection}`;
+  return a.kind;
+}
 type View = "active" | "archived";
 
 // How long the "Archived — Undo" toast stays before auto-dismissing.
@@ -239,15 +246,34 @@ export default function ArtifactsPage() {
   const counts = useMemo(() => {
     const c = { all: artifacts.length, draft: 0, workflow: 0 };
     for (const a of artifacts) {
+      if (a.collection) continue;
       if (a.kind === "draft") c.draft++;
       else c.workflow++;
     }
     return c;
   }, [artifacts]);
 
+  // One filter per collection present, in first-seen (newest) order.
+  const collections = useMemo(() => {
+    const map = new Map<string, { label: string; count: number }>();
+    for (const a of artifacts) {
+      if (!a.collection) continue;
+      const entry = map.get(a.collection);
+      if (entry) entry.count++;
+      else map.set(a.collection, { label: a.collection_label || a.collection, count: 1 });
+    }
+    return Array.from(map, ([name, entry]) => ({ name, ...entry }));
+  }, [artifacts]);
+
+  // A collection filter whose last item went away shows All.
+  const shown: KindFilter =
+    filter.startsWith("c:") && !collections.some((c) => `c:${c.name}` === filter)
+      ? "all"
+      : filter;
+
   const visible = useMemo(
-    () => (filter === "all" ? artifacts : artifacts.filter((a) => a.kind === filter)),
-    [artifacts, filter]
+    () => (shown === "all" ? artifacts : artifacts.filter((a) => filterKey(a) === shown)),
+    [artifacts, shown]
   );
 
   const workflowTitleMap = useMemo(
@@ -273,13 +299,18 @@ export default function ArtifactsPage() {
     for (const a of visible) {
       // Namespace the workflow key so a workflow literally named "drafts"
       // can never collide with the drafts bucket.
-      const key = a.kind === "draft" ? "drafts" : `wf:${a.source_label}`;
+      const key = a.collection
+        ? `c:${a.collection}`
+        : a.kind === "draft"
+          ? "drafts"
+          : `wf:${a.source_label}`;
       const existing = map.get(key);
       if (existing) {
         existing.items.push(a);
       } else {
-        const label =
-          a.kind === "draft"
+        const label = a.collection
+          ? a.collection_label || a.collection
+          : a.kind === "draft"
             ? "Drafts"
             : workflowTitleMap.get(a.source_label) ?? a.source_label;
         map.set(key, { key, label, items: [a] });
@@ -327,23 +358,32 @@ export default function ArtifactsPage() {
                 className="inline-flex max-w-full overflow-x-auto rounded-xl border border-line bg-surface-elevated p-1"
               >
                 <FilterButton
-                  active={filter === "all"}
+                  active={shown === "all"}
                   onClick={() => setFilter("all")}
                   label="All"
                   count={counts.all}
                 />
                 <FilterButton
-                  active={filter === "draft"}
+                  active={shown === "draft"}
                   onClick={() => setFilter("draft")}
                   label="Drafts"
                   count={counts.draft}
                 />
                 <FilterButton
-                  active={filter === "workflow"}
+                  active={shown === "workflow"}
                   onClick={() => setFilter("workflow")}
                   label="Workflows"
                   count={counts.workflow}
                 />
+                {collections.map((c) => (
+                  <FilterButton
+                    key={c.name}
+                    active={shown === `c:${c.name}`}
+                    onClick={() => setFilter(`c:${c.name}`)}
+                    label={c.label}
+                    count={c.count}
+                  />
+                ))}
               </div>
               <OverflowMenu
                 label="More filters"

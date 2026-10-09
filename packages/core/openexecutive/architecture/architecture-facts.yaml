@@ -287,6 +287,28 @@ caching:
     TOOL_BUILDING_ADDENDUM's multi-read rule: an answer that needs three or
     more reads builds a run_script tool that returns only what answers the
     question, so the budget is rarely reached.
+  extensions: |
+    orchestrator.extensions lets an install add chat tools and kinds of
+    document without changing this code. OPENEXECUTIVE_EXTENSIONS names
+    Python modules, imported once (first turn or first Documents read); each
+    register() calls register_tool / register_collection, and a module that
+    fails is logged and skipped so the install still starts. A tool's name
+    may not be one the loop knows (executive.builtin_tool_names). Extension
+    tools are never in _ALL_SKILL_TOOLS, so reflection, research and the
+    synthesis never get them; the chat loop adds them per turn like the Act
+    as me tools, never on an unattended run or a turn private to the
+    principal, and only where the tool's offered(session) says. That
+    predicate must depend only on the kind of turn, so each kind keeps one
+    cached tool list. Act as me's lockdown refuses them after a mail read
+    (unclassified, fails closed). A tool may sit in a tool group, new or
+    existing (tool_groups.add_to_group, done at load, so the groups are
+    fixed per process). Its chip goes through summarize_action's usual
+    no-chip rules, and a chip link must be a path inside the app. A
+    collection is a drafted artifact tagged collection:<name>: the record
+    carries it, GET /artifacts returns collection / collection_label, the
+    Documents page shows one filter per collection, and archive, restore and
+    delete call the collection's on_change first (502 and no change if it
+    raises). draft_artifact(supersedes=) refuses a collection's document.
   deferred_tool_groups: |
     The less common skill tools are not in the tool list. orchestrator.
     tool_groups.GROUPS puts them in named groups (calendar, people, goals,

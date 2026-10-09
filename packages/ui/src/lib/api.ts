@@ -2747,6 +2747,10 @@ export interface ArtifactSummary {
   external_url: string | null;
   link_label: string | null;
   supersedes_id: string | null; // id of the earlier version this revised
+  // An installed extension's kind of document, with its own filter
+  // (packages/core/openexecutive/orchestrator/extensions.py).
+  collection?: string | null;
+  collection_label?: string | null;
 }
 
 export type ArtifactFormat = "docx" | "html" | "link" | "markdown" | "xlsx";

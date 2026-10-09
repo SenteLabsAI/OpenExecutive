@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with its
 # import name when that differs ("scikit-learn (import sklearn)").
 _EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \(import [A-Za-z0-9_.]+\))?")
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 # Walk up from this file to find the repo root .env. If no .env exists
 # (CI, fresh checkouts), `_ROOT` becomes `cwd` so file-path defaults stay
@@ -678,6 +679,23 @@ class Settings(BaseSettings):
         if self.python_job_runner_url and not (self.python_job_runner_key or "").strip():
             raise ValueError("PYTHON_JOB_RUNNER_URL requires PYTHON_JOB_RUNNER_KEY")
         return self
+    # ---- Extensions (orchestrator/extensions.py) ----
+    # Python modules this install adds, comma-separated (e.g. "acme.tools").
+    # Each module's register() adds chat tools and document collections at
+    # startup. A bad name is dropped, not fatal, like the extra libraries.
+    extensions: str | None = Field(None, alias="OPENEXECUTIVE_EXTENSIONS")
+
+    @field_validator("extensions")
+    @classmethod
+    def _validate_extensions(cls, v: str | None) -> str | None:
+        items = [item.strip() for item in (v or "").split(",") if item.strip()]
+        good = [item for item in items if _MODULE_NAME.fullmatch(item)]
+        if len(good) != len(items):
+            logging.getLogger(__name__).warning(
+                "OPENEXECUTIVE_EXTENSIONS: ignored names that are not Python module paths"
+            )
+        return ",".join(good) or None
+
     # A script that worked may be saved and run again by name (saved tools,
     # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
     # list_saved_tools lists nothing; saved tools stay stored.

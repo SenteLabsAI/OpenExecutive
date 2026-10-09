@@ -47,6 +47,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from openexecutive.orchestrator.artifact_formats import get_format
+from openexecutive.orchestrator.extensions import Change, get_collection
+from openexecutive.orchestrator.extensions import notify as notify_collection
 from openexecutive.orchestrator.artifact_records import (
     ArtifactNotFound,
     ArtifactRecord,
@@ -97,6 +99,10 @@ class ArtifactSummary(BaseModel):
     external_url: str | None = None
     link_label: str | None = None
     supersedes_id: str | None = None
+    # An installed extension's kind of document (orchestrator/extensions.py):
+    # the Documents page gives each its own filter.
+    collection: str | None = None
+    collection_label: str | None = None
 
 
 class ArtifactDetail(ArtifactSummary):
@@ -162,6 +168,7 @@ async def archive_artifact(composite_id: str, request: Request) -> dict[str, str
     """Soft-hide an artifact (reversible). Drops it from the default list and
     from the Executive's recall (knowledge index)."""
     viewer = _viewer(request)
+    await _notify_collection(composite_id, request, "archived")
     rec = _mutate(lambda: set_artifact_archived(composite_id, archived=True, viewer=viewer))
     from openexecutive.orchestrator.artifact_tools import unindex_artifact
 
@@ -174,6 +181,7 @@ async def restore_artifact(composite_id: str, request: Request) -> dict[str, str
     """Un-archive an artifact, returning it to the active list and, for a
     drafted artifact, to the knowledge index."""
     viewer = _viewer(request)
+    await _notify_collection(composite_id, request, "restored")
     rec = _mutate(lambda: set_artifact_archived(composite_id, archived=False, viewer=viewer))
     if rec.kind == "draft" and rec.stored:
         from openexecutive.orchestrator.artifact_tools import index_artifact
@@ -186,6 +194,7 @@ async def restore_artifact(composite_id: str, request: Request) -> dict[str, str
 async def delete_artifact(composite_id: str, request: Request) -> dict[str, str]:
     """Permanently delete the underlying alert / workflow-run row."""
     viewer = _viewer(request)
+    await _notify_collection(composite_id, request, "deleted")
     rec = _mutate(lambda: delete_artifact_record(composite_id, viewer=viewer))
     from openexecutive.orchestrator.artifact_tools import unindex_artifact
 
@@ -216,6 +225,22 @@ def _load(composite_id: str, request: Request) -> ArtifactRecord:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+async def _notify_collection(composite_id: str, request: Request, change: Change) -> None:
+    """Tell an extension collection one of its documents is about to change
+    (orchestrator/extensions.py). If it can't take the change, nothing
+    changes: a 502 the page shows as a failed action."""
+    rec = _load(composite_id, request)
+    if rec.collection is None:
+        return
+    try:
+        await notify_collection(rec.collection, rec.id, change)
+    except Exception as exc:
+        logger.exception("artifact %s: collection %s refused %s", rec.id, rec.collection, change)
+        raise HTTPException(
+            status_code=502, detail="That couldn't be done right now. Try again in a moment."
+        ) from exc
+
+
 def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
     try:
         return action()
@@ -228,6 +253,7 @@ def _mutate(action: Callable[[], ArtifactRecord]) -> ArtifactRecord:
 
 def _summary(rec: ArtifactRecord) -> ArtifactSummary:
     fmt = get_format(rec.format)
+    collection = get_collection(rec.collection)
     preview = fmt.text(rec.stored)[:_PREVIEW_CHARS] if rec.stored else ""
     return ArtifactSummary(
         id=rec.id,
@@ -245,4 +271,6 @@ def _summary(rec: ArtifactRecord) -> ArtifactSummary:
         external_url=rec.url,
         link_label=rec.link_label,
         supersedes_id=rec.supersedes_id,
+        collection=rec.collection,
+        collection_label=collection.label if collection is not None else None,
     )

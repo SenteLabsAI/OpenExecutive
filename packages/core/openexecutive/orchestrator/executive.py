@@ -39,7 +39,7 @@ from openexecutive.memory.workspace_settings import (
     pin_turn_principal_role,
     pin_turn_workspace_mode,
 )
-from openexecutive.orchestrator import take_the_lead, tool_groups
+from openexecutive.orchestrator import extensions, take_the_lead, tool_groups
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -707,6 +707,24 @@ _ALL_SKILL_HANDLERS = {
     **FORM_TOOL_HANDLERS,
     **PYTHON_JOB_TOOL_HANDLERS,
 }
+
+
+def builtin_tool_names() -> frozenset[str]:
+    """Every tool name the chat loop knows itself, which an extension's tool
+    may not take (orchestrator/extensions.py)."""
+    return frozenset({
+        *(t["name"] for t in SPECIALIST_TOOLS),
+        *_ALL_SKILL_HANDLERS,
+        *DELEGATION_TOOL_HANDLERS,
+        *MAILBOX_TOOL_NAMES,
+        *HISTORY_TOOL_HANDLERS,
+        *MCP_TOOL_NAMES,
+        step_script.RUN_SCRIPT_TOOL,
+        step_script.LIST_SAVED_TOOLS_TOOL,
+        tool_groups.OPEN_TOOLS,
+        tool_groups.USE_TOOL,
+        WEB_SEARCH_TOOL_NAME,
+    })
 
 
 def _private_tool_row(tool_name: str) -> bool:
@@ -2014,6 +2032,14 @@ class Executive:
         if history_offered:
             delegation_tools = [*delegation_tools, *HISTORY_TOOLS]
             turn_handlers = {**turn_handlers, **HISTORY_TOOL_HANDLERS}
+        # Tools an installed extension adds (orchestrator/extensions.py): only
+        # on a turn someone is in, never an unattended run or a turn private
+        # to the principal, and only where each tool says it is offered.
+        if not unattended_withheld and not private_turn:
+            extra_tools = extensions.offered_tools(current_session.get())
+            if extra_tools:
+                delegation_tools = [*delegation_tools, *(t.definition for t in extra_tools)]
+                turn_handlers = {**turn_handlers, **{t.name: t.handler for t in extra_tools}}
         # Take the lead as the Executive: an unattended run's acting tools,
         # its own and the MCP ones, go through the gate (take_the_lead).
         leading = bool(unattended_withheld) and take_the_lead.executive_on()

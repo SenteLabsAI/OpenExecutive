@@ -158,7 +158,8 @@ def summarize_action(
     None is treated as team.
 
     Returns None when:
-      • `tool_name` is not in SIDE_EFFECTING_TOOLS
+      • `tool_name` is not in SIDE_EFFECTING_TOOLS (nor an extension tool
+        with a chip, orchestrator/extensions.py)
       • the tool's parsed result reports an error (so we don't claim
         "DM'd Sara" when Slack returned 4xx)
       • the result is a `not_found` (the target row didn't exist, so nothing
@@ -167,7 +168,10 @@ def summarize_action(
     The returned dict is the SSE event body — chat.py wraps it with
     `data: ` framing. Keep summaries terse; the chip is sized for one line.
     """
-    if tool_name not in SIDE_EFFECTING_TOOLS:
+    from openexecutive.orchestrator import extensions
+
+    extension = tool_name not in SIDE_EFFECTING_TOOLS
+    if extension and not extensions.has_chip(tool_name):
         return None
 
     parsed = _parse_result(tool_result)
@@ -207,6 +211,11 @@ def summarize_action(
     }
     if iteration is not None:
         payload["iteration"] = iteration
+    if extension:
+        # An installed extension's tool (orchestrator/extensions.py) words
+        # its own chip; a link stays inside the app.
+        fields = extensions.chip_fields(tool_name, tool_input, parsed)
+        return {**payload, **fields} if fields is not None else None
 
     if tool_name == "send_slack_dm":
         user_id = tool_input.get("user_id") or "a teammate"

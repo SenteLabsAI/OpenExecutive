@@ -89,6 +89,35 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
 DEFERRED: dict[str, str] = {tool: group for group, (_, tools) in GROUPS.items() for tool in tools}
 
 
+def add_to_group(group: str, purpose: str | None, tool: str) -> None:
+    """Put an extension's tool in ``group`` (orchestrator/extensions.py),
+    creating the group when ``purpose`` says what it is for. Done once at
+    startup, so every turn still sees one fixed set of groups."""
+    if tool in DEFERRED:
+        raise ValueError(f"{tool!r} is already in group {DEFERRED[tool]!r}")
+    if group in GROUPS:
+        current_purpose, tools = GROUPS[group]
+        GROUPS[group] = (current_purpose, (*tools, tool))
+    else:
+        if not (purpose or "").strip():
+            raise ValueError(f"new group {group!r} needs a purpose")
+        GROUPS[group] = (" ".join((purpose or "").split()), (tool,))
+    DEFERRED[tool] = group
+
+
+def remove_from_group(group: str, tool: str) -> None:
+    """Undo add_to_group (tests)."""
+    if DEFERRED.get(tool) != group or group not in GROUPS:
+        return
+    purpose, tools = GROUPS[group]
+    rest = tuple(t for t in tools if t != tool)
+    if rest:
+        GROUPS[group] = (purpose, rest)
+    else:
+        del GROUPS[group]
+    del DEFERRED[tool]
+
+
 def open_tools_tool(offered: Iterable[str]) -> dict[str, Any]:
     """The open_tools definition for a turn whose deferred tools are
     ``offered``: it names only the groups and tools that turn may use, so a
