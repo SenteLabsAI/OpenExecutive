@@ -135,7 +135,6 @@ ACTING_TOOLS: frozenset[str] = frozenset({
     "cancel_calendar_event",
     "create_calendar_event",
     "create_instant_meeting",
-    "delete_skill",
     "message_person",
     "run_workflow",
     "send_company_broadcast",
@@ -144,7 +143,7 @@ ACTING_TOOLS: frozenset[str] = frozenset({
     "send_slack_dm",
     "send_telegram_message",
 })
-_DELETE_TOOLS = frozenset({"archive_person", "cancel_calendar_event", "delete_skill"})
+_DELETE_TOOLS = frozenset({"archive_person", "cancel_calendar_event"})
 _BROADCAST_TOOLS = frozenset({"send_company_broadcast", "send_department_message"})
 # A connected (MCP) tool passes ungated only when its name says it reads and
 # nothing in it says it acts. Any other name goes through the gate.
@@ -1059,7 +1058,6 @@ _TOOL_LABELS: dict[str, str] = {
     "cancel_calendar_event": "Cancel a meeting",
     "create_calendar_event": "Book a meeting",
     "create_instant_meeting": "Start a call",
-    "delete_skill": "Delete a skill",
     "message_person": "Message someone",
     "run_workflow": "Start a workflow",
     "send_company_broadcast": "Message the whole company",

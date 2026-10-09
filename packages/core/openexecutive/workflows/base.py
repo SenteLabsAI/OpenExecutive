@@ -96,6 +96,9 @@ class WorkflowMeta(BaseModel):
     # workflows/playbooks.py. Drives "Follows playbooks" on the workflow page
     # and "Used by workflows" on the Playbooks tab.
     playbooks: list[str] = Field(default_factory=list)
+    # A Quick workflow (workflows/quick.py): one field, one document drafted
+    # by following a playbook that no other workflow follows.
+    quick: bool = False
 
 
 class Workflow(ABC):

@@ -18,7 +18,6 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import quote
 
 from openexecutive.orchestrator import tool_labels
 
@@ -62,10 +61,6 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "remember_fact",
     "forget_fact",
     "update_company_profile",
-    # Skills mutations
-    "create_skill",
-    "update_skill",
-    "delete_skill",
     # Triage / alerts
     "create_alert",
     "ack_alert",
@@ -83,14 +78,6 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # Act as me: a card of actions left for the speaker to approve
     "propose_actions",
 })
-
-
-_PLAYBOOKS_LINK = "/jobs?tab=playbooks"
-
-
-def _draft_link(name: str) -> str:
-    """Chat's playbook changes are drafts; the chip opens the one to review."""
-    return f"{_PLAYBOOKS_LINK}&draft={quote(name)}" if name else _PLAYBOOKS_LINK
 
 
 def _parse_result(tool_result: str) -> dict[str, Any] | None:
@@ -424,25 +411,6 @@ def summarize_action(
         )
         payload["target"] = str(tool_input.get("field") or "") or None
         payload["link"] = "/company-profile"
-    elif tool_name == "create_skill":
-        name = tool_input.get("name", "")
-        payload["summary"] = f"Drafted playbook: {name}" if name else "Drafted a playbook"
-        payload["target"] = name or None
-        payload["link"] = _draft_link(name)
-    elif tool_name == "update_skill":
-        name = tool_input.get("name", "")
-        payload["summary"] = (
-            f"Drafted a change to playbook: {name}" if name else "Drafted a playbook change"
-        )
-        payload["target"] = name or None
-        payload["link"] = _draft_link(name)
-    elif tool_name == "delete_skill":
-        name = tool_input.get("name", "")
-        payload["summary"] = (
-            f"Proposed deleting playbook: {name}" if name else "Proposed deleting a playbook"
-        )
-        payload["target"] = name or None
-        payload["link"] = _draft_link(name)
     elif tool_name == "create_alert":
         headline = (tool_input.get("headline") or "")[:60]
         payload["summary"] = f"Flagged alert: {headline}" if headline else "Flagged alert"

@@ -1,10 +1,11 @@
-"""Playbook changes the Executive proposes from chat, held for a person to review.
+"""Playbook changes the Executive proposed from chat, held for a person to review.
 
-The Executive's chat tools (`create_skill`, `update_skill`, `delete_skill`)
-run on inbound email and chat channels too, so a crafted message could steer
-them. Instead of changing the library directly they save a *draft*; nothing
-takes effect until a person approves it on the Playbooks tab — the same
-draft → human approval shape custom workflows use.
+Chat used to propose playbooks with `create_skill`, `update_skill` and
+`delete_skill`, which ran on inbound email and chat channels too, so they
+saved a *draft* a person approved on the Playbooks tab. Chat no longer
+changes playbooks (it saves repeatable work as a workflow instead), so
+nothing new is drafted; this queue only lets a person approve or discard the
+drafts proposed before, until it goes with the Playbooks tab.
 
 Drafts are JSON files in ``company/skills/.drafts/`` (one per playbook name;
 a newer proposal replaces an older one). They are not ``*.md``, so the

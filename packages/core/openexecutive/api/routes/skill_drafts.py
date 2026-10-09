@@ -1,7 +1,7 @@
 """Review queue for playbook changes the Executive proposed from chat.
 
-See knowledge/skill_drafts.py: chat's create/update/delete_skill only save a
-draft; a person approves or discards it here (the Playbooks tab).
+See knowledge/skill_drafts.py: chat used to save playbook changes as drafts;
+a person approves or discards the ones still waiting here (the Playbooks tab).
 """
 from __future__ import annotations
 

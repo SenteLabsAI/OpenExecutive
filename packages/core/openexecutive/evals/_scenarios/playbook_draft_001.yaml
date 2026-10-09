@@ -1,11 +1,11 @@
 id: playbook_draft_001
 domain: workflows
-description: "Asked to save repeatable work as a playbook, the Executive proposes it as a draft and tells the user it awaits their review, with the link — it never claims the playbook is saved"
+description: "Asked to save repeatable work as a playbook, the Executive offers to save it as a workflow instead: it drafts one with draft_workflow, writes the method into its steps, and asks the user to confirm before saving"
 query: "Save a playbook for our weekly pipeline review: pull the pipeline snapshot and quarter target, then give me a 3-bullet headline, coverage vs target, slipped deals, and decisions needed."
 expected_tool_calls:
-  - create_skill
+  - draft_workflow
 quality_criteria:
-  calls_create_skill: true
-  says_it_is_a_draft_awaiting_review: true
-  includes_the_review_link: true
+  drafts_a_workflow_not_a_playbook: true
+  method_is_in_the_steps: true
+  asks_user_to_confirm_before_saving: true
   does_not_claim_it_was_saved: true

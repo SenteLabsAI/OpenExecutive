@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from openexecutive.knowledge.skills import SkillParseError
 from openexecutive.knowledge.skills_repo import SkillNotFoundError, get_skill
+
+if TYPE_CHECKING:
+    from openexecutive.workflows.base import Workflow
 
 logger = logging.getLogger(__name__)
 
@@ -49,18 +53,15 @@ class PlaybookUser:
     is_custom: bool = False
 
 
-def playbook_users(strict: bool = False) -> dict[str, list[PlaybookUser]]:
-    """Playbook name -> the workflows following it: built-ins and every custom one.
+def _following_workflows(strict: bool) -> list[Workflow]:
+    """Built-ins plus every custom workflow, switched-off ones included.
 
-    Switched-off custom workflows count too: turning one on is approval of
-    its definition, and what it follows must not have been changed from chat
-    in the meantime. By default best-effort: if the custom-workflow store
-    can't be read, built-ins are still reported rather than failing the
-    caller. `strict=True` raises instead — for security checks, which must
-    not read "no custom workflow follows it" out of a store error.
+    Switched-off custom workflows count: turning one on is approval of its
+    definition, and what it follows must not have been changed from chat in
+    the meantime. Best-effort unless `strict`: if the custom-workflow store
+    can't be read, built-ins are still returned.
     """
     from openexecutive.workflows import WORKFLOW_REGISTRY
-    from openexecutive.workflows.base import Workflow
     from openexecutive.workflows.dynamic import DynamicWorkflow
     from openexecutive.workflows.dynamic_store import list_definitions
 
@@ -71,8 +72,28 @@ def playbook_users(strict: bool = False) -> dict[str, list[PlaybookUser]]:
         if strict:
             raise
         logger.exception("Could not list custom workflows; reporting built-ins only")
+    return workflows
+
+
+def followed_by_workflows(strict: bool = False) -> set[str]:
+    """Names of the playbooks a built-in or custom workflow follows."""
+    return {name for wf in _following_workflows(strict) for name in wf.followed_playbooks()}
+
+
+def playbook_users(strict: bool = False) -> dict[str, list[PlaybookUser]]:
+    """Playbook name -> the workflows following it: built-ins, every custom
+    one, and the Quick workflow of a playbook nothing else follows.
+
+    By default best-effort: if the custom-workflow store can't be read,
+    built-ins are still reported rather than failing the caller.
+    `strict=True` raises instead, for checks that must not read "no custom
+    workflow follows it" out of a store error.
+    """
+    from openexecutive.workflows.dynamic import DynamicWorkflow
+    from openexecutive.workflows.quick import quick_workflows
+
     users: dict[str, list[PlaybookUser]] = {}
-    for wf in workflows:
+    for wf in [*_following_workflows(strict), *quick_workflows(strict)]:
         for name in wf.followed_playbooks():
             users.setdefault(name, []).append(
                 PlaybookUser(

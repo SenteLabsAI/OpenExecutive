@@ -44,8 +44,9 @@ from ._agent_loop_fakes import FinalMsg, ScriptedProvider, TextBlock, ToolUseBlo
 # sha256 of EXECUTIVE_PERSONA_PROMPT before it was split into sections. The
 # split must not move a single byte of the team prompt. Updated once since,
 # deliberately: the inbound-email reply step names the `--- REPLY ---` block
-# instead of the Gmail send tool, so it holds for Outlook too.
-TEAM_PERSONA_SHA256 = "419725695c173451666ff8a64849bb13a5fabcbbb8f56ac0c1831e0cf61db5c4"
+# instead of the Gmail send tool, so it holds for Outlook too. And once more:
+# the Skills paragraph saves repeatable work as a workflow, not a playbook.
+TEAM_PERSONA_SHA256 = "1132deffbe673c84c5d69aa93240c0c237904bd612bb1c51ce69967599d10be0"
 
 SOLO_HEADINGS = (
     "## You Work for One Person",

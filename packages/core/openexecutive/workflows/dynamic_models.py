@@ -309,6 +309,10 @@ def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
 
         if defn.name in WORKFLOW_REGISTRY:
             errors.append(f"name {defn.name!r} collides with a built-in workflow")
+        elif defn.name.startswith("quick_"):
+            # Reserved for the Quick workflows derived from playbooks
+            # (workflows/quick.py QUICK_PREFIX).
+            errors.append(f"name {defn.name!r} may not start with 'quick_'")
 
     if not defn.title.strip():
         errors.append("title must not be empty")

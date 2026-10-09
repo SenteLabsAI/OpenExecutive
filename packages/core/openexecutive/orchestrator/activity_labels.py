@@ -50,9 +50,6 @@ _LABELS: dict[str, str] = {
     # Skills
     "search_skills": "Looking through saved skills…",
     "load_skill": "Opening a saved skill…",
-    "create_skill": "Drafting a new playbook…",
-    "update_skill": "Drafting a playbook change…",
-    "delete_skill": "Proposing a playbook deletion…",
 
     # Scheduling and outbound messages
     "schedule_followup": "Scheduling a follow-up…",
@@ -195,9 +192,6 @@ _PRIORITY: tuple[frozenset[str], ...] = (
         "tune_watchlist_entry",
     }),
     frozenset({
-        "create_skill",
-        "update_skill",
-        "delete_skill",
         "propose_form_values",
     }),
 )

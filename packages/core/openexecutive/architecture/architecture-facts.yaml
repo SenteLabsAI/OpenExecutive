@@ -1510,8 +1510,31 @@ knowledge:
     mental model the UI and persona teach: a playbook is HOW the Executive
     does a piece of work (method, template, checklist; no inputs, schedule or
     side effects); a workflow is the runnable job that produces an artifact.
-    Backend names (`/skills`, the five `*_skill` tools, the `skills`
+    Every playbook belongs to a workflow: a built-in or custom one that
+    follows it, or else its own Quick workflow (below). Backend names
+    (`/skills`, the `search_skills` / `load_skill` tools, the `skills`
     collection) are unchanged.
+
+    Quick workflows (workflows/quick.py): one per playbook in effect that no
+    built-in or custom workflow follows (switched-off custom ones count),
+    derived whenever the catalog is read, never stored. Name
+    `quick_<playbook, dashes as underscores>` (custom workflows may not take
+    the `quick_` prefix, validate_definition); WorkflowMeta.quick is true.
+    One required field, `request`; steps context (profile + RAG for the
+    category's specialist) -> draft (that specialist follows the playbook
+    via playbook_clause, one Markdown document). Category -> specialist /
+    section: strategy cso (Growth), finance cfo (Capital), hr chro (People),
+    legal gc (Risk), operations coo (Operating), marketing cmo (Growth),
+    product cpo, board board_comms, sales (Growth), general cso
+    (Operating). list_workflows() = built-ins + Quick + active custom;
+    get_workflow resolves a Quick name after the registry. The 8 built-in
+    playbooks no built-in workflow follows are Quick: board-update-memo,
+    exec-1on1-template ("1:1 agenda"), layoff-comms-plan,
+    positioning-statement, post-mortem-template ("Post-mortem"),
+    customer-interview-plan, feature-prioritization, market-sizing. A
+    company's own playbook shows up as one; hiding a built-in drops it; a
+    custom workflow that starts following one replaces it. If the custom
+    store can't be read, no Quick workflows are offered (unknown followers).
 
     Storage: built-ins ship in git under knowledge/builtin/skills/<category>/;
     company skills in company/skills/<category>/ (gitignored, copied with
@@ -1541,8 +1564,8 @@ knowledge:
       - Hidden built-ins are invisible to search_skills/load_skill and to
         list_skills unless include_hidden; `GET /skills/{name}` still reads
         them so the UI can show one before `POST /skills/{name}/restore`.
-      - create_skill conflicts with every existing name, hidden built-ins
-        included (customizing goes through update).
+      - skills_repo.create_skill conflicts with every existing name, hidden
+        built-ins included (customizing goes through update).
 
     Index reconciliation: `sync_builtin_skill_index` makes the built-in rows
     match "built-ins in effect" (on disk, not hidden, not customized) —
@@ -1552,31 +1575,18 @@ knowledge:
     non-empty, so a built-in added in a release never reached an existing
     install's index.
 
-    Chat proposes, a person approves (knowledge/skill_drafts.py): the
-    create/update/delete_skill tools never change the library — they save a
-    draft JSON in company/skills/.drafts/<name>.json (one per name, newest
-    wins; not *.md, so never listed, indexed, searched, loaded or followed;
-    carried by client slots and cleared by fixture reset with the rest of
-    company/skills). Every save stamps a new `id`; approve (body {id}) and
-    discard (?id=) act only on that version (409 SkillDraftChangedError
-    otherwise), and approval removes the draft only if it is still that
-    version. Drafts also report `followers` (workflows naming the playbook),
-    creates included. The Playbooks tab's "To review" strip approves
-    (POST /skill-drafts/{name}/approve -> the ordinary repo op; 409 keeps
-    the draft on conflict / vanished target), edits then saves, or discards.
-    Chips read "Drafted playbook / Drafted a change to / Proposed deleting"
-    and link to /jobs?tab=playbooks&draft=<name>. The persona must say it's
-    a draft and never claim a playbook was saved.
-
-    Chat tools stay off built-ins: `update_skill` / `delete_skill` in
-    orchestrator/skills_tools.py refuse any name a built-in ships under
-    (code "builtin"), including the company's customized copy. Workflows
-    read built-ins by fixed name and the tool loop also runs on inbound
-    email/Slack/etc., so letting the model customize or hide one would let a
-    crafted message rewrite what board_prep / quarterly_plan follow.
-    Customize / revert / hide / restore are HTTP-only (the Playbooks tab).
-
-    Chat chips: see "Chat proposes, a person approves" above.
+    Chat does not change playbooks: it has only search_skills and
+    load_skill. Repeatable work is saved as a workflow (draft_workflow ->
+    the user confirms -> save_workflow), with the method in its steps; a
+    playbook's body is changed by a person (Playbooks tab, HTTP only:
+    customize / revert / hide / restore). Workflows read playbooks at run
+    time, including approved scheduled custom ones whose later action steps
+    write to already-approved targets unattended, and the tool loop also
+    runs on inbound email/Slack/etc., so no model a crafted message could
+    steer may rewrite one. The old create/update/delete_skill chat tools
+    saved drafts (knowledge/skill_drafts.py, company/skills/.drafts/); none
+    are made any more, and the Playbooks tab's "To review" strip only
+    approves or discards ones proposed before.
 
     Workflows follow playbooks (workflows/playbooks.py): `load_playbook`
     returns the body in effect ("" when hidden, missing or malformed — never
@@ -1590,17 +1600,10 @@ knowledge:
     (board_prep used to also load board-update-memo and never use it; that
     dead load is gone.) Custom workflows: SpecialistStepSpec.playbook,
     validated at save, appended AFTER {field} rendering. playbook_users()
-    feeds SkillMeta.used_by, search_skills hits' `workflows`, and the UI's
-    hide/revert/delete warnings, and the chat-tool guard: update_skill /
-    delete_skill also refuse (code "followed_by_workflow") any company
-    playbook any workflow follows (switched-off custom ones too, via
-    list_definitions(active_only=False)) — an approved scheduled custom
-    workflow reads it at each run and later action steps write to
-    already-approved targets unattended, so a crafted inbound message must
-    not be able to rewrite it. create_skill runs the same follower check
-    (a deleted playbook's name a workflow still follows can't be refilled
-    from chat), and the check uses playbook_users(strict=True): a store
-    error refuses with code "unverifiable" instead of failing open.
+    feeds SkillMeta.used_by, search_skills hits' `workflows` (Quick ones
+    included), and the UI's hide/revert/delete warnings; it counts
+    switched-off custom workflows (list_definitions(active_only=False)), and
+    followed_by_workflows() is the same set without the Quick ones.
     load_playbook catches every exception; a
     custom step whose playbook is unavailable emits a `progress` event.
     Persona routing: a hit with `workflows` +
@@ -3872,8 +3875,7 @@ people:
     private, the entry on everyone's /watchlist); draft_artifact (visible
     to the whole team; its handler refuses too); update_department_goal
     (goal text in every turn's org block and on /today); save_workflow
-    (listed on /jobs); create_skill / update_skill / delete_skill (the
-    shared skill review list); load_mcp_server (connects to any HTTPS URL,
+    (listed on /jobs); load_mcp_server (connects to any HTTPS URL,
     which can itself carry the turn's content — the dispatch guard covers
     MCP tool uses too). Of the MCP tools it may use only
     `schedule_tools.PRIVATE_TURN_MCP_TOOLS` (Google Workspace reads and the
@@ -9391,7 +9393,8 @@ delegation:
     (_guard_outbound), calendar invites name attendees by person id, the
     Executive's Gmail / Outlook send through call_tool checks every
     recipient against _roster_allow_set, remember_fact and update_company_profile keep only the
-    speaker's own words, and playbook changes are drafts a person approves.
+    speaker's own words, and a workflow drafted in chat is saved only once
+    a person confirms it.
     upsert_person runs only for a contact the speaker named this turn
     (lockdown.speaker_named_contact: kind contact, only name, role, email,
     leave and response fields; a word of the name in their own words, in

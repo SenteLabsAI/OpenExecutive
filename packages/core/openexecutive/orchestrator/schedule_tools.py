@@ -1793,8 +1793,6 @@ def unattended_withheld_error(tool_name: str) -> str:
 # - update_department_goal: goal status and progress text render in every
 #   turn's org block and on /today.
 # - save_workflow: the definition is listed on everyone's /jobs.
-# - create_skill, update_skill, delete_skill: the draft goes on the shared
-#   skill review list.
 # - load_mcp_server: connects to any HTTPS URL the model names — the URL
 #   itself can carry the turn's content to a stranger.
 # - read_document: reads company documents and other downloaded files, so a
@@ -1821,8 +1819,6 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "cancel_calendar_event",
     "create_calendar_event",
     "create_instant_meeting",
-    "create_skill",
-    "delete_skill",
     "draft_artifact",
     "forget_fact",
     "load_mcp_server",
@@ -1842,7 +1838,6 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "suggest_workflow",
     "update_company_profile",
     "update_department_goal",
-    "update_skill",
 })
 
 

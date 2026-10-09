@@ -80,10 +80,6 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
             "send_telegram_message",
         ),
     ),
-    "skills": (
-        "create, change or delete skills",
-        ("create_skill", "delete_skill", "update_skill"),
-    ),
 }
 
 DEFERRED: dict[str, str] = {tool: group for group, (_, tools) in GROUPS.items() for tool in tools}

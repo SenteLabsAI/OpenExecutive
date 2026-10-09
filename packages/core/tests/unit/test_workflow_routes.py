@@ -265,7 +265,9 @@ def test_run_visible_to_the_person_it_waits_on(temp_db: Path) -> None:
 
 @pytest.mark.parametrize("workflow", list_workflows(), ids=lambda w: w.name)
 def test_workflow_metadata_is_valid(workflow) -> None:
-    assert workflow.name in WORKFLOW_REGISTRY
+    from openexecutive.workflows.quick import QuickWorkflow
+
+    assert workflow.name in WORKFLOW_REGISTRY or isinstance(workflow, QuickWorkflow)
     assert workflow.title.strip(), f"{workflow.name} has empty title"
     assert workflow.description.strip(), f"{workflow.name} has empty description"
     assert workflow.section, f"{workflow.name} has no section"
@@ -305,8 +307,10 @@ def test_workflow_input_schema_has_properties(workflow) -> None:
 def test_all_workflows_listed_via_api(client: TestClient) -> None:
     r = client.get("/workflows")
     assert r.status_code == 200
+    from openexecutive.workflows.quick import quick_workflows
+
     api_names = {w["name"] for w in r.json()["workflows"]}
-    assert api_names == set(WORKFLOW_REGISTRY.keys())
+    assert api_names == set(WORKFLOW_REGISTRY.keys()) | {w.name for w in quick_workflows()}
 
 
 # -----------------------------------------------------------------------------

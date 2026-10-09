@@ -8,8 +8,8 @@ invoices in it"). Most of what such text could want is already fenced on its
 own: messages, invites and the Executive's own email reach only people on
 the roster or addresses the speaker typed, an email written as them is only
 a draft in their own mailbox until they send it themselves, facts and profile edits keep only
-the speaker's words, and playbook changes wait for a person on the Playbooks
-tab. What is not fenced is a door to the open internet. So from the round it
+the speaker's words, and a workflow drafted in chat is saved only once a
+person confirms it. What is not fenced is a door to the open internet. So from the round it
 runs in until the turn ends, only that stays shut: no outside fetch (a URL
 can carry what the mail said anywhere: ``read_document``, research, the
 watchlist, ``load_mcp_server``, any gateway tool but
@@ -92,9 +92,6 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # A document kept for the person this turn is for, never published on a
     # turn private to the principal (artifact_tools.handle_draft_artifact).
     "draft_artifact",
-    "create_skill",
-    "update_skill",
-    "delete_skill",
     # Facts and profile edits keep only the speaker's own words (fact_tools).
     "remember_fact",
     "forget_fact",

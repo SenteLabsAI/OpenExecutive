@@ -103,7 +103,9 @@ WORKFLOW_REGISTRY: dict[str, Workflow] = {
 def get_workflow(name: str) -> Workflow:
     """Resolve a workflow by name.
 
-    Built-ins win on a name collision (checked first). User-created
+    Built-ins win on a name collision (checked first). A ``quick_`` name is
+    a Quick workflow derived from a playbook (``workflows/quick.py``); custom
+    workflows may not use that prefix. User-created
     ("dynamic") definitions are resolved lazily from the dynamic store and
     wrapped in the generic ``DynamicWorkflow`` engine. Imports are deferred
     to avoid a workflows -> orchestrator -> workflows import cycle.
@@ -111,6 +113,12 @@ def get_workflow(name: str) -> Workflow:
     workflow = WORKFLOW_REGISTRY.get(name)
     if workflow is not None:
         return workflow
+
+    from openexecutive.workflows.quick import get_quick_workflow
+
+    quick = get_quick_workflow(name)
+    if quick is not None:
+        return quick
 
     from openexecutive.workflows.dynamic import DynamicWorkflow
     from openexecutive.workflows.dynamic_store import get_definition
@@ -122,14 +130,16 @@ def get_workflow(name: str) -> Workflow:
 
 
 def list_workflows() -> list[Workflow]:
-    """All runnable workflows: built-ins followed by active dynamic ones."""
-    builtins = list(WORKFLOW_REGISTRY.values())
+    """All runnable workflows: built-ins, then the Quick ones (one per
+    playbook nothing else follows), then active dynamic ones."""
+    builtins: list[Workflow] = list(WORKFLOW_REGISTRY.values())
 
     from openexecutive.workflows.dynamic import DynamicWorkflow
     from openexecutive.workflows.dynamic_store import list_definitions
+    from openexecutive.workflows.quick import quick_workflows
 
     dynamics = [DynamicWorkflow(d) for d in list_definitions(active_only=True)]
-    return builtins + dynamics
+    return builtins + list(quick_workflows()) + dynamics
 
 
 __all__ = [
