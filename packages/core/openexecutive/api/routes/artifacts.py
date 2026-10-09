@@ -47,8 +47,6 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from openexecutive.orchestrator.artifact_formats import get_format
-from openexecutive.orchestrator.extensions import Change, get_collection
-from openexecutive.orchestrator.extensions import notify as notify_collection
 from openexecutive.orchestrator.artifact_records import (
     ArtifactNotFound,
     ArtifactRecord,
@@ -68,6 +66,8 @@ from openexecutive.orchestrator.artifact_records import (
 from openexecutive.orchestrator.artifact_records import (
     set_archived as set_artifact_archived,
 )
+from openexecutive.orchestrator.extensions import Change, get_collection
+from openexecutive.orchestrator.extensions import notify as notify_collection
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
