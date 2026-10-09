@@ -296,8 +296,9 @@ caching:
     may not be one the loop knows (executive.builtin_tool_names). Extension
     tools are never in _ALL_SKILL_TOOLS, so reflection, research and the
     synthesis never get them; the chat loop adds them per turn like the Act
-    as me tools, never on an unattended run or a turn private to the
-    principal, and only where the tool's offered(session) says. That
+    as me tools, never on an unattended run, a turn private to the
+    principal or to a speaker not on the People list, and only where the
+    tool's offered(session) says. That
     predicate must depend only on the kind of turn, so each kind keeps one
     cached tool list. Act as me's lockdown refuses them after a mail read
     (unclassified, fails closed). A tool may sit in a tool group, new or
@@ -309,6 +310,9 @@ caching:
     Documents page shows one filter per collection, and archive, restore and
     delete call the collection's on_change first (502 and no change if it
     raises). draft_artifact(supersedes=) refuses a collection's document.
+    The alert pipeline strips collection: tags, so only an extension's own
+    code files into its collection. A module failing partway through
+    register() is rolled back.
   deferred_tool_groups: |
     The less common skill tools are not in the tool list. orchestrator.
     tool_groups.GROUPS puts them in named groups (calendar, people, goals,

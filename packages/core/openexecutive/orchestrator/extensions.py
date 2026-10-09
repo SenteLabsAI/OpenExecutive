@@ -10,6 +10,8 @@ An extension tool is offered only on a turn someone is in:
   here, and reflection and research build their toolkits from
   ``_ALL_SKILL_TOOLS``, which never holds these;
 - never on a turn private to the principal (mail from one of their contacts);
+- never to a speaker who isn't on the People list (mail from a stranger, an
+  unknown chat user), so text from outside the team can't reach these tools;
 - like every tool Act as me's lockdown has not classified, it is refused once
   the turn has read the owner's mail (``delegation.lockdown`` fails closed);
 - and only where the tool's own ``offered(session)`` says so, which should
@@ -83,7 +85,8 @@ class Collection:
 _tools: dict[str, ExtraTool] = {}
 _collections: dict[str, Collection] = {}
 _loaded = False
-_load_lock = threading.Lock()
+# Reentrant: a register() may read the registry (e.g. get_collection).
+_load_lock = threading.RLock()
 
 
 def _builtin_tool_names() -> frozenset[str]:
@@ -142,6 +145,7 @@ def load() -> None:
 
         names = [n for n in (getattr(get_settings(), "extensions", None) or "").split(",") if n]
         for module_name in names:
+            tools_before, collections_before = set(_tools), set(_collections)
             try:
                 module = importlib.import_module(module_name)
                 register = getattr(module, "register", None)
@@ -150,13 +154,29 @@ def load() -> None:
                 register()
             except Exception:
                 logger.exception("extension %s failed to load; skipped", module_name)
+                # All or nothing: drop what it registered before failing.
+                for name in set(_tools) - tools_before:
+                    _forget_tool(name)
+                for name in set(_collections) - collections_before:
+                    del _collections[name]
         _loaded = True
+
+
+def _forget_tool(name: str) -> None:
+    tool = _tools.pop(name)
+    if tool.group is not None:
+        from openexecutive.orchestrator import tool_groups
+
+        tool_groups.remove_from_group(tool.group, name)
 
 
 def offered_tools(session: Any) -> list[ExtraTool]:
     """The extension tools a turn on ``session`` is offered (the caller has
-    already excluded unattended and private turns). A failing ``offered``
-    counts as not offered."""
+    already excluded unattended and private turns): none unless the speaker
+    is on the People list, then each whose ``offered`` agrees. A failing
+    ``offered`` counts as not offered."""
+    if not isinstance(getattr(session, "caller_person_id", None), int):
+        return []
     load()
     offered: list[ExtraTool] = []
     for tool in _tools.values():
@@ -251,12 +271,8 @@ async def notify(collection_name: str | None, artifact_id: str, change: Change) 
 def _reset_for_tests() -> None:
     """Forget every registration (tests only)."""
     global _loaded
-    from openexecutive.orchestrator import tool_groups
-
-    for tool in _tools.values():
-        if tool.group is not None:
-            tool_groups.remove_from_group(tool.group, tool.name)
-    _tools.clear()
+    for name in list(_tools):
+        _forget_tool(name)
     _collections.clear()
     _loaded = False
 

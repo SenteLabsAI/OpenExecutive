@@ -136,7 +136,40 @@ def test_load_imports_each_named_module_and_skips_a_broken_one(monkeypatch: pyte
     monkeypatch.setattr(extensions, "_loaded", False)
     extensions.load()
     extensions.load()  # once per process
-    assert [t.name for t in extensions.offered_tools(None)] == ["make_widget"]
+    assert [t.name for t in extensions.offered_tools(_session())] == ["make_widget"]
+
+
+def test_a_module_that_fails_halfway_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch) -> None:
+    half = types.ModuleType("oe_ext_half")
+
+    def _register() -> None:
+        extensions.register_tool(_tool("first_tool", group="halfway", group_purpose="p"))
+        extensions.register_collection(Collection(name="halves", label="Halves"))
+        raise RuntimeError("second one broke")
+
+    half.register = _register  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "oe_ext_half", half)
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: SimpleNamespace(extensions="oe_ext_half"))
+    monkeypatch.setattr(extensions, "_loaded", False)
+    extensions.load()
+    assert extensions.offered_tools(_session()) == []
+    assert extensions.get_collection("halves") is None
+    assert "halfway" not in tool_groups.GROUPS and "first_tool" not in tool_groups.DEFERRED
+
+
+def test_a_register_that_reads_the_registry_does_not_hang(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = types.ModuleType("oe_ext_reader")
+
+    def _register() -> None:
+        extensions.register_collection(Collection(name="widgets", label="Widgets"))
+        assert extensions.get_collection("widgets") is not None
+
+    mod.register = _register  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "oe_ext_reader", mod)
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: SimpleNamespace(extensions="oe_ext_reader"))
+    monkeypatch.setattr(extensions, "_loaded", False)
+    extensions.load()
+    assert extensions.get_collection("widgets") is not None
 
 
 def test_the_setting_keeps_only_module_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,6 +255,7 @@ def _results(provider: _Provider, call: int) -> dict[str, str]:
 def _session(**kwargs: Any) -> Any:
     from openexecutive.orchestrator.session import Session
 
+    kwargs.setdefault("caller_person_id", 1)
     return Session(session_id="web:ext", **kwargs)
 
 
@@ -252,8 +286,8 @@ def test_a_grouped_tool_runs_through_use_tool() -> None:
 
 @pytest.mark.parametrize(
     "session_kwargs",
-    [{"unattended": True}, {"private_to_principal": True}],
-    ids=["unattended", "private to the principal"],
+    [{"unattended": True}, {"private_to_principal": True}, {"caller_person_id": None}],
+    ids=["unattended", "private to the principal", "a speaker not on the People list"],
 )
 def test_never_offered_or_run_on_an_unattended_or_private_turn(session_kwargs: dict[str, Any]) -> None:
     tool = _tool()
@@ -278,7 +312,7 @@ def test_a_failing_offered_counts_as_not_offered() -> None:
         raise RuntimeError("boom")
 
     extensions.register_tool(_tool(offered=_boom))
-    assert extensions.offered_tools(None) == []
+    assert extensions.offered_tools(_session()) == []
 
 
 def test_the_mail_lockdown_refuses_it_like_any_unclassified_tool() -> None:

@@ -275,7 +275,9 @@ async def evaluate_and_dispatch(
         headline=decision.headline or (event.subject or event.title or event.source),
         body=decision.body,
         suggested_action=decision.suggested_action,
-        topic_tags=topic_tags,
+        # Only an extension's own code files a document in its collection
+        # (orchestrator/extensions.py): a triaged alert never claims one.
+        topic_tags=[t for t in topic_tags if not t.startswith("collection:")],
         dedup_key=dedup_key,
         routed_to_person_id=routed_to,
         db_path=path,
