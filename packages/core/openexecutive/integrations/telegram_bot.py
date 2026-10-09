@@ -265,6 +265,9 @@ async def _process_and_reply(
 
     response: str | None = None
     async with _chat_lock(chat_id):
+        # Again under the lock: a /new queued behind an earlier turn may have
+        # started the next conversation since this message was picked up.
+        session_id = await asyncio.to_thread(conversation_for, f"telegram:{chat_id}")
         try:
             profile = load_or_create_profile()
             # See the note in slack_bot: lets an approval gate raised in

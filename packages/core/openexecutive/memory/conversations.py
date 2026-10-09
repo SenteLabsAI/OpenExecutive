@@ -153,7 +153,10 @@ def split_existing_streams(
     by the same quiet-gap rule. Returns how many new conversations it made.
 
     Messages move to their conversation's id; the first conversation keeps
-    the base id. Each takes its title from its first message, the stream's
+    the base id. Nothing else moves: decisions and advice are read across the
+    whole stream anyway (``conversation_ids.family_clause``), and the Drive
+    files and searches a conversation remembers (``memory.drive_reads``) stay
+    with the first one, as they would after a cut made live. Each takes its title from its first message, the stream's
     owner, and its read-mail lock (``mark_mail_private``, kept for good since
     the cut can't tell which part read the mail). Bounded by
     ``app_migrations`` like ``episodic.cancel_orphaned_talent_reminders``.

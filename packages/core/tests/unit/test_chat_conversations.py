@@ -314,3 +314,33 @@ def test_later_conversations_pass_the_api_id_checks() -> None:
 
     for pattern in (chat._SESSION_ID_RE, audit._SESSION_ID_RE):
         assert pattern.match("telegram:4242~2") and pattern.match("slack:dm:U1~11")
+
+
+def test_telegram_picks_the_conversation_again_under_the_chat_lock() -> None:
+    """A /new queued behind a running turn starts ~2 before the next message
+    takes the lock; that message must land in ~2, not the one just ended."""
+    calls: list[str] = []
+    answers = iter([BASE, f"{BASE}~2"])
+
+    def pick(base: str) -> str:
+        calls.append(base)
+        return next(answers)
+
+    session = AsyncMock()
+    with (
+        patch("openexecutive.integrations.conversations.conversation_for", side_effect=pick),
+        patch("openexecutive.audit.log_event"),
+        patch("openexecutive.people.store.find_person_by_telegram_chat_id", return_value=None),
+        patch("openexecutive.alerts.pipeline.schedule_evaluation"),
+        patch("openexecutive.knowledge.retriever.retrieve", return_value=""),
+        patch("openexecutive.memory.episodic.format_for_prompt", return_value=""),
+        patch("openexecutive.memory.session_store.load_messages", return_value=[]),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              side_effect=RuntimeError("stop here")),
+        patch("openexecutive.orchestrator.session.Session", new=session),
+        patch.object(telegram_bot, "send_message", new=AsyncMock()),
+    ):
+        asyncio.run(telegram_bot._process_and_reply(
+            message_text="hi", sender_name="Dana", chat_id=4242, message_id=9, token="t",
+        ))
+    assert calls == [BASE, BASE]
