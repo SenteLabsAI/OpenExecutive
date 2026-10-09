@@ -29,11 +29,12 @@ import FeatureName from "@/components/FeatureName";
 // metaFor / groupByRhythm) now lives in ./shared so the header stat strip and
 // these cards agree on how raw scheduled_actions `kind`s map to human groups.
 //
-// The Heartbeat tab of the Pulse page has three views, each its own export:
-// Activity (`RecentActivity`), Rhythm (the default export) and Follow-ups
-// (`FollowUpsCard`). The rhythm card shows the *pending* queue only (the
+// The Pulse overview previews the next few and last few items; these are the
+// full lists behind its links. The Schedule screen shows the rhythm (the
+// default export) and the follow-ups (`FollowUpsCard`); the Activity screen
+// shows `RecentActivity`. The rhythm card shows the *pending* queue only (the
 // upcoming cadence), fetched soonest-first; follow-ups (ad_hoc one-offs) are
-// their own view.
+// their own card, and background scans sit behind "Show background scans".
 
 // Over-fetch cap. The backend can't filter by `kind`, so we pull a generous
 // slice and group client-side; high-frequency system scans are capped at render
@@ -144,7 +145,7 @@ export default function RhythmSection() {
 // `subject` names who/what it was directed at. Ported from the Briefing rail
 // (now removed) so the Pulse shows the same rich rows. The full summary is
 // always rendered as the body, so no information is lost.
-function activityLine(item: ActivityItem): { verb: string; subject: string } {
+export function activityLine(item: ActivityItem): { verb: string; subject: string } {
   switch (item.kind) {
     case "dm_sent":
       return { verb: "DM'd", subject: item.target ?? "a colleague" };
@@ -184,7 +185,7 @@ function activityLine(item: ActivityItem): { verb: string; subject: string } {
 // Kinds whose `subject` IS the full summary: the body row renders the text, so
 // the inline subject span is suppressed to avoid repeating it (only the verb
 // shows inline). Kept beside activityLine so adding a kind is a one-place edit.
-const SUMMARY_KINDS = new Set([
+export const SUMMARY_KINDS = new Set([
   "decision_logged",
   "advice_given",
   "action",
@@ -197,7 +198,7 @@ const SUMMARY_KINDS = new Set([
 ]);
 
 // Take the lead and Handle it for me rows say whose name it acted in.
-function actingAs(item: ActivityItem): string | null {
+export function actingAs(item: ActivityItem): string | null {
   if (item.kind === "sent_as_you") return "As you";
   if (item.kind === "took_the_lead") return "As the Executive";
   return null;
@@ -418,8 +419,8 @@ function RhythmCard({
 }
 
 // ---------------------------------------------------------------------------
-// System pulse — the literal heartbeat (internal scans). Shown like the other
-// rhythm groups (shared SectionHeading) and always expanded. Capped at render
+// System pulse — the literal heartbeat (internal scans). Folded behind "Show
+// background scans", then shown like the other rhythm groups. Capped at render
 // time: under done/all these fire every few minutes, so an uncapped list would
 // bury the user-facing groups above.
 // ---------------------------------------------------------------------------
@@ -427,13 +428,28 @@ function RhythmCard({
 const SYSTEM_PULSE_CAP = 50;
 
 function SystemPulse({ actions }: { actions: ScheduledAction[] }) {
+  // Nothing here is sent to the person, so it stays folded away until asked.
+  const [open, setOpen] = useState(false);
   if (actions.length === 0) return null;
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-expanded={false}
+        className="inline-flex h-10 items-center gap-1.5 rounded-xl px-2 text-sm font-medium text-fg-muted hover:text-fg hover:bg-surface-overlay transition-colors"
+      >
+        <Icon name="chevron-right" size="w-4 h-4" />
+        Show background scans ({actions.length})
+      </button>
+    );
+  }
   const shown = actions.slice(0, SYSTEM_PULSE_CAP);
   const hidden = actions.length - shown.length;
   return (
     <section>
       <SectionHeading
-        title="System pulse"
+        title="Background scans"
         count={actions.length}
         icon="activity"
         tag="Internal · continuous"

@@ -7,7 +7,10 @@ import {
   listDecisions,
   listInitiatives,
   listScheduledActions,
+  type Advice,
   type DailyActivityCount,
+  type Decision,
+  type Initiative,
   type ScheduledAction,
   type WorkspaceMode,
 } from "@/lib/api";
@@ -24,41 +27,40 @@ import {
   LivePulse,
   STAT_VALUE_TONE,
   Skeleton,
-  StatTile,
   groupByRhythm,
   metaFor,
   type StatTone,
 } from "./shared";
 
-// The Pulse page's at-a-glance numbers and its "heartbeat" — a
-// GitHub-contributions-style heatmap of the Executive's self-initiated
-// activity over the last 90 days. Up front sit three headline numbers (beats
-// today, next beat, memories); the rest (rhythm counts and the vitals derived
-// from the heatmap: streaks, totals, trend) sit under "More stats". Every
-// metric is derived from data the page already needs (pending scheduled
-// actions + the three memory lists); only the per-day heatmap requires its own
-// endpoint, since /today/activity returns the last-N items, not a daily
-// timeline. What peer memory learned about the signed-in person is theirs
-// alone (Settings → About you), so it is not counted here.
+// The Pulse page's heartbeat card: a GitHub-contributions-style heatmap of
+// the Executive's self-initiated activity over the last 90 days, beside three
+// headline numbers (done today, the next thing it will do, days in a row).
+// The rest (rhythm counts and the vitals derived from the heatmap: streaks,
+// totals, trend) sit under "More detail" in the same card. Every metric is
+// derived from data the page already needs (pending scheduled actions + the
+// three memory lists, which the memory tiles reuse); only the per-day heatmap
+// requires its own endpoint, since /today/activity returns the last-N items,
+// not a daily timeline. What peer memory learned about the signed-in person
+// is theirs alone (Settings → About you), so it is not counted here.
 
 const HEATMAP_DAYS = 90;
 
 interface HeaderData {
   pending: ScheduledAction[];
-  memoriesTotal: number;
-  /** Initiatives with status "active" — solo's stand-in for dept check-ins. */
-  activeProjects: number;
+  decisions: Decision[];
+  initiatives: Initiative[];
+  advice: Advice[];
   heatmap: DailyActivityCount[];
 }
 
 export interface PulseData {
   data: HeaderData | null;
   loading: boolean;
-  /** Headline numbers first, then the ones under "More stats". */
+  /** Headline numbers first, then the ones under "More detail". */
   stats: { headline: Stat[]; more: Stat[] } | null;
 }
 
-/** Loads everything the Pulse numbers and heatmap need, once per page. */
+/** Loads everything the Pulse numbers, heatmap and memory tiles need, once per page. */
 export function usePulseData(): PulseData {
   const { mode } = useWorkspace();
   const [data, setData] = useState<HeaderData | null>(null);
@@ -78,12 +80,7 @@ export function usePulseData(): PulseData {
     ])
       .then(([pending, decisions, initiatives, advice, daily]) => {
         if (cancelled) return;
-        setData({
-          pending,
-          memoriesTotal: decisions.length + initiatives.length + advice.length,
-          activeProjects: initiatives.filter((i) => i.status === "active").length,
-          heatmap: daily.days,
-        });
+        setData({ pending, decisions, initiatives, advice, heatmap: daily.days });
       })
       .catch((err) => {
         if ((err as Error)?.name !== "AbortError" && !cancelled) setData(null);
@@ -105,56 +102,67 @@ export function usePulseData(): PulseData {
   return { data, loading, stats };
 }
 
-/** The three headline numbers, with the rest folded under "More stats". */
-export function PulseSummary({ pulse }: { pulse: PulseData }) {
+/** The heatmap and its numbers in one card, with the rest under "More detail". */
+export function HeartbeatCard({ pulse }: { pulse: PulseData }) {
   const { data, loading, stats } = pulse;
   const [open, setOpen] = useState(false);
   const moreId = useId();
 
   return (
-    <section aria-label="At a glance" className="space-y-3">
-      <div className="grid grid-cols-3 gap-2 sm:gap-4">
-        {loading || !stats
-          ? Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="rounded-2xl border border-line bg-surface-elevated px-4 py-4 sm:px-5">
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-8 w-12 mt-2" />
-              </div>
-            ))
-          : stats.headline.map((s) => (
-              <StatTile key={s.label} label={s.label} value={s.value} hint={s.hint} tone={s.tone} />
-            ))}
+    <section
+      aria-label="Heartbeat"
+      className="rounded-2xl border border-line bg-surface-elevated p-4 sm:p-6"
+    >
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold text-fg">Heartbeat</h2>
+          <LivePulse />
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-controls={moreId}
+          className="inline-flex h-10 items-center gap-1 rounded-xl px-2 text-sm font-semibold text-accent hover:bg-surface-overlay transition-colors"
+        >
+          {open ? "Less detail" : "More detail"}
+          <Icon
+            name="chevron-right"
+            size="w-4 h-4"
+            className={`transition-transform ${open ? "rotate-90" : ""}`}
+          />
+        </button>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        aria-controls={moreId}
-        className="inline-flex h-10 items-center gap-1.5 rounded-xl px-2 text-sm font-medium text-fg-muted hover:text-fg hover:bg-surface-overlay transition-colors"
-      >
-        <Icon
-          name="chevron-right"
-          size="w-4 h-4"
-          className={`transition-transform ${open ? "rotate-90" : ""}`}
-        />
-        {open ? "Fewer stats" : "More stats"}
-      </button>
+      <div className="flex flex-col-reverse md:flex-row md:items-center gap-5 md:gap-10">
+        <div className="shrink-0 min-w-0">
+          {loading || !data ? <Skeleton className="h-32 w-60" /> : <Heatmap days={data.heatmap} />}
+        </div>
+        <div className="grid grid-cols-3 gap-3 sm:gap-6 flex-1 min-w-0">
+          {loading || !stats
+            ? Array.from({ length: 3 }).map((_, i) => (
+                <div key={i}>
+                  <Skeleton className="h-8 w-12" />
+                  <Skeleton className="h-4 w-20 mt-2" />
+                </div>
+              ))
+            : stats.headline.map((s) => <Headline key={s.label} stat={s} />)}
+        </div>
+      </div>
 
       {open && (
-        <div id={moreId} className="rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5 space-y-5">
+        <div id={moreId} className="border-t border-line mt-5 pt-5">
           <div className={VITALS_GRID}>
-            {loading || !stats
-              ? Array.from({ length: 3 }).map((_, i) => <VitalSkeleton key={i} />)
-              : stats.more.map((s) => (
+            {loading || !stats || !data ? (
+              Array.from({ length: VITALS_COUNT }).map((_, i) => <VitalSkeleton key={i} />)
+            ) : (
+              <>
+                {stats.more.map((s) => (
                   <Vital key={s.label} label={s.label} value={String(s.value)} hint={s.hint} tone={s.tone} />
                 ))}
-          </div>
-          <div className="border-t border-line pt-5">
-            <h3 className="text-sm font-semibold text-fg mb-3">
-              Heartbeat, last {HEATMAP_DAYS} days
-            </h3>
-            {loading || !data ? <VitalsSkeleton /> : <Vitals days={data.heatmap} />}
+                <Vitals days={data.heatmap} />
+              </>
+            )}
           </div>
         </div>
       )}
@@ -162,34 +170,18 @@ export function PulseSummary({ pulse }: { pulse: PulseData }) {
   );
 }
 
-/** The heatmap card at the top of the Heartbeat tab. */
-export function HeartbeatCard({ pulse }: { pulse: PulseData }) {
-  const { data, loading } = pulse;
-  const vitals = useMemo(() => (data ? deriveVitals(data.heatmap) : null), [data]);
+/** A big number with its label under it. */
+function Headline({ stat }: { stat: Stat }) {
   return (
-    <section className="rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <div className="flex items-baseline gap-2 flex-wrap">
-          <h2 className="text-base font-semibold text-fg">Heartbeat</h2>
-          <span className="text-sm text-fg-subtle">last {HEATMAP_DAYS} days</span>
-        </div>
-        <LivePulse />
+    <div className="min-w-0">
+      <div
+        className={`text-2xl sm:text-3xl font-bold tabular-nums leading-tight truncate ${STAT_VALUE_TONE[stat.tone ?? "default"]}`}
+        title={String(stat.value)}
+      >
+        {stat.value}
       </div>
-      <div className="flex flex-col md:flex-row md:items-center gap-5 md:gap-8">
-        <div className="shrink-0 min-w-0">
-          {loading || !data ? <Skeleton className="h-32 w-60" /> : <Heatmap days={data.heatmap} />}
-        </div>
-        {vitals && data && (
-          <p className="text-[15px] text-fg-muted leading-relaxed">
-            <span className="text-fg font-semibold">{plural(vitals.total, "beat")}</span> on{" "}
-            {vitals.activeDays} of {data.heatmap.length} days.
-            <br />
-            Current streak:{" "}
-            <span className="text-fg font-semibold">{plural(vitals.currentStreak.days, "day")}</span>
-          </p>
-        )}
-      </div>
-    </section>
+      <div className="text-sm text-fg-muted mt-1 line-clamp-2">{stat.label}</div>
+    </div>
   );
 }
 
@@ -205,33 +197,40 @@ export interface Stat {
 }
 
 function deriveStats(
-  { pending, memoriesTotal, activeProjects, heatmap }: HeaderData,
+  { pending, initiatives, heatmap }: HeaderData,
   mode: WorkspaceMode,
 ): { headline: Stat[]; more: Stat[] } {
   const groups = groupByRhythm(pending);
   const followups = pending.filter((a) => a.kind === "ad_hoc").length;
+  const activeProjects = initiatives.filter((i) => i.status === "active").length;
 
-  // Soonest pending fire = the literal "next beat". One whose time has
-  // passed is waiting for the scheduler's next tick, so it reads "Due now".
-  const soonest = pending.reduce<ScheduledAction | null>((best, a) => {
-    if (!best) return a;
-    return a.run_at.localeCompare(best.run_at) < 0 ? a : best;
-  }, null);
-  const nextBeat = soonest
-    ? { value: formatNextBeat(soonest.run_at) || "soon", hint: metaFor(soonest).label }
-    : { value: "—", hint: "nothing scheduled" };
+  // The next thing it will do for you. Background scans fire every few
+  // minutes, so counting them would make this read "Due now" all day. One
+  // whose time has passed is waiting for the scheduler's next tick.
+  const soonest = pending
+    .filter((a) => metaFor(a).group !== "system")
+    .reduce<ScheduledAction | null>(
+      (best, a) => (!best || a.run_at.localeCompare(best.run_at) < 0 ? a : best),
+      null,
+    );
+  const nextLabel = soonest ? formatNextBeat(soonest.run_at) || "soon" : "";
+  const next: Stat = soonest
+    ? {
+        label: nextLabel === "Due now" ? `${nextName(soonest)} is due` : `until ${nextName(soonest)}`,
+        value: nextLabel === "Due now" ? "Now" : nextLabel.replace(/^in /, ""),
+        tone: "accent",
+      }
+    : { label: "nothing scheduled", value: "—", tone: "accent" };
 
   // The heatmap is oldest → newest, so the last entry is today.
-  const beatsToday = heatmap.length > 0 ? heatmap[heatmap.length - 1].count : 0;
-
-  // The three episodic lists the Memory tabs show.
-  const memories: Stat = { label: "Memories", value: memoriesTotal, hint: "decisions, initiatives, advice" };
+  const doneToday = heatmap.length > 0 ? heatmap[heatmap.length - 1].count : 0;
+  const streak = deriveVitals(heatmap).currentStreak.days;
 
   return {
     headline: [
-      { label: "Beats today", value: beatsToday, tone: "emerald", hint: "actions fired" },
-      { label: "Next beat", value: nextBeat.value, tone: "accent", hint: nextBeat.hint },
-      memories,
+      { label: "done today", value: doneToday, tone: "emerald" },
+      next,
+      { label: streak === 1 ? "day in a row" : "days in a row", value: streak },
     ],
     more: [
       { label: "Daily rhythms", value: groups.daily.length },
@@ -244,11 +243,19 @@ function deriveStats(
   };
 }
 
+/** "the morning brief", "a follow-up": the next action's name, in a sentence. */
+function nextName(action: ScheduledAction): string {
+  if (action.kind === "ad_hoc") return "a follow-up";
+  const label = metaFor(action).label;
+  return `the ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+}
+
 // --------------------------------------------------------------------------- #
 // Vitals — summary numbers beside the heatmap, derived from the same counts
 // --------------------------------------------------------------------------- #
 
-const VITALS_COUNT = 6;
+// The three counts plus the six vitals.
+const VITALS_COUNT = 9;
 
 const TREND_TONE: Record<TrendDirection, StatTone> = {
   up: "emerald",
@@ -291,7 +298,7 @@ function Vitals({ days }: { days: DailyActivityCount[] }) {
   const { trend } = v;
 
   return (
-    <div className={VITALS_GRID}>
+    <>
       <Vital
         label="Current streak"
         value={plural(v.currentStreak.days, "day")}
@@ -307,7 +314,7 @@ function Vitals({ days }: { days: DailyActivityCount[] }) {
       <Vital label="Longest streak" value={plural(v.longestStreak, "day")} />
       <Vital
         label={`${days.length}-day total`}
-        value={plural(v.total, "beat")}
+        value={plural(v.total, "action")}
         hint={`on ${v.activeDays} of ${days.length} days`}
       />
       <Vital
@@ -325,7 +332,7 @@ function Vitals({ days }: { days: DailyActivityCount[] }) {
         hint={trend.windowDays > 0 ? `${trend.current} vs ${trend.prior}` : undefined}
         tone={TREND_TONE[trend.direction]}
       />
-    </div>
+    </>
   );
 }
 
@@ -334,16 +341,6 @@ function VitalSkeleton() {
     <div>
       <Skeleton className="h-3 w-20" />
       <Skeleton className="h-6 w-14 mt-2" />
-    </div>
-  );
-}
-
-function VitalsSkeleton() {
-  return (
-    <div className={VITALS_GRID}>
-      {Array.from({ length: VITALS_COUNT }).map((_, i) => (
-        <VitalSkeleton key={i} />
-      ))}
     </div>
   );
 }

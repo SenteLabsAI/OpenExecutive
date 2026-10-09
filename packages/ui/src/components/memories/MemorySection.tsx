@@ -17,107 +17,38 @@ import {
 } from "@/lib/api";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import SectionTabs from "@/components/ui/SectionTabs";
 import CorrectionsTab from "./CorrectionsTab";
 import HistoryTab from "./HistoryTab";
+import type { MemoryView } from "@/lib/pulseView";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
-
-type MemoryTab = "decisions" | "initiatives" | "advice" | "corrections" | "history";
-
-export const MEMORY_TABS: readonly MemoryTab[] = [
-  "decisions",
-  "initiatives",
-  "advice",
-  "corrections",
-  "history",
-];
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 
+// Counts are shown on the Pulse overview's tiles, not here.
+const ignoreCount = () => {};
+
 // ---------------------------------------------------------------------------
-// Section shell — the "what it knows" half of the Pulse page.
+// One memory list, on its own screen behind a Pulse tile.
 // ---------------------------------------------------------------------------
 
-export default function MemorySection() {
-  const [tab, setTab] = useState<MemoryTab>("decisions");
-  // Each tab reports its row count so the tab labels can carry a live badge.
-  // All tabs stay mounted (inactive ones hidden) so every count loads up
-  // front; a tab's own edit/delete re-runs its refresh, which reports the new
-  // length back here, keeping that tab's badge correct.
-  const [counts, setCounts] = useState<Record<MemoryTab, number | null>>({
-    decisions: null,
-    initiatives: null,
-    advice: null,
-    corrections: null,
-    history: null,
-  });
-  // History (Always in the loop) is the signed-in person's own notes: it goes
-  // away for anyone with none to see (not signed in, not on the roster).
-  const [historyEnabled, setHistoryEnabled] = useState<boolean | null>(null);
-  // Stable per-tab callbacks — these are passed to the (always-mounted) tabs as
-  // `onCount`, which lives in each tab's `refresh` useCallback deps. They MUST
-  // keep a constant identity across renders, or the tab's refresh→useEffect
-  // chain would re-fire every render and loop forever. (Do NOT inline a
-  // `setCount(tab)` factory here.)
-  const onCountDecisions = useCallback((n: number) => setCounts((c) => ({ ...c, decisions: n })), []);
-  const onCountInitiatives = useCallback((n: number) => setCounts((c) => ({ ...c, initiatives: n })), []);
-  const onCountAdvice = useCallback((n: number) => setCounts((c) => ({ ...c, advice: n })), []);
-  const onCountCorrections = useCallback(
-    (n: number) => setCounts((c) => ({ ...c, corrections: n })),
-    [],
-  );
-  const onCountHistory = useCallback(
-    (n: number | null) => setCounts((c) => ({ ...c, history: n })),
-    [],
-  );
-  const onHistoryAvailable = useCallback((available: boolean) => setHistoryEnabled(available), []);
-
-  useEffect(() => {
-    if (historyEnabled === false && tab === "history") setTab("decisions");
-  }, [historyEnabled, tab]);
-
-  // `/memories?tab=corrections` (the chat chip after remember_fact) opens
-  // that tab. Read once on mount from the URL, so the page needs no Suspense
-  // boundary for useSearchParams.
-  useEffect(() => {
-    const wanted = new URLSearchParams(window.location.search).get("tab");
-    if (wanted && (MEMORY_TABS as readonly string[]).includes(wanted)) setTab(wanted as MemoryTab);
-  }, []);
-
-  const tabs: MemoryTab[] = MEMORY_TABS.filter((t) => !(t === "history" && historyEnabled === false));
+export default function MemoryList({ view }: { view: MemoryView }) {
+  // History (Always in the loop) is the signed-in person's own notes; someone
+  // with none to see (not signed in, not on the roster) gets a plain message.
+  const [historyAvailable, setHistoryAvailable] = useState(true);
+  const onHistoryAvailable = useCallback((available: boolean) => setHistoryAvailable(available), []);
 
   return (
-    <div>
-      <SectionTabs
-        label="Memory"
-        className="mb-4"
-        active={tab}
-        onChange={setTab}
-        tabs={tabs.map((t) => ({
-          id: t,
-          label: t.charAt(0).toUpperCase() + t.slice(1),
-          badge: counts[t],
-        }))}
-      />
-
-      {/* All tabs stay mounted (inactive ones hidden) so every count loads. */}
-      <div className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5 py-1">
-        <div className={tab === "decisions" ? "" : "hidden"}>
-          <DecisionsTab onCount={onCountDecisions} />
-        </div>
-        <div className={tab === "initiatives" ? "" : "hidden"}>
-          <InitiativesTab onCount={onCountInitiatives} />
-        </div>
-        <div className={tab === "advice" ? "" : "hidden"}>
-          <AdviceTab onCount={onCountAdvice} />
-        </div>
-        <div className={tab === "corrections" ? "" : "hidden"}>
-          <CorrectionsTab onCount={onCountCorrections} />
-        </div>
-        <div className={tab === "history" ? "" : "hidden"}>
-          <HistoryTab onCount={onCountHistory} onAvailable={onHistoryAvailable} />
-        </div>
-      </div>
+    <div className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5 py-1">
+      {view === "decisions" && <DecisionsTab onCount={ignoreCount} />}
+      {view === "initiatives" && <InitiativesTab onCount={ignoreCount} />}
+      {view === "advice" && <AdviceTab onCount={ignoreCount} />}
+      {view === "corrections" && <CorrectionsTab onCount={ignoreCount} />}
+      {view === "history" &&
+        (historyAvailable ? (
+          <HistoryTab onCount={ignoreCount} onAvailable={onHistoryAvailable} />
+        ) : (
+          <EmptyState message="There are no notes for you here. They're kept for people on the People list, once they're signed in." />
+        ))}
     </div>
   );
 }

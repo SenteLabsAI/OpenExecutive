@@ -3,7 +3,7 @@
 // sections — and the redesigned PulseHeader — can reuse them without
 // duplication. Holds three things: domain/format helpers, the scheduled-action
 // "rhythm" taxonomy (used by both the header stat strip and CadenceSection),
-// and a handful of presentational primitives (StatTile, LivePulse, etc.).
+// and a handful of presentational primitives (LivePulse, SectionHeading, etc.).
 
 import Icon, { type IconName } from "@/components/Icon";
 import type { ScheduledAction, WorkspaceMode } from "@/lib/api";
@@ -172,29 +172,6 @@ export const STAT_VALUE_TONE: Record<StatTone, string> = {
   emerald: "text-emerald-500",
   amber: "text-amber-500",
 };
-
-/** A single at-a-glance metric: label, big number, optional hint. */
-export function StatTile({
-  label,
-  value,
-  hint,
-  tone = "default",
-}: {
-  label: string;
-  value: string | number;
-  hint?: string;
-  tone?: StatTone;
-}) {
-  return (
-    <div className="rounded-2xl border border-line bg-surface-elevated px-3 py-3 sm:px-5 sm:py-4 min-w-0">
-      <div className="text-sm font-medium text-fg-muted leading-snug">{label}</div>
-      <div className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight tabular-nums leading-tight break-words ${STAT_VALUE_TONE[tone]}`}>
-        {value}
-      </div>
-      {hint && <div className="text-sm text-fg-subtle mt-0.5 leading-snug line-clamp-2">{hint}</div>}
-    </div>
-  );
-}
 
 /**
  * "Live" indicator: a beating emerald dot + optional label. The ping animation
