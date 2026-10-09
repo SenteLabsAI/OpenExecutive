@@ -54,8 +54,9 @@ _TITLE_MAX_LEN = 60
 # newline forges a log record) and makes mis-attribution trivially easy.
 # Same charset as api.routes.audit._SESSION_ID_RE, which already had to
 # defend the read side against integration-derived ids; it is wide enough for
-# every real form ("slack:thread:C1:1700000000.001", "email:x@host", uuid4).
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=]{1,256}$")
+# every real form ("slack:thread:C1:1700000000.001", "email:x@host", uuid4,
+# "telegram:123~2" for a later conversation of a chat app, memory.conversation_ids).
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=~]{1,256}$")
 
 
 def _clean_session_id(session_id: str | None) -> str | None:

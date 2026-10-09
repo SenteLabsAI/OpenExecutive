@@ -103,11 +103,15 @@ def _scoped_to_session(candidates: list[dict], session_ids: Sequence[str]) -> li
     the exact #136 failure one surface over. The adapter that double-writes
     history across two session ids must offer both here too.
     """
-    accepted = {sid for sid in session_ids if sid}
+    from openexecutive.memory.conversation_ids import base_session_id
+
+    # A chat app's stream is cut into conversations (memory.conversations);
+    # a question asked in one is still answered by a reply in a later one.
+    accepted = {base_session_id(sid) for sid in session_ids if sid}
     out = []
     for run in candidates:
         origin = str(_parse_state(run).get("origin_session_id") or "")
-        if origin and origin not in accepted:
+        if origin and base_session_id(origin) not in accepted:
             continue
         out.append(run)
     return out

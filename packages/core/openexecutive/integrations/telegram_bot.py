@@ -154,11 +154,14 @@ async def _process_and_reply(
     ``attachment_file_ids`` is a list of ``(file_id, filename, content_type)``
     tuples for any files or photos attached to the message.
     """
-    # Deterministic per-chat session id — stamped on every audit row (inbound,
+    # Per-conversation session id — stamped on every audit row (inbound,
     # chat_turn, specialist_consult, tool_invocation) so a single request can
     # be followed end-to-end in /audit. Must match the value used when the
-    # Session is constructed below.
-    session_id = f"telegram:{chat_id}"
+    # Session is constructed below. The chat is one stream, `telegram:{chat_id}`,
+    # cut into conversations after a quiet gap or a /new (memory.conversations).
+    from openexecutive.integrations.conversations import conversation_for
+
+    session_id = await asyncio.to_thread(conversation_for, f"telegram:{chat_id}")
 
     from openexecutive.audit import log_event as audit_log
     audit_log(
@@ -262,6 +265,9 @@ async def _process_and_reply(
 
     response: str | None = None
     async with _chat_lock(chat_id):
+        # Again under the lock: a /new queued behind an earlier turn may have
+        # started the next conversation since this message was picked up.
+        session_id = await asyncio.to_thread(conversation_for, f"telegram:{chat_id}")
         try:
             profile = load_or_create_profile()
             # See the note in slack_bot: lets an approval gate raised in
@@ -370,6 +376,26 @@ async def _process_and_reply(
             logger.exception(
                 "Telegram: failed to persist turn for session %s", session_id
             )
+        else:
+            from openexecutive.integrations.conversations import title_after_turn
+
+            title_after_turn(session_id, message_text, response)
+
+
+async def _start_fresh_and_reply(chat_id: int, token: str) -> None:
+    """Answer /new: start a new conversation in this chat and say so."""
+    from openexecutive.integrations.conversations import start_fresh
+    from openexecutive.people.store import find_person_by_telegram_chat_id
+
+    async with _chat_lock(chat_id):
+        person = await asyncio.to_thread(find_person_by_telegram_chat_id, str(chat_id))
+        reply = await asyncio.to_thread(
+            start_fresh, f"telegram:{chat_id}", person.id if person is not None else None
+        )
+    try:
+        await send_message(token, chat_id, reply)
+    except Exception:
+        logger.exception("Telegram: failed to confirm /new for chat %s", chat_id)
 
 
 # Known bot commands that should be stripped before passing to the Executive.
@@ -572,6 +598,14 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
 
     # Require either text or at least one attachment to proceed.
     if not text and not attachment_file_ids:
+        return {}
+
+    from openexecutive.integrations.conversations import is_new_conversation_command
+
+    if not attachment_file_ids and is_new_conversation_command(text):
+        background_tasks.add_task(
+            _start_fresh_and_reply, chat_id=chat_id, token=settings.telegram_bot_token
+        )
         return {}
 
     background_tasks.add_task(

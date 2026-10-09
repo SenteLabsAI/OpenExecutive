@@ -549,6 +549,12 @@ async def create_slack_app():
             thread_ts=str(thread_ts or ""),
             is_threaded_reply=is_threaded_reply,
         )
+        # A DM or a person's mentions in one channel is one endless stream;
+        # it is cut into conversations after a quiet gap or a "new chat"
+        # (memory.conversations). Threads are left as they are.
+        from openexecutive.integrations.conversations import conversation_for
+
+        session_id = await asyncio.to_thread(conversation_for, session_id)
 
         # Fetch thread replies ONCE up front so we can use the result for
         # (a) the "has the bot engaged?" check on thread_continuation mode,
@@ -711,6 +717,18 @@ async def create_slack_app():
                     session_id,
                     exc_info=True,
                 )
+            return
+
+        # "new chat" (or /new) starts a fresh conversation instead of a turn.
+        from openexecutive.integrations.conversations import (
+            is_new_conversation_command,
+            start_fresh,
+        )
+        from openexecutive.memory.conversation_ids import is_rolling
+
+        if not files and is_rolling(session_id) and is_new_conversation_command(cleaned):
+            reply = await asyncio.to_thread(start_fresh, session_id, sender_person.id)
+            await say(text=reply, thread_ts=thread_ts)
             return
 
         # WaitForHuman inbound resolver — check BEFORE alert triage.
@@ -1002,6 +1020,9 @@ async def create_slack_app():
                     also_session_id=also_session_id,
                     sender_person_id=sender_person.id,
                 )
+                from openexecutive.integrations.conversations import title_after_turn
+
+                title_after_turn(session_id, own_words, response)
 
         except Exception as exc:
             # Correlate the traceback with the audit trail. Without the

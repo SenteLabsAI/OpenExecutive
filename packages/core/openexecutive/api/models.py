@@ -234,6 +234,10 @@ class SessionSummary(BaseModel):
     created_at: str
     updated_at: str
     message_count: int = 0
+    # Set only on a search (`GET /sessions?q=`): how many messages contain the
+    # words (0 when only the title does) and the newest one around the match.
+    match_count: int | None = None
+    snippet: str | None = None
 
 
 class TargetCustomerData(BaseModel):

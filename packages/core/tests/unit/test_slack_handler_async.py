@@ -128,6 +128,11 @@ class _Harness:
         self.store = _FakeSessionStore()
         self.episodic_kwargs: list[dict[str, Any]] = []
         self.person = _person()
+        # Which conversation of a stream a message lands in
+        # (integrations.conversations); identity unless a test cuts one.
+        self.conversation: dict[str, str] = {}
+        self.titled: list[str] = []
+        self.fresh = MagicMock(return_value="Started a fresh conversation.")
 
     def _record_episodic(self, *_: Any, **kwargs: Any) -> str:
         self.episodic_kwargs.append(kwargs)
@@ -164,6 +169,11 @@ class _Harness:
                   return_value="WARM_STORE"),
             patch("openexecutive.workflows.inbound_resolver.resolve_inbound_message",
                   new=AsyncMock(return_value=None)),
+            patch("openexecutive.integrations.conversations.conversation_for",
+                  side_effect=lambda sid: self.conversation.get(sid, sid)),
+            patch("openexecutive.integrations.conversations.title_after_turn",
+                  side_effect=lambda sid, *_a: self.titled.append(sid)),
+            patch("openexecutive.integrations.conversations.start_fresh", new=self.fresh),
             exec_patch,
         ]
         for p in self._patches:
@@ -1198,3 +1208,33 @@ async def test_a_failed_startup_identity_lookup_is_retried(monkeypatch: pytest.M
         clock[0] += 120  # resolved: never asked again
         await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
         client.auth_test.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_chat_in_a_dm_starts_a_fresh_conversation_instead_of_a_turn() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            await listeners["handle_message"](
+                event=dict(DM_EVENT, text="new chat"), say=h.say, client=h.client
+            )
+
+            h.fresh.assert_called_once_with("slack:dm:U123", 7)
+            h.say.assert_awaited_once()
+            assert h.say.await_args.kwargs["text"] == "Started a fresh conversation."
+            h.chat.assert_not_awaited()
+            assert h.store.messages == {}
+
+
+@pytest.mark.asyncio
+async def test_a_dm_after_the_gap_is_saved_and_titled_as_the_next_conversation() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.conversation["slack:dm:U123"] = "slack:dm:U123~2"
+            await listeners["handle_message"](
+                event=dict(DM_EVENT), say=h.say, client=h.client
+            )
+
+            assert h.chat.await_args.kwargs["session"].session_id == "slack:dm:U123~2"
+            assert list(h.store.created) == ["slack:dm:U123~2"]
+            assert h.titled == ["slack:dm:U123~2"]
+            h.fresh.assert_not_called()

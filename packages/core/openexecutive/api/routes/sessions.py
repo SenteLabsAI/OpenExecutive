@@ -18,14 +18,20 @@ from openexecutive.memory.session_store import (
     get_session_metadata,
     list_sessions,
     load_messages,
+    search_sessions,
     set_message_feedback,
 )
 
 router = APIRouter()
 
 
-@router.get("/sessions", response_model=list[SessionSummary])
-def get_sessions(request: Request) -> list[SessionSummary]:
+_MAX_QUERY_CHARS = 200
+
+
+@router.get("/sessions", response_model=list[SessionSummary], response_model_exclude_none=True)
+def get_sessions(request: Request, q: str = "") -> list[SessionSummary]:
+    """The caller's chats, newest first. With ``q``, only those whose title
+    or messages contain it, each with a snippet of the newest match."""
     caller_person_id = _resolve_caller_person_id(request)
     if caller_person_id is None:
         # Either a signed-in user whose email isn't in the roster, or no
@@ -33,6 +39,9 @@ def get_sessions(request: Request) -> list[SessionSummary]:
         # have no chats to see — return empty rather than leaking the
         # legacy NULL-owner rows.
         return []
+    query = q.strip()[:_MAX_QUERY_CHARS]
+    if query:
+        return [SessionSummary(**s) for s in search_sessions(caller_person_id, query)]
     return [SessionSummary(**s) for s in list_sessions(caller_person_id)]
 
 

@@ -6,6 +6,7 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import type { SessionSummary } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/relativeTime";
+import { highlightParts, matchLabel } from "@/lib/chatSearch";
 import { CHANNEL_LABELS, sessionChannel, sessionTitle } from "@/lib/sessionChannel";
 import { groupSessionsByDate, type GroupKey } from "@/lib/sessionGroups";
 
@@ -17,6 +18,8 @@ interface ChatHistoryProps {
   sessions: SessionSummary[];
   /** While a search is active every group is forced open so no match is hidden. */
   searching: boolean;
+  /** The words the server searched for, to mark in each result's snippet. */
+  query?: string;
   onSelect: (sessionId: string) => void;
   /** Deletes after the row has asked; resolves false when it failed. */
   onDelete: (sessionId: string) => Promise<boolean>;
@@ -24,7 +27,7 @@ interface ChatHistoryProps {
 
 // Date-grouped conversation list for /chats — the full history the sidebar's
 // short Recent list links to.
-export default function ChatHistory({ sessions, searching, onSelect, onDelete }: ChatHistoryProps) {
+export default function ChatHistory({ sessions, searching, query = "", onSelect, onDelete }: ChatHistoryProps) {
   const [collapsedOverride, setCollapsedOverride] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Set<string>>(new Set());
 
@@ -70,7 +73,7 @@ export default function ChatHistory({ sessions, searching, onSelect, onDelete }:
             {!collapsed && (
               <div className="mt-1 space-y-2">
                 {visible.map((s) => (
-                  <ChatRow key={s.session_id} session={s} onSelect={onSelect} onDelete={onDelete} />
+                  <ChatRow key={s.session_id} session={s} query={query} onSelect={onSelect} onDelete={onDelete} />
                 ))}
                 {hiddenCount > 0 && (
                   <button
@@ -92,10 +95,12 @@ export default function ChatHistory({ sessions, searching, onSelect, onDelete }:
 
 function ChatRow({
   session,
+  query,
   onSelect,
   onDelete,
 }: {
   session: SessionSummary;
+  query: string;
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => Promise<boolean>;
 }) {
@@ -104,7 +109,9 @@ function ChatRow({
   const [deleting, setDeleting] = useState(false);
   const [failed, setFailed] = useState(false);
   const channel = sessionChannel(session.session_id);
-  const messages = `${session.message_count} message${session.message_count === 1 ? "" : "s"}`;
+  const messages =
+    matchLabel(session.match_count) ??
+    `${session.message_count} message${session.message_count === 1 ? "" : "s"}`;
 
   const confirmDelete = async () => {
     setDeleting(true);
@@ -136,6 +143,19 @@ function ChatRow({
           <span className="block text-sm text-fg-subtle mt-0.5">
             {formatRelativeTime(session.updated_at)} · {messages}
           </span>
+          {session.snippet && (
+            <span className="block text-sm text-fg-muted mt-1.5 line-clamp-2 break-words">
+              {highlightParts(session.snippet, query).map((p, i) =>
+                p.match ? (
+                  <mark key={i} className="bg-accent/25 text-fg rounded px-0.5">
+                    {p.text}
+                  </mark>
+                ) : (
+                  <span key={i}>{p.text}</span>
+                ),
+              )}
+            </span>
+          )}
         </button>
         <OverflowMenu
           label="More actions for this chat"

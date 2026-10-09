@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from openexecutive.memory.conversation_ids import is_rolling
 from openexecutive.memory.drive_reads import delete_session_drive_memory
 from openexecutive.memory.episodic import DB_PATH, _get_conn
 
@@ -186,7 +187,98 @@ def list_sessions(
             """,
             (caller_person_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    # A chat-app conversation started with /new has a row before it has a
+    # word in it; it shows once the first turn lands.
+    return [
+        dict(row) for row in rows
+        if row["message_count"] or not is_rolling(str(row["session_id"]))
+    ]
+
+
+_SEARCH_LIMIT = 50
+_SNIPPET_CHARS = 160
+
+
+def _like_pattern(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _snippet(content: str, query: str) -> str:
+    """About ``_SNIPPET_CHARS`` of ``content`` around the first match of
+    ``query``, on one line, with … where it was cut."""
+    text = " ".join(str(content or "").split())
+    at = text.lower().find(query.lower())
+    if at < 0:
+        return text[:_SNIPPET_CHARS] + ("…" if len(text) > _SNIPPET_CHARS else "")
+    lead = max(0, (_SNIPPET_CHARS - len(query)) // 3)
+    start = max(0, at - lead)
+    if start:
+        space = text.find(" ", start)
+        start = space + 1 if 0 <= space < at else start
+    end = min(len(text), start + _SNIPPET_CHARS)
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def search_sessions(
+    caller_person_id: int,
+    query: str,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """The caller's own chats whose title or messages contain ``query``
+    (case-insensitive), newest first, at most ``_SEARCH_LIMIT``.
+
+    Scoped exactly like ``list_sessions`` (the caller's own rows), so nobody
+    else's conversation can match. Each row adds ``match_count`` (how many
+    messages contain the words; 0 when only the title does) and ``snippet``
+    (the newest matching message around the match, prefixed with who said
+    it), or None for a title-only match."""
+    q = " ".join(query.split())
+    if not q or not db_path.exists():
+        return []
+    pattern = _like_pattern(q)
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT s.session_id, s.title, s.created_at, s.updated_at,
+                   (SELECT COUNT(*) FROM chat_messages m
+                     WHERE m.session_id = s.session_id) AS message_count,
+                   (SELECT COUNT(*) FROM chat_messages m
+                     WHERE m.session_id = s.session_id
+                       AND m.content LIKE ? ESCAPE '\\') AS match_count,
+                   s.title LIKE ? ESCAPE '\\' AS title_match
+            FROM sessions s
+            WHERE s.caller_person_id = ?
+            ORDER BY s.updated_at DESC
+            """,
+            (pattern, pattern, caller_person_id),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not row["message_count"] and is_rolling(str(row["session_id"])):
+                continue
+            if not row["match_count"] and not row["title_match"]:
+                continue
+            item = {
+                k: row[k]
+                for k in ("session_id", "title", "created_at", "updated_at",
+                          "message_count", "match_count")
+            }
+            item["snippet"] = None
+            if row["match_count"]:
+                hit = conn.execute(
+                    "SELECT role, content FROM chat_messages "
+                    "WHERE session_id = ? AND content LIKE ? ESCAPE '\\' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (row["session_id"], pattern),
+                ).fetchone()
+                if hit is not None:
+                    who = "You" if hit["role"] == "user" else "Executive"
+                    item["snippet"] = f"{who}: {_snippet(hit['content'], q)}"
+            out.append(item)
+            if len(out) >= _SEARCH_LIMIT:
+                break
+    return out
 
 
 def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:

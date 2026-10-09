@@ -2048,3 +2048,82 @@ def test_is_rostered_fails_closed_when_the_roster_lookup_raises():
         side_effect=RuntimeError("db is locked"),
     ):
         assert db._is_rostered("123") is False
+
+
+# --------------------------------------------------------------------------- #
+# _handle_message — conversations within a DM (integrations.conversations)
+# --------------------------------------------------------------------------- #
+
+def _conversation_patches(*, conversation: str, fresh: MagicMock, titled: list[str]):
+    return (
+        patch("openexecutive.people.store.find_person_by_discord_id", return_value=MagicMock(id=42)),
+        patch("openexecutive.alerts.pipeline.schedule_evaluation"),
+        patch("openexecutive.knowledge.retriever.retrieve", return_value=""),
+        patch("openexecutive.memory.episodic.format_for_prompt", return_value=""),
+        patch("openexecutive.audit.log_event"),
+        patch("openexecutive.workflows.inbound_resolver.resolve_and_acknowledge",
+              new=AsyncMock(return_value=False)),
+        patch("openexecutive.integrations.conversations.conversation_for",
+              side_effect=lambda _sid: conversation),
+        patch("openexecutive.integrations.conversations.start_fresh", new=fresh),
+        patch("openexecutive.integrations.conversations.title_after_turn",
+              side_effect=lambda sid, *_a: titled.append(sid)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_chat_in_a_dm_starts_a_fresh_conversation_instead_of_a_turn():
+    from contextlib import ExitStack
+
+    send_fn = AsyncMock()
+    fresh = MagicMock(return_value="Started a fresh conversation.")
+    titled: list[str] = []
+    with ExitStack() as stack:
+        for p in _conversation_patches(conversation="discord:dm:111", fresh=fresh, titled=titled):
+            stack.enter_context(p)
+        MockExec = stack.enter_context(patch("openexecutive.orchestrator.executive.Executive"))
+        await _handle_message(
+            text="/new", discord_user_id="111", discord_channel="dm1", message_id="m1",
+            thread_id=None, send_fn=send_fn, is_dm=True,
+            session_id="discord:dm:111", session_title="Discord DM",
+        )
+
+    fresh.assert_called_once_with("discord:dm:111", 42)
+    send_fn.assert_awaited_once_with("Started a fresh conversation.")
+    MockExec.assert_not_called()
+    assert titled == []
+
+
+@pytest.mark.asyncio
+async def test_a_dm_after_the_gap_is_saved_and_titled_as_the_next_conversation():
+    from contextlib import ExitStack
+
+    send_fn = AsyncMock()
+    fresh = MagicMock()
+    titled: list[str] = []
+    saved: list[str] = []
+    with ExitStack() as stack:
+        for p in _conversation_patches(conversation="discord:dm:111~2", fresh=fresh, titled=titled):
+            stack.enter_context(p)
+        mock_profile = stack.enter_context(
+            patch("openexecutive.onboarding.profile_builder.load_or_create_profile"))
+        MockExec = stack.enter_context(patch("openexecutive.orchestrator.executive.Executive"))
+        stack.enter_context(patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=None))
+        stack.enter_context(patch("openexecutive.orchestrator.session.Session",
+                                  return_value=MagicMock(seen_channel_refs=set())))
+        stack.enter_context(patch("openexecutive.memory.session_store.load_messages", return_value=[]))
+        stack.enter_context(patch("openexecutive.memory.session_store.create_session",
+                                  side_effect=lambda sid, *_a, **_k: saved.append(sid)))
+        stack.enter_context(patch("openexecutive.memory.session_store.save_message"))
+        stack.enter_context(patch("openexecutive.memory.session_store.update_session_timestamp"))
+        mock_profile.return_value.is_empty.return_value = True
+        MockExec.return_value.chat = AsyncMock(return_value="the reply")
+        await _handle_message(
+            text="where are we on hiring?", discord_user_id="111", discord_channel="dm1",
+            message_id="m2", thread_id=None, send_fn=send_fn, is_dm=True,
+            session_id="discord:dm:111", session_title="Discord DM",
+        )
+
+    fresh.assert_not_called()
+    assert saved == ["discord:dm:111~2"]
+    assert titled == ["discord:dm:111~2"]

@@ -723,6 +723,12 @@ async def _handle_message(
     plain-channel @mention auto-thread path.
     """
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.integrations.conversations import conversation_for
+
+    # A DM or a person's mentions in one channel is one endless stream; it is
+    # cut into conversations after a quiet gap or a "new chat"
+    # (memory.conversations). Threads come back unchanged.
+    session_id = await asyncio.to_thread(conversation_for, session_id)
 
     audit_log(
         "integration_inbound",
@@ -776,6 +782,18 @@ async def _handle_message(
                 author_display_name=author_display_name,
                 send_ack=send_fn if is_dm else None,
             )
+        return
+
+    # "new chat" (or /new) starts a fresh conversation instead of a turn.
+    from openexecutive.integrations.conversations import (
+        is_new_conversation_command,
+        start_fresh,
+    )
+    from openexecutive.memory.conversation_ids import is_rolling
+
+    if not attachment_count and is_rolling(session_id) and is_new_conversation_command(text):
+        reply = await asyncio.to_thread(start_fresh, session_id, sender_person.id)
+        await send_fn(reply)
         return
 
     # WaitForHuman inbound resolver — check before alert triage.
@@ -1044,6 +1062,10 @@ async def _handle_message(
             logger.exception(
                 "Discord: failed to persist turn for session %s", session_id
             )
+        else:
+            from openexecutive.integrations.conversations import title_after_turn
+
+            title_after_turn(session_id, text, response)
 
         # Promoted-thread double-write: when the router opened a brand-
         # new bot-owned thread for this reply, also persist the turn

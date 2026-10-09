@@ -4554,6 +4554,14 @@ today:
     Read-side only — no writes happen here.
 
 chat:
+  chats_search: |
+    GET /sessions?q= searches the caller's own chats (same scope as the
+    list) by title and message text, case-insensitive with LIKE
+    wildcards escaped. Each result adds match_count (0 = title only) and
+    snippet (newest matching message around the match). The Chats page
+    debounces it and opens a message match with /?session=…&find=…, and
+    the chat starts on that message with previous/next and highlights
+    the words (CSS Custom Highlight API where the browser has it).
   module: openexecutive.api.routes.chat
   endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works.
   sse_event_types:
@@ -6971,6 +6979,35 @@ auth:
         script and by the UI (scripts/callerAssertion.test.mjs).
 
 integrations:
+  chat_app_conversations: |
+    A Telegram chat, a Slack or Discord DM and a person's @mentions in
+    one channel are each one endless stream with a fixed base id
+    (telegram:{chat}, slack:dm:{user}, slack:channel:{c}:{user},
+    discord:dm:{user}, discord:channel:{c}:{user}). memory.conversations
+    cuts it into conversations so the Chats page shows each one, titled,
+    instead of one chat that never ends, and replayed history starts
+    clean.
+      • A message starts the next conversation when the stream has been
+        quiet for two hours (CONVERSATION_GAP). The first keeps the bare
+        base id; later ones are base~2, base~3 (memory.conversation_ids).
+      • "/new", "new chat" or "new conversation" as the whole message
+        starts one now; the reply names the conversation it ended. The
+        empty row stays off GET /sessions until its first turn.
+      • After a conversation's first exchange it is titled in the
+        background (utils.session_title, else its first words).
+      • Threads, email and web chats are never cut.
+      • What spans the stream compares base ids: inbound_resolver
+        (an approval asked before a cut is answered after it) and the
+        session-scoped decisions/advice in format_for_prompt.
+      • Boot (and a client-slot restore) runs split_existing_streams
+        once per DB (app_migrations): old history is cut by the same
+        rule, each part titled from its first message, a read-mail lock
+        carried to every part with mail_read_at unknown (fails closed).
+      • An adapter outside the package registers its streams with
+        conversation_ids.register_rolling and runs
+        split_existing_streams(migration=<its own name>, only=<its base
+        ids>) once, since the built-in sweep may have run before it
+        registered. Boot runs the sweep off the event loop (to_thread).
   channel_access: |
     Channel access splits into INBOUND (does the message reach the
     Executive at all?) and OUTBOUND (can the Executive reply via the

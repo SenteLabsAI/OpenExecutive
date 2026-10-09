@@ -104,3 +104,57 @@ def test_sessions_list_email_case_insensitive(client: TestClient) -> None:
     resp = client.get("/sessions", headers={"x-caller-email": "Sabin@Example.COM"})
     assert resp.status_code == 200
     assert [s["session_id"] for s in resp.json()] == ["sabin-s1"]
+
+
+def test_search_finds_words_inside_the_callers_own_chats(client: TestClient) -> None:
+    """`?q=` searches titles AND messages, only in the caller's own chats, and
+    shows the newest matching message around the match."""
+    alex_id = people_store.upsert_person(
+        full_name="Alex", is_principal=True, email="alex@example.com"
+    )
+    sabin_id = people_store.upsert_person(full_name="Sabin", email="sabin@example.com")
+
+    session_store.create_session("cash", "Cash plan", "2024-01-01T00:00:00", caller_person_id=alex_id)
+    session_store.save_message("cash", "user", "How much runway do we have if the loan slips?")
+    session_store.save_message("cash", "assistant", "About 11 months of RUNWAY at today's burn.")
+    session_store.create_session("deck", "Runway scenarios", "2024-01-02T00:00:00", caller_person_id=alex_id)
+    session_store.create_session("other", "Lunch", "2024-01-03T00:00:00", caller_person_id=alex_id)
+    session_store.save_message("other", "user", "Book lunch with Dana")
+    session_store.create_session("sabin", "Sabin chat", "2024-01-04T00:00:00", caller_person_id=sabin_id)
+    session_store.save_message("sabin", "user", "Our runway worries me")
+
+    rows = client.get("/sessions", params={"q": "runway"}, headers={"x-caller-email": "alex@example.com"}).json()
+    by_id = {r["session_id"]: r for r in rows}
+    assert set(by_id) == {"cash", "deck"}
+    assert by_id["cash"]["match_count"] == 2
+    assert by_id["cash"]["snippet"] == "Executive: About 11 months of RUNWAY at today's burn."
+    assert by_id["deck"]["match_count"] == 0
+    assert "snippet" not in by_id["deck"]
+
+    sabin = client.get("/sessions", params={"q": "runway"}, headers={"x-caller-email": "sabin@example.com"}).json()
+    assert [r["session_id"] for r in sabin] == ["sabin"]
+
+    # Without a query the list keeps its old shape.
+    plain = client.get("/sessions", headers={"x-caller-email": "alex@example.com"}).json()
+    assert all("match_count" not in r and "snippet" not in r for r in plain)
+
+
+def test_search_treats_wildcards_as_text(client: TestClient) -> None:
+    alex_id = people_store.upsert_person(
+        full_name="Alex", is_principal=True, email="alex@example.com"
+    )
+    session_store.create_session("a", "One", "2024-01-01T00:00:00", caller_person_id=alex_id)
+    session_store.save_message("a", "user", "growth was 9% last quarter")
+    session_store.create_session("b", "Two", "2024-01-01T00:00:00", caller_person_id=alex_id)
+    session_store.save_message("b", "user", "nothing to see")
+
+    assert [r["session_id"] for r in client.get("/sessions", params={"q": "9%"}).json()] == ["a"]
+    assert client.get("/sessions", params={"q": "%"}).json()[0]["session_id"] == "a"
+    assert client.get("/sessions", params={"q": "_"}).json() == []
+
+
+def test_snippet_is_cut_around_the_match() -> None:
+    text = "word " * 100 + "runway is the point " + "tail " * 100
+    snip = session_store._snippet(text, "runway")
+    assert "runway" in snip and snip.startswith("…") and snip.endswith("…")
+    assert len(snip) <= 170
