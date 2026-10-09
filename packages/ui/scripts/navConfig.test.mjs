@@ -12,18 +12,20 @@ import {
   hubForPath,
   isDestinationActive,
   profileWording,
+  settingsHrefForHash,
   settingsPageForHash,
 } from "../src/components/shell/navConfig.ts";
 
 const links = (items) => items.map((i) => `${i.label} → ${i.href}`);
 const ROLE_KINDS = ["owner", "in_house", "independent", "other", null, undefined];
 
-test("the main menu is six places, team is the default", () => {
+test("the main menu is seven places, team is the default", () => {
   assert.deepEqual(links(buildDestinations()), [
     "Home → /",
     "Chats → /chats",
     "Work → /jobs",
     "Company → /people",
+    "Delegate → /delegate/act-as-me",
     "Knowledge → /knowledge",
     "Pulse → /memories",
   ]);
@@ -33,7 +35,8 @@ test("the main menu is six places, team is the default", () => {
 test("solo swaps Company for You, which opens on Goals", () => {
   const solo = links(buildDestinations({ mode: "solo", roleKind: "owner" }));
   assert.equal(solo[3], "You → /goals");
-  assert.equal(solo.length, 6);
+  assert.equal(solo[4], "Delegate → /delegate/act-as-me");
+  assert.equal(solo.length, 7);
 });
 
 test("team hubs: Work and Company tabs", () => {
@@ -51,6 +54,22 @@ test("team hubs: Work and Company tabs", () => {
     company.tabs.at(-1).description,
     "Your company's identity and strategy — set up once, edited any time.",
   );
+});
+
+test("Delegate holds Act as me, Handle it for me and Take the lead, each a named feature", () => {
+  for (const opts of [{}, { mode: "solo", roleKind: "owner" }]) {
+    const delegate = buildHubs(opts).find((h) => h.key === "delegate");
+    assert.deepEqual(links(delegate.tabs), [
+      "Act as me → /delegate/act-as-me",
+      "Handle it for me → /delegate/handle-it",
+      "Take the lead → /delegate/take-the-lead",
+    ]);
+    assert.deepEqual(
+      delegate.tabs.map((t) => t.feature),
+      ["act_as_me", "handle_it", "take_the_lead"],
+    );
+    assert.equal(hubForPath("/delegate/handle-it", opts)?.key, "delegate");
+  }
 });
 
 test("team hubs ignore the role", () => {
@@ -182,7 +201,6 @@ test("the Settings hub: one tile per page, each with its own route", () => {
     SETTINGS_PAGES.map((p) => `${p.label} → ${p.href}`),
     [
       "Your Executive → /settings/executive",
-      "Act as me → /settings/act-as-me",
       "About you → /settings/memory",
       "Workspace → /settings/workspace",
       "Advanced → /settings/advanced",
@@ -203,7 +221,11 @@ test("old /settings#anchors land on the matching page", () => {
   assert.equal(to("#executive"), "/settings/executive");
   assert.equal(to("#on-its-own"), "/settings/executive");
   assert.equal(to("#workspace"), "/settings/workspace");
-  assert.equal(to("act-as-me"), "/settings/act-as-me");
+  assert.equal(to("act-as-me"), null);
+  // Act as me moved out of Settings: its old anchor goes to its Delegate tab.
+  assert.equal(settingsHrefForHash("#act-as-me"), "/delegate/act-as-me");
+  assert.equal(settingsHrefForHash("#workspace"), "/settings/workspace");
+  assert.equal(settingsHrefForHash("#nope"), null);
   assert.equal(to("#memory"), "/settings/memory");
   assert.equal(to("#tools"), "/settings/advanced");
   for (const g of ADVANCED_GROUPS) assert.equal(to(`#tools-${g.key}`), "/settings/advanced");

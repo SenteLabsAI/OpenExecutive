@@ -25,7 +25,7 @@ import {
 import FeatureName from "@/components/FeatureName";
 
 // Home: the replies the Executive drafted in your own Gmail for mail that
-// needs you (Settings → Act as me → Draft replies to my inbox), shown as
+// needs you (Delegate → Act as me → Draft replies to my inbox), shown as
 // cards in "Needs you". Each card shows who wrote, what they wrote, the
 // draft, what it leaves you to decide and anything to check. Send (the
 // card's primary) sends that draft from your Gmail exactly as it is there,

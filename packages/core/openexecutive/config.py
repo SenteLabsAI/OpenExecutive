@@ -1068,7 +1068,7 @@ class Settings(BaseSettings):
         20, alias="DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", ge=1, le=500
     )
     # Whether the owner may let team members use Act as me for themselves
-    # (Settings → Act as me → "Let team members use it", off until they turn
+    # (Delegate → Act as me → "Let team members use it", off until they turn
     # it on). Off: the owner alone, as before (delegation.settings).
     delegation_team_members: bool = Field(False, alias="DELEGATION_TEAM_MEMBERS")
 

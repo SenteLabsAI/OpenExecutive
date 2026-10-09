@@ -2,11 +2,15 @@
 
 import Link from "next/link";
 
+import FeatureName from "@/components/FeatureName";
+
 import type { Hub } from "@/components/shell/navConfig";
 import { isNavActive } from "@/components/shell/navConfig";
 
 // The tab row at the top of every page in a hub (Work, Company / You), so
 // the hub's pages read as one place. The shell renders it; pages don't.
+// A tab for a named feature (Delegate's) shows its brand label: in full on
+// the open tab, muted on the others.
 export default function HubTabs({ hub, pathname }: { hub: Hub; pathname: string }) {
   return (
     <nav
@@ -16,6 +20,21 @@ export default function HubTabs({ hub, pathname }: { hub: Hub; pathname: string 
       <div className="flex gap-1 py-2">
         {hub.tabs.map((tab) => {
           const active = isNavActive(tab.href, pathname);
+          if (tab.feature) {
+            return (
+              <Link
+                key={tab.href}
+                href={tab.href}
+                title={tab.description}
+                aria-current={active ? "page" : undefined}
+                className={`flex flex-shrink-0 items-center rounded-xl px-1 sm:px-2 py-1.5 text-[13px] sm:text-[15px] transition-opacity ${
+                  active ? "" : "opacity-60 grayscale hover:opacity-100 hover:grayscale-0"
+                }`}
+              >
+                <FeatureName feature={tab.feature} className={active ? "" : "!bg-transparent"} />
+              </Link>
+            );
+          }
           return (
             <Link
               key={tab.href}

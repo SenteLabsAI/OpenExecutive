@@ -273,10 +273,10 @@ MS365_MCP_CLIENT_ID=<app id> uv run python scripts/connect-own-outlook.py --emai
 
 No restart is needed. The address must be the owner's email on the People
 page, and it must not be the Executive's own `EXEC_EMAIL_ADDRESS`. Then turn
-it on in Settings → Act as me; the setup status page shows the connection.
+it on in Delegate → Act as me; the setup status page shows the connection.
 
 **Team members (optional).** Set `DELEGATION_TEAM_MEMBERS=true` and the owner
-gets **Let team members use it** in Settings → Act as me. Once they turn it
+gets **Let team members use it** in Delegate → Act as me. Once they turn it
 on, each team member connects their own Gmail or Outlook the same way (the script with
 their own address, one file each in the same directory) and turns it on for
 themselves. A team member's mail, drafts, reply cards and audit rows are

@@ -13,7 +13,7 @@ import {
   type TrainingSetting,
 } from "@/lib/api";
 
-// Training on Settings → Act as me (delegation/training.py), the way Take the
+// Training on Delegate → Act as me (delegation/training.py), the way Take the
 // lead has it: like someone new, each job can be In training, where it brings
 // you its work first and learns who and how from what you approve. Each job's
 // card carries its own Off / In training / On (Write drafts as me, Handle it

@@ -22,7 +22,7 @@ import {
 } from "@/lib/api";
 import { formatAgo } from "@/lib/setupStatus";
 
-// Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
+// Handle it for me (PUT /delegation/handle-it), its own tab under Delegate:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
 // decides each one (delegation/handle_it.py). Off / In training / On, as on
 // Take the lead: In training (Replies in training, delegation/training.py,
@@ -60,7 +60,7 @@ export type DelegationLoad = {
   setSettings: (next: DelegationSettings) => void;
 };
 
-// GET /delegation once for the Act as me page's Training and Handle it
+// GET /delegation once for a Delegate tab's Training and Handle it
 // cards, so a change on one shows on the other. "hidden" for someone who
 // can't have Act as me (GET /delegation answers null).
 export function useDelegation(): DelegationLoad {
@@ -87,9 +87,9 @@ export function useDelegation(): DelegationLoad {
   return { settings, state, setSettings };
 }
 
-// Under Draft replies to my inbox on Settings → Act as me: nothing for
+// On Delegate → Handle it for me: nothing for
 // someone who can't have Act as me; until the inbox watcher is on, the card
-// says to turn it on above.
+// says to turn it on, on the Act as me tab.
 export default function HandleItCard({ load }: { load: DelegationLoad }) {
   const { settings, state, setSettings } = load;
   if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
@@ -218,7 +218,7 @@ export function HandleItSection({
         !handleIt.available
           ? "Needs signed sign-ins on this server before it can send anything as you."
           : !inboxOn
-            ? "Turn on Draft replies to my inbox above first."
+            ? "Turn on Draft replies to my inbox on the Act as me tab first."
             : "Replies and follow-ups it sends as you."
       }
     >

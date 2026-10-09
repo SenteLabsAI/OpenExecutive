@@ -1,4 +1,4 @@
-// Settings → Act as me → How I write: the style as a few plain sentences
+// Delegate → Act as me → How I write: the style as a few plain sentences
 // instead of a form, which of them a described style adds, and the phrases a
 // person can tap into their description. Kept free of React so scripts/ can
 // test it.

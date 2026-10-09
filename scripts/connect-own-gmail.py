@@ -128,7 +128,7 @@ def main() -> int:
     )
     print(f"Saved {path}")
     print("Copy it into the API's DELEGATION_GOOGLE_CREDENTIALS_DIR (Docker: /data/delegation_google/),")
-    print("then open Settings → Act as me. Do not commit it.")
+    print("then open Delegate → Act as me. Do not commit it.")
     return 0
 
 

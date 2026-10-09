@@ -30,7 +30,7 @@ import {
 import { formatAgo } from "@/lib/setupStatus";
 import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceStyle";
 
-// Settings → Act as me: let the Executive draft email AS you, in your own
+// Delegate → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with Draft replies to my inbox on,
 // for mail that needs you, which it sends when you tap Send on Today (or on
 // its own, under Handle it for me).
@@ -412,7 +412,7 @@ function InboxSection({
       description={
         on
           ? handleItOn
-            ? "When mail comes in that needs you, it writes a first reply in your Drafts. Handle it for me, below, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them."
+            ? "When mail comes in that needs you, it writes a first reply in your Drafts. Handle it for me, on the next tab, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them."
             : "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
           : actAsMeOn
             ? "Off: it only drafts when you ask it to in chat."
