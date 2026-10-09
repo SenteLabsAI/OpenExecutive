@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import Icon from "@/components/Icon";
 import AdvancedFold from "@/components/settings/AdvancedFold";
+import ModePicker from "@/components/settings/ModePicker";
 import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
@@ -18,6 +19,7 @@ import {
   setDelegationEnabled,
   setDelegationTeam,
   setInboxWatch,
+  setTraining,
   updateVoiceProfile,
   type DelegationSettings,
   type DelegationTeam,
@@ -73,8 +75,26 @@ function greetingFields(p: VoiceProfile): Record<string, string> {
   return Object.fromEntries(AUDIENCES.map((a) => [a, p.greetings[a] ?? ""]));
 }
 
-export default function ActAsMeCard() {
-  const [settings, setSettings] = useState<DelegationSettings | null>(null);
+type DraftsMode = "off" | "training" | "on";
+
+// `onSettings` hears every change made here, so the page's other cards
+// (Handle it for me, What it's learned) keep up; `children` sit after Draft
+// replies to my inbox, before Advanced.
+export default function ActAsMeCard({
+  onSettings,
+  children,
+}: {
+  onSettings?: (next: DelegationSettings) => void;
+  children?: ReactNode;
+} = {}) {
+  const [settings, setSettingsState] = useState<DelegationSettings | null>(null);
+  const setSettings = useCallback(
+    (next: DelegationSettings | ((prev: DelegationSettings | null) => DelegationSettings | null)) => {
+      setSettingsState(next);
+      if (typeof next !== "function") onSettings?.(next);
+    },
+    [onSettings],
+  );
   const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +106,7 @@ export default function ActAsMeCard() {
         setState("hidden");
         return;
       }
-      setSettings(next);
+      setSettingsState(next);
       setState("ready");
     } catch (err) {
       if ((err as Error)?.name === "AbortError") return;
@@ -120,7 +140,7 @@ export default function ActAsMeCard() {
       polls.current += 1;
       getDelegation()
         .then((next) => {
-          if (next) setSettings(next);
+          if (next) setSettingsState(next);
         })
         .catch(() => { /* keep the card; the next look may work */ })
         .finally(() => setPollTick((n) => n + 1));
@@ -152,11 +172,20 @@ export default function ActAsMeCard() {
   const mailbox = outlook ? "Outlook" : "Gmail";
   const on = settings.enabled;
 
-  const toggle = async () => {
+  // Off / In training / On: On and In training both write drafts; In
+  // training also offers "Do it like this next time" on a draft you changed
+  // (Drafts in training, delegation/training.py).
+  const draftsMode: DraftsMode = !on ? "off" : settings.training?.drafts ? "training" : "on";
+  const pickDrafts = async (next: DraftsMode) => {
     setBusy(true);
     setError(null);
     try {
-      setSettings(await setDelegationEnabled(!on));
+      if (next === "off") {
+        setSettings(await setDelegationEnabled(false));
+      } else {
+        if (!on) setSettings(await setDelegationEnabled(true));
+        setSettings(await setTraining({ drafts: next === "training" }));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the setting.");
     } finally {
@@ -219,22 +248,30 @@ export default function ActAsMeCard() {
         title="Write drafts as me"
         titleId="act-as-me-label"
         description={
-          on
-            ? `On: ask it in chat — “reply to Dana as me: yes to the 5th” — and the draft waits in your ${mailbox} Drafts.`
-            : connected
-              ? "Off: the Executive only ever writes as itself."
-              : "Connect your mailbox first."
-        }
-        action={
-          <Switch
-            checked={on}
-            onChange={() => void toggle()}
-            disabled={busy || (!on && !connected)}
-            labelledBy="act-as-me-label"
-          />
+          on || connected
+            ? `Ask it in chat — “reply to Dana as me: yes to the 5th” — and the draft waits in your ${mailbox} Drafts. Nothing is sent.`
+            : "Connect your mailbox first."
         }
       >
-        {error && <p className="text-sm text-red-500">{error}</p>}
+        <ModePicker<DraftsMode>
+          labelledBy="act-as-me-label"
+          value={draftsMode}
+          disabled={busy || (!on && !connected)}
+          options={[
+            { value: "off", label: "Off" },
+            { value: "training", label: "In training" },
+            { value: "on", label: "On" },
+          ]}
+          onPick={(next) => void pickDrafts(next)}
+        />
+        <p className="mt-3 text-sm text-fg-muted leading-relaxed">
+          {draftsMode === "training"
+            ? "When you change a draft, tick Do it like this next time and it learns how you write to that person."
+            : draftsMode === "on"
+              ? "It writes drafts as you, in the style under How I write."
+              : "The Executive only ever writes as itself."}
+        </p>
+        {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
       </SettingsCard>
 
       {settings.inbox && (
@@ -250,6 +287,8 @@ export default function ActAsMeCard() {
           }}
         />
       )}
+
+      {children}
 
       <AdvancedFold
         id="act-as-me-advanced"

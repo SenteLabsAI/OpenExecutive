@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
+import ModePicker from "@/components/settings/ModePicker";
 import SettingsCard from "@/components/settings/SettingsCard";
 import {
   addMyLeadRule,
@@ -12,6 +13,7 @@ import {
   getMyLeadRules,
   setHandleIt,
   setLeadAsYou,
+  setTraining,
   type DelegationSettings,
   type HandledReply,
   type HandleIt,
@@ -22,14 +24,15 @@ import { formatAgo } from "@/lib/setupStatus";
 
 // Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
-// decides each one (delegation/handle_it.py). One dial says how much goes
-// without you: Off, Easy ones, People I know, Most mail, and for the owner
-// Everything, which uses Take the lead
-// (PUT /delegation/take-the-lead), where links, the topics that always wait and
-// the added rules hold a reply back. With Replies in training (the Training
-// card, delegation/training.py) the picked step says so, and only people you
-// allowed get replies on their own. Anything it won't send waits on Today as
-// before. Below the dial, what it sent in the last week (GET /delegation/handled).
+// decides each one (delegation/handle_it.py). Off / In training / On, as on
+// Take the lead: In training (Replies in training, delegation/training.py,
+// PUT /delegation/training) every reply waits on Today unless you allowed that
+// person with Send + allow, and "Train follow-ups too" does the same for
+// follow-ups. Who it handles is the level: Easy ones, People I know, Most mail,
+// and for the owner, when it's On, Everything, which uses Take the lead
+// (PUT /delegation/take-the-lead), where links, the topics that always wait
+// and the added rules hold a reply back. Below, what it sent in the last week
+// (GET /delegation/handled).
 export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string; followUps: string }[] = [
   {
     mode: "careful",
@@ -84,9 +87,9 @@ export function useDelegation(): DelegationLoad {
   return { settings, state, setSettings };
 }
 
-// Under the mailbox card on Settings → Act as me: nothing for someone who
-// can't have Act as me; until the inbox watcher is on, the card says to turn
-// it on above.
+// Under Draft replies to my inbox on Settings → Act as me: nothing for
+// someone who can't have Act as me; until the inbox watcher is on, the card
+// says to turn it on above.
 export default function HandleItCard({ load }: { load: DelegationLoad }) {
   const { settings, state, setSettings } = load;
   if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
@@ -103,28 +106,31 @@ export default function HandleItCard({ load }: { load: DelegationLoad }) {
       handleIt={settings.handle_it}
       inboxOn={settings.inbox.enabled}
       repliesInTraining={Boolean(settings.training?.replies)}
+      followUpsInTraining={Boolean(settings.training?.follow_ups)}
       onSettings={setSettings}
     />
   );
 }
 
-type Step = "off" | HandleItMode | "lead";
+type Mode = "off" | "training" | "on";
+type Level = HandleItMode | "lead";
 
-const OFF_STEP = { label: "Off", text: "Every reply waits for you to tap Send." };
-const LEAD_STEP = {
+const LEAD_LEVEL = {
   label: "Everything",
-  text: "Uses Take the lead. It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
+  replies: "Uses Take the lead. It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
 };
 
 export function HandleItSection({
   handleIt,
   inboxOn,
   repliesInTraining = false,
+  followUpsInTraining = false,
   onSettings,
 }: {
   handleIt: HandleIt;
   inboxOn: boolean;
   repliesInTraining?: boolean;
+  followUpsInTraining?: boolean;
   onSettings: (next: DelegationSettings) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -133,7 +139,8 @@ export function HandleItSection({
   const [rules, setRules] = useState<LeadRule[] | null>(null);
   const on = handleIt.enabled;
   const lead = Boolean(on && handleIt.lead);
-  const step: Step = !on ? "off" : lead ? "lead" : handleIt.mode;
+  const mode: Mode = !on ? "off" : repliesInTraining ? "training" : "on";
+  const level: Level = lead ? "lead" : handleIt.mode;
   const canTurnOn = inboxOn && handleIt.available;
 
   useEffect(() => {
@@ -154,19 +161,11 @@ export function HandleItSection({
     return () => controller.abort();
   }, [lead]);
 
-  // One dial: each step includes the one before. Take the lead as you is
-  // its own switch on the server, so leaving it turns it off first.
-  const pick = async (next: Step) => {
-    if (next === step) return;
+  const save = async (work: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
-      if (next === "lead") {
-        onSettings(await setLeadAsYou(true));
-      } else {
-        if (lead) await setLeadAsYou(false);
-        onSettings(await setHandleIt(next === "off" ? { enabled: false } : { enabled: true, mode: next }));
-      }
+      await work();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the setting.");
     } finally {
@@ -174,15 +173,42 @@ export function HandleItSection({
     }
   };
 
-  const steps: { step: Step; label: string; lines: string[] }[] = [
-    { step: "off", label: OFF_STEP.label, lines: [OFF_STEP.text] },
-    ...HANDLE_IT_MODES.map((m) => ({
-      step: m.mode as Step,
-      label: m.label,
-      lines: [`Replies: ${m.replies}`, `Follow-ups: ${m.followUps}`],
-    })),
-    ...(handleIt.lead_available ? [{ step: "lead" as Step, label: LEAD_STEP.label, lines: [LEAD_STEP.text] }] : []),
+  // Training first, then the level, so turning it on never sends anything
+  // before the training is in place. Putting it in training turns Take the
+  // lead as you off on the server.
+  const pickMode = (next: Mode) =>
+    save(async () => {
+      if (next === "off") {
+        if (lead) await setLeadAsYou(false);
+        onSettings(await setHandleIt({ enabled: false }));
+        return;
+      }
+      const train = next === "training";
+      if (train !== repliesInTraining || train !== followUpsInTraining) {
+        onSettings(await setTraining({ replies: train, follow_ups: train }));
+      }
+      if (!on) onSettings(await setHandleIt({ enabled: true, mode: handleIt.mode }));
+    });
+
+  // Take the lead as you is its own switch on the server, so leaving
+  // Everything turns it off first.
+  const pickLevel = (next: Level) =>
+    save(async () => {
+      if (next === "lead") {
+        onSettings(await setLeadAsYou(true));
+        return;
+      }
+      if (lead) await setLeadAsYou(false);
+      onSettings(await setHandleIt({ enabled: true, mode: next }));
+    });
+
+  const levels: { value: Level; label: string; replies: string; followUps?: string; disabled?: boolean }[] = [
+    ...HANDLE_IT_MODES.map((m) => ({ value: m.mode as Level, label: m.label, replies: m.replies, followUps: m.followUps })),
+    ...(handleIt.lead_available
+      ? [{ value: "lead" as Level, label: LEAD_LEVEL.label, replies: LEAD_LEVEL.replies, disabled: mode === "training" }]
+      : []),
   ];
+  const picked = levels.find((l) => l.value === level);
 
   return (
     <SettingsCard
@@ -193,50 +219,75 @@ export function HandleItSection({
           ? "Needs signed sign-ins on this server before it can send anything as you."
           : !inboxOn
             ? "Turn on Draft replies to my inbox above first."
-            : repliesInTraining
-              ? "How much it may send on its own. Replies are in training, so only to people you allowed."
-              : "How much it sends from your mailbox on its own. Whatever it doesn't send waits for you on Today."
+            : "Replies and follow-ups it sends as you."
       }
     >
       <div className="flex flex-col gap-4">
-        <div role="radiogroup" aria-labelledby="handle-it-label" className="flex flex-col gap-2">
-          {steps.map((s) => {
-            const picked = s.step === step;
-            return (
-              <button
-                key={s.step}
-                type="button"
-                role="radio"
-                aria-checked={picked}
-                disabled={busy || (s.step !== "off" && !canTurnOn)}
-                onClick={() => void pick(s.step)}
-                className={`min-h-touch rounded-xl border px-4 py-3 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
-                  picked ? "border-accent bg-accent/5" : "border-line hover:border-line-strong"
-                }`}
-              >
-                <span className="flex items-center gap-2 text-[15px] font-semibold text-fg">
-                  <span
-                    aria-hidden="true"
-                    className={`inline-block h-4 w-4 flex-shrink-0 rounded-full border-2 ${
-                      picked ? "border-accent bg-accent" : "border-line-strong"
-                    }`}
-                  />
-                  {s.label}
-                  {picked && repliesInTraining && s.step !== "off" && (
-                    <span className="ml-1 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-semibold text-accent">
-                      In training
-                    </span>
-                  )}
-                </span>
-                {s.lines.map((line) => (
-                  <span key={line} className="mt-1 block text-sm leading-snug text-fg-muted">
-                    {line}
-                  </span>
-                ))}
-              </button>
-            );
-          })}
+        <div>
+          <ModePicker<Mode>
+            labelledBy="handle-it-label"
+            value={mode}
+            disabled={busy || (!on && !canTurnOn)}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "training", label: "In training" },
+              { value: "on", label: "On" },
+            ]}
+            onPick={(next) => void pickMode(next)}
+          />
+          <p className="mt-3 text-sm text-fg-muted leading-relaxed">
+            {mode === "training"
+              ? "Every reply comes to you on Today first. Tap Send + allow and it handles that person on its own from then on."
+              : mode === "on"
+                ? "It sends replies and follow-ups on its own, to the people below. Whatever it doesn't send waits for you on Today."
+                : "Every reply waits for you to tap Send."}
+          </p>
         </div>
+        {on && (
+          <div className="border-t border-line pt-4">
+            <h3 id="handle-it-level-label" className="text-[15px] font-semibold text-fg">
+              Who it handles
+            </h3>
+            <div className="mt-2">
+              <ModePicker<Level>
+                labelledBy="handle-it-level-label"
+                value={level}
+                disabled={busy}
+                compact
+                options={levels.map((l) => ({ value: l.value, label: l.label, disabled: l.disabled }))}
+                onPick={(next) => void pickLevel(next)}
+              />
+            </div>
+            {picked && (
+              <p className="mt-2 text-sm text-fg-muted leading-snug">
+                {picked.followUps ? `${picked.replies} Follow-ups: ${picked.followUps}` : picked.replies}
+              </p>
+            )}
+            {mode === "training" && handleIt.lead_available && (
+              <p className="mt-1 text-sm text-fg-muted">Everything opens up once it&apos;s On.</p>
+            )}
+          </div>
+        )}
+        {on && (mode === "training" || followUpsInTraining) && (
+          <label className="flex cursor-pointer items-start gap-3 border-t border-line pt-4">
+            <input
+              type="checkbox"
+              checked={followUpsInTraining}
+              disabled={busy}
+              onChange={(e) => {
+                const train = e.target.checked;
+                void save(async () => onSettings(await setTraining({ follow_ups: train })));
+              }}
+              className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
+            />
+            <span>
+              <span className="block text-[15px] font-semibold text-fg">Train follow-ups too</span>
+              <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
+                Untick to let follow-ups go out at this level while replies stay in training.
+              </span>
+            </span>
+          </label>
+        )}
         {on && (
           <p className="text-sm text-fg-muted">
             Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to anyone
