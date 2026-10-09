@@ -63,7 +63,7 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ),
     ),
     "workflows": (
-        "draft, save, list, suggest or run workflows; Python jobs on files",
+        "draft, save, list, suggest or run workflows; Python jobs (analysis, charts, documents; with or without files)",
         ("draft_workflow", "list_workflows", "run_python_job", "run_workflow", "save_workflow", "suggest_workflow"),
     ),
     "documents": (

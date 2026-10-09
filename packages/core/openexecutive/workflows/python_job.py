@@ -42,6 +42,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -91,8 +92,8 @@ _MAX_INPUTS_CHARS = 20_000
 TOOL_DEFINITION: dict[str, Any] = {
     "name": TOOL_NAME,
     "description": (
-        "Run Python with real libraries on files, when a job needs more than your "
-        "tools: split or merge PDFs and read their pages (pypdf), read or build "
+        "Run Python with real libraries, on attached files or on data you have or "
+        "make up, when a job needs more than your tools: split or merge PDFs and read their pages (pypdf), read or build "
         "spreadsheets (openpyxl, pandas), analyse data (pandas, numpy), draw charts "
         "(matplotlib), work with images (Pillow), and make documents, from scratch "
         "or from files: Word (python-docx, imported as docx), PowerPoint "
@@ -704,6 +705,24 @@ def result_file(job_id: str, name: str) -> Path | None:
     root = jobs_dir().resolve()
     path = (root / job_id / name).resolve()
     return path if path.is_file() and path.is_relative_to(root) else None
+
+
+@functools.cache
+def offered_definition() -> dict[str, Any]:
+    """TOOL_DEFINITION as this instance offers it: a remote runner with more
+    libraries (PYTHON_JOB_EXTRA_LIBRARIES) names them, or the description's
+    "only the libraries listed" would have the model refuse jobs the runner
+    can do. Fixed per process, so the cached tool prefix stays stable."""
+    from openexecutive.config import get_settings
+
+    settings = get_settings()
+    extra = settings.python_job_extra_libraries
+    if not (settings.python_job_runner_url and extra):
+        return TOOL_DEFINITION
+    return {
+        **TOOL_DEFINITION,
+        "description": f"{TOOL_DEFINITION['description']} Also installed here: {extra}.",
+    }
 
 
 PYTHON_JOB_TOOLS: list[dict[str, Any]] = [TOOL_DEFINITION]

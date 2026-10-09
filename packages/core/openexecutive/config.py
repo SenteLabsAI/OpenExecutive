@@ -628,6 +628,10 @@ class Settings(BaseSettings):
     # required with the URL.
     python_job_runner_url: str | None = Field(None, alias="PYTHON_JOB_RUNNER_URL")
     python_job_runner_key: str | None = Field(None, alias="PYTHON_JOB_RUNNER_KEY")
+    # Libraries the runner has beyond the local sandbox's, named in the job
+    # tool's description (e.g. "scipy, scikit-learn (import sklearn)"). Used
+    # only with PYTHON_JOB_RUNNER_URL; the local sandbox can't install more.
+    python_job_extra_libraries: str | None = Field(None, alias="PYTHON_JOB_EXTRA_LIBRARIES")
 
     @field_validator("python_job_runner_url")
     @classmethod
@@ -642,6 +646,19 @@ class Settings(BaseSettings):
         if not host or not (parsed.scheme == "https" or (parsed.scheme == "http" and private)):
             raise ValueError(
                 "PYTHON_JOB_RUNNER_URL must be an https URL (plain http only to localhost, .internal or .flycast)"
+            )
+        return v
+
+    @field_validator("python_job_extra_libraries")
+    @classmethod
+    def _validate_python_job_extra_libraries(cls, v: str | None) -> str | None:
+        # It goes into a tool description: package names and plain words only.
+        v = " ".join((v or "").split())
+        if not v:
+            return None
+        if len(v) > 300 or not re.fullmatch(r"[A-Za-z0-9_.,()\- ]+", v):
+            raise ValueError(
+                "PYTHON_JOB_EXTRA_LIBRARIES must be a short comma-separated list of package names"
             )
         return v
 

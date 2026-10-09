@@ -678,6 +678,13 @@ _ALL_SKILL_TOOLS = [
     *FORM_TOOLS,
     *PYTHON_JOB_TOOLS,
 ]
+def _offered_skill_tools() -> list[dict[str, Any]]:
+    """_ALL_SKILL_TOOLS with the Python job tool as this instance describes it
+    (python_job.offered_definition: a runner's extra libraries)."""
+    offered = python_job.offered_definition()
+    return [offered if t["name"] == python_job.TOOL_NAME else t for t in _ALL_SKILL_TOOLS]
+
+
 _ALL_SKILL_HANDLERS = {
     **SKILL_TOOL_HANDLERS,
     "create_alert": handle_create_alert,
@@ -2067,7 +2074,7 @@ class Executive:
             direct_tools, deferred_tools = tool_groups.split(
                 t for t in filter_tools_for_workspace_mode(
                     [
-                        *SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools,
+                        *SPECIALIST_TOOLS, *_offered_skill_tools(), *self._mcp_tools,
                         *self._script_tools, *delegation_tools,
                     ],
                     workspace_mode,
