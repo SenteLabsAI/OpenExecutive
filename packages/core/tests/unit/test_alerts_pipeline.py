@@ -325,6 +325,27 @@ def test_pipeline_adds_department_tag_from_channel(monkeypatch, db: Path) -> Non
     assert row is not None and row.topic_tags == ["finance", "department:finance"]
 
 
+def test_pipeline_strips_collection_tags_from_triage(monkeypatch, db: Path) -> None:
+    """Only an extension's own code files into its collection
+    (orchestrator/extensions.py): a tag the triage model was talked into
+    never reaches the stored alert."""
+    from openexecutive.alerts import pipeline
+
+    _stub_triage(monkeypatch, tags=["finance", "collection:widgets"])
+    _count_dispatches(monkeypatch)
+
+    async def run():
+        _, aid = await pipeline.evaluate_and_dispatch(
+            AlertEvent(source="artifact", external_id="c", body="x"),
+            db_path=db,
+        )
+        return aid
+
+    aid = asyncio.run(run())
+    row = alert_store.get_alert(aid, db_path=db)
+    assert row is not None and row.topic_tags == ["finance"]
+
+
 def test_pipeline_coalesces_same_key_without_dispatch_and_redispatches_on_escalation(
     monkeypatch, db: Path
 ) -> None:
