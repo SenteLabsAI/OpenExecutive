@@ -1535,6 +1535,8 @@ knowledge:
     company's own playbook shows up as one; hiding a built-in drops it; a
     custom workflow that starts following one replaces it. If the custom
     store can't be read, no Quick workflows are offered (unknown followers).
+    Playbooks whose names map to one Quick name (market-sizing,
+    market_sizing) get none, so sort order never picks the method.
 
     Storage: built-ins ship in git under knowledge/builtin/skills/<category>/;
     company skills in company/skills/<category>/ (gitignored, copied with

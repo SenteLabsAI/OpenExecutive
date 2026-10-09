@@ -16,6 +16,7 @@ starts following stops being offered on its own. Their names carry the
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, Field
@@ -201,7 +202,15 @@ def quick_workflows(strict: bool = False) -> list[QuickWorkflow]:
             raise
         logger.exception("Could not work out the Quick workflows; offering none")
         return []
-    return [QuickWorkflow(s) for s in skills if s.frontmatter.name not in followed]
+    candidates = [QuickWorkflow(s) for s in skills if s.frontmatter.name not in followed]
+    # Distinct playbook names can map to one Quick name (`market-sizing`,
+    # `market_sizing`, `Market-Sizing`). Offer none of them rather than let
+    # sort order decide which method a name runs.
+    counts = Counter(w.name for w in candidates)
+    for name, n in counts.items():
+        if n > 1:
+            logger.warning("%d playbooks map to the Quick workflow %r; offering none", n, name)
+    return [w for w in candidates if counts[w.name] == 1]
 
 
 def get_quick_workflow(name: str) -> QuickWorkflow | None:

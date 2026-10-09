@@ -120,6 +120,24 @@ def test_a_hidden_builtin_playbook_has_no_quick_workflow(
     assert "quick_market_sizing" not in {w.name for w in quick_workflows()}
 
 
+def test_playbooks_that_share_a_quick_name_get_none(
+    company: ChromaDBStore, no_custom: list[DynamicWorkflowDef]
+) -> None:
+    # `market_sizing` and the built-in `market-sizing` both map to
+    # quick_market_sizing: neither is offered, and neither resolves.
+    skills_repo.create_skill(
+        name="market_sizing",
+        description="d",
+        when_to_use="w",
+        category="board",
+        body="another method",
+        store=company,
+    )
+    assert "quick_market_sizing" not in {w.name for w in quick_workflows()}
+    with pytest.raises(KeyError):
+        get_workflow("quick_market_sizing")
+
+
 def test_no_quick_workflows_when_custom_workflows_cannot_be_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
