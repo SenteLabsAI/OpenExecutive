@@ -446,7 +446,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # same quiet-gap rule new messages follow (memory.conversations).
     from openexecutive.memory.conversations import split_existing_streams
     try:
-        split_existing_streams()
+        await asyncio.to_thread(split_existing_streams)
     except Exception:
         logging.getLogger("openexecutive").exception("chat-app conversation split failed")
 

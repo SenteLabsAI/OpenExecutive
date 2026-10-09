@@ -181,9 +181,9 @@ def test_later_turns_keep_the_title(db: Path) -> None:
 # ── one-shot split of old history ────────────────────────────────────────
 
 
-def _old_stream(db: Path, mail_private: bool = False) -> None:
+def _old_stream(db: Path, mail_private: bool = False, base: str = BASE) -> None:
     t0 = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
-    session_store.create_session(BASE, "Telegram Dana", t0.isoformat(), caller_person_id=OWNER, db_path=db)
+    session_store.create_session(base, "Telegram Dana", t0.isoformat(), caller_person_id=OWNER, db_path=db)
     plan = [
         (t0, "user", "Draft a reply to the landlord"),
         (t0 + timedelta(minutes=1), "assistant", "Here's a draft."),
@@ -200,10 +200,10 @@ def _old_stream(db: Path, mail_private: bool = False) -> None:
         for at, role, text in plan:
             conn.execute(
                 "INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (BASE, role, text, at.isoformat()),
+                (base, role, text, at.isoformat()),
             )
         if mail_private:
-            conn.execute("UPDATE sessions SET mail_private = 1, mail_read_at = 3 WHERE session_id = ?", (BASE,))
+            conn.execute("UPDATE sessions SET mail_private = 1, mail_read_at = 3 WHERE session_id = ?", (base,))
 
 
 def test_old_history_is_cut_by_the_same_rule(db: Path) -> None:
@@ -229,6 +229,30 @@ def test_a_mail_read_lock_carries_to_every_part(db: Path) -> None:
     for sid in (BASE, f"{BASE}~2", f"{BASE}~3"):
         assert session_store.session_mail_private(sid, db_path=db)
         assert session_store.mail_read_at(sid, db_path=db) is None
+
+
+def test_streams_registered_later_are_cut_by_their_own_sweep(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory import conversation_ids
+
+    monkeypatch.setattr(conversation_ids, "_extra_streams", [])
+    _old_stream(db, base="pigeon:dm:7")
+    # The built-in sweep ran before the adapter registered: nothing to cut.
+    assert conversations.split_existing_streams(db_path=db) == 0
+    _old_stream(db)
+    conversation_ids.register_rolling(lambda sid: sid.startswith("pigeon:dm:"))
+
+    def is_pigeon(base: str) -> bool:
+        return base.startswith("pigeon:dm:")
+
+    made = conversations.split_existing_streams(db_path=db, migration="pigeon-split", only=is_pigeon)
+    assert made == 2
+    ids = {s["session_id"] for s in session_store.list_sessions(OWNER, db_path=db)}
+    assert {"pigeon:dm:7", "pigeon:dm:7~2", "pigeon:dm:7~3", BASE} <= ids
+    # `only` kept the sweep to the adapter's streams.
+    assert f"{BASE}~2" not in ids
+    assert conversations.split_existing_streams(db_path=db, migration="pigeon-split", only=is_pigeon) == 0
 
 
 def test_web_chats_and_threads_are_not_cut(db: Path) -> None:

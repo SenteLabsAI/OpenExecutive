@@ -6993,6 +6993,11 @@ integrations:
         once per DB (app_migrations): old history is cut by the same
         rule, each part titled from its first message, a read-mail lock
         carried to every part with mail_read_at unknown (fails closed).
+      • An adapter outside the package registers its streams with
+        conversation_ids.register_rolling and runs
+        split_existing_streams(migration=<its own name>, only=<its base
+        ids>) once, since the built-in sweep may have run before it
+        registered. Boot runs the sweep off the event loop (to_thread).
   channel_access: |
     Channel access splits into INBOUND (does the message reach the
     Executive at all?) and OUTBOUND (can the Executive reply via the

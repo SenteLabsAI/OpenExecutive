@@ -10,6 +10,7 @@ Executive's replayed history starts clean.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -148,9 +149,15 @@ def split_existing_streams(
     *,
     gap: timedelta = CONVERSATION_GAP,
     db_path: Path | None = None,
+    migration: str = _SPLIT_MIGRATION,
+    only: Callable[[str], bool] | None = None,
 ) -> int:
     """One-shot: cut every chat-app stream saved before conversations existed
     by the same quiet-gap rule. Returns how many new conversations it made.
+
+    An adapter that registers its streams later (``register_rolling``) cuts
+    its own history once with its own ``migration`` name and an ``only``
+    filter for its base ids, since this sweep may already have run without it.
 
     Messages move to their conversation's id; the first conversation keeps
     the base id. Nothing else moves: decisions and advice are read across the
@@ -168,7 +175,7 @@ def split_existing_streams(
     with _get_conn(resolved) as conn:
         claimed = conn.execute(
             "INSERT OR IGNORE INTO app_migrations (name, applied_at) VALUES (?, ?)",
-            (_SPLIT_MIGRATION, datetime.now(UTC).isoformat()),
+            (migration, datetime.now(UTC).isoformat()),
         )
         if claimed.rowcount == 0:
             return 0
@@ -178,6 +185,8 @@ def split_existing_streams(
         for stream in streams:
             base = str(stream["session_id"])
             if not is_rolling(base) or base_session_id(base) != base:
+                continue
+            if only is not None and not only(base):
                 continue
             messages = conn.execute(
                 "SELECT id, role, content, created_at FROM chat_messages "
