@@ -35,7 +35,14 @@ const EDIT_STARTERS = [
  * changes, save. The thread scrolls inside a fixed-height panel with the
  * composer pinned, so the page never grows.
  */
-export default function WorkflowWizard({ editName }: { editName?: string } = {}) {
+export default function WorkflowWizard({
+  editName,
+  onProgress,
+}: {
+  editName?: string;
+  /** "Question 1 of 3" while asking, or null; the page shows it by its title. */
+  onProgress?: (text: string | null) => void;
+} = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -93,11 +100,26 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turn, pending, busy]);
 
+  // Which question this is, for the page header. None while drafting or
+  // changing a saved workflow.
+  const asked = turn?.questions_asked ?? 0;
+  const progress =
+    turn && !turn.editing && turn.phase !== "draft" && asked > 0
+      ? `Question ${Math.min(asked, turn.max_questions)} of ${turn.max_questions}`
+      : null;
+  useEffect(() => {
+    onProgress?.(progress);
+  }, [onProgress, progress]);
+  useEffect(() => () => onProgress?.(null), [onProgress]);
+
   const run = useCallback(
     async (op: () => Promise<WorkflowDesignerTurn>, pendingText: string | null) => {
       setError(null);
       setBusy(true);
       setPending(pendingText);
+      // The message moves into the thread as it is sent, so the box empties
+      // now rather than showing the same text twice while waiting.
+      if (pendingText !== null) setInput("");
       try {
         const next = await op();
         setTurn(next);
@@ -112,6 +134,8 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+        // Put an unsent message back, ready to retry.
+        if (pendingText !== null) setInput(pendingText);
       } finally {
         setPending(null);
         setBusy(false);
@@ -133,9 +157,7 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
     const handedOff = takeWorkflowDescription()?.trim();
     if (resumeId || editName) return;
     if (handedOff) {
-      // Kept in the composer until the first turn succeeds, so a failed
-      // start leaves the text ready to retry.
-      setInput(handedOff);
+      // A failed start puts the text back in the composer to retry.
       void run(() => startWorkflowDesigner(handedOff), handedOff);
       return;
     }
@@ -179,6 +201,9 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
   }
 
   const started = turn !== null;
+  // The intro and examples go as soon as the first message is sent, not
+  // when the first reply arrives.
+  const showIntro = !started && pending === null;
   const original = turn?.editing ? turn.original ?? null : null;
   // Changing a saved workflow, before the user has said what to change.
   const editOpening = !!original && turn!.transcript.length === 0;
@@ -197,7 +222,7 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-6">
         <div className="max-w-3xl mx-auto space-y-4">
-          {!started && (
+          {showIntro && (
             <div className="space-y-3">
               <p className="text-base text-fg">
                 Describe the job you want done — what it should produce, who it&rsquo;s
@@ -302,12 +327,23 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
 
           {pending && (
             <div className="flex justify-end">
-              <div className="max-w-[85%] rounded-2xl px-4 py-3 text-[15px] whitespace-pre-wrap bg-indigo-600/20 text-fg opacity-70">
+              <div className="max-w-[85%] rounded-2xl px-4 py-3 text-[15px] whitespace-pre-wrap bg-indigo-600/20 text-fg">
                 {pending}
               </div>
             </div>
           )}
-          {busy && <p className="text-sm text-fg-muted">Thinking…</p>}
+          {busy && (
+            <div className="flex justify-start" role="status" aria-live="polite">
+              <div className="flex items-center gap-2.5 rounded-2xl border border-line bg-surface-elevated px-4 py-3 text-sm text-fg-muted">
+                <span className="flex gap-1" aria-hidden="true">
+                  <span className="h-1.5 w-1.5 rounded-full bg-fg-muted animate-pulse" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-fg-muted animate-pulse [animation-delay:150ms]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-fg-muted animate-pulse [animation-delay:300ms]" />
+                </span>
+                {started ? "Thinking…" : "Reading what you need…"}
+              </div>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
       </div>
@@ -325,11 +361,13 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
                 send(input);
               }
             }}
-            rows={started ? 2 : 4}
+            rows={showIntro ? 4 : 2}
             disabled={busy}
             autoFocus
             placeholder={
-              isDraft
+              busy
+                ? "Waiting for my reply…"
+                : isDraft
                 ? "Tell me what to change… (Enter to send)"
                 : editOpening
                 ? "e.g. Have Mark sign off instead, and run it on Fridays."
@@ -346,7 +384,7 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
               disabled={busy || !input.trim()}
               className="px-6"
             >
-              {busy ? "Thinking…" : started ? "Send" : "Start"}
+              {showIntro ? "Start" : "Send"}
             </Button>
             {started && !isDraft && !editOpening && (
               <Button variant="ghost" onClick={draftNow} disabled={busy}>
@@ -354,11 +392,6 @@ export default function WorkflowWizard({ editName }: { editName?: string } = {})
               </Button>
             )}
             <span className="ml-auto flex items-center gap-3 text-sm text-fg-subtle">
-              {started && !original && (
-                <span>
-                  {turn!.questions_asked} of {turn!.max_questions} questions
-                </span>
-              )}
               <Link
                 href={
                   editTarget

@@ -127,10 +127,10 @@ export default function WorkflowDraftReview({
         pending.onActivated();
       } else if (edit && sessionId) {
         const saved = await saveWorkflowDesignerEdit(sessionId, def);
-        router.push(`/jobs/${encodeURIComponent(saved.name)}`);
+        router.push(`/jobs/${encodeURIComponent(saved.name)}?saved=1`);
       } else {
         const saved = await createCustomWorkflow(def);
-        router.push(`/jobs/${encodeURIComponent(saved.name)}`);
+        router.push(`/jobs/${encodeURIComponent(saved.name)}?saved=1`);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

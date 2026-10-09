@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import WorkflowRunner from "@/components/WorkflowRunner";
-import Button from "@/components/ui/Button";
+import Button, { buttonClass } from "@/components/ui/Button";
 import ApprovedTargets from "@/components/jobs/ApprovedTargets";
 import PendingWorkflowReview from "@/components/jobs/PendingWorkflowReview";
 import {
@@ -15,6 +15,7 @@ import {
   getWorkflow,
   getWorkflowSample,
 } from "@/lib/api";
+import { describeCadence } from "@/lib/workflowChanges";
 
 type FormState = Record<string, string>;
 
@@ -71,6 +72,8 @@ function isMultiline(name: string, schema: WorkflowInputFieldSchema): boolean {
 export default function JobDetailPage() {
   const params = useParams<{ name: string }>();
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const name = params?.name;
   const [workflow, setWorkflow] = useState<WorkflowMeta | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -78,6 +81,13 @@ export default function JobDetailPage() {
   // 404s); it gets its review card instead, where turning it on approves it.
   const [pendingDef, setPendingDef] = useState<DynamicWorkflowDef | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // A saved custom workflow, for when it runs.
+  const [customDef, setCustomDef] = useState<DynamicWorkflowDef | null>(null);
+  // Only offer "Fill with an example" when the workflow has one.
+  const [hasSample, setHasSample] = useState(false);
+  // Arrived straight from creating or changing it (`?saved=1`). Read once and
+  // dropped from the URL, so a refresh doesn't say it again.
+  const [justSaved] = useState(() => searchParams?.get("saved") === "1");
   const [form, setForm] = useState<FormState>({});
   const [running, setRunning] = useState(false);
   const [prefillBanner, setPrefillBanner] = useState<
@@ -89,6 +99,16 @@ export default function JobDetailPage() {
   // re-render and silently overwrites the user's in-progress edits.
   const initializedForWorkflowRef = useRef<string | null>(null);
   const prefillRaw = searchParams?.get("prefill") ?? null;
+
+  useEffect(() => {
+    if (!justSaved || !pathname) return;
+    const rest = new URLSearchParams(searchParams?.toString() ?? "");
+    rest.delete("saved");
+    const qs = rest.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    // Once, on arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!name) return;
@@ -122,6 +142,16 @@ export default function JobDetailPage() {
         if (appliedAny) setPrefillBanner("suggestion");
         setForm(initial);
         initializedForWorkflowRef.current = name;
+        if (wf.is_custom) {
+          getCustomWorkflow(name)
+            .then((d) => !cancelled && setCustomDef(d))
+            .catch(() => {});
+        }
+        if (Object.keys(props).length > 0) {
+          getWorkflowSample(name)
+            .then(() => !cancelled && setHasSample(true))
+            .catch(() => {});
+        }
       })
       .catch(async (e) => {
         const message = e instanceof Error ? e.message : String(e);
@@ -229,6 +259,44 @@ export default function JobDetailPage() {
   }
 
   const props = workflow.input_schema.properties ?? {};
+  const hasInputs = Object.keys(props).length > 0;
+  // "Load context" is setup every run does, not something this workflow does.
+  const steps = workflow.steps
+    .filter((s) => s.id !== "context")
+    .map((s) => {
+      const custom = customDef?.steps.find((c) => c.id === s.id);
+      const detail = !custom
+        ? ""
+        : custom.kind === "approval_gate"
+          ? custom.question
+          : custom.kind === "synthesis"
+            ? custom.instructions
+            : custom.goal;
+      return { id: s.id, title: s.title, detail: s.description || detail };
+    });
+  const editHref = workflow.is_custom
+    ? `/jobs/new?edit=${encodeURIComponent(workflow.name)}`
+    : null;
+  const runButtons = (
+    <div className="flex flex-wrap items-center gap-3">
+      <Button
+        type="submit"
+        variant="primary"
+        disabled={!allRequiredFilled}
+        className="px-7"
+      >
+        Run it now
+      </Button>
+      {editHref && (
+        <Link href={editHref} className={buttonClass("secondary")}>
+          Change it
+        </Link>
+      )}
+      {hasInputs && (
+        <span className="text-sm text-fg-muted">All fields with * are required.</span>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
@@ -238,6 +306,16 @@ export default function JobDetailPage() {
             <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
               ← Workflows
             </Link>
+            {justSaved && (
+              <div className="mt-3">
+                <p
+                  role="status"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-medium text-emerald-500"
+                >
+                  <span aria-hidden="true">✓</span> Saved
+                </p>
+              </div>
+            )}
             <h1 className="mt-2 mb-2 text-2xl sm:text-3xl font-bold tracking-tight text-fg">
               {workflow.title}
             </h1>
@@ -264,7 +342,66 @@ export default function JobDetailPage() {
             )}
           </div>
 
-          {!running && (
+          {!running && (steps.length > 0 || customDef) && (
+            <section className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-7">
+              {customDef && (
+                <div
+                  className={`flex items-start justify-between gap-3 ${
+                    steps.length > 0 ? "border-b border-line pb-4 mb-4" : ""
+                  }`}
+                >
+                  <div>
+                    <p className="text-[15px] font-semibold text-fg">
+                      {customDef.cadence
+                        ? describeCadence(customDef.cadence)
+                        : "Runs when you start it"}
+                    </p>
+                    <p className="text-sm text-fg-muted">
+                      {hasInputs
+                        ? "You fill in a few details each time."
+                        : "Nothing to fill in."}
+                    </p>
+                  </div>
+                  {editHref && (
+                    <Link
+                      href={editHref}
+                      className="shrink-0 text-sm text-fg-muted hover:text-fg"
+                    >
+                      Change
+                    </Link>
+                  )}
+                </div>
+              )}
+              {steps.length > 0 && (
+                <>
+                  <h2 className="text-lg font-semibold text-fg">What it does</h2>
+                  <ol className="mt-3 space-y-2.5">
+                    {steps.map((step, i) => (
+                      <li key={step.id} className="flex gap-3 text-[15px]">
+                        <span className="shrink-0 mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-surface-overlay text-xs text-fg-muted">
+                          {i + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-fg">{step.title}</p>
+                          {step.detail && (
+                            <p className="text-sm text-fg-muted line-clamp-2 break-words">
+                              {step.detail}
+                            </p>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              )}
+            </section>
+          )}
+
+          {!running && !hasInputs && (
+            <form onSubmit={handleSubmit}>{runButtons}</form>
+          )}
+
+          {!running && hasInputs && (
             <form
               onSubmit={handleSubmit}
               className="space-y-6 rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-7"
@@ -273,14 +410,16 @@ export default function JobDetailPage() {
                 <h2 className="text-lg font-semibold text-fg">What it needs</h2>
                 {/* Fills every field with a realistic sample; each field's
                     own "Use example" fills just that one. */}
-                <button
-                  type="button"
-                  onClick={handleLoadSample}
-                  title="Load a realistic sample to see what good inputs look like. You can edit anything before running."
-                  className="min-h-10 rounded-lg px-2 text-[15px] font-semibold text-accent hover:underline underline-offset-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                >
-                  Fill with an example
-                </button>
+                {hasSample && (
+                  <button
+                    type="button"
+                    onClick={handleLoadSample}
+                    title="Load a realistic sample to see what good inputs look like. You can edit anything before running."
+                    className="min-h-10 rounded-lg px-2 text-[15px] font-semibold text-accent hover:underline underline-offset-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  >
+                    Fill with an example
+                  </button>
+                )}
               </div>
 
               {prefillBanner && (
@@ -375,16 +514,7 @@ export default function JobDetailPage() {
                 );
               })}
 
-              <div className="flex flex-wrap items-center gap-3 pt-1">
-                <Button type="submit" variant="primary" disabled={!allRequiredFilled} className="px-7">
-                  Continue
-                </Button>
-                {Object.keys(props).length > 0 && (
-                  <span className="text-sm text-fg-muted">
-                    All fields with * are required.
-                  </span>
-                )}
-              </div>
+              <div className="pt-1">{runButtons}</div>
             </form>
           )}
 
