@@ -140,7 +140,7 @@ def load() -> None:
             return
         from openexecutive.config import get_settings
 
-        names = [n for n in (get_settings().extensions or "").split(",") if n]
+        names = [n for n in (getattr(get_settings(), "extensions", None) or "").split(",") if n]
         for module_name in names:
             try:
                 module = importlib.import_module(module_name)
