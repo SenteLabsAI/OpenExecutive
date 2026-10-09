@@ -39,7 +39,7 @@ from openexecutive.memory.workspace_settings import (
     pin_turn_principal_role,
     pin_turn_workspace_mode,
 )
-from openexecutive.orchestrator import take_the_lead
+from openexecutive.orchestrator import take_the_lead, tool_groups
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -1921,19 +1921,20 @@ class Executive:
             # Solo withholds the team-only tools before the sort, so each mode
             # has its own stable, sorted tool prefix (as do an unattended run
             # and a turn private to the principal).
-            client_tools = sorted(
-                (
-                    t for t in filter_tools_for_workspace_mode(
-                        [
-                            *SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools,
-                            *self._script_tools, *delegation_tools,
-                        ],
-                        workspace_mode,
-                    )
-                    if t["name"] not in not_offered
-                ),
-                key=lambda t: t["name"],
+            # The less common tools are offered through open_tools/use_tool
+            # rather than one by one (tool_groups), so the list is short and
+            # stays the same whichever groups the turn opens.
+            direct_tools, deferred_tools = tool_groups.split(
+                t for t in filter_tools_for_workspace_mode(
+                    [
+                        *SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *self._mcp_tools,
+                        *self._script_tools, *delegation_tools,
+                    ],
+                    workspace_mode,
+                )
+                if t["name"] not in not_offered
             )
+            client_tools = sorted(direct_tools, key=lambda t: t["name"])
             tools_with_cache: list[dict[str, Any]] = [
                 *client_tools[:-1],
                 {**client_tools[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}},
@@ -2032,6 +2033,20 @@ class Executive:
 
             if final_msg.stop_reason != "tool_use":
                 return
+
+            # open_tools is answered here; a use_tool call becomes the call it
+            # stands for (same id), so every guard, handler, chip and audit
+            # row below sees the tool's own name, as for a direct call.
+            group_results: dict[str, str] = {}
+            for i, tu in enumerate(tool_uses):
+                if tu["name"] == tool_groups.OPEN_TOOLS:
+                    group_results[tu["id"]] = tool_groups.open_result(tu["input"], deferred_tools)
+                elif tu["name"] == tool_groups.USE_TOOL:
+                    call, error = tool_groups.unwrap(tu)
+                    if call is None:
+                        group_results[tu["id"]] = error or ""
+                    else:
+                        tool_uses[i] = call
 
             specialist_tool_uses = [tu for tu in tool_uses if tu["name"] == "consult_specialist"]
             skill_tool_uses = [tu for tu in tool_uses if tu["name"] in turn_handlers]
@@ -2175,7 +2190,7 @@ class Executive:
             # Signal that tool calls are in flight so the client can show progress.
             yield self._THINKING
 
-            results_by_id: dict[str, str] = {}
+            results_by_id: dict[str, str] = dict(group_results)
 
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)

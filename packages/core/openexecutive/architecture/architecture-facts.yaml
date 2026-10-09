@@ -259,6 +259,31 @@ caching:
     same prefix from its first round to its last. recall_history (Always in
     the loop, orchestrator.history_tools) joins the same way when
     history_tools.recall_person allows it, before the same sort.
+  deferred_tool_groups: |
+    The less common skill tools are not in the tool list. orchestrator.
+    tool_groups.GROUPS puts them in named groups (calendar, people, goals,
+    watch_and_alerts, workflows, documents, messaging, skills), and
+    tool_groups.split takes them out of the turn's offered tools after every
+    filter (workspace mode, unattended, private turn) and BEFORE the sort,
+    adding two small fixed tools in their place: open_tools(group), whose
+    description names every group and its tools, and use_tool(name, input).
+    open_tools is answered in the loop with the group's tools (name,
+    description, input_schema) as a tool RESULT, never by changing the tool
+    list, because the list is the start of the cached prefix: a list that
+    grew mid-turn would miss the cache for the tools, the system blocks and
+    the whole history. So the list is the same on every call of every turn,
+    and a group's descriptions are paid for only on a turn that opens it.
+    Only tools the turn offers are listed, so a private turn's open_tools
+    never shows a withheld tool. A use_tool call is rewritten into the
+    tool's own call (same tool_use id, the model's assistant block left as
+    sent) before dispatch, so it meets the same guards (workspace mode,
+    private turn, unattended, Take the lead), handler, progress events and
+    audit rows as a direct call. use_tool accepts only names in
+    tool_groups.DEFERRED; anything else, or input that is not an object,
+    gets an error tool result. The everyday tools (consult_specialist,
+    propose_form_values, people and memory lookups, follow-ups, the MCP
+    meta-tools) stay direct. This cut the direct list from about 19.5k to
+    about 6-7k tokens, which every model call of a turn re-sends.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
   intra_turn_cache: |
     executive._apply_loop_cache_marker moves a single ephemeral marker onto
@@ -277,7 +302,7 @@ caching:
     a marker nested inside tool_result["content"] would survive the gate and
     reach a backend that rejects the field.
   tool_result_bound: |
-    TOOL_RESULT_MAX_CHARS (default 50,000) caps one tool result before it
+    TOOL_RESULT_MAX_CHARS (default 20,000, about 5k tokens) caps one tool result before it
     enters the prompt. Applied at the single point every result reaches the
     model (the tool_results comprehension in _stream_agent_loop), not at each
     producer: that also covers specialist output, tool errors and the
@@ -286,7 +311,9 @@ caching:
     Capping upstream of that parse would feed it truncated JSON and silently
     drop the form_patch SSE event.
     A circuit breaker, not a routine clipper: the default is set so ordinary
-    tool output never reaches it. A cut result carries an explicit marker
+    tool output (a status, an email thread, a specialist's analysis) never
+    reaches it; a long document read does, and the marker asks for a
+    narrower request (a page range, a section). A cut result carries an explicit marker
     naming the tool and stating the result is incomplete — silent truncation
     is worse than none, because the model reads the cut text as the whole
     answer and confabulates the rest.

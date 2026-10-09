@@ -252,8 +252,12 @@ def retrieve(
     distance_threshold: float | None = None,
     builtin_distance_threshold: float | None = None,
     record_source: Callable[..., None] | None = None,
+    n_synced: int = 3,
 ) -> str:
     """Retrieve knowledge for ``query`` as a prompt-ready block ("" for none).
+
+    ``n_synced`` is how many chunks each synced source (Notion, Drive,
+    OneDrive, Confluence) may add.
 
     ``record_source(kind, title, url=None)`` is told about each document the
     block quotes — the web chat lists them under the answer (see
@@ -369,8 +373,8 @@ def retrieve(
         query_text=query,
         collection=ChromaDBStore.NOTION_COLLECTION,
         domain_filter=effective_domains,
-        n_results=3,
-    )
+        n_results=n_synced,
+    ) if n_synced > 0 else []
     notion_results = [
         r for r in raw_notion if _passes_threshold(r, distance_threshold)
     ]
@@ -381,8 +385,8 @@ def retrieve(
         query_text=query,
         collection=ChromaDBStore.DRIVE_COLLECTION,
         domain_filter=effective_domains,
-        n_results=3,
-    )
+        n_results=n_synced,
+    ) if n_synced > 0 else []
     drive_results = [r for r in raw_drive if _passes_threshold(r, distance_threshold)]
 
     # Synced OneDrive folders (knowledge.onedrive_sync) — the same isolation
@@ -391,8 +395,8 @@ def retrieve(
         query_text=query,
         collection=ChromaDBStore.ONEDRIVE_COLLECTION,
         domain_filter=effective_domains,
-        n_results=3,
-    )
+        n_results=n_synced,
+    ) if n_synced > 0 else []
     onedrive_results = [r for r in raw_onedrive if _passes_threshold(r, distance_threshold)]
 
     # Synced Confluence spaces (knowledge.confluence_sync) — isolated and
@@ -401,8 +405,8 @@ def retrieve(
         query_text=query,
         collection=ChromaDBStore.CONFLUENCE_COLLECTION,
         domain_filter=effective_domains,
-        n_results=3,
-    )
+        n_results=n_synced,
+    ) if n_synced > 0 else []
     confluence_results = [
         r for r in raw_confluence if _passes_threshold(r, distance_threshold)
     ]

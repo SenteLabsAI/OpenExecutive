@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     )
     knowledge_builtin_n_results: int = Field(5, alias="KNOWLEDGE_BUILTIN_N_RESULTS")
     knowledge_company_n_results: int = Field(3, alias="KNOWLEDGE_COMPANY_N_RESULTS")
+    # A specialist's own retrieval (router._retrieve_for_call) takes fewer
+    # chunks than the Executive's: it answers one narrow question. The company
+    # count also caps each synced source (Notion, Drive, OneDrive, Confluence).
+    specialist_builtin_n_results: int = Field(3, alias="SPECIALIST_BUILTIN_N_RESULTS", ge=0)
+    specialist_company_n_results: int = Field(2, alias="SPECIALIST_COMPANY_N_RESULTS", ge=0)
 
     # Max parallel `consult_specialist` calls dispatched in one chat turn.
     # 0 (default) is inert: resolve_fanout_cap() falls back to the specialist
@@ -570,10 +575,11 @@ class Settings(BaseSettings):
     # Upper bound on a single tool result's characters before it enters the
     # prompt. A circuit breaker against an unbounded result (a large document
     # fetch) dominating a turn and then being re-sent on every remaining
-    # iteration of the tool loop — deliberately set high enough that ordinary
-    # tool output never reaches it. Applies to every tool, not just MCP.
+    # iteration of the tool loop. 20,000 characters (about 5,500 tokens) is
+    # well above a typical result; a longer one is cut with a marker that
+    # asks for a narrower request. Applies to every tool, not just MCP.
     tool_result_max_chars: int = Field(
-        50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
+        20_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
     )
     # Workflow action steps may also act through one short sandboxed script
     # (`run_script`, workflows/step_script.py) that calls the step's own tools

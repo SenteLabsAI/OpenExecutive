@@ -334,7 +334,7 @@ def fake_specialists(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             raise answer
         return str(answer)
 
-    def retrieve(*, query: str, specialist_name: str, record_source: Any = None) -> str:
+    def retrieve(*, query: str, specialist_name: str, record_source: Any = None, **_k: Any) -> str:
         if record_source is not None:
             record_source("company", f"{specialist_name} notes.pdf")
         return f"knowledge for {specialist_name}"

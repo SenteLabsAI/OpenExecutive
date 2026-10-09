@@ -284,13 +284,18 @@ async def _retrieve_for_call(
     rather than failing the turn: every specialist's retrieval is gathered
     together, so one exception here used to lose the whole answer.
     """
+    from openexecutive.config import get_settings
     from openexecutive.knowledge.retriever import retrieve
 
+    settings = get_settings()
     try:
         return await asyncio.to_thread(
             retrieve,
             query=call["query"],
             specialist_name=call["specialist"],
+            n_builtin=settings.specialist_builtin_n_results,
+            n_company=settings.specialist_company_n_results,
+            n_synced=settings.specialist_company_n_results,
             record_source=record_source,
         )
     except Exception:

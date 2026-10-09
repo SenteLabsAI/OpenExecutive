@@ -78,8 +78,8 @@ def test_limit_is_honoured_not_hardcoded() -> None:
     [
         500,     # a short JSON status result
         4_000,   # a specialist's analysis
-        20_000,  # a substantial document excerpt
-        40_000,  # the attachments extractor's own ceiling
+        15_000,  # a long email thread
+        20_000,  # a substantial document excerpt (the shipped default)
     ],
 )
 def test_default_limit_does_not_fire_on_ordinary_output(size: int) -> None:

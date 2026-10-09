@@ -783,6 +783,7 @@ def test_unattended_loop_neither_offers_nor_runs_create_goal() -> None:
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.schedule_tools import set_session
     from openexecutive.orchestrator.session import Session
+    from tests.unit.offered_tools import capture_offered
 
     dept_store.create_department("Engineering")
     tool_use = SimpleNamespace(
@@ -798,18 +799,22 @@ def test_unattended_loop_neither_offers_nor_runs_create_goal() -> None:
 
     async def _go() -> list[Any]:
         with (
+            capture_offered() as seen,
             patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
             set_session(Session(unattended=True)),
         ):
-            return [
+            items = [
                 item async for item in Executive()._stream_agent_loop(
                     system_blocks=[], messages=[{"role": "user", "content": "x"}],
                     model="claude-test", workspace_mode="team",
                 )
             ]
+            offered_out.extend(seen[0])
+            return items
 
+    offered_out: list[str] = []
     items = asyncio.run(_go())
-    offered = {t.get("name") for t in provider.calls[0]["tools"]}
+    offered = set(offered_out)
     assert "create_goal" not in offered and "update_department_goal" in offered
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
     assert "unattended" in result["error"]

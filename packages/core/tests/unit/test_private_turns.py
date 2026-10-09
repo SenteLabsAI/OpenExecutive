@@ -30,6 +30,7 @@ from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic
 from openexecutive.orchestrator.schedule_tools import current_session
 from openexecutive.orchestrator.session import Session
+from tests.unit.offered_tools import capture_offered
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 
@@ -951,6 +952,8 @@ class _ScriptedStreams:
     def __init__(self, finals: list[Any]) -> None:
         self._finals = list(finals)
         self.calls: list[dict[str, Any]] = []
+        # Per call, every tool the turn offered (tests.unit.offered_tools).
+        self.offered: list[list[str]] = []
 
     def messages_stream(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
@@ -997,6 +1000,7 @@ def _run_loop(
 
     async def _go() -> None:
         with (
+            capture_offered() as offered,
             patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
             # The loop's module-level alias, bound when executive was first
             # imported: another module's test that imports it lazily while
@@ -1011,15 +1015,16 @@ def _run_loop(
                 turn_id="t-loop",
             ):
                 pass
+            provider.offered = offered
 
     asyncio.run(_go())
     return provider
 
 
 def _offered(provider: _ScriptedStreams) -> list[str]:
-    """The client tools offered on the first call (server tools have no
-    input_schema)."""
-    return [t["name"] for t in provider.calls[0]["tools"] if "input_schema" in t]
+    """Every client tool the first call offered, the ones behind open_tools
+    included (sorted names)."""
+    return provider.offered[0]
 
 
 def test_every_withheld_name_is_a_real_tool() -> None:
@@ -1085,6 +1090,29 @@ def test_a_private_turn_refuses_a_withheld_tool_the_model_emits_anyway(
     assert refusals[0].details["refused"] == "private_turn"
     # Every row of the private turn is private, the model-call rows included.
     assert all(e.private for e in _audit().query(limit=1000))
+
+
+def test_a_private_turn_refuses_a_withheld_tool_through_use_tool(roster: SimpleNamespace) -> None:
+    """The less common tools are reached through open_tools / use_tool
+    (tool_groups). A use_tool call meets the same guard as a direct call, and
+    the private turn's open_tools never lists a withheld tool."""
+    from openexecutive.orchestrator import executive as executive_module
+    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
+
+    handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
+    uses = [
+        SimpleNamespace(type="tool_use", id="tu-1", name="use_tool",
+                        input={"name": "send_company_broadcast", "input": {"text": "Jordan"}}),
+        SimpleNamespace(type="tool_use", id="tu-2", name="open_tools", input={"group": "messaging"}),
+    ]
+    with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}):
+        provider = _run_loop(_private_turn(roster), uses)
+    handler.assert_not_awaited()
+    results = {b["tool_use_id"]: b["content"] for b in provider.calls[1]["messages"][-1]["content"]}
+    assert PRIVATE_TURN_REFUSAL in json.loads(results["tu-1"])["error"]
+    listed = {t["name"] for t in json.loads(results["tu-2"])["tools"]}
+    assert "send_slack_dm" in listed
+    assert not listed & {"send_company_broadcast", "send_department_message"}
 
 
 def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None:
