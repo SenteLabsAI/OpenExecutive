@@ -232,6 +232,10 @@ async def _notify_collection(composite_id: str, request: Request, change: Change
     rec = _load(composite_id, request)
     if rec.collection is None:
         return
+    # Archiving what is archived, or restoring what is active, changes
+    # nothing, so the collection isn't told.
+    if (change == "archived") == (rec.archived_at is not None) and change != "deleted":
+        return
     try:
         await notify_collection(rec.collection, rec.id, change)
     except Exception as exc:

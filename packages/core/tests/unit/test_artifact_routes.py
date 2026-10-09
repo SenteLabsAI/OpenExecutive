@@ -614,3 +614,11 @@ async def test_a_refused_change_does_not_happen(db: Path, widgets: Any) -> None:
         assert exc.value.status_code == 502
     detail = await artifacts_route.get_artifact(f"alert:{aid}", _REQ)
     assert detail.archived_at is None
+
+
+async def test_a_change_that_changes_nothing_is_not_reported(db: Path, widgets: Any) -> None:
+    aid = _seed_widget(db)
+    await artifacts_route.restore_artifact(f"alert:{aid}", _REQ)
+    await artifacts_route.archive_artifact(f"alert:{aid}", _REQ)
+    await artifacts_route.archive_artifact(f"alert:{aid}", _REQ)
+    assert widgets.seen == [(f"alert:{aid}", "archived")]
