@@ -315,6 +315,11 @@ def test_slack_handler_suppresses_without_sending(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("openexecutive.config.get_settings", lambda: _S())
     monkeypatch.setattr(
+        # On the roster, so the suppression under test is the anti-spam guard
+        # rather than the roster gate that now precedes it.
+        "openexecutive.people.store.find_person_by_slack_id", lambda _ref: object()
+    )
+    monkeypatch.setattr(
         "openexecutive.orchestrator.outbound_guard.check_outbound_allowed",
         lambda *_a, **_k: "duplicate suppressed",
     )

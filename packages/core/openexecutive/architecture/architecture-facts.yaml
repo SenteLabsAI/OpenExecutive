@@ -1184,9 +1184,19 @@ routing:
     of outbound tools sit alongside each other:
 
       1. Per-Person DMs — `send_slack_dm`, `send_discord_dm`,
-         `send_telegram_message`. People-roster gated, and additionally
-         passed through the outbound anti-spam guard before the network
-         send (see `outbound_antispam_invariant`).
+         `send_telegram_message`. People-roster gated
+         (`schedule_tools._dm_recipient_on_roster`, unconditional on all
+         three), and additionally passed through the outbound anti-spam
+         guard before the network send (see
+         `outbound_antispam_invariant`). The gate is what keeps untrusted
+         turn content — inbound mail, a chat message, a knowledge document
+         — from aiming a DM at an arbitrary workspace member, so it is the
+         model-exposed `user_id`/`chat_id` argument it exists to constrain.
+         Until the gate was added to the Slack handler, that claim was
+         true of Discord and Telegram only: `send_slack_dm` looked the
+         recipient up solely when `turn_is_private_to_principal()`, a
+         per-turn flag the inbound mail poller sets, so an ordinary turn
+         reached `chat_postMessage` with no roster check at all.
       2. Department channels — `send_department_message(slug,
          integration, text)` posts to a configured room on the
          department row. No roster gate — channels are team-visible.

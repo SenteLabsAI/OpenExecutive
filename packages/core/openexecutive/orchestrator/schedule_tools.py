@@ -935,13 +935,27 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
         PRIVATE_TURN_REFUSAL,
         turn_is_private_to_principal,
     )
+    from openexecutive.people.store import find_person_by_slack_id
 
     if turn_is_private_to_principal():
-        from openexecutive.people.store import find_person_by_slack_id
-
         recipient = find_person_by_slack_id(user_id)
         if recipient is None or not recipient.is_principal:
             return json.dumps({"error": PRIVATE_TURN_REFUSAL})
+
+    # Roster gate: refuse outbound to any Slack user that doesn't match a
+    # non-archived Person row. Prevents prompt-injection from coaxing the
+    # Executive into DMing arbitrary Slack users — the same guard
+    # send_discord_dm and send_telegram_message already apply. Kept after the
+    # private-turn check above so that refusal keeps its own reason.
+    if not _dm_recipient_on_roster(find_person_by_slack_id, user_id):
+        logger.warning(
+            "send_slack_dm: refused user_id=%s (not in People roster)", user_id
+        )
+        return json.dumps({"error": (
+            f"user_id {user_id!r} is not in the People roster. Pass the person's "
+            "slack_user_id from lookup_person (a Slack member id like U01ABCDEF) "
+            "— NOT their person_id."
+        )})
 
     settings = get_settings()
     if not settings.slack_bot_token:

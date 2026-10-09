@@ -114,6 +114,30 @@ def test_send_discord_dm_roster_gate_does_not_persist(monkeypatch: pytest.Monkey
 # Slack
 # --------------------------------------------------------------------------- #
 
+
+def test_send_slack_dm_roster_gate_does_not_persist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unrostered recipient: roster gate refuses BEFORE send. No row written.
+
+    `send_slack_dm` takes a free-form `user_id` from the model, so without
+    this gate untrusted content in a turn — inbound mail, a Slack or Discord
+    message, a knowledge document — can direct a DM to any member of the
+    workspace. The Discord and Telegram handlers above have carried the guard
+    for exactly that reason; Slack checked the roster only on a turn that was
+    already private to the principal, which is to say almost never.
+    """
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_slack_id",
+        lambda _id, **_kw: None,
+    )
+    result = asyncio.run(
+        schedule_tools.handle_send_slack_dm(
+            {"user_id": "U0STRANGER", "text": "hi"}
+        )
+    )
+    assert "error" in json.loads(result)
+    assert "not in the People roster" in json.loads(result)["error"]
+    assert _done_rows() == []
+
 def test_send_slack_dm_persists_done_row() -> None:
     sent: list[dict] = []
 
@@ -127,6 +151,10 @@ def test_send_slack_dm_persists_done_row() -> None:
 
     with patch(
         "slack_sdk.web.async_client.AsyncWebClient", _FakeClient
+    ), patch(
+        # On the roster: send_slack_dm refuses an unrostered Slack id, as
+        # send_discord_dm and send_telegram_message already do.
+        "openexecutive.people.store.find_person_by_slack_id", lambda _ref: object()
     ):
         result = asyncio.run(
             schedule_tools.handle_send_slack_dm(
