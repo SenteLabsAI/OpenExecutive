@@ -266,7 +266,10 @@ caching:
     result min(TOOL_RESULT_MAX_CHARS, what is left), never below 3,000
     (_TURN_BUDGET_FLOOR), and _cap_tool_result(budget_spent=True) adds to the
     marker that the question has read as much as it can: answer from what you
-    have and say what you could not read. consult_specialist results neither
+    have and say what you could not read, and never edit, rewrite or replace
+    anything from that cut result (offer to do it as its own request, which
+    starts with a fresh budget), so a partial read never becomes a lossy
+    write. consult_specialist results neither
     count nor are cut (they are the analysis, not a read); run_script results
     count but are never cut below the per-result cap, since step_script puts
     the list of writes that already ran at their head and a 3,000-character

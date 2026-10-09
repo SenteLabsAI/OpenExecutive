@@ -307,6 +307,9 @@ def test_budget_marker_says_answer_from_what_you_have() -> None:
     out = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000, budget_spent=True)
     assert len(out) <= 3_000
     assert "already read as much as it can" in out
+    # A read cut by the budget must never be the basis of an edit: the
+    # model would write back a document missing everything past the cut.
+    assert "Do not edit, rewrite or replace anything from this cut result" in out
     plain = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000)
     assert "already read as much as it can" not in plain
 

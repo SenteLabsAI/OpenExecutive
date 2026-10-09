@@ -304,7 +304,10 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: boo
             "or filter — rather than re-requesting the whole document."
             + (
                 " This question has already read as much as it can: answer "
-                "from what you have, and say what you could not read."
+                "from what you have, and say what you could not read. Do not "
+                "edit, rewrite or replace anything from this cut result: say "
+                "it was too long to work on here and offer to do it as its "
+                "own request."
                 if budget_spent
                 else ""
             )
