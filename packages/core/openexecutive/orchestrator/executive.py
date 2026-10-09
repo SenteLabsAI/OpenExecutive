@@ -318,8 +318,9 @@ def _cap_tool_result(
                 "edit, rewrite or replace anything from this cut result."
                 + (
                     " If you need this whole result to edit or rewrite it, "
-                    "call the tool again with exactly the same input: that one "
-                    "repeat comes back in full (once per question)."
+                    "call the tool again with exactly the same input: that "
+                    "repeat does not run the tool again, it brings back this "
+                    "same result in full (once per question)."
                     if full_reread_left
                     else " If you needed it to edit or rewrite something, say "
                     "it was too long to work on here and offer to do it as "
@@ -384,16 +385,22 @@ class _TurnReadingBudget:
     read cut by the budget may be the very document the question asks to
     edit, and an edit from a cut read would drop everything past the cut.
     So the turn gets one full re-read: when the model repeats a call the
-    budget cut, same tool and same input, that repeat gets the per-result
-    cap instead (the marker says how). Once per turn, so the budget still
-    bounds the turn: at most one extra ``per_result``.
+    budget cut, same tool and same input, the loop answers it with the
+    result it already has (``replay``), under the per-result cap, and never
+    runs the tool again. Replaying rather than re-running matters: the
+    budget cuts any tool's result, and a repeated write (an event, a
+    message) would happen twice. Once per turn, so the budget still bounds
+    the turn: at most one extra ``per_result``.
     """
 
     def __init__(self, *, per_result: int, turn_budget: int) -> None:
         self.per_result = per_result
         self.turn_budget = turn_budget
         self.used = 0
-        self._cut_calls: set[str] = set()
+        # Full text of each result the budget cut, by call.
+        self._cut_results: dict[str, str] = {}
+        # tool_use ids answered by ``replay``: shown in full, not cut again.
+        self._replayed: set[str] = set()
         self.full_reread_left = True
 
     @staticmethod
@@ -403,18 +410,29 @@ class _TurnReadingBudget:
         except (TypeError, ValueError):
             return name + "\x00" + repr(tool_input)
 
-    def cap(self, name: str, tool_input: Any, text: Any) -> Any:
+    def replay(self, tool_use: dict[str, Any]) -> str | None:
+        """The stored full result if ``tool_use`` repeats a call the budget
+        cut and the turn's one re-read is left; the caller then answers it
+        with this text instead of dispatching it. ``None`` otherwise."""
+        if not self.full_reread_left:
+            return None
+        full = self._cut_results.get(self._key(tool_use["name"], tool_use["input"]))
+        if full is None:
+            return None
+        self.full_reread_left = False
+        self._replayed.add(tool_use["id"])
+        return full
+
+    def cap(self, name: str, tool_input: Any, text: Any, tool_use_id: str = "") -> Any:
         """``text`` capped for the prompt, counted against the budget."""
-        limit, budget_spent = _turn_result_limit(
-            name, per_result=self.per_result, turn_budget=self.turn_budget, used=self.used
-        )
-        if budget_spent and isinstance(text, str) and len(text) > limit:
-            key = self._key(name, tool_input)
-            if self.full_reread_left and key in self._cut_calls:
-                self.full_reread_left = False
-                limit, budget_spent = self.per_result, False
-            else:
-                self._cut_calls.add(key)
+        if tool_use_id and tool_use_id in self._replayed:
+            limit, budget_spent = self.per_result, False
+        else:
+            limit, budget_spent = _turn_result_limit(
+                name, per_result=self.per_result, turn_budget=self.turn_budget, used=self.used
+            )
+            if budget_spent and isinstance(text, str) and len(text) > limit:
+                self._cut_results[self._key(name, tool_input)] = text
         content = _cap_tool_result(
             text,
             tool_name=name,
@@ -2169,9 +2187,18 @@ class Executive:
                         group_results[tu["id"]] = error or ""
                     else:
                         tool_uses[i] = call
+            # The turn's one full re-read of a result the reading budget cut
+            # is answered from that result, never by running the tool again
+            # (it may have been a write).
+            for tu in tool_uses:
+                if tu["id"] not in group_results:
+                    replayed = reading_budget.replay(tu)
+                    if replayed is not None:
+                        group_results[tu["id"]] = replayed
+            dispatch_uses = [tu for tu in tool_uses if tu["id"] not in group_results]
 
-            specialist_tool_uses = [tu for tu in tool_uses if tu["name"] == "consult_specialist"]
-            skill_tool_uses = [tu for tu in tool_uses if tu["name"] in turn_handlers]
+            specialist_tool_uses = [tu for tu in dispatch_uses if tu["name"] == "consult_specialist"]
+            skill_tool_uses = [tu for tu in dispatch_uses if tu["name"] in turn_handlers]
             # Dispatch guard: a tool this mode does not offer never runs, even
             # if the model emits it anyway — it gets an error tool_result.
             withheld_uses = [tu for tu in skill_tool_uses if tu["name"] in withheld_tools]
@@ -2179,9 +2206,9 @@ class Executive:
                 skill_tool_uses = [
                     tu for tu in skill_tool_uses if tu["name"] not in withheld_tools
                 ]
-            mcp_tool_uses = [tu for tu in tool_uses if tu["name"] in MCP_TOOL_NAMES]
+            mcp_tool_uses = [tu for tu in dispatch_uses if tu["name"] in MCP_TOOL_NAMES]
             script_tool_uses = [
-                tu for tu in tool_uses
+                tu for tu in dispatch_uses
                 if self._script_tools
                 and tu["name"] in (step_script.RUN_SCRIPT_TOOL, step_script.LIST_SAVED_TOOLS_TOOL)
             ]
@@ -2980,7 +3007,10 @@ class Executive:
             tool_results: list[dict[str, Any]] = []
             for tu in tool_uses:
                 content = reading_budget.cap(
-                    tu["name"], tu["input"], results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}")
+                    tu["name"],
+                    tu["input"],
+                    results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}"),
+                    tu["id"],
                 )
                 tool_results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": content})
             # Messages the person sent since the last round ride in this

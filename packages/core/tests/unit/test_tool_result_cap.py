@@ -395,28 +395,77 @@ def test_budget_marker_fits_the_smallest_cap(full_reread_left: bool) -> None:
 
 def test_a_cut_read_can_be_read_once_more_in_full() -> None:
     """The read the question asks to edit may be the one the budget cut.
-    Repeating that exact call brings it back whole, once per turn; any
-    other repeat stays cut, so the turn is still bounded."""
+    Repeating that exact call brings it back whole, once per turn, from the
+    result already in hand; any other repeat stays cut, so the turn is
+    still bounded."""
     from openexecutive.orchestrator.executive import _TURN_BUDGET_FLOOR, _TurnReadingBudget
 
     budget = _TurnReadingBudget(per_result=20_000, turn_budget=40_000)
     doc = "d" * 19_000
-    assert budget.cap("read_document", {"id": "q2"}, doc) == doc
-    assert budget.cap("read_document", {"id": "q3"}, doc) == doc
+    assert budget.cap("read_document", {"id": "q2"}, doc, "t1") == doc
+    assert budget.cap("read_document", {"id": "q3"}, doc, "t2") == doc
     # Over budget: the third read is cut, and offered the full re-read.
-    cut = budget.cap("read_document", {"id": "q3-plan"}, doc)
+    cut = budget.cap("read_document", {"id": "q3-plan"}, doc, "t3")
     assert len(cut) <= _TURN_BUDGET_FLOOR
     assert "exactly the same input" in cut
-    # A different call is not the re-read: still cut.
-    other = budget.cap("read_document", {"id": "q4"}, doc)
-    assert len(other) <= _TURN_BUDGET_FLOOR
-    # The same call again (its input in any key order) comes back whole.
-    assert budget.cap("read_document", {"id": "q3-plan"}, doc) == doc
-    # That was the turn's one: a further repeat is cut, and no longer offered.
-    again = budget.cap("read_document", {"id": "q4"}, doc)
+    # A different call is not a repeat of a cut one: nothing to replay.
+    assert budget.replay({"id": "t4", "name": "read_document", "input": {"id": "q2"}}) is None
+    # The same call again is answered with the stored result, in full.
+    repeat = {"id": "t5", "name": "read_document", "input": {"id": "q3-plan"}}
+    assert budget.replay(repeat) == doc
+    assert budget.cap("read_document", {"id": "q3-plan"}, doc, "t5") == doc
+    # That was the turn's one: no further replay, and no longer offered.
+    assert budget.replay({"id": "t6", "name": "read_document", "input": {"id": "q3-plan"}}) is None
+    again = budget.cap("read_document", {"id": "q4"}, doc, "t6")
     assert len(again) <= _TURN_BUDGET_FLOOR
     assert "exactly the same input" not in again
     assert "offer to do it as its own request" in again
+
+
+def test_a_repeated_cut_call_is_replayed_not_run_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The budget cuts any tool's result, writes included, and the marker
+    asks for a repeat with the same input. That repeat must be answered
+    from the result in hand: running it again would do the write twice."""
+    exec_ = Executive()
+    monkeypatch.setattr(exec_._settings, "tool_result_max_chars", 20_000)
+    monkeypatch.setattr(exec_._settings, "tool_results_turn_max_chars", 40_000)
+
+    provider = _ScriptedProvider(
+        [
+            _FinalMsg([_ToolUseBlock("r1", "read_document", {"n": 1}),
+                       _ToolUseBlock("r2", "read_document", {"n": 2})], "tool_use"),
+            _FinalMsg([_ToolUseBlock("w1", "create_event", {"title": "Board prep"})], "tool_use"),
+            _FinalMsg([_ToolUseBlock("w2", "create_event", {"title": "Board prep"})], "tool_use"),
+            _FinalMsg([_TextBlock("done")], "end_turn"),
+        ]
+    )
+    writes: list[int] = []
+
+    async def _read(*_a: Any, **_k: Any) -> str:
+        return "d" * 19_000
+
+    async def _write(*_a: Any, **_k: Any) -> str:
+        writes.append(1)
+        return "e" * 12_000
+
+    async def _go() -> None:
+        with patch(
+            "openexecutive.orchestrator.executive.get_provider", return_value=provider,
+        ), patch.dict(
+            "openexecutive.orchestrator.executive._ALL_SKILL_HANDLERS",
+            {"read_document": _read, "create_event": _write},
+        ):
+            async for _ in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "x"}], model="claude-test",
+            ):
+                pass
+
+    asyncio.run(_go())
+    cut = provider.calls[2]["messages"][-1]["content"][0]["content"]
+    assert len(cut) <= 3_000 and "exactly the same input" in cut
+    replayed = provider.calls[3]["messages"][-1]["content"][0]["content"]
+    assert replayed == "e" * 12_000
+    assert len(writes) == 1
 
 
 def test_a_result_under_the_floor_never_spends_the_reread() -> None:

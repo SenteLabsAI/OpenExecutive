@@ -271,8 +271,10 @@ caching:
     anything from that cut result, so a partial read never becomes a lossy
     write. The read the question needs to edit may be the cut one, so
     executive._TurnReadingBudget gives each turn one full re-read: repeating a
-    cut call with the same tool and input (compared as sorted JSON) returns it
-    under the per-result cap, and the marker offers that while it is left;
+    cut call with the same tool and input (compared as sorted JSON) is answered
+    with the stored full result (replay, before dispatch) under the per-result
+    cap, never by running the tool again (the cut may have been a write), and
+    the marker offers that while it is left;
     after it, the marker says to offer the edit as its own request (a fresh
     budget). A turn so reads at most the budget plus one result. A result short
     enough not to be cut never spends the re-read. consult_specialist results neither
