@@ -581,6 +581,13 @@ class Settings(BaseSettings):
     tool_result_max_chars: int = Field(
         20_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
     )
+    # What all of one turn's tool results may add together, in characters
+    # (specialists' answers aside): each stays in the prompt for every later
+    # call of the turn. Past it a result shows its first 3,000 characters and
+    # says the turn has read enough. 0 turns it off.
+    tool_results_turn_max_chars: int = Field(
+        40_000, alias="TOOL_RESULTS_TURN_MAX_CHARS", ge=0
+    )
     # Workflow action steps may also act through one short sandboxed script
     # (`run_script`, workflows/step_script.py) that calls the step's own tools
     # — each call through the same allowlist, budget, target check and audit.

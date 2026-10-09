@@ -244,9 +244,12 @@ _MIN_USEFUL_CAP = 1_000
 # under this (the longest in the MCP surface is ~40 chars); the bound exists
 # so a model-supplied name cannot inflate the marker past its own budget.
 _TOOL_NAME_MARKER_MAX = 80
+# Once a turn's reading budget (TOOL_RESULTS_TURN_MAX_CHARS) is used up, a
+# further tool result still shows this much, so the model sees what it got.
+_TURN_BUDGET_FLOOR = 3_000
 
 
-def _cap_tool_result(text: Any, *, tool_name: str, limit: int) -> Any:
+def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: bool = False) -> Any:
     """Bound one tool result before it enters the prompt.
 
     A circuit breaker, not a routine clipper: the default budget is set so
@@ -273,6 +276,10 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int) -> Any:
     inside the budget, and the marker itself is ~284-383 chars — below
     that floor there is no room for it and the guarantee breaks. The
     config field enforces this with ``ge=1_000``.
+
+    ``budget_spent`` says the turn's reading budget, not this result's own
+    size, set ``limit``: the marker then says to answer from what the turn
+    has rather than read more.
     """
     if not isinstance(text, str):
         return text
@@ -294,7 +301,14 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int) -> Any:
             f"{len(text):,} characters from `{safe_name}` ({pct}% omitted). "
             "This is NOT the full result. To see more, call the tool again "
             "with a narrower request — a page range, a section name, a query "
-            "or filter — rather than re-requesting the whole document.]"
+            "or filter — rather than re-requesting the whole document."
+            + (
+                " This question has already read as much as it can: answer "
+                "from what you have, and say what you could not read."
+                if budget_spent
+                else ""
+            )
+            + "]"
         )
 
     # Reserve the marker inside the budget so the capped result never
@@ -309,6 +323,26 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int) -> Any:
         safe_name, len(text), shown, limit,
     )
     return text[:shown] + marker(shown, pct)
+
+
+def _turn_result_limit(name: str, *, per_result: int, turn_budget: int, used: int) -> tuple[int, bool]:
+    """The cap for one tool result, given what the turn has already read.
+
+    Every tool result stays in the prompt for each later call of the turn,
+    so a turn that reads several long documents re-sends all of them on
+    every call. ``turn_budget`` (TOOL_RESULTS_TURN_MAX_CHARS; 0 = off)
+    bounds what a turn's results add together: once ``used`` reaches it, a
+    further result is cut to ``_TURN_BUDGET_FLOOR``. Returns (limit, whether
+    the budget rather than ``per_result`` set it). A specialist's analysis
+    is the answer itself, not a read, so it neither counts nor is cut by the
+    budget.
+    """
+    if turn_budget <= 0 or name == "consult_specialist":
+        return per_result, False
+    remaining = turn_budget - used
+    if remaining >= per_result:
+        return per_result, False
+    return min(per_result, max(_TURN_BUDGET_FLOOR, remaining)), True
 
 
 # The history breakpoint lives an hour: people answer in minutes, not
@@ -1895,6 +1929,9 @@ class Executive:
         caller_message_count = len(current_messages)
         last_full_text = ""
         specialists_consulted: list[str] = []
+        # Characters of tool results this turn has put in the prompt so far
+        # (_turn_result_limit): every one is re-sent on each later call.
+        turn_result_chars = 0
 
         for iteration in range(1, max_iterations + 1):
             logger.info(
@@ -2855,18 +2892,23 @@ class Executive:
             # output, tool errors and the unknown-tool fallback, and it
             # leaves non-model consumers (the propose_form_values JSON
             # parse above, the audit trail) reading the full text.
-            tool_results = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tu["id"],
-                    "content": _cap_tool_result(
-                        results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}"),
-                        tool_name=tu["name"],
-                        limit=self._settings.tool_result_max_chars,
-                    ),
-                }
-                for tu in tool_uses
-            ]
+            tool_results: list[dict[str, Any]] = []
+            for tu in tool_uses:
+                limit, budget_spent = _turn_result_limit(
+                    tu["name"],
+                    per_result=self._settings.tool_result_max_chars,
+                    turn_budget=self._settings.tool_results_turn_max_chars,
+                    used=turn_result_chars,
+                )
+                content = _cap_tool_result(
+                    results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}"),
+                    tool_name=tu["name"],
+                    limit=limit,
+                    budget_spent=budget_spent,
+                )
+                if tu["name"] != "consult_specialist" and isinstance(content, str):
+                    turn_result_chars += len(content)
+                tool_results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": content})
             # Messages the person sent since the last round ride in this
             # round's user message, after the tool results (which must come
             # first). Only this loop's own, newest message changes, so the

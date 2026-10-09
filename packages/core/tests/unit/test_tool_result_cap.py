@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -274,3 +274,80 @@ def test_hostile_tool_name_is_truncated_not_echoed_whole() -> None:
     out = _cap_tool_result("x" * 50_000, tool_name="N" * 500, limit=2_000)
     assert "N" * 500 not in out
     assert "N" * 80 in out
+
+
+# --------------------------------------------------------------------- #
+# The turn's reading budget (TOOL_RESULTS_TURN_MAX_CHARS)
+# --------------------------------------------------------------------- #
+
+
+def test_turn_budget_limit() -> None:
+    from openexecutive.orchestrator.executive import _TURN_BUDGET_FLOOR, _turn_result_limit
+
+    # Plenty left: the per-result cap applies, not the budget.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=40_000, used=0) == (20_000, False)
+    # Partly used: what is left.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=40_000, used=30_000) == (10_000, True)
+    # Used up: still a floor, so the model sees what it got.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=40_000, used=60_000) == (
+        _TURN_BUDGET_FLOOR, True,
+    )
+    # Never more than the per-result cap, even at the floor.
+    assert _turn_result_limit("x", per_result=2_000, turn_budget=40_000, used=60_000) == (2_000, True)
+    # Off, and specialists exempt.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=0, used=10**6) == (20_000, False)
+    assert _turn_result_limit("consult_specialist", per_result=20_000, turn_budget=40_000, used=10**6) == (
+        20_000, False,
+    )
+
+
+def test_budget_marker_says_answer_from_what_you_have() -> None:
+    out = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000, budget_spent=True)
+    assert len(out) <= 3_000
+    assert "already read as much as it can" in out
+    plain = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000)
+    assert "already read as much as it can" not in plain
+
+
+def test_a_turns_reads_share_one_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three long reads across two rounds: the first two fit the budget, the
+    third comes back at the floor with the budget note. A specialist's
+    answer after that is neither counted nor cut."""
+    exec_ = Executive()
+    monkeypatch.setattr(exec_._settings, "tool_result_max_chars", 20_000)
+    monkeypatch.setattr(exec_._settings, "tool_results_turn_max_chars", 40_000)
+
+    provider = _ScriptedProvider(
+        [
+            _FinalMsg([_ToolUseBlock("r1", "read_document", {"n": 1}),
+                       _ToolUseBlock("r2", "read_document", {"n": 2})], "tool_use"),
+            _FinalMsg([_ToolUseBlock("r3", "read_document", {"n": 3}),
+                       _ToolUseBlock("s1", "consult_specialist", {"specialist": "cfo", "query": "q"})],
+                      "tool_use"),
+            _FinalMsg([_TextBlock("done")], "end_turn"),
+        ]
+    )
+
+    async def _read(*_a: Any, **_k: Any) -> str:
+        return "d" * 19_000
+
+    async def _go() -> None:
+        with patch(
+            "openexecutive.orchestrator.executive.get_provider", return_value=provider,
+        ), patch.dict(
+            "openexecutive.orchestrator.executive._ALL_SKILL_HANDLERS", {"read_document": _read},
+        ), patch(
+            "openexecutive.orchestrator.executive.route_parallel",
+            new=AsyncMock(return_value={"s1": "a" * 15_000}),
+        ):
+            async for _ in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "x"}], model="claude-test",
+            ):
+                pass
+
+    asyncio.run(_go())
+    first = {b["tool_use_id"]: b["content"] for b in provider.calls[1]["messages"][-1]["content"]}
+    assert len(first["r1"]) == 19_000 and len(first["r2"]) == 19_000
+    second = {b["tool_use_id"]: b["content"] for b in provider.calls[2]["messages"][-1]["content"]}
+    assert len(second["r3"]) <= 3_000
+    assert "already read as much as it can" in second["r3"]
