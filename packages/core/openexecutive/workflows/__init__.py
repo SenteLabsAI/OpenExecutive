@@ -105,7 +105,8 @@ def get_workflow(name: str) -> Workflow:
 
     Built-ins win on a name collision (checked first). A ``quick_`` name is
     a Quick workflow derived from a playbook (``workflows/quick.py``); custom
-    workflows may not use that prefix. User-created
+    workflows may not take that prefix (one saved under it before keeps its
+    name, and no Quick workflow shadows it). User-created
     ("dynamic") definitions are resolved lazily from the dynamic store and
     wrapped in the generic ``DynamicWorkflow`` engine. Imports are deferred
     to avoid a workflows -> orchestrator -> workflows import cycle.

@@ -150,6 +150,14 @@ class QuickWorkflow(Workflow):
             n_company=4,
             store=store,
         )
+        if not method:
+            # The method is the point of a Quick workflow: without it the
+            # draft would be a generic one passed off as following it.
+            yield WorkflowEvent(
+                type="error",
+                message=f"How a {self.title.lower()} is done could not be read; nothing was drafted.",
+            )
+            return
         yield WorkflowEvent(
             type="step_done",
             step_id="context",
@@ -192,17 +200,25 @@ def quick_workflows(strict: bool = False) -> list[QuickWorkflow]:
     `strict=True` raises instead.
     """
     from openexecutive.knowledge.skills_repo import list_skills
-    from openexecutive.workflows.playbooks import followed_by_workflows
+    from openexecutive.workflows.playbooks import _following_workflows
 
     try:
-        followed = followed_by_workflows(strict=True)
+        others = _following_workflows(strict=True)
         skills = list_skills()
     except Exception:
         if strict:
             raise
         logger.exception("Could not work out the Quick workflows; offering none")
         return []
-    candidates = [QuickWorkflow(s) for s in skills if s.frontmatter.name not in followed]
+    followed = {name for wf in others for name in wf.followed_playbooks()}
+    # A custom workflow saved under a `quick_` name before the prefix was
+    # reserved keeps that name: no Quick workflow shadows it.
+    taken = {wf.name for wf in others}
+    candidates = [
+        w
+        for w in (QuickWorkflow(s) for s in skills if s.frontmatter.name not in followed)
+        if w.name not in taken
+    ]
     # Distinct playbook names can map to one Quick name (`market-sizing`,
     # `market_sizing`, `Market-Sizing`). Offer none of them rather than let
     # sort order decide which method a name runs.

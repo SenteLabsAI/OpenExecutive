@@ -38,6 +38,11 @@ def no_custom(monkeypatch: pytest.MonkeyPatch) -> list[DynamicWorkflowDef]:
         "list_definitions",
         lambda active_only=False, **_: [d for d in defs if d.is_active or not active_only],
     )
+    monkeypatch.setattr(
+        dynamic_store,
+        "get_definition",
+        lambda name, **_: next((d for d in defs if d.name == name), None),
+    )
     return defs
 
 
@@ -152,6 +157,18 @@ def test_no_quick_workflows_when_custom_workflows_cannot_be_read(
         quick_workflows(strict=True)
 
 
+def test_a_stored_custom_workflow_keeps_an_older_quick_name(
+    company: ChromaDBStore, no_custom: list[DynamicWorkflowDef]
+) -> None:
+    # Saved as `quick_market_sizing` before the prefix was reserved: it is
+    # still the one that name lists and runs.
+    legacy = _custom_following("").model_copy(update={"name": "quick_market_sizing"})
+    no_custom.append(legacy)
+    assert "quick_market_sizing" not in {w.name for w in quick_workflows()}
+    assert [w.name for w in list_workflows()].count("quick_market_sizing") == 1
+    assert not isinstance(get_workflow("quick_market_sizing"), QuickWorkflow)
+
+
 def test_custom_workflows_may_not_take_a_quick_name() -> None:
     defn = _custom_following("").model_copy(update={"name": "quick_vendor"})
     assert any("may not start with 'quick_'" in e for e in validate_definition(defn))
@@ -184,3 +201,23 @@ async def test_run_follows_the_playbook(monkeypatch: pytest.MonkeyPatch) -> None
     artifact = next(e for e in events if e.type == "artifact")
     assert artifact.content == "# Post-mortem\n\nTimeline, cause, impact."
     assert [e.step_id for e in events if e.type == "step_done"] == ["context", "draft"]
+
+
+@pytest.mark.asyncio
+async def test_run_stops_when_the_playbook_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_route(**_: Any) -> str:
+        raise AssertionError("must not draft without the method")
+
+    profile = MagicMock()
+    profile.name = "Acme"
+    monkeypatch.setattr(quick_mod, "load_or_create_profile", lambda: profile)
+    monkeypatch.setattr(quick_mod, "route_to_specialist", fake_route)
+    monkeypatch.setattr(quick_mod, "retrieve", lambda **_: "")
+    monkeypatch.setattr(quick_mod, "load_playbook", lambda name: "")
+
+    wf = QuickWorkflow(skills_repo.get_skill("post-mortem-template"))
+    inputs = wf.input_model()(request="Tuesday's checkout outage")
+    events = [e async for e in wf.run(inputs=inputs, store=MagicMock())]
+
+    assert events[-1].type == "error"
+    assert not [e for e in events if e.type == "artifact"]
