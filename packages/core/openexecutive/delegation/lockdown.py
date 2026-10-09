@@ -6,7 +6,8 @@
 model. Text in it could try to steer the model ("open this link with the
 invoices in it"). Most of what such text could want is already fenced on its
 own: messages, invites and the Executive's own email reach only people on
-the roster or addresses the speaker typed, facts and profile edits keep only
+the roster or addresses the speaker typed, an email written as them is only
+a draft in their own mailbox until they send it themselves, facts and profile edits keep only
 the speaker's words, and playbook changes wait for a person on the Playbooks
 tab. What is not fenced is a door to the open internet. So from the round it
 runs in until the turn ends, only that stays shut: no outside fetch (a URL
@@ -16,9 +17,13 @@ watchlist, ``load_mcp_server``, any gateway tool but
 no workflow (it runs later, unattended, and may fetch or script), no post
 to everyone (broadcasts, department messages, alerts), and no change to who
 is on the roster or holds authority (archiving someone, a department head, a
-roster request), since every send and approval check trusts it. The one
-roster change that runs is a contact the speaker named themselves
-(``speaker_named_contact``).
+roster request), since every send and approval check trusts it.
+
+The one roster change that runs is a contact they named themselves in this
+message (``speaker_named_contact``). Anything else they would want done goes
+on an approval card instead of being refused outright (``propose_actions``):
+the card is built in code and shows exactly what will happen, and only their
+tap does it, which text in a mail can't give.
 
 Every tool the Executive can be offered is classified here, in exactly one of
 ``MAIL_TOUCHED_ALLOWED_TOOLS`` or ``MAIL_TOUCHED_WITHHELD_TOOLS`` (a test fails
@@ -30,15 +35,11 @@ turn), and treats a round that calls any of them as already touched,
 because a round's tools run concurrently. The handlers that reach outside
 check again (``outside_reach_refusal``). The server-side ``web_search``
 stays, as on a turn private to the owner: it cannot be refused at dispatch
-without a cache miss. The full lockdown lasts for the turn
-(``TurnDelegation.read_mail``). A later turn of that conversation stays private
-to its owner (``touched_mail``), and its history carries only their words and
-the Executive's replies, never the mail a tool returned. A reply can still
-repeat a link the mail planted, so the same tools stay withheld on later turns
-while the reading turn is in the history the model is shown
-(``TurnDelegation.mail_in_view``, ``carried_withholds``). A chat app's
-conversation never ends, so that hold lifts once the reading turn scrolls out
-of view, some 20 to 30 messages later, rather than lasting forever.
+without a cache miss. The lockdown lasts for the turn
+(``TurnDelegation.read_mail``) and no longer. A later turn of that
+conversation stays private to its owner (``touched_mail``), and its history
+carries only their words and the Executive's replies, never the mail a tool
+returned: their next message is them asking again, having read the reply.
 """
 from __future__ import annotations
 
@@ -148,8 +149,18 @@ REFUSAL = (
     "or outside address, runs a script or workflow, posts to everyone, sets "
     "a follow-up, goal or decision outcome, or changes who is on the roster or "
     "holds authority. "
-    "Tell the user it can be done if they ask again in their next message. "
+    "Tell the user it will work if they ask again in their next message. "
     "Do not retry it in this turn."
+)
+
+# The roster change a mail-reading turn can still offer: a card the person
+# approves with one tap (``propose_actions``, kind ``add_contact``).
+CONTACT_REFUSAL = (
+    "This turn read the user's own mail, so a contact is only added here when "
+    "they named the person in this message. Put it on an approval card instead "
+    "(propose_actions, kind add_contact, with the name and address) so they "
+    "can add them with one tap here in the chat, and tell them it is waiting. "
+    "Do not retry upsert_person in this turn."
 )
 
 # What ``upsert_person`` may set on a turn that read the owner's mail: who a
@@ -189,16 +200,6 @@ def _name_words(name: str) -> set[str]:
         w.lower() for w in _NAME_WORD.findall(name or "")
         if len(w) >= 3 and w.lower() not in _COMMON_WORDS
     }
-
-
-CARRIED_REFUSAL = (
-    "This conversation read the user's own mail recently, so nothing here opens "
-    "a link or outside address, runs a script or workflow, posts to everyone, sets a "
-    "follow-up, goal or decision outcome, or changes who is on the roster or "
-    "holds authority yet. Tell the user it "
-    "works in a new conversation, or here after about 20 to 30 more of their "
-    "messages. Do not retry it now."
-)
 
 
 # A word that asks for a roster change: "add Jamie as a contact", "save her
@@ -288,34 +289,17 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
     return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS
 
 
-def carried_withholds(tool_name: str, tool_input: Any) -> bool:
-    """Whether a call to ``tool_name`` is refused on a later turn of a
-    conversation whose mail-reading turn is still in view: the same tools as
-    on the reading turn (fail closed)."""
-    return mail_touched_withholds(tool_name, tool_input)
-
-
-def carried_withheld_error(label: str) -> str:
-    return json.dumps({"error": f"{label} was not run. {CARRIED_REFUSAL}"})
-
-
 def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:
     """For a handler that can reach an outside address: the refusal when this
-    turn read the owner's mail, or runs in a conversation whose reading turn
-    is still in view, else None. ``tool_name`` and ``tool_input`` (for
-    ``call_tool``) narrow it to what ``mail_touched_withholds`` refuses; by
-    default ``label`` is the tool. Never raises; fails closed."""
-    from openexecutive.delegation.settings import (
-        turn_carries_mail_lock,
-        turn_read_delegate_mail,
-    )
+    turn read the owner's mail, else None. ``tool_name`` and ``tool_input``
+    (for ``call_tool``) narrow it to what ``mail_touched_withholds`` refuses;
+    by default ``label`` is the tool. Never raises; fails closed."""
+    from openexecutive.delegation.settings import turn_read_delegate_mail
 
     name = tool_name or label
     try:
         if turn_read_delegate_mail():
             return mail_touched_withheld_error(label) if mail_touched_withholds(name, tool_input) else None
-        if turn_carries_mail_lock():
-            return carried_withheld_error(label) if carried_withholds(name, tool_input) else None
         return None
     except Exception:
         return mail_touched_withheld_error(label)
@@ -324,4 +308,5 @@ def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "
 def mail_touched_withheld_error(label: str) -> str:
     """The JSON error tool_result for a refused call (``label`` is the tool,
     or for call_tool the tool it asked for)."""
-    return json.dumps({"error": f"{label} was not run. {REFUSAL}"})
+    why = CONTACT_REFUSAL if label == "upsert_person" else REFUSAL
+    return json.dumps({"error": f"{label} was not run. {why}"})

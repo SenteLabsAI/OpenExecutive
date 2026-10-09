@@ -232,14 +232,14 @@ def test_a_turn_that_read_the_owners_mail_refuses_the_whole_script(
 def test_a_later_turn_of_a_mail_conversation_is_not_locked_once_the_mail_is_out_of_view(
     monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
 ) -> None:
-    # A later turn of a conversation that read the owner's mail, once that
-    # turn is out of the history the model is shown: private (touched_mail)
-    # but not locked, so scripts, outside tools and sends all run.
+    # A later turn of a conversation that read the owner's mail: private
+    # (touched_mail) but not locked, so scripts, outside tools and sends all
+    # run.
     from types import SimpleNamespace
 
     from openexecutive.orchestrator import executive as ex
 
-    pinned = SimpleNamespace(offered=False, touched_mail=True, read_mail=False, mail_in_view=False)
+    pinned = SimpleNamespace(offered=False, touched_mail=True, read_mail=False)
     monkeypatch.setattr("openexecutive.orchestrator.executive.turn_delegation", lambda _s: pinned)
     slack: list[dict[str, Any]] = []
 

@@ -13,6 +13,7 @@ import { loadsInline } from "@/lib/markdownImages";
 import { isMailboxLink } from "@/lib/replyCards";
 import { hostOf } from "@/lib/url";
 import FeatureName from "@/components/FeatureName";
+import { ChatActionCards } from "@/components/ActionCards";
 
 interface MessageProps {
   role: "user" | "assistant";
@@ -234,6 +235,14 @@ export default function Message({
   onFeedback,
   status,
 }: MessageProps) {
+  // Approval cards this reply left, shown under it (ActionCards).
+  const cardIds = useMemo(
+    () =>
+      (actions ?? [])
+        .map((a) => a.decision_id)
+        .filter((id): id is number => typeof id === "number"),
+    [actions],
+  );
   if (role === "user") {
     return (
       <div className="flex justify-end mb-6">
@@ -290,6 +299,8 @@ export default function Message({
         {status && <div className="mt-3">{status}</div>}
 
         {actions && actions.length > 0 && <ActionChips actions={actions} />}
+
+        {cardIds.length > 0 && <ChatActionCards ids={cardIds} />}
 
         {sources && !isStreaming && <AnswerSourcesFooter sources={sources} />}
 

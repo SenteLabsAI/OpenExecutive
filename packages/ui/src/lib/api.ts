@@ -20,6 +20,9 @@ export interface ActionTaken {
   target?: string | null;
   link?: string | null;
   iteration?: number;
+  // An approval card's id (propose_actions): the chat shows the card itself
+  // under the message.
+  decision_id?: number;
 }
 
 // Names the round of tool calls currently in flight, so the progress line can

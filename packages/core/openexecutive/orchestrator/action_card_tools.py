@@ -6,7 +6,8 @@ is offered and re-checked the same way (``_writer``: the pin and the verified
 surface). It opens no mailbox and does nothing itself, so it stays on after a
 turn read mail, when ``message_person``, the calendar tools and roster writes
 are withheld: that is what it is for. Nothing on the card happens until the
-person approves it, signed in on the web.
+person approves it, signed in on the web: in the chat it was left in (its chip
+carries the card's id) or on Today.
 """
 from __future__ import annotations
 
@@ -23,8 +24,8 @@ PROPOSE_ACTIONS_TOOL: dict[str, Any] = {
     "name": PROPOSE_ACTIONS,
     "description": (
         "Leave the person you are speaking with a card of actions to approve: they "
-        "see each action exactly as it will happen and tap Approve (on their "
-        "Briefing in the web app) to do it. Nothing happens until they do. Use it "
+        "see each action exactly as it will happen and tap Approve (in this "
+        "chat, or on Today in the web app) to do it. Nothing happens until they do. Use it "
         "when an email of theirs calls for a meeting, a message to someone, or a new "
         "contact, and you can't do it yourself on this turn. Up to 5 actions a card. "
         "Kinds: `invite` (title, start, end as local date-times, attendee_person_ids "
@@ -105,7 +106,7 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
         "status": "waiting_for_approval",
         "decision_id": decision_id,
         "actions": [a["summary"] for a in checked],
-        "note": "Nothing has happened yet. It is on their Briefing in the web app for them to approve.",
+        "note": "Nothing has happened yet. It is in this chat and on Today in the web app for them to approve.",
     })
 
 

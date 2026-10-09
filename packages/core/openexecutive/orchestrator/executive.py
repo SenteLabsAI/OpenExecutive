@@ -8,7 +8,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 from openexecutive.audit import bind_turn, clear_turn, private_rows, set_turn
@@ -23,8 +23,6 @@ from openexecutive.audit.redaction import (
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.delegation.lockdown import (
-    carried_withheld_error,
-    carried_withholds,
     mail_touched_withheld_error,
     mail_touched_withholds,
 )
@@ -2082,12 +2080,10 @@ class Executive:
             # nothing that opens a link, runs a script or workflow, or posts
             # to everyone runs for the rest of the turn (delegation.lockdown).
             # A later turn of that conversation stays private (touched_mail)
-            # and withholds the same tools only while the reading turn is in
-            # the history it is shown (mail_in_view, carried_withholds). The
-            # offered list stays as it is, so the cached prefix never changes
+            # but is not locked: it is the person asking again. The offered
+            # list stays as it is, so the cached prefix never changes
             # mid-turn.
             mail_touched_uses: list[dict[str, Any]] = []
-            refusal_for: Callable[[str], str] = mail_touched_withheld_error
             if pinned_delegation is not None and (
                 pinned_delegation.read_mail
                 or any(tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
@@ -2095,12 +2091,6 @@ class Executive:
                 mail_touched_uses = [
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
                     if mail_touched_withholds(tu["name"], tu["input"])
-                ]
-            elif pinned_delegation is not None and pinned_delegation.touched_mail and pinned_delegation.mail_in_view:
-                refusal_for = carried_withheld_error
-                mail_touched_uses = [
-                    tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
-                    if carried_withholds(tu["name"], tu["input"])
                 ]
             if mail_touched_uses:
                 skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
@@ -2217,7 +2207,7 @@ class Executive:
                     },
                     private=True,
                 )
-                results_by_id[tu["id"]] = refusal_for(label)
+                results_by_id[tu["id"]] = mail_touched_withheld_error(label)
             for tu in withheld_uses:
                 if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to
@@ -2873,10 +2863,7 @@ class Executive:
                 not fanout_hinted
                 and self._script_tools
                 and step_script.RUN_SCRIPT_TOOL not in not_offered
-                and not (
-                    pinned_delegation is not None
-                    and (pinned_delegation.read_mail or (pinned_delegation.touched_mail and pinned_delegation.mail_in_view))
-                )
+                and not (pinned_delegation is not None and pinned_delegation.read_mail)
                 and not any(tu["name"] == step_script.RUN_SCRIPT_TOOL for tu in tool_uses)
                 and any(step_script.lists_many(str(results_by_id.get(tu["id"], ""))) for tu in tool_uses)
             ):

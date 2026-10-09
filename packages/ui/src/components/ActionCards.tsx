@@ -188,3 +188,19 @@ export function ActionCardItem({
     </article>
   );
 }
+
+// The chat: the cards a reply left (its propose_actions chips carry their
+// ids), shown under it while they wait. A card already approved, dismissed
+// or expired shows nothing here; its chip still links to Today.
+export function ChatActionCards({ ids }: { ids: number[] }) {
+  const { cards, gone } = useActionCards();
+  const shown = cards.filter((c) => ids.includes(c.decision_id));
+  if (shown.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-3">
+      {shown.map((card) => (
+        <ActionCardItem key={card.decision_id} card={card} onGone={gone} />
+      ))}
+    </div>
+  );
+}

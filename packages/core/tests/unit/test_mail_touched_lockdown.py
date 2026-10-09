@@ -256,31 +256,18 @@ def kept_private(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     return pins
 
 
-def test_a_later_turn_holds_links_while_the_mail_is_in_view(
+def test_a_later_turn_runs_links_and_sends(
     fetched: list[dict[str, Any]], sent: list[dict[str, Any]], kept_private: list[Any]
 ) -> None:
-    # A reply can repeat a link the mail planted, so while the reading turn
-    # is in the history the model is shown, links stay off; sends run.
-    _, calls = _turn([
+    # Only the reading turn is locked: the next message is the person asking
+    # again, having read the reply. It stays private to them.
+    _turn([
         ToolUseBlock("tu1", "read_document", LINK),
         ToolUseBlock("tu2", "send_slack_dm", SLACK),
     ])
-    assert fetched == [] and sent == [SLACK]
-    refusal = json.loads(_tool_results(calls[1])["tu1"])["error"]
-    assert "new conversation" in refusal and "20 to 30" in refusal
+    assert fetched == [LINK] and sent == [SLACK]
     assert kept_private and kept_private[-1].touched_mail is True
-    assert kept_private[-1].read_mail is False and kept_private[-1].mail_in_view is True
-
-
-def test_a_later_turn_runs_links_once_the_mail_is_out_of_view(
-    monkeypatch: pytest.MonkeyPatch, fetched: list[dict[str, Any]], kept_private: list[Any]
-) -> None:
-    from openexecutive.delegation import settings as dsettings
-
-    monkeypatch.setattr(dsettings, "mail_still_in_view", lambda *_a: False)
-    _turn([ToolUseBlock("tu2", "read_document", LINK)])
-    assert fetched == [LINK]
-    assert kept_private[-1].touched_mail is True and kept_private[-1].mail_in_view is False
+    assert kept_private[-1].read_mail is False
 
 
 def test_reading_mail_in_that_later_turn_locks_it_again(
@@ -317,15 +304,10 @@ def test_the_outside_handlers_refuse_on_their_own() -> None:
         assert lockdown.outside_reach_refusal("run_workflow") is not None
         assert lockdown.outside_reach_refusal("schedule_followup") is not None
         assert lockdown.outside_reach_refusal("message_person") is None
+        # A later turn of that conversation refuses nothing.
         session.turn_delegation.read_mail = False  # type: ignore[attr-defined]
-        # A later turn holds the same while the reading turn is in view...
-        session.turn_delegation.mail_in_view = True  # type: ignore[attr-defined]
-        assert "20 to 30" in (lockdown.outside_reach_refusal("run_workflow") or "")
-        assert "20 to 30" in (lockdown.outside_reach_refusal("schedule_followup") or "")
-        assert lockdown.outside_reach_refusal("message_person") is None
-        # ...and refuses nothing once it is out of view.
-        session.turn_delegation.mail_in_view = False  # type: ignore[attr-defined]
         assert lockdown.outside_reach_refusal("run_workflow") is None
+        assert lockdown.outside_reach_refusal("schedule_followup") is None
     finally:
         current_session.reset(token)
 
@@ -463,7 +445,7 @@ def test_the_log_never_carries_a_call_tools_own_words(sent: list[dict[str, Any]]
 
 
 @pytest.mark.parametrize("tool", sorted(lockdown.MAIL_TOUCHED_WITHHELD_TOOLS))
-def test_every_withheld_tool_is_refused_while_the_mail_is_in_view(tool: str) -> None:
+def test_every_withheld_tool_is_refused_only_on_the_reading_turn(tool: str) -> None:
     session = Session()
     pinned = TurnDelegation(offered=True, touched_mail=True, read_mail=True, session_id=session.session_id)
     session.turn_delegation = pinned  # type: ignore[attr-defined]
@@ -472,10 +454,6 @@ def test_every_withheld_tool_is_refused_while_the_mail_is_in_view(tool: str) -> 
         assert lockdown.mail_touched_withholds(tool, {})
         assert "next message" in (lockdown.outside_reach_refusal(tool) or "")
         pinned.read_mail = False
-        pinned.mail_in_view = True
-        assert lockdown.carried_withholds(tool, {})
-        assert "new conversation" in (lockdown.outside_reach_refusal(tool) or "")
-        pinned.mail_in_view = False
         assert lockdown.outside_reach_refusal(tool) is None
     finally:
         current_session.reset(token)

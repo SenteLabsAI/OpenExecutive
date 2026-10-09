@@ -163,3 +163,9 @@ def test_a_senders_address_matches_by_name_or_local_part() -> None:
     assert lockdown._sent_by("ops@co.example", senders, "Jamie Rivera")
     assert not lockdown._sent_by("jamie@firm.example", senders, "Morgan Blake")
     assert not lockdown._sent_by("other@firm.example", senders, "Jamie Rivera")
+
+
+def test_a_refused_contact_add_points_to_an_approval_card() -> None:
+    refusal = lockdown.mail_touched_withheld_error("upsert_person")
+    assert "propose_actions" in refusal and "add_contact" in refusal
+    assert "propose_actions" not in lockdown.mail_touched_withheld_error("fetch_url")

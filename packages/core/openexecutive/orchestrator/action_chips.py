@@ -259,6 +259,10 @@ def summarize_action(
         payload["summary"] = f"Waiting for your approval: {count} {noun}" if count else "Waiting for your approval"
         payload["target"] = None
         payload["link"] = "/today"
+        # The chat shows the card itself under its message, by this id.
+        decision_id = (parsed or {}).get("decision_id")
+        if isinstance(decision_id, int) and not isinstance(decision_id, bool):
+            payload["decision_id"] = decision_id
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")
         payload["summary"] = (

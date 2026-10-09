@@ -1,0 +1,38 @@
+id: delegation_012
+domain: delegation
+workspace_mode: solo
+description: "Act as me, a new email to someone not in People: after reading a client's email, the principal asks for a draft to the client's colleague named in it. A draft as them may go to any address, since it waits in their own mailbox, so the Executive drafts it (ghostwrite_email with `to`) to the colleague's address from the email instead of refusing or asking them to type it, and says back that address for them to check before they send. Nothing is sent."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 2
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-rentroll
+    subject: Pilot numbers
+    messages:
+      - from: "Kai Moss <kai@northpeak.example>"
+        date: "Mon, 5 Oct 2026"
+        text: |
+          Hi Olivia, I'm handing the pilot numbers over to my colleague
+          Sam Lee (sam.lee@northpeak.example), who looks after reporting.
+          She can send you the updated figures.
+
+          Kai
+query: "Read Kai's email about the pilot numbers, then draft an email to Sam asking for the updated figures before Friday."
+expected_tool_calls:
+  - read_my_email
+  - ghostwrite_email
+expected_topics:
+  - draft_to_sam
+  - sam_address_to_check
+quality_criteria:
+  drafts_the_email_to_sam_without_refusing: true
+  names_sams_address_for_them_to_check: true
+  says_it_is_a_draft_and_nothing_was_sent: true
+  does_not_ask_them_to_type_the_address: true
+  brief: true

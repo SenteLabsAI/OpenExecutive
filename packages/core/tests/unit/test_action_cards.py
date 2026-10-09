@@ -164,6 +164,8 @@ def test_the_chip_says_it_is_waiting() -> None:
         tool_result=json.dumps({"status": "waiting_for_approval", "decision_id": 3, "actions": ["a", "b"]}),
     )
     assert chip is not None and chip["summary"] == "Waiting for your approval: 2 actions" and chip["link"] == "/today"
+    # The chat shows the card under its message by this id.
+    assert chip["decision_id"] == 3
     assert summarize_action(tool_name="propose_actions", tool_input={}, tool_result=json.dumps({"error": "x"})) is None
 
 
@@ -369,3 +371,4 @@ def test_dismissing_a_card_does_nothing(roster: SimpleNamespace, client: TestCli
     resp = client.post(f"/decisions/{card.id}/reject", json={"reason": ""}, headers={"x-caller-email": TEAM})
     assert resp.status_code == 200 and resp.json()["status"] == "rejected"
     assert sends == []
+

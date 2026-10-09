@@ -8884,7 +8884,7 @@ delegation:
     NOT part of the offer (the handler checks it per call), so the cached
     tool prefix never flips when a token lapses. speaker_text is pinned
     because the turn's message joins the session history only after the
-    turn, and a new email may go to an address typed this turn — outside any
+    turn, and a draft's address typed this turn needs no check — outside any
     tag block an adapter added (settings.typed_addresses drops the
     <outbound_reply_context> backstory hydrated into a DM, and counts none
     at all when the message carries an attachment — an "[Attached: …]"
@@ -8921,9 +8921,13 @@ delegation:
     never Reply-To (flag reply_to_ignored), with cc only on reply_all (minus
     the writer and the sender; beyond 10 trimmed and flagged cc_trimmed);
     References from gmail.references_header — whole ids only, the parent
-    last, the oldest after the root dropped to fit one header; a new email goes only to roster people
-    (contacts only when contacts_reachable_now) or addresses in
-    speaker_text. Result {status drafted, draft_id, gmail_link, to, cc,
+    last, the oldest after the root dropped to fit one header; a new email
+    or a forward may go to any well-formed address (_new_recipients): it is
+    only a draft in their own mailbox, and they see who it is to before
+    they send it. An address neither on the roster (contacts only when
+    contacts_reachable_now) nor typed in speaker_text comes back in
+    not_in_people with check_address, and the persona names it for them to
+    check. Result {status drafted, draft_id, gmail_link, to, cc,
     subject, preview, flags, open_questions, note}; the link is built from a
     fixed https://mail.google.com/ prefix and the note marks the preview as
     data. action_chips gives it a chip only for status drafted.
@@ -8998,7 +9002,7 @@ delegation:
     ghostwrite_email takes forward (a thread id) with to: a draft forwarding
     the thread's latest non-draft message, intent the note above it (the
     ghostwriter writes the note only), recipients by _new_recipients
-    (roster or typed this turn), subject "Fwd: ...". DraftSpec.forward
+    (any address; not_in_people names ones to check), subject "Fwd: ...". DraftSpec.forward
     (gmail.ForwardOf: message id, header block, the sender's own words).
     Gmail: build_raw quotes the header and text under the note and attaches
     DraftSpec.attachments; create_draft fills them from the original
@@ -9057,7 +9061,13 @@ delegation:
     final_payload.results (done | waiting | failed | skipped). Reject does
     nothing else. Audit: delegation_actions_proposed / _approved / _dismissed,
     private, kinds and outcomes only. Approved on the web only (chat apps
-    have no buttons); a card can come from any Act as me surface.
+    have no buttons); a card can come from any Act as me surface. In the web
+    chat the card shows under the reply that left it: the propose_actions
+    chip carries decision_id (action_chips), and ChatActionCards renders it
+    from GET /delegation/actions while it waits. There is no "always
+    allow" for contacts: a standing allowance would let mail-planted text
+    add its sender and email them in the same turn without a tap, so each
+    card still needs its own tap.
   ghostwriter: |
     delegation.ghostwriter.compose — the only text the Executive produces
     under someone else's name. System = the constant GHOSTWRITER_PROMPT +
@@ -9287,7 +9297,10 @@ delegation:
     mail_read_tools; lockdown._sent_by), never one the
     mail's text only mentions; on an
     update the stored name too, and a changed address must be one they
-    typed), because the roster is what every send check trusts. What an
+    typed), because the roster is what every send check trusts. Any other
+    refused upsert_person gets lockdown.CONTACT_REFUSAL, which points the
+    model at an add_contact approval card instead of asking them to type
+    the address. What an
     email itself asks for (a meeting, a message, a new contact) is still
     never done on its say-so: the persona sends it to propose_actions.
     Every tool the Executive can be offered is in exactly one of
@@ -9305,18 +9318,15 @@ delegation:
     turn private to the principal. The lockdown is per turn
     (TurnDelegation.read_mail, set only by the tools that read the mailbox
     or notes): the next message starts afresh, in a mail_private
-    conversation too, which stays private (touched_mail) but not fully
-    locked. History keeps only the speaker's words and the
-    Executive's final replies, never a tool's result, but a reply can repeat
-    a link the mail planted, so a later turn withholds the same tools
-    (lockdown.carried_withholds, CARRIED_REFUSAL) while the reading turn is
-    still in the history the model is shown (TurnDelegation.mail_in_view:
-    sessions.mail_read_at, the history length mark_mail_private stores before
-    the reading turn, against session.history_window_start; NULL counts as
-    in view). A chat app's conversation (a Telegram chat) never ends, so the
-    hold lifts some 20 to 30 messages later rather than lasting for ever.
-    Accepted residual: a later reply that repeats the planted link keeps it
-    in view past that point. The process
+    conversation too, which stays private (touched_mail) but is not locked
+    at all. History keeps only the speaker's words and the Executive's
+    final replies, never a tool's result, and the next message is the
+    person asking again after reading that reply. (Until 2026-10 a later
+    turn held the same tools for some 20 to 30 messages while the reading
+    turn was in view, lockdown.carried_withholds; it was dropped as too
+    restrictive: a refused contact add or link in a long chat app
+    conversation stayed refused even after the person confirmed.
+    sessions.mail_read_at is still stored by mark_mail_private.) The process
     log names a refused call_tool's inner tool only when it is shaped like
     a tool name (executive._loggable_tool, [a-z0-9_]{1,64}), else
     "call_tool:<unlisted>": that name is the model's own text, which mail

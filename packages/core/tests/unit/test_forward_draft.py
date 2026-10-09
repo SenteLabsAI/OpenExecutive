@@ -77,13 +77,14 @@ def test_a_forward_drafts_the_latest_message_to_someone_they_know(roster: Simple
     assert result["subject"] == "Fwd: Brand refresh pilot"
 
 
-def test_a_forward_goes_only_to_people_they_know(roster: SimpleNamespace) -> None:
+def test_a_forward_to_someone_new_is_a_draft_they_check(roster: SimpleNamespace) -> None:
     mailbox = FakeMailbox()
     result = _ghostwrite(_session(mailbox, "forward it"), {
         "intent": "FYI", "forward": "t1", "to": ["stranger@elsewhere.example"],
     })
-    assert "roster" in result["error"]
-    assert mailbox.drafts == []
+    assert result["status"] == "drafted"
+    assert result["not_in_people"] == ["stranger@elsewhere.example"]
+    assert [d.to for d in mailbox.drafts] == [["stranger@elsewhere.example"]]
 
 
 def test_a_forward_needs_a_real_thread_id(roster: SimpleNamespace) -> None:
