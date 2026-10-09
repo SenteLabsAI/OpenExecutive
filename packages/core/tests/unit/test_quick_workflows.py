@@ -169,9 +169,16 @@ def test_a_stored_custom_workflow_keeps_an_older_quick_name(
     assert not isinstance(get_workflow("quick_market_sizing"), QuickWorkflow)
 
 
-def test_custom_workflows_may_not_take_a_quick_name() -> None:
+def test_custom_workflows_may_not_take_a_quick_name(
+    no_custom: list[DynamicWorkflowDef],
+) -> None:
     defn = _custom_following("").model_copy(update={"name": "quick_vendor"})
     assert any("may not start with 'quick_'" in e for e in validate_definition(defn))
+
+    # One already stored under it can still be edited and switched on.
+    no_custom.append(defn)
+    edited = defn.model_copy(update={"title": "Vendor check, renamed", "is_active": True})
+    assert not [e for e in validate_definition(edited) if "quick_" in e]
 
 
 @pytest.mark.asyncio

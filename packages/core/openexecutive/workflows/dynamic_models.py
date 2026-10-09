@@ -311,8 +311,13 @@ def validate_definition(defn: DynamicWorkflowDef) -> list[str]:
             errors.append(f"name {defn.name!r} collides with a built-in workflow")
         elif defn.name.startswith("quick_"):
             # Reserved for the Quick workflows derived from playbooks
-            # (workflows/quick.py QUICK_PREFIX).
-            errors.append(f"name {defn.name!r} may not start with 'quick_'")
+            # (workflows/quick.py QUICK_PREFIX). One saved under it before
+            # the prefix was reserved keeps its name, so it can still be
+            # edited and switched on.
+            from openexecutive.workflows.dynamic_store import get_definition
+
+            if get_definition(defn.name) is None:
+                errors.append(f"name {defn.name!r} may not start with 'quick_'")
 
     if not defn.title.strip():
         errors.append("title must not be empty")
