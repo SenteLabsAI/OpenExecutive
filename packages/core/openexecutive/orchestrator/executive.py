@@ -299,17 +299,19 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: boo
         return (
             f"\n\n[TRUNCATED by Open Executive: showed the first {shown:,} of "
             f"{len(text):,} characters from `{safe_name}` ({pct}% omitted). "
-            "This is NOT the full result. To see more, call the tool again "
-            "with a narrower request — a page range, a section name, a query "
-            "or filter — rather than re-requesting the whole document."
+            "This is NOT the full result."
             + (
+                # A narrower re-read would be cut the same way, so the
+                # budget note replaces the "ask again" advice.
                 " This question has already read as much as it can: answer "
                 "from what you have, and say what you could not read. Do not "
                 "edit, rewrite or replace anything from this cut result: say "
                 "it was too long to work on here and offer to do it as its "
                 "own request."
                 if budget_spent
-                else ""
+                else " To see more, call the tool again with a narrower "
+                "request — a page range, a section name, a query or filter — "
+                "rather than re-requesting the whole document."
             )
             + "]"
         )

@@ -310,8 +310,12 @@ def test_budget_marker_says_answer_from_what_you_have() -> None:
     # A read cut by the budget must never be the basis of an edit: the
     # model would write back a document missing everything past the cut.
     assert "Do not edit, rewrite or replace anything from this cut result" in out
+    # A narrower re-read would be cut too, so the budget note drops the
+    # "call the tool again" advice rather than contradict it.
+    assert "call the tool again" not in out
     plain = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000)
     assert "already read as much as it can" not in plain
+    assert "call the tool again" in plain
 
 
 def test_a_turns_reads_share_one_budget(monkeypatch: pytest.MonkeyPatch) -> None:
