@@ -50,7 +50,7 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ),
     ),
     "watch_and_alerts": (
-        "the watch list, alerts, executive research runs",
+        "keep an eye on topics, people or competitors (the watch list), alerts, executive research runs",
         (
             "ack_alert",
             "add_watchlist_entry",
@@ -67,7 +67,7 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ("draft_workflow", "list_workflows", "run_python_job", "run_workflow", "save_workflow", "suggest_workflow"),
     ),
     "documents": (
-        "draft, read back or list documents (artifacts)",
+        "write, read back or list documents such as memos, reports and plans (artifacts)",
         ("draft_artifact", "get_artifact", "list_artifacts"),
     ),
     "messaging": (
@@ -107,7 +107,9 @@ def open_tools_tool(offered: Iterable[str]) -> dict[str, Any]:
             "Open a group of further tools. You have more tools than the ones listed "
             "directly; they sit in the groups below. When a request needs one, open "
             "its group: the result gives each tool's description and input, and you "
-            "then call it with use_tool. Open a group only when the request needs it.\n"
+            "then call it with use_tool. Open a group only when the request needs it. "
+            "Before you tell the person you can't do something, check these groups: "
+            "if one covers it, open it.\n"
             + lines
         ),
         "input_schema": {
