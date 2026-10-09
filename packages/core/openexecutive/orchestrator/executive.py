@@ -247,6 +247,11 @@ _TOOL_NAME_MARKER_MAX = 80
 # Once a turn's reading budget (TOOL_RESULTS_TURN_MAX_CHARS) is used up, a
 # further tool result still shows this much, so the model sees what it got.
 _TURN_BUDGET_FLOOR = 3_000
+# Results the turn's reading budget counts but never cuts (see
+# _turn_result_limit).
+_NEVER_CUT_BY_TURN_BUDGET = frozenset(
+    {step_script.RUN_SCRIPT_TOOL, tool_groups.OPEN_TOOLS, "search_tools"}
+)
 
 
 def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: bool = False) -> Any:
@@ -343,9 +348,13 @@ def _turn_result_limit(name: str, *, per_result: int, turn_budget: int, used: in
     budget. A built tool's result counts but is never cut below
     ``per_result``: it is already bounded (step_script), and it lists the
     writes that already ran, which a short cut would hide and the model would
-    then repeat.
+    then repeat. Tool discovery (``open_tools``, ``search_tools``) is treated
+    the same way: its result is the schema for the next call, and a cut one
+    would leave the model unable to make it.
     """
-    if turn_budget <= 0 or name in ("consult_specialist", step_script.RUN_SCRIPT_TOOL):
+    if turn_budget <= 0 or name == "consult_specialist":
+        return per_result, False
+    if name in _NEVER_CUT_BY_TURN_BUDGET:
         return per_result, False
     remaining = turn_budget - used
     if remaining >= per_result:

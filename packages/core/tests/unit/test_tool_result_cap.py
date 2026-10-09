@@ -301,6 +301,9 @@ def test_turn_budget_limit() -> None:
     )
     # A built tool's result lists the writes that already ran: never cut short.
     assert _turn_result_limit("run_script", per_result=20_000, turn_budget=40_000, used=10**6) == (20_000, False)
+    # Nor is tool discovery: a cut schema would leave the next call unmakeable.
+    for name in ("open_tools", "search_tools"):
+        assert _turn_result_limit(name, per_result=20_000, turn_budget=40_000, used=10**6) == (20_000, False)
 
 
 def test_budget_marker_says_answer_from_what_you_have() -> None:
