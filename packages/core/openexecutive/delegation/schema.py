@@ -20,6 +20,7 @@ HANDLE_IT_TABLE = "delegation_handle_it"
 HANDLED_TABLE = "delegation_handled"
 REMINDERS_TABLE = "delegation_reminders"
 MAIL_READ_TABLE = "delegation_mail_read"
+TRAINING_TABLE = "delegation_training"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -33,6 +34,7 @@ TABLES: tuple[str, ...] = (
     HANDLED_TABLE,
     REMINDERS_TABLE,
     MAIL_READ_TABLE,
+    TRAINING_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -123,7 +125,8 @@ _DDL: tuple[str, ...] = (
     f"CREATE INDEX IF NOT EXISTS idx_{INBOX_MESSAGES_TABLE}_created "
     f"ON {INBOX_MESSAGES_TABLE}(person_id, created_at)",
     # Handle it for me, one row per person (absent: off). mode is careful |
-    # balanced | bold (delegation.handle_it.MODES). levels is the per-kind
+    # balanced | bold (delegation.handle_it.MODES; a 'training' row from
+    # before is moved by _move_training_off_the_dial). levels is the per-kind
     # setting it replaced, kept for older rows (_add_handle_it_mode).
     f"CREATE TABLE IF NOT EXISTS {HANDLE_IT_TABLE} ("
     "  person_id INTEGER PRIMARY KEY,"
@@ -176,6 +179,16 @@ _DDL: tuple[str, ...] = (
     ")",
     f"CREATE INDEX IF NOT EXISTS idx_{MAIL_READ_TABLE}_person_read "
     f"ON {MAIL_READ_TABLE}(person_id, read_at)",
+    # Act as me in training, per setting (delegation.training.SETTINGS):
+    # one row per person and setting, absent means not in training.
+    f"CREATE TABLE IF NOT EXISTS {TRAINING_TABLE} ("
+    "  person_id INTEGER NOT NULL,"
+    "  setting TEXT NOT NULL,"
+    "  enabled INTEGER NOT NULL DEFAULT 0,"
+    "  updated_at TEXT,"
+    "  updated_by TEXT,"
+    "  PRIMARY KEY (person_id, setting)"
+    ")",
 )
 
 
@@ -202,8 +215,34 @@ def _add_handle_it_mode(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _move_training_off_the_dial(conn: sqlite3.Connection) -> None:
+    """In training was once a step on Handle it for me's dial (mode
+    ``training``); it is now a switch per Act as me setting. Such a row moves
+    to Balanced, the limits its allowed senders had, with Replies and
+    Follow-ups in training (follow-ups always waited there), so nothing more
+    goes on its own than before."""
+    rows = conn.execute(
+        f"SELECT person_id FROM {HANDLE_IT_TABLE} WHERE mode = 'training'"  # noqa: S608 — constant table name
+    ).fetchall()
+    if not rows:
+        return
+    for (person_id,) in rows:
+        for setting in ("replies", "follow_ups"):
+            conn.execute(
+                f"INSERT INTO {TRAINING_TABLE} (person_id, setting, enabled, updated_by) "  # noqa: S608
+                "VALUES (?, ?, 1, 'migration') ON CONFLICT(person_id, setting) DO UPDATE SET enabled = 1",
+                (person_id, setting),
+            )
+        conn.execute(
+            f"UPDATE {HANDLE_IT_TABLE} SET mode = 'balanced' WHERE person_id = ?",  # noqa: S608
+            (person_id,),
+        )
+    conn.commit()
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the tables if missing. Idempotent."""
     for statement in _DDL:
         conn.execute(statement)
     _add_handle_it_mode(conn)
+    _move_training_off_the_dial(conn)

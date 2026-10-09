@@ -203,12 +203,12 @@ function useTileStatuses(): {
         : { text: "Mailbox not connected", tone: "warn" };
     const handleIt = delegation.handle_it;
     if (handleIt?.enabled) {
-      const mode =
-        handleIt.mode === "training"
-          ? "In training"
-          : (HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On");
+      const mode = HANDLE_IT_MODES.find((m) => m.mode === handleIt.mode)?.label ?? "On";
       // Short enough for one line on a phone: the dial step is what matters.
-      byPage["act-as-me"] = { text: `Handles: ${mode}`, tone: "ok" };
+      byPage["act-as-me"] = {
+        text: delegation.training?.replies ? `Handles: ${mode}, in training` : `Handles: ${mode}`,
+        tone: "ok",
+      };
     }
   }
 

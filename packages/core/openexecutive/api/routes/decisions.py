@@ -468,15 +468,16 @@ async def _send_reply(
     (``delegation.reply_send``, which checks everything again first)."""
     from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
 
-    # Send + allow, in training: ``edits.allow`` (and ``edits.example``, keep
-    # an edited draft as an example). The rest is the second yes.
+    # Send + allow, in training: ``edits.allow``; ``edits.example`` keeps an
+    # edited draft as how they write (Drafts in training). The rest is the
+    # second yes.
     confirm = dict(body.edits or {})
     allow = confirm.pop("allow", None)
     example = confirm.pop("example", None)
     try:
         await send_approved_reply(
             instance, caller=api_caller.caller(request), resolver=resolver, confirm=confirm,
-            learn={"example": example is True} if allow is True else None,
+            allow=allow is True, example=example is True,
         )
     except SendRefused as refused:
         raise HTTPException(
@@ -635,13 +636,14 @@ async def _carry_out_actions(
 ) -> DecisionInstance:
     """Do an action card's actions, exactly as stored, on its person's tap
     (``delegation.action_cards``, which checks the caller and each action
-    again first). ``edits.only`` picks which of them."""
+    again first). ``edits.only`` picks which of them; ``edits.allow`` is
+    Approve + allow, with Suggested actions in training."""
     from openexecutive.delegation.action_cards import ApproveRefused, approve
 
     try:
         await approve(
             instance, caller=api_caller.caller(request), resolver=resolver,
-            only=(body.edits or {}).get("only"),
+            only=(body.edits or {}).get("only"), allow=(body.edits or {}).get("allow") is True,
         )
     except ApproveRefused as refused:
         raise HTTPException(

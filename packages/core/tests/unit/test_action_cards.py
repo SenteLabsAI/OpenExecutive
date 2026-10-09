@@ -372,3 +372,169 @@ def test_dismissing_a_card_does_nothing(roster: SimpleNamespace, client: TestCli
     assert resp.status_code == 200 and resp.json()["status"] == "rejected"
     assert sends == []
 
+
+
+# --------------------------------------------------------------------------- #
+# In training: Approve + allow, then allowed cards happen on their own
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def actions_in_training(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    from openexecutive.delegation import handle_it, training
+
+    set_enabled(roster.principal, True, updated_by="t")
+    training.set_(roster.principal, {training.ACTIONS: True}, updated_by="t")
+    monkeypatch.setattr(handle_it, "signing_ok", lambda: True)
+    return roster
+
+
+def _allow(card: Any) -> list[dict[str, Any]]:
+    return asyncio.run(action_cards.approve(card, caller=None, resolver=card.approver_person_id, allow=True))
+
+
+def test_approve_and_allow_then_the_same_kind_happens_on_its_own(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_in_training
+    principal = people_store.get_person(roster.principal)
+    card = _card(_session(FakeMailbox()), [_message(roster.teammate), _invite(roster.principal, roster.teammate)])
+    [shown] = action_cards.cards(principal)
+    assert shown.can_allow
+    _allow(card)
+    learned = training.learned(roster.principal)
+    assert sorted((a.label, training.setting_of(a.key)) for a in learned) == [
+        ("Meetings with Ben Teammate", "actions"), ("Message Ben Teammate", "actions"),
+    ]
+    sends.clear()
+    # A new card of the same kinds, other words and time: carried out at once.
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [
+        _message(roster.teammate, "Could you send the pilot notes?"),
+    ]})
+    assert result["status"] == "done_on_its_own"
+    assert result["actions"] == [{"action": "Message Ben Teammate", "status": "done", "detail": "Sent."}]
+    assert [i["text"] for _, i, _ in sends] == ["Could you send the pilot notes?"]
+    done = get_decision_instance(result["decision_id"])
+    assert done is not None and done.status == "executed" and done.gate_mode == "auto_execute"
+    assert action_cards.cards(principal) == []
+    chip = summarize_action(tool_name="propose_actions", tool_input={}, tool_result=json.dumps(result))
+    assert chip is not None and chip["summary"] == "Done on its own, as you allowed: 1 action"
+
+
+@pytest.mark.parametrize(("action", "reason"), [
+    ("someone_else", "not_allowed"),
+    ("contact", "not_allowed"),
+    ("sensitive", "sensitive"),
+    ("link", "link"),
+    ("amount", "amount"),
+])
+def test_what_still_waits_in_training(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any], action: str, reason: str,
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_in_training
+    training.allow_action(roster.principal, {"kind": "message", "input": {"person_id": roster.teammate}},
+                          decision_id=None)
+    proposed = {
+        "someone_else": _message(roster.contact),
+        "contact": {"kind": "add_contact", "full_name": "Sam Lee", "email": "sam@northpeak.example"},
+        "sensitive": _message(roster.teammate, "Can you check the contract terms?"),
+        "link": _message(roster.teammate, "See https://files.example.com/x"),
+        "amount": _message(roster.teammate, "Is $400 right?"),
+    }[action]
+    checked = action_cards.check([proposed], people_store.get_person(roster.principal), now=datetime.now(UTC))
+    assert not isinstance(checked, str)
+    assert action_cards.on_its_own_refusal(people_store.get_person(roster.principal), checked,
+                                           now=datetime.now(UTC)) == reason
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [proposed]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+
+
+def test_out_of_training_allowed_cards_wait(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_in_training
+    training.allow_action(roster.principal, {"kind": "message", "input": {"person_id": roster.teammate}},
+                          decision_id=None)
+    training.set_(roster.principal, {training.ACTIONS: False}, updated_by="t")
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate)]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+    [shown] = action_cards.cards(people_store.get_person(roster.principal))
+    assert not shown.can_allow
+    with pytest.raises(action_cards.ApproveRefused) as refused:
+        _allow(get_decision_instance(result["decision_id"]))
+    assert refused.value.code == "cant_allow" and sends == []
+
+
+def test_a_new_contact_alone_cant_be_allowed(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    card = _card(_session(FakeMailbox()), [
+        {"kind": "add_contact", "full_name": "Sam Lee", "email": "sam@northpeak.example"},
+    ])
+    with pytest.raises(action_cards.ApproveRefused) as refused:
+        _allow(card)
+    assert refused.value.code == "cant_allow"
+    assert get_decision_instance(card.id).status == "proposed"
+
+
+def test_the_daily_limit_holds_on_its_own(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_in_training
+    monkeypatch.setattr(action_cards, "ON_ITS_OWN_PER_DAY", 1)
+    training.allow_action(roster.principal, {"kind": "message", "input": {"person_id": roster.teammate}},
+                          decision_id=None)
+    first = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate, "one")]})
+    second = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate, "two")]})
+    assert first["status"] == "done_on_its_own" and second["status"] == "waiting_for_approval"
+
+
+def test_approve_and_allow_through_the_route(
+    actions_in_training: SimpleNamespace, client: TestClient, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_in_training
+    card = _card(_session(FakeMailbox()), [_message(roster.teammate)])
+    olivia = {"x-caller-email": OWNER}
+    assert client.get("/delegation/actions", headers=olivia).json()["cards"][0]["can_allow"] is True
+    resp = client.post(f"/decisions/{card.id}/approve", json={"edits": {"allow": True}}, headers=olivia)
+    assert resp.status_code == 200
+    assert [a.label for a in training.learned(roster.principal)] == ["Message Ben Teammate"]
+
+
+def test_an_invite_on_its_own_goes_through_the_meeting_gate(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_in_training
+    training.allow_action(roster.principal, {"kind": "invite", "input": {"attendee_person_ids": [roster.teammate]}},
+                          decision_id=None)
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_invite(roster.principal, roster.teammate)]})
+    assert result["status"] == "done_on_its_own"
+    # Nobody tapped, so it is never booked as already approved by them.
+    assert [(k, approver) for k, _, approver in sends] == [("invite", None)]
+
+
+def test_a_card_held_at_the_last_check_waits_as_an_ordinary_card(
+    actions_in_training: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    roster = actions_in_training
+    person = people_store.get_person(roster.principal)
+    checked = action_cards.check([_message(roster.teammate)], person, now=datetime.now(UTC))
+    assert not isinstance(checked, str)
+    decision_id = action_cards.propose(person, checked, "y", session_id=None, on_its_own=True)
+    # Not allowed after all: held, handed back to wait on a tap.
+    assert asyncio.run(action_cards.run_on_its_own(decision_id, person)) is None
+    card = get_decision_instance(decision_id)
+    assert card is not None and card.status == "proposed" and card.gate_mode == "propose" and sends == []

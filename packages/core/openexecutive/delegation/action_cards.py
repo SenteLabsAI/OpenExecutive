@@ -26,9 +26,25 @@ exactly as stored, with no model call: claimed first, so it runs once.
 
 **Limits.** ``CARDS_PER_TURN`` a turn and ``OPEN_CARDS_MAX`` waiting a
 person; a card is dropped after ``CARD_TTL``.
+
+**In training.** With Act as me's Suggested actions in training
+(``delegation.training``), a card adds **Approve + allow**: it does the
+actions on the person's tap, as Approve does, and from then on a message to
+that person, or a meeting with exactly those people, is allowed. A card whose
+every action is allowed is carried out as soon as it is proposed
+(``run_on_its_own``), with no tap, but only when plain code finds nothing
+against it (``on_its_own_refusal``): still in training, Act as me on, a server
+that can tie the switch to the person, nothing sensitive, no link or amount,
+a short message, and fewer than ``ON_ITS_OWN_PER_DAY`` actions today. A new
+contact always waits. Anything refused waits on its card as before. An
+invite carried out on its own is never booked as already approved: the
+meeting gate decides as for any meeting nobody tapped (a time chosen from
+someone's mail must not land on a calendar unasked), so it may go to the
+approver as a proposal.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -53,6 +69,10 @@ NAME_MAX = 120
 WHY_MAX = 300
 MAX_ATTENDEES = 20
 HORIZON = timedelta(days=366)
+# Carried out on their own, in training: at most this many actions a day, and
+# a message no longer than this.
+ON_ITS_OWN_PER_DAY = 10
+ON_ITS_OWN_MESSAGE_MAX = 1200
 
 _EMAIL_RE = re.compile(r"^[^@\s<>,;\"']+@[^@\s<>,;\"']+\.[^@\s<>,;\"']+$")
 
@@ -83,6 +103,9 @@ class ActionCard:
     created_at: str
     why: str
     actions: list[CardAction] = field(default_factory=list)
+    # Approve + allow: Suggested actions is in training and something on the
+    # card can be allowed that isn't yet (delegation.training).
+    can_allow: bool = False
 
 
 def _one_line(value: Any, limit: int) -> str:
@@ -276,9 +299,13 @@ def open_cards(person_id: int, *, now: datetime | None = None) -> list[Any]:
     return sorted((c for c in found if _live(c, at)), key=lambda c: c.created_at, reverse=True)
 
 
-def propose(speaker: Any, actions: list[dict[str, Any]], why: str, *, session_id: str | None) -> int:
+def propose(
+    speaker: Any, actions: list[dict[str, Any]], why: str, *, session_id: str | None, on_its_own: bool = False,
+) -> int:
     """Store a card for ``speaker`` (``actions`` already ``check``ed); returns
-    its decision id. The same actions still waiting are that card."""
+    its decision id. The same actions still waiting are that card.
+    ``on_its_own`` marks it for ``run_on_its_own`` (``on_its_own_refusal``
+    found nothing against it)."""
     from openexecutive.memory.decision_ledger import create_decision_instance
 
     digest = hashlib.sha256(
@@ -299,14 +326,28 @@ def propose(speaker: Any, actions: list[dict[str, Any]], why: str, *, session_id
         originating_session_id=session_id,
         proposed_payload=payload,
         idempotency_key=f"{DECISION_CLASS}:{digest}:{uuid.uuid4().hex[:12]}",
-        gate_mode="propose",
+        gate_mode="auto_execute" if on_its_own else "propose",
         approver_person_id=speaker.id,
         confidence=None,
     )
 
 
+def can_allow(person_id: int, actions: list[Any], *, in_training: bool) -> bool:
+    """Whether Approve + allow has something to allow on a card."""
+    from openexecutive.delegation import training
+
+    return in_training and any(
+        isinstance(a, dict) and training.action_key(person_id, a) is not None
+        and training.allowed_action(person_id, a) is None
+        for a in actions
+    )
+
+
 def cards(person: Any) -> list[ActionCard]:
     """``person``'s waiting cards, for ``GET /delegation/actions``."""
+    from openexecutive.delegation import training
+
+    in_training = training.get(person.id).actions
     out: list[ActionCard] = []
     for card in open_cards(person.id):
         payload = _payload(card)
@@ -320,8 +361,61 @@ def cards(person: Any) -> list[ActionCard]:
                            text=str(a.get("text") or ""))
                 for i, a in enumerate(actions) if isinstance(a, dict)
             ],
+            can_allow=can_allow(person.id, actions, in_training=in_training),
         ))
     return out
+
+
+def on_its_own_refusal(person: Any, actions: list[dict[str, Any]], *, now: datetime) -> str | None:
+    """Why a card of ``actions`` may not be carried out on its own (a short
+    code), or None when it may. Plain code only; never raises (an error
+    refuses)."""
+    try:
+        return _on_its_own_refusal(person, actions, now)
+    except Exception:
+        logger.warning("action_cards: the on-its-own rules failed — asking instead", exc_info=True)
+        return "uncountable"
+
+
+def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> str | None:
+    from openexecutive.delegation import handle_it, training
+    from openexecutive.delegation.settings import can_delegate, is_enabled
+    from openexecutive.memory.decision_ledger import STATUS_EXECUTED, list_instances
+
+    if person is None or person.id is None or not training.get(person.id).actions:
+        return "training_off"
+    if not can_delegate(person) or not is_enabled(person.id):
+        return "act_as_me_off"
+    if not handle_it.signing_ok():
+        return "signing_off"
+    if not actions or any(training.allowed_action(person.id, a) is None for a in actions):
+        return "not_allowed"
+    for action in actions:
+        given = action.get("input")
+        stored: dict[str, Any] = given if isinstance(given, dict) else {}
+        texts = [str(stored.get(k) or "") for k in ("text", "title", "description")]
+        if handle_it.sensitive(*texts):
+            return "sensitive"
+        if any(handle_it._LINK_RE.search(t) for t in texts):
+            return "link"
+        if any(handle_it._AMOUNT_RE.search(t) for t in texts):
+            return "amount"
+        if len(str(stored.get("text") or "")) > ON_ITS_OWN_MESSAGE_MAX:
+            return "long"
+    day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    done_today = list_instances(
+        DECISION_CLASS, status=STATUS_EXECUTED, approver_person_id=person.id,
+        resolved_since=day.isoformat(), limit=1000,
+    )
+    done = sum(len(_payload(card).get("actions") or []) for card in done_today)
+    if done + len(actions) > ON_ITS_OWN_PER_DAY:
+        return "daily_limit"
+    return None
+
+
+# One card carried out on its own at a time, so two turns can't both pass
+# the daily limit before either is counted.
+_ON_ITS_OWN_LOCK = asyncio.Lock()
 
 
 def audit(event: str, summary: str, details: dict[str, Any]) -> None:
@@ -342,8 +436,10 @@ def _result(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-async def _do(action: dict[str, Any], person: Any) -> dict[str, str]:
-    """Carry out one stored action, checked again first. Never raises."""
+async def _do(action: dict[str, Any], person: Any, *, tapped: bool = True) -> dict[str, str]:
+    """Carry out one stored action, checked again first. Never raises.
+    ``tapped``: the person approved this very card, so an invite is booked
+    as approved by them; on its own, the meeting gate decides."""
     kind = str(action.get("kind") or "")
     given = action.get("input")
     stored: dict[str, Any] = given if isinstance(given, dict) else {}
@@ -368,7 +464,10 @@ async def _do(action: dict[str, Any], person: Any) -> dict[str, str]:
                 handle_create_calendar_event,
             )
 
-            with approved_by(person.id):
+            if tapped:
+                with approved_by(person.id):
+                    result = _result(await handle_create_calendar_event(tool_input))
+            else:
                 result = _result(await handle_create_calendar_event(tool_input))
             if result.get("status") == "created":
                 return {"status": "done", "detail": "Booked."}
@@ -391,12 +490,12 @@ async def _do(action: dict[str, Any], person: Any) -> dict[str, str]:
     return {"status": "failed", "detail": "Unknown action."}
 
 
-async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any = None) -> list[dict[str, Any]]:
+async def approve(
+    instance: Any, *, caller: Any, resolver: int | None, only: Any = None, allow: bool = False,
+) -> list[dict[str, Any]]:
     """Carry out ``instance``'s actions (those in ``only`` when given) for
-    its person, once. Raises ``ApproveRefused``."""
-    from contextlib import nullcontext
-
-    from openexecutive.audit import rows_for_person
+    its person, once. ``allow`` is Approve + allow (in training): allow each
+    one that happened from now on. Raises ``ApproveRefused``."""
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.settings import can_delegate, is_enabled
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
@@ -407,9 +506,6 @@ async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any
         claim_for_execution,
         finish_execution,
     )
-    from openexecutive.orchestrator.people_tools import grant_contact_egress
-    from openexecutive.orchestrator.schedule_tools import current_session
-    from openexecutive.orchestrator.session import Session
     from openexecutive.people.store import get_person
 
     payload = _payload(instance)
@@ -436,8 +532,42 @@ async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any
         chosen &= set(only)
         if not chosen:
             raise ApproveRefused(422, "bad_selection", "Pick at least one action.")
+    if allow:
+        from openexecutive.delegation import training
+
+        if not training.get(person.id).actions:
+            raise ApproveRefused(422, "cant_allow", "Approve + allow is for cards while Suggested actions is in training.")
+        keys = [found[0] for i in chosen if (found := training.action_key(person.id, actions[i])) is not None]
+        if not keys:
+            raise ApproveRefused(422, "cant_allow", "Nothing on this card can be allowed.")
+        if not all(training.room_for(person.id, k) for k in keys):
+            raise ApproveRefused(409, "learned_full", "It has learned as much as it can hold. Remove something first.")
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise ApproveRefused(409, "already_handled", "This card was already handled.")
+    results = await _carry_out(person, actions, chosen)
+    any_ok = any(r["status"] in ("done", "waiting") for r in results)
+    status = (STATUS_APPROVED_UNCHANGED if len(chosen) == len(actions) else STATUS_APPROVED_WITH_EDIT) if any_ok else STATUS_FAILED
+    finish_execution(instance.id, status, final_payload={**payload, "results": results})
+    audit("delegation_actions_approved", f"Person {person.id} approved an action card", {
+        "person_id": person.id, "decision_id": instance.id,
+        "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],
+    })
+    if allow:
+        _allow_done(person.id, actions, results, decision_id=instance.id)
+    return results
+
+
+async def _carry_out(
+    person: Any, actions: list[dict[str, Any]], chosen: set[int], *, tapped: bool = True,
+) -> list[dict[str, Any]]:
+    """Do the ``chosen`` actions for ``person``, once claimed."""
+    from contextlib import nullcontext
+
+    from openexecutive.audit import rows_for_person
+    from openexecutive.orchestrator.people_tools import grant_contact_egress
+    from openexecutive.orchestrator.schedule_tools import current_session
+    from openexecutive.orchestrator.session import Session
+
     results: list[dict[str, Any]] = []
     token = current_session.set(Session(unattended=True))
     try:
@@ -449,14 +579,91 @@ async def approve(instance: Any, *, caller: Any, resolver: int | None, only: Any
                 if i not in chosen:
                     results.append({"index": i, "status": "skipped", "detail": "Left out."})
                     continue
-                results.append({"index": i, **await _do(action, person)})
+                results.append({"index": i, **await _do(action, person, tapped=tapped)})
     finally:
         current_session.reset(token)
+    return results
+
+
+def _allow_done(person_id: int, actions: list[dict[str, Any]], results: list[dict[str, Any]], *, decision_id: int) -> None:
+    """Approve + allow, once the actions ran: allow each one that happened
+    (or went to whoever approves meetings). A failure never undoes them."""
+    from openexecutive.delegation import training
+
+    allowed: list[int] = []
+    for result in results:
+        if result["status"] not in ("done", "waiting"):
+            continue
+        try:
+            found = training.allow_action(person_id, actions[result["index"]], decision_id=decision_id)
+        except Exception:
+            logger.warning("action_cards: the actions ran, but allowing one failed", exc_info=True)
+            continue
+        if found is not None:
+            allowed.append(found.id)
+    if allowed:
+        audit("delegation_actions_allowed", f"Person {person_id} allowed suggested actions in training", {
+            "person_id": person_id, "decision_id": decision_id, "allowed_ids": allowed,
+        })
+
+
+async def run_on_its_own(decision_id: int, person: Any, *, now: datetime | None = None) -> list[dict[str, Any]] | None:
+    """Carry out a card ``propose`` marked ``on_its_own``, checking every
+    rule again first. None when it was left waiting for the person."""
+    from openexecutive.audit import rows_for_person
+    from openexecutive.memory.decision_ledger import (
+        claim_for_execution,
+        get_decision_instance,
+        hand_back,
+    )
+
+    at = now or datetime.now(UTC)
+    instance = get_decision_instance(decision_id)
+    if (
+        instance is None or instance.decision_class != DECISION_CLASS or instance.gate_mode != "auto_execute"
+        or person is None or instance.approver_person_id != person.id
+    ):
+        return None
+    payload = _payload(instance)
+    actions = [a for a in payload.get("actions") or [] if isinstance(a, dict)]
+    async with _ON_ITS_OWN_LOCK:
+        with rows_for_person(person.id):
+            refused = on_its_own_refusal(person, actions, now=at)
+            if refused is not None:
+                # An ordinary card again, waiting on their tap.
+                hand_back(decision_id, {**payload, "held_because": refused})
+                audit("delegation_actions_held", f"Left person {person.id}'s action card for them", {
+                    "person_id": person.id, "decision_id": decision_id, "reason": refused,
+                })
+                return None
+            if not claim_for_execution(decision_id, resolver_person_id=None):
+                return None
+            results = await _carry_out(person, actions, set(range(len(actions))), tapped=False)
+            return _finish_on_its_own(person, decision_id, payload, actions, results)
+
+
+def _finish_on_its_own(
+    person: Any, decision_id: int, payload: dict[str, Any], actions: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    from openexecutive.delegation import training
+    from openexecutive.memory.decision_ledger import (
+        STATUS_EXECUTED,
+        STATUS_FAILED,
+        finish_execution,
+    )
+
     any_ok = any(r["status"] in ("done", "waiting") for r in results)
-    status = (STATUS_APPROVED_UNCHANGED if len(chosen) == len(actions) else STATUS_APPROVED_WITH_EDIT) if any_ok else STATUS_FAILED
-    finish_execution(instance.id, status, final_payload={**payload, "results": results})
-    audit("delegation_actions_approved", f"Person {person.id} approved an action card", {
-        "person_id": person.id, "decision_id": instance.id,
+    finish_execution(
+        decision_id, STATUS_EXECUTED if any_ok else STATUS_FAILED,
+        final_payload={**payload, "results": results, "on_its_own": True},
+    )
+    for action in actions:
+        allowance = training.allowed_action(person.id, action)
+        if allowance is not None:
+            training.used(allowance)
+    audit("delegation_actions_handled", f"Carried out person {person.id}'s action card on its own", {
+        "person_id": person.id, "decision_id": decision_id,
         "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],
     })
     return results

@@ -1630,6 +1630,8 @@ export interface DelegationSettings {
   inbox?: InboxWatch;
   // Absent (or null) on a backend that predates Handle it for me.
   handle_it?: HandleIt | null;
+  // Absent (or null) on a backend that predates per-setting training.
+  training?: Training | null;
   // The owner's "Let team members use Act as me", while the install allows
   // it; null (or absent) for everyone else.
   team?: DelegationTeam | null;
@@ -1670,18 +1672,30 @@ export interface InboxWatch {
 // decided by plain code (delegation/handle_it.py). Each kind of reply has a
 // level; "ask" leaves a card as before.
 // How much Handle it for me sends on its own (delegation/handle_it.py RULES).
-// "training": every reply waits on its card, which adds Send + allow.
-export type HandleItMode = "training" | "careful" | "balanced" | "bold";
+export type HandleItMode = "careful" | "balanced" | "bold";
 
-// A sender Handle it for me may reply to on its own, allowed with Send +
-// allow in training; yours alone (DELETE /delegation/learned/{id}).
-export interface HandleItLearned {
+// Act as me's settings that can each be in training (delegation/training.py).
+export type TrainingSetting = "replies" | "follow_ups" | "actions" | "drafts";
+
+// Something Act as me learned in training, yours alone (DELETE
+// /delegation/learned/{id}): a person replies or follow-ups may go to, an
+// action allowed with Approve + allow, or how you write to someone.
+export interface TrainingLearned {
   id: number;
   label: string;
-  // The reply you sent after changing the draft, kept as an example ("").
+  setting: TrainingSetting;
+  // What you sent after changing a draft, kept as an example ("").
   example: string;
   uses: number;
   created_at: string;
+}
+
+export interface Training {
+  replies: boolean;
+  follow_ups: boolean;
+  actions: boolean;
+  drafts: boolean;
+  learned: TrainingLearned[];
 }
 
 export interface HandleIt {
@@ -1695,7 +1709,6 @@ export interface HandleIt {
   // owner can have it for now (lead_available).
   lead?: boolean;
   lead_available?: boolean;
-  learned?: HandleItLearned[];
 }
 
 // One reply sent on its own, yours alone (GET /delegation/handled).
@@ -1742,8 +1755,11 @@ export interface ReplyCard {
   waited_because?: string;
   // "follow_up": the draft chases your own unanswered email.
   source?: string;
-  // In training: Send + allow is offered (replies to them aren't allowed yet).
+  // In training: Send + allow is offered (replies, or a follow-up's people,
+  // aren't allowed yet).
   can_allow?: boolean;
+  // Drafts in training: "Do it like this next time" keeps your changed draft.
+  learns_style?: boolean;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.
@@ -1898,10 +1914,21 @@ export async function setInboxWatch(enabled: boolean): Promise<DelegationSetting
   return res.json();
 }
 
-// Ask again before replying to a sender it learned in training.
-export async function removeHandleItLearned(id: number): Promise<DelegationSettings> {
+// Forget one thing it learned in training: it asks again from now on.
+export async function removeTrainingLearned(id: number): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/learned/${id}`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't remove that.");
+  return (await res.json()) as DelegationSettings;
+}
+
+// Put Act as me's settings in or out of training.
+export async function setTraining(update: Partial<Record<TrainingSetting, boolean>>): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/training`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change training.");
   return (await res.json()) as DelegationSettings;
 }
 
@@ -1967,8 +1994,9 @@ function strings(value: unknown): string[] {
 // Send the reply's draft from your Gmail, exactly as it is there (POST
 // /decisions/{id}/approve). `confirm` is your second yes: the recipients you
 // were shown, and that a newer message in the thread is fine.
-// `allow` is Send + allow in training: replies to this sender go on their own
-// from now on; `example` keeps your sent version when you changed the draft.
+// `allow` is Send + allow in training: replies to this sender (follow-ups to
+// these people) go on their own from now on; `example` keeps your sent
+// version when you changed the draft (Drafts in training).
 export async function sendReplyCard(
   id: number,
   confirm?: { recipients: string[]; thread_moved_on?: boolean; allow?: boolean; example?: boolean },
@@ -2008,6 +2036,8 @@ export interface ActionCard {
   created_at: string;
   why: string;
   actions: ActionCardAction[];
+  // In training: Approve + allow is offered.
+  can_allow?: boolean;
 }
 
 // What happened to one action: done, waiting (sent to whoever approves
@@ -2028,12 +2058,13 @@ export async function getActionCards(signal?: AbortSignal): Promise<ActionCard[]
 }
 
 // Do the ticked actions (`only`, by index) of an action card. Returns what
-// happened to each.
-export async function approveActionCard(id: number, only: number[]): Promise<ActionCardResult[]> {
+// happened to each. `allow` is Approve + allow (Suggested actions in
+// training): the same kind, with the same people, happens on its own from now on.
+export async function approveActionCard(id: number, only: number[], allow = false): Promise<ActionCardResult[]> {
   const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ edits: { only } }),
+    body: JSON.stringify({ edits: allow ? { only, allow: true } : { only } }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't do that.");
   const body = (await res.json()) as { final_payload_json?: string | null };

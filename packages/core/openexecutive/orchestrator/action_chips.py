@@ -250,7 +250,16 @@ def summarize_action(
         payload["summary"] = f"{summary}: {text}" if text else summary
         payload["target"] = None
     elif tool_name == "propose_actions":
-        # Only a stored card earns a chip; it says nothing has happened yet.
+        # A card carried out on its own (allowed in training) says what it did.
+        if (parsed or {}).get("status") == "done_on_its_own":
+            done = [a for a in (parsed or {}).get("actions") or [] if isinstance(a, dict)]
+            ok = sum(1 for a in done if a.get("status") in ("done", "waiting"))
+            noun = "action" if ok == 1 else "actions"
+            payload["summary"] = f"Done on its own, as you allowed: {ok} {noun}"
+            payload["target"] = None
+            payload["link"] = "/today"
+            return payload
+        # Otherwise only a stored card earns a chip; it says nothing has happened yet.
         if (parsed or {}).get("status") != "waiting_for_approval":
             return None
         actions = (parsed or {}).get("actions")

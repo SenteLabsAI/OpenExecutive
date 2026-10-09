@@ -86,11 +86,14 @@ export function ActionCardItem({
       return next;
     });
 
-  const approve = async () => {
+  // `allow`: Approve + allow, with Suggested actions in training.
+  const [allowed, setAllowed] = useState(false);
+  const approve = async (allow = false) => {
     setBusy("Doing it…");
     setError(null);
     try {
-      setResults(await approveActionCard(card.decision_id, [...ticked].sort((a, b) => a - b)));
+      setResults(await approveActionCard(card.decision_id, [...ticked].sort((a, b) => a - b), allow));
+      setAllowed(allow);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't do that.");
     } finally {
@@ -168,6 +171,11 @@ export function ActionCardItem({
         })}
       </ul>
 
+      {results && allowed && (
+        <p className="mt-3 text-sm text-fg-muted">
+          From now on, the same kind with the same people happens on its own, without asking.
+        </p>
+      )}
       {results ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={() => onGone(card.decision_id)}>
@@ -179,6 +187,11 @@ export function ActionCardItem({
           <Button variant="primary" onClick={() => void approve()} disabled={busy !== null || ticked.size === 0}>
             {busy ?? (ticked.size === card.actions.length ? "Approve" : `Approve ${ticked.size}`)}
           </Button>
+          {card.can_allow && busy === null && (
+            <Button variant="secondary" onClick={() => void approve(true)} disabled={ticked.size === 0}>
+              Approve + allow
+            </Button>
+          )}
           <Button variant="ghost" className="ml-auto" onClick={() => void dismiss()} disabled={busy !== null}>
             Dismiss
           </Button>

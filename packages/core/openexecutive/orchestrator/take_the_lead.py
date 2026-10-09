@@ -97,7 +97,7 @@ TRAINING_TAG = "take_the_lead:training"
 # What it's learned is one list for every feature that trains (each key
 # starts with its feature); Take the lead is the first.
 FEATURE = "take_the_lead"
-# Act as me's Handle it for me, in training (delegation.training): each
+# Act as me, in training (delegation.training), per setting: each
 # person's own, by person_id.
 FEATURE_ACT_AS_ME = "act_as_me"
 

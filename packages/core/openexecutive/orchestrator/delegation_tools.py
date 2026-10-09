@@ -446,6 +446,7 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import compose
     from openexecutive.delegation.gmail import DraftSpec
+    from openexecutive.delegation.training import example_for
     from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
 
     if tool_input.get("forward"):
@@ -473,6 +474,8 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
         signature=stored.profile.signature,
         exec_name=get_settings().exec_display_name,
         model=composer_model(),
+        # How they wrote to this one person before, when Drafts in training kept it.
+        writer_example=example_for(writer.person.id, recipients[0]) if len(recipients) == 1 else None,
     )
     if not composed.subject:
         return _error("The draft came back without a subject. Try again with a clearer intent."), False

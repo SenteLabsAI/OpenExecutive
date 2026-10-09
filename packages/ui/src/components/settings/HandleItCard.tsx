@@ -10,7 +10,6 @@ import {
   getDelegation,
   getHandledReplies,
   getMyLeadRules,
-  removeHandleItLearned,
   setHandleIt,
   setLeadAsYou,
   type DelegationSettings,
@@ -24,12 +23,12 @@ import { formatAgo } from "@/lib/setupStatus";
 // Handle it for me (PUT /delegation/handle-it) on Settings → Act as me:
 // replies the inbox watcher sends from your mailbox on its own. Plain code
 // decides each one (delegation/handle_it.py). One dial says how much goes
-// without you: Off, In training (every reply waits, and Send + allow on a
-// card lets replies to that person go; delegation/training.py), Easy ones,
-// People I know, Most mail, and for the owner
+// without you: Off, Easy ones, People I know, Most mail, and for the owner
 // Everything, which uses Take the lead
 // (PUT /delegation/take-the-lead), where links, the topics that always wait and
-// the added rules hold a reply back. Anything it won't send waits on Today as
+// the added rules hold a reply back. With Replies in training (the Training
+// card, delegation/training.py) the picked step says so, and only people you
+// allowed get replies on their own. Anything it won't send waits on Today as
 // before. Below the dial, what it sent in the last week (GET /delegation/handled).
 export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string; followUps: string }[] = [
   {
@@ -52,12 +51,18 @@ export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: stri
   },
 ];
 
-// Under the mailbox card on Settings → Act as me: nothing for someone who
-// can't have Act as me (GET /delegation answers null); until the inbox
-// watcher is on, the card says to turn it on above.
-export default function HandleItCard() {
+export type DelegationLoad = {
+  settings: DelegationSettings | null;
+  state: "loading" | "hidden" | "ready" | "error";
+  setSettings: (next: DelegationSettings) => void;
+};
+
+// GET /delegation once for the Act as me page's Training and Handle it
+// cards, so a change on one shows on the other. "hidden" for someone who
+// can't have Act as me (GET /delegation answers null).
+export function useDelegation(): DelegationLoad {
   const [settings, setSettings] = useState<DelegationSettings | null>(null);
-  const [state, setState] = useState<"loading" | "hidden" | "ready" | "error">("loading");
+  const [state, setState] = useState<DelegationLoad["state"]>("loading");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -76,6 +81,14 @@ export default function HandleItCard() {
     return () => controller.abort();
   }, []);
 
+  return { settings, state, setSettings };
+}
+
+// Under the mailbox card on Settings → Act as me: nothing for someone who
+// can't have Act as me; until the inbox watcher is on, the card says to turn
+// it on above.
+export default function HandleItCard({ load }: { load: DelegationLoad }) {
+  const { settings, state, setSettings } = load;
   if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
   if (state === "error") {
     return (
@@ -86,17 +99,18 @@ export default function HandleItCard() {
   }
   if (state === "hidden" || !settings?.handle_it || !settings.inbox) return null;
   return (
-    <HandleItSection handleIt={settings.handle_it} inboxOn={settings.inbox.enabled} onSettings={setSettings} />
+    <HandleItSection
+      handleIt={settings.handle_it}
+      inboxOn={settings.inbox.enabled}
+      repliesInTraining={Boolean(settings.training?.replies)}
+      onSettings={setSettings}
+    />
   );
 }
 
 type Step = "off" | HandleItMode | "lead";
 
 const OFF_STEP = { label: "Off", text: "Every reply waits for you to tap Send." };
-const TRAINING_STEP = {
-  label: "In training",
-  text: "Every reply waits for you. Tap Send + allow on one, and replies to that person go on their own from then on. Follow-ups always wait.",
-};
 const LEAD_STEP = {
   label: "Everything",
   text: "Uses Take the lead. It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
@@ -105,10 +119,12 @@ const LEAD_STEP = {
 export function HandleItSection({
   handleIt,
   inboxOn,
+  repliesInTraining = false,
   onSettings,
 }: {
   handleIt: HandleIt;
   inboxOn: boolean;
+  repliesInTraining?: boolean;
   onSettings: (next: DelegationSettings) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -158,22 +174,8 @@ export function HandleItSection({
     }
   };
 
-  const learned = handleIt.learned ?? [];
-  const forget = async (id: number) => {
-    setBusy(true);
-    setError(null);
-    try {
-      onSettings(await removeHandleItLearned(id));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove that.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const steps: { step: Step; label: string; lines: string[] }[] = [
     { step: "off", label: OFF_STEP.label, lines: [OFF_STEP.text] },
-    { step: "training", label: TRAINING_STEP.label, lines: [TRAINING_STEP.text] },
     ...HANDLE_IT_MODES.map((m) => ({
       step: m.mode as Step,
       label: m.label,
@@ -189,9 +191,11 @@ export function HandleItSection({
       description={
         !handleIt.available
           ? "Needs signed sign-ins on this server before it can send anything as you."
-          : inboxOn
-            ? "How much it sends from your mailbox on its own. Whatever it doesn't send waits for you on Today."
-            : "Turn on Draft replies to my inbox above first."
+          : !inboxOn
+            ? "Turn on Draft replies to my inbox above first."
+            : repliesInTraining
+              ? "How much it may send on its own. Replies are in training, so only to people you allowed."
+              : "How much it sends from your mailbox on its own. Whatever it doesn't send waits for you on Today."
       }
     >
       <div className="flex flex-col gap-4">
@@ -218,6 +222,11 @@ export function HandleItSection({
                     }`}
                   />
                   {s.label}
+                  {picked && repliesInTraining && s.step !== "off" && (
+                    <span className="ml-1 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-semibold text-accent">
+                      In training
+                    </span>
+                  )}
                 </span>
                 {s.lines.map((line) => (
                   <span key={line} className="mt-1 block text-sm leading-snug text-fg-muted">
@@ -233,43 +242,6 @@ export function HandleItSection({
             Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to anyone
             the email didn&apos;t go to.
           </p>
-        )}
-        {(step === "training" || learned.length > 0) && (
-          <div>
-            <h3 className="text-[15px] font-semibold text-fg">What it&apos;s learned</h3>
-            <p className="mt-1 text-sm text-fg-muted">
-              {step === "training"
-                ? "People it replies to on its own. Use Send + allow on a reply to add someone."
-                : "People you allowed in training. They count only while the dial is on In training."}
-            </p>
-            {learned.length === 0 ? (
-              <p className="mt-3 text-sm text-fg-muted">Nobody yet.</p>
-            ) : (
-              <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
-                {learned.map((item) => (
-                  <li key={item.id} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
-                    <span className="min-w-0">
-                      <span className="block text-[15px] font-medium break-words">{item.label}</span>
-                      <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted line-clamp-2">
-                        Allowed {new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                        {item.uses > 0 ? ` · replied ${item.uses} ${item.uses === 1 ? "time" : "times"} since` : ""}
-                        {item.example ? ` · writes like “${item.example}”` : ""}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void forget(item.id)}
-                      className="flex-shrink-0 min-h-touch text-sm font-semibold text-accent hover:underline disabled:opacity-60"
-                      aria-label={`Remove ${item.label}`}
-                    >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
         )}
         {lead && (
           <div>

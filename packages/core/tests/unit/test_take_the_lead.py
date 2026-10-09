@@ -1191,8 +1191,8 @@ def test_a_removed_one_isnt_suggested_straight_back(
 def test_the_owners_act_as_me_ones_share_the_list_and_nobody_elses(client: TestClient, owner: Any) -> None:
     from openexecutive.delegation import training
 
-    mine = training.allow_sender(owner.id, "dana@northpeak.example", "Dana Park", example=None, decision_id=None)
-    training.allow_sender(owner.id + 50, "sam@northpeak.example", "Sam Lee", example=None, decision_id=None)
+    mine = training.allow_sender(owner.id, "dana@northpeak.example", "Dana Park", decision_id=None)
+    training.allow_sender(owner.id + 50, "sam@northpeak.example", "Sam Lee", decision_id=None)
     learned = client.get("/take-the-lead").json()["learned"]
     assert [(x["label"], x["feature"]) for x in learned] == [
         ("Reply to Dana Park (dana@northpeak.example)", "act_as_me"),

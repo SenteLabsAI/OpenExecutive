@@ -4882,8 +4882,11 @@ audit:
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
     - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and mode. Always private.
     - delegation_reply_handled — Handle it for me sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
-    - delegation_reply_allowed — Send + allow in training: the person allowed replies to a sender after sending one. details carry person_id, decision_id, allowed_id and example (whether a changed draft was kept). Always private.
-    - delegation_learned_removed — a person removed a sender Handle it for me had learned (DELETE /delegation/learned/{id}). details carry person_id and allowed_id. Always private.
+    - delegation_reply_allowed — Send + allow in training: the person allowed replies to a sender (or follow-ups to those people) after sending one. details carry person_id, decision_id, allowed_id and setting. Always private.
+    - delegation_example_kept — Drafts in training: a reply the person changed in their mailbox and sent was kept as how they write to that person. details carry person_id, decision_id and allowed_id. Always private.
+    - delegation_actions_allowed / delegation_actions_handled / delegation_actions_held — Suggested actions in training: Approve + allow allowed those actions; a card of allowed actions was carried out on its own (details.outcomes); or it waited after all (details.reason). Always private.
+    - delegation_training_changed — a person put Act as me settings in or out of training (PUT /delegation/training). details carry person_id and each setting changed. Always private.
+    - delegation_learned_removed — a person removed something Act as me had learned (DELETE /delegation/learned/{id}). details carry person_id and allowed_id. Always private.
     - take_the_lead_changed — a Take the lead switch, Ask first switch or company rule changed (PUT /take-the-lead, its rules, PUT /delegation/take-the-lead). actor "user"; details carry the scope and what changed.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
@@ -9636,19 +9639,46 @@ delegation:
     Card payload source follow_up (from_email = first recipient); the
     reconciler closes it "answered" and deletes its unedited draft when
     anyone else writes in the thread.
-    In training (mode training, delegation.training): every reply waits
-    (handle_it_reason training) unless the person allowed its sender with
-    Send + allow on a card (POST /decisions/{id}/approve edits.allow, plus
-    edits.example to keep a draft they edited in the mailbox). The
-    allowance is a take_the_lead_allowed row, feature act_as_me, key
-    act_as_me|person:<id>|reply|<address>, person_id set: theirs alone,
-    capped per person, never in learned_note. An allowed sender's reply
-    still passes every refusal check under the training Rules (balanced
-    limits, strangers allowed because the person named them), and is
-    checked again at send time (removed since: handle_it_off). Follow-ups
-    always wait; Take the lead as you is turned off and lifts nothing.
-    The kept example goes to the ghostwriter as <writer_example> (style
-    only, untrusted block) when it next writes to that sender.
+    In training is per Act as me setting, not a dial step (owner's ask,
+    2026-10-09): delegation.training, one delegation_training row per
+    (person_id, setting), settings replies | follow_ups | actions | drafts,
+    PUT /delegation/training (putting replies/follow_ups in or actions out
+    is narrowing and needs no signed caller; anything else does). Every
+    allowance is a take_the_lead_allowed row, feature act_as_me, person_id
+    set, key act_as_me|person:<id>|<action>|<who>: reply|<address>,
+    follow_up|<sorted addresses>, message|person:<id>,
+    invite|people:<sorted ids, self left out>, style|<address> (a kept
+    example); training.setting_of(key) labels the one learned list. Theirs
+    alone, capped per person (ALLOWED_MAX), never in learned_note.
+    Replies in training: every reply waits (handle_it_reason training)
+    unless its sender was allowed with Send + allow (POST
+    /decisions/{id}/approve edits.allow); an allowed sender's reply goes on
+    its own only while Handle it is enabled, under the dial's Rules with
+    the stranger check skipped, every other refusal check, and again at
+    send time (removed since: handle_it_off). Follow-ups in training: the
+    same with follow_up_training and follow_up_refusal skipping the
+    relation check for exactly the allowed recipients. Take the lead as
+    you lifts nothing while either is in training (turned off when they go
+    in; PUT /delegation/take-the-lead answers 409 in_training). Suggested
+    actions in training: Approve + allow (edits.allow) on a
+    delegation_actions card allows each message/invite that ran (never
+    add_contact); propose_actions then carries out a card whose every
+    action is allowed at once (action_cards.on_its_own_refusal: training
+    on, Act as me on, signing_ok, not sensitive, no link or amount, message
+    <= 1200 chars, at most ON_ITS_OWN_PER_DAY 10 actions a day, under one
+    lock; run_on_its_own claims it, gate_mode auto_execute, status
+    executed; a refusal there hand_back()s it to an ordinary card). An
+    invite run on its own skips calendar_tools.approved_by, so the meeting
+    gate decides (security review: a mail-chosen time must not be booked
+    unasked).
+    Drafts in training: on Send (plain or + allow) with edits.example and a
+    draft edited in the mailbox, the sent text is kept as style|<address>;
+    training.example_for (style key first, then an older reply-key example)
+    feeds the ghostwriter's <writer_example> (style only, untrusted block)
+    for inbox replies, follow-ups and chat drafts to that one person. An
+    old dial row on mode training moves to balanced + replies and
+    follow_ups in training
+    (schema._move_training_off_the_dial).
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -9814,11 +9844,13 @@ delegation:
     only approvals after it count toward suggesting it again). Leaving training while on is
     loosening (provable owner). The allowed list is shared across features
     (feature column, owner's choice: one list, a switch per feature); Act as
-    me joins it next.
+    me is the second (feature act_as_me, per person, a training switch per
+    setting: see delegation).
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,
-    delegation_handle_it and delegation_handled (delegation.schema.TABLES) in the episodic DB (created by
+    delegation_handle_it, delegation_handled, delegation_reminders,
+    delegation_mail_read and delegation_training (delegation.schema.TABLES) in the episodic DB (created by
     memory.episodic.initialize_db via delegation.schema.ensure_schema); per
     company — in clients.slots._BLANK_WIPE_TABLES and
     cli.fixture_loader.reset_all_state. A reply card is a decision_instances

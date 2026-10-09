@@ -13,7 +13,8 @@ The ghostwriter writes a short nudge in their voice, from the thread; as for
 replies it has no tools, so the thread's text can at most change the words.
 Whether it goes on its own is ``handle_it.follow_up_refusal``, plain code, by
 the setting: never on Careful, to their team and contacts on Balanced, to
-anyone they wrote to on Bold; only to exactly the people their email went to,
+anyone they wrote to on Bold (with Follow-ups in training, only to people
+they allowed with Send + allow); only to exactly the people their email went to,
 and never on a sensitive topic or with a link or an amount. It goes through
 the one send path (``reply_send.send_on_its_own``) on an ordinary
 ``delegation_reply`` card marked ``source: follow_up``; anything refused
@@ -133,6 +134,7 @@ async def _follow_up(
     from openexecutive.delegation.gmail import DraftSpec, references_header
     from openexecutive.delegation.inbox_classifier import Verdict
     from openexecutive.delegation.threads import thread_text, writer_said
+    from openexecutive.delegation.training import example_for
     from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
 
     email = (person.email or "").strip().lower()
@@ -168,6 +170,7 @@ async def _follow_up(
                 exec_name=settings.exec_display_name,
                 model=composer_model(),
                 now=now,
+                writer_example=example_for(person.id, to[0]) if len(going) == 1 else None,
             )
         except ComposeError:
             inbox._retry_later(person.id, sent.id, "compose_failed")

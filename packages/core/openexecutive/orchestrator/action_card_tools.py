@@ -7,7 +7,9 @@ surface). It opens no mailbox and does nothing itself, so it stays on after a
 turn read mail, when ``message_person``, the calendar tools and roster writes
 are withheld: that is what it is for. Nothing on the card happens until the
 person approves it, signed in on the web: in the chat it was left in (its chip
-carries the card's id) or on Today.
+carries the card's id) or on Today. The one exception is a card of actions
+they allowed with Approve + allow, with Suggested actions in training
+(``action_cards.run_on_its_own``).
 """
 from __future__ import annotations
 
@@ -91,9 +93,11 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
             return _error(f"They already have {action_cards.OPEN_CARDS_MAX} cards waiting. Ask them to clear some first.")
         pinned.action_cards = getattr(pinned, "action_cards", 0) + 1
         session = current_session.get()
+        # In training, a card of actions they all allowed is carried out now.
+        on_its_own = action_cards.on_its_own_refusal(writer.person, checked, now=datetime.now(UTC)) is None
         decision_id = action_cards.propose(
             writer.person, checked, str(tool_input.get("why") or ""),
-            session_id=getattr(session, "session_id", None),
+            session_id=getattr(session, "session_id", None), on_its_own=on_its_own,
         )
     except Exception:
         logger.warning("propose_actions: couldn't store the card", exc_info=True)
@@ -102,6 +106,22 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
         "person_id": writer.person.id, "decision_id": decision_id,
         "kinds": [a["kind"] for a in checked],
     })
+    if on_its_own:
+        try:
+            results = await action_cards.run_on_its_own(decision_id, writer.person)
+        except Exception:
+            logger.warning("propose_actions: carrying out an allowed card failed", exc_info=True)
+            results = None
+        if results is not None:
+            return json.dumps({
+                "status": "done_on_its_own",
+                "decision_id": decision_id,
+                "actions": [
+                    {"action": checked[r["index"]]["summary"], "status": r["status"], "detail": r.get("detail", "")}
+                    for r in results
+                ],
+                "note": "They allowed these in training, so they were carried out now. Tell them what happened.",
+            })
     return json.dumps({
         "status": "waiting_for_approval",
         "decision_id": decision_id,
