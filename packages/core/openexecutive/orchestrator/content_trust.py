@@ -78,12 +78,20 @@ UNTRUSTED_NOTICE = (
 # Tools offered only while the principal is speaking on an interactive,
 # verified surface. Each changes the install for every later turn and has no
 # speaker check of its own — or, for list_saved_tools, shows the principal's
-# own saved automations (run_script refuses tool= on the same turns).
+# own saved automations.
 PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({
     "list_saved_tools", "load_mcp_server",
     # Reads the Knowledge library's files and keeps result files only the
     # principal can download.
     "run_python_job",
+    # Runs a program the model just wrote, spending the turn's own tool budget
+    # (CHAT_SCRIPT_MAX_CALLS, default 200) in one tool_use. The handler's
+    # may_save / may_run_saved already refuse to keep or re-run a saved tool on
+    # such a turn, but neither stops a fresh script, so one injected
+    # instruction from inbound or stored text turns a bounded direct call into
+    # a batch of them. Its siblings run_python_job and list_saved_tools were
+    # here already; this one was not.
+    "run_script",
 })
 
 # Inside a block the tag's own name is renamed outright, in any case and
