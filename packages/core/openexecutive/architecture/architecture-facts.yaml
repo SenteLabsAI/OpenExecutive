@@ -6204,7 +6204,7 @@ workflows:
     errors, so a bad runner reply can't raise in the handler. The runner is
     trusted to isolate jobs.
     PYTHON_JOB_EXTRA_LIBRARIES (with a runner only; comma-separated package
-    names, each with an optional short note in parentheses, at most 300
+    names, each with an optional "(import <module>)", at most 300
     chars; anything else is dropped with a warning, not fatal, since it may be
     pushed to machines that must boot) is appended to the tool description by
     python_job.offered_definition (cached per process, so the tool prefix

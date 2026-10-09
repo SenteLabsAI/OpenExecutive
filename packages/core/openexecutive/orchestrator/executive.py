@@ -678,6 +678,8 @@ _ALL_SKILL_TOOLS = [
     *FORM_TOOLS,
     *PYTHON_JOB_TOOLS,
 ]
+
+
 def _offered_skill_tools() -> list[dict[str, Any]]:
     """_ALL_SKILL_TOOLS with the Python job tool as this instance describes it
     (python_job.offered_definition: a runner's extra libraries)."""

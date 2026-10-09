@@ -6,9 +6,9 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-# One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with a
-# short note in parentheses.
-_EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \([A-Za-z0-9_. \-]{1,40}\))?")
+# One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with its
+# import name when that differs ("scikit-learn (import sklearn)").
+_EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \(import [A-Za-z0-9_.]+\))?")
 
 # Walk up from this file to find the repo root .env. If no .env exists
 # (CI, fresh checkouts), `_ROOT` becomes `cwd` so file-path defaults stay
@@ -658,7 +658,7 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_python_job_extra_libraries(cls, v: str | None) -> str | None:
         # It goes into a tool description, so only package names, each with an
-        # optional note in parentheses ("scikit-learn (import sklearn)"). A bad
+        # optional import name ("scikit-learn (import sklearn)"). A bad
         # value is dropped, not fatal: it is optional and the control plane may
         # push it to machines that must still boot.
         v = " ".join((v or "").split())
