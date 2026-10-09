@@ -810,8 +810,10 @@ async def _executive_synthesis_loop(
     )
     from openexecutive.orchestrator.executive import (
         _ALL_SKILL_HANDLERS,
-        _ALL_SKILL_TOOLS,
+        _offered_skill_tools,
     )
+    # The Python job tool as this instance describes it (a runner's libraries).
+    _ALL_SKILL_TOOLS = _offered_skill_tools()
     from openexecutive.orchestrator.schedule_tools import (
         configured_integrations,
         current_session,

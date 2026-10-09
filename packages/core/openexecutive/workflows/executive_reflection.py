@@ -709,8 +709,10 @@ class ExecutiveReflectionWorkflow(Workflow):
         )
         from openexecutive.orchestrator.executive import (
             _ALL_SKILL_HANDLERS,
-            _ALL_SKILL_TOOLS,
+            _offered_skill_tools,
         )
+        # The Python job tool as this instance describes it (a runner's libraries).
+        _ALL_SKILL_TOOLS = _offered_skill_tools()
         from openexecutive.orchestrator.knowledge_tools import (
             KNOWLEDGE_TOOL_HANDLERS,
             KNOWLEDGE_TOOLS,

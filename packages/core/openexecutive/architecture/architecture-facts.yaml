@@ -6203,10 +6203,12 @@ workflows:
     files must be str -> valid base64 (b64decode validate=True) or the job
     errors, so a bad runner reply can't raise in the handler. The runner is
     trusted to isolate jobs.
-    PYTHON_JOB_EXTRA_LIBRARIES (with a runner only; package names, commas,
-    parentheses, at most 300 chars) is appended to the tool description by
+    PYTHON_JOB_EXTRA_LIBRARIES (with a runner only; comma-separated package
+    names, each with an optional short note in parentheses, at most 300
+    chars; anything else is dropped with a warning, not fatal, since it may be
+    pushed to machines that must boot) is appended to the tool description by
     python_job.offered_definition (cached per process, so the tool prefix
-    stays stable); the description otherwise says only the listed libraries
+    stays stable) for chat, research and reflection toolkits alike; the description otherwise says only the listed libraries
     are installed, and the model refused jobs needing scipy and the like. The
     workflows group label says jobs work with or without files: "on files"
     alone made the model refuse jobs on data typed into the chat.

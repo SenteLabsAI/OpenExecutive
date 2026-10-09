@@ -1,3 +1,4 @@
+import logging
 import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -10,6 +11,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # inside the working tree instead of resolving to filesystem root —
 # previously `_ROOT / "chroma_db"` became `/chroma_db` in CI, which is
 # unwritable and produced `chromadb.InternalError: Permission denied`.
+# One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with a
+# short note in parentheses.
+_EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \([A-Za-z0-9_. \-]{1,40}\))?")
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE
 _FOUND_ENV = False
@@ -652,15 +656,20 @@ class Settings(BaseSettings):
     @field_validator("python_job_extra_libraries")
     @classmethod
     def _validate_python_job_extra_libraries(cls, v: str | None) -> str | None:
-        # It goes into a tool description: package names and plain words only.
+        # It goes into a tool description, so only package names, each with an
+        # optional note in parentheses ("scikit-learn (import sklearn)"). A bad
+        # value is dropped, not fatal: it is optional and the control plane may
+        # push it to machines that must still boot.
         v = " ".join((v or "").split())
         if not v:
             return None
-        if len(v) > 300 or not re.fullmatch(r"[A-Za-z0-9_.,()\- ]+", v):
-            raise ValueError(
-                "PYTHON_JOB_EXTRA_LIBRARIES must be a short comma-separated list of package names"
+        items = [item.strip() for item in v.split(",")]
+        if len(v) > 300 or not all(_EXTRA_LIBRARY.fullmatch(item) for item in items):
+            logging.getLogger(__name__).warning(
+                "PYTHON_JOB_EXTRA_LIBRARIES ignored: not a short comma-separated list of package names"
             )
-        return v
+            return None
+        return ", ".join(items)
 
     @model_validator(mode="after")
     def _validate_python_job_runner_key(self) -> "Settings":
