@@ -325,6 +325,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # Installed extensions (orchestrator/extensions.py) load here, so the
+    # first chat turn or Documents read doesn't import them on the loop.
+    from openexecutive.orchestrator import extensions
+
+    extensions.load()
+
     store = ChromaDBStore(persist_directory=settings.vector_store_path)
     app.state.store = store
     # Hand the warm store to the MCP server's resource/tool handlers, which

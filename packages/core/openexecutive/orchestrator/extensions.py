@@ -2,7 +2,8 @@
 
 ``OPENEXECUTIVE_EXTENSIONS`` names Python modules, comma-separated. Each has a
 ``register()`` that calls ``register_tool`` and ``register_collection``; they
-are imported once, the first time a turn or the Documents page needs them.
+are imported once, when the API starts (or the first time anything needs them
+in a process that has no API, e.g. the CLI).
 
 An extension tool is offered only on a turn someone is in:
 
@@ -160,7 +161,11 @@ def load() -> None:
                         raise ExtensionError(f"{module_name} has no register()")
                     register()
                 except Exception:
-                    logger.exception("extension %s failed to load; skipped", module_name)
+                    logger.exception(
+                        "extension %s failed to load; skipped — its tools and "
+                        "documents are unavailable until it is fixed",
+                        module_name,
+                    )
                     # All or nothing: drop what it registered before failing.
                     for name in set(_tools) - tools_before:
                         _forget_tool(name)
