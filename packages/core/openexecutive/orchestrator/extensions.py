@@ -78,7 +78,9 @@ class Collection:
     # The Documents filter's label, e.g. "Reports".
     label: str
     # Told before one of its documents is archived, restored or deleted:
-    # (artifact id, change). If it raises, the change does not happen.
+    # (artifact id, change). If it raises, the change does not happen. It
+    # must be idempotent: two requests can report the same change, and the
+    # change itself can still fail after it returns.
     on_change: Callable[[str, Change], Awaitable[None]] | None = None
 
 
