@@ -6,14 +6,15 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with a
+# short note in parentheses.
+_EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \([A-Za-z0-9_. \-]{1,40}\))?")
+
 # Walk up from this file to find the repo root .env. If no .env exists
 # (CI, fresh checkouts), `_ROOT` becomes `cwd` so file-path defaults stay
 # inside the working tree instead of resolving to filesystem root —
 # previously `_ROOT / "chroma_db"` became `/chroma_db` in CI, which is
 # unwritable and produced `chromadb.InternalError: Permission denied`.
-# One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with a
-# short note in parentheses.
-_EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \([A-Za-z0-9_. \-]{1,40}\))?")
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE
 _FOUND_ENV = False
