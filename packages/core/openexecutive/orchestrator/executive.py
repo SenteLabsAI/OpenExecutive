@@ -247,6 +247,7 @@ _TOOL_NAME_MARKER_MAX = 80
 # Once a turn's reading budget (TOOL_RESULTS_TURN_MAX_CHARS) is used up, a
 # further tool result still shows this much, so the model sees what it got.
 _TURN_BUDGET_FLOOR = 3_000
+
 # Results the turn's reading budget counts but never cuts (see
 # _turn_result_limit).
 _NEVER_CUT_BY_TURN_BUDGET = frozenset(
@@ -254,7 +255,9 @@ _NEVER_CUT_BY_TURN_BUDGET = frozenset(
 )
 
 
-def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: bool = False) -> Any:
+def _cap_tool_result(
+    text: Any, *, tool_name: str, limit: int, budget_spent: bool = False, full_reread_left: bool = False
+) -> Any:
     """Bound one tool result before it enters the prompt.
 
     A circuit breaker, not a routine clipper: the default budget is set so
@@ -278,13 +281,16 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: boo
 
     Precondition: ``limit`` must be at least ``_MIN_USEFUL_CAP``. The
     "never exceeds ``limit``" guarantee holds by reserving the marker
-    inside the budget, and the marker itself is ~284-383 chars — below
+    inside the budget, and the marker itself is ~280-850 chars — below
     that floor there is no room for it and the guarantee breaks. The
     config field enforces this with ``ge=1_000``.
 
     ``budget_spent`` says the turn's reading budget, not this result's own
     size, set ``limit``: the marker then says to answer from what the turn
-    has rather than read more.
+    has rather than read more, and never to edit from the cut text. With
+    ``full_reread_left`` it also offers the turn's one full re-read
+    (``_TurnReadingBudget``), so an edit the question asked for can still
+    be done from the whole document.
     """
     if not isinstance(text, str):
         return text
@@ -308,11 +314,19 @@ def _cap_tool_result(text: Any, *, tool_name: str, limit: int, budget_spent: boo
             + (
                 # A narrower re-read would be cut the same way, so the
                 # budget note replaces the "ask again" advice.
-                " This question has already read as much as it can: answer "
-                "from what you have, and say what you could not read. Do not "
-                "edit, rewrite or replace anything from this cut result: say "
-                "it was too long to work on here and offer to do it as its "
-                "own request."
+                " This question has already read as much as it can. Never "
+                "edit, rewrite or replace anything from this cut result."
+                + (
+                    " If you need this whole result to edit or rewrite it, "
+                    "call the tool again with exactly the same input: that one "
+                    "repeat comes back in full (once per question)."
+                    if full_reread_left
+                    else " If you needed it to edit or rewrite something, say "
+                    "it was too long to work on here and offer to do it as "
+                    "its own request."
+                )
+                + " Otherwise answer from what you have, and say what you "
+                "could not read."
                 if budget_spent
                 else " To see more, call the tool again with a narrower "
                 "request — a page range, a section name, a query or filter — "
@@ -360,6 +374,57 @@ def _turn_result_limit(name: str, *, per_result: int, turn_budget: int, used: in
     if remaining >= per_result:
         return per_result, False
     return min(per_result, max(_TURN_BUDGET_FLOOR, remaining)), True
+
+
+class _TurnReadingBudget:
+    """One turn's reading budget (TOOL_RESULTS_TURN_MAX_CHARS), with one
+    escape hatch.
+
+    ``_turn_result_limit`` decides the cap from what the turn has used. A
+    read cut by the budget may be the very document the question asks to
+    edit, and an edit from a cut read would drop everything past the cut.
+    So the turn gets one full re-read: when the model repeats a call the
+    budget cut, same tool and same input, that repeat gets the per-result
+    cap instead (the marker says how). Once per turn, so the budget still
+    bounds the turn: at most one extra ``per_result``.
+    """
+
+    def __init__(self, *, per_result: int, turn_budget: int) -> None:
+        self.per_result = per_result
+        self.turn_budget = turn_budget
+        self.used = 0
+        self._cut_calls: set[str] = set()
+        self.full_reread_left = True
+
+    @staticmethod
+    def _key(name: str, tool_input: Any) -> str:
+        try:
+            return name + "\x00" + json.dumps(tool_input, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return name + "\x00" + repr(tool_input)
+
+    def cap(self, name: str, tool_input: Any, text: Any) -> Any:
+        """``text`` capped for the prompt, counted against the budget."""
+        limit, budget_spent = _turn_result_limit(
+            name, per_result=self.per_result, turn_budget=self.turn_budget, used=self.used
+        )
+        if budget_spent and isinstance(text, str) and len(text) > limit:
+            key = self._key(name, tool_input)
+            if self.full_reread_left and key in self._cut_calls:
+                self.full_reread_left = False
+                limit, budget_spent = self.per_result, False
+            else:
+                self._cut_calls.add(key)
+        content = _cap_tool_result(
+            text,
+            tool_name=name,
+            limit=limit,
+            budget_spent=budget_spent,
+            full_reread_left=self.full_reread_left,
+        )
+        if name != "consult_specialist" and isinstance(content, str):
+            self.used += len(content)
+        return content
 
 
 # The history breakpoint lives an hour: people answer in minutes, not
@@ -1946,9 +2011,12 @@ class Executive:
         caller_message_count = len(current_messages)
         last_full_text = ""
         specialists_consulted: list[str] = []
-        # Characters of tool results this turn has put in the prompt so far
-        # (_turn_result_limit): every one is re-sent on each later call.
-        turn_result_chars = 0
+        # What this turn's tool results have put in the prompt so far: every
+        # one is re-sent on each later call.
+        reading_budget = _TurnReadingBudget(
+            per_result=self._settings.tool_result_max_chars,
+            turn_budget=self._settings.tool_results_turn_max_chars,
+        )
 
         for iteration in range(1, max_iterations + 1):
             logger.info(
@@ -2911,20 +2979,9 @@ class Executive:
             # parse above, the audit trail) reading the full text.
             tool_results: list[dict[str, Any]] = []
             for tu in tool_uses:
-                limit, budget_spent = _turn_result_limit(
-                    tu["name"],
-                    per_result=self._settings.tool_result_max_chars,
-                    turn_budget=self._settings.tool_results_turn_max_chars,
-                    used=turn_result_chars,
+                content = reading_budget.cap(
+                    tu["name"], tu["input"], results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}")
                 )
-                content = _cap_tool_result(
-                    results_by_id.get(tu["id"], f"Unknown tool: {tu['name']}"),
-                    tool_name=tu["name"],
-                    limit=limit,
-                    budget_spent=budget_spent,
-                )
-                if tu["name"] != "consult_specialist" and isinstance(content, str):
-                    turn_result_chars += len(content)
                 tool_results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": content})
             # Messages the person sent since the last round ride in this
             # round's user message, after the tool results (which must come

@@ -312,7 +312,10 @@ def test_budget_marker_says_answer_from_what_you_have() -> None:
     assert "already read as much as it can" in out
     # A read cut by the budget must never be the basis of an edit: the
     # model would write back a document missing everything past the cut.
-    assert "Do not edit, rewrite or replace anything from this cut result" in out
+    assert "Never edit, rewrite or replace anything from this cut result" in out
+    # Without the full re-read left, an edit is offered as its own request.
+    assert "offer to do it as its own request" in out
+    assert "exactly the same input" not in out
     # A narrower re-read would be cut too, so the budget note drops the
     # "call the tool again" advice rather than contradict it.
     assert "call the tool again" not in out
@@ -363,3 +366,66 @@ def test_a_turns_reads_share_one_budget(monkeypatch: pytest.MonkeyPatch) -> None
     second = {b["tool_use_id"]: b["content"] for b in provider.calls[2]["messages"][-1]["content"]}
     assert len(second["r3"]) <= 3_000
     assert "already read as much as it can" in second["r3"]
+
+
+def test_budget_marker_offers_the_full_reread_while_it_is_left() -> None:
+    out = _cap_tool_result(
+        "x" * 50_000, tool_name="read_document", limit=3_000, budget_spent=True, full_reread_left=True
+    )
+    assert len(out) <= 3_000
+    assert "call the tool again with exactly the same input" in out
+    assert "Never edit, rewrite or replace anything from this cut result" in out
+    assert "narrower" not in out
+
+
+@pytest.mark.parametrize("full_reread_left", [False, True])
+def test_budget_marker_fits_the_smallest_cap(full_reread_left: bool) -> None:
+    """The per-result cap can be as low as 1,000 (the config's floor), and
+    the budget can still be what set it: the longer budget marker must fit."""
+    out = _cap_tool_result(
+        "x" * 50_000,
+        tool_name="t" * 200,
+        limit=1_000,
+        budget_spent=True,
+        full_reread_left=full_reread_left,
+    )
+    assert len(out) <= 1_000
+    assert "already read as much as it can" in out
+
+
+def test_a_cut_read_can_be_read_once_more_in_full() -> None:
+    """The read the question asks to edit may be the one the budget cut.
+    Repeating that exact call brings it back whole, once per turn; any
+    other repeat stays cut, so the turn is still bounded."""
+    from openexecutive.orchestrator.executive import _TURN_BUDGET_FLOOR, _TurnReadingBudget
+
+    budget = _TurnReadingBudget(per_result=20_000, turn_budget=40_000)
+    doc = "d" * 19_000
+    assert budget.cap("read_document", {"id": "q2"}, doc) == doc
+    assert budget.cap("read_document", {"id": "q3"}, doc) == doc
+    # Over budget: the third read is cut, and offered the full re-read.
+    cut = budget.cap("read_document", {"id": "q3-plan"}, doc)
+    assert len(cut) <= _TURN_BUDGET_FLOOR
+    assert "exactly the same input" in cut
+    # A different call is not the re-read: still cut.
+    other = budget.cap("read_document", {"id": "q4"}, doc)
+    assert len(other) <= _TURN_BUDGET_FLOOR
+    # The same call again (its input in any key order) comes back whole.
+    assert budget.cap("read_document", {"id": "q3-plan"}, doc) == doc
+    # That was the turn's one: a further repeat is cut, and no longer offered.
+    again = budget.cap("read_document", {"id": "q4"}, doc)
+    assert len(again) <= _TURN_BUDGET_FLOOR
+    assert "exactly the same input" not in again
+    assert "offer to do it as its own request" in again
+
+
+def test_a_result_under_the_floor_never_spends_the_reread() -> None:
+    """A short result past the budget is not cut, so repeating it must not
+    use up the turn's one full re-read."""
+    from openexecutive.orchestrator.executive import _TurnReadingBudget
+
+    budget = _TurnReadingBudget(per_result=20_000, turn_budget=10_000)
+    budget.cap("read_document", {"id": "a"}, "d" * 10_000)
+    assert budget.cap("list_files", {}, "short") == "short"
+    assert budget.cap("list_files", {}, "short") == "short"
+    assert budget.full_reread_left

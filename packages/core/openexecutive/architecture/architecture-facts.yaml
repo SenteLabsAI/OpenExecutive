@@ -268,9 +268,14 @@ caching:
     marker's "call the tool again more narrowly" advice (that re-read would be
     cut too) with: the question has read as much as it can: answer from what you
     have and say what you could not read, and never edit, rewrite or replace
-    anything from that cut result (offer to do it as its own request, which
-    starts with a fresh budget), so a partial read never becomes a lossy
-    write. consult_specialist results neither
+    anything from that cut result, so a partial read never becomes a lossy
+    write. The read the question needs to edit may be the cut one, so
+    executive._TurnReadingBudget gives each turn one full re-read: repeating a
+    cut call with the same tool and input (compared as sorted JSON) returns it
+    under the per-result cap, and the marker offers that while it is left;
+    after it, the marker says to offer the edit as its own request (a fresh
+    budget). A turn so reads at most the budget plus one result. A result short
+    enough not to be cut never spends the re-read. consult_specialist results neither
     count nor are cut (they are the analysis, not a read); run_script results
     count but are never cut below the per-result cap, since step_script puts
     the list of writes that already ran at their head and a 3,000-character
