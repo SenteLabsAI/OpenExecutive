@@ -144,7 +144,7 @@ export default function HomePage() {
   // Cross-route entries: from every inner route the sidebar and mobile
   // bottom nav link to `/?new=1` (New chat) and `/?session=<id>` (a
   // Recent chat, or a row on /chats). `/?new=1&draft=<text>` also seeds
-  // the new chat's input without sending it (Playbooks "Try in chat"). When either param is present on
+  // the new chat's input without sending it (the Workflows page's "Talk it through in chat"). When either param is present on
   // mount, apply it and strip the query so a refresh doesn't reapply it.
   // A `session` id is held until the caller's own (owner-scoped) session
   // list has loaded, and opened only if that list contains it: the id comes

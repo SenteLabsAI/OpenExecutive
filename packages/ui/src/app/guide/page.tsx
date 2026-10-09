@@ -21,7 +21,7 @@ const SECTIONS = [
   { id: 'people', label: 'People', sub: 'Your roster — who the Executive coordinates with, their SLAs, channels, and approval scopes.' },
   { id: 'company_profile', label: 'Company Profile & Onboarding', sub: "Your company's identity and strategy — set up once, edited any time." },
   { id: 'knowledge', label: 'Knowledge base', sub: 'Upload company documents so the Executive can ground its answers in your context.' },
-  { id: 'skills', label: 'Playbooks', sub: 'How the Executive does a piece of work — methods, templates, checklists. A tab on Workflows.' },
+  { id: 'skills', label: "How it's done", sub: "The method behind each workflow, which the Executive also follows in chat. Edit it on the workflow's page." },
   { id: 'custom_tools', label: 'Custom Tools', sub: "When the Executive lacks a tool, it builds one — and keeps the ones it will need again." },
   { id: 'council', label: 'Agent Council', sub: "Configure the specialists — models, prompts, reasoning depth, and the Executive's voice." },
   { id: 'audit', label: 'Audit Log', sub: 'A searchable record of every turn, consult, tool call, alert, and scheduled action.' },

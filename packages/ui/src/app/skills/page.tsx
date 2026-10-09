@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// Skills are managed as Playbooks, a tab on the Workflows page.
+// Playbooks now live on the workflow that follows them ("How it's done").
 export default function SkillsPage() {
-  redirect("/jobs?tab=playbooks");
+  redirect("/jobs");
 }

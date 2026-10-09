@@ -146,7 +146,7 @@ const WORK_TABS: NavItem[] = [
     href: "/jobs",
     label: "Workflows",
     icon: "doc",
-    description: "Workflows that produce a deliverable, plus the playbooks the Executive follows.",
+    description: "Workflows that produce a deliverable, each with how it\u2019s done.",
   },
   {
     href: "/artifacts",

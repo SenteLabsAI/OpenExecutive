@@ -1505,8 +1505,11 @@ knowledge:
     says so with `builtin_distance_threshold`.
   skills: |
     Skills are Markdown procedures with YAML frontmatter (name, description,
-    when_to_use, category). The UI calls them PLAYBOOKS and shows them as a
-    tab on Workflows (`/jobs?tab=playbooks`; `/skills` redirects there). The
+    when_to_use, category). The UI shows each one as "How it's done" on the
+    page of the workflow that follows it (components/jobs/HowItsDone.tsx:
+    Edit = PUT /skills/{name}, a customized copy on a built-in; Reset to
+    original = DELETE on that copy); there is no separate Playbooks tab
+    any more, and `/skills` redirects to `/jobs`. The
     mental model the UI and persona teach: a playbook is HOW the Executive
     does a piece of work (method, template, checklist; no inputs, schedule or
     side effects); a workflow is the runnable job that produces an artifact.
@@ -1536,7 +1539,11 @@ knowledge:
     custom workflow that starts following one replaces it. If the custom
     store can't be read, no Quick workflows are offered (unknown followers).
     Playbooks whose names map to one Quick name (market-sizing,
-    market_sizing) get none, so sort order never picks the method.
+    market_sizing) get none, so sort order never picks the method. A
+    custom workflow stored under a `quick_` name before the prefix was
+    reserved keeps it: no Quick workflow takes a name a built-in or stored
+    custom one already has. A run whose playbook can't be read (hidden or
+    broken since listing) ends with an error rather than a generic draft.
 
     Storage: built-ins ship in git under knowledge/builtin/skills/<category>/;
     company skills in company/skills/<category>/ (gitignored, copied with
@@ -1580,15 +1587,14 @@ knowledge:
     Chat does not change playbooks: it has only search_skills and
     load_skill. Repeatable work is saved as a workflow (draft_workflow ->
     the user confirms -> save_workflow), with the method in its steps; a
-    playbook's body is changed by a person (Playbooks tab, HTTP only:
-    customize / revert / hide / restore). Workflows read playbooks at run
+    playbook's body is changed by a person (How it's done on the workflow
+    page; the HTTP API also keeps hide / restore). Workflows read playbooks at run
     time, including approved scheduled custom ones whose later action steps
     write to already-approved targets unattended, and the tool loop also
     runs on inbound email/Slack/etc., so no model a crafted message could
-    steer may rewrite one. The old create/update/delete_skill chat tools
-    saved drafts (knowledge/skill_drafts.py, company/skills/.drafts/); none
-    are made any more, and the Playbooks tab's "To review" strip only
-    approves or discards ones proposed before.
+    steer may rewrite one. (The old create/update/delete_skill chat tools
+    and their draft review queue, /skill-drafts, are removed; a leftover
+    company/skills/.drafts/ folder is ignored.)
 
     Workflows follow playbooks (workflows/playbooks.py): `load_playbook`
     returns the body in effect ("" when hidden, missing or malformed — never

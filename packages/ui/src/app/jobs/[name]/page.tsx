@@ -6,6 +6,7 @@ import Link from "next/link";
 import WorkflowRunner from "@/components/WorkflowRunner";
 import Button, { buttonClass } from "@/components/ui/Button";
 import ApprovedTargets from "@/components/jobs/ApprovedTargets";
+import HowItsDone from "@/components/jobs/HowItsDone";
 import PendingWorkflowReview from "@/components/jobs/PendingWorkflowReview";
 import {
   DynamicWorkflowDef,
@@ -322,25 +323,11 @@ export default function JobDetailPage() {
             <p className="text-[15px] text-fg-muted leading-relaxed">
               {workflow.description}
             </p>
-            {(workflow.playbooks?.length ?? 0) > 0 && (
-              <p className="mt-2 text-sm text-fg-muted">
-                Follows{" "}
-                {workflow.playbooks!.length === 1 ? "playbook" : "playbooks"}:{" "}
-                {workflow.playbooks!.map((p, i) => (
-                  <span key={p}>
-                    {i > 0 && ", "}
-                    <Link
-                      href={`/jobs?tab=playbooks&playbook=${encodeURIComponent(p)}`}
-                      className="text-accent hover:underline"
-                    >
-                      {p}
-                    </Link>
-                  </span>
-                ))}
-                {" "}— customize it to change how this workflow writes.
-              </p>
-            )}
           </div>
+
+          {!running && (workflow.playbooks?.length ?? 0) > 0 && (
+            <HowItsDone playbooks={workflow.playbooks!} workflowTitle={workflow.title} />
+          )}
 
           {!running && (steps.length > 0 || customDef) && (
             <section className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-7">
