@@ -69,7 +69,7 @@ def test_ids_round_trip() -> None:
 def test_only_chat_app_streams_roll() -> None:
     assert is_rolling("telegram:-100") and is_rolling("slack:channel:C1:U1")
     assert is_rolling("discord:dm:9") and is_rolling("discord:channel:5:9")
-    for sid in ("4f1c2a", "slack:thread:C1:1.2", "discord:thread:5", "email:t1", "google_chat:spaces/x"):
+    for sid in ("4f1c2a", "slack:thread:C1:1.2", "discord:thread:5", "email:t1", "pigeon:dm:x"):
         assert not is_rolling(sid)
         assert base_session_id(sid) == sid
 
