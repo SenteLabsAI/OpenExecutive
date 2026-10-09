@@ -312,7 +312,15 @@ caching:
     raises). draft_artifact(supersedes=) refuses a collection's document.
     The alert pipeline strips collection: tags, so only an extension's own
     code files into its collection. A module failing partway through
-    register() is rolled back.
+    register() is rolled back. ExtraTool(workflow=True) also offers the tool
+    to workflow action steps as oe__<name> (tool_catalog._extension_specs,
+    merged under the fixed built-ins, which win a clash; name at most 60
+    chars so the prefixed name fits 64). offered() is not asked there: the
+    step's approved tool list is the approval, and the call runs inside
+    extensions.workflow_step(name) so in_workflow_step(name) is True for
+    that tool only, and the handler decides what an unattended call may do
+    (it must not call other extension handlers or leave tasks running). read_only=True is the
+    only way to be labelled reads-only on the review card.
   deferred_tool_groups: |
     The less common skill tools are not in the tool list. orchestrator.
     tool_groups.GROUPS puts them in named groups (calendar, people, goals,

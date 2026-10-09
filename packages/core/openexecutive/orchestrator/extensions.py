@@ -19,6 +19,16 @@ An extension tool is offered only on a turn someone is in:
   depend only on the kind of turn (surface, workspace mode), never on what was
   said, so each kind of turn keeps one cached tool list.
 
+A tool registered with ``workflow=True`` is also offered to workflow action
+steps (``workflows/tool_catalog.py``), as ``oe__<name>``: a step names it in
+its tool list, which the person approved when they created the workflow. The
+step runs with nobody in the turn, so ``offered`` is not asked; while such a
+call runs, ``in_workflow_step(name)`` is True for that tool's name only, and
+the handler decides for itself what an unattended call may do. A handler
+must not call another extension's handler or leave a task running past its
+own return (a task copies the flag). ``read_only`` says whether the tool only
+reads (the workflow review card's "may change things" badge).
+
 A tool may sit in a ``tool_groups`` group (opened with open_tools) instead of
 on the direct list, and may describe its chip. A collection is a kind of
 document an extension publishes as a drafted artifact tagged
@@ -27,11 +37,13 @@ extension hears when one is archived, restored or deleted, before it happens.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
 import logging
 import re
 import threading
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -40,6 +52,12 @@ logger = logging.getLogger(__name__)
 Change = Literal["archived", "restored", "deleted"]
 
 _TOOL_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+# What a workflow step calls an extension tool: the prefix keeps it from ever
+# colliding with an MCP name (those are server__tool).
+WORKFLOW_PREFIX = "oe__"
+_MAX_WORKFLOW_NAME = 64 - len(WORKFLOW_PREFIX)
+# The extension tool a workflow step is calling right now, if any.
+_in_workflow_step: ContextVar[str | None] = ContextVar("extension_in_workflow_step", default=None)
 # A collection or tool group name.
 _COLLECTION_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _COLLECTION_TAG_PREFIX = "collection:"
@@ -67,6 +85,10 @@ class ExtraTool:
     # None) -> {"summary", "target", "link"} or None for no chip. A link must
     # be a path inside the app ("/artifacts/alert:12").
     chip: Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any] | None] | None = None
+    # Also offered to workflow action steps (see module doc), and whether it
+    # only reads there (None: may change something).
+    workflow: bool = False
+    read_only: bool | None = None
 
     @property
     def name(self) -> str:
@@ -112,6 +134,8 @@ def register_tool(tool: ExtraTool) -> None:
     schema = tool.definition.get("input_schema")
     if not isinstance(schema, dict) or schema.get("type") != "object":
         raise ExtensionError(f"tool {name!r} needs an object input_schema")
+    if tool.workflow and len(name) > _MAX_WORKFLOW_NAME:
+        raise ExtensionError(f"workflow tool name {name!r} must be at most {_MAX_WORKFLOW_NAME} characters")
     if tool.group is not None:
         from openexecutive.orchestrator import tool_groups
 
@@ -203,6 +227,29 @@ def offered_tools(session: Any) -> list[ExtraTool]:
                 continue
         offered.append(tool)
     return offered
+
+
+def workflow_tools() -> list[ExtraTool]:
+    """The extension tools workflow action steps may use (``workflow=True``)."""
+    load()
+    return [tool for tool in _tools.values() if tool.workflow]
+
+
+@contextlib.contextmanager
+def workflow_step(tool_name: str) -> Iterator[None]:
+    """Mark the call inside as a workflow step's call of ``tool_name``."""
+    token = _in_workflow_step.set(tool_name)
+    try:
+        yield
+    finally:
+        _in_workflow_step.reset(token)
+
+
+def in_workflow_step(tool_name: str) -> bool:
+    """Whether the running call of ``tool_name`` is a workflow action step's:
+    one nobody is in, made because the workflow's approved tool list names
+    that tool."""
+    return _in_workflow_step.get() == tool_name
 
 
 def has_chip(tool_name: str) -> bool:
@@ -301,9 +348,12 @@ __all__ = [
     "collection_tag",
     "get_collection",
     "has_chip",
+    "in_workflow_step",
     "load",
     "notify",
     "offered_tools",
     "register_collection",
     "register_tool",
+    "workflow_step",
+    "workflow_tools",
 ]

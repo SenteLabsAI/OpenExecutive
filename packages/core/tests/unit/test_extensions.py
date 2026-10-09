@@ -402,3 +402,50 @@ def test_notify_passes_the_change_and_its_error() -> None:
     with pytest.raises(RuntimeError):
         asyncio.run(extensions.notify("widgets", "alert:1", "deleted"))
     assert seen == [("alert:1", "archived"), ("alert:1", "deleted")]
+
+
+# --------------------------------------------------------------------- #
+# Workflow action steps
+# --------------------------------------------------------------------- #
+
+
+def test_a_workflow_tool_joins_the_step_catalog_under_the_built_in_prefix() -> None:
+    from openexecutive.workflows import tool_catalog
+
+    seen: list[bool] = []
+
+    async def handler(tool_input: dict[str, Any]) -> str:
+        seen.append(extensions.in_workflow_step("read_widgets"))
+        seen.append(extensions.in_workflow_step("make_widget"))
+        return json.dumps({"ok": tool_input.get("title")})
+
+    extensions.register_tool(_tool("read_widgets", handler=handler, workflow=True, read_only=True))
+    extensions.register_tool(_tool("make_widget", workflow=True))
+    extensions.register_tool(_tool("chat_only"))
+    names = {t.name: t for t in tool_catalog.builtin_tools()}
+    assert names["oe__read_widgets"].read_only is True and names["oe__read_widgets"].source == "builtin"
+    # Not saying it only reads means it may change something.
+    assert names["oe__make_widget"].read_only is None
+    assert "oe__chat_only" not in names and "oe__read_file" in names
+    found = asyncio.run(tool_catalog.resolve(["oe__read_widgets", "oe__chat_only"]))
+    assert set(found) == {"oe__read_widgets"}
+    handler_for = tool_catalog.builtin_handler("oe__read_widgets")
+    assert handler_for is not None
+    assert json.loads(asyncio.run(handler_for({"title": "w"}))) == {"ok": "w"}
+    # The tool knows the call is a workflow step's, and only during it.
+    # Only for the tool the step called, and only during the call.
+    assert seen == [True, False] and extensions.in_workflow_step("read_widgets") is False
+
+
+def test_a_workflow_tool_cannot_shadow_a_built_in_step_tool() -> None:
+    from openexecutive.workflows import tool_catalog
+
+    extensions.register_tool(_tool("read_file", workflow=True))
+    info = {t.name: t for t in tool_catalog.builtin_tools()}["oe__read_file"]
+    assert "PDF" in info.description
+
+
+def test_a_workflow_tool_name_must_fit_with_its_prefix() -> None:
+    with pytest.raises(ExtensionError, match="at most"):
+        extensions.register_tool(_tool("w" * 61, workflow=True))
+    extensions.register_tool(_tool("w" * 61))

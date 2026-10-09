@@ -10,7 +10,10 @@ Two sources, one shape (:class:`ToolInfo`):
 * **Built-ins** — a small fixed set prefixed ``oe__`` so they can never collide
   with an MCP name (those are always ``server__tool``). They cover what no MCP
   server does for us: reading a file another tool downloaded, and reaching a
-  person or the alert queue through Open Executive's own guarded paths.
+  person or the alert queue through Open Executive's own guarded paths. An
+  installed extension's tools registered with ``workflow=True`` join them,
+  as ``oe__<name>`` (``orchestrator/extensions.py``); each call runs inside
+  ``extensions.workflow_step(name)`` so the tool knows nobody is in the turn.
 
 The step's tool allowlist is the user's approval (they see it on the review
 card before clicking Create), so this module never widens it: it only answers
@@ -419,12 +422,42 @@ def _builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     }
 
 
+def _extension_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    from openexecutive.orchestrator import extensions
+
+    specs: dict[str, tuple[ToolInfo, Handler]] = {}
+    for tool in extensions.workflow_tools():
+        name = f"{extensions.WORKFLOW_PREFIX}{tool.name}"
+
+        async def run(tool_input: dict[str, Any], _handler: Handler = tool.handler, _name: str = tool.name) -> str:
+            with extensions.workflow_step(_name):
+                return await _handler(tool_input)
+
+        specs[name] = (
+            ToolInfo(
+                name=name,
+                description=str(tool.definition.get("description") or ""),
+                input_schema=dict(tool.definition.get("input_schema") or {}),
+                # Only True counts: a tool can't claim to be safe by omission.
+                read_only=True if tool.read_only is True else None,
+                source="builtin",
+            ),
+            run,
+        )
+    return specs
+
+
+def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    # Our own built-ins win a name clash.
+    return {**_extension_specs(), **_builtin_specs()}
+
+
 def builtin_tools() -> list[ToolInfo]:
-    return [info for info, _ in _builtin_specs().values()]
+    return [info for info, _ in _all_builtin_specs().values()]
 
 
 def builtin_handler(name: str) -> Handler | None:
-    spec = _builtin_specs().get(name)
+    spec = _all_builtin_specs().get(name)
     return spec[1] if spec else None
 
 
@@ -450,7 +483,7 @@ async def resolve(names: list[str]) -> dict[str, ToolInfo]:
     discovered-tools filter, which ``call_tool`` requires.
     """
     found: dict[str, ToolInfo] = {}
-    builtins = _builtin_specs()
+    builtins = _all_builtin_specs()
     mcp_names = []
     for name in names:
         if name in builtins:
