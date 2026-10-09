@@ -335,9 +335,12 @@ def _turn_result_limit(name: str, *, per_result: int, turn_budget: int, used: in
     further result is cut to ``_TURN_BUDGET_FLOOR``. Returns (limit, whether
     the budget rather than ``per_result`` set it). A specialist's analysis
     is the answer itself, not a read, so it neither counts nor is cut by the
-    budget.
+    budget. A built tool's result counts but is never cut below
+    ``per_result``: it is already bounded (step_script), and it lists the
+    writes that already ran, which a short cut would hide and the model would
+    then repeat.
     """
-    if turn_budget <= 0 or name == "consult_specialist":
+    if turn_budget <= 0 or name in ("consult_specialist", step_script.RUN_SCRIPT_TOOL):
         return per_result, False
     remaining = turn_budget - used
     if remaining >= per_result:

@@ -299,6 +299,8 @@ def test_turn_budget_limit() -> None:
     assert _turn_result_limit("consult_specialist", per_result=20_000, turn_budget=40_000, used=10**6) == (
         20_000, False,
     )
+    # A built tool's result lists the writes that already ran: never cut short.
+    assert _turn_result_limit("run_script", per_result=20_000, turn_budget=40_000, used=10**6) == (20_000, False)
 
 
 def test_budget_marker_says_answer_from_what_you_have() -> None:
