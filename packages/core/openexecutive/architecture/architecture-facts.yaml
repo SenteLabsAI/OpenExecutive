@@ -9671,6 +9671,12 @@ delegation:
     invite run on its own skips calendar_tools.approved_by, so the meeting
     gate decides (security review: a mail-chosen time must not be booked
     unasked).
+    Guardrail (accepted tradeoff, review of PR 408): propose_actions runs
+    on turns that read untrusted mail, so a message carried out on its own
+    has model-written text nobody reads first. The allowance covers who
+    and what kind, never the words; the sensitive/link/amount/length
+    checks and the daily cap are what bound it, and only allowed roster
+    people can receive it.
     Drafts in training: on Send (plain or + allow) with edits.example and a
     draft edited in the mailbox, the sent text is kept as style|<address>;
     training.example_for (style key first, then an older reply-key example)

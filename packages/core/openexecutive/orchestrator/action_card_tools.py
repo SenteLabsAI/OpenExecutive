@@ -9,7 +9,11 @@ are withheld: that is what it is for. Nothing on the card happens until the
 person approves it, signed in on the web: in the chat it was left in (its chip
 carries the card's id) or on Today. The one exception is a card of actions
 they allowed with Approve + allow, with Suggested actions in training
-(``action_cards.run_on_its_own``).
+(``action_cards.run_on_its_own``). That card is usually proposed on a turn
+that read untrusted mail, so a message it sends has model-written text
+nobody reads first: the allowance covers who and what kind, not the words,
+and the sensitive, link, amount and length checks and the daily cap are
+what bound it.
 """
 from __future__ import annotations
 
