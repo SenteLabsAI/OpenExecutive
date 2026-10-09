@@ -1113,6 +1113,9 @@ def test_a_private_turn_refuses_a_withheld_tool_through_use_tool(roster: SimpleN
     listed = {t["name"] for t in json.loads(results["tu-2"])["tools"]}
     assert "send_slack_dm" in listed
     assert not listed & {"send_company_broadcast", "send_department_message"}
+    # Nor does the open_tools definition name them.
+    open_tools = next(t for t in provider.calls[0]["tools"] if t["name"] == "open_tools")
+    assert "send_company_broadcast" not in open_tools["description"]
 
 
 def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None:

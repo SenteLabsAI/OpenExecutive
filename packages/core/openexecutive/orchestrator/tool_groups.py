@@ -89,25 +89,34 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
 DEFERRED: dict[str, str] = {tool: group for group, (_, tools) in GROUPS.items() for tool in tools}
 
 
-def _group_lines() -> str:
-    return "\n".join(f"- {group}: {purpose} ({', '.join(tools)})" for group, (purpose, tools) in GROUPS.items())
+def open_tools_tool(offered: Iterable[str]) -> dict[str, Any]:
+    """The open_tools definition for a turn whose deferred tools are
+    ``offered``: it names only the groups and tools that turn may use, so a
+    tool a guard withholds is never named. The text depends only on that set,
+    which is fixed for each kind of turn, so each keeps its one cached list."""
+    names = set(offered)
+    groups = {
+        group: (purpose, [t for t in tools if t in names])
+        for group, (purpose, tools) in GROUPS.items()
+    }
+    groups = {group: entry for group, entry in groups.items() if entry[1]}
+    lines = "\n".join(f"- {group}: {purpose} ({', '.join(tools)})" for group, (purpose, tools) in groups.items())
+    return {
+        "name": OPEN_TOOLS,
+        "description": (
+            "Open a group of further tools. You have more tools than the ones listed "
+            "directly; they sit in the groups below. When a request needs one, open "
+            "its group: the result gives each tool's description and input, and you "
+            "then call it with use_tool. Open a group only when the request needs it.\n"
+            + lines
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"group": {"type": "string", "enum": sorted(groups)}},
+            "required": ["group"],
+        },
+    }
 
-
-OPEN_TOOLS_TOOL: dict[str, Any] = {
-    "name": OPEN_TOOLS,
-    "description": (
-        "Open a group of further tools. You have more tools than the ones listed "
-        "directly; they sit in the groups below. When a request needs one, open "
-        "its group: the result gives each tool's description and input, and you "
-        "then call it with use_tool. Open a group only when the request needs it.\n"
-        + _group_lines()
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {"group": {"type": "string", "enum": sorted(GROUPS)}},
-        "required": ["group"],
-    },
-}
 
 USE_TOOL_TOOL: dict[str, Any] = {
     "name": USE_TOOL,
@@ -139,8 +148,12 @@ def split(tools: Iterable[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[s
         else:
             direct.append(tool)
     if deferred:
-        direct += [OPEN_TOOLS_TOOL, USE_TOOL_TOOL]
+        direct += [open_tools_tool(deferred), USE_TOOL_TOOL]
     return direct, deferred
+
+
+def _offered_groups(deferred: dict[str, dict[str, Any]]) -> set[str]:
+    return {DEFERRED[name] for name in deferred if name in DEFERRED}
 
 
 def open_result(tool_input: Any, deferred: dict[str, dict[str, Any]]) -> str:
@@ -148,14 +161,14 @@ def open_result(tool_input: Any, deferred: dict[str, dict[str, Any]]) -> str:
     offers, for use_tool."""
     group = tool_input.get("group") if isinstance(tool_input, dict) else None
     if not isinstance(group, str) or group not in GROUPS:
-        return json.dumps({"error": f"No such group. Groups: {', '.join(sorted(GROUPS))}."})
+        return json.dumps({"error": f"No such group. Groups: {', '.join(sorted(_offered_groups(deferred)))}."})
     tools = [
         {"name": t["name"], "description": t.get("description", ""), "input_schema": t.get("input_schema", {})}
         for name in GROUPS[group][1]
         if (t := deferred.get(name)) is not None
     ]
     if not tools:
-        return json.dumps({"error": f"The {group} tools aren't available on this turn."})
+        return json.dumps({"error": f"No such group. Groups: {', '.join(sorted(_offered_groups(deferred)))}."})
     return json.dumps({"group": group, "call_with": USE_TOOL, "tools": tools})
 
 

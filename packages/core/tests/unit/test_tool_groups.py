@@ -58,10 +58,20 @@ def test_the_everyday_tools_stay_direct(name: str) -> None:
 
 
 def test_open_tools_lists_every_group() -> None:
-    desc = tool_groups.OPEN_TOOLS_TOOL["description"]
+    desc = tool_groups.open_tools_tool(tool_groups.DEFERRED)["description"]
     for group, (_, tools) in tool_groups.GROUPS.items():
         assert group in desc
         assert all(t in desc for t in tools)
+
+
+def test_open_tools_names_only_the_offered_tools() -> None:
+    tool = tool_groups.open_tools_tool(["create_goal", "send_slack_dm"])
+    assert "create_goal" in tool["description"] and "send_slack_dm" in tool["description"]
+    assert "send_company_broadcast" not in tool["description"]
+    assert "calendar" not in tool["description"]
+    assert tool["input_schema"]["properties"]["group"]["enum"] == ["goals", "messaging"]
+    # The same offer gives the same definition (one cached list per kind of turn).
+    assert tool == tool_groups.open_tools_tool(["send_slack_dm", "create_goal"])
 
 
 def test_split_keeps_the_direct_list_the_same_whatever_is_opened() -> None:

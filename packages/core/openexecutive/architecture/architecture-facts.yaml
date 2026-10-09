@@ -265,16 +265,18 @@ caching:
     watch_and_alerts, workflows, documents, messaging, skills), and
     tool_groups.split takes them out of the turn's offered tools after every
     filter (workspace mode, unattended, private turn) and BEFORE the sort,
-    adding two small fixed tools in their place: open_tools(group), whose
-    description names every group and its tools, and use_tool(name, input).
+    adding two small tools in their place: open_tools(group), whose
+    description names every offered group and its tools, and use_tool(name, input).
     open_tools is answered in the loop with the group's tools (name,
     description, input_schema) as a tool RESULT, never by changing the tool
     list, because the list is the start of the cached prefix: a list that
     grew mid-turn would miss the cache for the tools, the system blocks and
     the whole history. So the list is the same on every call of every turn,
     and a group's descriptions are paid for only on a turn that opens it.
-    Only tools the turn offers are listed, so a private turn's open_tools
-    never shows a withheld tool. A use_tool call is rewritten into the
+    open_tools' description (tool_groups.open_tools_tool) and its results
+    name only the tools the turn offers, so a private turn never sees a
+    withheld tool's name; the description depends only on that set, fixed
+    per kind of turn, so each kind keeps one stable list. A use_tool call is rewritten into the
     tool's own call (same tool_use id, the model's assistant block left as
     sent) before dispatch, so it meets the same guards (workspace mode,
     private turn, unattended, Take the lead), handler, progress events and
