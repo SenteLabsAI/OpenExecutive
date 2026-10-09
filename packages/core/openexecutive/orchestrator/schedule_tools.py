@@ -1742,6 +1742,13 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # Library work on files (workflows/python_job.py): the principal's own
     # turns only; research synthesis and reflection build from the full list.
     "run_python_job",
+    # Its sibling, for the reason this whole set exists: an unattended run's
+    # context is stored or inbound text with nobody watching, and run_script
+    # turns one instruction in it into a program spending the run's own tool
+    # budget (CHAT_SCRIPT_MAX_CALLS, default 200). A workflow's own action step
+    # keeps its scripts — that is the owner's definition, approved per step,
+    # and goes through workflows/step_script.py rather than this set.
+    "run_script",
     "assign_open_loop",
     "create_goal",
     "forget_fact",
