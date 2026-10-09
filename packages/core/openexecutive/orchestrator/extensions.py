@@ -85,6 +85,7 @@ class Collection:
 _tools: dict[str, ExtraTool] = {}
 _collections: dict[str, Collection] = {}
 _loaded = False
+_loading = False
 # Reentrant: a register() may read the registry (e.g. get_collection).
 _load_lock = threading.RLock()
 
@@ -135,31 +136,37 @@ def load() -> None:
     """Import each module ``OPENEXECUTIVE_EXTENSIONS`` names and call its
     ``register()``, once per process. A module that fails is logged and
     skipped, so a bad extension never stops the install from starting."""
-    global _loaded
+    global _loaded, _loading
     if _loaded:
         return
     with _load_lock:
-        if _loaded:
+        # A register() that reads the registry calls back in here: it sees
+        # what is registered so far rather than loading again.
+        if _loaded or _loading:
             return
-        from openexecutive.config import get_settings
+        _loading = True
+        try:
+            from openexecutive.config import get_settings
 
-        names = [n for n in (getattr(get_settings(), "extensions", None) or "").split(",") if n]
-        for module_name in names:
-            tools_before, collections_before = set(_tools), set(_collections)
-            try:
-                module = importlib.import_module(module_name)
-                register = getattr(module, "register", None)
-                if not callable(register):
-                    raise ExtensionError(f"{module_name} has no register()")
-                register()
-            except Exception:
-                logger.exception("extension %s failed to load; skipped", module_name)
-                # All or nothing: drop what it registered before failing.
-                for name in set(_tools) - tools_before:
-                    _forget_tool(name)
-                for name in set(_collections) - collections_before:
-                    del _collections[name]
-        _loaded = True
+            names = [n for n in (getattr(get_settings(), "extensions", None) or "").split(",") if n]
+            for module_name in names:
+                tools_before, collections_before = set(_tools), set(_collections)
+                try:
+                    module = importlib.import_module(module_name)
+                    register = getattr(module, "register", None)
+                    if not callable(register):
+                        raise ExtensionError(f"{module_name} has no register()")
+                    register()
+                except Exception:
+                    logger.exception("extension %s failed to load; skipped", module_name)
+                    # All or nothing: drop what it registered before failing.
+                    for name in set(_tools) - tools_before:
+                        _forget_tool(name)
+                    for name in set(_collections) - collections_before:
+                        del _collections[name]
+            _loaded = True
+        finally:
+            _loading = False
 
 
 def _forget_tool(name: str) -> None:
@@ -270,11 +277,11 @@ async def notify(collection_name: str | None, artifact_id: str, change: Change) 
 
 def _reset_for_tests() -> None:
     """Forget every registration (tests only)."""
-    global _loaded
+    global _loaded, _loading
     for name in list(_tools):
         _forget_tool(name)
     _collections.clear()
-    _loaded = False
+    _loaded = _loading = False
 
 
 __all__ = [

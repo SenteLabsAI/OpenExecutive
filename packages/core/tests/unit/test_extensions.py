@@ -160,16 +160,19 @@ def test_a_module_that_fails_halfway_leaves_nothing_behind(monkeypatch: pytest.M
 def test_a_register_that_reads_the_registry_does_not_hang(monkeypatch: pytest.MonkeyPatch) -> None:
     mod = types.ModuleType("oe_ext_reader")
 
+    calls: list[int] = []
+
     def _register() -> None:
-        extensions.register_collection(Collection(name="widgets", label="Widgets"))
-        assert extensions.get_collection("widgets") is not None
+        calls.append(1)
+        if extensions.get_collection("widgets") is None:
+            extensions.register_collection(Collection(name="widgets", label="Widgets"))
 
     mod.register = _register  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "oe_ext_reader", mod)
     monkeypatch.setattr("openexecutive.config.get_settings", lambda: SimpleNamespace(extensions="oe_ext_reader"))
     monkeypatch.setattr(extensions, "_loaded", False)
     extensions.load()
-    assert extensions.get_collection("widgets") is not None
+    assert extensions.get_collection("widgets") is not None and calls == [1]
 
 
 def test_the_setting_keeps_only_module_paths(monkeypatch: pytest.MonkeyPatch) -> None:
