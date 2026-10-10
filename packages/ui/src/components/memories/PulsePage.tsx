@@ -16,7 +16,7 @@ import { ComingUp, DoneRecently, FocusedScreen, MemoryTiles } from "./PulseOverv
 // scheduled_actions queue grouped by `kind`.
 //
 // Layout: one overview with no tabs (the heartbeat card with its numbers,
-// Coming up beside Done recently, then a tile per kind of memory), and a
+// a tile per kind of memory, then Coming up beside Done recently), and a
 // focused screen behind each link, picked by `?tab=` so the older tab links
 // still land (lib/pulseView.ts). What it has learned about the signed-in
 // person is theirs alone, so it lives in Settings → About you, not here.
@@ -102,11 +102,11 @@ function Overview() {
         </p>
       </header>
       <HeartbeatCard pulse={pulse} />
+      <MemoryTiles pulse={pulse} />
       <div className="grid gap-6 md:grid-cols-2">
         <ComingUp pulse={pulse} />
         <DoneRecently />
       </div>
-      <MemoryTiles pulse={pulse} />
     </>
   );
 }
