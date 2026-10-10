@@ -2779,24 +2779,37 @@ class MCPGateway:
             return False
         if any(info.name == tool_name for info in parse_search_results(text)):
             return True
+        # Both causes, because the old text named only the rename and sent the
+        # operator to the manifest for what was really a service-list setting.
+        settings = get_settings()
         logger.warning(
-            "MCPGateway: pinned tool %s not found by search — has workspace-mcp "
-            "renamed it? (prompts/connected_systems.GOOGLE_TOOL_MANIFEST)",
+            "MCPGateway: pinned tool %s not found by search — not loaded under "
+            "WORKSPACE_MCP_TOOLS=%s / WORKSPACE_MCP_TOOL_TIER=%s, or renamed by "
+            "workspace-mcp? (prompts/connected_systems.GOOGLE_TOOL_MANIFEST)",
             tool_name,
+            settings.workspace_mcp_tools,
+            settings.workspace_mcp_tool_tier,
         )
         return False
 
     async def prime_pinned_tools(self) -> list[str]:
-        """Discover every pinned Google tool (PINNED_GOOGLE_TOOLS) up front, so
-        the model's direct ``call_tool`` on one works without a search of its
-        own. Returns the names not found, a drift signal. Run once at startup
-        when Google is configured."""
-        from openexecutive.prompts.connected_systems import PINNED_GOOGLE_TOOLS
+        """Discover the pinned Google tools this install actually loaded, so the
+        model's direct ``call_tool`` on one works without a search of its own.
+        Returns the names not found, a drift signal. Run once at startup when
+        Google is configured.
 
-        missing = [n for n in sorted(PINNED_GOOGLE_TOOLS) if not await self._discover(n)]
+        Probes the same filtered set the prompt advertises
+        (``connected_systems.pinned_google_tools``), not the whole manifest: with
+        a ``WORKSPACE_MCP_TOOLS`` subset or the ``core`` tier, the rest were
+        never registered, so probing them produced a warning per tool every boot
+        and told the operator to look for a rename that had not happened."""
+        from openexecutive.prompts.connected_systems import pinned_google_tools
+
+        pinned = pinned_google_tools(get_settings())
+        missing = [n for n in sorted(pinned) if not await self._discover(n)]
         logger.info(
             "MCPGateway: primed %d pinned Google tools (%d missing)",
-            len(PINNED_GOOGLE_TOOLS) - len(missing), len(missing),
+            len(pinned) - len(missing), len(missing),
         )
         return missing
 

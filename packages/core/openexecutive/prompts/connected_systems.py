@@ -73,6 +73,71 @@ PINNED_GOOGLE_TOOLS: frozenset[str] = frozenset(
     name for names in GOOGLE_TOOL_MANIFEST.values() for name in names
 )
 
+# Which workspace-mcp service module each manifest heading comes from, so a
+# `WORKSPACE_MCP_TOOLS` subset can be matched against it. These are the names
+# `--tools` accepts (workspace-mcp's `SERVICE_MODULES`), not display names.
+GOOGLE_SERVICE_OF: dict[str, str] = {
+    "Gmail": "gmail",
+    "Calendar": "calendar",
+    "Drive": "drive",
+    "Docs": "docs",
+    "Sheets": "sheets",
+}
+
+# Pinned tools that workspace-mcp's `core` tier does NOT include, read from
+# `core/tool_tiers.yaml` in the pinned 1.29.0. Tiers are cumulative, so
+# `extended` and `complete` carry all 24 and only `core` needs subtracting.
+# Re-check when bumping the pin, exactly as for the manifest above.
+GOOGLE_TOOLS_ABOVE_CORE: frozenset[str] = frozenset({
+    "google_workspace__draft_gmail_message",
+    "google_workspace__get_gmail_attachment_content",
+    "google_workspace__get_gmail_thread_content",
+    "google_workspace__get_spreadsheet_info",
+    "google_workspace__list_docs_in_folder",
+    "google_workspace__list_drive_items",
+    "google_workspace__list_sheet_tables",
+    "google_workspace__list_spreadsheets",
+    "google_workspace__query_freebusy",
+    "google_workspace__search_docs",
+})
+
+
+def google_tool_manifest(settings: Settings) -> dict[str, tuple[str, ...]]:
+    """``GOOGLE_TOOL_MANIFEST`` narrowed to what workspace-mcp actually loaded.
+
+    The manifest is a static list of 24 names, but the child imports only the
+    service modules `WORKSPACE_MCP_TOOLS` names and registers only the tools in
+    `WORKSPACE_MCP_TOOL_TIER`. Advertising the unfiltered list tells the model a
+    tool is "already available, no `search_tools` needed" when it is not in the
+    index at all — it then calls it, gets extensible-mcp's "has not been
+    discovered via search_tools" refusal, and has no way to reconcile that with
+    its own instructions.
+
+    Both inputs are process-constant, so the result is too and block 0 stays
+    cacheable. A heading with nothing left is dropped rather than rendered empty.
+    """
+    services = settings.workspace_mcp_service_list
+    core_only = settings.workspace_mcp_tier == "core"
+    out: dict[str, tuple[str, ...]] = {}
+    for heading, names in GOOGLE_TOOL_MANIFEST.items():
+        if services is not None and GOOGLE_SERVICE_OF[heading] not in services:
+            continue
+        kept = tuple(n for n in names if not (core_only and n in GOOGLE_TOOLS_ABOVE_CORE))
+        if kept:
+            out[heading] = kept
+    return out
+
+
+def pinned_google_tools(settings: Settings) -> frozenset[str]:
+    """The pinned names worth probing and advertising on this install.
+
+    One source of truth shared by the prompt and `prime_pinned_tools`, so the
+    gateway never probes for a tool the prompt does not claim, and vice versa.
+    """
+    return frozenset(
+        name for names in google_tool_manifest(settings).values() for name in names
+    )
+
 
 def _on(flag: bool) -> str:
     return "on" if flag else "off"
@@ -104,9 +169,18 @@ def render_connected_systems(
     ]
 
     if google:
+        manifest = google_tool_manifest(settings)
+        # Derived, never hardcoded: naming all five while a subset is loaded is
+        # the whole bug. Ordered as the manifest is, so the text is stable.
+        loaded = [s for s in GOOGLE_TOOL_MANIFEST if s in manifest]
+        services = (
+            " and ".join(filter(None, [", ".join(loaded[:-1]), loaded[-1]]))
+            if loaded
+            else "no services"
+        )
         lines.append(
             f"- **Google Workspace: connected** as your own account ({email}) — "
-            "Gmail, Calendar, Drive, Docs and Sheets. Act from your own account: "
+            f"{services}. Act from your own account: "
             "never ask the user which address to send from — always send, create "
             "events, and own documents from your own account. If you need the "
             "user's email or a third party's, ask for that specifically by name. "
@@ -118,8 +192,8 @@ def render_connected_systems(
             "available, no `search_tools` needed. Use `search_tools` only for "
             "something not listed here."
         )
-        for service in sorted(GOOGLE_TOOL_MANIFEST):
-            names = ", ".join(f"`{n}`" for n in GOOGLE_TOOL_MANIFEST[service])
+        for service in sorted(manifest):
+            names = ", ".join(f"`{n}`" for n in manifest[service])
             lines.append(f"  - {service}: {names}")
     else:
         lines.append(

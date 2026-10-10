@@ -478,6 +478,63 @@ class Settings(BaseSettings):
     exec_display_name: str = Field("Open Executive", alias="EXEC_DISPLAY_NAME")
     email_poll_interval_seconds: int = Field(60, alias="EMAIL_POLL_INTERVAL_SECONDS")
 
+    # Which Google services the co-located workspace-mcp child loads, and at
+    # which tier. These are the same two variables `docker/workspace-mcp-launch.sh`
+    # turns into `--tools` / `--tool-tier`; they are read here so the prompt can
+    # describe what actually loaded instead of the whole manifest. Both are
+    # process-constant, which is what keeps cached block 0 warm.
+    workspace_mcp_tools: str = Field("all", alias="WORKSPACE_MCP_TOOLS")
+    workspace_mcp_tool_tier: str = Field("complete", alias="WORKSPACE_MCP_TOOL_TIER")
+
+    @property
+    def workspace_mcp_service_list(self) -> list[str] | None:
+        """The Google services loaded, or ``None`` meaning "all of them".
+
+        Mirrors `workspace-mcp-launch.sh`'s normalisation exactly, including the
+        cases that are easy to miss — and every one of them resolves to "all",
+        so a Python parser that handled only `split(",")` would answer with a
+        NARROWER set than the child actually loaded. That direction matters:
+        this value gates what the prompt advertises, and under-reporting hides a
+        tool the model can really call, which is the mirror image of the bug
+        this property exists to fix.
+
+        The four rules, in the launcher's order:
+
+        1. unset or empty -> ``all``
+        2. a value still reading ``$SOMETHING`` -> ``all``. extensible-mcp
+           leaves an unresolved `$VAR` in a config `env` block as that literal
+           text, so the child can receive the string "$WORKSPACE_MCP_TOOLS".
+        3. commas become spaces, then a value with no non-whitespace left
+           (``","``) -> ``all``
+        4. ``all`` only means every service when it is the WHOLE value, after
+           the launcher collapses whitespace. ``"gmail,all"`` becomes
+           ``--tools gmail all``, and since ``--tools`` is declared
+           ``nargs="*" choices=VALID_SERVICES`` and ``all`` is not a service
+           name, **argparse exits 2 and the child never starts** — so nothing
+           loads at all. This property reports ``["gmail", "all"]`` there,
+           matching what the launcher passes rather than what survives it;
+           neither answer describes a dead child, which is a gap the prompt
+           cannot express (``server_names`` comes from the config file, not
+           from child health). Treating ``all`` as a sentinel wherever it
+           appeared made this answer "every service" instead, the widening
+           direction this property exists to prevent. A parity test against
+           the real script catches both.
+        """
+        raw = (self.workspace_mcp_tools or "").strip()
+        if not raw or raw.startswith("$"):
+            return None
+        names = [p for p in raw.replace(",", " ").split() if p]
+        if not names or names == ["all"]:
+            return None
+        return list(dict.fromkeys(names))
+
+    @property
+    def workspace_mcp_tier(self) -> str:
+        """The tier the child runs at. An unresolved ``$VAR`` reads as the
+        launcher's default, for the same reason as above."""
+        raw = (self.workspace_mcp_tool_tier or "").strip()
+        return "complete" if not raw or raw.startswith("$") else raw
+
     # Roster requests (people.roster_requests): someone off the roster who
     # writes in is held for the principal to confirm, and told so — at most
     # once per sender per ROSTER_ACK_WINDOW_DAYS, and at most
