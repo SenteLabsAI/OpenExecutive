@@ -307,6 +307,28 @@ def hand_back(instance_id: int, proposed_payload: dict[str, Any], db_path: Path 
         return result.rowcount == 1
 
 
+def update_open_payload(
+    instance_id: int,
+    proposed_payload: dict[str, Any],
+    *,
+    expected_json: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Replace the payload of a row still waiting on someone (proposed),
+    compare-and-set: a row claimed, acted on or closed meanwhile is left
+    alone. With ``expected_json`` (the row's ``proposed_payload_json`` as it
+    was read), only while it is still that, so two writers never overwrite
+    each other's change."""
+    sql = "UPDATE decision_instances SET proposed_payload_json = ? WHERE id = ? AND status = ?"
+    params: tuple[Any, ...] = (json.dumps(proposed_payload), instance_id, STATUS_PROPOSED)
+    if expected_json is not None:
+        sql += " AND proposed_payload_json = ?"
+        params = (*params, expected_json)
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(sql, params)
+        return result.rowcount == 1
+
+
 def close_externally(
     instance_id: int,
     *,

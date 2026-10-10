@@ -545,7 +545,13 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     ...replies.cards.map((card) => ({
       key: `reply-${card.decision_id}`,
       render: (emphasized: boolean) => (
-        <ReplyCardItem card={card} onGone={replies.gone} onRefresh={replies.refresh} emphasized={emphasized} />
+        <ReplyCardItem
+          card={card}
+          onGone={replies.gone}
+          onRefresh={replies.refresh}
+          onChanged={replies.replace}
+          emphasized={emphasized}
+        />
       ),
     })),
     ...actionCards.cards.map((card) => ({

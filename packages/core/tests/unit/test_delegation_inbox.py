@@ -151,6 +151,19 @@ class FakeInbox:
         self.drafts[f"d{n}"] = DraftInfo(draft_id=f"d{n}", message=draft_message)
         return CreatedDraft(draft_id=f"d{n}", message_id=f"dm{n}", thread_id=draft_message.thread_id)
 
+    async def update_draft_text(self, draft_id: str, expected_version: str, text: str) -> str:
+        from openexecutive.delegation.gmail import DraftChanged
+
+        self.calls.append(f"update:{draft_id}")
+        info = self.drafts.get(draft_id)
+        if info is None:
+            raise GmailNotFound("404")
+        if info.message.id != expected_version:
+            raise DraftChanged("changed")
+        info.message.id = info.message.id + "-card"
+        info.message.text = text
+        return info.message.id
+
     # What the owner does in Gmail itself.
     def edit(self, draft_id: str, *, cc: list[str] | None = None, bcc: list[str] | None = None,
              to: list[str] | None = None) -> None:
@@ -219,6 +232,9 @@ def owner() -> Any:
     people_registry.invalidate()
     set_enabled(pid, True, updated_by="test")
     inbox.set_watch(pid, True, updated_by="test", now=NOW - timedelta(days=1))
+    # These tests follow replies saved in the mailbox's Drafts too; replies
+    # kept on their card alone (the default) are test_delegation_card_drafts.py's.
+    inbox.set_mailbox_drafts(pid, True, updated_by="test")
     return people_store.get_person(pid)
 
 

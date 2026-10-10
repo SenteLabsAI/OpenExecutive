@@ -89,10 +89,14 @@ export function mailboxName(link: string): string {
   return link.startsWith("https://outlook.") ? "Outlook" : "Gmail";
 }
 
-/** The first Send's question: who it goes to, from where. */
-export function sendQuestion(recipients: readonly string[], mailbox = "Gmail"): string {
+/** The first Send's question: who it goes to, from where. A reply saved in
+ * their mailbox goes exactly as the draft is there; one kept on its card
+ * alone goes as the card shows it. */
+export function sendQuestion(recipients: readonly string[], mailbox = "Gmail", inMailbox = true): string {
   const to = recipients.length ? recipients.join(", ") : "the sender";
-  return `Send this reply to ${to} from your ${mailbox}, exactly as the draft is there?`;
+  return inMailbox
+    ? `Send this reply to ${to} from your ${mailbox}, exactly as the draft is there?`
+    : `Send this reply to ${to} from your ${mailbox}, as shown above?`;
 }
 
 // Send refusals after which the card is gone for good: its draft was sent or

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import Button, { buttonClass } from "@/components/ui/Button";
 import {
   dismissReplyCard,
+  editReplyText,
   getReplyCards,
   ReplySendError,
   sendReplyCard,
@@ -24,15 +25,17 @@ import {
 } from "@/lib/replyCards";
 import FeatureName from "@/components/FeatureName";
 
-// Home: the replies the Executive drafted in your own Gmail for mail that
-// needs you (Delegate → Act as me → Draft replies to my inbox), shown as
-// cards in "Needs you". Each card shows who wrote, what they wrote, the
-// draft, what it leaves you to decide and anything to check. Send (the
-// card's primary) sends that draft from your Gmail exactly as it is there,
-// after you confirm who it goes to; Edit in Gmail and Dismiss (deletes it
-// unless you edited it) are their own buttons beside it. GET /delegation/replies answers
-// only the owner, so nothing shows for everyone else, on a backend without
-// it, and when nothing is waiting.
+// Home: the replies the Executive wrote as you for mail that needs you
+// (Delegate → Act as me → Draft replies to my inbox), shown as cards in
+// "Needs you". Each card shows who wrote, what they wrote, the draft, what it
+// leaves you to decide and anything to check. The reply waits on the card
+// alone unless you chose to keep replies in your Drafts too. Edit changes its
+// words right on the card (and in your Drafts when it's there:
+// PUT /delegation/replies/{id}/text). Send (the card's primary) sends it from
+// your own mailbox after you confirm who it goes to; Open in Gmail (when it's
+// in your Drafts) and Dismiss are their own buttons beside it.
+// GET /delegation/replies answers only the owner, so nothing shows for
+// everyone else, on a backend without it, and when nothing is waiting.
 
 // While a send Gmail hasn't confirmed is being settled (the card is
 // "executing"), how often the cards are read again.
@@ -74,15 +77,20 @@ export function useReplyCards() {
     setNotice(note ?? null);
   }, []);
 
-  return { cards: cards ?? [], notice, gone, refresh };
+  // A card changed in place (its words edited).
+  const replace = useCallback((card: ReplyCard) => {
+    setCards((prev) => (prev ?? []).map((c) => (c.decision_id === card.decision_id ? card : c)));
+  }, []);
+
+  return { cards: cards ?? [], notice, gone, refresh, replace };
 }
 
 // What the Replies-waiting cards are, for the Needs you header's tip.
 export const REPLIES_WAITING_TIP =
-  "Mail that needs you, with a first reply the Executive wrote in your voice. Each " +
-  "draft is in your own Drafts, and nothing is sent until you tap Send: it sends that " +
-  "draft exactly as it is in your mailbox, so edit it there first if you want to change it. " +
-  "Dismiss deletes the draft, unless you've edited it there. Only you see these.";
+  "Mail that needs you, with a first reply the Executive wrote in your voice. Tap Edit to " +
+  "change or add to it right here. Nothing is sent until you tap Send. If you keep replies " +
+  "in your Drafts too, Dismiss deletes that draft unless you changed it in your mailbox. " +
+  "Only you see these.";
 
 // What the row is doing: idle, asking before sending (first or second
 // time), or waiting on the backend.
@@ -98,16 +106,20 @@ export function ReplyCardItem({
   card,
   onGone,
   onRefresh,
+  onChanged,
   emphasized = false,
 }: {
   card: ReplyCard;
   emphasized?: boolean;
   onGone: (id: number, note?: string) => void;
   onRefresh: () => Promise<void>;
+  onChanged?: (card: ReplyCard) => void;
 }) {
   const [step, setStep] = useState<Step>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [fullDraft, setFullDraft] = useState(false);
+  // Edit: the draft's words in a box on the card, until Save or Cancel.
+  const [editing, setEditing] = useState<string | null>(null);
   // Drafts in training: keep what you sent as an example when you changed it first.
   const [keepExample, setKeepExample] = useState(true);
   const learnsStyle = Boolean(card.learns_style);
@@ -118,7 +130,9 @@ export function ReplyCardItem({
   const warnings = replyFlagLines(card.flags);
   const received = formatRelativeTime(card.received_at);
   const gmailLink = safeGmailLink(card.gmail_link);
-  const mailbox = mailboxName(card.gmail_link);
+  const mailbox = card.mailbox || mailboxName(card.gmail_link);
+  // Kept in their Drafts too, or on this card alone until Send.
+  const inMailbox = card.in_mailbox !== false;
   const who = card.from_name.trim() || card.from_email;
   const followUp = card.source === "follow_up";
 
@@ -130,6 +144,21 @@ export function ReplyCardItem({
       onGone(card.decision_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't dismiss that reply.");
+      setStep({ kind: "idle" });
+    }
+  };
+
+  const saveEdit = async () => {
+    if (editing === null) return;
+    setStep({ kind: "busy", label: "Saving…" });
+    setError(null);
+    try {
+      const updated = await editReplyText(card.decision_id, editing);
+      onChanged?.(updated);
+      setEditing(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save your change.");
+    } finally {
       setStep({ kind: "idle" });
     }
   };
@@ -227,6 +256,33 @@ export function ReplyCardItem({
 
       <div className="mt-3">
         <div className={label}>Your draft</div>
+        {editing !== null ? (
+          <div className="mt-1.5">
+            <div className="px-1 text-xs text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
+            <textarea
+              aria-label="Your draft"
+              rows={9}
+              value={editing}
+              disabled={busy}
+              autoFocus
+              onChange={(e) => setEditing(e.target.value)}
+              className="mt-1 w-full resize-y whitespace-pre-wrap rounded-xl border border-line-strong bg-surface p-3 text-[15px] leading-relaxed text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
+            />
+            <p className="mt-1 px-1 text-xs text-fg-subtle">
+              {inMailbox
+                ? `Saving changes the draft in your ${mailbox} too. Nothing is sent until you tap Send.`
+                : "Nothing is sent until you tap Send."}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button variant="primary" onClick={() => void saveEdit()} disabled={busy || !editing.trim()}>
+                {busy ? step.label : "Save"}
+              </Button>
+              <Button variant="ghost" onClick={() => setEditing(null)} disabled={busy}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
         <div className="mt-1.5 rounded-xl border border-line bg-surface px-3 py-2">
           <div className="text-xs text-fg-subtle break-words">To: {card.draft_to.join(", ")}</div>
           <p
@@ -247,6 +303,7 @@ export function ReplyCardItem({
             </button>
           )}
         </div>
+        )}
       </div>
 
       {card.waited_because && (
@@ -282,7 +339,7 @@ export function ReplyCardItem({
           {step.kind === "confirm" && (
             <p className="text-sm text-amber-700 dark:text-amber-300">{step.message}</p>
           )}
-          <p className="text-sm text-fg">{sendQuestion(step.recipients, mailbox)}</p>
+          <p className="text-sm text-fg">{sendQuestion(step.recipients, mailbox, inMailbox)}</p>
           {step.allow && (
             <p className="mt-2 text-sm text-fg">
               From now on, {followUp ? "follow-ups" : "replies"} to {who} go on their own while Handle it for me is
@@ -297,7 +354,7 @@ export function ReplyCardItem({
                 onChange={(e) => setKeepExample(e.target.checked)}
                 className="h-4 w-4 accent-accent"
               />
-              Do it like this next time (if you changed it in {mailbox})
+              Do it like this next time (if you changed it)
             </label>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -319,7 +376,7 @@ export function ReplyCardItem({
             </Button>
           </div>
         </div>
-      ) : (
+      ) : editing !== null ? null : (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
             variant="primary"
@@ -337,14 +394,24 @@ export function ReplyCardItem({
               Send + allow
             </Button>
           )}
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setError(null);
+              setEditing(card.draft_body);
+            }}
+            disabled={busy}
+          >
+            Edit
+          </Button>
           {gmailLink && (
             <a
               href={gmailLink}
               target="_blank"
               rel="noopener noreferrer"
-              className={buttonClass("secondary")}
+              className={buttonClass("ghost")}
             >
-              Edit in {mailbox}
+              Open in {mailbox}
             </a>
           )}
           {/* Dismiss is its own button, set apart on the right, so it's never

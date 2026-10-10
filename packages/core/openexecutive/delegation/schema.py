@@ -87,6 +87,8 @@ _DDL: tuple[str, ...] = (
     f"ON {DRAFTS_TABLE}(person_id, created_at)",
     # The inbox watcher's switch and health, one row per person (absent: off).
     # watch_since resets on every off → on, so it never drafts for old mail.
+    # mailbox_drafts: also save each reply in their mailbox's Drafts (off: the
+    # reply lives on its card alone until they send it).
     f"CREATE TABLE IF NOT EXISTS {INBOX_WATCH_TABLE} ("
     "  person_id INTEGER PRIMARY KEY,"
     "  enabled INTEGER NOT NULL DEFAULT 0,"
@@ -95,6 +97,7 @@ _DDL: tuple[str, ...] = (
     "  status TEXT NOT NULL DEFAULT 'off',"
     "  backoff_until TEXT,"
     "  failures INTEGER NOT NULL DEFAULT 0,"
+    "  mailbox_drafts INTEGER NOT NULL DEFAULT 0,"
     "  updated_at TEXT,"
     "  updated_by TEXT"
     ")",
@@ -240,9 +243,19 @@ def _move_training_off_the_dial(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _add_mailbox_drafts(conn: sqlite3.Connection) -> None:
+    """Give a watch table made before ``mailbox_drafts`` existed the column,
+    off: replies wait on their cards and no longer fill the person's Drafts."""
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({INBOX_WATCH_TABLE})")}
+    if "mailbox_drafts" not in columns:
+        conn.execute(f"ALTER TABLE {INBOX_WATCH_TABLE} ADD COLUMN mailbox_drafts INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the tables if missing. Idempotent."""
     for statement in _DDL:
         conn.execute(statement)
     _add_handle_it_mode(conn)
+    _add_mailbox_drafts(conn)
     _move_training_off_the_dial(conn)

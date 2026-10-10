@@ -129,7 +129,7 @@ async def _follow_up(
     """Draft one follow-up and leave its card, or send it. True when a draft
     was made."""
     from openexecutive.config import get_settings
-    from openexecutive.delegation import caps, drafts, handle_it, inbox
+    from openexecutive.delegation import caps, card_drafts, drafts, handle_it, inbox
     from openexecutive.delegation.ghostwriter import ComposeError, Recipient, compose
     from openexecutive.delegation.gmail import DraftSpec, references_header
     from openexecutive.delegation.inbox_classifier import Verdict
@@ -184,16 +184,19 @@ async def _follow_up(
         held = handle_it.follow_up_refusal(
             person.id, sent, reply, relation=relation, own=own, exec_address=exec_address, now=now,
         )
-        draft = await client.create_draft(DraftSpec(
+        spec = DraftSpec(
             to=reply.to, cc=reply.cc, subject=reply.subject, body=reply.body, thread_id=thread.id,
             in_reply_to=reply.in_reply_to, references=reply.references,
             from_name=" ".join(names), from_addr=None if sent.from_addr == email else sent.from_addr,
-        ))
+        )
+        # In their Drafts too, or on the card alone (card_drafts).
+        draft = await card_drafts.save(person.id, client, spec)
         saved = True
+        key = draft.draft_id or card_drafts.card_key(sent.id)
         try:
             drafts.record(
                 person.id, source=drafts.SOURCE_INBOX, thread_id=thread.id,
-                draft_id=draft.draft_id, message_id=draft.message_id, now=now,
+                draft_id=key, message_id=draft.message_id, now=now,
             )
         except Exception:
             logger.warning("delegation.follow_ups: couldn't record the draft", exc_info=True)
@@ -204,10 +207,12 @@ async def _follow_up(
             person, sent, thread, reply, draft, relation=relation, handled_as=relation,
             verdict=Verdict(needs_reply=True, kind="follow_up", confidence=1.0),
             on_its_own=held is None, handle_it_reason=held, source=inbox.FOLLOW_UP_SOURCE,
+            kept=None if draft.draft_id else card_drafts.card_fields(spec, key),
         )
     except Exception:
         # No card, so no draft either: a draft with no card would wait unseen.
-        await client.delete_draft(draft.draft_id)
+        if draft.draft_id:
+            await client.delete_draft(draft.draft_id)
         raise
     inbox._set_outcome(person.id, sent.id, inbox.DRAFTED, decision_id=decision_id)
     result.drafted += 1

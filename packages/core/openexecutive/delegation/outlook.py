@@ -64,6 +64,7 @@ from openexecutive.delegation.gmail import (
     _BULK_PRECEDENCE,
     _REPORT_SENDERS,
     CreatedDraft,
+    DraftChanged,
     DraftInfo,
     DraftSpec,
     GmailAuthError,
@@ -777,6 +778,42 @@ class DelegateOutlook:
             except GmailNotFound:
                 return False
         return True
+
+    async def update_draft_text(self, draft_id: str, expected_version: str, text: str) -> str:
+        """Replace the words of the draft ``draft_id`` with ``text``, keeping
+        who it goes to, the subject and the conversation, when it is still the
+        version ``expected_version`` (``draft_version``; If-Match holds it to
+        that version on Microsoft's side too). Returns its new version.
+        Raises ``GmailNotFound`` when it is gone and ``DraftChanged`` when it
+        changed meanwhile or is more than plain text. Nothing is sent."""
+        if not valid_id(draft_id):
+            raise GmailError("invalid draft id")
+        path = f"/messages/{quote(draft_id, safe='')}"
+        async with self._client() as client:
+            data = await self._get(client, path, {"$select": "id,isDraft,changeKey,body,hasAttachments"})
+            if data.get("isDraft") is not True:
+                raise GmailNotFound("not a draft")
+            change_key = str(data.get("changeKey") or "")
+            if draft_version(draft_id, change_key) != expected_version or not change_key:
+                raise DraftChanged("changed")
+            body = data.get("body")
+            if data.get("hasAttachments") is True or not (
+                isinstance(body, dict) and str(body.get("contentType") or "").lower() == "text"
+            ):
+                raise DraftChanged("not_plain")
+            etag = str(data.get("@odata.etag") or f'W/"{change_key}"')
+            try:
+                updated = await self._request(
+                    client, "PATCH", path, json_body={"body": {"contentType": "text", "content": text}},
+                    if_match=etag,
+                )
+            except GmailNotFound as exc:
+                # 412: it changed between the read and the write.
+                raise DraftChanged("changed") from exc
+        new_key = str(updated.get("changeKey") or "")
+        if not new_key:
+            raise GmailError("graph returned no edited draft", maybe_done=True)
+        return draft_version(draft_id, new_key)
 
     async def send_draft(self, draft_id: str) -> SentMessage:
         """Send the draft ``draft_id`` exactly as it is in Outlook now: Graph's

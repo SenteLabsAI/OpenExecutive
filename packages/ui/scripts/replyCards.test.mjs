@@ -78,6 +78,11 @@ test("sendQuestion names who the reply goes to", () => {
     "Send this reply to dana@x.example, sam@x.example from your Gmail, exactly as the draft is there?",
   );
   assert.match(sendQuestion([]), /to the sender/);
+  // Kept on its card alone: it goes as the card shows it.
+  assert.equal(
+    sendQuestion(["dana@x.example"], "Outlook", false),
+    "Send this reply to dana@x.example from your Outlook, as shown above?",
+  );
 });
 
 test("a failed send says whether the card is gone", () => {
