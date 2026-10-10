@@ -485,6 +485,54 @@ def test_a_runner_failure_is_a_job_error(monkeypatch: pytest.MonkeyPatch, respon
     assert body["_usage"] == {"peak_mb": None, "cpu_ms": None}
 
 
+def test_a_job_the_runner_turns_away_runs_in_the_local_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A runner may answer {"run_locally": true} (its quota is used up, say):
+    the job then runs here, in the local sandbox, and its result comes back."""
+    import httpx
+
+    seen = _runner(monkeypatch, lambda r: httpx.Response(429, json={"run_locally": True, "reason": "quota used"}))
+    monkeypatch.setattr(python_job, "_local_sandbox_ready", lambda: True)
+    ran: list[str] = []
+
+    async def local(base: Any, job: bytes, deno_dir: str, *, timeout_s: float, memory_mb: int) -> dict[str, Any]:
+        ran.append(json.loads(job)["code"])
+        return {"result": "2", "_usage": {"peak_mb": 1, "cpu_ms": 1}}
+
+    monkeypatch.setattr(python_job, "_run_in", local)
+    body = asyncio.run(python_job.run_job("1+1", {}, timeout_s=30))
+    assert len(seen) == 1 and ran == ["1+1"]
+    assert body == {"result": "2", "_usage": {"peak_mb": 1, "cpu_ms": 1}}
+
+
+def test_a_turned_away_job_with_no_local_sandbox_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    _runner(monkeypatch, lambda r: httpx.Response(429, json={"run_locally": True, "reason": "quota used"}))
+    monkeypatch.setattr(python_job, "_local_sandbox_ready", lambda: False)
+    body = asyncio.run(python_job.run_job("1", {}, timeout_s=30))
+    assert body["error"] == "quota used"
+    assert "_run_locally" not in body
+
+
+@pytest.mark.parametrize("reply", [
+    {"run_locally": "yes"}, {"run_locally": False}, ["run_locally"], None,
+])
+def test_only_an_explicit_run_locally_falls_back(monkeypatch: pytest.MonkeyPatch, reply: Any) -> None:
+    """Any other non-200 reply stays a job error: a busy or broken runner must
+    not move every job onto this machine."""
+    import httpx
+
+    _runner(monkeypatch, lambda r: httpx.Response(429, json=reply) if reply is not None else httpx.Response(429))
+    monkeypatch.setattr(python_job, "_local_sandbox_ready", lambda: True)
+
+    async def local(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("ran locally")
+
+    monkeypatch.setattr(python_job, "_run_in", local)
+    body = asyncio.run(python_job.run_job("1", {}, timeout_s=30))
+    assert "could not run the job (HTTP 429)" in body["error"]
+
+
 @pytest.mark.parametrize("url", [
     "http://runner.example.com/run", "ftp://runner.example.com", "https://", "file:///etc/passwd",
 ])

@@ -34,7 +34,10 @@ A deployment can run jobs elsewhere instead: with ``PYTHON_JOB_RUNNER_URL``
 set, ``run_job`` POSTs each job there (``_run_remote``) and reads back the
 same result object the local worker prints, so files, caps, kept results and
 metering work the same. The runner is trusted to isolate jobs as the local
-sandbox does.
+sandbox does. A runner may turn a job away with ``{"run_locally": true}`` in a
+non-200 reply (for example, the deployment's quota for it is used up): the
+job then runs in the local sandbox when this machine has one
+(``_local_sandbox_ready``), and fails with the runner's reason otherwise.
 """
 from __future__ import annotations
 
@@ -171,6 +174,11 @@ def available() -> bool:
         return False
     if settings.python_job_runner_url:
         return True
+    return _local_sandbox_ready()
+
+
+def _local_sandbox_ready() -> bool:
+    """Whether this machine has the local sandbox installed."""
     base = _sandbox_dir()
     return (base / "deno").is_file() and (base / "pyodide" / "pyodide.mjs").is_file()
 
@@ -249,10 +257,15 @@ async def run_job(
 
     settings = get_settings()
     if settings.python_job_runner_url:
-        return await _run_remote(
+        result = await _run_remote(
             settings.python_job_runner_url, settings.python_job_runner_key or "",
             code, files, timeout_s=timeout_s, memory_mb=memory_mb, inputs=inputs,
         )
+        if not result.pop("_run_locally", False):
+            return result
+        if not _local_sandbox_ready():
+            return result
+        logger.info("python job: the runner turned the job away; running it in the local sandbox")
     base = _sandbox_dir()
     wheels = sorted(str(p) for p in (base / "wheels").glob("*.whl"))
     job = json.dumps({
@@ -284,6 +297,24 @@ def _runner_client(timeout_s: float) -> httpx.AsyncClient:
 
 def _text(value: Any, limit: int) -> str | None:
     return value[:limit] if isinstance(value, str) and value else None
+
+
+async def _turned_away(resp: httpx.Response) -> str | None:
+    """For a non-200 reply: the runner's reason ("" when it gave none) if it
+    asked for the job to run locally (``{"run_locally": true}``), else None.
+    Reads at most a few KiB of the reply."""
+    raw = b""
+    async for chunk in resp.aiter_bytes():
+        raw += chunk
+        if len(raw) > 4096:
+            return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or body.get("run_locally") is not True:
+        return None
+    return _text(body.get("reason"), 300) or ""
 
 
 def _count(value: Any) -> int | None:
@@ -319,7 +350,15 @@ async def _run_remote(
         ) as resp:
             if resp.status_code != 200:
                 logger.warning("python job: runner answered HTTP %s", resp.status_code)
-                return {"error": f"the job runner could not run the job (HTTP {resp.status_code})", "_usage": usage}
+                failed: dict[str, Any] = {
+                    "error": f"the job runner could not run the job (HTTP {resp.status_code})", "_usage": usage,
+                }
+                turned_away = await _turned_away(resp)
+                if turned_away is not None:
+                    failed["_run_locally"] = True
+                    if turned_away:
+                        failed["error"] = turned_away
+                return failed
             raw = bytearray()
             async for chunk in resp.aiter_bytes():
                 raw += chunk
