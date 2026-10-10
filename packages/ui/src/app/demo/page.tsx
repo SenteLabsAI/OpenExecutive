@@ -242,7 +242,7 @@ export default function DemoPage() {
   async function handleReset() {
     setBusy(true);
     try {
-      const r = await resetAllState();
+      await resetAllState();
       setToast({
         message: "Reset complete — snapshot wiped",
         kind: "success",
