@@ -237,6 +237,52 @@ share with People on the roster.
 Every Google Workspace call acts as the Executive's own account: the gateway
 refuses a call whose `user_google_email` names any other address.
 
+#### Narrowing the Google tool surface (optional)
+
+Two variables decide how much of Google Workspace the co-located child loads.
+Both default to everything; leave them unset unless you want less.
+
+| Variable | Default | Values |
+|---|---|---|
+| `WORKSPACE_MCP_TOOLS` | `all` | `all`, or comma-separated service names: `gmail`, `calendar`, `drive`, `docs`, `sheets` (also `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`) |
+| `WORKSPACE_MCP_TOOL_TIER` | `complete` | `core`, `extended`, `complete` |
+
+`WORKSPACE_MCP_TOOLS` reaches workspace-mcp as `--tools`, which decides which
+service **modules** it imports. A service you leave out is never imported, so
+none of its tools exist — not in the index, and not callable. The tier decides
+how many tools per service are registered; tiers are cumulative, and `core` is
+the smallest.
+
+Both are prompt-visible. The Connected Systems block in the cached system
+prompt names only the services actually loaded and pins only the tool names
+that exist at the active tier, and startup priming probes the same set — so the
+Executive is never told a tool is "already available" when it is not. If you
+narrow these, expect the block to name fewer services; that is the intended
+effect, not a fault.
+
+Two things worth knowing before narrowing:
+
+- `core` leaves out ten of the pinned tools — Gmail drafts, threads and
+  attachments, Drive item listing, calendar freebusy, and the Docs/Sheets
+  listing and info tools. `extended` and `complete` both cover all of them.
+- `all` means every service only as the **whole** value (surrounding commas or
+  spaces are fine). `gmail,all` is passed through as the two names `gmail` and
+  `all`, and since `all` is not a service name, workspace-mcp's argument parser
+  rejects it and **the child does not start at all** — you lose every Google
+  tool, not just the misspelled one. Write `all` on its own, or list only real
+  service names.
+- Both variables reach the child through the `env` block of the
+  `google_workspace` entry in `mcp_servers.json`, which must forward them
+  (`"WORKSPACE_MCP_TOOLS": "$WORKSPACE_MCP_TOOLS"` and the same for
+  `WORKSPACE_MCP_TOOL_TIER`, as
+  [mcp_servers.json.example](../packages/core/mcp_servers.json.example) does).
+  A config that forwards only one of them leaves the API filtering the prompt
+  on a value the child never saw, which hides tools that are in fact callable.
+
+A pinned tool that priming cannot find is logged once at startup, naming both
+possible causes — the service list or tier excluding it, or workspace-mcp having
+renamed it since the pin in `docker/Dockerfile`.
+
 ### Your own Gmail or Outlook (Act as me, optional)
 
 Act as me lets the Executive draft replies **as the owner**, in the owner's

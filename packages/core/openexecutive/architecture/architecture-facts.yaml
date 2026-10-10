@@ -7681,7 +7681,15 @@ integrations:
     DiscoveredToolsFilter runs only tools one of the session's searches
     returned and keeps them for the session's life, so the lifespan runs
     MCPGateway.prime_pinned_tools() once in the background when
-    google_workspace is configured (exact-name searches; misses logged as
+    google_workspace is configured. It probes the SAME narrowed set the
+    prompt advertises (connected_systems.pinned_google_tools, filtered by
+    WORKSPACE_MCP_TOOLS and WORKSPACE_MCP_TOOL_TIER), so a service that was
+    never imported is never probed and never warned about. A name neither
+    can account for is logged once naming both causes - excluded by those
+    two variables, or renamed by workspace-mcp since the pin - because the
+    old text named only the rename and sent operators to the manifest for
+    what was usually a service-list setting (exact-name searches; misses
+    logged as
     drift), and call_tool retries a PINNED name once after discovering it when
     the reply is extensible-mcp's "has not been discovered via search_tools"
     refusal — after every gate has passed the same arguments. Unpinned tools

@@ -99,3 +99,77 @@ def test_dockerfile_defaults_match_the_launcher() -> None:
 def test_gateway_forwards_the_service_list() -> None:
     # Without it an operator's WORKSPACE_MCP_TOOLS never reaches the child.
     assert "WORKSPACE_MCP_TOOLS" in mcp_gateway._FORWARDED_ENV_VARS
+
+
+# --- the Python side must agree with the shell ------------------------------
+#
+# `Settings.workspace_mcp_service_list` exists so the prompt can describe what
+# the child loaded. If it disagrees with the launcher, the prompt is wrong again
+# — and the dangerous direction is the Python side answering NARROWER, which
+# hides a tool the model really can call.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,                      # unset
+        "all",
+        "gmail,calendar,drive",
+        "gmail, calendar ,drive",  # the launcher splits on commas AND whitespace
+        "gmail",
+        ",",                       # no service names at all -> all
+        "  ",                      # whitespace only -> all
+        "",                        # empty -> all
+        "$WORKSPACE_MCP_TOOLS",    # extensible-mcp left the literal in place
+        "all,",                    # a decorated "all" still means every service
+        " all ",
+        ",all",
+        "gmail,all",               # "all" beside real names is an operator error
+        "gmail,gmail,drive",       # duplicates
+    ],
+)
+def test_the_python_service_list_matches_the_real_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    """Parity against the shell, not against a second copy of the same reasoning.
+
+    The expectation comes from executing `workspace-mcp-launch.sh` and reading
+    its argv, so this cannot pass by both sides sharing a mistake — which is
+    how it caught two real divergences while this was being written. Both had
+    Python answering WIDER than the launcher, hiding the very mismatch the
+    filter exists to prevent.
+    """
+    from openexecutive.config import get_settings
+
+    env = {} if value is None else {"WORKSPACE_MCP_TOOLS": value}
+    from_shell = _services(_launch_args(tmp_path, **env))
+
+    if value is None:
+        monkeypatch.delenv("WORKSPACE_MCP_TOOLS", raising=False)
+    else:
+        monkeypatch.setenv("WORKSPACE_MCP_TOOLS", value)
+    from_python = get_settings().workspace_mcp_service_list
+
+    # `None` on both sides means "every service"; the launcher omits --tools.
+    if from_shell is None:
+        assert from_python is None, f"{value!r}: shell loads all, python says {from_python}"
+    else:
+        # The launcher keeps duplicates in argv; workspace-mcp imports a module
+        # once either way, so compare as sets with order preserved on our side.
+        assert from_python is not None, f"{value!r}: shell narrowed, python says all"
+        assert set(from_python) == set(from_shell), f"{value!r}"
+
+
+def test_the_python_tier_matches_the_real_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.config import get_settings
+
+    for value in (None, "core", "extended", "complete", "$WORKSPACE_MCP_TOOL_TIER"):
+        env = {} if value is None else {"WORKSPACE_MCP_TOOL_TIER": value}
+        from_shell = _tier(_launch_args(tmp_path, **env))
+        if value is None:
+            monkeypatch.delenv("WORKSPACE_MCP_TOOL_TIER", raising=False)
+        else:
+            monkeypatch.setenv("WORKSPACE_MCP_TOOL_TIER", value)
+        assert get_settings().workspace_mcp_tier == from_shell, f"{value!r}"

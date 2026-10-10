@@ -34,6 +34,14 @@ case "$TOOL_TIER" in '$'*) TOOL_TIER=complete ;; esac
 case "$SERVICES" in '$'*) SERVICES=all ;; esac
 SERVICES=$(printf '%s' "$SERVICES" | tr ',' ' ')
 case "$SERVICES" in *[![:space:]]*) ;; *) SERVICES=all ;; esac
+# Re-join on whitespace so the `!= all` test below sees tokens, not raw text.
+# `--tools` is declared `nargs="*" choices=VALID_SERVICES`, and "all" is not a
+# service, so argparse exits 2 on `--tools all` and the child never starts.
+# Without this, "all," or " all " survived the two cases above as the literal
+# string "all " — which is not equal to "all", so the branch below passed
+# `--tools all` and killed the server on a value the operator clearly meant as
+# the default.
+SERVICES=$(printf '%s' "$SERVICES" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
 # The choice reaches workspace-mcp only as --tools below. Left in the
 # environment it is read again as a fallback, and "all" is not a service name.
 unset WORKSPACE_MCP_TOOLS
