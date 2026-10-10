@@ -6266,6 +6266,12 @@ workflows:
     files must be str -> valid base64 (b64decode validate=True) or the job
     errors, so a bad runner reply can't raise in the handler. The runner is
     trusted to isolate jobs.
+    A non-200 reply whose JSON body has run_locally: true (and an optional
+    reason, at most 300 chars; body read up to 4 KiB, _turned_away) makes
+    run_job run the job in the local sandbox when _local_sandbox_ready(),
+    else the job fails with the reason. Only an explicit true falls back: any
+    other non-200 stays a job error, so a busy or broken runner never moves
+    every job onto the machine.
     PYTHON_JOB_EXTRA_LIBRARIES (with a runner only; comma-separated package
     names, each with an optional "(import <module>)", at most 300
     chars; anything else is dropped with a warning, not fatal, since it may be
