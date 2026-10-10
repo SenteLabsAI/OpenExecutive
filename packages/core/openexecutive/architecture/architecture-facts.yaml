@@ -3587,7 +3587,7 @@ departments:
     cadence is due, then `enqueue_next()` chains the following
     occurrence. The fire is NOT passed through the authority gate
     (`kind != "dept_cadence"` in `_execute_action`): cadence rows always
-    carry their department and the seeded departments are propose_only,
+    carry their department and new departments are propose_only,
     so gating it turned each check-in into a one-shot proposal card,
     marked the row done and never chained — the chain died until the next
     boot. The check-in has no outbound side effect (goal verdicts, one
@@ -3618,22 +3618,30 @@ departments:
     — left `running`, requeued by the boot sweep — never duplicates the
     next occurrence. Cost note: with the gate bug
     fixed, check-ins actually run — about three specialist calls each —
-    bounded by the skip rule (seeded departments have no Goals, so they
-    skip until someone adds one). Lifecycle cleanup: deleting a department cancels its
+    bounded by the skip rule (a department with no Goals skips until
+    someone adds one). Lifecycle cleanup: deleting a department cancels its
     pending `dept_cadence` rows in the same transaction, and the
     lifespan runs `cancel_orphaned_cadences()` on boot (before
     `bootstrap_cadences`) to cancel pending cadences whose department no
     longer exists — so a removed department stops firing check-in alerts.
   seeding: |
-    openexecutive.departments.store.seed_default_departments — the 8
-    default departments are seeded exactly once per database on first
-    boot, tracked by the `default_departments_seeded` row in the
-    `departments_meta` table. After that the user owns the list:
-    departments they delete stay deleted across restarts and the
-    defaults are never re-inserted. A database that predates the
-    sentinel but already holds departments is adopted as the baseline
-    (sentinel set, nothing inserted) so deploying this code never
-    resurrects rows the user removed.
+    Nothing creates departments at boot: a new install, a blank client
+    slot and the factory reset all start with none. Setup's commit
+    (onboarding/commit.reconcile_onboarding_departments) creates only the
+    departments its draft names, so a solo workspace or a team that names
+    none has zero, and the create_goal chat tool creates one when a goal
+    names an area that has none. A department named after one of the eight
+    catalogue areas (departments/charters DEFAULT_DEPARTMENTS) starts from
+    that area's charter (store.default_charter_for, applied inside
+    create_department unless a mission is given), and setup and create_goal
+    wire it to the matching specialist (store.specialist_key_for_area, at
+    most one department per specialist). Why: eight empty departments meant
+    eight daily check-ins in Coming up, eight empty cards and "no head"
+    warnings for companies that never had those functions. Workspaces
+    created before this keep what they have; nothing is removed.
+    store.seed_default_departments still inserts the full catalogue once
+    per database (tracked by the `default_departments_seeded` row in
+    `departments_meta`), but only tests and tooling call it.
   workspace_settings: |
     openexecutive.memory.workspace_settings — one row (id=1) in
     `workspace_settings` (episodic DB): `mode` ('team' default | 'solo'),
@@ -8541,10 +8549,11 @@ company_onboarding:
   departments_are_additive: |
     THE key difference from the fixture path. cli/fixture_loader._seed_departments
     DELETEs every department and goal before inserting — correct when swapping
-    in a demo company, destructive here: it would drop the eight defaults from
-    seed_default_departments along with their specialist_key wiring, and
-    onboarding's create_department calls pass no specialist_key (NULL), so a
-    wiped default can never be recreated properly. onboarding/commit.reconcile_onboarding_departments
+    in a demo company, destructive here: a re-run of setup would drop the
+    departments the workspace already has, with their goals and
+    specialist_key wiring. An unmatched draft is created with the specialist
+    its name maps to (specialist_key_for_area) unless another department
+    already has that specialist. onboarding/commit.reconcile_onboarding_departments
     instead matches each drafted department onto an existing one by slug or
     case-insensitive title (`departments.store.match_department`, shared with
     the create_goal chat tool), UPDATEs matches in place (preserving charter scope
@@ -8809,9 +8818,9 @@ clients:
     materialize_to_dir). No state.db; live state untouched; not activated.
     On first activation the blank-restore path applies the seed files with
     the fixture loader's seeders (people → memory → departments, so heads
-    and assigned ids resolve by name) and skips the default 8-department
-    reseed when the draft supplied an org (brief/cadence bootstraps still
-    run and pick up the seeded departments). After the first save-back
+    and assigned ids resolve by name); no default departments are added
+    (brief/cadence bootstraps still run and pick up the seeded
+    departments). After the first save-back
     writes state.db, the seed files remain as the engagement's birth record
     but are no longer consulted. meta.json records origin="generated" +
     the intake_description.

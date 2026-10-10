@@ -433,6 +433,11 @@ def _mark_defaults_seeded(conn: sqlite3.Connection, now: str) -> None:
 def seed_default_departments(db_path: Path | None = None) -> int:
     """Insert the 8 default departments on first run only.
 
+    Nothing calls this at startup any more: a new install starts with no
+    departments, and setup (``onboarding.commit``) or the Executive's
+    ``create_goal`` tool creates only the ones the company has. It remains for
+    tests and tooling that want the full catalogue in one call.
+
     Seeding happens exactly once per database, tracked by the
     ``default_departments_seeded`` row in ``departments_meta``. After that
     first run the user owns the department list: departments they delete stay
@@ -865,6 +870,14 @@ def create_department(
 
     base_slug = _slugify(title)
     now = _now()
+    # A department named after one of the catalogue areas ("Finance", "HR")
+    # starts from that area's charter, so it reads the same as it would have
+    # when all eight were created up front. An explicit mission still wins.
+    catalogue = default_charter_for(title)
+    scope: list[str] = list(catalogue.scope) if catalogue else []
+    out_of_scope: list[str] = list(catalogue.out_of_scope) if catalogue else []
+    if not mission.strip() and catalogue is not None:
+        mission = catalogue.mission
 
     with _get_conn(db_path) as conn:
         slug = base_slug
@@ -882,13 +895,15 @@ def create_department(
                   (slug, title, specialist_key,
                    charter_mission, charter_scope_json, charter_out_of_scope_json,
                    authority_level, cadences_json, updated_at)
-                VALUES (?, ?, ?, ?, '[]', '[]', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slug,
                     title,
                     specialist_key or None,
                     mission,
+                    json.dumps(scope),
+                    json.dumps(out_of_scope),
                     AuthorityLevel.PROPOSE_ONLY.value,
                     json.dumps({"check_in": DEFAULT_CHECK_IN_CADENCE}),
                     now,
@@ -943,6 +958,18 @@ _AREA_SPECIALISTS: dict[str, str] = {
     **{_slugify(title): key for _slug, title, key, _charter in DEFAULT_DEPARTMENTS},
     "sales": "sales",
 }
+
+
+_CATALOGUE_CHARTERS: dict[str, DepartmentCharter] = {
+    **{slug: charter for slug, _title, _key, charter in DEFAULT_DEPARTMENTS},
+    **{_slugify(title): charter for _slug, title, _key, charter in DEFAULT_DEPARTMENTS},
+}
+
+
+def default_charter_for(title: str) -> DepartmentCharter | None:
+    """The catalogue charter for an area called ``title`` ("Finance",
+    "People & Talent", "hr"), or None when it is not one of the eight."""
+    return _CATALOGUE_CHARTERS.get(_slugify(title))
 
 
 def specialist_key_for_area(title: str) -> str | None:

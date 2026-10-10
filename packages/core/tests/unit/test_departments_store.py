@@ -449,6 +449,24 @@ def test_create_department_default_cadence_set(db: Path) -> None:
     assert "check_in" in state.config.cadences
 
 
+def test_create_department_named_after_a_catalogue_area_gets_its_charter(db: Path) -> None:
+    from openexecutive.departments.charters import FINANCE_CHARTER, HR_CHARTER
+
+    finance = store.create_department("Finance")
+    assert finance.config.charter == FINANCE_CHARTER
+    # Matched by slug as well as title: "HR" is the catalogue's People & Talent.
+    hr = store.create_department("HR")
+    assert hr.config.charter.mission == HR_CHARTER.mission
+
+
+def test_create_department_explicit_mission_beats_the_catalogue(db: Path) -> None:
+    from openexecutive.departments.charters import FINANCE_CHARTER
+
+    state = store.create_department("Finance", mission="Keep the books.")
+    assert state.config.charter.mission == "Keep the books."
+    assert state.config.charter.scope == FINANCE_CHARTER.scope
+
+
 # --------------------------------------------------------------------------- #
 # delete_department
 # --------------------------------------------------------------------------- #

@@ -714,8 +714,8 @@ async def reset_all_state(
     """Wipe live state AND the snapshot — return to factory-default.
 
     Intentionally destructive. Unlike unload, there is no path back from
-    this. Re-seeds the 8 default specialist departments after wiping so the
-    user sees a sensible starting org instead of a blank departments page.
+    this. Leaves no departments, like a new install: setup creates only the
+    ones the company has. ``departments_seeded`` in the result is always 0.
 
     ``app_state`` (optional) is FastAPI's ``request.app.state``; when
     provided, the shared ``store`` attribute is swapped *inside* the lock
@@ -731,7 +731,7 @@ async def reset_all_state(
          (workflow_runs, audit_log, eval_runs) so /jobs and /audit reset
          too
       4. DELETE people + child tables (authority scope, availability)
-      5. DELETE departments + Goals, then re-seed 8 default departments
+      5. DELETE departments + Goals (none are re-created)
       5a. Reset the workspace settings to the defaults (team, no zone),
           then re-bootstrap principal briefs, department cadences, and (if
           enabled) the nudge-scan heartbeat — without this Today stays
@@ -962,18 +962,15 @@ async def reset_all_state(
             ),
         )
 
-        # 5. Departments + Goals, then re-seed defaults. ``departments_meta``
-        # carries the "default-departments-already-seeded" sentinel; without
-        # wiping it here, ``seed_default_departments`` short-circuits to a
-        # no-op on any reset after the first ever (the sentinel is set at
-        # API boot via ``api/main.py``), and the box ends up with zero
-        # departments — which then nukes the cadence bootstrap downstream.
+        # 5. Departments + Goals. A reset leaves none, like a new install:
+        # setup (or the Executive's create_goal tool) creates only the ones
+        # the company has.
         from openexecutive.departments import store as dept_store
         _delete_all_rows(
             dept_store.DB_PATH,
             ("department_goals", "departments", "departments_meta"),
         )
-        departments_seeded = dept_store.seed_default_departments()
+        departments_seeded = 0
 
         # 5a. Re-bootstrap the built-in scheduled actions that
         # ``api/main.py`` enqueues at process startup. The episodic wipe
