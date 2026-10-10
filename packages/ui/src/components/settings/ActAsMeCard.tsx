@@ -279,6 +279,7 @@ export default function ActAsMeCard({
           inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
           actAsMeOn={on}
           handleItOn={!!settings.handle_it?.enabled}
+          mailbox={settings.gmail?.provider === "microsoft" ? "Outlook" : "Gmail"}
           onSettings={setSettings}
           onInbox={(inbox) => {
             setStoppedWaiting(false);
@@ -367,12 +368,14 @@ function InboxSection({
   inbox,
   actAsMeOn,
   handleItOn,
+  mailbox,
   onSettings,
   onInbox,
 }: {
   inbox: InboxWatch;
   actAsMeOn: boolean;
   handleItOn: boolean;
+  mailbox: string;
   onSettings: (next: DelegationSettings) => void;
   onInbox: (next: InboxWatch) => void;
 }) {
@@ -384,7 +387,21 @@ function InboxSection({
     setBusy(true);
     setError(null);
     try {
-      onSettings(await setInboxWatch(!on));
+      onSettings(await setInboxWatch({ enabled: !on }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the setting.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Also keep each reply in their mailbox's Drafts (off: on its card alone).
+  const inDrafts = !!inbox.mailbox_drafts;
+  const keepInDrafts = async (next: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSettings(await setInboxWatch({ mailbox_drafts: next }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the setting.");
     } finally {
@@ -412,8 +429,8 @@ function InboxSection({
       description={
         on
           ? handleItOn
-            ? "When mail comes in that needs you, it writes a first reply in your Drafts. Handle it for me, on the next tab, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them."
-            : "When mail comes in that needs you, it writes a first reply in your Drafts and puts it on Today, where you send it, edit it in your mailbox or dismiss it. Nothing is sent until you tap Send."
+            ? "When mail comes in that needs you, it writes a first reply. Handle it for me, on the next tab, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them."
+            : "When mail comes in that needs you, it writes a first reply and puts it on Today, where you can edit it, send it or dismiss it. Nothing is sent until you tap Send."
           : actAsMeOn
             ? "Off: it only drafts when you ask it to in chat."
             : "Turn on Write drafts as me first."
@@ -437,6 +454,25 @@ function InboxSection({
             {inbox.checking ? "Checking…" : "Check now"}
           </Button>
         </div>
+      )}
+      {on && (
+        <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-line pt-4">
+          <input
+            type="checkbox"
+            checked={inDrafts}
+            disabled={busy}
+            onChange={(e) => void keepInDrafts(e.target.checked)}
+            className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
+          />
+          <span>
+            <span className="block text-[15px] font-semibold text-fg">Also save replies in my {mailbox} Drafts</span>
+            <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
+              {inDrafts
+                ? `Each reply is in your ${mailbox} Drafts too, so you can open it there.`
+                : `Off: replies wait on their cards only, so your ${mailbox} Drafts stay clear.`}
+            </span>
+          </span>
+        </label>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </SettingsCard>

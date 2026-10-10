@@ -101,6 +101,25 @@ def mark_sent(
         conn.close()
 
 
+def rename(
+    person_id: int, old_draft_id: str, draft_id: str, message_id: str, *, db_path: Path | None = None
+) -> bool:
+    """A reply kept on its card alone (``card_drafts``) became a real draft
+    when it was sent: its row takes the draft's ids, so it is still counted
+    once and ``mark_sent`` finds it."""
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET draft_id = ?, message_id = ? "  # noqa: S608 — constant table name
+            "WHERE person_id = ? AND draft_id = ?",
+            (draft_id, message_id, person_id, old_draft_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def chat_thread_ids(person_id: int, *, db_path: Path | None = None) -> set[str]:
     """The threads chat drafted into as ``person_id``."""
     conn = _connect(db_path)

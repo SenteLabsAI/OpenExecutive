@@ -418,14 +418,21 @@ def test_only_the_send_path_sends_and_only_the_approve_route_and_the_watcher_rea
     assert _uses("send_draft") == {"delegation/reply_send.py"}
     assert _uses("send_approved_reply") == {"api/routes/decisions.py"}
     assert _uses("send_on_its_own") == {"delegation/inbox.py"}
-    assert _importers("openexecutive.delegation.reply_send") == {"api/routes/decisions.py", "delegation/inbox.py"}
+    # card_drafts and the edit route use its refusals and caller check only.
+    assert _importers("openexecutive.delegation.reply_send") == {
+        "api/routes/decisions.py", "api/routes/delegation.py", "delegation/inbox.py", "delegation/card_drafts.py",
+    }
 
 
 def test_only_dismiss_deletes_a_draft() -> None:
     """Dismiss deletes an unedited draft; the watcher takes back only one it
     has just made, when that draft's card couldn't be made (a follow-up's
-    too), or an unedited follow-up nobody needs once the thread is answered."""
-    assert _uses("delete_draft") == {"delegation/replies.py", "delegation/inbox.py", "delegation/follow_ups.py"}
+    too), or an unedited follow-up nobody needs once the thread is answered,
+    and a reply kept on its card takes back the draft it made for a send that
+    was refused before anything went."""
+    assert _uses("delete_draft") == {
+        "delegation/replies.py", "delegation/inbox.py", "delegation/follow_ups.py", "delegation/card_drafts.py",
+    }
     assert _importers("openexecutive.delegation.replies") == {"api/routes/decisions.py", "api/routes/delegation.py"}
 
 

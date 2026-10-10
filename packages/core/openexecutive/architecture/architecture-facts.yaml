@@ -9804,12 +9804,19 @@ delegation:
     x-caller-email unless local login; turning it on needs gmail_status
     connected (409 gmail_not_connected / gmail_needs_reconnect /
     gmail_mismatch / no_email / shared_mailbox / gmail_error). Every change
-    writes a private audit row. PUT /delegation/inbox {enabled} (409
+    writes a private audit row. PUT /delegation/inbox {enabled?,
+    mailbox_drafts?} (mailbox_drafts: also save each reply in their Drafts,
+    off by default, so a reply lives on its card alone until Send makes the
+    draft from it: delegation.card_drafts; 409
     act_as_me_off or the Gmail codes; the same DelegationOut back, whose
     inbox field is {enabled, status, message, watch_since, last_poll_at,
     checking}); POST /delegation/inbox/check (202 with the inbox state; 409
     inbox_off / in_progress); GET /delegation/replies ({cards: [...]}, see
-    reply_cards). Send is POST /decisions/{id}/approve (edits carry the
+    reply_cards; each card says in_mailbox and mailbox); PUT
+    /delegation/replies/{id}/text {text} changes a reply's words on its card
+    and, when it is in their Drafts, there too, only while that draft is still
+    the version the card last saw (409 draft_changed / draft_not_plain /
+    caller_signing_required, 422 empty / too_long); it sends nothing. Send is POST /decisions/{id}/approve (edits carry the
     second yes; 409 confirm / caller_signing_required / draft_gone /
     you_replied / inbox_off / client_slot / the Gmail codes, 429
     rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST

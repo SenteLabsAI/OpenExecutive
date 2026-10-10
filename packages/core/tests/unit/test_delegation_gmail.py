@@ -336,6 +336,8 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
         # The inbox watcher: reads, and deleting a draft it wrote.
         "list_message_ids", "inbox_message_ids", "has_written_to", "get_message", "send_as_addresses",
         "get_draft", "delete_draft",
+        # Changing a reply's words from its card (delegation.card_drafts); sends nothing.
+        "update_draft_text",
         # Chat's reads of their own mailbox (orchestrator.mail_read_tools).
         "list_attachments", "attachment_bytes",
         # Send on the person's tap (delegation.reply_send).
@@ -366,6 +368,42 @@ def test_send_draft_sends_the_draft_by_its_id_and_nothing_else() -> None:
     assert post.method == "POST" and json.loads(post.content) == {"id": "d1"}
     with pytest.raises(GmailError):
         asyncio.run(client.send_draft("d1/../../messages"))
+
+
+def test_update_draft_text_keeps_every_header_and_only_the_version_it_saw() -> None:
+    from email import message_from_bytes, policy
+
+    from openexecutive.delegation.gmail import DraftChanged, build_raw
+
+    raw = build_raw(EMAIL, DraftSpec(
+        to=["dana@northpeak.example"], cc=["ben@northpeak.example"], subject="Re: Pilot", body="Yes.",
+        thread_id="t1", in_reply_to="<p1@x.example>", references="<p0@x.example> <p1@x.example>",
+    ))
+    google = FakeGoogle()
+    puts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/d1") and request.method == "GET":
+            assert request.url.params["format"] == "raw"
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m9", "threadId": "t1", "raw": raw}})
+        if request.url.path.endswith("/drafts/d1") and request.method == "PUT":
+            puts.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m10", "threadId": "t1"}})
+        return FakeGoogle.handler(google, request)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    assert asyncio.run(client.update_draft_text("d1", "m9", "Yes, Thursday works.")) == "m10"
+    sent = puts[0]
+    assert sent["id"] == "d1" and sent["message"]["threadId"] == "t1"
+    msg = message_from_bytes(base64.urlsafe_b64decode(sent["message"]["raw"]), policy=policy.default)
+    assert msg["To"] == "dana@northpeak.example" and msg["Cc"] == "ben@northpeak.example"
+    assert msg["Subject"] == "Re: Pilot" and msg["In-Reply-To"] == "<p1@x.example>"
+    assert msg["References"] == "<p0@x.example> <p1@x.example>"
+    assert msg.get_content().strip() == "Yes, Thursday works."
+    # Changed in Gmail since the card saw it: never overwritten.
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(client.update_draft_text("d1", "m8", "No."))
+    assert err.value.reason == "changed" and len(puts) == 1
 
 
 @pytest.mark.parametrize(("response", "maybe_done"), [

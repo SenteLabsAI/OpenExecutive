@@ -21,13 +21,21 @@ Routes:
   PUT    /delegation              — {enabled}; turning it on needs the caller's
                                     own Gmail connected (409 otherwise); turning
                                     it off turns the inbox watcher off too
-  PUT    /delegation/inbox        — {enabled}: "Draft replies to my inbox";
-                                    turning it on needs Act as me on and Gmail
-                                    connected (409), and starts from now
+  PUT    /delegation/inbox        — {enabled?, mailbox_drafts?}: "Draft
+                                    replies to my inbox"; turning it on needs
+                                    Act as me on and Gmail connected (409),
+                                    and starts from now. mailbox_drafts: also
+                                    save each reply in their Drafts (off by
+                                    default: on its card alone)
   POST   /delegation/inbox/check  — check the inbox now (202; 409 when the
                                     switch is off or a check is running)
   GET    /delegation/replies      — the reply cards waiting for the caller
                                     (from the database; no Gmail call)
+  PUT    /delegation/replies/{id}/text — {text}: change a reply's words
+                                    before Send, on its card and in their
+                                    Drafts when it is there too. Needs a
+                                    caller the API knows is that person, like
+                                    Send (delegation.card_drafts)
   PUT    /delegation/handle-it    — {enabled?, mode?}: Handle it for me,
                                     the inbox watcher sending some replies on
                                     its own, mode careful | balanced | bold
@@ -153,6 +161,8 @@ class InboxOut(BaseModel):
     watch_since: str | None = None
     last_poll_at: str | None = None
     checking: bool = False
+    # Also save each reply in their mailbox's Drafts (off: on its card alone).
+    mailbox_drafts: bool = False
 
 
 class TeamMemberUse(BaseModel):
@@ -286,7 +296,9 @@ class TeamUpdate(BaseModel):
 class InboxUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool
+    enabled: bool | None = None
+    # Also save each reply in the caller's mailbox's Drafts.
+    mailbox_drafts: bool | None = None
 
 
 class ReplyCardOut(BaseModel):
@@ -315,10 +327,20 @@ class ReplyCardOut(BaseModel):
     can_allow: bool = False
     # Drafts in training: "Do it like this next time" is offered.
     learns_style: bool = False
+    # Also in the caller's mailbox's Drafts; False: on this card alone.
+    in_mailbox: bool = True
+    # Which of their mailboxes it sends from: "Gmail" or "Outlook".
+    mailbox: str = "Gmail"
 
 
 class RepliesOut(BaseModel):
     cards: list[ReplyCardOut]
+
+
+class ReplyTextUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(max_length=20_000)
 
 
 class CardActionOut(BaseModel):
@@ -472,6 +494,7 @@ def _inbox_out(person_id: int) -> InboxOut:
         watch_since=watch.watch_since,
         last_poll_at=watch.last_poll_at,
         checking=checking,
+        mailbox_drafts=watch.mailbox_drafts,
     )
 
 
@@ -698,14 +721,34 @@ _CHECKS: set[asyncio.Task[Any]] = set()
 async def update_delegation_inbox(request: Request, body: InboxUpdate) -> DelegationOut:
     person = _caller(request)
     person_id = _person_id(person)
+    if body.enabled is None and body.mailbox_drafts is None:
+        raise _refuse(422, "nothing_to_change", "Say what to change.")
     if body.enabled:
         if not is_enabled(person_id):
             raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
         status = await gmail_status(person.email)
         if status != "connected":
             raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
-    _set_inbox(person_id, body.enabled)
+    if body.mailbox_drafts is not None:
+        _set_mailbox_drafts(person_id, body.mailbox_drafts)
+    if body.enabled is not None:
+        _set_inbox(person_id, body.enabled)
     return await _state(person)
+
+
+def _set_mailbox_drafts(person_id: int, on: bool) -> None:
+    """Whether replies are also saved in the caller's mailbox's Drafts. Cards
+    already made keep where their reply is."""
+    from openexecutive.delegation import inbox
+
+    if inbox.get_watch(person_id).mailbox_drafts == on:
+        return
+    inbox.set_mailbox_drafts(person_id, on, updated_by=f"person:{person_id}")
+    _audit(
+        "delegation_inbox_changed",
+        f"Also save replies in my Drafts turned {'on' if on else 'off'} by person {person_id}",
+        {"person_id": person_id, "mailbox_drafts": on},
+    )
 
 
 @router.post("/delegation/inbox/check", status_code=202, response_model=InboxOut)
@@ -748,6 +791,34 @@ def get_delegation_replies(request: Request) -> RepliesOut:
         ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
         for card in found
     ])
+
+
+@router.put("/delegation/replies/{decision_id}/text", response_model=ReplyCardOut)
+async def update_delegation_reply_text(request: Request, decision_id: int, body: ReplyTextUpdate) -> ReplyCardOut:
+    """Change the words of one of the caller's reply cards before Send: on
+    the card, and in their mailbox's Drafts when it is there too
+    (``delegation.card_drafts.edit``). Their own cards only; sends nothing."""
+    from openexecutive.delegation import card_drafts
+    from openexecutive.delegation.inbox import DECISION_CLASS
+    from openexecutive.delegation.replies import cards
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    instance = get_decision_instance(decision_id)
+    if instance is None or instance.decision_class != DECISION_CLASS or instance.approver_person_id != person_id:
+        raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    try:
+        await card_drafts.edit(instance, caller=api_caller.caller(request), resolver=person_id, text=body.text)
+    except SendRefused as refused:
+        raise HTTPException(
+            status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},
+        ) from None
+    card = next((c for c in cards(person) if c.decision_id == decision_id), None)
+    if card is None:
+        raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    return ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
 
 
 @router.get("/delegation/actions", response_model=ActionCardsOut)

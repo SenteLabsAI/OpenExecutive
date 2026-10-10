@@ -1568,6 +1568,8 @@ export interface InboxWatch {
   watch_since: string | null;
   last_poll_at: string | null;
   checking: boolean;
+  // Also save each reply in your mailbox's Drafts (off: on its card alone).
+  mailbox_drafts?: boolean;
 }
 
 // Handle it for me: the inbox watcher sends some replies on its own,
@@ -1662,6 +1664,11 @@ export interface ReplyCard {
   can_allow?: boolean;
   // Drafts in training: "Do it like this next time" keeps your changed draft.
   learns_style?: boolean;
+  // Also saved in your mailbox's Drafts; false when it waits on this card
+  // alone until you send it.
+  in_mailbox?: boolean;
+  // Which of your mailboxes it sends from: "Gmail" or "Outlook".
+  mailbox?: string;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.
@@ -1806,14 +1813,28 @@ export async function setDelegationTeam(enabled: boolean): Promise<DelegationSet
   return res.json();
 }
 
-export async function setInboxWatch(enabled: boolean): Promise<DelegationSettings> {
+export async function setInboxWatch(
+  update: { enabled?: boolean; mailbox_drafts?: boolean },
+): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/inbox`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(update),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to my inbox.");
   return res.json();
+}
+
+// Change a waiting reply's words before Send: on its card, and in your
+// mailbox's Drafts when it's there too. Sends nothing.
+export async function editReplyText(id: number, text: string): Promise<ReplyCard> {
+  const res = await fetch(`${API_BASE}/delegation/replies/${id}/text`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't save your change.");
+  return (await res.json()) as ReplyCard;
 }
 
 // Forget one thing it learned in training: it asks again from now on.

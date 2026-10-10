@@ -46,8 +46,12 @@ is refused before anything is sent unless Replies (or, on a follow-up card,
 Follow-ups) is in training and their list has room; once the reply went,
 replies to that sender (follow-ups to those people) may go on their own.
 "Do it like this next time" (``example``, with Drafts in training) keeps what
-they sent, when they changed the draft in their mailbox first, as how they
-write to that person.
+they sent, when they changed the draft first (on the card or in their
+mailbox), as how they write to that person.
+
+A reply kept on its card alone (``card_drafts``, the default) has no draft
+until Send: it is made from exactly what the card shows just before the
+checks below, and taken back out of the mailbox when they refuse it.
 
 Then it claims the card (``claim_for_execution``, proposed → executing, a
 compare-and-set: a double tap sends once), reads the draft once more and sends
@@ -159,8 +163,29 @@ async def _send(
     instance: Any, *, caller: Any, resolver: int | None, confirm: dict[str, Any], gmail: Any, now: datetime,
     on_its_own: bool = False, allow: bool = False, example: bool = False,
 ) -> str:
+    """``_send_checked``, and for a reply kept on its card alone
+    (``card_drafts``): the draft it made is taken back out of the mailbox
+    when the send is refused before anything went."""
+    from openexecutive.delegation import card_drafts
+
+    made: dict[str, Any] = {}
+    try:
+        return await _send_checked(
+            instance, caller=caller, resolver=resolver, confirm=confirm, gmail=gmail, now=now,
+            on_its_own=on_its_own, allow=allow, example=example, made=made,
+        )
+    except SendRefused as refused:
+        if made and refused.code != "send_unconfirmed":
+            await card_drafts.take_back(instance, made["person_id"], made["payload"], made["client"])
+        raise
+
+
+async def _send_checked(
+    instance: Any, *, caller: Any, resolver: int | None, confirm: dict[str, Any], gmail: Any, now: datetime,
+    on_its_own: bool = False, allow: bool = False, example: bool = False, made: dict[str, Any],
+) -> str:
     from openexecutive.config import get_settings
-    from openexecutive.delegation import drafts, handle_it, training
+    from openexecutive.delegation import card_drafts, drafts, handle_it, training
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
         STATUS_MESSAGES,
@@ -270,6 +295,11 @@ async def _send(
     if status != "connected":
         raise SendRefused(409, BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
 
+    if card_drafts.is_card_only(payload):
+        # Kept on its card alone: make the draft from exactly what the card
+        # shows, then check and send it like any other.
+        payload = await card_drafts.make_draft(instance, person.id, client)
+        made.update(person_id=person.id, payload=payload, client=client)
     message_id = str(payload.get("message_id") or "")
     thread_id = str(payload.get("thread_id") or "")
     unreadable = "Couldn't read the draft in your mailbox. Try again in a moment."
@@ -322,7 +352,11 @@ async def _send(
             reasons=reasons, recipients=recipients,
         )
 
-    edited = draft.message.id != str(payload.get("draft_message_id") or "")
+    # Changed in the mailbox, or on the card (``card_drafts.edit``).
+    edited = (
+        draft.message.id != str(payload.get("draft_message_id") or "")
+        or payload.get(card_drafts.EDITED_ON_CARD) is True
+    )
     if on_its_own and edited:
         # Someone changed it in the mailbox since it was written: that
         # version was never checked, so the person sends it, not this path.

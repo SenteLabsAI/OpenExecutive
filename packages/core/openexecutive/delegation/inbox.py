@@ -163,6 +163,9 @@ class InboxWatch:
     status: str = "off"
     backoff_until: str | None = None
     failures: int = 0
+    # Also save each reply in their mailbox's Drafts. Off (the default), a
+    # reply lives on its card alone until they send it (delegation.card_drafts).
+    mailbox_drafts: bool = False
 
 
 @dataclass
@@ -255,6 +258,7 @@ def get_watch(person_id: int, *, db_path: Path | None = None) -> InboxWatch:
         status=row["status"] or ("waiting" if row["enabled"] else "off"),
         backoff_until=row["backoff_until"],
         failures=int(row["failures"] or 0),
+        mailbox_drafts=bool(row["mailbox_drafts"]),
     )
 
 
@@ -283,6 +287,27 @@ def set_watch(
                 "failures = 0, updated_at = ?, updated_by = ? WHERE person_id = ?",
                 (moment, updated_by, person_id),
             )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_watch(person_id, db_path=db_path)
+
+
+def set_mailbox_drafts(
+    person_id: int, on: bool, *, updated_by: str, now: datetime | None = None, db_path: Path | None = None
+) -> InboxWatch:
+    """Whether replies are also saved in the person's mailbox's Drafts
+    (callers authorize first). Kept while the switch is off, for when it is
+    turned on again. Cards already made keep where their reply is."""
+    moment = (now or datetime.now(UTC)).isoformat()
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"INSERT INTO {INBOX_WATCH_TABLE} (person_id, enabled, mailbox_drafts, updated_at, updated_by) "  # noqa: S608
+            "VALUES (?, 0, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET mailbox_drafts = excluded.mailbox_drafts, "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (person_id, int(on), moment, updated_by),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -1069,7 +1094,7 @@ async def _consider(
     Once claimed, a message is finished or left for a later scan
     (``_retry_later``); a Gmail failure is raised for the scan to back off."""
     from openexecutive.config import get_settings
-    from openexecutive.delegation import caps, drafts, handle_it
+    from openexecutive.delegation import caps, card_drafts, drafts, handle_it
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
     from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
@@ -1146,27 +1171,30 @@ async def _consider(
         # addresses rather than the primary when only that one was used.
         addressed = [*message.to, *message.cc]
         alias = None if email in addressed else next((a for a in addressed if a in own), None)
+        spec = DraftSpec(
+            to=reply.to,
+            cc=reply.cc,
+            subject=reply.subject,
+            body=reply.body,
+            thread_id=thread.id,
+            in_reply_to=reply.in_reply_to,
+            references=reply.references,
+            from_name=" ".join(names),
+            from_addr=alias,
+        )
         try:
-            draft = await client.create_draft(DraftSpec(
-                to=reply.to,
-                cc=reply.cc,
-                subject=reply.subject,
-                body=reply.body,
-                thread_id=thread.id,
-                in_reply_to=reply.in_reply_to,
-                references=reply.references,
-                from_name=" ".join(names),
-                from_addr=alias,
-            ))
+            # In their Drafts too, or on the card alone (card_drafts).
+            draft = await card_drafts.save(person.id, client, spec)
         except GmailError:
             _retry_later(person.id, message.id, "draft_failed")
             raise
         saved = True
-        _set_outcome(person.id, message.id, PROCESSING, draft_id=draft.draft_id)
+        key = draft.draft_id or card_drafts.card_key(message.id)
+        _set_outcome(person.id, message.id, PROCESSING, draft_id=key)
         try:
             drafts.record(
                 person.id, source=drafts.SOURCE_INBOX, thread_id=thread.id,
-                draft_id=draft.draft_id, message_id=draft.message_id, now=now,
+                draft_id=key, message_id=draft.message_id, now=now,
             )
         except Exception:
             logger.warning("delegation.inbox: couldn't record the draft", exc_info=True)
@@ -1176,13 +1204,14 @@ async def _consider(
         decision_id = _create_card(
             person, message, thread, reply, draft, relation=known_as, handled_as=relation, verdict=verdict,
             on_its_own=held is None, handle_it_reason=held if handling.enabled else None,
+            kept=None if draft.draft_id else card_drafts.card_fields(spec, key),
         )
     except Exception as exc:
         logger.warning("delegation.inbox: couldn't make the card (%s)", type(exc).__name__)
         # Take the draft back, so a later scan starts over rather than
         # leaving a draft with no card (which would also mute its thread).
         try:
-            taken_back = await client.delete_draft(draft.draft_id)
+            taken_back = await client.delete_draft(draft.draft_id) if draft.draft_id else True
         except GmailError:
             taken_back = False
         if taken_back:
@@ -1197,6 +1226,7 @@ async def _consider(
         "person_id": person.id,
         "thread_id": thread.id,
         "draft_id": draft.draft_id,
+        "in_mailbox": bool(draft.draft_id),
         "decision_id": decision_id,
         "relation": relation,
         "kind": verdict.kind,
@@ -1250,6 +1280,7 @@ def _hand_back(card: Any, reason: str | None) -> None:
 def _create_card(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
     verdict: Any, on_its_own: bool = False, handle_it_reason: str | None = None, source: str | None = None,
+    kept: dict[str, Any] | None = None,
 ) -> int | None:
     """The card for this reply, made once per message (its idempotency key):
     a second call for the same message finds the one the first made. A card
@@ -1265,7 +1296,7 @@ def _create_card(
             proposed_payload=_card_payload(
                 person, message, thread, reply, draft, relation=relation, handled_as=handled_as, verdict=verdict,
                 handle_it_reason=handle_it_reason, source=source,
-            ),
+            ) | (kept or {}),
             idempotency_key=key,
             gate_mode="auto_execute" if on_its_own else "propose",
             approver_person_id=person.id,
@@ -1350,7 +1381,7 @@ async def reconcile(person: Any, client: Any, *, now: datetime, own: set[str]) -
 
 async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime, own: set[str]) -> int:
     """Settle one open card against Gmail; 1 when it closed."""
-    from openexecutive.delegation import drafts
+    from openexecutive.delegation import card_drafts, drafts
     from openexecutive.delegation.gmail import GmailNotFound
     from openexecutive.memory.decision_ledger import STATUS_EXECUTING, STATUS_PROPOSED
 
@@ -1363,14 +1394,16 @@ async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime,
     created = _parse(card.created_at)
     if created is not None and now - created > CARD_TTL:
         return int(_close_card(person.id, card.id, message_id, "expired", EXPIRED))
-    draft = await client.get_draft(str(payload.get("draft_id") or ""))
+    # A reply kept on its card alone has no draft to look for.
+    card_only = card_drafts.is_card_only(payload)
+    draft = None if card_only else await client.get_draft(str(payload.get("draft_id") or ""))
     try:
         thread = await client.get_thread(str(payload.get("thread_id") or ""))
     except GmailNotFound:
         return int(_close_card(person.id, card.id, message_id, "thread_gone", CLOSED))
     later = later_messages(thread, payload, now=now)
     sent_by_them = [m for m in later if "SENT" in m.labels and m.from_addr in own]
-    if draft is None:
+    if draft is None and not card_only:
         if not sent_by_them:
             return int(_close_card(person.id, card.id, message_id, "draft_deleted", CLOSED))
         if not _close_card(person.id, card.id, message_id, "sent_in_gmail", SENT):
@@ -1383,7 +1416,7 @@ async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime,
         if payload.get("source") == FOLLOW_UP_SOURCE:
             # They answered: the follow-up isn't needed any more.
             closed = _close_card(person.id, card.id, message_id, "answered", CLOSED)
-            if closed and draft.message.id == payload.get("draft_message_id"):
+            if closed and draft is not None and draft.message.id == payload.get("draft_message_id"):
                 # Nobody touched the draft: take it out of their Drafts too.
                 try:
                     await client.delete_draft(draft.draft_id)
@@ -1417,6 +1450,8 @@ async def _settle_unconfirmed_send(
 
     message_id = str(payload.get("message_id") or "")
     draft_id = str(payload.get("draft_id") or "")
+    if not draft_id:
+        return 0  # never sent: a card is claimed only once its draft exists
     draft = await client.get_draft(draft_id)
     try:
         thread = await client.get_thread(str(payload.get("thread_id") or ""))
