@@ -244,7 +244,7 @@ export default function DemoPage() {
     try {
       const r = await resetAllState();
       setToast({
-        message: `Reset complete — ${r.departments_seeded} default departments seeded, snapshot wiped`,
+        message: "Reset complete — snapshot wiped",
         kind: "success",
       });
       setResetOpen(false);
@@ -705,8 +705,8 @@ export default function DemoPage() {
                   </h3>
                   <p className="text-xs text-fg-muted mt-1 leading-relaxed">
                     Clears your live company data <em>and</em> the snapshot.
-                    Re-seeds the 8 default specialist departments so you start
-                    from a sensible blank slate. There is no undo.
+                    You start from a blank slate with no departments, as on a
+                    new install. There is no undo.
                   </p>
                 </div>
                 {!resetOpen && (

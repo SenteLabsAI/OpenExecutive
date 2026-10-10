@@ -597,7 +597,7 @@ def persist_goal_verdicts(
 
     if transitions:
         # Single audit row per workflow run keeps audit volume sane
-        # (~8 rows/day default across the seeded departments).
+        # (at most one row per department per day at the default cadence).
         try:
             get_audit_logger().log(
                 "goal_status_review",

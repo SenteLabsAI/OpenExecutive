@@ -2,10 +2,13 @@
 
 The department half is the reason this file exists. ``cli/fixture_loader``
 seeds departments by DELETing every row first — correct for swapping in a demo
-company, and destructive here: it would drop the eight defaults along with
-their ``specialist_key`` wiring, which ``create_department`` (always
-``specialist_key = NULL``) cannot restore. These tests pin the additive
-behaviour so nobody "simplifies" it into the fixture seeder later.
+company, and destructive here: a re-run of setup would drop the departments a
+workspace already has, with their goals and specialist wiring. These tests pin
+the additive behaviour so nobody "simplifies" it into the fixture seeder later.
+
+``dept_db`` holds the full catalogue (a workspace from before installs started
+empty); ``empty_dept_db`` is a new install, where setup's draft decides which
+departments exist.
 """
 from __future__ import annotations
 
@@ -37,6 +40,15 @@ def dept_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(dept_store, "DB_PATH", path)
     dept_store.initialize_db(path)
     dept_store.seed_default_departments(path)
+    monkeypatch.setattr("openexecutive.departments.registry.invalidate", lambda: None)
+    return path
+
+
+@pytest.fixture()
+def empty_dept_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "departments.db"
+    monkeypatch.setattr(dept_store, "DB_PATH", path)
+    dept_store.initialize_db(path)
     monkeypatch.setattr("openexecutive.departments.registry.invalidate", lambda: None)
     return path
 
@@ -632,3 +644,36 @@ def test_someone_elses_alias_is_not_the_owners_email(people_db: Path) -> None:
     people_store.set_person_emails(pid, ["dana@example.com"])
     with pytest.raises(OwnerEmailError):
         check_owner_email("dana@example.com", "Dana Reyes")
+
+
+# ── a new install: setup decides which departments exist ───────────────────
+
+
+def test_new_install_with_no_drafted_departments_has_none(empty_dept_db: Path) -> None:
+    assert reconcile_onboarding_departments([], {}) == {"updated": 0, "created": 0}
+    assert dept_store.list_departments(db_path=empty_dept_db) == []
+
+
+def test_new_install_creates_only_the_drafted_departments(empty_dept_db: Path) -> None:
+    counts = reconcile_onboarding_departments(
+        [DepartmentDraft(title="Finance"), DepartmentDraft(title="Growth")], {}
+    )
+    assert counts == {"updated": 0, "created": 2}
+    by_slug = {
+        d.config.slug: d.config for d in dept_store.list_departments(db_path=empty_dept_db)
+    }
+    assert set(by_slug) == {"finance", "growth"}
+    # Named after a specialist's area: wired to it and given its charter.
+    assert by_slug["finance"].specialist_key == "cfo"
+    assert by_slug["finance"].charter.scope  # the catalogue's Finance scope
+    # Anything else stays informational.
+    assert by_slug["growth"].specialist_key is None
+
+
+def test_a_specialist_is_wired_to_only_one_new_department(empty_dept_db: Path) -> None:
+    # "HR" and "People & Talent" slug differently but are both the chro area.
+    reconcile_onboarding_departments(
+        [DepartmentDraft(title="HR"), DepartmentDraft(title="People & Talent")], {}
+    )
+    keys = [d.config.specialist_key for d in dept_store.list_departments(db_path=empty_dept_db)]
+    assert keys.count("chro") == 1

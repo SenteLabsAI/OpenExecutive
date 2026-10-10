@@ -409,12 +409,10 @@ async def _restore_slot_state(
         # Generated (seed) slots carry people.yaml / departments.yaml /
         # memory.json from the intake draft — apply them with the fixture
         # loader's seeders (people first so memory + department heads can
-        # resolve person ids by name), then layer the boot-time defaults on
-        # top, skipping the default org when the draft supplied one.
+        # resolve person ids by name), then layer the boot-time scheduled
+        # rows on top.
         seeded = _seed_from_slot_files(settings, slot)
-        _reseed_blank_defaults(
-            seed_departments=not bool(seeded.get("departments_seeded"))
-        )
+        _reseed_blank_defaults()
 
     # 2. Company directory artifacts.
     from openexecutive.memory.company_profile import CompanyProfile
@@ -648,24 +646,17 @@ def _ensure_schemas() -> None:
     ReviewStore.backfill_trusted_defaults(db_path)
 
 
-def _reseed_blank_defaults(*, seed_departments: bool = True) -> None:
-    """Blank slot = factory state: default org + the boot-time scheduled rows.
+def _reseed_blank_defaults() -> None:
+    """Blank slot = factory state: the boot-time scheduled rows.
 
     Mirrors ``reset_all_state`` step 5/5a — without these the new client's
     Today page stays blank until the next process restart. Every call is
-    idempotent and individually guarded. ``seed_departments=False`` skips the
-    default 8-department org (used when a generated seed slot supplied its
-    own departments — the cadence/brief bootstraps still run and pick those
-    up from the table).
+    idempotent and individually guarded. No departments are created: a blank
+    slot starts with none, like a new install, and a generated seed slot's
+    own departments (if any) are picked up by the cadence bootstrap.
     """
     from openexecutive.config import get_settings
-    from openexecutive.departments.store import seed_default_departments
 
-    if seed_departments:
-        try:
-            seed_default_departments()
-        except Exception:
-            logger.exception("client-slots: seed_default_departments failed")
     try:
         from openexecutive.scheduler.runner import seed_principal_briefs
 

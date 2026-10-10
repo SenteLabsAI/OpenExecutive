@@ -8,12 +8,16 @@ without the profile they just saved.
 The department step is deliberately **additive**, and that is the one place
 this module must not copy ``cli/fixture_loader._seed_departments``. That
 seeder DELETEs every department and goal before inserting, which is correct
-when swapping in a demo company and destructive here: it would drop the eight
-defaults seeded by ``departments.store.seed_default_departments`` along with
-their ``specialist_key`` wiring, and ``create_department`` always writes
-``specialist_key = NULL`` — so a wiped default can never be recreated
-properly. We match drafted departments onto existing ones and create only
-what is genuinely new.
+when swapping in a demo company and destructive here: it would drop
+departments the user already has (and their goals) on a re-run of setup. We
+match drafted departments onto existing ones and create only what is
+genuinely new.
+
+A new install has no departments until this step runs, so the draft decides
+which ones exist: none for a solo workspace or a team that names none. A new
+department named after a specialist's area ("Finance", "HR") is wired to that
+specialist, the same rule the Executive's ``create_goal`` tool uses, so its
+goals get check-ins.
 """
 from __future__ import annotations
 
@@ -325,6 +329,7 @@ def reconcile_onboarding_departments(
             create_department,
             list_departments,
             match_department,
+            specialist_key_for_area,
             update_department,
         )
         from openexecutive.departments.store import (
@@ -368,7 +373,17 @@ def reconcile_onboarding_departments(
             head_id = person_ids.get(draft.head_person_name.strip()) if draft.head_person_name else None
 
             if match is None:
-                created = create_department(title, mission=draft.mission.strip())
+                candidate = specialist_key_for_area(title)
+                # One department per specialist: a second would make the
+                # specialist -> department mapping ambiguous.
+                specialist_key = (
+                    candidate
+                    if candidate and not any(k.specialist_key == candidate for k in known)
+                    else None
+                )
+                created = create_department(
+                    title, mission=draft.mission.strip(), specialist_key=specialist_key
+                )
                 counts["created"] += 1
                 slug = created.config.slug
                 # Register it so a later draft in this same batch matches the

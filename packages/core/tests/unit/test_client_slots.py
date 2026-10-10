@@ -572,8 +572,8 @@ async def test_generated_seed_slot_activation_seeds_org_and_memory(
     conn.close()
     assert people == ["Dana Reyes", "Lee Park"]
     assert depts == ["operations"]
-    # Default-department reseed was skipped (the draft supplied an org).
-    assert env.reseed_calls[-1] == {"seed_departments": False}
+    # Only the draft's departments: the boot-time defaults add none.
+    assert env.reseed_calls[-1] == {}
     assert "Meridian Solar" in env.settings.company_profile_path.read_text()
     assert (env.company / "docs" / "intake_brief.md").exists()
 
