@@ -9,6 +9,28 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.5.4](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.3...v0.5.4) (2026-10-10)
+
+
+### Added
+
+* **chat:** cut chat-app chats into conversations and search inside chats ([#413](https://github.com/SenteLabsAI/OpenExecutive/issues/413)) ([3915b6b](https://github.com/SenteLabsAI/OpenExecutive/commit/3915b6b2ec7455e2b0c3203e01adb818c9783f92))
+* **chat:** let a later-registered adapter cut its own old chat history ([#416](https://github.com/SenteLabsAI/OpenExecutive/issues/416)) ([07d6af5](https://github.com/SenteLabsAI/OpenExecutive/commit/07d6af53ab01d2cdd863a8f59f8e10bd86909009))
+* **delegation:** edit a waiting reply on its card and keep replies out of Drafts by default ([#423](https://github.com/SenteLabsAI/OpenExecutive/issues/423)) ([c480289](https://github.com/SenteLabsAI/OpenExecutive/commit/c480289ace443926962840bd79f869724fbed7c0))
+* **org:** start new workspaces with no departments ([#422](https://github.com/SenteLabsAI/OpenExecutive/issues/422)) ([e2574c1](https://github.com/SenteLabsAI/OpenExecutive/commit/e2574c1eb8e9fb2a5dc13f78bdcd93941370589c))
+* **ui:** lay out Pulse as one overview with focused screens ([#418](https://github.com/SenteLabsAI/OpenExecutive/issues/418)) ([62f1db4](https://github.com/SenteLabsAI/OpenExecutive/commit/62f1db454da25639077e1df7b6de1230c7cba091))
+* **ui:** put Act as me, Handle it for me and Take the lead under Delegate ([#417](https://github.com/SenteLabsAI/OpenExecutive/issues/417)) ([faf20f2](https://github.com/SenteLabsAI/OpenExecutive/commit/faf20f2532ca31f7e4c0b9edb5217c07f3ef3663))
+* **ui:** show what Pulse remembers above the schedule lists ([#421](https://github.com/SenteLabsAI/OpenExecutive/issues/421)) ([d20526f](https://github.com/SenteLabsAI/OpenExecutive/commit/d20526f57efd993c025932cd410b15533d8ca818))
+* **workflows:** fold playbooks into workflows ([#415](https://github.com/SenteLabsAI/OpenExecutive/issues/415)) ([f41a915](https://github.com/SenteLabsAI/OpenExecutive/commit/f41a9158095fe080744191868d7793b1dd1989ea))
+* **workflows:** let an extension offer its tools to workflow action steps ([#419](https://github.com/SenteLabsAI/OpenExecutive/issues/419)) ([d765eef](https://github.com/SenteLabsAI/OpenExecutive/commit/d765eef0ed6c2657d7201862c8a15c30bececbd8))
+* **workflows:** run a job in the local sandbox when the remote runner turns it away ([#424](https://github.com/SenteLabsAI/OpenExecutive/issues/424)) ([ff43129](https://github.com/SenteLabsAI/OpenExecutive/commit/ff43129829ece60a4e8f21060a9da320ff66430f))
+
+
+### Fixed
+
+* **prompts:** scope the Google manifest to the services and tier workspace-mcp loaded ([#425](https://github.com/SenteLabsAI/OpenExecutive/issues/425)) ([be279b5](https://github.com/SenteLabsAI/OpenExecutive/commit/be279b53077d1bc65b2b6d226e54e2f12508616c))
+* **ui:** tidy the new-workflow chat and the page after saving a workflow ([#412](https://github.com/SenteLabsAI/OpenExecutive/issues/412)) ([a13d6f3](https://github.com/SenteLabsAI/OpenExecutive/commit/a13d6f38f29459e98ea1d1ba8fef300952f1f29a))
+
 ## [0.5.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.2...v0.5.3) (2026-10-09)
 
 
