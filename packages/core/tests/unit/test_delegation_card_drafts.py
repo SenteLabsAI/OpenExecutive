@@ -191,3 +191,19 @@ def test_the_setting_is_kept_while_the_switch_is_off(db: Path, owner: Any) -> No
     inbox.set_watch(owner.id, False, updated_by="test")
     inbox.set_watch(owner.id, True, updated_by="test")
     assert inbox.get_watch(owner.id).mailbox_drafts is True
+
+
+def test_one_change_at_a_time(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    """A second save while the first is still being written is refused before
+    it touches the mailbox, so the card and the draft never disagree."""
+    inbox.set_mailbox_drafts(owner.id, True, updated_by="test")
+    mailbox, card = _card(owner)
+    card_drafts._EDITING.add(card.id)
+    try:
+        with pytest.raises(SendRefused) as err:
+            _edit(card, mailbox, owner, "Friday works.")
+        assert err.value.code == "busy" and "update:d1" not in mailbox.calls
+    finally:
+        card_drafts._EDITING.discard(card.id)
+    _edit(card, mailbox, owner, "Friday works.")
+    assert card.id not in card_drafts._EDITING

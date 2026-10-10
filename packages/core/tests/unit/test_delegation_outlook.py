@@ -600,6 +600,52 @@ def test_a_draft_sent_while_it_is_being_deleted_is_left_alone() -> None:
     assert "d1" in graph.messages
 
 
+def test_update_draft_text_changes_only_the_version_it_saw() -> None:
+    from openexecutive.delegation.gmail import DraftChanged
+
+    graph = FakeGraph()
+    graph.messages["d1"] = _msg("d1", isDraft=True)
+    client = graph.client()
+    seen = ol.draft_version("d1", "ck1")
+    version = asyncio.run(client.update_draft_text("d1", seen, "Friday at 10 works."))
+    assert version == ol.draft_version("d1", "ck1x")
+    patch = next(r for r in graph.graph_calls() if r.method == "PATCH")
+    assert json.loads(patch.content) == {"body": {"contentType": "text", "content": "Friday at 10 works."}}
+    assert patch.headers["If-Match"] == 'W/"ck1"'
+    # Changed in Outlook since the card saw it: never overwritten.
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(client.update_draft_text("d1", seen, "Monday."))
+    assert err.value.reason == "changed"
+    assert graph.messages["d1"]["body"]["content"] == "Friday at 10 works."
+
+
+@pytest.mark.parametrize("fields", [
+    {"hasAttachments": True},
+    {"body": {"contentType": "html", "content": "<p>Hi</p>"}},
+])
+def test_update_draft_text_leaves_a_draft_with_files_or_formatting(fields: dict[str, Any]) -> None:
+    from openexecutive.delegation.gmail import DraftChanged
+
+    graph = FakeGraph()
+    graph.messages["d1"] = _msg("d1", isDraft=True, **fields)
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(graph.client().update_draft_text("d1", ol.draft_version("d1", "ck1"), "Hi"))
+    assert err.value.reason == "not_plain"
+    assert not any(r.method == "PATCH" for r in graph.graph_calls())
+
+
+def test_update_draft_text_changed_between_read_and_write_is_refused() -> None:
+    """A 412 on the PATCH (If-Match) means someone changed it meanwhile."""
+    from openexecutive.delegation.gmail import DraftChanged
+
+    graph = FakeGraph()
+    graph.messages["d1"] = _msg("d1", isDraft=True)
+    graph.fail["PATCH /messages/d1"] = 412
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(graph.client().update_draft_text("d1", ol.draft_version("d1", "ck1"), "Hi"))
+    assert err.value.reason == "changed"
+
+
 def test_send_draft_sends_the_draft_by_its_id_and_nothing_else() -> None:
     graph = FakeGraph()
     graph.messages["d1"] = _msg("d1", isDraft=True)

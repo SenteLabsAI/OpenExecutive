@@ -43,6 +43,9 @@ EDITED_VERSION = "edited_version"
 # Cards whose draft is being made right now in this process, so two taps
 # never make two.
 _MAKING: set[int] = set()
+# Cards whose words are being changed right now in this process: one edit at
+# a time, so a second can't rewrite the mailbox draft and then lose the card.
+_EDITING: set[int] = set()
 
 
 def in_mailbox(person_id: int) -> bool:
@@ -131,8 +134,8 @@ async def make_draft(instance: Any, person_id: int, client: Any) -> dict[str, An
     from openexecutive.delegation.reply_send import SendRefused
     from openexecutive.memory.decision_ledger import get_decision_instance, update_open_payload
 
-    if instance.id in _MAKING:
-        raise SendRefused(409, "already_handled", "This reply is being sent already.")
+    if instance.id in _MAKING or instance.id in _EDITING:
+        raise SendRefused(409, "busy", "Your change to this reply is still being saved. Try again in a moment.")
     _MAKING.add(instance.id)
     try:
         current = get_decision_instance(instance.id)
@@ -200,20 +203,11 @@ async def edit(instance: Any, *, caller: Any, resolver: int | None, text: str, g
     person's tap. Returns the card's payload as it now is; raises
     ``SendRefused``. Sends nothing."""
     from openexecutive.audit import rows_for_person
-    from openexecutive.delegation.gmail import (
-        BLOCKING_CODES,
-        STATUS_MESSAGES,
-        DraftChanged,
-        GmailError,
-        GmailNotFound,
-        gmail_for,
-        gmail_status,
-        normalize_email,
-    )
-    from openexecutive.delegation.inbox import CLOSED, SENDING, _audit, _close_card, card_payload
+    from openexecutive.delegation.gmail import normalize_email
+    from openexecutive.delegation.inbox import SENDING, card_payload
     from openexecutive.delegation.reply_send import _NOT_YOURS, SendRefused, _check_caller
     from openexecutive.delegation.settings import can_delegate, is_enabled
-    from openexecutive.memory.decision_ledger import STATUS_PROPOSED, update_open_payload
+    from openexecutive.memory.decision_ledger import STATUS_PROPOSED
     from openexecutive.people.store import get_person
 
     payload = card_payload(instance)
@@ -236,39 +230,64 @@ async def edit(instance: Any, *, caller: Any, resolver: int | None, text: str, g
             raise SendRefused(422, "empty", "Write something before you save it.")
         if len(words) > MAX_TEXT_CHARS:
             raise SendRefused(422, "too_long", f"That's too long to send from here (at most {MAX_TEXT_CHARS:,} characters).")
-        changed = {**payload, "draft_body": words, EDITED_ON_CARD: True}
-        draft_id = str(payload.get("draft_id") or "")
-        if draft_id:
-            email = normalize_email(person.email)
-            client = gmail if gmail is not None else gmail_for(email)
-            status = await gmail_status(email, gmail=client)
-            if status != "connected":
-                raise SendRefused(409, BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
-            seen = str(payload.get(EDITED_VERSION) or payload.get("draft_message_id") or "")
-            try:
-                version = await client.update_draft_text(draft_id, seen, words)
-            except GmailNotFound:
-                _close_card(person.id, instance.id, str(payload.get("message_id") or ""), "draft_gone", CLOSED)
+        if instance.id in _EDITING or instance.id in _MAKING:
+            raise SendRefused(409, "busy", "This reply is being saved or sent right now. Try again in a moment.")
+        _EDITING.add(instance.id)
+        try:
+            return await _edit(instance, person, payload, words, gmail)
+        finally:
+            _EDITING.discard(instance.id)
+
+
+async def _edit(instance: Any, person: Any, payload: dict[str, Any], words: str, gmail: Any) -> dict[str, Any]:
+    """``edit`` once its checks passed, one at a time per card."""
+    from openexecutive.delegation.gmail import (
+        BLOCKING_CODES,
+        STATUS_MESSAGES,
+        DraftChanged,
+        GmailError,
+        GmailNotFound,
+        gmail_for,
+        gmail_status,
+        normalize_email,
+    )
+    from openexecutive.delegation.inbox import CLOSED, _audit, _close_card
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.memory.decision_ledger import update_open_payload
+
+    changed = {**payload, "draft_body": words, EDITED_ON_CARD: True}
+    draft_id = str(payload.get("draft_id") or "")
+    if draft_id:
+        email = normalize_email(person.email)
+        client = gmail if gmail is not None else gmail_for(email)
+        status = await gmail_status(email, gmail=client)
+        if status != "connected":
+            raise SendRefused(409, BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
+        seen = str(payload.get(EDITED_VERSION) or payload.get("draft_message_id") or "")
+        try:
+            version = await client.update_draft_text(draft_id, seen, words)
+        except GmailNotFound:
+            _close_card(person.id, instance.id, str(payload.get("message_id") or ""), "draft_gone", CLOSED)
+            raise SendRefused(
+                409, "draft_gone", "That draft isn't in your mailbox any more: it was sent or deleted there.",
+            ) from None
+        except DraftChanged as exc:
+            if exc.reason == "not_plain":
                 raise SendRefused(
-                    409, "draft_gone", "That draft isn't in your mailbox any more: it was sent or deleted there.",
+                    409, "draft_not_plain", "This draft has files or formatting, so change it in your mailbox.",
                 ) from None
-            except DraftChanged as exc:
-                if exc.reason == "not_plain":
-                    raise SendRefused(
-                        409, "draft_not_plain", "This draft has files or formatting, so change it in your mailbox.",
-                    ) from None
-                raise SendRefused(
-                    409, "draft_changed",
-                    "This draft was changed in your mailbox, so it wasn't changed here. Change it there, or dismiss it.",
-                ) from None
-            except GmailError as exc:
-                raise SendRefused(
-                    502, "gmail_error", "Couldn't save your change in your mailbox. Try again in a moment.",
-                ) from exc
-            changed[EDITED_VERSION] = version
-        if not update_open_payload(instance.id, changed, expected_json=instance.proposed_payload_json):
-            raise SendRefused(409, "already_handled", "This reply changed or was sent meanwhile. Look at it again.")
-        _audit("delegation_reply_edited", f"Person {person.id} changed a reply on its card", {
-            "person_id": person.id, "decision_id": instance.id, "in_mailbox": bool(draft_id),
-        })
-        return changed
+            raise SendRefused(
+                409, "draft_changed",
+                "This draft was changed in your mailbox, so it wasn't changed here. Change it there, or dismiss it.",
+            ) from None
+        except GmailError as exc:
+            raise SendRefused(
+                502, "gmail_error", "Couldn't save your change in your mailbox. Try again in a moment.",
+            ) from exc
+        changed[EDITED_VERSION] = version
+    if not update_open_payload(instance.id, changed, expected_json=instance.proposed_payload_json):
+        raise SendRefused(409, "already_handled", "This reply changed or was sent meanwhile. Look at it again.")
+    _audit("delegation_reply_edited", f"Person {person.id} changed a reply on its card", {
+        "person_id": person.id, "decision_id": instance.id, "in_mailbox": bool(draft_id),
+    })
+    return changed
