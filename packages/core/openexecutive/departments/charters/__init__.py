@@ -1,9 +1,11 @@
-"""Seed charter text for the 8 default departments.
+"""Charter text for the 8 catalogue departments.
 
-Phase 1 fleshes out Finance only; the other 7 ship as two-line stubs that
-later phases (and humans editing through the UI) will fill in. Charters are
-read once at seed time and persisted into the `departments` table — editing
-a charter at runtime goes through the PATCH route, not by editing this file.
+No install starts with these: a department is created by setup or the
+Executive's ``create_goal`` tool, and one named after a catalogue area starts
+from that area's charter (``store.default_charter_for``). Phase 1 fleshes out
+Finance only; the other 7 ship as two-line stubs. Charters are copied into the
+`departments` table when the department is created — editing a charter at
+runtime goes through the PATCH route, not by editing this file.
 """
 from __future__ import annotations
 

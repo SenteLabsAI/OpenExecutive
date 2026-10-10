@@ -116,7 +116,8 @@ def test_reset_returns_to_team_defaults_and_rebootstraps(_reset_harness: Any, _i
     ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Asia/Seoul"))
     _run_reset(_reset_harness)
     assert ws.get_workspace() == ws.WorkspaceSettings()
-    assert _count(_isolated, "dept_cadence") == 8
+    # A reset leaves no departments, so there is nothing to check in on.
+    assert _count(_isolated, "dept_cadence") == 0
 
 
 def test_reset_path_bootstrap_honours_solo(

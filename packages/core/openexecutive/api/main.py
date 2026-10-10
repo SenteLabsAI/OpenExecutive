@@ -453,12 +453,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # AFTER episodic_db so the additive ALTERs (department column on decisions,
     # initiatives, advice_given, scheduled_actions) have already run by the
     # time anything else writes to those tables.
+    # No departments are created here: a new install starts with none, and
+    # setup creates only the ones the company has.
     from openexecutive.departments.store import (
         initialize_db as initialize_departments_db,
     )
-    from openexecutive.departments.store import seed_default_departments
     initialize_departments_db()
-    seed_default_departments()
 
     # Solo installs have no team to be incomplete: the check only warns
     # about departments with no head, which is every department there.

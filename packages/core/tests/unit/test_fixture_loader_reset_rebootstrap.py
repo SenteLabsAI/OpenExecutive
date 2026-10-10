@@ -100,11 +100,12 @@ def _scheduled_kinds(db_path: Path) -> set[str]:
         }
 
 
-def test_reset_re_enqueues_principal_briefs_and_dept_cadences(
+def test_reset_re_enqueues_principal_briefs_and_leaves_no_departments(
     settings_stub: Any, _isolate_dbs: Path
 ) -> None:
-    """After reset, the same three principal brief kinds and at least one
-    ``dept_cadence`` row should be back in ``scheduled_actions``.
+    """After reset, the same three principal brief kinds are back in
+    ``scheduled_actions``, and there are no departments (so no
+    ``dept_cadence`` rows), as on a new install.
 
     These are the rows ``api/main.py`` bootstraps at startup. Before the
     fix, the reset deleted them and they didn't return until the process
@@ -123,9 +124,12 @@ def test_reset_re_enqueues_principal_briefs_and_dept_cadences(
     assert "principal_brief_eod" in kinds
     assert "executive_reflection" in kinds
 
-    # Department cadences — the 8 default departments each carry a
-    # check_in cadence spec, so bootstrap_cadences enqueues one row apiece.
-    assert "dept_cadence" in kinds
+    # No departments, so no check-ins: setup creates only the ones the
+    # company has.
+    assert "dept_cadence" not in kinds
+    from openexecutive.departments import store as dept_store
+    assert dept_store.list_departments() == []
+    assert result["departments_seeded"] == 0
 
 
 def test_reset_bootstraps_are_idempotent_on_second_call(
@@ -156,18 +160,10 @@ def test_reset_bootstraps_are_idempotent_on_second_call(
             ).fetchone()[0]
             assert count == 1, f"{kind} duplicated across resets: {count} rows"
 
-        # ``dept_cadence`` is one row per department with a check_in spec —
-        # the count must match after one reset and stay flat after the
-        # second. Without ``_has_pending_cadence``'s per-slug guard, the
-        # second reset would double the row count.
-        cadence_rows = conn.execute(
-            "SELECT department, COUNT(*) FROM scheduled_actions "
-            "WHERE kind = 'dept_cadence' AND status = 'pending' "
-            "GROUP BY department"
-        ).fetchall()
-        assert cadence_rows, "expected at least one dept_cadence row after reset"
-        for slug, count in cadence_rows:
-            assert count == 1, f"dept_cadence for {slug} duplicated: {count} rows"
+        # A reset leaves no departments, so a second one adds no check-ins.
+        assert conn.execute(
+            "SELECT COUNT(*) FROM scheduled_actions WHERE kind = 'dept_cadence'"
+        ).fetchone()[0] == 0
 
 
 def test_reset_clears_review_state_and_reregisters_defaults(
