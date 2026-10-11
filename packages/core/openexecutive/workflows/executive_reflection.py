@@ -713,6 +713,7 @@ class ExecutiveReflectionWorkflow(Workflow):
         )
         # The Python job tool as this instance describes it (a runner's libraries).
         _ALL_SKILL_TOOLS = _offered_skill_tools()
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.orchestrator.knowledge_tools import (
             KNOWLEDGE_TOOL_HANDLERS,
             KNOWLEDGE_TOOLS,
@@ -890,6 +891,7 @@ class ExecutiveReflectionWorkflow(Workflow):
                         type="error", message=f"Reflection LLM call failed: {exc}"
                     )
                     return
+                log_model_usage(response, model=model, actor=self.name, iteration=iteration)
 
                 # Only the await sits inside the tag — this is an async
                 # generator, and a ContextVar set across a `yield` would leak.

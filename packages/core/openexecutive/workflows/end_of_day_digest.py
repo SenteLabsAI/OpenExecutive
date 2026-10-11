@@ -379,6 +379,7 @@ class EndOfDayDigestWorkflow(Workflow):
         )
 
         from openexecutive.agents.utility_fast import get_fast_model
+        from openexecutive.audit.usage import log_model_usage
         from openexecutive.memory.facts import with_standing_facts
         from openexecutive.providers import get_provider
 
@@ -397,6 +398,7 @@ class EndOfDayDigestWorkflow(Workflow):
                 system=system,
                 messages=[{"role": "user", "content": user_content}],
             )
+            log_model_usage(response, model=model, actor=self.name)
             text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
             artifact_text = text_blocks[0].text.strip() if text_blocks else ""
         except Exception as exc:

@@ -764,6 +764,7 @@ _REPAIR_INSTRUCTION = (
 
 async def _repair(draft: str, context: str, system: str, report: GroundingReport) -> str:
     from openexecutive.agents.utility_fast import get_fast_model
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers import get_provider
 
     model = get_fast_model()
@@ -777,6 +778,7 @@ async def _repair(draft: str, context: str, system: str, report: GroundingReport
         system=system,
         messages=[{"role": "user", "content": content}],
     )
+    log_model_usage(response, model=model, actor="briefing_grounding")
     blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
     return blocks[0].text.strip() if blocks else ""
 
