@@ -2,7 +2,7 @@ import asyncio
 import time
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from openexecutive.api.models import HealthResponse
 
@@ -10,7 +10,7 @@ router = APIRouter()
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
+async def health_check(request: Request) -> HealthResponse:
     from openexecutive.config import get_settings
     from openexecutive.knowledge.skills_index import count_skills
     from openexecutive.knowledge.store import ChromaDBStore
@@ -30,6 +30,15 @@ async def health_check() -> HealthResponse:
 
     profile = load_or_create_profile()
 
+    # This app's gateway, not the module-level active one: shutdown clears the
+    # singleton while leaving app.state populated, and the MCP-disabled path
+    # nulls app.state without clearing the singleton, so the two diverge.
+    # getattr both ways: an app assembled without the MCP lifespan has no
+    # attribute, and a gateway built past __init__ (tests) has no probe.
+    gateway = getattr(request.app.state, "mcp_gateway", None)
+    probe = getattr(gateway, "pinned_tools", None)
+    missing = probe.missing if probe is not None else None
+
     return HealthResponse(
         status="ok",
         builtin_knowledge_chunks=chunk_count,
@@ -37,6 +46,7 @@ async def health_check() -> HealthResponse:
         company_name=profile.name if not profile.is_empty() else None,
         builtin_skills=builtin_skills_count,
         company_skills=company_skills_count,
+        google_tools_missing=list(missing) if missing is not None else None,
     )
 
 

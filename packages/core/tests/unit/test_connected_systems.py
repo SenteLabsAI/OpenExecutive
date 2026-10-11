@@ -314,3 +314,86 @@ def test_prime_pinned_tools_searches_each_and_reports_the_missing() -> None:
 def test_prime_survives_a_dead_session() -> None:
     gateway = MCPGateway()  # never started: every search raises
     assert sorted(asyncio.run(gateway.prime_pinned_tools())) == sorted(PINNED_GOOGLE_TOOLS)
+
+
+def _priming_gateway(missing: set[str]) -> MCPGateway:
+    """A started gateway whose searches return every pinned tool except ``missing``."""
+    gateway = MCPGateway()
+    session = MagicMock()
+
+    async def search(tool: str, args: dict[str, Any]) -> MagicMock:
+        assert tool == "search_tools"
+        wanted = next(n for n in PINNED_GOOGLE_TOOLS if re.sub(r"_+", " ", n) == args["query"])
+        return _result("No matching tools found." if wanted in missing else _search_hit(wanted))
+
+    session.call_tool = AsyncMock(side_effect=search)
+    gateway._session = session
+    return gateway
+
+
+def test_prime_records_the_misses_for_health_and_setup_status() -> None:
+    gateway = _priming_gateway({"google_workspace__create_doc"})
+    assert gateway.pinned_tools is None, "nothing probed yet"
+
+    asyncio.run(gateway.prime_pinned_tools())
+
+    assert gateway.pinned_tools is not None
+    assert gateway.pinned_tools.missing == ("google_workspace__create_doc",)
+
+
+def test_prime_records_an_empty_tuple_when_every_pinned_tool_is_there() -> None:
+    gateway = _priming_gateway(set())
+    asyncio.run(gateway.prime_pinned_tools())
+    assert gateway.pinned_tools is not None
+    assert gateway.pinned_tools.missing == ()
+
+
+def test_prime_records_a_failure_rather_than_an_empty_result() -> None:
+    """A BaseExceptionGroup is what anyio raises out of a failing session, and
+    it is not an Exception — so a plain `except Exception` would let it past and
+    leave the probe looking unfinished forever."""
+    gateway = MCPGateway()
+    session = MagicMock()
+    session.call_tool = AsyncMock(
+        side_effect=BaseExceptionGroup("session died", [KeyboardInterrupt()])
+    )
+    gateway._session = session
+
+    assert asyncio.run(gateway.prime_pinned_tools()) == []
+
+    assert gateway.pinned_tools is not None
+    assert gateway.pinned_tools.missing is None, "a failed probe must not read as 'all found'"
+
+
+def test_prime_records_nothing_when_shutdown_cancels_it() -> None:
+    gateway = MCPGateway()
+    session = MagicMock()
+    session.call_tool = AsyncMock(side_effect=asyncio.CancelledError())
+    gateway._session = session
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway.prime_pinned_tools())
+
+    assert gateway.pinned_tools is None, "cancelled at shutdown is not a failed probe"
+
+
+def test_prime_reads_settings_once_for_the_whole_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every pinned tool missing means every probe reaches the warning that
+    names the settings — which must still be the one read priming already did."""
+    from openexecutive.orchestrator import mcp_gateway as gw_mod
+
+    calls = 0
+    real = gw_mod.get_settings
+
+    def counted() -> Any:
+        nonlocal calls
+        calls += 1
+        return real()
+
+    monkeypatch.setattr(gw_mod, "get_settings", counted)
+    gateway = _priming_gateway(set(PINNED_GOOGLE_TOOLS))
+
+    missing = asyncio.run(gateway.prime_pinned_tools())
+
+    assert sorted(missing) == sorted(PINNED_GOOGLE_TOOLS)
+    assert calls == 1

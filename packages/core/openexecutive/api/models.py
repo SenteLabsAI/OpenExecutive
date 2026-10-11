@@ -160,6 +160,12 @@ class HealthResponse(BaseModel):
     company_name: str | None = None
     builtin_skills: int = 0
     company_skills: int = 0
+    # The pinned Google tools startup priming could not find. `[]` is the only
+    # value that asserts every one is present; `null` means no answer — Google
+    # Workspace is not configured, or the probe has not finished, or it failed.
+    # Setup status says which. A non-empty list means a workspace-mcp rename or
+    # a tool the configured services and tier never loaded.
+    google_tools_missing: list[str] | None = None
     version: str = "0.5.4"  # x-release-please-version
 
 

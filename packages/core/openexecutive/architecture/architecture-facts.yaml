@@ -7467,6 +7467,16 @@ integrations:
     audit ts for the channel's actor). Order = setup_checks.LABELS. The
     UI adds its own sign-in light (lib/setupStatus.ts signInCheck, from
     the UI's env) and sorts worst-first.
+    LABELS is the whole row list and run_checks emits one row per key, so
+    there is NO hide-when-fine mechanism: a condition that should show
+    nothing when healthy cannot have its own row, it has to ride an
+    existing one. That is why the pinned-Google-tools drift signal folds
+    into check_gmail as a warn branch (see mcp.prime_pinned_tools) rather
+    than adding a google_tools row, which would sit there as ok | off
+    forever. A stand-in gateway in a test has no pinned_tools attribute
+    at all, which is NOT the same as a real gateway whose probe has not
+    finished (None) - check_gmail keys on a sentinel so the first case
+    reads exactly as it did before the drift branch existed.
     Probes — at most one free read-only call per service, each bounded
     by PROBE_TIMEOUT_S (5 s), via one shared httpx client per run:
     Anthropic models.list(limit=1) through configured_async_client
@@ -7695,8 +7705,22 @@ integrations:
     two variables, or renamed by workspace-mcp since the pin - because the
     old text named only the rename and sent operators to the manifest for
     what was usually a service-list setting (exact-name searches; misses
-    logged as
-    drift), and call_tool retries a PINNED name once after discovering it when
+    kept on the gateway as PinnedToolsProbe, not only logged: GET /health
+    reports them as google_tools_missing and Setup status turns the Email
+    (Gmail) row amber naming a few and counting the rest. The probe is ONE
+    frozen value assigned once, so no reader has to reconcile two attributes:
+    missing=() means it ran and found everything, missing=None means the probe
+    itself failed, and the attribute still being None means it has not
+    finished. Only () reads green anywhere, so a probe that died can never
+    look healthy. prime_pinned_tools catches BaseException, not Exception,
+    because anyio wraps a session failure in BaseExceptionGroup, which is not
+    an Exception - the same reasoning as the gateway's startup guard in
+    api.main; CancelledError still propagates, since that is shutdown
+    cancelling the task and the probe genuinely has no answer. Settings are
+    read once for the whole run and passed into each probe, because
+    get_settings() builds a fresh Settings every call and this read the
+    environment once per missing tool),
+    and call_tool retries a PINNED name once after discovering it when
     the reply is extensible-mcp's "has not been discovered via search_tools"
     refusal — after every gate has passed the same arguments. Unpinned tools
     still need the model's own search; nothing here widens what a call may do

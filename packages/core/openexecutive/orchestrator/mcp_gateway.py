@@ -11,12 +11,13 @@ import os
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Iterable, Iterator
+from dataclasses import dataclass
 from email.utils import getaddresses
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from openexecutive.config import get_settings, mcp_config_file_present
+from openexecutive.config import Settings, get_settings, mcp_config_file_present
 from openexecutive.memory import drive_reads
 from openexecutive.people.identity import RosterAllow
 from openexecutive.utils.html_tags import strip_tags
@@ -2698,6 +2699,20 @@ def configured_server_names(config_path: Path) -> list[str]:
     return sorted(str(name) for name in servers)
 
 
+@dataclass(frozen=True)
+class PinnedToolsProbe:
+    """What startup priming learned about the pinned Google tools.
+
+    One value, assigned once, so a reader never has to reconcile two attributes
+    that were written separately: ``missing`` is the names the probe could not
+    find, or ``None`` when the probe itself failed and found out nothing. The
+    gateway's attribute being ``None`` means the probe has not finished (or
+    never ran, because Google is not configured).
+    """
+
+    missing: tuple[str, ...] | None
+
+
 class MCPGateway:
     """Proxies search_tools / call_tool / load_mcp_server to an extensible-mcp subprocess.
 
@@ -2716,6 +2731,11 @@ class MCPGateway:
         # Connected Systems prompt section reads it, so a gateway that never
         # started never reads as connected.
         self.server_names: tuple[str, ...] = ()
+        # What startup priming found, for /health and the Setup status page.
+        # None until priming finishes, so a probe that crashed can never read
+        # as "every pinned tool is present" — only PinnedToolsProbe(missing=())
+        # asserts that.
+        self.pinned_tools: PinnedToolsProbe | None = None
 
     async def start(self, config_path: Path) -> None:
         from mcp import ClientSession, StdioServerParameters
@@ -2761,27 +2781,36 @@ class MCPGateway:
         text = result.content[0].text if result.content else json.dumps({"tools": []})
         return _drop_blocked_tools(text)
 
-    async def _discover(self, tool_name: str) -> bool:
+    async def _discover(self, tool_name: str, settings: Settings | None = None) -> bool:
         """Run the exact-name search that registers ``tool_name`` with
         extensible-mcp's discovered-tools filter (it only runs a tool one of
         this session's ``search_tools`` results returned, and remembers it for
         the session's life), the way ``tool_catalog.resolve`` does. True when
-        the search returned it. Best-effort: never raises."""
+        the search returned it. Best-effort: never raises.
+
+        A caller that probes many names passes ``settings`` so the whole run
+        shares one read: ``get_settings()`` builds a fresh ``Settings`` every
+        call, so reading it here cost one environment read per missing tool.
+        Left out (the ``call_tool`` retry, which probes one name), it is read
+        only on the path that needs it.
+        """
         from openexecutive.workflows.tool_catalog import parse_search_results
 
         query = re.sub(r"[_\-]+", " ", tool_name).strip()
         try:
             text = await self.search_tools({"query": query, "top_k": 10})
+            found = any(info.name == tool_name for info in parse_search_results(text))
         except Exception as exc:
             logger.warning(
                 "MCPGateway: discovering %s failed (%s)", tool_name, type(exc).__name__
             )
             return False
-        if any(info.name == tool_name for info in parse_search_results(text)):
+        if found:
             return True
+        if settings is None:
+            settings = get_settings()
         # Both causes, because the old text named only the rename and sent the
         # operator to the manifest for what was really a service-list setting.
-        settings = get_settings()
         logger.warning(
             "MCPGateway: pinned tool %s not found by search — not loaded under "
             "WORKSPACE_MCP_TOOLS=%s / WORKSPACE_MCP_TOOL_TIER=%s, or renamed by "
@@ -2798,6 +2827,10 @@ class MCPGateway:
         Returns the names not found, a drift signal. Run once at startup when
         Google is configured.
 
+        Also records the outcome on ``self.pinned_tools`` for ``/health`` and
+        the Setup status page, which is the authoritative reading: the return
+        value cannot express "the probe itself failed", and nothing awaits it.
+
         Probes the same filtered set the prompt advertises
         (``connected_systems.pinned_google_tools``), not the whole manifest: with
         a ``WORKSPACE_MCP_TOOLS`` subset or the ``core`` tier, the rest were
@@ -2805,8 +2838,25 @@ class MCPGateway:
         and told the operator to look for a rename that had not happened."""
         from openexecutive.prompts.connected_systems import pinned_google_tools
 
-        pinned = pinned_google_tools(get_settings())
-        missing = [n for n in sorted(pinned) if not await self._discover(n)]
+        settings = get_settings()
+        pinned = pinned_google_tools(settings)
+        try:
+            missing = [n for n in sorted(pinned) if not await self._discover(n, settings)]
+        except asyncio.CancelledError:
+            # Shutdown cancels this task (api.main). Leave pinned_tools unset:
+            # the probe did not finish, and the process is going away.
+            raise
+        except BaseException:
+            # Not `except Exception`: anyio wraps a session failure in
+            # BaseExceptionGroup as soon as one member is a BaseException, and
+            # that group is not an Exception — the same reasoning the gateway's
+            # own startup guard in api.main spells out. Letting one through
+            # here would leave pinned_tools None forever, which the Setup
+            # status page would show as "still checking" rather than a failure.
+            logger.warning("MCPGateway: priming the pinned Google tools failed", exc_info=True)
+            self.pinned_tools = PinnedToolsProbe(missing=None)
+            return []
+        self.pinned_tools = PinnedToolsProbe(missing=tuple(missing))
         logger.info(
             "MCPGateway: primed %d pinned Google tools (%d missing)",
             len(pinned) - len(missing), len(missing),

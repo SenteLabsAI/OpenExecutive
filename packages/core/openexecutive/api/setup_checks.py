@@ -790,6 +790,20 @@ def _google_sign_in_missing() -> str | None:
     return "GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET"
 
 
+# A stand-in gateway in a test has no probe attribute at all, which is not the
+# same as a real gateway whose probe has not finished — that one is None.
+_NO_PROBE = object()
+# Tool names are long identifiers, so _clip would cut one mid-name. Name a few
+# and count the rest; /health carries the whole list.
+_TOOLS_NAMED = 3
+
+
+def _missing_tools_text(names: tuple[str, ...]) -> str:
+    shown = ", ".join(names[:_TOOLS_NAMED])
+    rest = len(names) - _TOOLS_NAMED
+    return f"{shown}, and {rest} more" if rest > 0 else shown
+
+
 def check_gmail(snap: Snapshot) -> SetupCheck:
     from openexecutive.orchestrator.mcp_gateway import configured_server_names
 
@@ -826,6 +840,42 @@ def check_gmail(snap: Snapshot) -> SetupCheck:
             " No email has come in yet — if you've sent one, sign Google in once as that address "
             "(scripts/mint-google-token.py)."
         )
+    # Which pinned Google tools startup priming found. Only an empty tuple says
+    # they are all there, so a probe that never finished or crashed cannot read
+    # as green. Keeps the email timestamp the way _channel_ready does.
+    probe: Any = getattr(snap.mcp_gateway, "pinned_tools", _NO_PROBE)
+    if probe is not _NO_PROBE:
+        last = snap.last_inbound.get("email")
+        last_at = last.ts if last is not None else None
+        log_fix = f'The API log says why — look for "MCPGateway", {_RESTART}'
+        if probe is None:
+            return _result(
+                "gmail",
+                "warn",
+                f"{summary} Still checking which Google tools loaded.",
+                "That takes a few minutes after a restart. If it doesn't finish, the connection "
+                f"to Google is stuck — {log_fix}",
+                last_activity=last_at,
+            )
+        if probe.missing is None:
+            return _result(
+                "gmail",
+                "warn",
+                f"{summary} Couldn't check which Google tools loaded.",
+                log_fix,
+                last_activity=last_at,
+            )
+        if probe.missing:
+            plural = "" if len(probe.missing) == 1 else "s"
+            return _result(
+                "gmail",
+                "warn",
+                f"{summary} But {len(probe.missing)} Google tool{plural} couldn't be found: "
+                f"{_missing_tools_text(probe.missing)}.",
+                "Either a workspace-mcp update renamed them, or the configured Google services "
+                f"and tool tier never loaded them. {log_fix}",
+                last_activity=last_at,
+            )
     return _channel_ready(snap, "gmail", summary, actor="email", roster=None)
 
 

@@ -1051,3 +1051,55 @@ async def test_a_paused_tick_records_itself(scheduler_loop: dict[str, Any]) -> N
     pause.pause("ceo@example.com")
     _, tick = await _one_tick()
     assert tick is not None and tick[1] == "paused"
+
+
+def _gmail_gateway(probe: Any) -> Any:
+    """A started gateway stand-in carrying a priming result. A bare object() —
+    what the other Gmail tests pass — has no attribute at all, which is the
+    "not a real gateway" case and must read exactly as it did before."""
+    return SimpleNamespace(pinned_tools=probe)
+
+
+def test_gmail_names_the_pinned_google_tools_priming_could_not_find(
+    gmail_settings: Settings,
+) -> None:
+    from openexecutive.orchestrator.mcp_gateway import PinnedToolsProbe
+
+    seen = {"email": inbound("email", "Inbound email")}
+
+    def check(probe: Any) -> SetupCheck:
+        return check_gmail(
+            make_snap(gmail_settings, mcp_gateway=_gmail_gateway(probe), last_inbound=seen)
+        )
+
+    every_tool_there = check(PinnedToolsProbe(missing=()))
+    assert every_tool_there.state == "ok"
+    assert "couldn't be found" not in every_tool_there.summary
+
+    one = check(PinnedToolsProbe(missing=("google_workspace__create_doc",)))
+    assert one.state == "warn"
+    assert "1 Google tool couldn't be found: google_workspace__create_doc." in one.summary
+    assert "renamed them" in (one.fix or "")
+    assert one.last_activity is not None, "the inbox timestamp survives the warning"
+
+    two = check(PinnedToolsProbe(missing=("a_tool", "b_tool")))
+    assert "2 Google tools couldn't be found: a_tool, b_tool." in two.summary
+
+    # Long lists are capped by count, not clipped mid-identifier.
+    many = check(PinnedToolsProbe(missing=tuple(f"tool_{i}" for i in range(24))))
+    assert "24 Google tools couldn't be found: tool_0, tool_1, tool_2, and 21 more." in many.summary
+
+
+def test_gmail_does_not_report_green_before_priming_answers(gmail_settings: Settings) -> None:
+    from openexecutive.orchestrator.mcp_gateway import PinnedToolsProbe
+
+    not_finished = check_gmail(make_snap(gmail_settings, mcp_gateway=_gmail_gateway(None)))
+    assert not_finished.state == "warn"
+    assert "Still checking which Google tools loaded." in not_finished.summary
+    assert "a few minutes after a restart" in (not_finished.fix or "")
+
+    failed = check_gmail(
+        make_snap(gmail_settings, mcp_gateway=_gmail_gateway(PinnedToolsProbe(missing=None)))
+    )
+    assert failed.state == "warn"
+    assert "Couldn't check which Google tools loaded." in failed.summary

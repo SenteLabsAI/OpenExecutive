@@ -177,8 +177,16 @@ skipping the check.
 can reach it unauthenticated. It returns:
 
 ```json
-{"status": "ok", "builtin_knowledge_chunks": 1234, "version": "0.1.0"}
+{"status": "ok", "builtin_knowledge_chunks": 1234, "google_tools_missing": [], "version": "0.1.0"}
 ```
+
+`google_tools_missing` is the pinned Google tools startup priming could not
+find. `[]` means it checked and they are all there — the only value that says
+so. A list of names means a `workspace-mcp` update renamed one, or the
+configured services and tool tier never loaded it; Settings → Setup status
+names them too. `null` means no answer: Google Workspace is not configured, or
+the probe has not finished, or it failed. Expect `null` during the startup
+grace period below, so alert on a non-empty list rather than on "not `[]`".
 
 **Give it a startup grace period of about 5 minutes.** A cold container builds
 the MCP tool-discovery vector index and loads Chroma before it serves. The
