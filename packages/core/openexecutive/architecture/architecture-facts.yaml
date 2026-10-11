@@ -4579,7 +4579,7 @@ chat:
     the chat starts on that message with previous/next and highlights
     the words (CSS Custom Highlight API where the browser has it).
   module: openexecutive.api.routes.chat
-  endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works.
+  endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works. POST /chat/background starts a new chat the server answers to the end with no reader (202 + session_id; the caller request is wrapped so is_disconnected is always false, the stream is drained by a task kept in _background_tasks; at most 3 per owner key in _background_counts, claimed before the first await so a burst cannot pass together, else 429).
   sse_event_types:
     - "chunk — one text delta from the assistant response stream. Fields: type, content, session_id."
     - "thinking — keepalive emitted at the start of EVERY tool-use round, not just specialist ones. Fields: type, session_id. It carries no tool information, so the UI uses it purely as an in-flight boolean and takes the wording from the `activity` event that immediately precedes it. It used to be the sole driver of a hardcoded 'Consulting specialists…' string, which is why an MCP or calendar round looked like a specialist fan-out."

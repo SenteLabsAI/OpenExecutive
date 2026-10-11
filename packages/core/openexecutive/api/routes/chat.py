@@ -17,6 +17,8 @@ from fastapi.responses import StreamingResponse
 from openexecutive.api import caller as api_caller
 from openexecutive.api.models import (
     AddChatMessageRequest,
+    BackgroundChatRequest,
+    BackgroundChatResponse,
     ChatRequest,
     PageContext,
     StopChatRequest,
@@ -1558,6 +1560,91 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         client_turn_id=body.client_turn_id,
         memory_text=body.memory_text,
     )
+
+
+# Background turns (POST /chat/background): how many each caller has running,
+# by the same owner key Stop uses, and the tasks themselves (the strong
+# reference that keeps one from being collected mid-turn, as `_rename_tasks`).
+_background_counts: dict[str, int] = {}
+_background_tasks: set[asyncio.Task[None]] = set()
+# How many of one caller's background turns may run at once. Each is a full
+# turn with nobody holding a connection open, so without a cap one caller
+# could start any number of them.
+_BACKGROUND_TURNS_PER_CALLER = 3
+
+
+def _release_background_slot(owner: str) -> None:
+    left = _background_counts.get(owner, 0) - 1
+    if left > 0:
+        _background_counts[owner] = left
+    else:
+        _background_counts.pop(owner, None)
+
+
+class _StaysConnected(Request):
+    """The caller's request, for a turn that outlives it: the turn keeps
+    going after the client has gone, instead of stopping as a /chat turn does
+    when its tab closes."""
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+async def _drain_background_turn(body: Any, session_id: str) -> None:
+    """Run the turn's stream to its end. Its events have no reader; the turn
+    persists itself as it would for /chat."""
+    try:
+        async with contextlib.aclosing(body) as events:
+            async for _ in events:
+                pass
+    except Exception:
+        logger.exception("chat.background_failed session_id=%s", session_id)
+
+
+@router.post("/chat/background", status_code=202, response_model=BackgroundChatResponse)
+async def chat_background(body: BackgroundChatRequest, request: Request) -> BackgroundChatResponse:
+    """Start a new chat and answer it on the server, to the end.
+
+    Unlike /chat, nobody needs to stay connected: a phone that approves a
+    card and closes the app still gets the work done, and the answer appears
+    in its chat list. Everything before the stream (who is calling, their
+    access, the session) is checked here as /chat checks it, so a refusal is
+    this request's error rather than a silent no-op later.
+    """
+    owner = _stop_owner_key(request, _resolve_caller_person_id(request))
+    # Claim the slot before the first await: the pre-stream work below takes
+    # long enough for a burst of requests to all pass a check made earlier.
+    if _background_counts.get(owner, 0) >= _BACKGROUND_TURNS_PER_CALLER:
+        raise HTTPException(
+            status_code=429,
+            detail="A few things are already being worked on. Try again when one has finished.",
+        )
+    _background_counts[owner] = _background_counts.get(owner, 0) + 1
+    # Always a fresh chat, minted here, so the id returned is the one the
+    # turn uses (a client id could be refused and swapped for another).
+    session_id = str(uuid.uuid4())
+    try:
+        response = await _run_chat_turn(
+            message=body.message,
+            session_id=session_id,
+            committee_review=False,
+            attachment_blocks=None,
+            request=_StaysConnected(request.scope, request.receive),
+            memory_text=body.memory_text,
+        )
+    except BaseException:
+        _release_background_slot(owner)
+        raise
+    task = asyncio.create_task(_drain_background_turn(response.body_iterator, session_id))
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task[None]) -> None:
+        _background_tasks.discard(t)
+        _release_background_slot(owner)
+
+    task.add_done_callback(_done)
+    logger.info("chat.background_started session_id=%s", session_id)
+    return BackgroundChatResponse(session_id=session_id)
 
 
 @router.post("/chat/stop")

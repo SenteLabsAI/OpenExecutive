@@ -77,6 +77,23 @@ class ChatRequest(BaseModel):
     memory_text: str | None = Field(None, min_length=1, max_length=2000)
 
 
+class BackgroundChatRequest(BaseModel):
+    """Body of POST /chat/background: a new chat that runs to the end on the
+    server, whether or not the caller stays to watch (a phone app approving
+    a card, then closing). `message` and `memory_text` mean what they do on
+    `ChatRequest`."""
+
+    message: str = Field(..., min_length=1, max_length=32000)
+    memory_text: str | None = Field(None, min_length=1, max_length=2000)
+
+
+class BackgroundChatResponse(BaseModel):
+    """Where the background turn's chat will be: open it from the chat list
+    once the turn has answered."""
+
+    session_id: str
+
+
 class StopChatRequest(BaseModel):
     """Body of POST /chat/stop — the `client_turn_id` sent with the turn."""
 
