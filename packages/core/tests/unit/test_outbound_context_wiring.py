@@ -30,6 +30,7 @@ def settings_with_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
         slack_bot_token = "xoxb-test"
         discord_bot_token = "discord-test"
         telegram_bot_token = "tg-test"
+        knowledge_chat_max_chars = 6000
 
     monkeypatch.setattr("openexecutive.config.get_settings", lambda: _S())
 
