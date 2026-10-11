@@ -854,7 +854,7 @@ def check_gmail(snap: Snapshot) -> SetupCheck:
                 "warn",
                 f"{summary} Still checking which Google tools loaded.",
                 "That takes a few minutes after a restart. If it doesn't finish, the connection "
-                f"to Google is stuck — {log_fix}",
+                f'to Google is stuck: look for "MCPGateway" in the API log, {_RESTART}',
                 last_activity=last_at,
             )
         if probe.missing is None:

@@ -1096,7 +1096,14 @@ def test_gmail_does_not_report_green_before_priming_answers(gmail_settings: Sett
     not_finished = check_gmail(make_snap(gmail_settings, mcp_gateway=_gmail_gateway(None)))
     assert not_finished.state == "warn"
     assert "Still checking which Google tools loaded." in not_finished.summary
-    assert "a few minutes after a restart" in (not_finished.fix or "")
+    # The whole sentence, not a substring: these branches append to a running
+    # summary, and an earlier draft read "...is stuck — The API log says why —"
+    # because a standalone sentence was glued into a clause. A substring
+    # assertion passed that; rendering the page is what caught it.
+    assert not_finished.fix == (
+        "That takes a few minutes after a restart. If it doesn't finish, the connection "
+        'to Google is stuck: look for "MCPGateway" in the API log, then restart the app.'
+    )
 
     failed = check_gmail(
         make_snap(gmail_settings, mcp_gateway=_gmail_gateway(PinnedToolsProbe(missing=None)))
