@@ -157,6 +157,11 @@ class Settings(BaseSettings):
     )
     knowledge_builtin_n_results: int = Field(5, alias="KNOWLEDGE_BUILTIN_N_RESULTS")
     knowledge_company_n_results: int = Field(3, alias="KNOWLEDGE_COMPANY_N_RESULTS")
+    # Total characters of knowledge excerpts a chat turn carries (web chat,
+    # Telegram, Discord, Google Chat). The closest matches are kept first.
+    # Every excerpt is re-sent on each model call of the turn, so a long tail
+    # of weak matches costs on every call. 0 = no cap.
+    knowledge_chat_max_chars: int = Field(6000, ge=0, alias="KNOWLEDGE_CHAT_MAX_CHARS")
     # A specialist's own retrieval (router._retrieve_for_call) takes fewer
     # chunks than the Executive's: it answers one narrow question. The company
     # count also caps each synced source (Notion, Drive, OneDrive, Confluence).

@@ -307,7 +307,7 @@ async def _process_and_reply(
             # already tells the model about this surface.
             origin_channel="google_chat",
         )
-        retrieved_context = retrieve(query=message_text)
+        retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
         episodic_context = format_for_prompt()
 
         chat_message = message_text

@@ -553,3 +553,88 @@ def test_history_window_moves_in_steps() -> None:
     changes = [i for i in range(1, len(firsts)) if firsts[i] != firsts[i - 1]]
     assert all(b - a >= 10 for a, b in zip(changes, changes[1:], strict=False))
     assert len(changes) == 4
+
+
+# --------------------------------------------------------------------- #
+# The turn's own message is cached on the first call
+# --------------------------------------------------------------------- #
+
+
+def _marked_text_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    return [
+        b for b in content
+        if isinstance(b, dict) and b.get("type") == "text"
+        and isinstance(b.get("cache_control"), dict)
+    ]
+
+
+def test_first_call_caches_the_turn_message() -> None:
+    """Otherwise the first call sends the turn's context uncached and the
+    second writes the same tokens to the cache: paid twice."""
+    provider = _scripted_three_iterations()
+    _run_loop(provider, system_blocks=_real_system_blocks())
+
+    first = provider.calls[0]
+    marked = _marked_text_blocks(first["messages"][-1])
+    assert len(marked) == 1
+    assert marked[0]["text"] == "do the thing"
+    assert marked[0]["cache_control"] == {"type": "ephemeral"}
+    assert _count_all_markers(first) == 4
+
+
+def test_turn_marker_gives_way_to_the_loop_marker() -> None:
+    provider = _scripted_three_iterations()
+    _run_loop(provider, system_blocks=_real_system_blocks())
+
+    for call in provider.calls[1:]:
+        question = call["messages"][0]
+        assert _marked_text_blocks(question) == []
+        assert len(_marked_tool_results(call["messages"])) == 1
+        assert _count_all_markers(call) == 4
+
+
+def test_turn_marker_with_history_keeps_ttls_in_order() -> None:
+    provider = _scripted_three_iterations()
+    _run_loop(provider, messages=_history_messages(), system_blocks=_real_system_blocks())
+
+    assert _ttls_in_wire_order(provider.calls[0]) == ["1h", "1h", "1h", "5m"]
+    assert _count_all_markers(provider.calls[0]) == 4
+
+
+def test_turn_marker_marks_the_last_text_of_a_typed_message() -> None:
+    from openexecutive.orchestrator.executive import _mark_turn_message
+
+    original = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "context"},
+            {"type": "image", "source": {"type": "base64", "data": "x"}},
+            {"type": "text", "text": "question"},
+        ],
+    }
+    messages = [original]
+    marked = _mark_turn_message(messages)
+    assert marked is messages[0] and marked is not original
+    assert [b.get("cache_control") for b in marked["content"]] == [
+        None, None, {"type": "ephemeral"},
+    ]
+    assert all("cache_control" not in b for b in original["content"])
+
+
+def test_turn_marker_skips_a_message_that_is_not_the_users() -> None:
+    from openexecutive.orchestrator.executive import _mark_turn_message
+
+    messages = [{"role": "assistant", "content": "hello"}]
+    assert _mark_turn_message(messages) is None
+    assert messages == [{"role": "assistant", "content": "hello"}]
+
+
+def test_no_turn_marker_when_caching_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    exec_ = Executive()
+    monkeypatch.setattr(exec_._settings, "enable_caching", False)
+    provider = _scripted_three_iterations()
+    _run_loop(provider, executive=exec_)
+    assert _marked_text_blocks(provider.calls[0]["messages"][-1]) == []

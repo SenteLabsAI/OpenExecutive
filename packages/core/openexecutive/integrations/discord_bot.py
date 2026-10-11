@@ -931,7 +931,7 @@ async def _handle_message(
             if is_dm and discord_user_id:
                 session.seen_channel_refs.add(("discord_dm", discord_user_id))
 
-            retrieved_context = retrieve(query=text)
+            retrieved_context = retrieve(query=text, max_chars=get_settings().knowledge_chat_max_chars)
             episodic_context = format_for_prompt(session_id=session_id)
 
             # Sender was already resolved at the roster gate above; reuse it

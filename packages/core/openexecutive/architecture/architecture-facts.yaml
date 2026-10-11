@@ -136,6 +136,11 @@ caching:
          history; with history the slot goes to the history marker (1h) on
          the newest non-empty history turn (normally the previous reply)
       4. newest tool_result (5m)       — the agent loop's intra-turn marker
+         (on the loop's first call, before any tool result, the slot marks
+         the message being answered instead: executive._mark_turn_message,
+         so the turn's context is written once and read back by later
+         calls rather than sent uncached and then written; it comes off
+         when the loop marker lands)
     The history marker (executive._apply_history_cache_marker, applied by
     the agent loop, never by _build_messages) is what lets the next message
     read the conversation back. History turns are rebuilt from plain text,
@@ -1478,6 +1483,14 @@ knowledge:
     shared one answers name() == "default" with an empty config. It must NOT
     be a DefaultEmbeddingFunction instance: Collection._embed ignores those
     and embeds with a fresh default rebuilt from the collection config.
+  chat_excerpt_budget: |
+    The chat surfaces (web chat, Telegram, Discord, Google Chat) pass
+    max_chars=KNOWLEDGE_CHAT_MAX_CHARS (default 6000, 0 = no cap) to
+    retrieve(). retriever._fit_to_budget keeps the closest chunks across every
+    collection until the cap, skipping one that would overflow so a shorter
+    weaker one can still fit, and always keeps the closest. Each excerpt is
+    re-sent on every model call of the turn, so the tail of weak matches cost
+    on every call. Workflows and specialists keep their own counts, uncapped.
   distance_gates: |
     Two gates. KNOWLEDGE_DISTANCE_THRESHOLD (default 0.55) is the shared one,
     applied to COMPANY, NOTION_WIKI and RECENT_RESEARCH.

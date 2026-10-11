@@ -519,9 +519,64 @@ def _apply_history_cache_marker(
     return new_system, new_messages
 
 
+# The turn's own message (the question plus this turn's context: facts,
+# memory, knowledge excerpts) is cached for the loop's first call only. It is
+# the slot the loop marker takes from the second call on, so the request
+# never carries more than the API's four breakpoints.
+_TURN_CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
+
+
+def _mark_turn_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Cache the message being answered on the loop's first call, in place.
+
+    Without it the first call sends the turn's context uncached, and the
+    second call (after the first tool use, which is most turns) writes the
+    same tokens to the cache: the context is paid twice. With it the first
+    call writes it once and every later call reads it back.
+
+    Replaces the last message with a marked copy (the caller owns the
+    original dict) and returns that copy, so ``_clear_turn_marker`` can take
+    the marker off once the loop marker moves past it. Returns None when
+    there is nothing to mark: no messages, the last one is not the user's,
+    or it carries no text.
+    """
+    if not messages or messages[-1].get("role") != "user":
+        return None
+    content = messages[-1].get("content")
+    if isinstance(content, str):
+        if not content:
+            return None
+        marked: list[dict[str, Any]] = [
+            {"type": "text", "text": content, "cache_control": dict(_TURN_CACHE_CONTROL)}
+        ]
+    elif isinstance(content, list):
+        texts = [
+            j for j, b in enumerate(content)
+            if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+        ]
+        if not texts:
+            return None
+        marked = [dict(b) if isinstance(b, dict) else b for b in content]
+        marked[texts[-1]]["cache_control"] = dict(_TURN_CACHE_CONTROL)
+    else:
+        return None
+    message = {**messages[-1], "content": marked}
+    messages[-1] = message
+    return message
+
+
+def _clear_turn_marker(message: dict[str, Any] | None) -> None:
+    """Take ``_mark_turn_message``'s marker off its copy, in place."""
+    if message is None:
+        return
+    for block in message.get("content") or []:
+        if isinstance(block, dict):
+            block.pop("cache_control", None)
+
+
 def _apply_loop_cache_marker(
     messages: list[dict[str, Any]], start: int = 0
-) -> None:
+) -> bool:
     """Move the agent loop's intra-turn cache breakpoint to the newest
     tool result, in place.
 
@@ -578,6 +633,7 @@ def _apply_loop_cache_marker(
                 markable.append(block)
     if markable:
         markable[-1]["cache_control"] = {"type": "ephemeral"}
+    return bool(markable)
 
 
 def _tool_error_result(tool_name: str, exc: BaseException) -> str:
@@ -2055,6 +2111,9 @@ class Executive:
             system_blocks, current_messages = _apply_history_cache_marker(
                 system_blocks, current_messages
             )
+        turn_marked = (
+            _mark_turn_message(current_messages) if self._settings.enable_caching else None
+        )
         # Tool calls this turn's scripts have made, in all and per own tool
         # (settings.chat_script_max_calls, step_script.CHAT_OWN_TOOL_CAPS).
         script_counts: dict[str, int] = {}
@@ -3076,7 +3135,9 @@ class Executive:
             # is a shallow copy, so anything at a lower index is still owned
             # by the caller and must not be mutated.
             if self._settings.enable_caching:
-                _apply_loop_cache_marker(current_messages, caller_message_count)
+                if _apply_loop_cache_marker(current_messages, caller_message_count):
+                    _clear_turn_marker(turn_marked)
+                    turn_marked = None
 
         logger.warning("max_iterations=%d reached — returning partial result", max_iterations)
         yield last_full_text or "I was unable to complete the analysis. Please try again."
