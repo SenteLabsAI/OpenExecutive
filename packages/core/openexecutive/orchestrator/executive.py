@@ -3134,10 +3134,11 @@ class Executive:
             # Bounded to the messages this loop appended: current_messages
             # is a shallow copy, so anything at a lower index is still owned
             # by the caller and must not be mutated.
-            if self._settings.enable_caching:
-                if _apply_loop_cache_marker(current_messages, caller_message_count):
-                    _clear_turn_marker(turn_marked)
-                    turn_marked = None
+            if self._settings.enable_caching and _apply_loop_cache_marker(
+                current_messages, caller_message_count
+            ):
+                _clear_turn_marker(turn_marked)
+                turn_marked = None
 
         logger.warning("max_iterations=%d reached — returning partial result", max_iterations)
         yield last_full_text or "I was unable to complete the analysis. Please try again."
