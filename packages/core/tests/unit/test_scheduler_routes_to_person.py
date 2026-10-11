@@ -132,12 +132,17 @@ def test_propose_only_creates_alert_no_dispatch() -> None:
 def test_propose_only_outside_window_reschedules() -> None:
     dept_store.seed_default_departments()
     dept_store.update_department("finance", authority_level=AuthorityLevel.PROPOSE_ONLY)
-    # Approver with WILDCARD — gate finds them. They're only available Sundays.
+    # Approver with WILDCARD — gate finds them. They're only available one day a week.
     approver_id = people_store.upsert_person(full_name="Sarah", slack_user_id="U_CFO")
     people_store.set_authority_scope(approver_id, [AuthorityScope.WILDCARD])
-    # Available only on Sundays 09-10 UTC; today is Tuesday (weekday 1).
+    # Available only tomorrow 09-10 UTC, so the approver is outside the window
+    # whatever the clock says. _execute_action reads datetime.now(UTC) itself,
+    # so a fixed weekday made this fail for the hour it happened to name.
+    tomorrow = (_now().weekday() + 1) % 7
     people_store.set_availability(approver_id, [
-        AvailabilityWindow(weekdays=[6], start_local="09:00", end_local="10:00", timezone="UTC")
+        AvailabilityWindow(
+            weekdays=[tomorrow], start_local="09:00", end_local="10:00", timezone="UTC"
+        )
     ])
     dept_registry.invalidate()
     people_registry.invalidate()
@@ -255,10 +260,13 @@ def test_escalate_is_not_deferred_to_approver_window() -> None:
     dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
     approver_id = people_store.upsert_person(full_name="Sarah", slack_user_id="U_GC")
     people_store.set_authority_scope(approver_id, [AuthorityScope.WILDCARD])
-    # Available only on Sundays 09-10 UTC. Whether or not that is now, an
-    # escalation must not be rescheduled to the approver's next window.
+    # Available only tomorrow 09-10 UTC, so the approver is reliably off-hours
+    # now; an escalation must still not be rescheduled to their next window.
+    tomorrow = (_now().weekday() + 1) % 7
     people_store.set_availability(approver_id, [
-        AvailabilityWindow(weekdays=[6], start_local="09:00", end_local="10:00", timezone="UTC")
+        AvailabilityWindow(
+            weekdays=[tomorrow], start_local="09:00", end_local="10:00", timezone="UTC"
+        )
     ])
     dept_registry.invalidate()
     people_registry.invalidate()
