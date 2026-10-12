@@ -18,6 +18,7 @@ def test_telegram_messages_turn_previews_off(monkeypatch: pytest.MonkeyPatch) ->
 
     class Resp:
         is_error = False
+        status_code = 200
 
         def json(self) -> dict[str, Any]:
             return {"result": {"message_id": 7}}
