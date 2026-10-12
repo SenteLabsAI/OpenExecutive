@@ -264,6 +264,12 @@ def test_list_sessions_previews_the_last_message(db: Path) -> None:
     assert by_id["p3"]["preview"] is None
 
 
+def test_list_sessions_preview_keeps_underscores_and_hashes_in_words(db: Path) -> None:
+    create_session("w1", "Files", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    save_message("w1", "assistant", "## Next\n> Check the _sales_report_q3.csv_ and the C# port.", db_path=db)
+    assert list_sessions(OWNER, db_path=db)[0]["preview"] == "Next Check the sales_report_q3.csv and the C# port."
+
+
 def test_list_sessions_preview_is_cut_at_a_word(db: Path) -> None:
     create_session("long", "Long", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
     save_message("long", "assistant", "word " * 60, db_path=db)

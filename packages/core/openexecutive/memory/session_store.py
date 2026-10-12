@@ -220,8 +220,13 @@ def list_sessions(
 _PREVIEW_CHARS = 120
 # Ids per IN (...) query, under SQLite's bound-parameter limit.
 _IN_BATCH = 500
-# Markdown's marks, which read as noise in a one-line preview.
-_MARKDOWN_MARKS = re.compile(r"[*_`#>|]+|\[([^\]]*)\]\([^)]*\)")
+# Markdown's marks, which read as noise in a one-line preview: a link keeps
+# its text; emphasis, code ticks, and a heading's or quote's lead go. An
+# underscore inside a word (snake_case) and a # mid-line (C#) stay.
+_MARKDOWN_MARKS = re.compile(
+    r"\[([^\]]*)\]\([^)]*\)|`+|\*+|(?<!\w)_+|_+(?!\w)|^[ \t]*#+[ \t]|^[ \t]*>[ \t]?",
+    re.MULTILINE,
+)
 
 
 def _preview(role: str | None, content: str | None) -> str | None:
