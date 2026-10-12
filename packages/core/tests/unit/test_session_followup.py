@@ -243,6 +243,7 @@ async def test_generator_turns_copied_offer_into_users_request(monkeypatch: pyte
         ("Would you like me to send your notes to the board?", "Send my notes to the board."),
         ("Shall I check if you have time Friday?", "Check if I have time Friday."),
         ("Want me to tell Sam you're out next week?", "Tell Sam I'm out next week."),
+        ("Want me to tell Sam you asked about the budget?", "Tell Sam I asked about the budget."),
     ],
 )
 def test_offers_become_requests(offer: str, expected: str) -> None:

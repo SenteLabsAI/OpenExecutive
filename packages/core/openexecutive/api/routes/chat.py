@@ -2147,10 +2147,16 @@ _PRONOUN_RE = re.compile(
 )
 
 
-# "you" opening a clause is a subject: "check if you're free" is handled
-# above, but "check if you have time" needs "I", not "me".
+# "you" opening a clause is a subject: "check if you have time" needs "I",
+# not "me".
 _SUBJECT_YOU_RE = re.compile(
     r"\b(if|when|whether|that|so|until|before|after|while)\s+you\b(?!')",
+    re.IGNORECASE,
+)
+# ...and so is "you" before a verb: "tell Sam you asked" -> "I asked".
+_YOU_BEFORE_VERB_RE = re.compile(
+    r"\byou(?=\s+(?:have|had|want|wanted|need|needed|asked|said|mentioned|"
+    r"can|could|will|would|should|might|plan|planned|think|thought)\b)",
     re.IGNORECASE,
 )
 
@@ -2177,6 +2183,7 @@ def as_user_request(text: str, *, last_executive_reply: str = "") -> str:
     if not rest:
         return text
     rest = _SUBJECT_YOU_RE.sub(lambda p: p.group(1) + " I", rest)
+    rest = _YOU_BEFORE_VERB_RE.sub("I", rest)
     rest = _PRONOUN_RE.sub(lambda p: _PRONOUN_FLIPS[p.group(1).lower()], rest)
     rest = rest.rstrip(" ?.!")
     if not rest:
