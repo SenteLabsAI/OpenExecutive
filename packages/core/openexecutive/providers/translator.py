@@ -215,6 +215,23 @@ def _request_caches_assistant_text(messages: list[Any]) -> bool:
     return False
 
 
+def _request_caches_messages(messages: list[Any]) -> bool:
+    """True iff any block of any message in the request carries a marker.
+
+    Sets one shape for the text of every user turn sent as blocks, as the two
+    checks above do for tool results and replies. The Executive caches the
+    question being answered on the loop's first call
+    (``executive._mark_turn_message``) and takes that marker off once the
+    loop marker moves to the first tool result. If the shape followed the
+    marker, the question would go out typed on the first call and flattened
+    on the second, and the second call could not read what the first wrote.
+    """
+    for m in messages:
+        if isinstance(m, dict) and _any_block_has_cache_control(m.get("content")):
+            return True
+    return False
+
+
 def _anthropic_messages_to_openai(messages: list[Any]) -> list[dict[str, Any]]:
     """Convert Anthropic ``messages`` to OpenAI chat-completions ``messages``.
 
@@ -226,11 +243,12 @@ def _anthropic_messages_to_openai(messages: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     typed_tool_results = _request_caches_tool_results(messages)
     typed_assistant_text = _request_caches_assistant_text(messages)
+    typed_user_text = _request_caches_messages(messages)
     for m in messages:
         role = m.get("role")
         content = m.get("content")
         if role == "user":
-            out.extend(_user_content_to_openai(content, typed_tool_results))
+            out.extend(_user_content_to_openai(content, typed_tool_results, typed_user_text))
         elif role == "assistant":
             out.append(_assistant_content_to_openai(content, typed_assistant_text))
         else:
@@ -254,7 +272,7 @@ def _content_to_text(content: Any) -> str:
 
 
 def _user_content_to_openai(
-    content: Any, typed_tool_results: bool = False
+    content: Any, typed_tool_results: bool = False, typed_text: bool = False
 ) -> list[dict[str, Any]]:
     """User-turn content: emit one user message, plus one ``tool`` role message
     per Anthropic ``tool_result`` block so the OpenAI chat history threads
@@ -263,8 +281,11 @@ def _user_content_to_openai(
     When any text block in ``content`` carries ``cache_control`` (used for
     Anthropic's rolling user-turn cache), the user message's ``content``
     stays as a typed-block array so the cache hint survives translation to
-    OpenRouter. Otherwise we flatten to a plain string — broader upstream
+    OpenRouter. So does ``typed_text`` (a marker anywhere in the request, see
+    ``_request_caches_messages``), so the text keeps one shape while the
+    markers move. Otherwise we flatten to a plain string — broader upstream
     compatibility for non-Anthropic routing and slightly smaller wire bytes.
+    A turn sent as a plain string stays one either way.
 
     A base64 PDF ``document`` block becomes an OpenAI ``file`` part (see
     ``_file_part``) and forces the typed-array form, text and files in their
@@ -279,7 +300,7 @@ def _user_content_to_openai(
     text_blocks: list[dict[str, Any]] = []  # populated when cache_control present
     text_chunks: list[str] = []  # populated for the flat-string fallback
     tool_messages: list[dict[str, Any]] = []
-    preserve_typed = _any_block_has_cache_control(content)
+    preserve_typed = typed_text or _any_block_has_cache_control(content)
     # Text and PDF parts in their original order, used only when a PDF is
     # present: a file part cannot ride in the flat-string form.
     ordered_parts: list[dict[str, Any]] = []

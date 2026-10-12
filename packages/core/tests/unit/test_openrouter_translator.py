@@ -1389,3 +1389,64 @@ def test_assistant_turns_stay_flat_without_a_history_marker() -> None:
     out = _anthropic_messages_to_openai(_history_request(marked=False))
     assert out[1]["content"] == "first answer"
     assert out[3]["content"] == "second answer"
+
+
+# --- the question being answered, cached on the loop's first call ------------
+
+
+def _strip_markers(message: dict) -> dict:
+    out = dict(message)
+    if isinstance(out.get("content"), list):
+        out["content"] = [
+            {k: v for k, v in blk.items() if k != "cache_control"} for blk in out["content"]
+        ]
+    return out
+
+
+def test_turn_message_keeps_its_shape_once_the_loop_marker_moves() -> None:
+    """The loop's first call caches the question; from the second call the
+    marker sits on the newest tool result instead. The question must go out
+    in the same shape on both calls, or the second call cannot read the first
+    call's write and pays for the question again."""
+    from openexecutive.orchestrator.executive import (
+        _apply_loop_cache_marker,
+        _clear_turn_marker,
+        _mark_turn_message,
+    )
+    from openexecutive.providers.translator import _anthropic_messages_to_openai
+
+    messages: list[dict] = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+        {"role": "user", "content": "facts and excerpts\n\nwhat did we pay for water?"},
+    ]
+    caller_count = len(messages)
+    turn = _mark_turn_message(messages)
+    first = _anthropic_messages_to_openai(messages)
+
+    messages.append(
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "search", "input": {}}]}
+    )
+    messages.append(
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "found it"}]}
+    )
+    assert _apply_loop_cache_marker(messages, caller_count)
+    _clear_turn_marker(turn)
+    second = _anthropic_messages_to_openai(messages)
+
+    assert isinstance(first[2]["content"], list)
+    assert "cache_control" in first[2]["content"][-1]
+    assert _strip_markers(first[2]) == _strip_markers(second[2]), (
+        "the question changed shape between the loop's first and second call"
+    )
+    # History turns sent as strings stay strings.
+    assert second[0]["content"] == "earlier question"
+
+
+def test_user_text_stays_flat_without_any_marker() -> None:
+    from openexecutive.providers.translator import _anthropic_messages_to_openai
+
+    out = _anthropic_messages_to_openai(
+        [{"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}]
+    )
+    assert out == [{"role": "user", "content": "a\n\nb"}]
