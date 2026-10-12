@@ -1214,7 +1214,7 @@ async def create_slack_app():
 
         from openexecutive.integrations.slack_events import HttpEventsListener
 
-        return app, HttpEventsListener(AsyncSlackRequestHandler(app))
+        return app, HttpEventsListener(AsyncSlackRequestHandler(app), settings.slack_signing_secret or "")
 
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 

@@ -7329,9 +7329,13 @@ integrations:
     secret and an ``AsyncSlackRequestHandler``, and Slack posts events to
     ``POST /webhook/slack`` (integrations.slack_events, mounted at import so
     main.py never imports slack_bolt; it answers 503 until the lifespan
-    sets the handler). Bolt's request verification refuses a missing,
-    wrong or more-than-five-minutes-old signature before any middleware
-    or listener runs, answers url_verification, and acks at once while
+    sets the handler). The route itself checks the v0 signature (constant
+    time, timestamp within 300 s, ASCII digits only, body capped at 1 MB)
+    BEFORE handing the request to Bolt, because Bolt logs the whole body of
+    a request that fails its own check (at INFO, which the process runs at)
+    and raises on an unparseable body or timestamp: unsigned traffic would
+    otherwise write anything into the log. A signed body Bolt can't parse is
+    400. Bolt then verifies again, answers url_verification, and acks at once while
     the listener runs (Slack resends an event not acked within 3 s). The
     route is in _UNAUTHENTICATED_PATHS and passes the local-login Host
     gate as a self-verifying webhook. In BOTH modes a global middleware

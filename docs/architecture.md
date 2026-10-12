@@ -504,7 +504,7 @@ Async Bolt app in socket mode, embedded in the FastAPI lifespan (no separate pro
 
 Required env vars: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
 
-Or events over HTTP: with `SLACK_SIGNING_SECRET` set and no `SLACK_APP_TOKEN`, the same Bolt app takes Slack's Events API at `POST /webhook/slack` (`integrations/slack_events.py`). Bolt checks each request's signature (and refuses one older than five minutes) before any listener runs, answers Slack's URL check, and acknowledges at once. The app subscribes to `app_mention`, `message.im`, `message.channels` and `message.groups`, with the scopes `app_mentions:read`, `im:history`, `channels:history` and `groups:history`. In either mode a repeated event id is dropped (Slack resends an event it thinks went unacknowledged) and so is an event delivered for another workspace.
+Or events over HTTP: with `SLACK_SIGNING_SECRET` set and no `SLACK_APP_TOKEN`, the same Bolt app takes Slack's Events API at `POST /webhook/slack` (`integrations/slack_events.py`). The route checks each request's signature (and refuses one older than five minutes) before Bolt or any listener sees it, answers Slack's URL check, and acknowledges at once. The app subscribes to `app_mention`, `message.im`, `message.channels` and `message.groups`, with the scopes `app_mentions:read`, `im:history`, `channels:history` and `groups:history`. In either mode a repeated event id is dropped (Slack resends an event it thinks went unacknowledged) and so is an event delivered for another workspace.
 
 Files a rostered sender shares (PDFs, Word, spreadsheets, text, images) are read into the turn — scanned PDFs converted to text — which needs the bot's **`files:read`** scope. Without it the message still gets a reply, but its files come back unreadable.
 

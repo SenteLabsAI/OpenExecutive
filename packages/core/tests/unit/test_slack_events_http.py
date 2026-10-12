@@ -46,7 +46,7 @@ def _no_slack(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(slack_bot, "_bot_user_id", None)
     monkeypatch.setattr(slack_bot, "_bot_id_last_attempt", None)
-    monkeypatch.setattr(slack_events, "_request_handler", None)
+    monkeypatch.setattr(slack_events, "_listener", None)
 
 
 def _signed(body: dict[str, Any], *, secret: str = SECRET, age_s: int = 0) -> tuple[bytes, dict[str, str]]:
@@ -101,6 +101,49 @@ def test_unsigned_request_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 401
 
 
+def test_an_unsigned_body_never_reaches_the_log(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """Bolt logs the whole body of a request that fails its signature check;
+    the route refuses it before Bolt sees it."""
+    import logging
+
+    _settings(monkeypatch)
+    caplog.set_level(logging.DEBUG)
+    with TestClient(create_app()) as client:
+        res = client.post(
+            "/webhook/slack",
+            content=b"x=1\nFORGED_LINE the secret is hunter2",
+            headers={"x-slack-request-timestamp": str(int(time.time())), "x-slack-signature": "v0=00"},
+        )
+    assert res.status_code == 401
+    assert "FORGED_LINE" not in caplog.text
+
+
+@pytest.mark.parametrize("timestamp", ["abc", "\u00b2", "9" * 5000])
+def test_an_unreadable_timestamp_is_a_bad_signature(monkeypatch: pytest.MonkeyPatch, timestamp: str) -> None:
+    _settings(monkeypatch)
+    assert not slack_events.signature_valid(SECRET, b"{}", timestamp, "v0=00")
+    if timestamp.isascii():
+        with TestClient(create_app()) as client:
+            res = client.post(
+                "/webhook/slack", content=b"{}",
+                headers={"x-slack-request-timestamp": timestamp, "x-slack-signature": "v0=00"},
+            )
+        assert res.status_code == 401
+
+
+def test_a_signed_body_that_is_not_json_is_a_bad_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch)
+    with TestClient(create_app()) as client:
+        raw = b"{"
+        ts = str(int(time.time()))
+        digest = hmac.new(SECRET.encode(), f"v0:{ts}:".encode() + raw, hashlib.sha256).hexdigest()
+        res = client.post(
+            "/webhook/slack", content=raw,
+            headers={"content-type": "application/json", "x-slack-request-timestamp": ts, "x-slack-signature": f"v0={digest}"},
+        )
+    assert res.status_code == 400
+
+
 def test_route_is_off_without_a_signing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     _settings(monkeypatch, slack_signing_secret=None)
     with TestClient(create_app()) as client:
@@ -127,8 +170,8 @@ def test_socket_mode_wins_when_both_are_set(monkeypatch: pytest.MonkeyPatch) -> 
 def test_route_closes_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     _settings(monkeypatch)
     with TestClient(create_app()):
-        assert slack_events._request_handler is not None
-    assert slack_events._request_handler is None
+        assert slack_events._listener is not None
+    assert slack_events._listener is None
 
 
 async def _app_with_probe() -> tuple[Any, AsyncMock]:
