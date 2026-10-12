@@ -143,6 +143,7 @@ from openexecutive.orchestrator.schedule_tools import (
 )
 from openexecutive.orchestrator.session import Session
 from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS, SKILL_TOOLS
+from openexecutive.orchestrator.teammate_mail import guard_call_tool
 from openexecutive.orchestrator.turn_inbox import (
     TurnInbox,
     render_added_messages,
@@ -2724,9 +2725,11 @@ class Executive:
                     )
 
             if mcp_tool_uses and self._mcp_gateway is not None:
+                # A teammate's mail with the Executive stays theirs: every
+                # mailbox read the model makes is filtered (teammate_mail).
                 _mcp_dispatch = {
                     "search_tools": self._mcp_gateway.search_tools,
-                    "call_tool": (
+                    "call_tool": guard_call_tool(
                         take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                         if leading
                         else self._mcp_gateway.call_tool
@@ -2815,7 +2818,7 @@ class Executive:
                 # matters: the gateway's own gates (discovery, deny-list,
                 # recipients), Take the lead's gate on an unattended run, and
                 # the same chip and audit row, as each call happens.
-                script_call = (
+                script_call = guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
                     else self._mcp_gateway.call_tool
