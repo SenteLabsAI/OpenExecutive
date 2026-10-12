@@ -198,7 +198,9 @@ def list_sessions(
             batch = last_ids[at:at + _IN_BATCH]
             marks = ",".join("?" * len(batch))
             for msg in conn.execute(
-                f"SELECT id, role, content FROM chat_messages WHERE id IN ({marks})", batch
+                "SELECT id, role, substr(content, 1, ?) AS content FROM chat_messages "
+                f"WHERE id IN ({marks})",
+                [_PREVIEW_READ_CHARS, *batch],
             ):
                 last[msg["id"]] = msg
     # A chat-app conversation started with /new has a row before it has a
@@ -218,6 +220,9 @@ def list_sessions(
 
 
 _PREVIEW_CHARS = 120
+# How much of a last message the list reads: enough to fill the preview once
+# Markdown marks are gone, without loading a long answer in full per chat.
+_PREVIEW_READ_CHARS = 2000
 # Ids per IN (...) query, under SQLite's bound-parameter limit.
 _IN_BATCH = 500
 # Markdown's marks, which read as noise in a one-line preview: a link keeps

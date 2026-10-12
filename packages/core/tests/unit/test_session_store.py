@@ -276,3 +276,24 @@ def test_list_sessions_preview_is_cut_at_a_word(db: Path) -> None:
     preview = list_sessions(OWNER, db_path=db)[0]["preview"]
     assert preview.endswith("word…")
     assert len(preview) <= 121
+
+
+def test_list_sessions_previews_every_chat_across_lookup_batches(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import openexecutive.memory.session_store as store
+
+    monkeypatch.setattr(store, "_IN_BATCH", 2)
+    for n in range(5):
+        create_session(f"b{n}", f"Chat {n}", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+        save_message(f"b{n}", "assistant", f"Answer {n}", db_path=db)
+    previews = {s["session_id"]: s["preview"] for s in list_sessions(OWNER, db_path=db)}
+    assert previews == {f"b{n}": f"Answer {n}" for n in range(5)}
+
+
+def test_list_sessions_preview_reads_only_the_start_of_a_long_message(db: Path) -> None:
+    create_session("big", "Big", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    save_message("big", "assistant", "Summary first. " + "x" * 500_000, db_path=db)
+    preview = list_sessions(OWNER, db_path=db)[0]["preview"]
+    assert preview.startswith("Summary first.")
+    assert len(preview) <= 121
