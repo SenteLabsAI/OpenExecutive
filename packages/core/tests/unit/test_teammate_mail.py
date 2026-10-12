@@ -334,10 +334,46 @@ def test_the_owner_reading_outside_mail_keeps_nothing_private(roster: SimpleName
     mark.assert_not_called()
 
 
-def test_an_unattended_run_is_untouched(roster: SimpleNamespace) -> None:
-    roster.session.unattended = True
+def test_a_background_run_reads_as_the_principal(roster: SimpleNamespace) -> None:
+    session = SimpleNamespace(unattended=True, caller_person_id=None)
+    assert tm._reader_id(session) == roster.owner
+
+
+def test_a_step_outside_any_session_sees_no_teammates_mail(roster: SimpleNamespace) -> None:
+    current_session.set(None)
     text = _message(TEAMMATE, EXEC)
-    assert _run(FakeMailbox({READ: text}), READ, message_id="never-seen") == text
+    out = asyncio.run(tm.guard_in_turn(FakeMailbox({READ: text}))(
+        {"name": READ, "arguments": {"message_id": "m1"}}
+    ))
+    assert json.loads(out)["withheld"] is True
+    vendor = _message(VENDOR, EXEC)
+    out = asyncio.run(tm.guard_in_turn(FakeMailbox({READ: vendor}))(
+        {"name": READ, "arguments": {"message_id": "m1"}}
+    ))
+    assert out == vendor
+
+
+@pytest.mark.parametrize("arguments", [
+    {"body": {"conditions": {"fromAddresses": [{"emailAddress": {"address": TEAMMATE}}]}}},
+    {"body": {"actions": {"forwardTo": [{"emailAddress": {"address": OWNER}}]}}},
+])
+def test_an_outlook_rule_that_could_pass_on_a_teammates_mail_is_refused(
+    roster: SimpleNamespace, arguments: dict[str, Any],
+) -> None:
+    mailbox = FakeMailbox({})
+    with _reader(roster.owner):
+        out = _run(mailbox, "microsoft_365__create-mail-rule", **arguments)
+    assert "rule" in json.loads(out)["error"] and mailbox.calls == []
+
+
+def test_the_rest_of_the_turn_is_kept_to_the_teammate(roster: SimpleNamespace) -> None:
+    roster.session.session_id = "s-ben"
+    tm.allow_mail_ids(roster.session, "m1")
+    pinned = SimpleNamespace(person_id=roster.ben, touched_mail=False)
+    with _reader(roster.ben), patch("openexecutive.memory.session_store.mark_mail_private"), \
+            patch("openexecutive.delegation.settings.turn_delegation", lambda _s: pinned):
+        _run(FakeMailbox({READ: _message(TEAMMATE, EXEC)}), READ, message_id="m1")
+    assert pinned.touched_mail is True
 
 
 def test_other_tools_pass(roster: SimpleNamespace) -> None:

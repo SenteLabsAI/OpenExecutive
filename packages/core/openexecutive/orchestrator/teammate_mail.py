@@ -35,9 +35,12 @@ surface that proved who they are, or the teammate whose own email the turn
 is answering when Gmail authenticated it; on any other turn every
 teammate's mail is left out. A conversation in which a teammate other than
 the principal was shown their own mail becomes theirs alone, as Act as me's
-do (``session_store.mark_mail_private``). An
-unattended run, and the internal callers that reach the gateway directly
-(the email poller, the brief), are unaffected. Fails closed: when the roster
+do (``session_store.mark_mail_private``), and so do the rest of that turn's
+audit rows. A background run the model drives (a follow-up, the reflection)
+reads as the principal it reports to; a workflow step outside any session
+reads as nobody. An Outlook inbox rule that forwards, or names another
+teammate, is refused. The internal callers that reach the gateway directly
+(the email poller, the brief) are unaffected. Fails closed: when the roster
 can't be read, the call is refused.
 """
 from __future__ import annotations
@@ -110,6 +113,11 @@ SEARCH_REFUSED_NOTE = (
     "with a search or filter instead."
 )
 ROSTER_NOTE = "{tool} was not run: the roster could not be read. Try again."
+RULE_NOTE = (
+    "{tool} was not run: a mailbox rule that forwards mail, or names another "
+    "teammate, could pass on a teammate's own mail with the Executive, which "
+    "is private to them."
+)
 QUERY_NOTE = (
     "{tool} was not run: close every quote and bracket in the query and try again."
 )
@@ -127,6 +135,9 @@ class _Sides:
     reader_id: int | None = None
     reader_is_principal: bool = False
     seen: set[str] = field(default_factory=set)
+    # Off only outside any session (a scheduled workflow step), which has
+    # nowhere to keep what it was shown; its searches and reads stay filtered.
+    gate_ids: bool = True
 
     @property
     def key(self) -> str:
@@ -202,6 +213,11 @@ def _reader_id(session: Any) -> int | None:
     from openexecutive.people.store import find_principal_person, get_person
 
     caller = getattr(session, "caller_person_id", None)
+    if getattr(session, "unattended", False) is True:
+        # A background run (a follow-up, the reflection) works for the
+        # principal and reports to them: it reads as them.
+        principal = find_principal_person()
+        return principal.id if principal is not None else None
     if principal_speaking(session):
         if caller is not None:
             return int(caller)
@@ -242,6 +258,7 @@ def _sides(session: Any) -> _Sides | None:
         reader_id=reader_id,
         reader_is_principal=any(p.is_principal for p in reader),
         seen=seen if isinstance(seen, set) else set(),
+        gate_ids=session is not None,
     )
 
 
@@ -324,13 +341,19 @@ def _prepare(name: str, arguments: dict[str, Any], sides: _Sides) -> tuple[str |
                 "query": _gmail_query(str(arguments.get("query") or ""), sides),
                 "include_headers": True,
             }
-        if any(not sides.saw(i) for i in _gmail_ids(arguments)):
+        if sides.gate_ids and any(not sides.saw(i) for i in _gmail_ids(arguments)):
             return _refusal(UNSEEN_ID_NOTE.format(tool=name)), arguments
         return None, arguments
     tail = n[len(_M365_PREFIX):]
     if "search" in tail and "onedrive" not in tail:
         return _refusal(SEARCH_REFUSED_NOTE.format(tool=name)), arguments
-    if any(not sides.saw(i) for i in _m365_ids(arguments)):
+    if "rule" in tail or "mailbox_settings" in tail:
+        # An inbox rule or mailbox setting acts on mail still to come: one
+        # that forwards, or names another teammate, is refused.
+        text = json.dumps(arguments, ensure_ascii=False).lower()
+        if "forward" in text or "redirect" in text or any(a in sides.others for a in _addresses(text)):
+            return _refusal(RULE_NOTE.format(tool=name)), arguments
+    if sides.gate_ids and any(not sides.saw(i) for i in _m365_ids(arguments)):
         return _refusal(UNSEEN_ID_NOTE.format(tool=name)), arguments
     if tail in _M365_LIST_TOOLS or tail == "get_mail_message":
         return None, {
@@ -513,6 +536,13 @@ def _keep_private(session: Any, sides: _Sides) -> None:
         mark_mail_private(str(session_id), sides.reader_id, history_len=history_len(session))
     except Exception:
         logger.exception("teammate_mail: couldn't mark the conversation private")
+    # The rest of this turn's rows, its answer included, are theirs too.
+    from openexecutive.delegation.settings import turn_delegation
+
+    pinned = turn_delegation(session)
+    if pinned is not None and pinned.person_id in (None, sides.reader_id):
+        pinned.touched_mail = True
+        pinned.person_id = sides.reader_id
 
 
 def guard_call_tool(call: CallTool) -> CallTool:
@@ -530,8 +560,6 @@ def guard_call_tool(call: CallTool) -> CallTool:
         if not isinstance(name, str) or not is_mail_call(name, arguments):
             return await call(tool_input)
         session = current_session.get()
-        if session is not None and getattr(session, "unattended", False):
-            return await call(tool_input)
         sides = _sides(session)
         if sides is None:
             return _refusal(ROSTER_NOTE.format(tool=name))
@@ -557,15 +585,6 @@ def guard_call_tool(call: CallTool) -> CallTool:
 
 def guard_in_turn(call: CallTool) -> CallTool:
     """``guard_call_tool`` for a caller that runs both inside a chat turn and
-    on its own (a workflow step, the reflection pass): guarded while a
-    session is bound, as it is when the chat started it."""
-    from openexecutive.orchestrator.schedule_tools import current_session
-
-    guarded = guard_call_tool(call)
-
-    async def maybe(tool_input: dict[str, Any]) -> str:
-        if current_session.get() is None:
-            return await call(tool_input)
-        return await guarded(tool_input)
-
-    return maybe
+    on its own (a workflow step, the reflection pass). Outside a session the
+    reader is nobody: searches and reads leave every teammate's mail out."""
+    return guard_call_tool(call)
