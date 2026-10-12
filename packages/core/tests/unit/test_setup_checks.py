@@ -392,6 +392,20 @@ async def test_slack_states_after_the_token_works() -> None:
     assert not_listening.state == "warn"
 
 
+async def test_slack_events_over_http() -> None:
+    http_settings = make_settings(SLACK_BOT_TOKEN=SLACK_BOT, SLACK_SIGNING_SECRET="signing-secret-value")
+    ada = Person(id=1, full_name="Ada", slack_user_id="U1")
+    async with Recorder(slack_ok).client() as c:
+        not_started = await check_slack(make_snap(http_settings, people=[ada]), c)
+        # No connection to ask about: the handler only has to exist.
+        taking = await check_slack(
+            make_snap(http_settings, slack_handler=SimpleNamespace(mode="http"), people=[ada]), c
+        )
+    assert not_started.state == "error" and "didn't start" in not_started.summary
+    assert (taking.state, taking.summary) == ("ok", "Takes Slack events from Acme HQ at /webhook/slack.")
+    assert_no_secret(taking, SLACK_BOT, "signing-secret-value")
+
+
 async def test_slack_listening_without_its_own_identity_warns() -> None:
     snap = make_snap(
         slack_settings(),

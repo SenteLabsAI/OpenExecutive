@@ -60,6 +60,7 @@ from openexecutive.api.routes import (
     auth as auth_route,
 )
 from openexecutive.integrations.google_chat import router as google_chat_router
+from openexecutive.integrations.slack_events import router as slack_events_router
 from openexecutive.integrations.telegram_bot import router as telegram_router
 from openexecutive.utils.deployment import is_local_login, is_public_deployment
 
@@ -156,7 +157,7 @@ _configure_logging()
 # the /webhook/* routes are called by external services (Google, Telegram) and
 # carry their own verification.
 _UNAUTHENTICATED_PATHS: frozenset[str] = frozenset(
-    {"/health", "/webhook/telegram", "/webhook/google-chat"}
+    {"/health", "/webhook/telegram", "/webhook/google-chat", "/webhook/slack"}
 )
 
 
@@ -668,9 +669,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # only uvicorn + the UI, so Slack silently never listened unless someone
     # ran `python -m openexecutive.integrations.slack_bot` by hand (#131).
     #
-    # Requires BOTH tokens: the bot token authenticates the Web API calls,
-    # the app-level token opens the Socket Mode connection.
-    if settings.slack_bot_token and settings.slack_app_token:
+    # Needs the bot token (it authenticates the Web API calls) and a way to
+    # hear Slack: the app-level token opens the Socket Mode connection, or the
+    # signing secret lets Slack post events to /webhook/slack instead.
+    if settings.slack_bot_token and (settings.slack_app_token or settings.slack_signing_secret):
         _slack_log = logging.getLogger("openexecutive")
         try:
             # Imported inside the try, not above it: slack_bolt is itself
@@ -702,6 +704,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     _slack_log.error(
                         "Slack socket mode connect failed", exc_info=exc
                     )
+                elif getattr(slack_handler, "mode", None) == "http":
+                    _slack_log.info("Slack events accepted at /webhook/slack")
                 else:
                     _slack_log.info("Slack socket mode listener connected")
 
@@ -845,10 +849,11 @@ _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 def _webhook_verifies_its_caller(path: str) -> bool:
     """Whether this webhook authenticates its caller by itself. Google Chat
-    always checks the signed JWT; Telegram only when TELEGRAM_WEBHOOK_SECRET is
+    always checks the signed JWT and Slack its signature (the route answers
+    503 unless a signing secret is set); Telegram only when TELEGRAM_WEBHOOK_SECRET is
     set to a value Telegram can send — without it, it accepts anyone's
     update."""
-    if path == "/webhook/google-chat":
+    if path in ("/webhook/google-chat", "/webhook/slack"):
         return True
     if path == "/webhook/telegram":
         from openexecutive.config import get_settings
@@ -990,6 +995,7 @@ def create_app() -> FastAPI:
     app.include_router(watchlist.router, tags=["watchlist"])
     app.include_router(google_chat_router, tags=["google-chat"])
     app.include_router(telegram_router, tags=["telegram"])
+    app.include_router(slack_events_router, tags=["slack"])
     app.include_router(architecture.router, tags=["architecture"])
     app.include_router(guide.router, tags=["guide"])
     app.include_router(health.router, tags=["health"])

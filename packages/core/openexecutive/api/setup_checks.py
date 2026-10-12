@@ -486,7 +486,8 @@ async def check_slack(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             f"Copy the Bot User OAuth Token again from your Slack app's settings into .env, {_RESTART}",
         )
     workspace = _clip(str(body.get("team") or "your Slack workspace"))
-    if not app_token:
+    over_http = not app_token and bool((snap.settings.slack_signing_secret or "").strip())
+    if not app_token and not over_http:
         return _result(
             "slack",
             "warn",
@@ -500,6 +501,16 @@ async def check_slack(snap: Snapshot, http: httpx.AsyncClient) -> SetupCheck:
             "error",
             f"The tokens work for {workspace}, but the Slack listener didn't start.",
             f'The API log says why — look for "Failed to start Slack bot". Fix that, {_RESTART}',
+        )
+    if over_http:
+        # Slack posts to /webhook/slack; there is no connection to ask about,
+        # so the last message that arrived is the only sign it is delivering.
+        return _channel_ready(
+            snap,
+            "slack",
+            f"Takes Slack events from {workspace} at /webhook/slack.",
+            actor="slack",
+            roster=_Roster("slack_user_id", "Slack member ID"),
         )
     try:
         listening = bool(

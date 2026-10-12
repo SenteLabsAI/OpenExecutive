@@ -5,6 +5,7 @@ import contextlib
 import logging
 import re
 import time
+from collections import OrderedDict
 from typing import Any
 
 from openexecutive.audit.redaction import ERROR_DETAIL_LEN
@@ -45,6 +46,35 @@ _MAX_CONCURRENT_HANDLERS = 5
 # the per-session lock in discord_bot.py. Unbounded growth matches both of
 # those; a conversation's lock is a few dozen bytes.
 _session_locks: dict[str, asyncio.Lock] = {}
+
+# Event ids already taken. Slack sends an event again when it thinks the first
+# delivery wasn't acknowledged in time (and Socket Mode can redeliver on a
+# reconnect); without this the Executive would answer the same message twice.
+_SEEN_EVENTS_MAX = 2000
+_seen_event_ids: OrderedDict[str, None] = OrderedDict()
+
+
+def _first_delivery(event_id: str) -> bool:
+    """Record ``event_id``; False when it was already taken."""
+    if not event_id:
+        return True
+    if event_id in _seen_event_ids:
+        _seen_event_ids.move_to_end(event_id)
+        return False
+    _seen_event_ids[event_id] = None
+    while len(_seen_event_ids) > _SEEN_EVENTS_MAX:
+        _seen_event_ids.popitem(last=False)
+    return True
+
+
+def _delivered_to(body: dict) -> set[str]:
+    """The workspace ids an Events API payload says it was delivered for."""
+    teams = {str(body.get("team_id") or "")}
+    for authorization in body.get("authorizations") or []:
+        if isinstance(authorization, dict):
+            teams.add(str(authorization.get("team_id") or ""))
+    teams.discard("")
+    return teams
 
 
 def bot_user_id() -> str | None:
@@ -443,7 +473,9 @@ async def _read_shared_files(files: list[dict]) -> tuple[str, list[dict]]:
 
 
 async def create_slack_app():
-    """Build the async Bolt app and its Socket Mode handler.
+    """Build the async Bolt app and how it hears Slack: a Socket Mode handler
+    with ``SLACK_APP_TOKEN``, else an ``slack_events.HttpEventsListener`` that
+    takes Slack's events at ``POST /webhook/slack`` (``SLACK_SIGNING_SECRET``).
 
     Async Bolt (not the sync ``App``) so every handler awaits on the caller's
     event loop. That matters because the app is started from the FastAPI
@@ -457,19 +489,42 @@ async def create_slack_app():
     Imports stay deferred inside the factory so the module imports cleanly
     where slack_bolt is absent — the helper unit tests rely on that.
     """
-    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_bolt.async_app import AsyncApp
 
     from openexecutive.config import get_settings
 
     settings = get_settings()
 
-    if not settings.slack_bot_token or not settings.slack_app_token:
+    if not settings.slack_bot_token or not (
+        settings.slack_app_token or settings.slack_signing_secret
+    ):
         raise RuntimeError(
-            "SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set to run the Slack bot"
+            "SLACK_BOT_TOKEN and SLACK_APP_TOKEN (Socket Mode) or SLACK_SIGNING_SECRET "
+            "(events over HTTP) must be set to run the Slack bot"
         )
+    # Socket Mode wins when both are set: it needs no public address.
+    over_http = not settings.slack_app_token
 
-    app = AsyncApp(token=settings.slack_bot_token)
+    # In HTTP mode Bolt checks every request's signature with the signing
+    # secret before any middleware or listener below runs.
+    app = AsyncApp(
+        token=settings.slack_bot_token,
+        signing_secret=settings.slack_signing_secret if over_http else None,
+        request_verification_enabled=over_http,
+    )
+    _seen_event_ids.clear()
+
+    @app.middleware
+    async def _once_per_event_from_this_workspace(body: dict, context, ack, next) -> Any:
+        if body.get("type") == "event_callback":
+            own_team = str(getattr(context.authorize_result, "team_id", None) or "")
+            if own_team and own_team not in _delivered_to(body):
+                logger.warning("Slack: dropped an event delivered for another workspace")
+                return await ack()
+            if not _first_delivery(str(body.get("event_id") or "")):
+                logger.info("Slack: dropped a repeat delivery of event %s", body.get("event_id"))
+                return await ack()
+        return await next()
 
     # Resolve and cache the bot's own user_id at startup. Failure here
     # disables thread auto-continuation until a later retry succeeds (see
@@ -1153,6 +1208,15 @@ async def create_slack_app():
     from openexecutive.integrations.roster_intake import register_replayer
 
     register_replayer("slack", _replay_held)
+
+    if over_http:
+        from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
+
+        from openexecutive.integrations.slack_events import HttpEventsListener
+
+        return app, HttpEventsListener(AsyncSlackRequestHandler(app))
+
+    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
     handler = AsyncSocketModeHandler(app, settings.slack_app_token)
     return app, handler

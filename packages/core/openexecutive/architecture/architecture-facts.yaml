@@ -7323,7 +7323,22 @@ integrations:
     ``start_async()`` (sleep-forever) must never be used there.
     Handlers await on the application event loop, which is what keeps
     the uvicorn-bound MCP gateway, the shared AsyncAnthropic client and
-    the SSE queues off a foreign loop. Responds to (a) ``@mention``
+    the SSE queues off a foreign loop. EVENTS OVER HTTP: with
+    ``SLACK_SIGNING_SECRET`` set and no ``SLACK_APP_TOKEN`` (Socket Mode
+    wins when both are set), the same Bolt app is built with the signing
+    secret and an ``AsyncSlackRequestHandler``, and Slack posts events to
+    ``POST /webhook/slack`` (integrations.slack_events, mounted at import so
+    main.py never imports slack_bolt; it answers 503 until the lifespan
+    sets the handler). Bolt's request verification refuses a missing,
+    wrong or more-than-five-minutes-old signature before any middleware
+    or listener runs, answers url_verification, and acks at once while
+    the listener runs (Slack resends an event not acked within 3 s). The
+    route is in _UNAUTHENTICATED_PATHS and passes the local-login Host
+    gate as a self-verifying webhook. In BOTH modes a global middleware
+    drops an event_callback whose event_id was already taken (bounded
+    in-memory set) or that was delivered for another workspace than the
+    bot token's (team_id / authorizations vs authorize_result.team_id).
+    Responds to (a) ``@mention``
     events, (b) DMs, and
     (c) thread continuations: any non-mention message in a thread the
     bot has previously replied in is treated as a continuation and run

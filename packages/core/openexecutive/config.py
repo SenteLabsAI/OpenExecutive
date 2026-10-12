@@ -456,6 +456,9 @@ class Settings(BaseSettings):
 
     slack_bot_token: str | None = Field(None, alias="SLACK_BOT_TOKEN")
     slack_app_token: str | None = Field(None, alias="SLACK_APP_TOKEN")
+    # The other way to hear Slack: with this set and no SLACK_APP_TOKEN, Slack
+    # posts events to POST /webhook/slack, signed with the app's signing secret.
+    slack_signing_secret: str | None = Field(None, alias="SLACK_SIGNING_SECRET")
     # Company-wide broadcast channels — when set, OE can post to "the
     # whole team" on a given integration without picking a specific
     # human or department. Used by `send_company_broadcast`. Each is
@@ -624,7 +627,7 @@ class Settings(BaseSettings):
     google_chat_project_number: str | None = Field(None, alias="GOOGLE_CHAT_PROJECT_NUMBER")
 
     @field_validator(
-        "slack_bot_token", "slack_app_token", "telegram_bot_token",
+        "slack_bot_token", "slack_app_token", "slack_signing_secret", "telegram_bot_token",
         "discord_bot_token", "discord_app_id", "google_chat_project_number",
         "google_chat_service_account_file", "google_chat_service_account_email",
         mode="before",

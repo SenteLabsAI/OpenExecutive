@@ -183,7 +183,7 @@ setup guide:
 
 | Integration | What it does | Setup |
 |---|---|---|
-| **Slack** | Answers mentions and DMs | Set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` (socket mode) |
+| **Slack** | Answers mentions and DMs | Set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` (socket mode), or `SLACK_SIGNING_SECRET` to take events over HTTP at `/webhook/slack` |
 | **Discord** | Answers DMs, mentions and slash commands | [Run the Discord Bot](#run-the-discord-bot) |
 | **Telegram** | Answers messages to your bot | [docs/telegram_setup.md](docs/telegram_setup.md) |
 | **Google Chat** | Answers mentions in a space | [docs/google_chat_setup.md](docs/google_chat_setup.md) |
@@ -387,6 +387,7 @@ the app refuses to start.
 | `ROUTING_MODEL` | No | `claude-haiku-5-5` | Model for intent routing |
 | `SLACK_BOT_TOKEN` | No | — | Slack bot OAuth token |
 | `SLACK_APP_TOKEN` | No | — | Slack socket mode token |
+| `SLACK_SIGNING_SECRET` | No | — | Slack signing secret: hear Slack over HTTP at `/webhook/slack` instead of socket mode |
 | `EXEC_EMAIL_ADDRESS` | No | — | The Executive's own mailbox (Gmail via Google Workspace MCP, or Outlook via Microsoft 365 MCP) |
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | How often to poll for new email |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token (from @BotFather) |
