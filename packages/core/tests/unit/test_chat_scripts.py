@@ -303,6 +303,10 @@ def test_a_later_turn_of_a_mail_conversation_is_not_locked_once_the_mail_is_out_
 
     pinned = SimpleNamespace(offered=False, touched_mail=True, read_mail=False)
     monkeypatch.setattr("openexecutive.orchestrator.executive.turn_delegation", lambda _s: pinned)
+    # The send passes the teammate-mail guard, which reads the roster and
+    # refuses when it can't: give it an empty one rather than whatever
+    # ./episodic_memory.db an earlier test left behind.
+    monkeypatch.setattr("openexecutive.people.store.list_people", lambda *a, **kw: [])
     slack: list[dict[str, Any]] = []
 
     async def send_slack_dm(tool_input: dict[str, Any]) -> str:
