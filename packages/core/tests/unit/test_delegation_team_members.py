@@ -259,12 +259,15 @@ def test_a_conversation_that_read_their_mail_is_theirs_alone(
         session_store, "session_mail_private", partial(session_store.session_mail_private, db_path=db)
     )
 
-    session_store.create_session("s-ben", "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
+    # A channel thread Ben started: the principal may open it until it reads
+    # Ben's mail (his own chats are his alone from the start).
+    sid = "slack:thread:C1:1700000000.001"
+    session_store.create_session(sid, "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
     request: Any = SimpleNamespace(headers={}, client=None, state=SimpleNamespace())
-    assert _session_access(request, "s-ben", roster.principal) == "allowed"
-    session_store.mark_mail_private("s-ben", roster.teammate, db_path=db)
-    assert _session_access(request, "s-ben", roster.principal) == "forbidden"
-    assert _session_access(request, "s-ben", roster.teammate) == "allowed"
+    assert _session_access(request, sid, roster.principal) == "allowed"
+    session_store.mark_mail_private(sid, roster.teammate, db_path=db)
+    assert _session_access(request, sid, roster.principal) == "forbidden"
+    assert _session_access(request, sid, roster.teammate) == "allowed"
 
 
 def test_marking_creates_a_channel_conversation_with_its_owner(roster: SimpleNamespace, db: Path) -> None:

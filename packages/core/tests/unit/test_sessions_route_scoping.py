@@ -158,3 +158,44 @@ def test_snippet_is_cut_around_the_match() -> None:
     snip = session_store._snippet(text, "runway")
     assert "runway" in snip and snip.startswith("…") and snip.endswith("…")
     assert len(snip) <= 170
+
+
+def test_a_teammates_own_chat_is_theirs_alone(client: TestClient) -> None:
+    """The principal can open any chat but a teammate's own: their web chats
+    and DMs are theirs, as their mail with the Executive is. A channel or
+    group conversation, which others in it read anyway, stays open to them."""
+    alex_id = people_store.upsert_person(
+        full_name="Alex", is_principal=True, email="alex@example.com"
+    )
+    sabin_id = people_store.upsert_person(full_name="Sabin", email="sabin@example.com")
+    owned = {
+        "sabin-web": sabin_id,
+        "slack:dm:U_SABIN": sabin_id,
+        "slack:thread:D123:1700000000.001": sabin_id,  # a thread in a DM
+        "telegram:5002": sabin_id,
+        "discord:dm:1002": sabin_id,
+        "slack:thread:C123:1700000000.002": sabin_id,
+        "telegram:-100200": sabin_id,
+        "alex-web": alex_id,
+    }
+    for sid, owner in owned.items():
+        session_store.create_session(sid, "chat", "2024-01-01T00:00:00", caller_person_id=owner)
+    shared = {"slack:thread:C123:1700000000.002", "telegram:-100200"}
+
+    alex = {"x-caller-email": "alex@example.com"}
+    sabin = {"x-caller-email": "sabin@example.com"}
+    for sid, owner in owned.items():
+        mine = client.get(f"/sessions/{sid}/messages", headers=sabin).status_code
+        principal = client.get(f"/sessions/{sid}/messages", headers=alex).status_code
+        cli = client.get(f"/sessions/{sid}/messages").status_code
+        if owner == sabin_id:
+            assert mine == 200, sid
+            expected = 200 if sid in shared else 404
+            assert (principal, cli) == (expected, expected), sid
+        else:
+            assert (mine, principal, cli) == (404, 200, 200), sid
+    # Refused exactly like a chat that doesn't exist.
+    assert client.get("/sessions/sabin-web", headers=alex).json() == (
+        client.get("/sessions/no-such-chat", headers=alex).json()
+    )
+    assert client.delete("/sessions/sabin-web", headers=alex).status_code == 404

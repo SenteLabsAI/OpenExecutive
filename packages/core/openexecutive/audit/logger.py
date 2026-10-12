@@ -201,8 +201,14 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
     )
 
 
-def _owner_clause(owned_by: int | None, params: list[Any]) -> str:
-    """Leave out every team member's own rows but ``owned_by``'s."""
+def _owner_clause(owned_by: int | None, params: list[Any], only_owned: bool = False) -> str:
+    """Leave out every team member's own rows but ``owned_by``'s — and, when
+    ``only_owned``, every row that is not theirs."""
+    if only_owned:
+        if owned_by is None:
+            return "0"
+        params.append(int(owned_by))
+        return "private_to_person = ?"
     if owned_by is None:
         return "private_to_person IS NULL"
     params.append(int(owned_by))
@@ -504,17 +510,19 @@ class AuditLogger:
         department: str | None = None,
         include_private: bool = True,
         owned_by: int | None = None,
+        only_owned: bool = False,
     ) -> list[AuditEvent]:
         """Rows matching every filter given, newest first. ``include_private``
         False leaves out the rows private to the principal — filtered in SQL,
         so a page is still full and ``count`` agrees with it. A team member's
-        own rows are left out unless ``owned_by`` is them."""
+        own rows are left out unless ``owned_by`` is them; ``only_owned``
+        keeps ``owned_by``'s own rows alone (none with no ``owned_by``)."""
         limit = max(1, min(limit, 1000))
         offset = max(0, offset)
 
         clauses: list[str] = []
         params: list[Any] = []
-        clauses.append(_owner_clause(owned_by, params))
+        clauses.append(_owner_clause(owned_by, params, only_owned))
         if not include_private:
             clauses.append("private_to_principal = 0")
         if event_type:
@@ -567,10 +575,11 @@ class AuditLogger:
         until: str | None = None,
         include_private: bool = True,
         owned_by: int | None = None,
+        only_owned: bool = False,
     ) -> int:
         clauses: list[str] = []
         params: list[Any] = []
-        clauses.append(_owner_clause(owned_by, params))
+        clauses.append(_owner_clause(owned_by, params, only_owned))
         if not include_private:
             clauses.append("private_to_principal = 0")
         if event_type:

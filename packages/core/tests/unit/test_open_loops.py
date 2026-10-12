@@ -456,12 +456,13 @@ def test_feedback_route_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from openexecutive.api.routes import sessions as route
 
+    owner = {"id": 5}
     monkeypatch.setattr(
-        "openexecutive.memory.session_store.get_session_owner", lambda sid: (True, 5)
+        "openexecutive.memory.session_store.get_session_owner", lambda sid: (True, owner["id"])
     )
     monkeypatch.setattr(route, "set_message_feedback", lambda *a, **k: True)
-    principal = SimpleNamespace(is_principal=True, archived=False)
-    teammate = SimpleNamespace(is_principal=False, archived=False)
+    principal = SimpleNamespace(is_principal=True, archived=False, kind="team")
+    teammate = SimpleNamespace(is_principal=False, archived=False, kind="team")
     monkeypatch.setattr("openexecutive.people.store.get_person",
                         lambda pid, db_path=None: principal if pid == 1 else teammate)
     body = route.MessageFeedback(feedback="down")
@@ -474,10 +475,13 @@ def test_feedback_route_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
             return exc.status_code
 
     assert call(5) == 204      # the session's own caller
-    assert call(1) == 204      # the principal
     # Refused like an unknown session, so the route can't probe which exist.
+    assert call(1) == 404      # the principal: a teammate's own chat is theirs
     assert call(7) == 404      # someone else
     assert call(None) == 404   # unrostered
+    owner["id"] = None         # an ownerless legacy row is the principal's
+    assert call(1) == 204
+    assert call(5) == 404
 
 
 def test_close_open_loop_chip_only_when_closed() -> None:

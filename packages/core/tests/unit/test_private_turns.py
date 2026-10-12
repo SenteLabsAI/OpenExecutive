@@ -126,16 +126,23 @@ def test_every_row_a_private_turn_writes_is_private(roster: SimpleNamespace) -> 
         _audit().log("tool_invocation", "mcp:send_gmail_message to the principal")
         # A caller cannot make a private turn's row public.
         log_event("memory_snapshot", "snapshot", private=False)
-    with _turn(Session(from_web_chat=True, caller_person_id=roster.teammate)):
+    with _turn(_principal_web(roster)):
+        log_event("chat_turn", "Executive: the principal's own turn")
+    with _turn(_teammate_web(roster)):
+        # A teammate's own turn is theirs alone, the principal included.
         log_event("chat_turn", "Executive: the teammate's own turn")
     log_event("scheduled_action", "no turn at all")
     assert _private_flags() == {
         "Executive: Jordan wants pricing by Friday": True,
         "mcp:send_gmail_message to the principal": True,
         "snapshot": True,
-        "Executive: the teammate's own turn": False,
+        "Executive: the principal's own turn": False,
         "no turn at all": False,
     }
+    owned = _audit().query(owned_by=roster.teammate, only_owned=True)
+    assert [(e.summary, e.private_to_person) for e in owned] == [
+        ("Executive: the teammate's own turn", roster.teammate)
+    ]
 
 
 def test_a_caller_can_mark_a_row_private() -> None:
@@ -158,10 +165,10 @@ def test_a_private_alert_is_audited_privately(
     with _turn(_teammate_web(roster)):
         asyncio.run(handle_create_alert({"subject": "Server down", "body": "..."}))
     assert [e.private for e in events] == [True, False]
-    assert _private_flags() == {
-        "Alert: Jordan asked about pricing": True,
-        "Alert: Server down": False,
-    }
+    assert _private_flags() == {"Alert: Jordan asked about pricing": True}
+    # The teammate's own turn: its row is theirs.
+    owned = _audit().query(owned_by=roster.teammate, only_owned=True)
+    assert [e.summary for e in owned] == ["Alert: Server down"]
 
 
 _NAMING_A_CONTACT: dict[str, Any] = {
@@ -223,6 +230,11 @@ def test_a_row_naming_a_contact_off_the_principals_turn_stays_as_it_is(
     with _turn(session):
         _audit().log("tool_invocation", "mcp:send_gmail_message blocked",
                      full={"input": {"arguments": {"to": CONTACT_EMAIL}}})
+    if session_key == "teammate_web":
+        # The teammate's own turn: the row is theirs, and they read it.
+        owned = _audit().query(owned_by=roster.teammate, only_owned=True)
+        assert [e.summary for e in owned] == ["mcp:send_gmail_message blocked"]
+        return
     assert _private_flags() == {"mcp:send_gmail_message blocked": False}
 
 
@@ -436,6 +448,24 @@ def test_every_row_written_while_a_private_mail_is_handled_is_private(
     assert _private_flags()["after the mail"] is False
 
 
+def test_a_teammates_authenticated_mail_is_theirs_alone(roster: SimpleNamespace) -> None:
+    # Gmail vouches the mail is the teammate's: every row of its handling is
+    # theirs. (Unauthenticated, as above, it stays where the principal reads
+    # it, so a forged From can't hide a turn from them.)
+    before = {e.id for e in _audit().query(limit=1000, owned_by=roster.teammate)}
+    with patch(
+        "openexecutive.integrations.fact_confirmation.sender_authenticated",
+        new=AsyncMock(return_value=True),
+    ):
+        public = _handle_through_the_turn(_raw(TEAM_EMAIL, "Body text here."))
+    assert _without_roster_rows(public) == []
+    rows = [e for e in _audit().query(limit=1000, owned_by=roster.teammate) if e.id not in before]
+    assert {"knowledge_retrieval", "integration_inbound", "chat_turn"} <= {
+        e.event_type for e in rows
+    }
+    assert {e.private_to_person for e in rows} == {roster.teammate}
+
+
 # --- Chat messages from the principal, before their turn binds its session --
 
 
@@ -634,22 +664,33 @@ def test_the_principals_rows_naming_a_contact_are_private_before_the_turn_binds(
 
 
 @pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
-@pytest.mark.parametrize(("who", "text"), [
-    ("principal", _NAMES_NOBODY),
-    # On a teammate's turn a contact is a stranger: hiding the row would tell
-    # them the address is one.
-    ("teammate", _NAMES_A_CONTACT),
-])
 def test_other_chat_rows_stay_visible(
-    roster: SimpleNamespace, surface: str, who: str, text: str,
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    roster: SimpleNamespace, surface: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    rows = _surface_rows(surface, who, text, monkeypatch, tmp_path)
+    rows = _surface_rows(surface, "principal", _NAMES_NOBODY, monkeypatch, tmp_path)
     flags = _flags_by_type(rows)
     assert flags[_FIRST_ROW[surface]] == {False}
     assert flags["knowledge_retrieval"] == {False}
     if surface == "web":
         assert flags["memory_snapshot"] == {False}
+
+
+@pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
+def test_a_teammates_chat_rows_are_theirs_alone(
+    roster: SimpleNamespace, surface: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Every row of a teammate's own turn, the ones written before it binds
+    # its session included, is theirs: not the principal's to read either.
+    before = {e.id for e in _audit().query(limit=1000, owned_by=roster.teammate)}
+    assert _surface_rows(surface, "teammate", _NAMES_A_CONTACT, monkeypatch, tmp_path) == []
+    rows = [e for e in _audit().query(limit=1000, owned_by=roster.teammate) if e.id not in before]
+    owners = {}
+    for e in rows:
+        owners.setdefault(e.event_type, set()).add(e.private_to_person)
+    assert owners[_FIRST_ROW[surface]] == {roster.teammate}
+    assert owners["knowledge_retrieval"] == {roster.teammate}
+    if surface == "web":
+        assert owners["memory_snapshot"] == {roster.teammate}
 
 
 def test_an_unverified_telegram_chat_is_not_the_principals_turn(roster: SimpleNamespace) -> None:
@@ -848,44 +889,55 @@ def _sees_private(client: TestClient, headers: dict[str, str], seeded: SimpleNam
     return sees
 
 
-def test_a_teammate_sees_no_private_row_on_any_route(seeded: SimpleNamespace) -> None:
+def test_a_teammate_sees_their_own_rows_and_no_others(
+    roster: SimpleNamespace, seeded: SimpleNamespace
+) -> None:
+    # The log holds what everyone said to the Executive: once a principal is
+    # on the roster, a teammate reads their own turns there and nothing else.
+    audit = _audit()
+    own = [
+        audit.log("chat_turn", f"ben {i}", session_id="web:ben", actor="user",
+                  private_to_person=roster.teammate)
+        for i in range(3)
+    ]
     client = _audit_client()
     teammate = _as(TEAM_EMAIL)
 
     listed = client.get("/audit/logs", headers=teammate).json()
-    assert listed["total"] == 4  # 3 public chat turns + the public cache_event
-    assert all("private" not in i["summary"] for i in listed["items"])
-    # Pagination is honest: two pages cover the public rows exactly.
+    assert listed["total"] == 3
+    assert {i["summary"] for i in listed["items"]} == {"ben 0", "ben 1", "ben 2"}
+    # Pagination is honest.
     pages = [
         client.get("/audit/logs", params={"limit": 2, "offset": off}, headers=teammate).json()
-        for off in (0, 2, 4)
+        for off in (0, 2)
     ]
-    assert [p["total"] for p in pages] == [4, 4, 4]
-    assert [len(p["items"]) for p in pages] == [2, 2, 0]
-    assert client.get("/audit/logs", params={"q": "private"}, headers=teammate).json() == (
-        client.get("/audit/logs", params={"q": "no such row"}, headers=teammate).json()
-    )
+    assert [p["total"] for p in pages] == [3, 3]
+    assert [len(p["items"]) for p in pages] == [2, 1]
+    assert client.get("/audit/logs", params={"q": "public"}, headers=teammate).json()["total"] == 0
 
+    assert client.get(f"/audit/logs/{own[0]}", headers=teammate).status_code == 200
     missing = client.get("/audit/logs/999999", headers=teammate)
-    for private_id in seeded.private_ids:
-        got = client.get(f"/audit/logs/{private_id}", headers=teammate)
+    for other in [*seeded.public_ids, *seeded.private_ids]:
+        got = client.get(f"/audit/logs/{other}", headers=teammate)
         assert (got.status_code, got.json()) == (404, missing.json())
 
-    # A session of private rows only reads as one that does not exist…
+    # Someone else's session reads as one that does not exist; their own shows.
     missing_session = client.get("/audit/sessions/web:none", headers=teammate)
-    got = client.get("/audit/sessions/email:t1", headers=teammate)
-    assert (got.status_code, got.json()) == (404, missing_session.json())
-    # …and a mixed session shows its public rows only.
-    mixed = client.get("/audit/sessions/web:1", headers=teammate).json()
-    assert {e["summary"] for e in mixed["events"]} == {
-        "public 0", "public 1", "public 2", "cache public",
-    }
-    assert all(n["event_id"] != seeded.mixed_private for n in mixed["graph"]["nodes"])
-    assert mixed["cost_summary"]["input_tokens"] == 100
+    for sid in ("email:t1", "web:1"):
+        got = client.get(f"/audit/sessions/{sid}", headers=teammate)
+        assert (got.status_code, got.json()) == (404, missing_session.json())
+    mine = client.get("/audit/sessions/web:ben", headers=teammate).json()
+    assert {e["summary"] for e in mine["events"]} == {"ben 0", "ben 1", "ben 2"}
 
-    usage = client.get("/audit/usage", headers=teammate).json()
-    assert usage["totals"]["input_tokens"] == 100
-    assert usage["totals"]["calls"] == 1
+    # Someone signed in but not on the roster reads nothing.
+    stranger = _as("nobody@elsewhere.example")
+    assert client.get("/audit/logs", headers=stranger).json()["total"] == 0
+    assert client.get(f"/audit/logs/{own[0]}", headers=stranger).status_code == 404
+
+    # The principal reads everyone's rows but a teammate's own.
+    principal = client.get("/audit/logs", headers=_as(OWNER_EMAIL)).json()
+    assert not {"ben 0", "ben 1", "ben 2"} & {i["summary"] for i in principal["items"]}
+    assert client.get(f"/audit/logs/{own[0]}", headers=_as(OWNER_EMAIL)).status_code == 404
 
 
 def test_the_principal_sees_every_row(seeded: SimpleNamespace) -> None:
@@ -1165,8 +1217,10 @@ def test_load_mcp_server_is_the_principals_alone(roster: SimpleNamespace, surfac
     assert not PRINCIPAL_ONLY_TOOLS & set(_offered(provider))
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
     assert "only the principal" in result["error"]
-    refusals = [e for e in _audit().query(event_type="tool_invocation", limit=100)
-                if e.summary.startswith("load_mcp_server refused")]
+    rows = _audit().query(event_type="tool_invocation", limit=100) + _audit().query(
+        event_type="tool_invocation", limit=100, owned_by=roster.teammate, only_owned=True
+    )
+    refusals = [e for e in rows if e.summary.startswith("load_mcp_server refused")]
     assert len(refusals) == 1 and refusals[0].details["refused"] == "not_principal"
 
 
