@@ -77,6 +77,37 @@ def test_send_writes_linkage_when_session_active(
     assert row.outbound_message_id == "discord-msg-1"
 
 
+@pytest.mark.parametrize(("speaker", "kept"), [(7, False), (42, True)])
+def test_a_teammates_chat_is_not_quoted_to_someone_else(
+    isolated_db: Path, monkeypatch: pytest.MonkeyPatch, speaker: int, kept: bool
+) -> None:
+    # A teammate's own conversation is theirs alone: their message to
+    # someone else is linked, but with no excerpt of their chat.
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_discord_id",
+        lambda _id: MagicMock(id=42),
+    )
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.people_tools.teammate_turn_owner", lambda _s: speaker
+    )
+    current_session.set(MagicMock(session_id="slack:dm:U_BEN"))
+
+    with patch(
+        "openexecutive.integrations.discord_bot.send_dm",
+        new=AsyncMock(return_value="discord-msg-1"),
+    ):
+        asyncio.run(
+            schedule_tools.handle_send_discord_dm(
+                {"discord_user_id": "alex-123", "text": "Ben asks whether Q3 is final"}
+            )
+        )
+
+    row = _find(isolated_db)
+    assert row is not None
+    assert row.outbound_text == "Ben asks whether Q3 is final"
+    assert row.originating_session_id == ("slack:dm:U_BEN" if kept else None)
+
+
 def test_send_writes_no_linkage_without_session(
     isolated_db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

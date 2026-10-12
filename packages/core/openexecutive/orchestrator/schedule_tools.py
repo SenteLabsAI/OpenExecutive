@@ -288,7 +288,7 @@ def _record_outbound_context(
         # Never for one of the principal's contacts. They cannot message the
         # bot, and hydrating their email reply with this backstory would quote
         # the principal's conversation into an unattended turn — whose opening
-        # the audit log (readable by everyone) records — and set that turn
+        # the audit log records — and set that turn
         # apart from any other outside sender's.
         from openexecutive.people.store import find_person_by_channel_ref
 
@@ -296,6 +296,15 @@ def _record_outbound_context(
             return
         originating_session_id = getattr(session, "session_id", None)
         recipient_person_id = _resolve_recipient_person_id(channel, channel_ref)
+        # A teammate's own conversation is theirs alone: their message to
+        # someone else is linked so the reply makes sense, but no excerpt of
+        # their chat goes with it into the recipient's turn
+        # (`inbound_hydration._build_backstory_excerpt`).
+        from openexecutive.orchestrator.people_tools import teammate_turn_owner
+
+        speaker = teammate_turn_owner(session)
+        if speaker is not None and speaker != recipient_person_id:
+            originating_session_id = None
         from openexecutive.memory.episodic import insert_outbound_context
 
         context_id = insert_outbound_context(

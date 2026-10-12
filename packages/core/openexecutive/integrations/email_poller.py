@@ -496,7 +496,7 @@ async def _handle_one_email(
             if teammate_id is not None:
                 teammate_authenticated = await sender_authenticated(gateway, message_id, from_addr)
         except Exception:  # noqa: BLE001 - optional step; must not lose the email.
-            logger.warning("sender check failed; teammate mail stays private this turn", exc_info=True)
+            logger.warning("sender check failed; this mail's audit rows follow the ordinary rule", exc_info=True)
             teammate_authenticated = None
         if teammate_authenticated is not True:
             teammate_id = None
