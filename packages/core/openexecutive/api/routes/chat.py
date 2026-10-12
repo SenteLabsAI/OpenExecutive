@@ -2039,7 +2039,11 @@ async def _generate_prompts_via_llm(
     subtitle_raw = data.get("subtitle")
     if not isinstance(prompts_raw, list) or not isinstance(subtitle_raw, str):
         return None
-    prompts = [str(p).strip() for p in prompts_raw if isinstance(p, str) and p.strip()]
+    prompts = [
+        as_user_request(str(p).strip())
+        for p in prompts_raw
+        if isinstance(p, str) and p.strip()
+    ]
     subtitle = subtitle_raw.strip()
     if len(prompts) < 4 or not subtitle:
         return None
@@ -2064,6 +2068,13 @@ _FOLLOWUP_SYSTEM = (
     "or 'that'. Never repeat a question the user already asked. Never "
     "suggest looping in, messaging, or following up with the user "
     "themselves.\n\n"
+    "The suggestion is what the USER types, never the executive's own "
+    "words. When the last reply ends with an offer ('Should I draft a "
+    "follow-up to Andrew?', 'Want me to book it?'), the user accepts it "
+    "as a plain request: 'Draft a short follow-up to Andrew asking where "
+    "things stand.' Never copy the executive's offer, and never start "
+    "with 'Should I', 'Shall I', 'Want me to', 'Would you like me to' "
+    "or 'I can'.\n\n"
     "Output ONLY a JSON object with exactly one key — no prose, no "
     "markdown, no fences:\n"
     '  "suggestion": one sentence, 4-14 words, no greeting, no '
@@ -2100,7 +2111,77 @@ async def _generate_followup_via_llm(transcript: str) -> str | None:
     # A runaway or empty answer is worse than no suggestion in the composer.
     if not suggestion or len(suggestion.split()) > _FOLLOWUP_MAX_WORDS:
         return None
-    return suggestion
+    return as_user_request(suggestion, last_executive_reply=_last_executive_reply(transcript))
+
+
+def _last_executive_reply(transcript: str) -> str:
+    marker = "EXECUTIVE: "
+    i = transcript.rfind(marker)
+    return transcript[i + len(marker) :] if i >= 0 else ""
+
+
+# Openers that can only be the executive offering to do something. The
+# model sometimes copies the reply's closing offer into the composer as-is.
+_OFFER_OPENERS = re.compile(
+    r"^(?:(?:do you )?want me to|would you like me to|shall i)\s+",
+    re.IGNORECASE,
+)
+# "Should I …?" is also how a user asks for advice ("Should I raise
+# prices?"), so it is only an offer when the executive's reply made it.
+_SHOULD_I = re.compile(r"^should i\s+", re.IGNORECASE)
+# Executive-voice pronouns flip to the user's own once the offer is theirs:
+# "Want me to remind you?" -> "Remind me."
+_PRONOUN_FLIPS = {
+    "you": "me",
+    "your": "my",
+    "yours": "mine",
+    "yourself": "myself",
+    "you're": "I'm",
+    "you've": "I've",
+    "you'll": "I'll",
+    "you'd": "I'd",
+}
+_PRONOUN_RE = re.compile(
+    r"\b(" + "|".join(sorted(map(re.escape, _PRONOUN_FLIPS), key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+# "you" opening a clause is a subject: "check if you're free" is handled
+# above, but "check if you have time" needs "I", not "me".
+_SUBJECT_YOU_RE = re.compile(
+    r"\b(if|when|whether|that|so|until|before|after|while)\s+you\b(?!')",
+    re.IGNORECASE,
+)
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]", "", " ".join(text.lower().split()))
+
+
+def as_user_request(text: str, *, last_executive_reply: str = "") -> str:
+    """Turn an executive-voice offer into the user's own request.
+
+    "Should I draft a short follow-up to Andrew?" (copied from the reply)
+    becomes "Draft a short follow-up to Andrew." Anything that does not open
+    with an offer is returned unchanged.
+    """
+    rest: str | None = None
+    m = _OFFER_OPENERS.match(text)
+    if m:
+        rest = text[m.end() :]
+    else:
+        m = _SHOULD_I.match(text)
+        if m and _norm(text.rstrip("?")) in _norm(last_executive_reply):
+            rest = text[m.end() :]
+    if not rest:
+        return text
+    rest = _SUBJECT_YOU_RE.sub(lambda p: p.group(1) + " I", rest)
+    rest = _PRONOUN_RE.sub(lambda p: _PRONOUN_FLIPS[p.group(1).lower()], rest)
+    rest = rest.rstrip(" ?.!")
+    if not rest:
+        return text
+    return rest[0].upper() + rest[1:] + "."
 
 
 @router.get("/chat/suggested-prompts")

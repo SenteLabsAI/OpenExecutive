@@ -214,3 +214,49 @@ async def test_generator_parses_fenced_json(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_generator_rejects_bad_output(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     _patch_provider(monkeypatch, raw)
     assert await chat_route._generate_followup_via_llm("t") is None
+
+
+_ANDREW_REPLY = (
+    "USER: has andrew from northwind reached out today?\n\n"
+    "EXECUTIVE: No. Nothing from Andrew has reached your inbox in the last two days. "
+    "Should I draft a short follow-up to Andrew asking where things stand?"
+)
+
+
+@pytest.mark.asyncio
+async def test_generator_turns_copied_offer_into_users_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_provider(
+        monkeypatch,
+        '{"suggestion": "Should I draft a short follow-up to Andrew asking where things stand?"}',
+    )
+    assert (
+        await chat_route._generate_followup_via_llm(_ANDREW_REPLY)
+        == "Draft a short follow-up to Andrew asking where things stand."
+    )
+
+
+@pytest.mark.parametrize(
+    ("offer", "expected"),
+    [
+        ("Want me to book 30 minutes with Priya on Thursday?", "Book 30 minutes with Priya on Thursday."),
+        ("Do you want me to remind you tomorrow?", "Remind me tomorrow."),
+        ("Would you like me to send your notes to the board?", "Send my notes to the board."),
+        ("Shall I check if you have time Friday?", "Check if I have time Friday."),
+        ("Want me to tell Sam you're out next week?", "Tell Sam I'm out next week."),
+    ],
+)
+def test_offers_become_requests(offer: str, expected: str) -> None:
+    assert chat_route.as_user_request(offer) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Draft the customer email announcing the Pro increase.",
+        "What's driving the churn in the mid-market segment?",
+        # The user's own question, not an echo of an offer: advice, kept as is.
+        "Should I raise prices on the Pro tier before renewals?",
+    ],
+)
+def test_user_voice_is_left_alone(text: str) -> None:
+    assert chat_route.as_user_request(text, last_executive_reply="Churn rose 4% last quarter.") == text
