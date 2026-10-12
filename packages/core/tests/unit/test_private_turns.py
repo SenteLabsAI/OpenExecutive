@@ -934,10 +934,47 @@ def test_a_teammate_sees_their_own_rows_and_no_others(
     assert client.get("/audit/logs", headers=stranger).json()["total"] == 0
     assert client.get(f"/audit/logs/{own[0]}", headers=stranger).status_code == 404
 
-    # The principal reads everyone's rows but a teammate's own.
-    principal = client.get("/audit/logs", headers=_as(OWNER_EMAIL)).json()
-    assert not {"ben 0", "ben 1", "ben 2"} & {i["summary"] for i in principal["items"]}
-    assert client.get(f"/audit/logs/{own[0]}", headers=_as(OWNER_EMAIL)).status_code == 404
+
+def test_the_principal_sees_a_teammates_actions_but_not_their_words(
+    roster: SimpleNamespace, seeded: SimpleNamespace
+) -> None:
+    audit = _audit()
+    said = audit.log("chat_turn", "User: my bank details are 1234", session_id="web:ben",
+                     actor="user", private_to_person=roster.teammate,
+                     details={"direction": "in", "msg_len": 31}, full={"message": "1234"})
+    did = audit.log("tool_invocation", "mcp:send_gmail_message to dentist@example.com",
+                    session_id="web:ben", actor="executive", private_to_person=roster.teammate,
+                    details={"tool": "send_gmail_message", "kind": "mcp", "ok": True,
+                             "to": "dentist@example.com", "result": "sent: 1234"})
+    asked = audit.log("tool_invocation", "x", session_id="web:ben", private_to_person=roster.teammate,
+                      details={"tool": "bank details are 1234", "kind": "mcp"})
+    client = _audit_client()
+    owner = _as(OWNER_EMAIL)
+
+    listed = client.get("/audit/logs", headers=owner).json()
+    assert listed["total"] == 12  # the 9 seeded rows and Ben's 3
+    rows = {i["id"]: i for i in listed["items"]}
+    assert rows[said]["summary"] == "Message (Ben Teammate's conversation, details private)"
+    assert rows[said]["details"] == {"direction": "in"}
+    assert rows[did]["summary"] == "mcp:send_gmail_message (Ben Teammate's conversation, details private)"
+    assert rows[did]["details"] == {"tool": "send_gmail_message", "kind": "mcp", "ok": True}
+    # A tool label that isn't a plain name is dropped, not shown.
+    assert rows[asked]["summary"] == "tool_invocation (Ben Teammate's conversation, details private)"
+    assert "1234" not in json.dumps(listed)
+
+    one = client.get(f"/audit/logs/{said}", headers=owner).json()
+    assert one["full"] is None and "1234" not in json.dumps(one)
+    session = client.get("/audit/sessions/web:ben", headers=owner).json()
+    assert len(session["events"]) == 3 and "1234" not in json.dumps(session)
+    # A search never matches on their words.
+    assert client.get("/audit/logs", params={"q": "1234"}, headers=owner).json()["total"] == 0
+
+    # Ben reads his own rows in full.
+    mine = client.get(f"/audit/logs/{said}", headers=_as(TEAM_EMAIL)).json()
+    assert mine["summary"] == "User: my bank details are 1234"
+    assert mine["full"] == {"message": "1234"}
+
+
 
 
 def test_the_principal_sees_every_row(seeded: SimpleNamespace) -> None:

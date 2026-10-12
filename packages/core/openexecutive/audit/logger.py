@@ -201,9 +201,14 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
     )
 
 
-def _owner_clause(owned_by: int | None, params: list[Any], only_owned: bool = False) -> str:
+def _owner_clause(
+    owned_by: int | None, params: list[Any], only_owned: bool = False, all_owners: bool = False
+) -> str:
     """Leave out every team member's own rows but ``owned_by``'s — and, when
-    ``only_owned``, every row that is not theirs."""
+    ``only_owned``, every row that is not theirs. ``all_owners`` keeps every
+    member's rows (the read API shows the principal their actions, redacted)."""
+    if all_owners:
+        return "1"
     if only_owned:
         if owned_by is None:
             return "0"
@@ -511,6 +516,7 @@ class AuditLogger:
         include_private: bool = True,
         owned_by: int | None = None,
         only_owned: bool = False,
+        all_owners: bool = False,
     ) -> list[AuditEvent]:
         """Rows matching every filter given, newest first. ``include_private``
         False leaves out the rows private to the principal — filtered in SQL,
@@ -522,7 +528,7 @@ class AuditLogger:
 
         clauses: list[str] = []
         params: list[Any] = []
-        clauses.append(_owner_clause(owned_by, params, only_owned))
+        clauses.append(_owner_clause(owned_by, params, only_owned, all_owners))
         if not include_private:
             clauses.append("private_to_principal = 0")
         if event_type:
@@ -576,10 +582,11 @@ class AuditLogger:
         include_private: bool = True,
         owned_by: int | None = None,
         only_owned: bool = False,
+        all_owners: bool = False,
     ) -> int:
         clauses: list[str] = []
         params: list[Any] = []
-        clauses.append(_owner_clause(owned_by, params, only_owned))
+        clauses.append(_owner_clause(owned_by, params, only_owned, all_owners))
         if not include_private:
             clauses.append("private_to_principal = 0")
         if event_type:
