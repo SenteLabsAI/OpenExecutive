@@ -133,8 +133,18 @@ def _seed(session_id: str, owner: int | None) -> None:
 def test_reads_are_limited_to_owner_and_principal(
     client: TestClient, people: dict[str, int], path: str
 ) -> None:
+    # A teammate's own DM is theirs alone, the principal included.
     _seed("slack:dm:USABIN", people["sabin"])
     url = path.format(id="slack:dm:USABIN")
+
+    assert client.get(url, headers=SABIN).status_code == 200
+    assert client.get(url, headers=ALEX).status_code == 404
+    assert client.get(url, headers=RIYA).status_code == 404
+    assert client.get(url, headers=STRANGER).status_code == 404
+
+    # A channel thread they started is open to the principal too.
+    _seed("slack:thread:C1:1700000000.001", people["sabin"])
+    url = path.format(id="slack:thread:C1:1700000000.001")
 
     assert client.get(url, headers=SABIN).status_code == 200
     assert client.get(url, headers=ALEX).status_code == 200
@@ -208,9 +218,11 @@ def test_chat_never_writes_into_someone_elses_session(
     assert _message_count(db, "sabin-chat") == 0
     assert len(_session_ids(db)) == 3  # sabin-chat + one fresh chat each
 
-    assert _chat(client, SABIN, "sabin-chat") == 200
+    # Nor the principal: a teammate's own chat is theirs alone.
     assert _chat(client, ALEX, "sabin-chat") == 200
-    assert _message_count(db, "sabin-chat") == 4
+    assert _message_count(db, "sabin-chat") == 0
+    assert _chat(client, SABIN, "sabin-chat") == 200
+    assert _message_count(db, "sabin-chat") == 2
 
 
 def test_unresolved_caller_can_continue_only_their_own_new_chat(

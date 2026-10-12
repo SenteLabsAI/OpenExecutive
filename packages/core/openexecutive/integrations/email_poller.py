@@ -485,7 +485,8 @@ async def _handle_one_email(
     # where the principal reads it, so a forged From can't hide a turn.
     teammate_authenticated: bool | None = None
     teammate_id: int | None = None
-    if not private and sender_in_roster:
+    # Only Gmail authenticates a sender (`fact_confirmation.read_raw`).
+    if not private and sender_in_roster and provider.name == "google":
         from openexecutive.integrations.fact_confirmation import sender_authenticated
         from openexecutive.orchestrator.people_tools import team_member_id
 
