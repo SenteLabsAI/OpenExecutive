@@ -503,6 +503,29 @@ def _propose_via_decision_alert(
         )
 
 
+def _asked_on_a_verified_surface(session: Any) -> bool:
+    """Whether someone on the team started this turn on a surface that
+    verified who they are: the principal (``is_principal_on_verified_surface``)
+    or a rostered teammate (``teammate_on_verified_surface``, never in a turn
+    an email started). An inbound email, a contact's message or an unattended
+    run answers False, so text someone else wrote can't book, start or cancel
+    a meeting with nobody approving it. Fails closed."""
+    from openexecutive.orchestrator.people_tools import (
+        is_principal_on_verified_surface,
+        teammate_on_verified_surface,
+    )
+
+    if session is None:
+        return False
+    return is_principal_on_verified_surface(session) or teammate_on_verified_surface(session) is not None
+
+
+_NOT_FROM_HERE = (
+    "only someone on the team, asking directly in the app or their own chat, "
+    "can do this; suggest it to them instead"
+)
+
+
 def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
     """The meeting gate in solo mode. No department is consulted — the
     install's departments are only the principal's areas, not an
@@ -570,10 +593,10 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
 
     # 1. Gate: calendar must be enabled and MCP must be active.
     if not settings.calendar_booking_enabled:
-        return json.dumps({"error": "calendar_booking_enabled is not set to true"})
+        return json.dumps({"error": "calendar booking isn't turned on for this workspace"})
     gateway = get_active_gateway()
     if gateway is None:
-        return json.dumps({"error": "MCP gateway is not running — calendar unavailable"})
+        return json.dumps({"error": "the calendar isn't connected right now"})
 
     # 2. Parse required fields.
     try:
@@ -673,6 +696,19 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
             required_scope=AuthorityScope.MEETING_SCHEDULING,
             now=now,
         )
+        if gate_decision.action == "execute" and not _asked_on_a_verified_surface(session):
+            # The department's authority covers its people asking, not text
+            # from outside (an inbound email): that waits for an approver.
+            # An execute decision carries no approver: route it as a proposal.
+            from openexecutive.departments.authority import _route_proposal
+
+            gate_decision = _route_proposal(
+                department_slug="operations",
+                action="propose",
+                required_scope=AuthorityScope.MEETING_SCHEDULING,
+                now=now,
+                reason="auto_execute needs someone on the team on a verified surface — proposing",
+            )
     # With a contact on the invite the booking is private to the principal:
     # they approve it (only they may reach a contact at approval time) and
     # nobody else sees the proposal.
@@ -790,10 +826,13 @@ async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
     settings = get_settings()
 
     if not settings.calendar_booking_enabled:
-        return json.dumps({"error": "calendar_booking_enabled is not set to true"})
+        return json.dumps({"error": "calendar booking isn't turned on for this workspace"})
     gateway = get_active_gateway()
     if gateway is None:
-        return json.dumps({"error": "MCP gateway is not running — calendar unavailable"})
+        return json.dumps({"error": "the calendar isn't connected right now"})
+    # It books at once, with no approval: only for someone on the team.
+    if not _asked_on_a_verified_surface(current_session.get()):
+        return json.dumps({"error": _NOT_FROM_HERE})
 
     try:
         attendee_person_ids = list(tool_input["attendee_person_ids"])
@@ -942,6 +981,11 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
     )
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.people_tools import contacts_reachable_now
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    # Cancelling notifies everyone invited: only for someone on the team.
+    if not _asked_on_a_verified_surface(current_session.get()):
+        return json.dumps({"error": _NOT_FROM_HERE})
 
     try:
         instance_id = int(tool_input["decision_instance_id"])

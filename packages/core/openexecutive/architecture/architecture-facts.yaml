@@ -8282,6 +8282,12 @@ integrations:
         step — the user asked to meet now) and SKIPS the horizon + business-hours/
         weekday caps; still enforces roster, principal-protect, max-attendees, and
         max-events/day, and records an `executed` ledger row for audit.
+        Since nothing approves it, it (and cancel_calendar_event) runs only when
+        someone on the team asked on a verified surface
+        (calendar_tools._asked_on_a_verified_surface: the principal, or a
+        rostered teammate never in an email-started turn); otherwise it refuses.
+        Team mode's create_calendar_event that operations would auto-execute
+        is proposed instead on such a turn.
       cancel_calendar_event  — cancel by decision_instance_id. Only a
         meeting_scheduling instance, and one whose payload is private (a
         meeting with the principal's contact) only when contacts are reachable
