@@ -816,17 +816,15 @@ async def _handle_message(
 
     # Fork into alerts triage pipeline.
     try:
-        from openexecutive.alerts.models import AlertEvent
-        from openexecutive.alerts.pipeline import schedule_evaluation
+        from openexecutive.alerts.pipeline import schedule_chat_message_evaluation
 
-        schedule_evaluation(
-            AlertEvent(
-                source="discord",
-                external_id=message_id,
-                channel=discord_channel,
-                user=discord_user_id,
-                body=text,
-            )
+        schedule_chat_message_evaluation(
+            source="discord",
+            external_id=message_id,
+            channel=discord_channel,
+            body=text,
+            sender=sender_person,
+            fallback_name=discord_user_id,
         )
     except Exception:
         logger.exception("Failed to schedule alert evaluation for Discord message")

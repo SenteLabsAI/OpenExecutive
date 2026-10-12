@@ -271,16 +271,15 @@ async def _process_and_reply(
 
     # Fork into alert triage pipeline (fire-and-forget, same pattern as Slack/email).
     try:
-        from openexecutive.alerts.models import AlertEvent
-        from openexecutive.alerts.pipeline import schedule_evaluation
+        from openexecutive.alerts.pipeline import schedule_chat_message_evaluation
+        from openexecutive.people.store import find_person_by_email
 
-        schedule_evaluation(
-            AlertEvent(
-                source="google_chat",
-                external_id=message_name,
-                body=message_text,
-                user=sender_name,
-            )
+        schedule_chat_message_evaluation(
+            source="google_chat",
+            external_id=message_name,
+            body=message_text,
+            sender=find_person_by_email(sender_email) if sender_email else None,
+            fallback_name=sender_name,
         )
     except Exception:
         logger.exception("Google Chat: failed to schedule alert evaluation")

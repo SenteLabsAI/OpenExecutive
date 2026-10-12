@@ -203,16 +203,14 @@ async def _process_and_reply(
 
     # Fork into alert triage pipeline (fire-and-forget, same pattern as other integrations).
     try:
-        from openexecutive.alerts.models import AlertEvent
-        from openexecutive.alerts.pipeline import schedule_evaluation
+        from openexecutive.alerts.pipeline import schedule_chat_message_evaluation
 
-        schedule_evaluation(
-            AlertEvent(
-                source="telegram",
-                external_id=str(message_id),
-                body=message_text,
-                user=sender_name,
-            )
+        schedule_chat_message_evaluation(
+            source="telegram",
+            external_id=str(message_id),
+            body=message_text,
+            sender=_tg_person,
+            fallback_name=sender_name,
         )
     except Exception:
         logger.exception("Telegram: failed to schedule alert evaluation")

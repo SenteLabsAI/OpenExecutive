@@ -3021,6 +3021,10 @@ peer_memory:
         attributed, once the principal adds them; non-roster email is
         triaged unattributed (see `integrations.channel_access`,
         `people.roster_requests`).
+        A matched chat-app sender reaches alert triage under that
+        Person's ``full_name``, never the chat app's self-chosen display
+        name, and the principal's own chat messages are not triaged
+        (``alerts.pipeline.schedule_chat_message_evaluation``).
       - Web ``/chat`` uses ``x-caller-email`` stamped by the Next.js
         proxy from the verified NextAuth session →
         ``find_person_by_email`` (primary address only — an alias never

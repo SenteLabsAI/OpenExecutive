@@ -784,7 +784,7 @@ async def create_slack_app():
 
                 speaker_label = (
                     getattr(sender_person, "display_name", None)
-                    or getattr(sender_person, "name", None)
+                    or getattr(sender_person, "full_name", None)
                     or slack_user_id
                 )
                 decision = await should_respond(
@@ -826,17 +826,15 @@ async def create_slack_app():
         # Fork the inbound message into the alerts triage pipeline. Runs in a
         # background thread/task so the reactive reply path is not delayed.
         try:
-            from openexecutive.alerts.models import AlertEvent
-            from openexecutive.alerts.pipeline import schedule_evaluation
+            from openexecutive.alerts.pipeline import schedule_chat_message_evaluation
 
-            schedule_evaluation(
-                AlertEvent(
-                    source="slack",
-                    external_id=str(event.get("ts") or thread_ts or ""),
-                    channel=event.get("channel"),
-                    user=slack_user_id,
-                    body=cleaned,
-                )
+            schedule_chat_message_evaluation(
+                source="slack",
+                external_id=str(event.get("ts") or thread_ts or ""),
+                channel=event.get("channel"),
+                body=cleaned,
+                sender=sender_person,
+                fallback_name=slack_user_id,
             )
         except Exception:
             logger.exception("Failed to schedule alert evaluation for Slack message")

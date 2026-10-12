@@ -128,9 +128,9 @@ def _format_event_block(event: AlertEvent) -> str:
     if event.from_:
         parts.append(f"from: {event.from_}")
     if event.channel:
-        parts.append(f"slack_channel: {event.channel}")
+        parts.append(f"channel: {event.channel}")
     if event.user:
-        parts.append(f"slack_user: {event.user}")
+        parts.append(f"sender: {event.user}")
     if event.title:
         parts.append(f"title: {event.title}")
     parts.append("---")
