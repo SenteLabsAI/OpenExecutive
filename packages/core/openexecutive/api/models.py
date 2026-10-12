@@ -261,6 +261,9 @@ class SessionSummary(BaseModel):
     # words (0 when only the title does) and the newest one around the match.
     match_count: int | None = None
     snippet: str | None = None
+    # Set on the plain list: the chat's last message as one line, "You: "
+    # before the person's own words, for a list that says what each chat is.
+    preview: str | None = None
 
 
 class TargetCustomerData(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,8 @@ def list_sessions(
     existed) are excluded — the comparison `NULL = ?` never matches in
     SQLite. Only the principal can still open them by id (see
     `api.routes.chat._session_access`).
+
+    Each row adds ``preview``: the last message as one line (``_preview``).
     """
     if not db_path.exists():
         return []
@@ -178,7 +181,7 @@ def list_sessions(
         rows = conn.execute(
             """
             SELECT s.session_id, s.title, s.created_at, s.updated_at,
-                   COUNT(m.id) AS message_count
+                   COUNT(m.id) AS message_count, MAX(m.id) AS last_id
             FROM sessions s
             LEFT JOIN chat_messages m ON m.session_id = s.session_id
             WHERE s.caller_person_id = ?
@@ -187,12 +190,53 @@ def list_sessions(
             """,
             (caller_person_id,),
         ).fetchall()
+        # Each chat's last message, by its id (the primary key), so the
+        # preview costs no second pass over the messages.
+        last_ids = [row["last_id"] for row in rows if row["last_id"] is not None]
+        last: dict[int, Any] = {}
+        for at in range(0, len(last_ids), _IN_BATCH):
+            batch = last_ids[at:at + _IN_BATCH]
+            marks = ",".join("?" * len(batch))
+            for msg in conn.execute(
+                f"SELECT id, role, content FROM chat_messages WHERE id IN ({marks})", batch
+            ):
+                last[msg["id"]] = msg
     # A chat-app conversation started with /new has a row before it has a
     # word in it; it shows once the first turn lands.
-    return [
-        dict(row) for row in rows
-        if row["message_count"] or not is_rolling(str(row["session_id"]))
-    ]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not row["message_count"] and is_rolling(str(row["session_id"])):
+            continue
+        item = {
+            k: row[k]
+            for k in ("session_id", "title", "created_at", "updated_at", "message_count")
+        }
+        msg = last.get(row["last_id"]) if row["last_id"] is not None else None
+        item["preview"] = _preview(msg["role"], msg["content"]) if msg is not None else None
+        out.append(item)
+    return out
+
+
+_PREVIEW_CHARS = 120
+# Ids per IN (...) query, under SQLite's bound-parameter limit.
+_IN_BATCH = 500
+# Markdown's marks, which read as noise in a one-line preview.
+_MARKDOWN_MARKS = re.compile(r"[*_`#>|]+|\[([^\]]*)\]\([^)]*\)")
+
+
+def _preview(role: str | None, content: str | None) -> str | None:
+    """The chat's last message as one plain line, about ``_PREVIEW_CHARS``
+    long, with "You: " before the person's own words; None for no message."""
+    if content is None:
+        return None
+    text = _MARKDOWN_MARKS.sub(lambda m: m.group(1) or " ", str(content))
+    text = " ".join(text.split())
+    if not text:
+        return None
+    if len(text) > _PREVIEW_CHARS:
+        cut = text.rfind(" ", 0, _PREVIEW_CHARS)
+        text = text[: cut if cut > _PREVIEW_CHARS // 2 else _PREVIEW_CHARS].rstrip(" ,.;:") + "…"
+    return f"You: {text}" if role == "user" else text
 
 
 _SEARCH_LIMIT = 50

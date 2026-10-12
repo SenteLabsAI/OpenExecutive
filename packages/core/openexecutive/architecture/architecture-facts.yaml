@@ -4588,6 +4588,12 @@ today:
     Read-side only — no writes happen here.
 
 chat:
+  chats_preview: |
+    GET /sessions (no q) gives each chat a preview: the last message as
+    one plain line (Markdown marks stripped, cut at a word near 120
+    chars), "You: " before the person's own words, null for an empty
+    chat. The list's GROUP BY takes MAX(m.id) per chat, then one
+    primary-key IN (...) lookup (batches of 500) reads those messages.
   chats_search: |
     GET /sessions?q= searches the caller's own chats (same scope as the
     list) by title and message text, case-insensitive with LIKE
