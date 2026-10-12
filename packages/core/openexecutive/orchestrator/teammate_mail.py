@@ -17,8 +17,11 @@ from chat) with three rules:
 2. **Mail is reached only by an id the conversation was shown.** Every other
    mail call that names a message or thread (read it, its attachments,
    reply in it, forward it, label it) must name one a filtered search or
-   list returned in this conversation (``Session.mail_ids_seen``), or the
-   inbound email the turn is answering. An id from anywhere else is refused.
+   list returned to this same reader in this conversation
+   (``Session.mail_ids_seen``), or the inbound email the turn is answering.
+   An id from anywhere else is refused. An Outlook call that forwards,
+   replies to or downloads from a message first reads who it is between,
+   and is refused when it is another teammate's.
 3. **Reads are filtered message by message.** A message, or a message inside
    a thread or batch, is another teammate's when an address of a rostered
    teammate other than the reader appears anywhere in it and none of the
@@ -29,7 +32,10 @@ from chat) with three rules:
 Outside mail (vendors, counsel, the principal's contacts) and the reader's
 own mail are untouched. The reader is the principal or a teammate on a
 surface that proved who they are, or the teammate whose own email the turn
-is answering; on any other turn every teammate's mail is left out. An
+is answering when Gmail authenticated it; on any other turn every
+teammate's mail is left out. A conversation in which a teammate other than
+the principal was shown their own mail becomes theirs alone, as Act as me's
+do (``session_store.mark_mail_private``). An
 unattended run, and the internal callers that reach the gateway directly
 (the email poller, the brief), are unaffected. Fails closed: when the roster
 can't be read, the call is refused.
@@ -104,6 +110,13 @@ SEARCH_REFUSED_NOTE = (
     "with a search or filter instead."
 )
 ROSTER_NOTE = "{tool} was not run: the roster could not be read. Try again."
+QUERY_NOTE = (
+    "{tool} was not run: close every quote and bracket in the query and try again."
+)
+OUTLOOK_THEIRS_NOTE = (
+    "{tool} was not run: that email involves another teammate and is their "
+    "own mail with the Executive, which is private to them."
+)
 
 
 @dataclass
@@ -111,7 +124,19 @@ class _Sides:
     reader: RosterAllow
     others: RosterAllow
     other_addresses: list[str]
+    reader_id: int | None = None
+    reader_is_principal: bool = False
     seen: set[str] = field(default_factory=set)
+
+    @property
+    def key(self) -> str:
+        return str(self.reader_id) if self.reader_id is not None else "-"
+
+    def saw(self, mail_id: str) -> bool:
+        return f"{self.key}:{mail_id}" in self.seen or f"*:{mail_id}" in self.seen
+
+    def remember(self, mail_id: str) -> None:
+        self.seen.add(f"{self.key}:{mail_id}")
 
 
 def _norm(name: str) -> str:
@@ -185,7 +210,11 @@ def _reader_id(session: Any) -> int | None:
     teammate = teammate_on_verified_surface(session)
     if teammate is not None:
         return int(teammate.id)
-    if str(getattr(session, "origin_channel", "") or "") == "email" and caller is not None:
+    if (
+        str(getattr(session, "origin_channel", "") or "") == "email"
+        and caller is not None
+        and getattr(session, "email_sender_authenticated", False) is True
+    ):
         person = get_person(int(caller))
         if person is not None and person.kind == "team" and not person.archived:
             return int(person.id) if person.id is not None else None
@@ -210,6 +239,8 @@ def _sides(session: Any) -> _Sides | None:
         reader=RosterAllow(reader),
         others=RosterAllow(others),
         other_addresses=sorted({a.strip().lower() for p in others for a in addresses_of(p) if a}),
+        reader_id=reader_id,
+        reader_is_principal=any(p.is_principal for p in reader),
         seen=seen if isinstance(seen, set) else set(),
     )
 
@@ -219,7 +250,7 @@ def allow_mail_ids(session: Any, *ids: str) -> None:
     turn is answering)."""
     seen = getattr(session, "mail_ids_seen", None)
     if isinstance(seen, set):
-        seen.update(i for i in ids if i)
+        seen.update(f"*:{i}" for i in ids if i)
 
 
 def _addresses(text: str) -> list[str]:
@@ -249,8 +280,24 @@ def _refusal(note: str) -> str:
 # ── before the call ──────────────────────────────────────────────────────
 
 
+def _balanced(query: str) -> bool:
+    """Whether the model's query leaves the exclusions appended to it alone:
+    quotes paired, brackets closed."""
+    if query.count('"') % 2:
+        return False
+    for open_, close in ("()", "{}"):
+        depth = 0
+        for ch in query:
+            depth += (ch == open_) - (ch == close)
+            if depth < 0:
+                return False
+        if depth:
+            return False
+    return True
+
+
 def _gmail_query(query: str, sides: _Sides) -> str:
-    excluded = " ".join(f"-from:{a} -to:{a} -cc:{a}" for a in sides.other_addresses)
+    excluded = " ".join(f"-{{from:{a} to:{a} cc:{a}}}" for a in sides.other_addresses)
     if not excluded:
         return query
     return f"({query}) {excluded}" if query.strip() else excluded
@@ -270,22 +317,24 @@ def _prepare(name: str, arguments: dict[str, Any], sides: _Sides) -> tuple[str |
     n = _norm(name)
     if _gmail(name):
         if n == _GW_PREFIX + "search_gmail_messages":
+            if not _balanced(str(arguments.get("query") or "")):
+                return _refusal(QUERY_NOTE.format(tool=name)), arguments
             return None, {
                 **arguments,
                 "query": _gmail_query(str(arguments.get("query") or ""), sides),
                 "include_headers": True,
             }
-        if any(i not in sides.seen for i in _gmail_ids(arguments)):
+        if any(not sides.saw(i) for i in _gmail_ids(arguments)):
             return _refusal(UNSEEN_ID_NOTE.format(tool=name)), arguments
         return None, arguments
     tail = n[len(_M365_PREFIX):]
     if "search" in tail and "onedrive" not in tail:
         return _refusal(SEARCH_REFUSED_NOTE.format(tool=name)), arguments
-    if any(i not in sides.seen for i in _m365_ids(arguments)):
+    if any(not sides.saw(i) for i in _m365_ids(arguments)):
         return _refusal(UNSEEN_ID_NOTE.format(tool=name)), arguments
     if tail in _M365_LIST_TOOLS or tail == "get_mail_message":
         return None, {
-            k: _with_party_fields(v) if str(k).lower() == "select" else v
+            k: _with_party_fields(v) if re.sub(r"[^a-z]", "", str(k).lower()) == "select" else v
             for k, v in arguments.items()
         }
     return None, arguments
@@ -305,12 +354,13 @@ def _filter_listing(text: str, sides: _Sides) -> str | None:
     body = text[head.end():body_end]
     starts = [m.start() for m in _SEARCH_ENTRY_RE.finditer(body)]
     if not starts:
-        return text
+        return "No messages to show."
     entries = [body[s:e] for s, e in zip(starts, [*starts[1:], len(body)], strict=True)]
     # An entry whose headers didn't come back can't be checked: dropped.
     kept = [e for e in entries if "From:" in e and not _theirs(e, _text_headers(e), sides)]
     for entry in kept:
-        sides.seen.update(_LISTED_ID_RE.findall(entry))
+        for mail_id in _LISTED_ID_RE.findall(entry):
+            sides.remember(mail_id)
     dropped = len(entries) - len(kept)
     if not dropped:
         return text
@@ -332,7 +382,9 @@ def _filter_thread(text: str, sides: _Sides) -> str:
         return text
     if not kept:
         return json.dumps({"withheld": True, "note": PRIVATE_NOTE})
-    return head + "".join(kept) + "\n" + _left_out(dropped)
+    # The head's subject is the first message's, which may be one left out.
+    head = "".join(line for line in head.splitlines(keepends=True) if line.startswith("Thread ID:"))
+    return head + "\n" + "".join(kept) + "\n" + _left_out(dropped)
 
 
 def _graph_parties(item: Any) -> str:
@@ -364,7 +416,7 @@ def _filter_graph(text: str, sides: _Sides, listing: bool) -> str:
         if listing:
             for item in kept:
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
-                    sides.seen.add(item["id"])
+                    sides.remember(item["id"])
         dropped = len(items) - len(kept)
         if not dropped:
             return text
@@ -424,6 +476,45 @@ async def _quotes_teammate(call: CallTool, arguments: dict[str, Any], sides: _Si
     return not isinstance(text, str) or _filter_thread(text, sides) != text
 
 
+_M365_PARTY_READ = _M365_PARTY_FIELDS + ",body"
+
+
+async def _outlook_theirs(call: CallTool, name: str, arguments: dict[str, Any], sides: _Sides) -> bool:
+    """Whether an Outlook call that acts on a message (forward, reply, an
+    attachment) names another teammate's. A failed read counts as yes."""
+    tail = _norm(name)[len(_M365_PREFIX):]
+    if tail == "get_mail_message" or tail in _M365_LIST_TOOLS:
+        return False
+    for message_id in set(_m365_ids(arguments)):
+        try:
+            text = await call({
+                "name": _M365_PREFIX + "get-mail-message",
+                "arguments": {"messageId": message_id, "select": _M365_PARTY_READ},
+            })
+            data = json.loads(text)
+        except Exception:
+            logger.warning("teammate_mail: Outlook party read failed — refusing", exc_info=True)
+            return True
+        if not isinstance(data, dict) or "error" in data or _graph_theirs(data, sides):
+            return True
+    return False
+
+
+def _keep_private(session: Any, sides: _Sides) -> None:
+    """A teammate other than the principal was shown their own mail: the
+    conversation becomes theirs alone, as Act as me's do."""
+    session_id = getattr(session, "session_id", None)
+    if sides.reader_id is None or sides.reader_is_principal or not session_id:
+        return
+    from openexecutive.delegation.settings import history_len
+    from openexecutive.memory.session_store import mark_mail_private
+
+    try:
+        mark_mail_private(str(session_id), sides.reader_id, history_len=history_len(session))
+    except Exception:
+        logger.exception("teammate_mail: couldn't mark the conversation private")
+
+
 def guard_call_tool(call: CallTool) -> CallTool:
     """``call`` with the module's rules on every mailbox call the model makes."""
     from openexecutive.orchestrator.schedule_tools import current_session
@@ -451,9 +542,30 @@ def guard_call_tool(call: CallTool) -> CallTool:
             return refused
         if _gmail(name) and await _quotes_teammate(call, arguments, sides):
             return _refusal(QUOTE_NOTE.format(tool=name))
+        if not _gmail(name) and await _outlook_theirs(call, name, arguments, sides):
+            return _refusal(OUTLOOK_THEIRS_NOTE.format(tool=name))
         result = await call({**tool_input, "arguments": arguments})
         if not isinstance(result, str):
             return result
-        return _filter(name, result, sides)
+        filtered = _filter(name, result, sides)
+        if any(a in sides.reader for a in _addresses(filtered)):
+            _keep_private(session, sides)
+        return filtered
 
     return guarded
+
+
+def guard_in_turn(call: CallTool) -> CallTool:
+    """``guard_call_tool`` for a caller that runs both inside a chat turn and
+    on its own (a workflow step, the reflection pass): guarded while a
+    session is bound, as it is when the chat started it."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    guarded = guard_call_tool(call)
+
+    async def maybe(tool_input: dict[str, Any]) -> str:
+        if current_session.get() is None:
+            return await call(tool_input)
+        return await guarded(tool_input)
+
+    return maybe

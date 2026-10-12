@@ -39,6 +39,13 @@ _SENSITIVE_SUBSTRINGS = (
     "apikey",
     # Email/chat content tools — bodies are too long and may contain PII.
     "get_gmail_message_content",
+    # The rest of Gmail's readers: a thread, a batch, a search listing
+    # (subjects and senders) and an attachment.
+    "gmail_thread",
+    "gmail_threads",
+    "gmail_messages_content",
+    "search_gmail_messages",
+    "gmail_attachment",
     "read_file_content",
     "download_file_content",
     "get_thread",

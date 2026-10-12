@@ -493,12 +493,16 @@ def _with_lead_tools(
         return tools, handlers, False
     if gateway is None:
         return tools, handlers, True
+    from openexecutive.orchestrator.teammate_mail import guard_in_turn
+
     extra = [t for t in MCP_TOOLS if t["name"] in ("search_tools", "call_tool")]
     tools = sorted([*tools, *extra], key=lambda t: t["name"])
     handlers = {
         **handlers,
         "search_tools": gateway.search_tools,
-        "call_tool": take_the_lead.gated_call_tool(gateway.call_tool, source="reflection"),
+        # Run from a chat turn, the pass reaches the mailbox the way the chat
+        # does (orchestrator.teammate_mail).
+        "call_tool": guard_in_turn(take_the_lead.gated_call_tool(gateway.call_tool, source="reflection")),
     }
     return tools, handlers, True
 

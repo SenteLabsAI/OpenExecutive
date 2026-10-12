@@ -147,6 +147,10 @@ class Session:
     # (``orchestrator.fact_tools``) — a From line alone proves nothing.
     email_from: str = ""
     email_authenticated: bool = False
+    # Whether Gmail authenticated the From of a teammate's (not the
+    # principal's) inbound email: only then does the turn read the mailbox as
+    # that teammate (orchestrator.teammate_mail).
+    email_sender_authenticated: bool = False
     # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
     # pinned at its start by ``pin_turn_delegation``: whether the speaker has
     # it on, whether ``ghostwrite_email`` is offered, and whether the turn has

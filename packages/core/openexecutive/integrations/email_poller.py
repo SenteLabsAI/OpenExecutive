@@ -799,6 +799,19 @@ async def _run_executive(
         session.email_authenticated = bool(principal) and session.email_from == principal and (
             await sender_authenticated(gateway, message_id, from_addr)
         )
+        if not session.email_authenticated:
+            # A teammate's own mail is theirs to read back only when Gmail
+            # vouches the email is from them (orchestrator.teammate_mail).
+            from openexecutive.people.identity import resolve_email_sender
+
+            try:
+                sender = resolve_email_sender(from_addr)
+                if sender is not None and not sender.is_principal:
+                    session.email_sender_authenticated = await sender_authenticated(
+                        gateway, message_id, from_addr
+                    )
+            except Exception:  # noqa: BLE001 - optional step; must not lose the email.
+                logger.warning("sender check failed; teammate mail stays private this turn", exc_info=True)
     if from_addr:
         # Only register the sender as a schedulable channel_ref if they
         # are in the People roster. Without this guard, an attacker who

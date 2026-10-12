@@ -30,9 +30,9 @@ from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic
 from openexecutive.orchestrator.schedule_tools import current_session
 from openexecutive.orchestrator.session import Session
-from tests.unit.offered_tools import capture_offered
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
+from tests.unit.offered_tools import capture_offered
 
 EXEC = "exec@example.com"
 OWNER_EMAIL = "olivia@co.example"
@@ -1253,6 +1253,11 @@ def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], 
     import openexecutive.orchestrator.mcp_gateway as gw_module
 
     gateway, reached = _real_gateway()
+    # The round reads message m1 as if a search had shown it: the chat reaches
+    # mail only by an id it was shown (orchestrator.teammate_mail).
+    from openexecutive.orchestrator.teammate_mail import allow_mail_ids
+
+    allow_mail_ids(session, "m1")
     with patch.object(gw_module, "get_settings",
                       return_value=SimpleNamespace(exec_email_address=EXEC)):
         provider = _run_loop(session, _mcp_round(), gateway=gateway)
