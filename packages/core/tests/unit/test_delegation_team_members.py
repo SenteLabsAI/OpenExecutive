@@ -187,18 +187,21 @@ def test_a_teammates_mail_turn_writes_their_rows(roster: SimpleNamespace, db: Pa
     assert row is not None and row.private_to_person == roster.teammate
 
 
-def test_the_audit_route_hides_a_teammates_row_from_the_principal(
+def test_the_audit_route_shows_the_principal_only_a_teammates_action(
     roster: SimpleNamespace, db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from openexecutive.api.routes import audit as audit_route
 
     log = AuditLogger(db)
     with rows_for_person(roster.teammate):
-        mine = log.log("delegation_inbox_scanned", "Checked")
+        mine = log.log("delegation_inbox_scanned", "Checked the invoice from Acme",
+                       details={"subject": "Invoice 7"}, full={"body": "..."})
     monkeypatch.setattr(audit_route, "_resolve_logger", lambda request: log)
     app = FastAPI()
     app.include_router(audit_route.router)
-    assert TestClient(app).get(f"/audit/logs/{mine}", headers=OWNER).status_code == 404
+    got = TestClient(app).get(f"/audit/logs/{mine}", headers=OWNER).json()
+    assert got["summary"].startswith("delegation_inbox_scanned (")
+    assert got["details"] == {} and got["full"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -259,12 +262,15 @@ def test_a_conversation_that_read_their_mail_is_theirs_alone(
         session_store, "session_mail_private", partial(session_store.session_mail_private, db_path=db)
     )
 
-    session_store.create_session("s-ben", "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
+    # A channel thread Ben started: the principal may open it until it reads
+    # Ben's mail (his own chats are his alone from the start).
+    sid = "slack:thread:C1:1700000000.001"
+    session_store.create_session(sid, "Inbox", "2026-10-01T00:00:00+00:00", roster.teammate, db_path=db)
     request: Any = SimpleNamespace(headers={}, client=None, state=SimpleNamespace())
-    assert _session_access(request, "s-ben", roster.principal) == "allowed"
-    session_store.mark_mail_private("s-ben", roster.teammate, db_path=db)
-    assert _session_access(request, "s-ben", roster.principal) == "forbidden"
-    assert _session_access(request, "s-ben", roster.teammate) == "allowed"
+    assert _session_access(request, sid, roster.principal) == "allowed"
+    session_store.mark_mail_private(sid, roster.teammate, db_path=db)
+    assert _session_access(request, sid, roster.principal) == "forbidden"
+    assert _session_access(request, sid, roster.teammate) == "allowed"
 
 
 def test_marking_creates_a_channel_conversation_with_its_owner(roster: SimpleNamespace, db: Path) -> None:

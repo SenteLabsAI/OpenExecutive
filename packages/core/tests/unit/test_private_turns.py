@@ -8,6 +8,7 @@ row on the principal's own turn that names one of their contacts, and the
 tools that post to other people, publish where they read, or start work
 outside the turn are neither offered to it nor run for it.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -65,16 +66,28 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 @pytest.fixture
 def roster() -> SimpleNamespace:
     principal = people_store.upsert_person(
-        full_name="Olivia Owner", is_principal=True, email=OWNER_EMAIL,
-        slack_user_id="U_OWNER", discord_user_id="1001", telegram_chat_id="5001",
+        full_name="Olivia Owner",
+        is_principal=True,
+        email=OWNER_EMAIL,
+        slack_user_id="U_OWNER",
+        discord_user_id="1001",
+        telegram_chat_id="5001",
     )
     teammate = people_store.upsert_person(
-        full_name="Ben Teammate", role="Ops", email=TEAM_EMAIL,
-        slack_user_id="U_BEN", discord_user_id="1002", telegram_chat_id="5002",
+        full_name="Ben Teammate",
+        role="Ops",
+        email=TEAM_EMAIL,
+        slack_user_id="U_BEN",
+        discord_user_id="1002",
+        telegram_chat_id="5002",
     )
     contact = people_store.upsert_person(
-        full_name="Jordan Client", role="Head of Procurement, Acme", email=CONTACT_EMAIL,
-        slack_user_id="U_JORDAN", discord_user_id="2002", telegram_chat_id="6002",
+        full_name="Jordan Client",
+        role="Head of Procurement, Acme",
+        email=CONTACT_EMAIL,
+        slack_user_id="U_JORDAN",
+        discord_user_id="2002",
+        telegram_chat_id="6002",
         kind="contact",
     )
     people_registry.invalidate()
@@ -126,16 +139,23 @@ def test_every_row_a_private_turn_writes_is_private(roster: SimpleNamespace) -> 
         _audit().log("tool_invocation", "mcp:send_gmail_message to the principal")
         # A caller cannot make a private turn's row public.
         log_event("memory_snapshot", "snapshot", private=False)
-    with _turn(Session(from_web_chat=True, caller_person_id=roster.teammate)):
+    with _turn(_principal_web(roster)):
+        log_event("chat_turn", "Executive: the principal's own turn")
+    with _turn(_teammate_web(roster)):
+        # A teammate's own turn is theirs alone, the principal included.
         log_event("chat_turn", "Executive: the teammate's own turn")
     log_event("scheduled_action", "no turn at all")
     assert _private_flags() == {
         "Executive: Jordan wants pricing by Friday": True,
         "mcp:send_gmail_message to the principal": True,
         "snapshot": True,
-        "Executive: the teammate's own turn": False,
+        "Executive: the principal's own turn": False,
         "no turn at all": False,
     }
+    owned = _audit().query(owned_by=roster.teammate, only_owned=True)
+    assert [(e.summary, e.private_to_person) for e in owned] == [
+        ("Executive: the teammate's own turn", roster.teammate)
+    ]
 
 
 def test_a_caller_can_mark_a_row_private() -> None:
@@ -151,60 +171,75 @@ def test_a_private_alert_is_audited_privately(
 
     events: list[Any] = []
     monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", events.append)
-    payload = {"subject": "Jordan asked about pricing", "body": "Needs an answer by Friday",
-               "from_address": CONTACT_EMAIL}
+    payload = {
+        "subject": "Jordan asked about pricing",
+        "body": "Needs an answer by Friday",
+        "from_address": CONTACT_EMAIL,
+    }
     with _turn(_private_turn(roster)):
         asyncio.run(handle_create_alert(payload))
     with _turn(_teammate_web(roster)):
         asyncio.run(handle_create_alert({"subject": "Server down", "body": "..."}))
     assert [e.private for e in events] == [True, False]
-    assert _private_flags() == {
-        "Alert: Jordan asked about pricing": True,
-        "Alert: Server down": False,
-    }
+    assert _private_flags() == {"Alert: Jordan asked about pricing": True}
+    # The teammate's own turn: its row is theirs.
+    owned = _audit().query(owned_by=roster.teammate, only_owned=True)
+    assert [e.summary for e in owned] == ["Alert: Server down"]
 
 
 _NAMING_A_CONTACT: dict[str, Any] = {
     # An email to them, in any case, as a display-name address.
-    "gmail": lambda r: {"full": {"input": {
-        "name": "google_workspace__send_gmail_message",
-        "arguments": {"to": f"Jordan <{CONTACT_EMAIL.upper()}>"},
-    }}},
+    "gmail": lambda r: {
+        "full": {
+            "input": {
+                "name": "google_workspace__send_gmail_message",
+                "arguments": {"to": f"Jordan <{CONTACT_EMAIL.upper()}>"},
+            }
+        }
+    },
     "message_person": lambda r: {"full": {"input": {"person_id": r.contact}}},
     "invite": lambda r: {"full": {"input": {"attendee_person_ids": [r.teammate, r.contact]}}},
     "slack_dm": lambda r: {"full": {"input": {"user_id": "U_JORDAN"}}},
     "telegram_dm": lambda r: {"full": {"input": {"chat_id": "6002"}}},
     # A tool result (JSON in a string) about them.
-    "result": lambda r: {"details": {
-        "result_preview": json.dumps({"person_id": r.contact, "found": True}),
-    }},
+    "result": lambda r: {
+        "details": {
+            "result_preview": json.dumps({"person_id": r.contact, "found": True}),
+        }
+    },
     # The reply naming them in full, however it is spaced or cased.
     "reply": lambda r: {"summary": "Executive: I emailed jordan  CLIENT about the renewal"},
 }
 
 
 @pytest.mark.parametrize("case", sorted(_NAMING_A_CONTACT))
-def test_the_principals_row_naming_a_contact_is_private(
-    roster: SimpleNamespace, case: str
-) -> None:
+def test_the_principals_row_naming_a_contact_is_private(roster: SimpleNamespace, case: str) -> None:
     row = _NAMING_A_CONTACT[case](roster)
     summary = row.get("summary", f"tool_invocation {case}")
     with _turn(_principal_web(roster)):
-        _audit().log("tool_invocation", summary,
-                     details=row.get("details"), full=row.get("full"))
+        _audit().log("tool_invocation", summary, details=row.get("details"), full=row.get("full"))
     assert _private_flags() == {summary: True}
 
 
 def test_the_principals_other_rows_stay_visible(roster: SimpleNamespace) -> None:
     with _turn(_principal_web(roster)):
-        _audit().log("tool_invocation", "mcp:send_gmail_message",
-                     full={"input": {"arguments": {"to": TEAM_EMAIL}}})
-        _audit().log("tool_invocation", "skill:message_person",
-                     full={"input": {"person_id": roster.teammate, "text": "Jordan"}})
+        _audit().log(
+            "tool_invocation",
+            "mcp:send_gmail_message",
+            full={"input": {"arguments": {"to": TEAM_EMAIL}}},
+        )
+        _audit().log(
+            "tool_invocation",
+            "skill:message_person",
+            full={"input": {"person_id": roster.teammate, "text": "Jordan"}},
+        )
         # Look-alikes: another address containing the contact's, a bare first
         # name, the contact's id where it is not a person, a goal id.
-        _audit().log("tool_invocation", "skill:update_department_goal",
-                     full={"input": {"goal_id": roster.contact, "note": f"x{CONTACT_EMAIL}"}})
+        _audit().log(
+            "tool_invocation",
+            "skill:update_department_goal",
+            full={"input": {"goal_id": roster.contact, "note": f"x{CONTACT_EMAIL}"}},
+        )
         _audit().log("chat_turn", "Executive: Jordan's team is in Acme")
     assert set(_private_flags().values()) == {False}
 
@@ -221,8 +256,16 @@ def test_a_row_naming_a_contact_off_the_principals_turn_stays_as_it_is(
         "none": None,
     }[session_key]
     with _turn(session):
-        _audit().log("tool_invocation", "mcp:send_gmail_message blocked",
-                     full={"input": {"arguments": {"to": CONTACT_EMAIL}}})
+        _audit().log(
+            "tool_invocation",
+            "mcp:send_gmail_message blocked",
+            full={"input": {"arguments": {"to": CONTACT_EMAIL}}},
+        )
+    if session_key == "teammate_web":
+        # The teammate's own turn: the row is theirs, and they read it.
+        owned = _audit().query(owned_by=roster.teammate, only_owned=True)
+        assert [e.summary for e in owned] == ["mcp:send_gmail_message blocked"]
+        return
     assert _private_flags() == {"mcp:send_gmail_message blocked": False}
 
 
@@ -242,8 +285,11 @@ def test_a_row_written_under_a_grant_naming_a_contact_is_private(roster: SimpleN
     from openexecutive.orchestrator.people_tools import grant_contact_egress
 
     with grant_contact_egress():
-        _audit().log("tool_invocation", "mcp:manage_event",
-                     full={"input": {"arguments": {"attendees": [OWNER_EMAIL, CONTACT_EMAIL]}}})
+        _audit().log(
+            "tool_invocation",
+            "mcp:manage_event",
+            full={"input": {"arguments": {"attendees": [OWNER_EMAIL, CONTACT_EMAIL]}}},
+        )
     assert _private_flags() == {"mcp:manage_event": True}
 
 
@@ -298,15 +344,16 @@ def _handle(raw: str) -> list[tuple[str, bool]]:
         patch.object(poller, "_mark_read", new=AsyncMock()),
     ):
         asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
-    return _without_roster_rows([
-        (e.event_type, e.private) for e in _audit().query(limit=1000) if e.id not in before
-    ])
+    return _without_roster_rows(
+        [(e.event_type, e.private) for e in _audit().query(limit=1000) if e.id not in before]
+    )
 
 
 def _without_roster_rows(rows: list[Any]) -> list[Any]:
     """The rows about the mail itself. A stranger's mail also opens a roster
     request ("who is this?"): those rows are the principal's alone whatever
     the mail, so they are checked here and set aside."""
+
     def event(row: Any) -> str:
         return row[0] if isinstance(row, tuple) else row.event_type
 
@@ -318,13 +365,16 @@ def _without_roster_rows(rows: list[Any]) -> list[Any]:
     return [r for r in rows if not event(r).startswith("roster_")]
 
 
-@pytest.mark.parametrize(("sender", "body", "private"), [
-    (CONTACT_EMAIL, "Body text here.", True),
-    (OWNER_EMAIL, FORWARDED_BODY, True),
-    (OWNER_EMAIL, "Remind me about Acme.", False),
-    (TEAM_EMAIL, "Body text here.", False),
-    ("stranger@elsewhere.example", "Body text here.", False),
-])
+@pytest.mark.parametrize(
+    ("sender", "body", "private"),
+    [
+        (CONTACT_EMAIL, "Body text here.", True),
+        (OWNER_EMAIL, FORWARDED_BODY, True),
+        (OWNER_EMAIL, "Remind me about Acme.", False),
+        (TEAM_EMAIL, "Body text here.", False),
+        ("stranger@elsewhere.example", "Body text here.", False),
+    ],
+)
 def test_the_poller_rows_about_private_mail_are_private(
     roster: SimpleNamespace, sender: str, body: str, private: bool
 ) -> None:
@@ -364,8 +414,13 @@ def _audited_retrieve(query: str = "", **_kw: Any) -> str:
     from openexecutive.knowledge import retriever
 
     retriever._emit_retrieval_audit(
-        query=query, domain_filter=None, specialist_name=None, builtin_results=[],
-        company_results=[], annotation_count=0, collection="builtin",
+        query=query,
+        domain_filter=None,
+        specialist_name=None,
+        builtin_results=[],
+        company_results=[],
+        annotation_count=0,
+        collection="builtin",
     )
     return ""
 
@@ -405,20 +460,25 @@ def _handle_through_the_turn(raw: str) -> list[Any]:
         patch.object(poller, "_mark_read", new=_mark_read),
         patch("openexecutive.knowledge.retriever.retrieve", side_effect=_audited_retrieve),
         patch("openexecutive.memory.episodic.format_for_prompt", return_value=""),
-        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
-              return_value=CompanyProfile()),
+        patch(
+            "openexecutive.onboarding.profile_builder.load_or_create_profile",
+            return_value=CompanyProfile(),
+        ),
         patch("openexecutive.orchestrator.executive.Executive", _ReplyingExecutive),
     ):
         asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
     return _new_rows(before)
 
 
-@pytest.mark.parametrize(("sender", "body", "private"), [
-    (CONTACT_EMAIL, "Body text here.", True),
-    (OWNER_EMAIL, FORWARDED_BODY, True),
-    (TEAM_EMAIL, "Body text here.", False),
-    ("stranger@elsewhere.example", "Body text here.", False),
-])
+@pytest.mark.parametrize(
+    ("sender", "body", "private"),
+    [
+        (CONTACT_EMAIL, "Body text here.", True),
+        (OWNER_EMAIL, FORWARDED_BODY, True),
+        (TEAM_EMAIL, "Body text here.", False),
+        ("stranger@elsewhere.example", "Body text here.", False),
+    ],
+)
 def test_every_row_written_while_a_private_mail_is_handled_is_private(
     roster: SimpleNamespace, sender: str, body: str, private: bool
 ) -> None:
@@ -434,6 +494,41 @@ def test_every_row_written_while_a_private_mail_is_handled_is_private(
     # The scope ends with the mail's handling.
     log_event("chat_turn", "after the mail")
     assert _private_flags()["after the mail"] is False
+
+
+def test_a_teammates_authenticated_mail_is_theirs_alone(roster: SimpleNamespace) -> None:
+    # Gmail vouches the mail is the teammate's: every row of its handling is
+    # theirs. (Unauthenticated, as above, it stays where the principal reads
+    # it, so a forged From can't hide a turn from them.)
+    before = {e.id for e in _audit().query(limit=1000, owned_by=roster.teammate)}
+    with patch(
+        "openexecutive.integrations.fact_confirmation.sender_authenticated",
+        new=AsyncMock(return_value=True),
+    ):
+        public = _handle_through_the_turn(_raw(TEAM_EMAIL, "Body text here."))
+    assert _without_roster_rows(public) == []
+    rows = [e for e in _audit().query(limit=1000, owned_by=roster.teammate) if e.id not in before]
+    assert {"knowledge_retrieval", "integration_inbound", "chat_turn"} <= {
+        e.event_type for e in rows
+    }
+    assert {e.private_to_person for e in rows} == {roster.teammate}
+
+
+def test_a_teammates_mail_whose_check_fails_keeps_the_ordinary_rule(
+    roster: SimpleNamespace,
+) -> None:
+    # A forged From reads as unauthenticated (the case above), and a check
+    # that raises does too: the mail is still handled, its rows where the
+    # principal reads them.
+    with patch(
+        "openexecutive.integrations.fact_confirmation.sender_authenticated",
+        new=AsyncMock(side_effect=RuntimeError("gmail down")),
+    ):
+        rows = _without_roster_rows(_handle_through_the_turn(_raw(TEAM_EMAIL, "Body text here.")))
+    assert {"knowledge_retrieval", "integration_inbound", "chat_turn"} <= {
+        e.event_type for e in rows
+    }
+    assert {e.private_to_person for e in rows} == {None}
 
 
 # --- Chat messages from the principal, before their turn binds its session --
@@ -459,12 +554,16 @@ def _chat_adapter_stubs() -> Iterator[None]:
         patch("openexecutive.memory.session_store.create_session"),
         patch("openexecutive.memory.session_store.save_message"),
         patch("openexecutive.memory.session_store.update_session_timestamp"),
-        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
-              return_value=CompanyProfile()),
+        patch(
+            "openexecutive.onboarding.profile_builder.load_or_create_profile",
+            return_value=CompanyProfile(),
+        ),
         patch("openexecutive.alerts.pipeline.schedule_evaluation"),
         patch("openexecutive.mcp_server.server.get_store", return_value=None),
-        patch("openexecutive.workflows.inbound_resolver.resolve_inbound_message",
-              new=AsyncMock(return_value=None)),
+        patch(
+            "openexecutive.workflows.inbound_resolver.resolve_inbound_message",
+            new=AsyncMock(return_value=None),
+        ),
         patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=None),
     ):
         yield
@@ -492,8 +591,13 @@ def _slack(monkeypatch: pytest.MonkeyPatch, user: str, text: str) -> list[Any]:
         AsyncMock(return_value={"user_id": "UBOT"}),
     )
     monkeypatch.setattr(slack_bot, "_bot_user_id", None)
-    event = {"text": text, "user": user, "channel": "D1", "channel_type": "im",
-             "ts": "1700000000.0"}
+    event = {
+        "text": text,
+        "user": user,
+        "channel": "D1",
+        "channel_type": "im",
+        "ts": "1700000000.0",
+    }
 
     async def _go() -> None:
         app, handler = await slack_bot.create_slack_app()
@@ -523,11 +627,19 @@ def _discord(user: str, text: str) -> list[Any]:
 
     before = {e.id for e in _audit().query(limit=1000)}
     with _chat_adapter_stubs():
-        asyncio.run(discord_bot._handle_message(
-            text=text, discord_user_id=user, discord_channel="dm-1", message_id="m1",
-            thread_id=None, send_fn=AsyncMock(), is_dm=True,
-            session_id=f"discord:user:{user}", session_title="DM",
-        ))
+        asyncio.run(
+            discord_bot._handle_message(
+                text=text,
+                discord_user_id=user,
+                discord_channel="dm-1",
+                message_id="m1",
+                thread_id=None,
+                send_fn=AsyncMock(),
+                is_dm=True,
+                session_id=f"discord:user:{user}",
+                session_title="DM",
+            )
+        )
     return _new_rows(before)
 
 
@@ -544,10 +656,15 @@ def _telegram(chat_id: str, text: str, verified: bool = True) -> list[Any]:
         patch("openexecutive.config.get_settings", return_value=settings),
         patch.object(telegram_bot, "send_message", new=AsyncMock(return_value=None)),
     ):
-        asyncio.run(telegram_bot._process_and_reply(
-            message_text=text, sender_name="someone", chat_id=int(chat_id),
-            message_id=1, token="t",
-        ))
+        asyncio.run(
+            telegram_bot._process_and_reply(
+                message_text=text,
+                sender_name="someone",
+                chat_id=int(chat_id),
+                message_id=1,
+                token="t",
+            )
+        )
     return _new_rows(before)
 
 
@@ -584,8 +701,10 @@ def _web(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, email: str, text: str)
         patch("openexecutive.utils.session_title.generate_session_title", _no_title),
         patch("openexecutive.orchestrator.executive.Executive", _Streaming),
         patch("openexecutive.knowledge.retriever.retrieve", side_effect=_audited_retrieve),
-        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
-              return_value=CompanyProfile()),
+        patch(
+            "openexecutive.onboarding.profile_builder.load_or_create_profile",
+            return_value=CompanyProfile(),
+        ),
     ):
         response = TestClient(app).post(
             "/chat", json={"message": text}, headers={"x-caller-email": email}
@@ -616,8 +735,12 @@ def _surface_rows(
 
 # The row each surface writes with the message text before the turn binds
 # its session, besides the knowledge retrieval.
-_FIRST_ROW = {"slack": "integration_inbound", "discord": "integration_inbound",
-              "telegram": "integration_inbound", "web": "chat_turn"}
+_FIRST_ROW = {
+    "slack": "integration_inbound",
+    "discord": "integration_inbound",
+    "telegram": "integration_inbound",
+    "web": "chat_turn",
+}
 
 
 @pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
@@ -634,22 +757,39 @@ def test_the_principals_rows_naming_a_contact_are_private_before_the_turn_binds(
 
 
 @pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
-@pytest.mark.parametrize(("who", "text"), [
-    ("principal", _NAMES_NOBODY),
-    # On a teammate's turn a contact is a stranger: hiding the row would tell
-    # them the address is one.
-    ("teammate", _NAMES_A_CONTACT),
-])
 def test_other_chat_rows_stay_visible(
-    roster: SimpleNamespace, surface: str, who: str, text: str,
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    roster: SimpleNamespace,
+    surface: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    rows = _surface_rows(surface, who, text, monkeypatch, tmp_path)
+    rows = _surface_rows(surface, "principal", _NAMES_NOBODY, monkeypatch, tmp_path)
     flags = _flags_by_type(rows)
     assert flags[_FIRST_ROW[surface]] == {False}
     assert flags["knowledge_retrieval"] == {False}
     if surface == "web":
         assert flags["memory_snapshot"] == {False}
+
+
+@pytest.mark.parametrize("surface", ["slack", "discord", "telegram", "web"])
+def test_a_teammates_chat_rows_are_theirs_alone(
+    roster: SimpleNamespace,
+    surface: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Every row of a teammate's own turn, the ones written before it binds
+    # its session included, is theirs: not the principal's to read either.
+    before = {e.id for e in _audit().query(limit=1000, owned_by=roster.teammate)}
+    assert _surface_rows(surface, "teammate", _NAMES_A_CONTACT, monkeypatch, tmp_path) == []
+    rows = [e for e in _audit().query(limit=1000, owned_by=roster.teammate) if e.id not in before]
+    owners = {}
+    for e in rows:
+        owners.setdefault(e.event_type, set()).add(e.private_to_person)
+    assert owners[_FIRST_ROW[surface]] == {roster.teammate}
+    assert owners["knowledge_retrieval"] == {roster.teammate}
+    if surface == "web":
+        assert owners["memory_snapshot"] == {roster.teammate}
 
 
 def test_an_unverified_telegram_chat_is_not_the_principals_turn(roster: SimpleNamespace) -> None:
@@ -679,15 +819,108 @@ def test_a_failed_sender_lookup_counts_as_not_the_principal(roster: SimpleNamesp
         _chat_adapter_stubs(),
         patch.object(store, "find_person_by_discord_id", _first_lookup_fails),
     ):
-        asyncio.run(discord_bot._handle_message(
-            text=_NAMES_A_CONTACT, discord_user_id="1001", discord_channel="dm-1",
-            message_id="m1", thread_id=None, send_fn=AsyncMock(), is_dm=True,
-            session_id="discord:user:1001", session_title="DM",
-        ))
+        asyncio.run(
+            discord_bot._handle_message(
+                text=_NAMES_A_CONTACT,
+                discord_user_id="1001",
+                discord_channel="dm-1",
+                message_id="m1",
+                thread_id=None,
+                send_fn=AsyncMock(),
+                is_dm=True,
+                session_id="discord:user:1001",
+                session_title="DM",
+            )
+        )
     assert len(calls) > 1  # the handler went on past the failed lookup
     flags = _flags_by_type(_new_rows(before))
     assert flags["integration_inbound"] == {False}
     assert flags["knowledge_retrieval"] == {False}
+
+
+def test_an_unverified_telegram_chat_is_not_the_teammates_own_turn(roster: SimpleNamespace) -> None:
+    # Anyone can post an update naming the teammate's chat id without the
+    # webhook secret, so it can't hide a turn from the principal.
+    rows = _telegram("5002", _NAMES_NOBODY, verified=False)
+    assert rows and {e.private_to_person for e in rows} == {None}
+
+
+def test_a_failed_sender_lookup_keeps_a_teammates_rows_where_the_principal_reads_them(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.integrations import discord_bot
+    from openexecutive.people import store
+
+    real = store.find_person_by_discord_id
+    calls: list[str] = []
+
+    def _first_lookup_fails(ref: str, *a: Any, **k: Any) -> Any:
+        calls.append(ref)
+        if len(calls) == 1:
+            raise OSError("roster unreadable")
+        return real(ref, *a, **k)
+
+    before = {e.id for e in _audit().query(limit=1000)}
+    with (
+        _chat_adapter_stubs(),
+        patch.object(store, "find_person_by_discord_id", _first_lookup_fails),
+    ):
+        asyncio.run(
+            discord_bot._handle_message(
+                text=_NAMES_NOBODY,
+                discord_user_id="1002",
+                discord_channel="dm-1",
+                message_id="m1",
+                thread_id=None,
+                send_fn=AsyncMock(),
+                is_dm=True,
+                session_id="discord:user:1002",
+                session_title="DM",
+            )
+        )
+    assert len(calls) > 1
+    flags = _flags_by_type(_new_rows(before))
+    assert flags["integration_inbound"] == {False}
+
+
+def test_sent_by_teammate(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.orchestrator.people_tools import sent_by_teammate
+
+    def person(pid: int) -> Any:
+        return people_store.get_person(pid)
+
+    assert sent_by_teammate("slack", "U_BEN", person(roster.teammate)) == roster.teammate
+    assert sent_by_teammate("discord", "1002", person(roster.teammate)) == roster.teammate
+    # The principal, a contact, nobody: not a teammate's own turn.
+    assert sent_by_teammate("slack", "U_OWNER", person(roster.principal)) is None
+    assert sent_by_teammate("slack", "U_JORDAN", person(roster.contact)) is None
+    assert sent_by_teammate("slack", "U_X", None) is None
+    # A surface that proves nobody: Google Chat, or Telegram without the secret.
+    assert sent_by_teammate("google_chat", "x", person(roster.teammate)) is None
+    unverified = get_settings().model_copy(update={"telegram_webhook_secret": None})
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: unverified)
+    assert sent_by_teammate("telegram", "5002", person(roster.teammate)) is None
+
+
+def test_teammate_turn_owner(roster: SimpleNamespace) -> None:
+    from openexecutive.orchestrator.people_tools import teammate_turn_owner
+
+    assert teammate_turn_owner(_teammate_web(roster)) == roster.teammate
+    assert teammate_turn_owner(_principal_web(roster)) is None
+    assert teammate_turn_owner(None) is None
+    unattended = _teammate_web(roster)
+    unattended.unattended = True
+    assert teammate_turn_owner(unattended) is None
+    email = Session(
+        session_id="email:t3",
+        origin_channel="email",
+        email_from=TEAM_EMAIL,
+        caller_person_id=roster.teammate,
+    )
+    assert teammate_turn_owner(email) is None  # a From header proves nothing
+    email.email_sender_authenticated = True
+    assert teammate_turn_owner(email) == roster.teammate
 
 
 def test_unscoped_audit_rows_clears_both_scopes_and_puts_them_back(
@@ -729,9 +962,15 @@ def test_a_run_the_principals_chat_reply_resumes_keeps_its_rows_public(
 
     async def _go() -> None:
         await discord_bot._handle_message(
-            text=f"Approved, go ahead with {CONTACT_EMAIL}", discord_user_id="1001",
-            discord_channel="dm-1", message_id="m1", thread_id=None, send_fn=AsyncMock(),
-            is_dm=True, session_id="discord:user:1001", session_title="DM",
+            text=f"Approved, go ahead with {CONTACT_EMAIL}",
+            discord_user_id="1001",
+            discord_channel="dm-1",
+            message_id="m1",
+            thread_id=None,
+            send_fn=AsyncMock(),
+            is_dm=True,
+            session_id="discord:user:1001",
+            session_title="DM",
         )
         await asyncio.gather(*list(resumer._KICK_TASKS))
 
@@ -778,8 +1017,9 @@ def test_a_scheduled_action_starts_with_no_audit_scope(
         "_execute_action": _execute,
     }.items():
         monkeypatch.setattr(runner, name, value)
-    monkeypatch.setattr("openexecutive.clients.rotation.clear_stale_rotation_marker",
-                        lambda _s: False)
+    monkeypatch.setattr(
+        "openexecutive.clients.rotation.clear_stale_rotation_marker", lambda _s: False
+    )
     monkeypatch.setattr("openexecutive.clients.rotation.seed_client_rotation", lambda: None)
 
     async def _go() -> None:
@@ -811,18 +1051,30 @@ def seeded(roster: SimpleNamespace) -> SimpleNamespace:
         for i in range(3)
     ]
     private_ids = [
-        audit.log("chat_turn", f"private {i}", session_id="email:t1", actor="executive",
-                  private=True)
+        audit.log(
+            "chat_turn", f"private {i}", session_id="email:t1", actor="executive", private=True
+        )
         for i in range(3)
     ]
-    audit.log("cache_event", "cache public", session_id="web:1", actor="executive",
-              details={"input_tokens": 100, "output_tokens": 10, "model": "m"})
-    audit.log("cache_event", "cache private", session_id="email:t1", actor="executive",
-              details={"input_tokens": 7000, "output_tokens": 700, "model": "m"}, private=True)
-    mixed_private = audit.log("tool_invocation", "mixed private", session_id="web:1",
-                              private=True)
-    return SimpleNamespace(public_ids=public_ids, private_ids=private_ids,
-                           mixed_private=mixed_private)
+    audit.log(
+        "cache_event",
+        "cache public",
+        session_id="web:1",
+        actor="executive",
+        details={"input_tokens": 100, "output_tokens": 10, "model": "m"},
+    )
+    audit.log(
+        "cache_event",
+        "cache private",
+        session_id="email:t1",
+        actor="executive",
+        details={"input_tokens": 7000, "output_tokens": 700, "model": "m"},
+        private=True,
+    )
+    mixed_private = audit.log("tool_invocation", "mixed private", session_id="web:1", private=True)
+    return SimpleNamespace(
+        public_ids=public_ids, private_ids=private_ids, mixed_private=mixed_private
+    )
 
 
 def _audit_client() -> TestClient:
@@ -848,44 +1100,121 @@ def _sees_private(client: TestClient, headers: dict[str, str], seeded: SimpleNam
     return sees
 
 
-def test_a_teammate_sees_no_private_row_on_any_route(seeded: SimpleNamespace) -> None:
+def test_a_teammate_sees_their_own_rows_and_no_others(
+    roster: SimpleNamespace, seeded: SimpleNamespace
+) -> None:
+    # The log holds what everyone said to the Executive: once a principal is
+    # on the roster, a teammate reads their own turns there and nothing else.
+    audit = _audit()
+    own = [
+        audit.log(
+            "chat_turn",
+            f"ben {i}",
+            session_id="web:ben",
+            actor="user",
+            private_to_person=roster.teammate,
+        )
+        for i in range(3)
+    ]
     client = _audit_client()
     teammate = _as(TEAM_EMAIL)
 
     listed = client.get("/audit/logs", headers=teammate).json()
-    assert listed["total"] == 4  # 3 public chat turns + the public cache_event
-    assert all("private" not in i["summary"] for i in listed["items"])
-    # Pagination is honest: two pages cover the public rows exactly.
+    assert listed["total"] == 3
+    assert {i["summary"] for i in listed["items"]} == {"ben 0", "ben 1", "ben 2"}
+    # Pagination is honest.
     pages = [
         client.get("/audit/logs", params={"limit": 2, "offset": off}, headers=teammate).json()
-        for off in (0, 2, 4)
+        for off in (0, 2)
     ]
-    assert [p["total"] for p in pages] == [4, 4, 4]
-    assert [len(p["items"]) for p in pages] == [2, 2, 0]
-    assert client.get("/audit/logs", params={"q": "private"}, headers=teammate).json() == (
-        client.get("/audit/logs", params={"q": "no such row"}, headers=teammate).json()
-    )
+    assert [p["total"] for p in pages] == [3, 3]
+    assert [len(p["items"]) for p in pages] == [2, 1]
+    assert client.get("/audit/logs", params={"q": "public"}, headers=teammate).json()["total"] == 0
 
+    assert client.get(f"/audit/logs/{own[0]}", headers=teammate).status_code == 200
     missing = client.get("/audit/logs/999999", headers=teammate)
-    for private_id in seeded.private_ids:
-        got = client.get(f"/audit/logs/{private_id}", headers=teammate)
+    for other in [*seeded.public_ids, *seeded.private_ids]:
+        got = client.get(f"/audit/logs/{other}", headers=teammate)
         assert (got.status_code, got.json()) == (404, missing.json())
 
-    # A session of private rows only reads as one that does not exist…
+    # Someone else's session reads as one that does not exist; their own shows.
     missing_session = client.get("/audit/sessions/web:none", headers=teammate)
-    got = client.get("/audit/sessions/email:t1", headers=teammate)
-    assert (got.status_code, got.json()) == (404, missing_session.json())
-    # …and a mixed session shows its public rows only.
-    mixed = client.get("/audit/sessions/web:1", headers=teammate).json()
-    assert {e["summary"] for e in mixed["events"]} == {
-        "public 0", "public 1", "public 2", "cache public",
-    }
-    assert all(n["event_id"] != seeded.mixed_private for n in mixed["graph"]["nodes"])
-    assert mixed["cost_summary"]["input_tokens"] == 100
+    for sid in ("email:t1", "web:1"):
+        got = client.get(f"/audit/sessions/{sid}", headers=teammate)
+        assert (got.status_code, got.json()) == (404, missing_session.json())
+    mine = client.get("/audit/sessions/web:ben", headers=teammate).json()
+    assert {e["summary"] for e in mine["events"]} == {"ben 0", "ben 1", "ben 2"}
 
-    usage = client.get("/audit/usage", headers=teammate).json()
-    assert usage["totals"]["input_tokens"] == 100
-    assert usage["totals"]["calls"] == 1
+    # Someone signed in but not on the roster reads nothing.
+    stranger = _as("nobody@elsewhere.example")
+    assert client.get("/audit/logs", headers=stranger).json()["total"] == 0
+    assert client.get(f"/audit/logs/{own[0]}", headers=stranger).status_code == 404
+
+
+def test_the_principal_sees_a_teammates_actions_but_not_their_words(
+    roster: SimpleNamespace, seeded: SimpleNamespace
+) -> None:
+    audit = _audit()
+    said = audit.log(
+        "chat_turn",
+        "User: my bank details are 1234",
+        session_id="web:ben",
+        actor="user",
+        private_to_person=roster.teammate,
+        details={"direction": "in", "msg_len": 31},
+        full={"message": "1234"},
+    )
+    did = audit.log(
+        "tool_invocation",
+        "mcp:send_gmail_message to dentist@example.com",
+        session_id="web:ben",
+        actor="executive",
+        private_to_person=roster.teammate,
+        details={
+            "tool": "send_gmail_message",
+            "kind": "mcp",
+            "ok": True,
+            "to": "dentist@example.com",
+            "result": "sent: 1234",
+        },
+    )
+    asked = audit.log(
+        "tool_invocation",
+        "x",
+        session_id="web:ben",
+        private_to_person=roster.teammate,
+        details={"tool": "bank details are 1234", "kind": "mcp"},
+    )
+    client = _audit_client()
+    owner = _as(OWNER_EMAIL)
+
+    listed = client.get("/audit/logs", headers=owner).json()
+    assert listed["total"] == 12  # the 9 seeded rows and Ben's 3
+    rows = {i["id"]: i for i in listed["items"]}
+    assert rows[said]["summary"] == "Message (Ben Teammate's conversation, details private)"
+    assert rows[said]["details"] == {"direction": "in"}
+    assert (
+        rows[did]["summary"]
+        == "mcp:send_gmail_message (Ben Teammate's conversation, details private)"
+    )
+    assert rows[did]["details"] == {"tool": "send_gmail_message", "kind": "mcp", "ok": True}
+    # A tool label that isn't a plain name is dropped, not shown.
+    assert (
+        rows[asked]["summary"] == "tool_invocation (Ben Teammate's conversation, details private)"
+    )
+    assert "1234" not in json.dumps(listed)
+
+    one = client.get(f"/audit/logs/{said}", headers=owner).json()
+    assert one["full"] is None and "1234" not in json.dumps(one)
+    session = client.get("/audit/sessions/web:ben", headers=owner).json()
+    assert len(session["events"]) == 3 and "1234" not in json.dumps(session)
+    # A search never matches on their words.
+    assert client.get("/audit/logs", params={"q": "1234"}, headers=owner).json()["total"] == 0
+
+    # Ben reads his own rows in full.
+    mine = client.get(f"/audit/logs/{said}", headers=_as(TEAM_EMAIL)).json()
+    assert mine["summary"] == "User: my bank details are 1234"
+    assert mine["full"] == {"message": "1234"}
 
 
 def test_the_principal_sees_every_row(seeded: SimpleNamespace) -> None:
@@ -897,22 +1226,32 @@ def test_the_principal_sees_every_row(seeded: SimpleNamespace) -> None:
         assert got.status_code == 200 and got.json()["summary"] == "private 1"
         session = client.get("/audit/sessions/email:t1", headers=headers).json()
         assert {e["summary"] for e in session["events"]} == {
-            "private 0", "private 1", "private 2", "cache private",
+            "private 0",
+            "private 1",
+            "private 2",
+            "cache private",
         }
         assert client.get("/audit/usage", headers=headers).json()["totals"]["input_tokens"] == 7100
 
 
-@pytest.mark.parametrize(("claimed", "caller"), [
-    (True, OWNER_EMAIL),
-    (True, None),
-    (True, TEAM_EMAIL),
-    (True, "nobody@elsewhere.example"),
-    (False, None),
-    (False, TEAM_EMAIL),
-])
+@pytest.mark.parametrize(
+    ("claimed", "caller"),
+    [
+        (True, OWNER_EMAIL),
+        (True, None),
+        (True, TEAM_EMAIL),
+        (True, "nobody@elsewhere.example"),
+        (False, None),
+        (False, TEAM_EMAIL),
+    ],
+)
 def test_audit_visibility_matches_the_other_principal_gated_routes(
-    db: Path, roster: SimpleNamespace, seeded: SimpleNamespace,
-    monkeypatch: pytest.MonkeyPatch, claimed: bool, caller: str | None,
+    db: Path,
+    roster: SimpleNamespace,
+    seeded: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    claimed: bool,
+    caller: str | None,
 ) -> None:
     """A missing caller header and an install nobody has claimed yet get
     exactly what /alerts gives them for an alert private to the principal."""
@@ -927,14 +1266,21 @@ def test_audit_visibility_matches_the_other_principal_gated_routes(
     monkeypatch.setattr(alert_store, "DB_PATH", db)
     alert_store.initialize_db(db)
     alert_id = alert_store.insert_alert(
-        source="email", external_id="x", severity="high", headline="Board seat",
-        body="...", topic_tags=[PRIVATE_ALERT_TAG],
+        source="email",
+        external_id="x",
+        severity="high",
+        headline="Board seat",
+        body="...",
+        topic_tags=[PRIVATE_ALERT_TAG],
     )
     app = FastAPI()
     app.include_router(alerts_route.router)
-    alert_visible = TestClient(app).post(
-        f"/alerts/{alert_id}/ack", json={"status": "ack"}, headers=_as(caller)
-    ).status_code == 200
+    alert_visible = (
+        TestClient(app)
+        .post(f"/alerts/{alert_id}/ack", json={"status": "ack"}, headers=_as(caller))
+        .status_code
+        == 200
+    )
 
     assert _sees_private(_audit_client(), _as(caller), seeded) is alert_visible
     assert alert_visible is (claimed and caller in (OWNER_EMAIL, None))
@@ -994,8 +1340,11 @@ def _run_loop(
     finals = []
     if tool_uses:
         finals.append(SimpleNamespace(content=tool_uses, stop_reason="tool_use", usage=None))
-    finals.append(SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")],
-                                  stop_reason="end_turn", usage=None))
+    finals.append(
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")], stop_reason="end_turn", usage=None
+        )
+    )
     provider = _ScriptedStreams(finals)
 
     async def _go() -> None:
@@ -1010,8 +1359,11 @@ def _run_loop(
             set_session(session),
         ):
             async for _item in Executive(mcp_gateway=gateway)._stream_agent_loop(
-                system_blocks=[], messages=[{"role": "user", "content": "x"}],
-                model="claude-test", workspace_mode=mode, principal_role_tag="",
+                system_blocks=[],
+                messages=[{"role": "user", "content": "x"}],
+                model="claude-test",
+                workspace_mode=mode,
+                principal_role_tag="",
                 turn_id="t-loop",
             ):
                 pass
@@ -1067,8 +1419,10 @@ def test_a_private_turn_has_its_cache_marker_on_its_last_tool(roster: SimpleName
     assert all("cache_control" not in t for t in client[:-1])
 
 
-@pytest.mark.parametrize("tool", ["send_company_broadcast", "send_department_message",
-                                  "run_workflow", "schedule_followup"])
+@pytest.mark.parametrize(
+    "tool",
+    ["send_company_broadcast", "send_department_message", "run_workflow", "schedule_followup"],
+)
 def test_a_private_turn_refuses_a_withheld_tool_the_model_emits_anyway(
     roster: SimpleNamespace, tool: str
 ) -> None:
@@ -1076,15 +1430,19 @@ def test_a_private_turn_refuses_a_withheld_tool_the_model_emits_anyway(
     from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
-    tool_use = SimpleNamespace(type="tool_use", id="tu-1", name=tool,
-                               input={"text": "Jordan emailed about pricing"})
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name=tool, input={"text": "Jordan emailed about pricing"}
+    )
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {tool: handler}):
         provider = _run_loop(_private_turn(roster), [tool_use])
     handler.assert_not_awaited()
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
     assert tool in result["error"] and PRIVATE_TURN_REFUSAL in result["error"]
-    refusals = [e for e in _audit().query(event_type="tool_invocation", limit=100)
-                if f"skill:{tool} refused" in e.summary]
+    refusals = [
+        e
+        for e in _audit().query(event_type="tool_invocation", limit=100)
+        if f"skill:{tool} refused" in e.summary
+    ]
     assert len(refusals) == 1
     assert refusals[0].private is True
     assert refusals[0].details["refused"] == "private_turn"
@@ -1101,9 +1459,15 @@ def test_a_private_turn_refuses_a_withheld_tool_through_use_tool(roster: SimpleN
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
     uses = [
-        SimpleNamespace(type="tool_use", id="tu-1", name="use_tool",
-                        input={"name": "send_company_broadcast", "input": {"text": "Jordan"}}),
-        SimpleNamespace(type="tool_use", id="tu-2", name="open_tools", input={"group": "messaging"}),
+        SimpleNamespace(
+            type="tool_use",
+            id="tu-1",
+            name="use_tool",
+            input={"name": "send_company_broadcast", "input": {"text": "Jordan"}},
+        ),
+        SimpleNamespace(
+            type="tool_use", id="tu-2", name="open_tools", input={"group": "messaging"}
+        ),
     ]
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}):
         provider = _run_loop(_private_turn(roster), uses)
@@ -1123,15 +1487,20 @@ def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None
 
     gateway = _gateway()
     tool_use = SimpleNamespace(
-        type="tool_use", id="tu-1", name="load_mcp_server",
+        type="tool_use",
+        id="tu-1",
+        name="load_mcp_server",
         input={"name": "x", "url": "https://collector.example/mcp?note=Jordan+wants+pricing"},
     )
     provider = _run_loop(_private_turn(roster), [tool_use], gateway=gateway)
     gateway.load_mcp_server.assert_not_awaited()
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
     assert PRIVATE_TURN_REFUSAL in result["error"]
-    refusal = [e for e in _audit().query(event_type="tool_invocation", limit=100)
-               if e.summary.startswith("mcp:load_mcp_server refused")]
+    refusal = [
+        e
+        for e in _audit().query(event_type="tool_invocation", limit=100)
+        if e.summary.startswith("mcp:load_mcp_server refused")
+    ]
     assert len(refusal) == 1 and refusal[0].private is True
     # On the principal's own verified turn it still runs.
     _run_loop(_principal_web(roster), [tool_use], gateway=gateway)
@@ -1150,14 +1519,18 @@ def test_load_mcp_server_is_the_principals_alone(roster: SimpleNamespace, surfac
     session = {
         "stranger_email": Session(session_id="email:t9", origin_channel="email"),
         "principal_email": Session(
-            session_id="email:t10", origin_channel="email", email_authenticated=True,
+            session_id="email:t10",
+            origin_channel="email",
+            email_authenticated=True,
             caller_person_id=roster.principal,
         ),
         "teammate_web": _teammate_web(roster),
     }[surface]
     gateway = _gateway()
     tool_use = SimpleNamespace(
-        type="tool_use", id="tu-1", name="load_mcp_server",
+        type="tool_use",
+        id="tu-1",
+        name="load_mcp_server",
         input={"name": "x", "url": "https://collector.example/mcp"},
     )
     provider = _run_loop(session, [tool_use], gateway=gateway)
@@ -1165,8 +1538,10 @@ def test_load_mcp_server_is_the_principals_alone(roster: SimpleNamespace, surfac
     assert not PRINCIPAL_ONLY_TOOLS & set(_offered(provider))
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
     assert "only the principal" in result["error"]
-    refusals = [e for e in _audit().query(event_type="tool_invocation", limit=100)
-                if e.summary.startswith("load_mcp_server refused")]
+    rows = _audit().query(event_type="tool_invocation", limit=100) + _audit().query(
+        event_type="tool_invocation", limit=100, owned_by=roster.teammate, only_owned=True
+    )
+    refusals = [e for e in rows if e.summary.startswith("load_mcp_server refused")]
     assert len(refusals) == 1 and refusals[0].details["refused"] == "not_principal"
 
 
@@ -1175,20 +1550,29 @@ def test_load_mcp_server_is_the_principals_alone(roster: SimpleNamespace, surfac
 
 def _search_block(name: str, description: str) -> str:
     """One tool block as extensible-mcp's search_tools writes it."""
-    return "\n".join([
-        f"## {name}", f"**Description:** {description}", "**Parameters:**",
-        '```json\n{"type": "object"}\n```', "**Similarity:** 0.800", "",
-    ])
+    return "\n".join(
+        [
+            f"## {name}",
+            f"**Description:** {description}",
+            "**Parameters:**",
+            '```json\n{"type": "object"}\n```',
+            "**Similarity:** 0.800",
+            "",
+        ]
+    )
 
 
 _SEARCH_TEXT = (
     "Found 4 matching tool(s). Use `call_tool` with the tool name and arguments "
-    "to invoke one.\n\n" + "\n".join([
-        _search_block("slack__post_message", "Post a message to a Slack channel."),
-        _search_block("google_workspace__send_gmail_message", "Send an email."),
-        _search_block("google_workspace__send_message", "Send a Google Chat message."),
-        _search_block("fetch__fetch", "Fetch a URL."),
-    ])
+    "to invoke one.\n\n"
+    + "\n".join(
+        [
+            _search_block("slack__post_message", "Post a message to a Slack channel."),
+            _search_block("google_workspace__send_gmail_message", "Send an email."),
+            _search_block("google_workspace__send_message", "Send a Google Chat message."),
+            _search_block("fetch__fetch", "Fetch a URL."),
+        ]
+    )
 )
 
 _NOTE = "Jordan wants pricing by Friday"
@@ -1206,8 +1590,10 @@ _REFUSED_CALLS: list[tuple[str, dict[str, Any]]] = [
     # By content: the fileUrl form is refused by the gateway's own URL-fetch
     # gate on every turn (test_mcp_gateway_fetch_and_script_egress.py).
     ("google_workspace__create_drive_file", {"file_name": "n.txt", "content": _NOTE}),
-    ("google_workspace__manage_event",
-     {"action": "create", "calendar_id": "team@group.calendar.google.com", "summary": _NOTE}),
+    (
+        "google_workspace__manage_event",
+        {"action": "create", "calendar_id": "team@group.calendar.google.com", "summary": _NOTE},
+    ),
 ]
 
 
@@ -1240,12 +1626,21 @@ def _mcp_round() -> list[Any]:
     return [
         _use(1, "search_tools", {"query": "send a message"}),
         *refused,
-        _call(n, "google_workspace__get_gmail_message_content",
-              {"message_id": "m1", "user_google_email": EXEC}),
-        _call(n + 1, "google_workspace__send_gmail_message",
-              {"to": OWNER_EMAIL, "subject": "Jordan", "body": _NOTE}),
-        _call(n + 2, "google_workspace__send_gmail_message",
-              {"to": TEAM_EMAIL, "subject": "Jordan", "body": _NOTE}),
+        _call(
+            n,
+            "google_workspace__get_gmail_message_content",
+            {"message_id": "m1", "user_google_email": EXEC},
+        ),
+        _call(
+            n + 1,
+            "google_workspace__send_gmail_message",
+            {"to": OWNER_EMAIL, "subject": "Jordan", "body": _NOTE},
+        ),
+        _call(
+            n + 2,
+            "google_workspace__send_gmail_message",
+            {"to": TEAM_EMAIL, "subject": "Jordan", "body": _NOTE},
+        ),
     ]
 
 
@@ -1258,8 +1653,9 @@ def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], 
     from openexecutive.orchestrator.teammate_mail import allow_mail_ids
 
     allow_mail_ids(session, "m1")
-    with patch.object(gw_module, "get_settings",
-                      return_value=SimpleNamespace(exec_email_address=EXEC)):
+    with patch.object(
+        gw_module, "get_settings", return_value=SimpleNamespace(exec_email_address=EXEC)
+    ):
         provider = _run_loop(session, _mcp_round(), gateway=gateway)
     results = {r["tool_use_id"]: r["content"] for r in provider.calls[1]["messages"][-1]["content"]}
     return provider, results, reached
@@ -1280,8 +1676,9 @@ def test_a_private_turn_reaches_only_google_reads_and_the_gated_gmail_send(
     for hidden in ("slack__", "fetch__", "google_workspace__send_message"):
         assert hidden not in results["tu-1"]
     # Dispatched: the Gmail read and the email to the principal only.
-    called = [(args["tool_name"], args["arguments"]) for name, args in reached
-              if name == "call_tool"]
+    called = [
+        (args["tool_name"], args["arguments"]) for name, args in reached if name == "call_tool"
+    ]
     assert [tool for tool, _ in called] == [
         "google_workspace__get_gmail_message_content",
         "google_workspace__send_gmail_message",
@@ -1293,8 +1690,11 @@ def test_a_private_turn_reaches_only_google_reads_and_the_gated_gmail_send(
     for i, tool in enumerate(refused, start=2):
         error = json.loads(results[f"tu-{i}"])["error"]
         assert tool in error and PRIVATE_TURN_REFUSAL in error
-    rows = {e.details["tool"]: e for e in _audit().query(event_type="tool_invocation", limit=100)
-            if e.summary.endswith("refused: the turn is private to the principal")}
+    rows = {
+        e.details["tool"]: e
+        for e in _audit().query(event_type="tool_invocation", limit=100)
+        if e.summary.endswith("refused: the turn is private to the principal")
+    }
     assert sorted(rows) == sorted(refused)
     for tool, row in rows.items():
         assert row.summary.startswith(f"mcp:{tool} refused")
@@ -1315,8 +1715,9 @@ def test_other_turns_search_and_call_every_mcp_tool_unchanged(
     assert results["tu-1"] == _SEARCH_TEXT
     called = [args["tool_name"] for name, args in reached if name == "call_tool"]
     # Every call reaches the gateway; its own gates alone decide the rest.
-    assert called[:len(_REFUSED_CALLS) + 1] == [
-        *(tool for tool, _ in _REFUSED_CALLS), "google_workspace__get_gmail_message_content",
+    assert called[: len(_REFUSED_CALLS) + 1] == [
+        *(tool for tool, _ in _REFUSED_CALLS),
+        "google_workspace__get_gmail_message_content",
     ]
     # Only the principal's verified turn is offered load_mcp_server
     # (`content_trust.principal_only_withheld`).
@@ -1353,37 +1754,40 @@ def test_the_private_turn_allow_list_is_reads_and_gated_gmail_only() -> None:
         normalized = _normalize_tool_name(name)
         assert normalized in _GATED_M365_MAIL_TOOLS and normalized not in _M365_REPLY_BY_ID_TOOLS
     for name in microsoft - writes:
-        verb = name[len(_M365_PREFIX):].split("-", 1)[0]
+        verb = name[len(_M365_PREFIX) :].split("-", 1)[0]
         assert verb in {"get", "list", "search"}, name
         normalized = _normalize_tool_name(name)
         assert normalized not in _GATED_M365_MAIL_TOOLS | _GATED_M365_CALENDAR_TOOLS
         assert normalized not in _M365_EVENT_BY_ID_TOOLS
 
 
-@pytest.mark.parametrize(("name", "allowed"), [
-    ("google_workspace__send_gmail_message", True),
-    ("google_workspace__draft_gmail_message", True),
-    ("google_workspace__search_gmail_messages", True),
-    ("google_workspace__get_gmail_message_content", True),
-    ("google_workspace__get_events", True),
-    ("google_workspace__list_calendars", True),
-    ("google_workspace__query_freebusy", True),
-    ("google_workspace__search_drive_files", True),
-    ("google_workspace__get_drive_file_content", True),
-    ("google_workspace__get_doc_content", True),
-    ("google_workspace__read_sheet_values", True),
-    ("microsoft_365__list-folder-files", True),
-    ("microsoft_365__download-bytes", False),  # only with a OneDrive file's target
-    *((tool, False) for tool, _ in _REFUSED_CALLS),
-    ("google_workspace__modify_gmail_message_labels", False),
-    ("google_workspace__manage_drive_access", False),
-    ("google_workspace___send_gmail_message", False),
-    ("google_workspace__send_gmail_message\n", False),
-    ("Google_Workspace__send_gmail_message", False),
-    ("", False),
-    (None, False),
-    (["google_workspace__send_gmail_message"], False),
-])
+@pytest.mark.parametrize(
+    ("name", "allowed"),
+    [
+        ("google_workspace__send_gmail_message", True),
+        ("google_workspace__draft_gmail_message", True),
+        ("google_workspace__search_gmail_messages", True),
+        ("google_workspace__get_gmail_message_content", True),
+        ("google_workspace__get_events", True),
+        ("google_workspace__list_calendars", True),
+        ("google_workspace__query_freebusy", True),
+        ("google_workspace__search_drive_files", True),
+        ("google_workspace__get_drive_file_content", True),
+        ("google_workspace__get_doc_content", True),
+        ("google_workspace__read_sheet_values", True),
+        ("microsoft_365__list-folder-files", True),
+        ("microsoft_365__download-bytes", False),  # only with a OneDrive file's target
+        *((tool, False) for tool, _ in _REFUSED_CALLS),
+        ("google_workspace__modify_gmail_message_labels", False),
+        ("google_workspace__manage_drive_access", False),
+        ("google_workspace___send_gmail_message", False),
+        ("google_workspace__send_gmail_message\n", False),
+        ("Google_Workspace__send_gmail_message", False),
+        ("", False),
+        (None, False),
+        (["google_workspace__send_gmail_message"], False),
+    ],
+)
 def test_which_mcp_tools_a_private_turn_may_call(name: Any, allowed: bool) -> None:
     from openexecutive.orchestrator.schedule_tools import (
         private_turn_allows_mcp_tool,
@@ -1397,14 +1801,17 @@ def test_which_mcp_tools_a_private_turn_may_call(name: Any, allowed: bool) -> No
     assert private_turn_withholds("load_mcp_server", {"name": name}) is True
 
 
-@pytest.mark.parametrize(("target", "allowed"), [
-    ("/drives/d1/items/i1/content", True),
-    ("/drives/d1/items/i1/content?format=pdf", True),
-    ("/me/messages/m1/attachments/a1/$value", False),
-    ("/drives/%2e%2e/items/i1/content", False),
-    ("/me/messages/m1/$value", False),
-    (None, False),
-])
+@pytest.mark.parametrize(
+    ("target", "allowed"),
+    [
+        ("/drives/d1/items/i1/content", True),
+        ("/drives/d1/items/i1/content?format=pdf", True),
+        ("/me/messages/m1/attachments/a1/$value", False),
+        ("/drives/%2e%2e/items/i1/content", False),
+        ("/me/messages/m1/$value", False),
+        (None, False),
+    ],
+)
 def test_a_private_turn_opens_a_onedrive_file_and_nothing_else_with_download_bytes(
     target: Any, allowed: bool
 ) -> None:
@@ -1422,8 +1829,9 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
-    tool_use = SimpleNamespace(type="tool_use", id="tu-1", name="send_company_broadcast",
-                               input={"text": "All hands at 3"})
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name="send_company_broadcast", input={"text": "All hands at 3"}
+    )
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}):
         provider = _run_loop(_teammate_web(roster), [tool_use], gateway=_gateway())
     handler.assert_awaited_once()
@@ -1436,8 +1844,12 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
     )
 
     assert offered == sorted(
-        t["name"] for t in [
-            *SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, *MCP_TOOLS, CHAT_TOOL_DEFINITION,
+        t["name"]
+        for t in [
+            *SPECIALIST_TOOLS,
+            *_ALL_SKILL_TOOLS,
+            *MCP_TOOLS,
+            CHAT_TOOL_DEFINITION,
             LIST_SAVED_TOOLS_DEFINITION,
         ]
         if t["name"] not in PRINCIPAL_ONLY_TOOLS
@@ -1455,8 +1867,9 @@ def test_contacts_follow_the_role_on_the_principals_turn_only(roster: SimpleName
     from openexecutive.memory.workspace_settings import PrincipalRole
     from openexecutive.orchestrator.executive import _contacts_in_prompt
 
-    role = PrincipalRole(role_kind="in_house", role_title="Director of Operations",
-                         reports_to="VP Operations")
+    role = PrincipalRole(
+        role_kind="in_house", role_title="Director of Operations", reports_to="VP Operations"
+    )
 
     def _solo(include_contacts: bool) -> str:
         people_registry.invalidate()

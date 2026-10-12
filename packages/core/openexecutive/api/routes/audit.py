@@ -12,11 +12,18 @@ Rows private to the principal (``AuditEvent.private`` — see
 ``audit.logger``) are read by the principal alone: every read route leaves
 them out for anyone else, in SQL, so totals and pages stay honest, and a
 private row's id answers 404 exactly like a missing one. A team member's own
-rows (``AuditEvent.private_to_person``, Act as me) are left out for everyone,
-the principal included.
+rows (``AuditEvent.private_to_person``: their own chats with the Executive,
+their mail, Act as me) are theirs: nobody else reads their words.
+
+Once a principal is on the roster, anyone else reads their own rows and
+nothing more (``_view``): the log holds what everyone said to the Executive,
+so it isn't a shared page. The principal reads a team member's own rows as
+actions only (``_redact``): what was done, when and in whose conversation,
+never what was said, and a text search leaves them out.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -34,6 +41,7 @@ from openexecutive.audit.logger import EVENT_TYPES
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=~]{1,256}$")
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class AuditEventOut(BaseModel):
@@ -244,6 +252,118 @@ def _sees_private_rows(request: Request) -> bool:
     return caller_is_principal(request)
 
 
+def _view(request: Request) -> dict[str, Any]:
+    """Which rows the caller reads, as ``AuditLogger.query`` / ``count``
+    filters. The principal: every row, a team member's own shown redacted
+    (``_redact``: what was done, not what was said). Anyone else,
+    once a principal is on the roster: their own rows alone (none for a
+    caller who resolves to nobody). Before then nobody is the principal, so
+    everyone reads the rows not private to one, as before. Fails closed."""
+    if _sees_private_rows(request):
+        # Every row, a teammate's own included: those are shown as actions,
+        # their words left out (`_redact`).
+        return {"include_private": True, "all_owners": True}
+    try:
+        from openexecutive.api.routes.chat import _resolve_caller_person_id
+        from openexecutive.people.store import find_principal_person
+
+        if find_principal_person() is None:
+            return {"include_private": False}
+        caller = _resolve_caller_person_id(request)
+    except Exception:
+        logger.exception("audit: couldn't tell who is reading — showing nothing")
+        caller = None
+    # Their own rows are all private (to them), so only the owner filter applies.
+    return {"include_private": True, "owned_by": caller, "only_owned": True}
+
+
+def _may_read(event: Any, view: dict[str, Any]) -> bool:
+    """Whether a row read by id is one ``view`` lets the caller read."""
+    if view.get("only_owned"):
+        owner = view.get("owned_by")
+        return owner is not None and event.private_to_person == owner
+    if event.private_to_person is not None:
+        return bool(view.get("all_owners"))
+    return not event.private or bool(view.get("include_private"))
+
+
+def _searchable(view: dict[str, Any]) -> dict[str, Any]:
+    """``view`` for a text search: a redacted row's own words must not decide
+    whether it matches, so a search leaves other people's rows out."""
+    return {k: v for k, v in view.items() if k != "all_owners"}
+
+
+# What a redacted row keeps of its details: what was done and what it cost,
+# never what was said (message text, queries, recipients, results).
+_SAFE_DETAIL_KEYS = frozenset({
+    "tool", "kind", "ok", "refused", "iteration", "specialist", "department",
+    "model", "input_tokens", "output_tokens", "cache_read_input_tokens",
+    "cache_creation_input_tokens", "cost_usd", "duration_ms", "direction",
+    "channel", "status", "outcome", "is_error", "calls",
+})
+# A tool label is model-chosen on `call_tool`, so only a plain name is kept.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,80}$")
+
+
+def _owner_names() -> dict[int, str]:
+    try:
+        from openexecutive.people.store import list_people
+
+        return {
+            int(p.id): (p.full_name or "a teammate")
+            for p in list_people(include_archived=True)
+            if p.id is not None
+        }
+    except Exception:
+        logger.exception("audit: couldn't read the roster for redacted rows")
+        return {}
+
+
+def _redact(event: Any, names: dict[int, str]) -> Any:
+    """A team member's own row as someone else reads it: the action, when and
+    in which conversation, with their words left out. The summary is rebuilt
+    from the event type and a plain tool name; the details keep only
+    ``_SAFE_DETAIL_KEYS``; ``full`` is dropped."""
+    import dataclasses
+
+    details = {
+        k: v for k, v in (event.details or {}).items()
+        if k in _SAFE_DETAIL_KEYS and isinstance(v, (int, float, bool, str))
+    }
+    tool = details.get("tool")
+    if not (isinstance(tool, str) and _TOOL_NAME_RE.match(tool)):
+        details.pop("tool", None)
+        tool = None
+    for key in ("kind", "refused", "status", "outcome", "channel", "direction", "model",
+                "specialist", "department"):
+        value = details.get(key)
+        if isinstance(value, str) and not _TOOL_NAME_RE.match(value):
+            details.pop(key)
+    if tool:
+        kind = details.get("kind")
+        action = f"{kind}:{tool}" if isinstance(kind, str) and kind and not tool.startswith(f"{kind}:") else tool
+    elif event.event_type == "chat_turn":
+        action = "Message" if event.actor == "user" else "Reply"
+    else:
+        action = event.event_type
+    if details.get("refused"):
+        action += " refused"
+    who = names.get(int(event.private_to_person), "a teammate")
+    summary = f"{action} ({who}'s conversation, details private)"
+    replace: dict[str, Any] = {"summary": summary, "details": details}
+    if hasattr(event, "full"):
+        replace["full"] = None
+    return dataclasses.replace(event, **replace)
+
+
+def _shown(events: list[Any], view: dict[str, Any]) -> list[Any]:
+    """``events`` as the caller reads them: someone else's own rows redacted."""
+    if not view.get("all_owners") or not any(e.private_to_person is not None for e in events):
+        return events
+    names = _owner_names()
+    return [_redact(e, names) if e.private_to_person is not None else e for e in events]
+
+
 class AuditLogRequest(BaseModel):
     event_type: str
     summary: str
@@ -273,14 +393,11 @@ def create_audit_log(body: AuditLogRequest, request: Request) -> dict[str, int |
 def get_audit_log(event_id: int, request: Request) -> AuditEventDetailOut:
     audit = _resolve_logger(request)
     event = audit.get(event_id)
-    # A private row reads exactly like a missing one to anyone else, and a
-    # team member's own row (Act as me) to everyone, the principal included.
-    if (
-        event is None
-        or event.private_to_person is not None
-        or (event.private and not _sees_private_rows(request))
-    ):
+    view = _view(request)
+    # A row the caller may not read answers exactly like a missing one.
+    if event is None or not _may_read(event, view):
         raise HTTPException(status_code=404, detail="audit event not found")
+    [event] = _shown([event], view)
     return AuditEventDetailOut(
         id=event.id,
         ts=event.ts,
@@ -560,9 +677,8 @@ def get_audit_session(session_id: str, request: Request) -> AuditSessionResponse
     if not _SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="invalid session_id format")
     audit = _resolve_logger(request)
-    events = audit.query(
-        session_id=session_id, limit=1000, include_private=_sees_private_rows(request)
-    )
+    view = _view(request)
+    events = _shown(audit.query(session_id=session_id, limit=1000, **view), view)
     if not events:
         raise HTTPException(status_code=404, detail="no events for session_id")
     graph, channel = _build_session_graph(events)
@@ -601,7 +717,9 @@ def list_audit_logs(
     offset: int = Query(default=0, ge=0),
 ) -> AuditListResponse:
     audit = _resolve_logger(request)
-    include_private = _sees_private_rows(request)
+    view = _view(request)
+    if q:
+        view = _searchable(view)
     events = audit.query(
         event_type=event_type,
         session_id=session_id,
@@ -611,7 +729,7 @@ def list_audit_logs(
         until=until,
         limit=limit,
         offset=offset,
-        include_private=include_private,
+        **view,
     )
     total = audit.count(
         event_type=event_type,
@@ -620,8 +738,9 @@ def list_audit_logs(
         q=q,
         since=since,
         until=until,
-        include_private=include_private,
+        **view,
     )
+    events = _shown(events, view)
     return AuditListResponse(
         items=[
             AuditEventOut(

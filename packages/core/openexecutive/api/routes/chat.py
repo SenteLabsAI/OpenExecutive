@@ -511,15 +511,53 @@ def _mail_private(session_id: str) -> bool:
         return True
 
 
+# Chat-app sessions held in a shared space (a channel, a group, a thread in
+# one), which others in it read anyway; the principal may open them as before.
+_SHARED_SESSION_PREFIXES = (
+    "slack:channel:", "slack:thread:",
+    "discord:channel:", "discord:thread:", "discord:msg:",
+    "telegram:-",
+)
+
+
+def _shared_space(session_id: str) -> bool:
+    """Whether ``session_id`` is a chat-app channel or group conversation
+    rather than someone's own chat. A Slack DM's channel id starts with "D",
+    so a thread in a DM is still that person's own."""
+    if not session_id.startswith(_SHARED_SESSION_PREFIXES):
+        return False
+    if session_id.startswith(("slack:channel:", "slack:thread:")):
+        return not session_id.split(":", 3)[2].startswith("D")
+    return True
+
+
+def _teammates_own(owner: int | None) -> bool:
+    """Whether a session ``owner`` is a team member other than the principal
+    (archived ones included: what they said stays theirs). Fails closed."""
+    if owner is None:
+        return False
+    from openexecutive.people.store import get_person
+
+    try:
+        person = get_person(int(owner))
+    except Exception:
+        logger.exception("chat: couldn't look up the owner of a session — treating it as theirs alone")
+        return True
+    return person is not None and person.kind == "team" and not person.is_principal
+
+
 def _session_access(
     request: Request, session_id: str, caller_person_id: int | None
 ) -> SessionAccess:
     """May this caller read, continue or delete ``session_id``?
 
-    The session's owner or the principal may (`is_principal_or_self`, the same
-    rule as feedback and followup; an ownerless legacy row is the principal's
-    alone). The one other way in is having started it in this process: that is
-    how an unresolved caller continues their own chat, whose row has no owner.
+    The session's owner may, and the principal may open any session that isn't
+    a teammate's (`is_principal_or_self`, the same rule as feedback and
+    followup; an ownerless legacy row is the principal's alone). A teammate's
+    own chat (the web app, a DM; not a channel or group, `_shared_space`) is
+    theirs alone, as their mail with the Executive is. The one
+    other way in is having started it in this process: that is how an
+    unresolved caller continues their own chat, whose row has no owner.
     A conversation that read its owner's own mail (Act as me,
     `session_store.mark_mail_private`) is its owner's alone: not the
     principal's, unless it is theirs. A check that can't be read refuses
@@ -542,6 +580,12 @@ def _session_access(
             return "allowed"
         if owner is None and _is_session_starter(request, session_id, caller_person_id):
             return "allowed"
+        return "forbidden"
+    if exists and owner is not None and caller_person_id == owner:
+        return "allowed"
+    if exists and not _shared_space(session_id) and _teammates_own(owner):
+        # A teammate's own chat with the Executive (the web app, a DM) is
+        # theirs alone, as their mail is: not the principal's either.
         return "forbidden"
     if exists and is_principal_or_self(caller_person_id, owner):
         return "allowed"
@@ -777,7 +821,10 @@ async def _run_chat_turn(
     from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import create_session
     from openexecutive.orchestrator.executive import Executive
-    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+    from openexecutive.orchestrator.people_tools import (
+        is_principal_on_verified_surface,
+        team_member_id,
+    )
 
     t0 = time.monotonic()
     # Same shape every other entry point mints (Executive.stream_chat), so
@@ -916,9 +963,14 @@ async def _run_chat_turn(
     # A conversation that once read the caller's own mail stays theirs: so
     # does what they say in it (the turn itself is pinned the same way).
     kept_private = _mail_private(session.session_id)
+    # A teammate's own chat is theirs too: every audit row of it, this one
+    # included, is theirs alone (`people_tools.teammate_turn_owner`).
+    own_rows = kept_private or (
+        not principal_turn and team_member_id(caller_person_id) is not None
+    )
     with (
         principal_turn_rows(principal_turn),
-        rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext(),
+        rows_for_person(caller_person_id) if own_rows else contextlib.nullcontext(),
     ):
         audit_log(
             "chat_turn",
@@ -1064,7 +1116,7 @@ async def _run_chat_turn(
 
         with (
             principal_turn_rows(principal_turn),
-            rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext(),
+            rows_for_person(caller_person_id) if own_rows else contextlib.nullcontext(),
             # The session isn't bound yet: recall the speaker's own documents.
             pinned_viewer(viewer_for_person(caller_person_id)),
         ):
@@ -1138,6 +1190,7 @@ async def _run_chat_turn(
             set_turn(session_id=session.session_id, turn_id=turn_id),
             set_session(session),
             principal_turn_rows(principal_turn),
+            rows_for_person(caller_person_id) if own_rows else contextlib.nullcontext(),
             bind_turn_files(turn_files),
         ):
             async with contextlib.aclosing(_sse_body()) as body:
@@ -1420,9 +1473,9 @@ async def _run_chat_turn(
             if inbox is not None:
                 inbox.close()
                 added_texts.extend(inbox.taken_texts())
-                # Audited like the turn's own "User:" row: private, and the
-                # caller's own, in a conversation that read their mail.
-                with rows_for_person(caller_person_id) if kept_private else contextlib.nullcontext():
+                # Audited like the turn's own "User:" row: the caller's own in
+                # a conversation that read their mail, or a teammate's chat.
+                with rows_for_person(caller_person_id) if own_rows else contextlib.nullcontext():
                     for added_text in added_texts:
                         audit_log(
                             "chat_turn",

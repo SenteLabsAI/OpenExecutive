@@ -410,7 +410,9 @@ def audit_row_owner(private_to_person: int | None = None) -> int | None:
 
     The one given, else the person whose own mailbox the work is in: the
     ``rows_for_person`` scope (the inbox watcher, a reply's Send, their Act as
-    me settings), or the speaker on a turn that read their mail. None when
+    me settings, a teammate's own turn on a chat adapter or the web app), the
+    speaker on a turn that read their mail, or the teammate whose own turn
+    this is (``teammate_turn_owner``). None when
     that person is the principal: their rows stay private to the principal,
     as before. Fails closed: a principal lookup that fails keeps the owner."""
     from openexecutive.audit.context import rows_owner
@@ -420,9 +422,14 @@ def audit_row_owner(private_to_person: int | None = None) -> int | None:
         from openexecutive.delegation.settings import turn_delegation
         from openexecutive.orchestrator.schedule_tools import current_session
 
-        pinned = turn_delegation(current_session.get())
+        session = current_session.get()
+        pinned = turn_delegation(session)
         if pinned is not None and pinned.touched_mail:
             owner = pinned.person_id
+        else:
+            # A teammate's own conversation with the Executive is theirs, as
+            # their mail is (``orchestrator.teammate_mail``).
+            owner = teammate_turn_owner(session)
     if owner is None:
         return None
     try:
@@ -435,6 +442,45 @@ def audit_row_owner(private_to_person: int | None = None) -> int | None:
     if principal is not None and principal.id == owner:
         return None
     return int(owner)
+
+
+def team_member_id(person_id: int | None) -> int | None:
+    """``person_id`` when it is a team member other than the principal (not a
+    contact, not archived), else None. A lookup that fails keeps the id, so
+    the rows it decides stay private rather than shown to the principal."""
+    if person_id is None:
+        return None
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(int(person_id))
+    except Exception:
+        logger.warning("people_tools: teammate lookup for audit rows failed — rows kept to them", exc_info=True)
+        return int(person_id)
+    if person is None or person.is_principal or person.archived or person.kind != "team":
+        return None
+    return int(person_id)
+
+
+def teammate_turn_owner(session: Any) -> int | None:
+    """The teammate whose own conversation with the Executive this turn is,
+    so every audit row it writes is theirs alone (``audit_row_owner``): a team
+    member other than the principal speaking on a surface that proved who
+    they are, or by email Gmail authenticated as theirs. None otherwise: an
+    unproven sender's rows stay where the principal reads them, so a forged
+    From or an unverified Telegram chat can't hide a turn from them."""
+    if (
+        session is None
+        or getattr(session, "unattended", False)
+        or getattr(session, "private_to_principal", False)
+    ):
+        return None
+    if getattr(session, "email_from", ""):
+        if getattr(session, "email_sender_authenticated", False) is not True:
+            return None
+    elif not _is_verified_speaker_surface(session):
+        return None
+    return team_member_id(getattr(session, "caller_person_id", None))
 
 
 def audit_row_private_to_principal(*payloads: Any) -> bool:
@@ -487,6 +533,20 @@ def sent_by_principal(channel: str, channel_ref: str, sender: Any) -> bool:
     return _is_verified_speaker_surface(surface)
 
 
+def sent_by_teammate(channel: str, channel_ref: str, sender: Any) -> int | None:
+    """The teammate (not the principal) a chat adapter's inbound message on
+    ``channel`` is from, when the channel proved who sent it — the person
+    whose own turn it starts (``teammate_turn_owner``) — else None."""
+    if sender is None or getattr(sender, "id", None) is None:
+        return None
+    surface = SimpleNamespace(
+        from_web_chat=False, origin_channel=channel, origin_channel_ref=channel_ref
+    )
+    if not _is_verified_speaker_surface(surface):
+        return None
+    return team_member_id(int(sender.id))
+
+
 _P = ParamSpec("_P")
 
 
@@ -499,7 +559,8 @@ def audit_rows_on_senders_turn(
     turn binds its session (the inbound row, the knowledge retrieval, alert
     triage) follow the rule they follow once it is: when the principal sent
     the message on a verified surface, a row that names one of their contacts
-    is private to the principal (``audit.context.principal_turn_rows``).
+    is private to the principal (``audit.context.principal_turn_rows``); when
+    a teammate did, every row is theirs alone (``rows_for_person``).
 
     ``sender_ref`` picks the sender's user or chat id out of the handler's
     arguments (by name), and ``find_sender`` resolves it to a Person, off the
@@ -514,7 +575,7 @@ def audit_rows_on_senders_turn(
 
         @functools.wraps(handler)
         async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
-            from openexecutive.audit.context import principal_turn_rows
+            from openexecutive.audit.context import principal_turn_rows, rows_for_person
 
             try:
                 bound = signature.bind(*args, **kwargs)
@@ -522,14 +583,18 @@ def audit_rows_on_senders_turn(
                 ref = sender_ref(dict(bound.arguments))
                 sender = await asyncio.to_thread(find_sender, ref) if ref else None
                 principal = sent_by_principal(channel, ref, sender)
+                teammate = sent_by_teammate(channel, ref, sender)
             except Exception as exc:
                 logger.warning(
                     "people_tools: could not tell who sent an inbound %s message (%s) — "
                     "its audit rows follow the ordinary rule", channel, type(exc).__name__,
                     exc_info=True,
                 )
-                principal = False
-            with principal_turn_rows(principal):
+                principal, teammate = False, None
+            with (
+                principal_turn_rows(principal),
+                rows_for_person(teammate) if teammate is not None else contextlib.nullcontext(),
+            ):
                 await handler(*args, **kwargs)
 
         return wrapper

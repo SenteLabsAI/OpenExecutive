@@ -16,6 +16,7 @@ live in `workspace/google.py` and `workspace/microsoft.py`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -459,7 +460,7 @@ async def _handle_one_email(
     # in _run_executive) so it knows reply tools will block and proposes
     # to a human instead.
     from openexecutive.audit import log_event as audit_log
-    from openexecutive.audit import private_rows
+    from openexecutive.audit import private_rows, rows_for_person
     from openexecutive.people.identity import resolve_email_sender
     sender_in_roster = resolve_email_sender(from_addr) is not None
     # Mail from one of the principal's contacts, or mail they forwarded: its
@@ -478,9 +479,33 @@ async def _handle_one_email(
     # is, however early it is written: the knowledge retrieval, for one,
     # runs before the turn binds its private session. The scope ends with
     # the handling.
+    # Mail from a teammate, Gmail-authenticated as theirs, is their own turn:
+    # every row of it is theirs alone, as their mail is
+    # (`people_tools.teammate_turn_owner`). An unauthenticated one stays
+    # where the principal reads it, so a forged From can't hide a turn.
+    teammate_authenticated: bool | None = None
+    teammate_id: int | None = None
+    # Only Gmail authenticates a sender (`fact_confirmation.read_raw`).
+    if not private and sender_in_roster and provider.name == "google":
+        from openexecutive.integrations.fact_confirmation import sender_authenticated
+        from openexecutive.orchestrator.people_tools import team_member_id
+
+        try:
+            sender = resolve_email_sender(from_addr)
+            teammate_id = team_member_id(sender.id if sender is not None else None)
+            if teammate_id is not None:
+                teammate_authenticated = await sender_authenticated(gateway, message_id, from_addr)
+        except Exception:  # noqa: BLE001 - optional step; must not lose the email.
+            logger.warning("sender check failed; this mail's audit rows follow the ordinary rule", exc_info=True)
+            teammate_authenticated = None
+        if teammate_authenticated is not True:
+            teammate_id = None
     held_for_roster = False
     roster_acknowledged = False
-    with private_rows(private):
+    with (
+        private_rows(private),
+        rows_for_person(teammate_id) if teammate_id is not None else contextlib.nullcontext(),
+    ):
         if not sender_in_roster:
             # A contact, like any non-team sender, gets no reply from this turn
             # (the gateway reaches contacts only when the principal asks
@@ -516,10 +541,10 @@ async def _handle_one_email(
         # `message` is what the sender wrote (quoted replies and a forwarded
         # message cut off, as peer memory sees it), the same thing web chat
         # keeps for a turn. The quoted chain below it is other people's mail
-        # — a contact's, on the principal's reply to one — and every
-        # signed-in user reads this row unless it is private, so the whole
-        # body is kept only on a private row, which the principal alone
-        # reads. Each field is cut, by its escaped JSON length, well under the
+        # — a contact's, on the principal's reply to one — and the
+        # principal reads this row unless it is private to them or to a
+        # teammate, so the whole body is kept only on a row private to the
+        # principal. Each field is cut, by its escaped JSON length, well under the
         # logger's 64 KB cap so an oversized mail loses its tail, not the
         # row's structure.
         body = "\n".join(body_lines).strip()
@@ -562,6 +587,7 @@ async def _handle_one_email(
                 roster_acknowledged=roster_acknowledged,
                 reply_block=reply_block,
                 provider=provider,
+                teammate_authenticated=teammate_authenticated,
             )
         except Exception:
             logger.exception("Executive raised for message=%s", message_id)
@@ -756,6 +782,7 @@ async def _run_executive(
     roster_acknowledged: bool = False,
     reply_block: str = "",
     provider: MailProvider | None = None,
+    teammate_authenticated: bool | None = None,
 ) -> None:
     from openexecutive.knowledge.retriever import retrieve
     from openexecutive.memory.episodic import format_for_prompt
@@ -806,7 +833,10 @@ async def _run_executive(
 
             try:
                 sender = resolve_email_sender(from_addr)
-                if sender is not None and not sender.is_principal:
+                if teammate_authenticated is not None:
+                    # Already checked while the mail was handled.
+                    session.email_sender_authenticated = teammate_authenticated
+                elif sender is not None and not sender.is_principal:
                     session.email_sender_authenticated = await sender_authenticated(
                         gateway, message_id, from_addr
                     )
