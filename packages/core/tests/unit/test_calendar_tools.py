@@ -12,6 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openexecutive.orchestrator.calendar_tools import (
+    _asked_on_a_verified_surface as _real_asked_on_a_verified_surface,
+)
+from openexecutive.orchestrator.calendar_tools import (
     handle_cancel_calendar_event,
     handle_create_calendar_event,
     handle_create_instant_meeting,
@@ -51,6 +54,21 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     people_store.initialize_db()
     alert_store.initialize_db(db)
     return db
+
+
+@pytest.fixture(autouse=True)
+def _asked_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests stand for someone on the team asking in the app; the ones
+    about text from outside (an inbound email) turn this off."""
+    from openexecutive.orchestrator import calendar_tools
+
+    monkeypatch.setattr(calendar_tools, "_asked_on_a_verified_surface", lambda session: True)
+
+
+def _from_outside(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import calendar_tools
+
+    monkeypatch.setattr(calendar_tools, "_asked_on_a_verified_surface", lambda session: False)
 
 
 def _settings(**kw: Any) -> Any:
@@ -894,3 +912,99 @@ def test_microsoft_provider_cancels_through_delete_calendar_event() -> None:
         "name": "microsoft_365__delete-calendar-event", "arguments": {"eventId": "evt-ms"},
     }
     assert get_decision_instance(iid).status == "reversed"
+
+
+def test_an_email_cannot_start_an_instant_meeting(monkeypatch: pytest.MonkeyPatch) -> None:
+    _from_outside(monkeypatch)
+    pid = _add_person("Alice", "alice@example.com")
+    result, gw = _call_instant({"attendee_person_ids": [pid], "confidence": 0.9})
+    assert "only someone on the team" in result["error"]
+    gw.call_tool.assert_not_awaited()
+
+
+def test_an_email_cannot_cancel_a_booking(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory.decision_ledger import mark_resolved
+    from openexecutive.memory.episodic import DB_PATH
+
+    pid = _add_person("Alice", "alice@example.com")
+    r = _call({
+        "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+        "attendee_person_ids": [pid], "confidence": 0.9,
+    })
+    mark_resolved(r["decision_instance_id"], "approved_unchanged", external_event_id="evt-1", db_path=DB_PATH)
+    _from_outside(monkeypatch)
+    gw = _fake_gateway()
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=gw):
+        raw = asyncio.run(handle_cancel_calendar_event({"decision_instance_id": r["decision_instance_id"]}))
+    assert "only someone on the team" in json.loads(raw)["error"]
+    gw.call_tool.assert_not_awaited()
+
+
+def test_team_auto_execute_from_an_email_is_proposed_to_an_approver(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.departments.authority import GateDecision
+    from openexecutive.memory.decision_ledger import list_instances, set_class_mode
+
+    _from_outside(monkeypatch)
+    set_class_mode("meeting_scheduling", "auto_execute")
+    pid = _add_person("Alice", "alice@example.com")
+    boss = _add_person("Boss", "boss@example.com", is_principal=True)
+    from openexecutive.people import registry
+
+    registry.invalidate()  # a roster cached by an earlier test has no principal
+    gw = _fake_gateway()
+    with (
+        patch("openexecutive.config.get_settings", return_value=_settings()),
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=gw),
+        # What the real gate returns for a department at auto_execute: no approver.
+        patch(
+            "openexecutive.departments.authority.gate_action",
+            return_value=GateDecision(allowed=True, action="execute"),
+        ),
+    ):
+        raw = asyncio.run(handle_create_calendar_event({
+            "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+            "attendee_person_ids": [pid], "confidence": 0.9,
+        }))
+    assert json.loads(raw)["status"] == "proposed"
+    gw.call_tool.assert_not_awaited()
+    assert list_instances("meeting_scheduling")[0].approver_person_id == boss
+
+
+# The gate itself, unpatched: who counts as someone on the team asking directly.
+@pytest.mark.parametrize(
+    ("who", "surface", "expected"),
+    [
+        ("principal", {"from_web_chat": True}, True),
+        ("teammate", {"from_web_chat": True}, True),
+        ("teammate", {"origin_channel": "slack"}, True),
+        ("teammate", {"from_web_chat": True, "email_from": "dana@northwind.example"}, False),
+        ("teammate", {"from_web_chat": True, "unattended": True}, False),
+        ("teammate", {"origin_channel": "email"}, False),
+        ("principal", {"origin_channel": "email"}, False),
+        ("contact", {"from_web_chat": True}, False),
+        (None, {"from_web_chat": True}, False),
+    ],
+)
+def test_only_someone_on_the_team_asking_directly_counts(
+    who: str | None, surface: dict[str, Any], expected: bool
+) -> None:
+    from openexecutive.people import registry
+
+    ids = {
+        "principal": _add_person("Dana Reyes", "dana@northwind.example", is_principal=True),
+        "teammate": _add_person("Sam Ortiz", "sam@northwind.example"),
+        "contact": people_store.upsert_person(
+            full_name="Priya Nair", email="priya@client.example", kind="contact"
+        ),
+    }
+    registry.invalidate()
+    session = SimpleNamespace(caller_person_id=ids.get(who or ""), **surface)
+    with patch(
+        "openexecutive.config.get_settings",
+        return_value=SimpleNamespace(telegram_webhook_secret_valid=False),
+    ):
+        assert _real_asked_on_a_verified_surface(session) is expected
+
+
+def test_no_session_does_not_count() -> None:
+    assert _real_asked_on_a_verified_surface(None) is False

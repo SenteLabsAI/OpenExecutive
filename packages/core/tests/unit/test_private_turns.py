@@ -1157,12 +1157,12 @@ def test_the_principal_sees_a_teammates_actions_but_not_their_words(
     audit = _audit()
     said = audit.log(
         "chat_turn",
-        "User: my bank details are 1234",
+        "User: my bank details are IBAN-ZQX9",
         session_id="web:ben",
         actor="user",
         private_to_person=roster.teammate,
         details={"direction": "in", "msg_len": 31},
-        full={"message": "1234"},
+        full={"message": "IBAN-ZQX9"},
     )
     did = audit.log(
         "tool_invocation",
@@ -1175,7 +1175,7 @@ def test_the_principal_sees_a_teammates_actions_but_not_their_words(
             "kind": "mcp",
             "ok": True,
             "to": "dentist@example.com",
-            "result": "sent: 1234",
+            "result": "sent: IBAN-ZQX9",
         },
     )
     asked = audit.log(
@@ -1183,7 +1183,7 @@ def test_the_principal_sees_a_teammates_actions_but_not_their_words(
         "x",
         session_id="web:ben",
         private_to_person=roster.teammate,
-        details={"tool": "bank details are 1234", "kind": "mcp"},
+        details={"tool": "bank details are IBAN-ZQX9", "kind": "mcp"},
     )
     client = _audit_client()
     owner = _as(OWNER_EMAIL)
@@ -1202,19 +1202,19 @@ def test_the_principal_sees_a_teammates_actions_but_not_their_words(
     assert (
         rows[asked]["summary"] == "tool_invocation (Ben Teammate's conversation, details private)"
     )
-    assert "1234" not in json.dumps(listed)
+    assert "IBAN-ZQX9" not in json.dumps(listed)
 
     one = client.get(f"/audit/logs/{said}", headers=owner).json()
-    assert one["full"] is None and "1234" not in json.dumps(one)
+    assert one["full"] is None and "IBAN-ZQX9" not in json.dumps(one)
     session = client.get("/audit/sessions/web:ben", headers=owner).json()
-    assert len(session["events"]) == 3 and "1234" not in json.dumps(session)
+    assert len(session["events"]) == 3 and "IBAN-ZQX9" not in json.dumps(session)
     # A search never matches on their words.
-    assert client.get("/audit/logs", params={"q": "1234"}, headers=owner).json()["total"] == 0
+    assert client.get("/audit/logs", params={"q": "IBAN-ZQX9"}, headers=owner).json()["total"] == 0
 
     # Ben reads his own rows in full.
     mine = client.get(f"/audit/logs/{said}", headers=_as(TEAM_EMAIL)).json()
-    assert mine["summary"] == "User: my bank details are 1234"
-    assert mine["full"] == {"message": "1234"}
+    assert mine["summary"] == "User: my bank details are IBAN-ZQX9"
+    assert mine["full"] == {"message": "IBAN-ZQX9"}
 
 
 def test_the_principal_sees_every_row(seeded: SimpleNamespace) -> None:
