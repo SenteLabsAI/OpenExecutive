@@ -80,18 +80,32 @@ async def send_message(token: str, chat_id: int, text: str) -> str | None:
     Returns the Telegram message_id of the last chunk sent (best-effort —
     ``None`` if no chunk delivered or the response lacks one), so callers can
     link an outbound DM to a later reply. Existing callers ignore the return."""
+    from openexecutive.utils.markdown_telegram import markdown_to_telegram_html
+
     client = _get_http_client()
     last_message_id: str | None = None
     for chunk in _split_message(text):
         if not chunk:
             continue
+        # No link previews: Telegram's server would fetch a link in the
+        # text on its own, and a reply can quote mail a sender wrote to
+        # carry data out in one.
+        base: dict[str, Any] = {"chat_id": chat_id, "link_preview_options": {"is_disabled": True}}
+        # The reply is Markdown, which Telegram shows as typed: send it as
+        # Telegram's HTML instead. Should Telegram refuse that (an entity it
+        # can't parse, or escaping that pushed it over the length cap), the
+        # chunk goes again as the plain text it was before.
         resp = await client.post(
             _tg_url(token, "sendMessage"),
-            # No link previews: Telegram's server would fetch a link in the
-            # text on its own, and a reply can quote mail a sender wrote to
-            # carry data out in one.
-            json={"chat_id": chat_id, "text": chunk, "link_preview_options": {"is_disabled": True}},
+            json={**base, "text": markdown_to_telegram_html(chunk), "parse_mode": "HTML"},
         )
+        if resp.is_error:
+            logger.warning(
+                "Telegram sendMessage (HTML) failed, sending as plain text: %s %s",
+                resp.status_code,
+                resp.text,
+            )
+            resp = await client.post(_tg_url(token, "sendMessage"), json={**base, "text": chunk})
         if resp.is_error:
             logger.error(
                 "Telegram sendMessage failed: %s %s", resp.status_code, resp.text
