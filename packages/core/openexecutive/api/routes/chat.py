@@ -2153,12 +2153,24 @@ _SUBJECT_YOU_RE = re.compile(
     r"\b(if|when|whether|that|so|until|before|after|while)\s+you\b(?!')",
     re.IGNORECASE,
 )
-# ...and so is "you" before a verb: "tell Sam you asked" -> "I asked".
+# ...and so is "you" before a verb: "tell Sam you asked" -> "I asked". Not
+# after a verb that takes "you" as its object, where the next word is a bare
+# infinitive: "help you plan the offsite" -> "help me plan the offsite".
 _YOU_BEFORE_VERB_RE = re.compile(
-    r"\byou(?=\s+(?:have|had|want|wanted|need|needed|asked|said|mentioned|"
-    r"can|could|will|would|should|might|plan|planned|think|thought)\b)",
+    r"\b(?:(\w+)\s+)?you(?=\s+(?:have|had|want|wanted|need|needed|asked|said|"
+    r"mentioned|can|could|will|would|should|might|plan|planned|think|thought)\b)",
     re.IGNORECASE,
 )
+_OBJECT_YOU_VERBS = frozenset(
+    {"help", "let", "make", "have", "see", "watch", "hear", "bid", "get", "remind", "ask", "tell"}
+)
+
+
+def _subject_you(m: re.Match[str]) -> str:
+    before = m.group(1)
+    if before and before.lower() in _OBJECT_YOU_VERBS:
+        return m.group(0)
+    return (before + " " if before else "") + "I"
 
 
 def _norm(text: str) -> str:
@@ -2183,7 +2195,7 @@ def as_user_request(text: str, *, last_executive_reply: str = "") -> str:
     if not rest:
         return text
     rest = _SUBJECT_YOU_RE.sub(lambda p: p.group(1) + " I", rest)
-    rest = _YOU_BEFORE_VERB_RE.sub("I", rest)
+    rest = _YOU_BEFORE_VERB_RE.sub(_subject_you, rest)
     rest = _PRONOUN_RE.sub(lambda p: _PRONOUN_FLIPS[p.group(1).lower()], rest)
     rest = rest.rstrip(" ?.!")
     if not rest:
