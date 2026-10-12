@@ -82,3 +82,29 @@ resource "google_secret_manager_secret" "google_oauth_client_secret" {
 
   depends_on = [google_project_service.apis]
 }
+
+# Operating-data feeds for the CFO/COO/partner seats (read-only keys).
+# Containers only: West populates the values himself (see docs/deployment.md).
+# A secret with no version is skipped by deploy.sh and the feed reports
+# "not configured" instead of failing.
+resource "google_secret_manager_secret" "linear_api_key" {
+  secret_id = "colette-exec-linear-api-key"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret" "stripe_readonly_key" {
+  secret_id = "colette-exec-stripe-readonly-key"
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}

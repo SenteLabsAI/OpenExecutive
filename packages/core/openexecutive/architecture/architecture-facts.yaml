@@ -3405,6 +3405,48 @@ clients:
     active card is always live-fresh; parked staleness is inherent until
     the v2 overnight-rotation phase.
 
+colette_seats:
+  modules: |
+    openexecutive.agents.partner_seats, openexecutive.prompts.partner_prompts,
+    openexecutive.feeds, openexecutive.partners, openexecutive.departments.colette_profile,
+    openexecutive.departments.rollup, openexecutive.orchestrator.partner_tools.
+  seat_kinds: |
+    Owner seats (cfo, coo): no human holds the role; the seat owns the department's
+    operating outcomes (operating-mandate overlay appended to the upstream prompt).
+    Partner seats (cmo, cpo, ceo_advisor): the direct counterpart of the human who owns
+    the function (department head_person_id). The seat proposes; the human decides.
+    Partner seats are keyed to humans through the department they serve; there is no
+    separate seat-to-person table.
+  invariants: |
+    - Seat prompts are module constants, never f-stringed with runtime data (cache-safe).
+    - Live figures (<operating_data>), the company roll-up (<company_rollup>) and the
+      working agreement (<working_agreement>) travel in the user turn only.
+    - A feed that is unset/errored/timed out is a labelled gap, never an estimate; feed
+      error text carries a status code or exception type only (no URLs or bodies).
+    - A working agreement is saved only after the human's explicit confirmation of a
+      read-back (confirmed=true), and a deferral never erases an agreement in force.
+    - begin_partner_introduction / save_working_agreement authorize on
+      Session.speaker_person_id: the seat's own human, or the principal.
+    - Agreement privacy ("keep this between us") is a behavioral instruction to the seat;
+      it is not an access control, because all seats share one company database.
+  feeds: |
+    FEEDS_BY_DEPARTMENT: finance -> billing, stripe; operations -> linear, billing;
+    product -> linear; strategy -> billing, stripe, linear. Settings: BILLING_EXPORT_TABLE,
+    BILLING_QUERY_PROJECT, STRIPE_READONLY_KEY (restricted read-only key), LINEAR_API_KEY,
+    FEED_TIMEOUT_SECONDS. Billing uses Application Default Credentials (roles/bigquery.jobUser
+    on the query project, roles/bigquery.dataViewer on the billing dataset).
+  profile: |
+    colette_profile.apply_colette_profile runs once per PROFILE_VERSION at boot (sentinel in
+    departments_meta) and only fills untouched fields. reconcile_unrunnable_departments runs
+    every boot and clears check_in cadences for departments whose specialist is unregistered.
+  introductions: |
+    partners.store.partner_agreements (seat PK; status not_started|in_progress|active|deferred;
+    versioned; review_after, default 30 days). partners.intro.pending_introduction_hint adds the
+    one-time offer (or review prompt) to the <current_speaker> block.
+  ceo_review: |
+    The Strategy department's weekly department_check_in (ceo_advisor seat) is the CEO review:
+    it receives the full feed set plus the company roll-up. There is no separate workflow because
+    the scheduler can only run user-created (dynamic) workflows on a cadence.
 diagram_style:
   required_classdefs: [entry, compute, storage, cache, external, hot]
   rules:

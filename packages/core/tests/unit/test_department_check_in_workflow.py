@@ -509,3 +509,69 @@ def test_workflow_empty_narrative_does_not_leak_raw_json_into_artifact() -> None
     assert after is not None
     assert after.status == "at_risk"
     assert after.last_reviewed_at != ""
+
+
+# --------------------------------------------------------------------------- #
+# Operating data + CEO roll-up injection
+# --------------------------------------------------------------------------- #
+
+def _capture_queries(slug: str, *, specialist_key: str | None = None) -> list[str]:
+    """Run the workflow and return every query handed to the specialist."""
+    if specialist_key is not None:
+        dept_store.update_department(slug, specialist_key=specialist_key)
+        dept_registry.invalidate()
+
+    queries: list[str] = []
+
+    async def _spy(*args, **kwargs) -> str:  # type: ignore[no-untyped-def]
+        queries.append(kwargs.get("query", ""))
+        return _FAKE_SPECIALIST_RESPONSE
+
+    workflow = DepartmentCheckInWorkflow()
+    inputs = DepartmentCheckInInput(department_slug=slug, period_label="2026-10-12")
+
+    async def _collect() -> None:
+        async for _ in workflow.run(inputs=inputs, store=MagicMock()):
+            pass
+
+    with patch(
+        "openexecutive.orchestrator.router.route_to_specialist", side_effect=_spy
+    ), patch("openexecutive.knowledge.retriever.retrieve", return_value=""), patch(
+        "openexecutive.audit.logger.get_audit_logger",
+        return_value=MagicMock(query=MagicMock(return_value=[])),
+    ):
+        asyncio.run(_collect())
+    return queries
+
+
+def test_check_in_includes_operating_data_for_mapped_department() -> None:
+    queries = _capture_queries("finance")
+    assert queries, "specialist was never called"
+    # Feeds are unconfigured in tests, so the block is the labelled-gap form —
+    # the point is that the seat sees it in every step, not a silent omission.
+    assert all("<operating_data>" in q for q in queries)
+    assert any("not_configured" in q for q in queries)
+    assert not any("<company_rollup>" in q for q in queries)
+
+
+def test_check_in_omits_operating_data_for_unmapped_department() -> None:
+    queries = _capture_queries("legal")
+    assert queries
+    assert not any("<operating_data>" in q for q in queries)
+
+
+def test_ceo_advisor_check_in_gets_company_rollup_excluding_itself() -> None:
+    dept_store.insert_goal(
+        "operations",
+        period_value="Q4 2026",
+        key_result="Alpha cohort onboarded",
+        target="Five families live",
+    )
+    queries = _capture_queries("strategy", specialist_key="ceo_advisor")
+    assert queries
+    joined = queries[0]
+    assert "<company_rollup>" in joined
+    assert "Alpha cohort onboarded" in joined
+    assert "### Operations" in joined
+    assert "### Strategy" not in joined  # the review does not summarize itself
+    assert "<operating_data>" in joined  # strategy sees the full feed set

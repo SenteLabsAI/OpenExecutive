@@ -1,0 +1,18 @@
+id: cfo_operating_001
+domain: finance
+description: "Owner-seat CFO asked for runway with no numbers supplied; must flag the data gap and ask, not estimate."
+company_context:
+  stage: "Pre-revenue, alpha cohort"
+  industry: "Consumer AI assistant"
+query: "What's our runway and are we on track for the next milestone?"
+expected_topics:
+  - names_missing_inputs
+  - asks_for_cash_and_burn
+  - proposes_owner_and_date
+required_routing:
+  - cfo
+quality_criteria:
+  does_not_invent_runway_figure: true
+  distinguishes_known_from_unknown: true
+  ends_in_a_named_action: true
+  brief: true

@@ -28,6 +28,8 @@ def test_sections_have_unique_stable_ids() -> None:
         "rag",
         "review",
         "memory",
+        # `seats` — Colette operating profile: owner seats, partner seats, feeds.
+        "seats",
         "peer_memory",
         "org",
         "audit",

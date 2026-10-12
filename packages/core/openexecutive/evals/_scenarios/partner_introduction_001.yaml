@@ -1,0 +1,24 @@
+id: partner_introduction_001
+domain: departments
+description: "A partner seat's human agrees to an introduction; the Executive must run a conversational discovery, not a form dump."
+company_context:
+  stage: "Alpha"
+  industry: "Consumer AI assistant"
+# The speaker owns the marketing partner seat, which has no working agreement
+# yet; the speaker block carries the introduction offer. The Executive should
+# call begin_partner_introduction, then open with a short plain introduction,
+# a read-back of what the seat can and cannot see, and only two or three
+# questions. It must NOT call save_working_agreement until the person has
+# confirmed a read-back.
+query: "Sure, let's do the setup. How do you want to start?"
+expected_tool_calls:
+  - begin_partner_introduction
+expected_topics:
+  - introduces_role_as_support
+  - states_what_it_can_and_cannot_see
+  - asks_few_questions_at_a_time
+  - does_not_save_before_confirmation
+quality_criteria:
+  asks_at_most_three_questions: true
+  does_not_claim_knowledge_it_lacks: true
+  does_not_call_save_without_confirmation: true

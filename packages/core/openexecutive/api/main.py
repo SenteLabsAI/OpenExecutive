@@ -217,6 +217,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     initialize_departments_db()
     seed_default_departments()
 
+    # Colette overlay: charters/goals/cadences for the owner and partner seats,
+    # the People roster, and a sweep that stops check-ins for departments whose
+    # specialist isn't registered. Applied once per profile version, never
+    # overwrites team edits. Best-effort: a failure here must not block boot.
+    try:
+        from openexecutive.departments.colette_profile import apply_colette_profile
+
+        _profile = apply_colette_profile()
+        logging.getLogger("openexecutive").info(
+            "colette-profile: skipped=%s people=%d departments=%d goals=%d cleared=%s",
+            _profile.skipped,
+            len(_profile.people_created),
+            len(_profile.departments_updated),
+            _profile.goals_added,
+            _profile.cadences_cleared,
+        )
+    except Exception:
+        logging.getLogger("openexecutive").exception(
+            "colette-profile: apply failed (continuing without it)"
+        )
+
     from openexecutive.departments.completeness import check_org_completeness
     _org_warnings = check_org_completeness()
     for _w in _org_warnings:

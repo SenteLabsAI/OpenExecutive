@@ -433,6 +433,26 @@ def _mark_defaults_seeded(conn: sqlite3.Connection, now: str) -> None:
     )
 
 
+def get_meta(key: str, db_path: Path | None = None) -> str | None:
+    """Read a ``departments_meta`` value (None when absent or the DB is missing)."""
+    if not _resolve_db_path(db_path).exists():
+        return None
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT value FROM departments_meta WHERE key = ?", (key,)
+        ).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def set_meta(key: str, value: str, db_path: Path | None = None) -> None:
+    """Insert or replace a ``departments_meta`` value."""
+    with _get_conn(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO departments_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+
+
 def seed_default_departments(db_path: Path | None = None) -> int:
     """Insert the 8 default departments on first run only.
 
@@ -535,6 +555,7 @@ def update_department(
     slug: str,
     *,
     title: str | None = None,
+    specialist_key: str | None | object = _UNSET,
     charter: DepartmentCharter | None = None,
     authority_level: AuthorityLevel | None = None,
     head_person_id: int | None | object = _UNSET,
@@ -562,6 +583,8 @@ def update_department(
     fields: list[tuple[str, object]] = []
     if title is not None:
         fields.append(("title", title))
+    if specialist_key is not _UNSET:
+        fields.append(("specialist_key", specialist_key))  # None → informational-only dept
     if charter is not None:
         fields.append(("charter_mission", charter.mission))
         fields.append(("charter_scope_json", json.dumps(charter.scope)))

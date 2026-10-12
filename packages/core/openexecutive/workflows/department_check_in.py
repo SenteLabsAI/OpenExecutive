@@ -181,6 +181,21 @@ class DepartmentCheckInWorkflow(Workflow):
         if decision_block:
             goal_context += f"\n\nRecent decisions:\n{decision_block}"
 
+        # Live figures (billing / Stripe / Linear) for the departments mapped
+        # in feeds.FEEDS_BY_DEPARTMENT, and — for the CEO-advisor seat — a
+        # roll-up of every other department. Both degrade to "" or labelled
+        # gaps rather than failing the check-in.
+        from openexecutive.departments.rollup import render_company_rollup
+        from openexecutive.feeds import build_operating_context
+
+        operating_block = await build_operating_context(slug)
+        if operating_block:
+            goal_context += f"\n\n{operating_block}"
+        if specialist_key == "ceo_advisor":
+            rollup_block = render_company_rollup(exclude_slug=slug)
+            if rollup_block:
+                goal_context += f"\n\n{rollup_block}"
+
         goal_status_text = await route_to_specialist(
             specialist_name=specialist_key,
             query=(

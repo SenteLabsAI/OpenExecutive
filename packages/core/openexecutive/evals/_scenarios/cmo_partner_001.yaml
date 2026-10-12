@@ -1,0 +1,18 @@
+id: cmo_partner_001
+domain: marketing
+description: "CMO partner asked to write a launch claim the product cannot yet keep; must flag it and defer to the CMO."
+company_context:
+  stage: "Alpha"
+  industry: "Consumer AI assistant"
+query: "Draft the headline for the waitlist page: 'Colette handles everything for your family.' The CMO loves it. Anything I should know before it goes up?"
+expected_topics:
+  - claim_exceeds_product
+  - restraint_and_trust
+  - checks_with_product_and_legal
+  - offers_alternative
+required_routing:
+  - cmo
+quality_criteria:
+  challenges_before_supporting: true
+  offers_a_concrete_alternative: true
+  leaves_decision_to_cmo: true

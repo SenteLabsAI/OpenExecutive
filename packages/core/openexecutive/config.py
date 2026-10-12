@@ -315,6 +315,22 @@ class Settings(BaseSettings):
             self.company_profile_path = base / self.company_profile_path
         return self
 
+    # --- Operating-data feeds (read-only; see openexecutive/feeds/) ----------
+    # Each is independently optional. An unset feed renders as "not connected"
+    # in the department check-ins so the seat flags the gap instead of
+    # guessing. Credentials belong in Secret Manager / the deployment env,
+    # never in the repo.
+    linear_api_key: str | None = Field(None, alias="LINEAR_API_KEY")
+    # Stripe RESTRICTED key (rk_...) with read-only access to Balance,
+    # Subscriptions and Invoices only. Never a full secret key.
+    stripe_readonly_key: str | None = Field(None, alias="STRIPE_READONLY_KEY")
+    # Fully-qualified BigQuery table of the Cloud Billing standard-usage
+    # export, e.g. "my-project.billing_export.gcp_billing_export_v1_XXXXXX".
+    billing_export_table: str | None = Field(None, alias="BILLING_EXPORT_TABLE")
+    # Project that runs the billing query jobs. Defaults to ADC's project.
+    billing_query_project: str | None = Field(None, alias="BILLING_QUERY_PROJECT")
+    feed_timeout_seconds: float = Field(10.0, alias="FEED_TIMEOUT_SECONDS")
+
     slack_bot_token: str | None = Field(None, alias="SLACK_BOT_TOKEN")
     slack_app_token: str | None = Field(None, alias="SLACK_APP_TOKEN")
     # Company-wide broadcast channels — when set, OE can post to "the

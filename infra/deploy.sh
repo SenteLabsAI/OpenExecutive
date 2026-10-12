@@ -17,6 +17,15 @@ fetch() { gcloud secrets versions access latest --secret="$1"; }
   echo "AUTH_GOOGLE_ID=$(fetch colette-exec-google-client-id 2>/dev/null || true)"
   echo "AUTH_GOOGLE_SECRET=$(fetch colette-exec-google-client-secret 2>/dev/null || true)"
   echo "OE_PUBLIC_DEPLOYMENT=1"
+  # Optional operating-data feeds: only written when a version exists, so an
+  # unpopulated secret leaves the feed "not configured" rather than set-but-empty.
+  for pair in "LINEAR_API_KEY:colette-exec-linear-api-key" "STRIPE_READONLY_KEY:colette-exec-stripe-readonly-key"; do
+    if value="$(fetch "${pair#*:}" 2>/dev/null)" && [ -n "$value" ]; then
+      echo "${pair%%:*}=$value"
+    fi
+  done
+  # Not a secret: set in the VM environment or edit here, e.g. project.dataset.gcp_billing_export_v1_XXXX
+  [ -n "${BILLING_EXPORT_TABLE:-}" ] && echo "BILLING_EXPORT_TABLE=$BILLING_EXPORT_TABLE"
 } > .env
 chmod 600 .env
 

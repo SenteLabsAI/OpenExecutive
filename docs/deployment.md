@@ -83,6 +83,22 @@ with "no company profile" on a fresh volume is expected, not a fault.
 | `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. |
 | `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in. See [auth.md](auth.md). |
 
+### Operating-data feeds (optional)
+
+The CFO, COO and partner seats read live figures from three read-only feeds.
+Each is off until configured and shows up to the agents as a labelled gap, never
+as an estimate.
+
+| Variable | Source | Notes |
+|---|---|---|
+| `STRIPE_READONLY_KEY` | Stripe restricted key | Create a **restricted** key with read access to Balance, Subscriptions and Invoices only. Secret Manager: `colette-exec-stripe-readonly-key`. |
+| `LINEAR_API_KEY` | Linear personal API key | Read-only use. Secret Manager: `colette-exec-linear-api-key`. |
+| `BILLING_EXPORT_TABLE` | BigQuery table of the Cloud Billing export | `project.dataset.gcp_billing_export_v1_XXXX`. Not a secret. Uses the VM service account (ADC), which needs `roles/bigquery.jobUser` on the project (or `BILLING_QUERY_PROJECT`) and `roles/bigquery.dataViewer` on the export dataset. |
+
+The Terraform creates the two secret containers; populate them yourself with
+`gcloud secrets versions add <name> --data-file=-`. `infra/deploy.sh` includes a
+key in `.env` only when it has a version.
+
 Integrations (Slack, Discord, email, Google Workspace) are all optional and off
 unless their variables are set. [.env.example](../.env.example) is the full list.
 

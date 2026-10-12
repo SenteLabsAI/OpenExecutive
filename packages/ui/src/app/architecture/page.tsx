@@ -20,6 +20,7 @@ const SECTIONS = [
   { id: 'rag', label: 'Knowledge & RAG', sub: 'ChromaDB collections, per-specialist domain filtering, and where retrieved context is injected.' },
   { id: 'review', label: 'SME Knowledge Review', sub: 'The pending-review queue, priority ordering, and how rejected/approved items affect retrieval.' },
   { id: 'memory', label: 'Memory System', sub: 'Episodic SQLite memory (decisions, initiatives, advice, scheduled actions) and how it’s surfaced.' },
+  { id: 'seats', label: 'Seats, Introductions & Operating Data', sub: 'Owner and partner seats, the introduction interview and working agreements, and the live data feeds behind the weekly check-ins.' },
   { id: 'peer_memory', label: 'Peer Memory (Person + Department)', sub: 'External peer-keyed memory. Per-person scope keyed by Person.id for cross-channel continuity, and per-department scope keyed by department_<slug> for institutional voice. Dialectic prefetch, fire-and-forget sync, peer-graph cross-pollination, per-fixture workspace isolation.' },
   { id: 'org', label: 'Org Structure', sub: 'Departments, goals, checklists, cadences; people registry; authority gates and channel resolution (Discord/Telegram/email).' },
   { id: 'audit', label: 'Audit Log', sub: 'Searchable, append-only record of chat turns, specialist consults, tool calls, scheduled actions, alerts, and inbound integrations.' },

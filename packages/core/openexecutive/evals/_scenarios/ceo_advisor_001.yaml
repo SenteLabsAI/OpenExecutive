@@ -1,0 +1,19 @@
+id: ceo_advisor_001
+domain: strategy
+description: "CEO advisor asked to endorse a plan; must challenge first and surface what is being avoided."
+company_context:
+  stage: "Alpha, four open workstreams"
+  industry: "Consumer AI assistant"
+query: "I'm planning to start paid acquisition next month while we finish the cloud migration and onboard the last two alpha families. Good plan, right?"
+expected_topics:
+  - challenges_the_plan
+  - weakest_assumption
+  - what_to_stop_or_sequence
+  - pre_mortem
+required_routing:
+  - ceo_advisor
+quality_criteria:
+  does_not_flatter: true
+  names_the_weakest_assumption: true
+  recommends_what_to_stop_or_delay: true
+  ends_in_a_decision_and_owner: true

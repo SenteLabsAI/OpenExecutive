@@ -207,6 +207,32 @@ def cancel_orphaned_cadences(db_path: Path | None = None) -> int:
     return cancelled
 
 
+def cancel_pending_cadence(slug: str, db_path: Path | None = None) -> int:
+    """Cancel pending ``dept_cadence`` actions for one department.
+
+    Used when a department's cadence spec changes (so ``bootstrap_cadences``
+    re-enqueues at the new time) or is cleared. Idempotent; returns the count
+    cancelled.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return 0
+    with _get_conn(resolved) as conn:
+        table_present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+        ).fetchone()
+        if table_present is None:
+            return 0
+        cursor = conn.execute(
+            "UPDATE scheduled_actions SET status = 'cancelled' "
+            "WHERE kind = 'dept_cadence' AND status = 'pending' AND department = ?",
+            (slug,),
+        )
+        return int(cursor.rowcount)
+
+
 def enqueue_next(
     slug: str,
     *,

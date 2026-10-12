@@ -53,6 +53,10 @@ from openexecutive.orchestrator.onboarding_tools import (
     ONBOARDING_TOOL_HANDLERS,
     ONBOARDING_TOOLS,
 )
+from openexecutive.orchestrator.partner_tools import (
+    PARTNER_TOOL_HANDLERS,
+    PARTNER_TOOLS,
+)
 from openexecutive.orchestrator.people_tools import (
     PEOPLE_TOOL_HANDLERS,
     PEOPLE_TOOLS,
@@ -135,6 +139,17 @@ def _build_current_speaker_block(person_id: int | None) -> str | None:
         return None
 
     who = f"{person.full_name} ({person.role})" if person.role else person.full_name
+    block = _speaker_sentence(person, who)
+    # Partner-seat introduction nudge (see partners/intro.py): only present when
+    # the speaker supports a seat that has no working agreement yet, or whose
+    # agreement is due for review. Never raises.
+    from openexecutive.partners.intro import pending_introduction_hint
+
+    hint = pending_introduction_hint(person_id)
+    return f"{block}\n{hint}" if hint else block
+
+
+def _speaker_sentence(person: Any, who: str) -> str:
     if person.is_principal:
         return (
             f"You are speaking directly with {who} — the principal, the company "
@@ -158,6 +173,7 @@ _ALL_SKILL_TOOLS = [
     *CALENDAR_TOOLS,
     *PEOPLE_TOOLS,
     *DEPARTMENT_TOOLS,
+    *PARTNER_TOOLS,
     *BROADCAST_TOOLS,
     *WATCHLIST_TOOLS,
     *RESEARCH_TOOLS,
@@ -183,6 +199,7 @@ _ALL_SKILL_HANDLERS = {
     **TALENT_TOOL_HANDLERS,
     **ONBOARDING_TOOL_HANDLERS,
     **FORM_TOOL_HANDLERS,
+    **PARTNER_TOOL_HANDLERS,
 }
 
 
@@ -490,6 +507,7 @@ class Executive:
         # Expose the current session to tool handlers (e.g. schedule_followup)
         # without threading it through every signature.
         current_session.set(session)
+        session.speaker_person_id = person_id
         # Persona and model can be overridden via the Agent Council admin UI.
         # Override is admin-set (not per-request dynamic), so placing it in the
         # cached block is fine — cache misses once on change, then hits normally.
@@ -701,6 +719,7 @@ class Executive:
             extra={"turn_break": True},
         )
         current_session.set(session)
+        session.speaker_person_id = person_id
 
         persona_override: str | None = None
         voice_persona_body: str | None = None

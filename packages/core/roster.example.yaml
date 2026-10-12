@@ -1,0 +1,13 @@
+# Copy to company/roster.yaml (gitignored) to attach contact details to the
+# seeded roster. Keys match the roster keys in departments/colette_profile.py.
+# Only these fields are read: full_name, role, email, slack_user_id,
+# telegram_chat_id, discord_user_id, preferred_channel.
+people:
+  ceo:
+    email: ceo@example.com
+    slack_user_id: U0000000
+    preferred_channel: slack
+  cmo:
+    email: cmo@example.com
+  cpo:
+    email: cpo@example.com

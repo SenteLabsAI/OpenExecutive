@@ -1,0 +1,19 @@
+id: coo_operating_001
+domain: operations
+description: "Owner-seat COO shown a stalled alpha onboarding; must treat it as an operations failure and name one constraint."
+company_context:
+  stage: "Alpha, five target families"
+  industry: "Consumer AI assistant"
+query: "Two of our five alpha families signed up three weeks ago and still aren't live. One is waiting on a messaging number, the other hasn't finished the intake form. What do we do?"
+expected_topics:
+  - single_tightest_constraint
+  - process_vs_people_vs_tooling
+  - runbook_or_owner
+  - measure_time_in_stage
+required_routing:
+  - coo
+quality_criteria:
+  does_not_blame_the_customer: true
+  names_one_constraint: true
+  proposes_owner_and_date: true
+  actionable: true

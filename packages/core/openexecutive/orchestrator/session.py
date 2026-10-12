@@ -18,6 +18,9 @@ class Session:
     # Used by schedule_followup to refuse scheduling sends to refs the user
     # never actually used — anti-spam guard.
     seen_channel_refs: set[tuple[str, str]] = field(default_factory=set)
+    # People-roster id of the human speaking this turn (None when unresolved).
+    # Lets tool handlers authorize actions that are only valid for that person.
+    speaker_person_id: int | None = None
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})

@@ -8,28 +8,43 @@ from openexecutive.agents.base import BaseAgent
 
 if TYPE_CHECKING:
     from openexecutive.orchestrator.debug_events import DebugCollector
-from openexecutive.agents.finance import FinanceAgent
 from openexecutive.agents.legal import LegalAgent
-from openexecutive.agents.operations import OperationsAgent
+from openexecutive.agents.partner_seats import (
+    CEOAdvisorAgent,
+    CMOPartnerAgent,
+    CPOPartnerAgent,
+    OperatingCFOAgent,
+    OperatingCOOAgent,
+)
 from openexecutive.agents.talent import TalentAgent
 from openexecutive.agents.triage import TriageAgent
 
-# Colette-exec runs three specialist seats (CFO/GC/COO) — Strategy, HR,
-# Marketing, Product, and Board Comms are covered directly by West/Wolf/Dingus.
-# Talent and Triage stay registered: they back the recruiting workflows and
-# the alert-triage pipeline respectively, not chat-consult seats.
+# Colette-exec seats:
+#   * Owner seats — CFO / COO (no human holds these roles; the seat owns the
+#     department's operating outcomes) and GC (consult).
+#   * Partner seats — CMO / CPO / CEO-advisor, each the direct counterpart of
+#     a human (Wajnberg / Dingus / West) who owns the function and decides.
+# HR, Board Comms and the generic CSO stay unregistered. Talent and Triage
+# stay registered: they back the recruiting workflows and the alert-triage
+# pipeline respectively, not chat-consult seats.
 SPECIALIST_REGISTRY: dict[str, BaseAgent] = {
-    "cfo": FinanceAgent(),
+    "cfo": OperatingCFOAgent(),
     "gc": LegalAgent(),
-    "coo": OperationsAgent(),
+    "coo": OperatingCOOAgent(),
+    "cmo": CMOPartnerAgent(),
+    "cpo": CPOPartnerAgent(),
+    "ceo_advisor": CEOAdvisorAgent(),
     "talent": TalentAgent(),
     "triage": TriageAgent(),
 }
 
 SPECIALIST_DESCRIPTIONS = {
-    "cfo": "Chief Financial Officer — financial modeling, unit economics, fundraising, cash flow, board finance",
+    "cfo": "Chief Financial Officer (owner seat) — owns cash/runway, cost-to-serve, vendor spend, compliance calendar, financial modeling and fundraising readiness",
     "gc": "General Counsel — contracts, IP, employment law basics, compliance (with appropriate disclaimers)",
-    "coo": "Chief Operating Officer — process design, vendor management, operational scaling, metrics",
+    "coo": "Chief Operating Officer (owner seat) — owns the onboarding pipeline, runbooks, delivery rhythm, vendor/dependency risk and operational scaling",
+    "cmo": "CMO partner — the CMO's direct counterpart: positioning, messaging, launch and channel plans, brand guardrails; drafts and challenges, the human CMO decides",
+    "cpo": "CPO partner (VP of Product) — the CPO's direct counterpart: discovery, specs, sequencing, product principles and consent design; the human CPO decides",
+    "ceo_advisor": "CEO advisor — challenger-first strategic partner to the CEO: pre-mortems, decision log, the company success scorecard, what is being avoided and what to stop",
     "talent": "Head of Talent & Executive Search — candidate screening & fit scoring, executive sourcing, energy-sector talent-market mapping",
     "triage": "Chief of Staff — evaluates inbound events (email/Slack/docs) for significance and decides alerting",
 }
@@ -65,6 +80,22 @@ SPECIALIST_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def _with_working_agreement(specialist_name: str, context: str) -> str:
+    """Prepend a partner seat's confirmed working agreement to its context.
+
+    Only the three partner seats have agreements; every other seat (and any seat
+    without an active agreement) gets ``context`` back unchanged. Never raises.
+    """
+    from openexecutive.partners.store import PARTNER_SEATS, agreement_context
+
+    if specialist_name not in PARTNER_SEATS:
+        return context
+    block = agreement_context(specialist_name)
+    if not block:
+        return context
+    return f"{block}\n\n{context}" if context else block
+
+
 async def route_to_specialist(
     specialist_name: str,
     query: str,
@@ -86,6 +117,7 @@ async def route_to_specialist(
     agent = SPECIALIST_REGISTRY.get(specialist_name)
     if agent is None:
         return f"Unknown specialist: {specialist_name}"
+    context = _with_working_agreement(specialist_name, context)
     return await agent.analyze(
         query=query,
         context=context,

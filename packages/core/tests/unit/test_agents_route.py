@@ -39,8 +39,8 @@ def test_list_agents_returns_all_specialists(client: TestClient) -> None:
     assert res.status_code == 200
     body = res.json()
     names = {a["name"] for a in body}
-    # At minimum these should exist; the registry currently has 9 specialists + executive.
-    assert {"executive", "cso", "cfo", "chro", "cmo", "cpo", "coo", "gc", "board_comms", "triage"} <= names
+    # At minimum these should exist; the registry currently has the CFO/GC/COO owner seats, the CMO/CPO/CEO-advisor partner seats, talent and triage, plus the executive.
+    assert {"executive", "ceo_advisor", "cfo", "cmo", "cpo", "coo", "gc", "triage"} <= names
     all_names = [a["name"] for a in body]
     assert len(all_names) == len(set(all_names)), f"duplicate agents in /agents: {all_names}"
     for a in body:
@@ -62,17 +62,17 @@ def test_get_agent_404_for_unknown(client: TestClient) -> None:
 
 
 def test_patch_then_get_reflects_override(client: TestClient) -> None:
-    res = client.patch("/agents/cso", json={"role": "Test CSO"})
+    res = client.patch("/agents/ceo_advisor", json={"role": "Test CEO advisor"})
     assert res.status_code == 200
     detail = res.json()
-    assert detail["role"] == "Test CSO"
-    assert detail["role_default"] != "Test CSO"
+    assert detail["role"] == "Test CEO advisor"
+    assert detail["role_default"] != "Test CEO advisor"
     assert detail["has_override"] is True
     assert "role" in detail["overridden_fields"]
 
 
 def test_patch_rejects_unknown_model(client: TestClient) -> None:
-    res = client.patch("/agents/cso", json={"model": "claude-not-real"})
+    res = client.patch("/agents/ceo_advisor", json={"model": "claude-not-real"})
     assert res.status_code == 400
 
 
@@ -84,7 +84,7 @@ def test_patch_rejects_openrouter_model_when_openrouter_disabled(
     — the runtime has no backend that can serve it, so the API rejects
     the override at PATCH time rather than 500-ing on first chat call."""
     # The default config in conftest leaves OPENROUTER_ENABLED unset (False).
-    res = client.patch("/agents/cso", json={"model": "openai/gpt-6-astra"})
+    res = client.patch("/agents/ceo_advisor", json={"model": "openai/gpt-6-astra"})
     assert res.status_code == 400
     assert "allowed" in res.json()["detail"].lower()
 
@@ -113,7 +113,7 @@ def test_patch_accepts_openrouter_model_when_openrouter_enabled(
             openrouter_timeout_s=180.0,
         ),
     )
-    res = client.patch("/agents/cso", json={"model": "openai/gpt-6-astra"})
+    res = client.patch("/agents/ceo_advisor", json={"model": "openai/gpt-6-astra"})
     # 200 means the model passed the allowlist; the override was persisted.
     assert res.status_code == 200, res.text
     assert res.json()["model"] == "openai/gpt-6-astra"
@@ -155,7 +155,7 @@ def test_test_endpoint_passes_draft_to_analyze(client: TestClient) -> None:
     fake_provider = SimpleNamespace(messages_create=create_mock)
     with patch("openexecutive.agents.base.get_provider", return_value=fake_provider):
         res = client.post(
-            "/agents/cso/test",
+            "/agents/ceo_advisor/test",
             json={
                 "query": "Hi",
                 "prompt": "DRAFT_PROMPT",
@@ -170,17 +170,17 @@ def test_test_endpoint_passes_draft_to_analyze(client: TestClient) -> None:
     assert kw["system"][0]["text"] == "DRAFT_PROMPT"
 
     # And no DB row was written.
-    assert client.get("/agents/cso").json()["has_override"] is False
+    assert client.get("/agents/ceo_advisor").json()["has_override"] is False
 
 
 def test_test_endpoint_rejects_empty_query(client: TestClient) -> None:
-    res = client.post("/agents/cso/test", json={"query": "   "})
+    res = client.post("/agents/ceo_advisor/test", json={"query": "   "})
     assert res.status_code == 400
 
 
 def test_test_endpoint_rejects_unknown_model(client: TestClient) -> None:
     res = client.post(
-        "/agents/cso/test", json={"query": "hi", "model": "claude-fake"}
+        "/agents/ceo_advisor/test", json={"query": "hi", "model": "claude-fake"}
     )
     assert res.status_code == 400
 

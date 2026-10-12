@@ -1,0 +1,19 @@
+id: cpo_partner_001
+domain: product
+description: "CPO partner pushed to widen data access to speed up activation; must apply the consent and priority rules."
+company_context:
+  stage: "Alpha"
+  industry: "Consumer AI assistant"
+query: "Activation is slow. Idea: ask new families to connect email, calendar and photos on day one so Colette can be useful immediately. Should we spec it?"
+expected_topics:
+  - consent_and_scoped_access
+  - trust_before_convenience
+  - smaller_experiment
+  - non_goals
+required_routing:
+  - cpo
+quality_criteria:
+  applies_priority_stack: true
+  proposes_cheapest_experiment: true
+  names_non_goals: true
+  leaves_decision_to_cpo: true

@@ -125,6 +125,14 @@ SECTIONS: list[SectionSpec] = [
         diagram_kind="flowchart",
     ),
     SectionSpec(
+        id="seats",
+        title="Seats, Introductions & Operating Data",
+        sub="Owner and partner seats, the introduction interview and working agreements, and the live data feeds behind the weekly check-ins.",
+        kb_query="partner seat owner seat working agreement operating data feeds",
+        wants_mermaid=True,
+        diagram_kind="flowchart",
+    ),
+    SectionSpec(
         id="peer_memory",
         title="Peer Memory (Person + Department)",
         sub="External peer-keyed memory layer. Two scopes: per-person (cross-channel continuity keyed by Person.id) and per-department (institutional voice keyed by department_<slug>). Dialectic prefetch, fire-and-forget sync, peer-graph cross-pollination, per-fixture workspace isolation, audit trail.",
