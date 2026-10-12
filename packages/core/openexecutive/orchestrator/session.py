@@ -32,6 +32,11 @@ class Session:
     # Used by schedule_followup to refuse scheduling sends to refs the user
     # never actually used — anti-spam guard.
     seen_channel_refs: set[tuple[str, str]] = field(default_factory=set)
+    # Mailbox message and thread ids this conversation was shown by a search
+    # that left other teammates' mail out (or the inbound email it answers).
+    # The model may reach the Executive's mailbox only by these
+    # (orchestrator.teammate_mail).
+    mail_ids_seen: set[str] = field(default_factory=set)
     # Which inbound channel this session arrived on ("slack", "discord",
     # "telegram", "google_chat", "email"), and the address on it. Empty for
     # web/CLI turns and runs nobody started from a channel. Used when a

@@ -774,6 +774,11 @@ async def _run_executive(
     # through the decision extractor as the principal's own words
     # (`content_trust.principal_speaking`).
     session = Session(**session_kwargs, origin_channel="email")
+    # The email this turn answers is one it may read, reply in or quote,
+    # whoever sent it (orchestrator.teammate_mail).
+    from openexecutive.orchestrator.teammate_mail import allow_mail_ids
+
+    allow_mail_ids(session, message_id, thread_id)
     if from_addr:
         # Who the mail claims to be from, and whether Gmail authenticated it:
         # the fact tools let the principal's own authenticated mail ask for a
