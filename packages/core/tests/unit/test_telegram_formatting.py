@@ -40,11 +40,19 @@ def test_text_and_raw_html_are_escaped() -> None:
     assert "Tom &amp; Jerry &lt;b&gt;not bold&lt;/b&gt;" in out
 
 
-def test_links_keep_safe_targets_only() -> None:
-    assert render('[site](https://x.example/?a=1&b="2")') == (
-        '<a href="https://x.example/?a=1&amp;b=%222%22">site</a>'
+def test_a_link_shows_its_target_and_is_never_a_tag() -> None:
+    # Quoted text must not hide where a link goes, nor make a tg:// or
+    # ton:// address tappable: the target is shown as plain text.
+    assert render("[Your bank](https://evil.example/phish)") == (
+        "Your bank (https://evil.example/phish)"
     )
-    assert "<a" not in render("[bad](javascript:alert(1))")
+    assert render("[Approve](tg://proxy?server=1.2.3.4&port=443)") == (
+        "Approve (tg://proxy?server=1.2.3.4&amp;port=443)"
+    )
+    assert render("<https://x.example/a>") == "https://x.example/a"
+    assert render("<ann@x.example>") == "ann@x.example"
+    for text in ("[a](https://x.example)", "[b](ton://transfer/EQ?amount=1)", "[c](javascript:alert(1))"):
+        assert "<a" not in render(text)
 
 
 class _Resp:

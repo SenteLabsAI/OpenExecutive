@@ -5,15 +5,18 @@ typed: asterisks, hashes and backticks included. Telegram's own formatting
 takes a small HTML subset (``parse_mode=HTML``), so a reply is parsed with
 markdown-it-py and written out in that subset:
 
-- bold, italic, strikethrough, inline code, code blocks, links and quotes
-  map to Telegram's tags; headings become bold lines; list items get a
+- bold, italic, strikethrough, inline code, code blocks and quotes map to
+  Telegram's tags; headings become bold lines; list items get a
   bullet or their number, since Telegram has no list tags;
 - every piece of text is escaped, and raw HTML in the reply stays text
   (markdown-it's ``html`` is off), so quoted mail or web text can't add
   markup of its own;
-- images are off (a link stays a link), and link targets go through
-  markdown-it's own check, which drops ``javascript:``, ``data:`` and the
-  like.
+- no ``<a>`` tag is ever written. A link shows as its text followed by its
+  target in brackets, as plain text (Telegram turns a visible web address
+  into a link itself). A reply can quote mail or a web page, and a tag would
+  let that text hide where a link goes (``[Your bank](https://evil…)``) or
+  make a ``tg://`` or ``ton://`` address one tap away (add a proxy, start a
+  bot, a wallet transfer), which plain text never did. Images are off too.
 """
 from __future__ import annotations
 
@@ -32,7 +35,6 @@ _INLINE_TAGS = {
     "em_close": "</i>",
     "s_open": "<s>",
     "s_close": "</s>",
-    "link_close": "</a>",
 }
 
 
@@ -42,6 +44,8 @@ def _esc(text: str) -> str:
 
 def _inline(children: list[Token]) -> str:
     out: list[str] = []
+    # Targets of the links currently open, and where each one's text began.
+    links: list[tuple[str, int]] = []
     for tok in children:
         if tok.type == "text":
             out.append(_esc(tok.content))
@@ -50,8 +54,12 @@ def _inline(children: list[Token]) -> str:
         elif tok.type == "code_inline":
             out.append(f"<code>{_esc(tok.content)}</code>")
         elif tok.type == "link_open":
-            href = str(tok.attrGet("href") or "")
-            out.append(f'<a href="{html.escape(href, quote=True)}">')
+            links.append((str(tok.attrGet("href") or ""), len(out)))
+        elif tok.type == "link_close":
+            href, start = links.pop() if links else ("", len(out))
+            shown = "".join(out[start:])
+            if href and _esc(href) != shown and f"mailto:{shown}" != _esc(href):
+                out.append(f" ({_esc(href)})")
         elif tok.type in _INLINE_TAGS:
             out.append(_INLINE_TAGS[tok.type])
         else:
