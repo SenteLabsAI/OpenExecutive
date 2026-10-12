@@ -94,12 +94,14 @@ async def send_message(token: str, chat_id: int, text: str) -> str | None:
         # The reply is Markdown, which Telegram shows as typed: send it as
         # Telegram's HTML instead. Should Telegram refuse that (an entity it
         # can't parse, or escaping that pushed it over the length cap), the
-        # chunk goes again as the plain text it was before.
+        # chunk goes again as the plain text it was before. Only a 400 is a
+        # refusal of the message itself: a 429 or 5xx would fail again (or,
+        # after a 5xx that was delivered anyway, send the reply twice).
         resp = await client.post(
             _tg_url(token, "sendMessage"),
             json={**base, "text": markdown_to_telegram_html(chunk), "parse_mode": "HTML"},
         )
-        if resp.is_error:
+        if resp.status_code == 400:
             logger.warning(
                 "Telegram sendMessage (HTML) failed, sending as plain text: %s %s",
                 resp.status_code,

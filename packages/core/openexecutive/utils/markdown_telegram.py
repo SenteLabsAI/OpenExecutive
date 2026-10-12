@@ -109,4 +109,9 @@ def markdown_to_telegram_html(text: str) -> str:
     rendered = "".join(out)
     # A quote's last paragraph leaves its break inside the tag.
     rendered = re.sub(r"\s+</blockquote>", "</blockquote>", rendered)
-    return re.sub(r"\n{3,}", "\n\n", rendered).strip()
+    # Collapse runs of blank lines between blocks, but not inside code,
+    # which is shown exactly as written.
+    parts = re.split(r"(<pre>.*?</pre>)", rendered, flags=re.S)
+    return "".join(
+        part if part.startswith("<pre>") else re.sub(r"\n{3,}", "\n\n", part) for part in parts
+    ).strip()

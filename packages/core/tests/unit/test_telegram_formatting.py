@@ -34,6 +34,12 @@ def test_code_blocks_and_quotes() -> None:
     assert render("> quoted\n> more") == "<blockquote>quoted\nmore</blockquote>"
 
 
+def test_blank_lines_inside_code_are_kept() -> None:
+    assert render("```\ndef a():\n    pass\n\n\ndef b():\n    pass\n```") == (
+        "<pre>def a():\n    pass\n\n\ndef b():\n    pass</pre>"
+    )
+
+
 def test_text_and_raw_html_are_escaped() -> None:
     out = render("Tom & Jerry <b>not bold</b> <script>x</script>")
     assert "<b>" not in out and "<script>" not in out
@@ -56,22 +62,24 @@ def test_a_link_shows_its_target_and_is_never_a_tag() -> None:
 
 
 class _Resp:
-    def __init__(self, ok: bool) -> None:
+    def __init__(self, ok: bool, status: int = 400) -> None:
         self.is_error = not ok
-        self.status_code = 200 if ok else 400
+        self.status_code = 200 if ok else status
         self.text = "" if ok else "Bad Request: can't parse entities"
 
     def json(self) -> dict[str, Any]:
         return {"result": {"message_id": 7}}
 
 
-def _send(monkeypatch: pytest.MonkeyPatch, text: str, html_ok: bool = True) -> list[dict[str, Any]]:
+def _send(
+    monkeypatch: pytest.MonkeyPatch, text: str, html_ok: bool = True, status: int = 400
+) -> list[dict[str, Any]]:
     sent: list[dict[str, Any]] = []
 
     class Client:
         async def post(self, url: str, json: dict[str, Any]) -> _Resp:
             sent.append(json)
-            return _Resp(html_ok or "parse_mode" not in json)
+            return _Resp(html_ok or "parse_mode" not in json, status)
 
     monkeypatch.setattr(telegram_bot, "_get_http_client", lambda: Client())
     asyncio.run(telegram_bot.send_message("t", 1, text))
@@ -90,3 +98,11 @@ def test_a_refused_html_message_goes_again_as_plain_text(monkeypatch: pytest.Mon
     assert html_try["parse_mode"] == "HTML"
     assert "parse_mode" not in plain_try and plain_try["text"] == "**Done.**"
     assert plain_try["link_preview_options"] == {"is_disabled": True}
+
+
+@pytest.mark.parametrize("status", [429, 500, 403])
+def test_only_a_refusal_is_retried_as_plain_text(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    # Rate limits, server errors and a blocked bot would fail again, and a
+    # 5xx that was delivered anyway would send the reply twice.
+    [only_try] = _send(monkeypatch, "**Done.**", html_ok=False, status=status)
+    assert only_try["parse_mode"] == "HTML"
