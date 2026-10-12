@@ -408,9 +408,10 @@ async def _dispatch(name: str, arguments: dict[str, Any], info: tool_catalog.Too
     gateway = get_active_gateway()
     if gateway is None:
         return json.dumps({"error": "the tool gateway is not running"})
-    # A step run from a chat turn reaches the mailbox the way the chat does
-    # (orchestrator.teammate_mail); a scheduled run has no session and is
-    # untouched.
+    # A step reaches the mailbox the way the chat does
+    # (orchestrator.teammate_mail): run from a chat turn, as that turn's
+    # reader; scheduled, with no session, as nobody, so every teammate's own
+    # mail stays out.
     from openexecutive.orchestrator.teammate_mail import guard_in_turn
 
     return await guard_in_turn(gateway.call_tool)({"name": name, "arguments": arguments})

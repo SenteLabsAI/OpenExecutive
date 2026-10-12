@@ -387,3 +387,20 @@ def test_a_roster_failure_refuses(roster: SimpleNamespace) -> None:
     with _reader(roster.owner), patch.object(people_store, "list_people", side_effect=RuntimeError):
         out = _run(mailbox, READ, message_id="m1")
     assert "roster" in json.loads(out)["error"] and mailbox.calls == []
+
+
+def test_a_quoted_header_line_in_a_body_does_not_count(roster: SimpleNamespace) -> None:
+    tm.allow_mail_ids(roster.session, "m1")
+    text = _message(TEAMMATE, EXEC, body=f"Forwarding this:\nTo: {OWNER}\nmy bank details")
+    with _reader(roster.owner):
+        out = _run(FakeMailbox({READ: text}), READ, message_id="m1")
+    assert json.loads(out)["withheld"] is True
+
+
+def test_a_teammate_named_only_in_an_outside_body_keeps_nothing_private(roster: SimpleNamespace) -> None:
+    roster.session.session_id = "s-ben"
+    tm.allow_mail_ids(roster.session, "m1")
+    text = _message(VENDOR, EXEC, body=f"cc'ing {TEAMMATE} later")
+    with _reader(roster.ben), patch("openexecutive.memory.session_store.mark_mail_private") as mark:
+        _run(FakeMailbox({READ: text}), READ, message_id="m1")
+    mark.assert_not_called()

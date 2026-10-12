@@ -283,7 +283,27 @@ def _theirs(unit: str, headers: str, sides: _Sides) -> bool:
 
 
 def _text_headers(unit: str) -> str:
-    return "\n".join(m.group(1) for m in _HEADER_RE.finditer(unit))
+    """The From / To / Cc / Reply-To values of a message's header block: the
+    lines before its first blank line. A body line that looks like a header
+    (a quoted "To: ...") is the sender's text and never counts."""
+    block = re.split(r"\n[ \t]*\n", unit.lstrip("\n"), maxsplit=1)[0]
+    return "\n".join(m.group(1) for m in _HEADER_RE.finditer(block))
+
+
+def _reader_in_headers(name: str, text: str, sides: _Sides) -> bool:
+    """Whether a result shows the reader mail they are on: their address in
+    a message's From / To / Cc, not anywhere in a body."""
+    if _gmail(name):
+        units = [u for u in _MESSAGE_START_RE.split(text) if u.strip()]
+        headers = "\n".join(_text_headers(u) for u in units)
+        return any(a in sides.reader for a in _addresses(headers))
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        return False
+    items = data.get("value") if isinstance(data, dict) else data
+    items = items if isinstance(items, list) else [data]
+    return any(a in sides.reader for i in items for a in _addresses(_graph_parties(i)))
 
 
 def _left_out(count: int) -> str:
@@ -576,7 +596,7 @@ def guard_call_tool(call: CallTool) -> CallTool:
         if not isinstance(result, str):
             return result
         filtered = _filter(name, result, sides)
-        if any(a in sides.reader for a in _addresses(filtered)):
+        if _reader_in_headers(name, filtered, sides):
             _keep_private(session, sides)
         return filtered
 
