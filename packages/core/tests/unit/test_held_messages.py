@@ -146,7 +146,7 @@ def test_the_principals_brief_carries_their_held_messages(ids: dict[str, int]) -
     assert held.HEADING in text and len(held_ids) == 1
     # The weekly review does not carry them.
     assert runner._with_held_messages("principal_weekly_review", "x") == ("x", [])
-    runner._mark_held_sent(held_ids)
+    asyncio.run(runner._mark_held_sent(held_ids))
     assert held.for_brief(ids["principal"]) == []
     assert runner._with_held_messages("principal_brief_eod", "x") == ("x", [])
 
@@ -278,3 +278,27 @@ def test_mark_sent_is_retried_after_a_delivery(
     # Past the claim TTL nothing is sent again.
     assert asyncio.run(held.release_due(NOW + held.CLAIM_TTL + timedelta(minutes=1))) == 0
     assert len(sent) == 1
+
+
+def test_a_brief_retries_marking_its_held_messages_sent(
+    ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = ids["principal"]
+    held.hold(pid, "In the brief", source="reflection", release_at=None, now=NOW)
+    [msg] = held.for_brief(pid)
+    real = held.mark_sent
+    calls: list[int] = []
+
+    def flaky(*a: Any, **k: Any) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        real(*a, **k)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(held, "mark_sent", flaky)
+    monkeypatch.setattr(held.asyncio, "sleep", no_sleep)
+    asyncio.run(runner._mark_held_sent([msg.id]))
+    assert len(calls) == 2 and held.held_count(pid) == 0

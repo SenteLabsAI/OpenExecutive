@@ -314,6 +314,26 @@ def mark_sent(ids: list[int], *, now: datetime | None = None, db_path: Path | No
         conn.close()
 
 
+async def mark_sent_after_delivery(
+    ids: list[int], *, now: datetime | None = None, db_path: Path | None = None
+) -> bool:
+    """Mark rows sent once their message went, retrying a few times: a row
+    left claimed is claimable again after CLAIM_TTL and would be sent twice.
+    Returns whether it stuck. Never raises."""
+    if not ids:
+        return True
+    for attempt in range(_MARK_SENT_TRIES):
+        try:
+            mark_sent(ids, now=now, db_path=db_path)
+            return True
+        except Exception:
+            if attempt == _MARK_SENT_TRIES - 1:
+                logger.error("held_messages: couldn't mark %d sent", len(ids), exc_info=True)
+            else:
+                await asyncio.sleep(0.5 * (attempt + 1))
+    return False
+
+
 def release_digest_now(person_id: int, *, now: datetime, db_path: Path | None = None) -> int:
     """Turn ``person_id``'s brief-held messages into ones due at ``now``
     (they leave with the next release pass). Returns how many."""
@@ -535,19 +555,7 @@ async def release_due(now: datetime, *, db_path: Path | None = None) -> int:
             with contextlib.suppress(Exception):
                 _backoff(messages, now, db_path)
             continue
-        # It went: retry the mark a few times, since a row left claimed is
-        # claimable again after CLAIM_TTL and would be sent twice.
-        for attempt in range(_MARK_SENT_TRIES):
-            try:
-                mark_sent(ids, now=now, db_path=db_path)
-                break
-            except Exception:
-                if attempt == _MARK_SENT_TRIES - 1:
-                    logger.error(
-                        "held_messages: couldn't mark person %s's sent", person_id, exc_info=True
-                    )
-                else:
-                    await asyncio.sleep(0.5 * (attempt + 1))
+        await mark_sent_after_delivery(ids, now=now, db_path=db_path)
         delivered += 1
         log_event(
             "held_messages_released",

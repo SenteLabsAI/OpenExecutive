@@ -2276,7 +2276,7 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 raise
             ok, detail = delivery.ok, delivery.detail
             if ok:
-                _mark_held_sent(held_ids)
+                await _mark_held_sent(held_ids)
             else:
                 _unclaim_held(held_ids)
             brief_state.record_delivery_outcome(
@@ -2376,15 +2376,10 @@ def _unclaim_held(ids: list[int]) -> None:
         logger.exception("scheduler: couldn't unclaim %d held message(s)", len(ids))
 
 
-def _mark_held_sent(ids: list[int]) -> None:
-    if not ids:
-        return
-    try:
-        from openexecutive.people.held_messages import mark_sent
+async def _mark_held_sent(ids: list[int]) -> None:
+    from openexecutive.people.held_messages import mark_sent_after_delivery
 
-        mark_sent(ids)
-    except Exception:
-        logger.exception("scheduler: couldn't mark %d held message(s) sent", len(ids))
+    await mark_sent_after_delivery(ids)
 
 
 def _release_others_digests(now: datetime) -> None:
