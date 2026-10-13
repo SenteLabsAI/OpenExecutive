@@ -124,7 +124,23 @@ def test_default_authority_is_propose_only(db: Path) -> None:
         assert state.config.authority_level == AuthorityLevel.PROPOSE_ONLY
 
 
-def test_default_cadence_is_daily_morning(db: Path) -> None:
+def test_default_cadence_is_weekly_monday_morning(db: Path) -> None:
+    store.seed_default_departments()
+    state = store.get_department("finance")
+    assert state is not None
+    assert state.config.cadences == {"check_in": "weekly@mon@09:00"}
+
+
+def test_created_department_checks_in_weekly(db: Path) -> None:
+    state = store.create_department("Customer Success")
+    assert state.config.cadences == {"check_in": "weekly@mon@09:00"}
+
+
+def test_existing_cadence_is_kept(db: Path) -> None:
+    """No migration: a department that already has a cadence keeps it."""
+    store.seed_default_departments()
+    store.update_department("finance", cadences={"check_in": "daily@09:00"})
+    store.initialize_db()
     store.seed_default_departments()
     state = store.get_department("finance")
     assert state is not None

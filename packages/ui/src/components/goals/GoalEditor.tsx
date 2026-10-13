@@ -19,9 +19,10 @@ import { formatRelativeTime } from "@/lib/relativeTime";
 // solo mode — and every call here is scoped by its slug.
 
 // "Last reviewed >N days ago" → render the row with a stale accent.
-// Healthy departments have `daily@09:00` so nothing should ever exceed 1d;
-// 7d catches departments that drift well past their cadence.
-const STALE_REVIEW_DAYS = 7;
+// A new department checks in weekly (`weekly@mon@09:00`), so a healthy goal
+// is reviewed at most ~7d ago; 10d leaves room for a skipped or late
+// check-in and still catches departments that drift well past their cadence.
+const STALE_REVIEW_DAYS = 10;
 const STALE_REVIEW_MS = STALE_REVIEW_DAYS * 24 * 60 * 60 * 1000;
 
 function isStaleReview(lastReviewedAt: string): boolean {

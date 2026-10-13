@@ -13,8 +13,9 @@ import {
   sendWorkflowDesignerMessage,
   startWorkflowDesigner,
 } from "@/lib/api";
-import { WORKFLOW_STARTERS, takeWorkflowDescription } from "@/lib/workflowStarters";
+import { takeWorkflowDescription, workflowStartersFor } from "@/lib/workflowStarters";
 import Button from "@/components/ui/Button";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import WorkflowDraftReview from "./WorkflowDraftReview";
 
 // Same cap chat applies to its `?draft=` prefill.
@@ -47,6 +48,7 @@ export default function WorkflowWizard({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const resumeId = searchParams.get("session");
+  const { mode } = useWorkspace();
 
   const [turn, setTurn] = useState<WorkflowDesignerTurn | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -230,7 +232,7 @@ export default function WorkflowWizard({
                 workflow for you to review.
               </p>
               <div className="flex flex-wrap gap-2">
-                {WORKFLOW_STARTERS.map((s) => (
+                {workflowStartersFor(mode).map((s) => (
                   <button
                     key={s}
                     type="button"

@@ -3640,7 +3640,24 @@ departments:
     e.g. `weekly@thu@09:00`), and `quarterly@DD-HH:MM`. Times are UTC.
     `PATCH /departments/{slug}` rejects a spec that does not parse (bad
     format, unknown DOW, out-of-range time) with a 422 naming the valid
-    formats (`is_valid_cadence_spec`); an empty spec means no cadence.
+    formats (`is_valid_cadence_spec`); an empty spec means no cadence
+    (the department page's Off). A new department starts with
+    `weekly@mon@09:00` (charters.DEFAULT_CHECK_IN_CADENCE, used by
+    store.create_department and the catalogue seed). It was `daily@09:00`;
+    departments created before the change keep their cadence (no
+    migration). Why weekly: most goals do not move in a day, and a daily
+    check-in meant a check-in card per department every morning. A changed
+    `check_in` on PATCH re-times the department at once
+    (`reschedule_check_in`: cancel its pending dept_cadence rows, then
+    `enqueue_next`, which queues nothing for an empty spec or in solo), so
+    switching it off does not leave one more check-in on the old schedule.
+    A running check-in is left alone; its chain adds nothing because the
+    new row is pending (or, when off, `enqueue_next` returns None).
+    `GET`/`PATCH /departments/{slug}` return `DepartmentDetail` — the
+    state plus `next_check_in_at` (`next_check_in_at()`: the earliest
+    pending dept_cadence run_at, or null). The page's picker is Daily /
+    Weekly (day + time) / Off over that spec (UI lib/checkInCadence.ts);
+    a spec it cannot show (quarterly) is kept as-is until one is picked.
     `_parse_cadence_spec(spec, after, tz=UTC)` also takes a zone: it builds
     the wall-clock time in that zone and only then converts to UTC, so a
     local schedule is DST-safe (a time the spring-forward gap skips fires
@@ -3682,7 +3699,7 @@ departments:
     backoff (`mark_action_failed_or_retry`); once it returns `failed` the
     runner chains the next occurrence anyway (unless this attempt already
     chained before failing), so one broken department does not drop out
-    of the daily cycle. Chaining is idempotent (`runner._chain_dept_cadence`
+    of its cycle. Chaining is idempotent (`runner._chain_dept_cadence`
     adds nothing while a `pending` dept_cadence row for the department
     exists), so a row that chained and then failed to record its outcome
     — left `running`, requeued by the boot sweep — never duplicates the
@@ -3706,7 +3723,7 @@ departments:
     create_department unless a mission is given), and setup and create_goal
     wire it to the matching specialist (store.specialist_key_for_area, at
     most one department per specialist). Why: eight empty departments meant
-    eight daily check-ins in Coming up, eight empty cards and "no head"
+    eight check-ins in Coming up, eight empty cards and "no head"
     warnings for companies that never had those functions. Workspaces
     created before this keep what they have; nothing is removed.
     store.seed_default_departments still inserts the full catalogue once
@@ -6109,7 +6126,16 @@ workflows:
     typed; it is also the fallback when storage is blocked, so then nothing
     is sent until the user presses Start. Below the panel: the user's custom
     workflows, four ready-made starter picks, and the full built-in list
-    folded behind "Browse all" (`?browse=1`). A dynamic
+    folded behind "Browse all" (`?browse=1`). The picks and the example
+    chips follow the workspace mode (`starterPicksFor` /
+    `workflowStarterChipsFor` in lib/workflowStarters.ts): a team gets
+    investor_update, board_prep, mbr and competitive_teardown and a board
+    pre-read chip; solo ("Just you", an owner-operator) gets mbr,
+    pricing_review, churn_deep_dive and quarterly_plan, and chips for a
+    Friday cash and pipeline check, customers who stopped buying and the
+    competitor digest. tests/unit/test_jobs_starter_picks.py pins every
+    pick to a WORKFLOW_REGISTRY entry that is not background and not
+    principal-only in its mode. A dynamic
     workflow is a stored JSON definition (the `dynamic_workflows` table;
     `openexecutive.workflows.dynamic_store`) interpreted at runtime by ONE
     generic engine, `openexecutive.workflows.dynamic.DynamicWorkflow`, which
