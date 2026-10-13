@@ -1340,7 +1340,10 @@ routing:
     on the arguments sent to the server, so gates, outbound-context records
     and audit rows see the model's words. Skipped when every recipient is
     the principal, when the body already has it, and for send_draft_message
-    (the draft got it when made). Chat: the shorter line on the Executive's
+    (the draft got it when made). Only a last shown line counts as already
+    there. HTML that could hide what follows (disclosure.hides_what_follows)
+    is refused; the roster acknowledgement to a new sender gets
+    BARE_MAIL_LINE, which names nobody. Chat: the shorter line on the Executive's
     Slack / Telegram / Discord / Google Chat replies and on send_slack_dm,
     send_discord_dm, send_telegram_message and broadcast_tools._dispatch,
     once per conversation per 24 hours (in memory; a restart shows it

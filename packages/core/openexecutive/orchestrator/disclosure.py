@@ -115,30 +115,71 @@ def chat_line() -> str:
     return f"{settings.exec_display_name.strip() or 'Open Executive'} · AI assistant"
 
 
-def add_mail_line(body: str, *, as_html: bool = False) -> str:
+# The line for mail to someone the roster never checked (the acknowledgement
+# to a new sender): no name, company or address, like the message itself.
+BARE_MAIL_LINE = "This message was sent by an AI assistant."
+
+# Markup that can keep whatever follows it from showing: an unclosed comment,
+# style or script, or text styled away. An HTML body with any of it isn't sent
+# (``hides_what_follows``), so the line can't be hidden after it.
+_HIDING = re.compile(
+    r"<!--|<style|<script|<template|<noscript|<iframe|<object|display\s*:\s*none|visibility\s*:\s*hidden"
+    r"|(?:font-size|opacity|height)\s*:\s*0(?![.\d])|mso-hide",
+    re.IGNORECASE,
+)
+
+
+def hides_what_follows(html_body: str) -> bool:
+    """Whether HTML mail carries markup that could hide the line after it."""
+    return bool(_HIDING.search(html_body or ""))
+
+
+def _ends_with_line(body: str, line: str, *, as_html: bool) -> bool:
+    """Whether ``body`` already ends with the line *as shown*: in a quoted
+    earlier message or a comment it doesn't count."""
+    if as_html:
+        from openexecutive.utils.html_tags import strip_tags
+
+        body = html.unescape(strip_tags(body, repl="\n"))
+    lines = body.rstrip().splitlines()
+    return bool(lines) and lines[-1].strip() == line
+
+
+def add_mail_line(body: str, *, as_html: bool = False, bare: bool = False) -> str:
     """``body`` with the mail line below it, once."""
     try:
-        line = mail_line()
+        line = BARE_MAIL_LINE if bare else mail_line()
     except Exception:
         logger.warning("disclosure: couldn't build the mail line", exc_info=True)
         return body
-    if line in body or html.escape(line) in body:
+    if _ends_with_line(body, line, as_html=as_html):
         return body
     if as_html:
         return f'{body}<hr><p style="color:#666;font-size:12px">{html.escape(line)}</p>'
     return f"{body.rstrip()}\n\n{_MAIL_RULE}\n{line}"
 
 
-def with_mail_line(body: str, *, recipients: list[str] | None = None, as_html: bool = False) -> str:
+def with_mail_line(
+    body: str, *, recipients: list[str] | None = None, as_html: bool = False, bare: bool = False,
+) -> str:
     """The Executive's mail body as it should go: with the line, unless
-    disclosure is off or it only goes to the principal."""
-    if not enabled() or not isinstance(body, str):
+    disclosure is off or it only goes to the principal. ``bare`` uses
+    ``BARE_MAIL_LINE``, for a recipient the roster never checked."""
+    if not isinstance(body, str) or not applies(recipients):
         return body
+    return add_mail_line(body, as_html=as_html, bare=bare)
+
+
+def applies(recipients: list[str] | None = None) -> bool:
+    """Whether mail to ``recipients`` gets the line: disclosure is on and it
+    doesn't only go to the principal (unknown recipients count as others)."""
+    if not enabled():
+        return False
     if recipients:
         principal = _principal_email().lower()
         if principal and all(r.strip().lower() == principal for r in recipients):
-            return body
-    return add_mail_line(body, as_html=as_html)
+            return False
+    return True
 
 
 def with_chat_line(text: str, conversation: str, *, now: float | None = None) -> str:

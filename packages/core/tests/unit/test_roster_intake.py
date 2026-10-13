@@ -98,6 +98,18 @@ def test_the_granted_acknowledgement_reaches_an_address_off_the_roster(roster: S
     assert args["to"] == STRANGER and args["body"] == roster_intake.ACK_TEXT
 
 
+def test_the_acknowledgement_says_it_is_an_ai_without_naming_anyone(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import disclosure
+
+    monkeypatch.delenv("AI_DISCLOSURE", raising=False)
+    gateway, sent = _gateway()
+    asyncio.run(roster_intake.send_email_ack(gateway, STRANGER))
+    body = sent.await_args.args[1]["arguments"]["body"]
+    assert body == f"{roster_intake.ACK_TEXT}\n\n---\n{disclosure.BARE_MAIL_LINE}"
+
+
 @pytest.mark.parametrize("over", [
     {"body": "Anything else at all"},
     {"subject": "Re: your invoice"},

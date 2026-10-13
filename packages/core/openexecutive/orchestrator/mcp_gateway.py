@@ -1574,20 +1574,43 @@ def _m365_recipients(message: dict[str, Any]) -> list[str]:
     return found
 
 
-def _with_disclosure(tool_name: Any, normalized: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _with_disclosure(
+    tool_name: Any, normalized: str, arguments: dict[str, Any], *, bare: bool = False,
+) -> dict[str, Any] | str:
     """The Executive's own mail send or draft with the AI disclosure line
-    under its body (``orchestrator.disclosure``). Runs after every gate, on
-    a copy; a shape it doesn't know is left as it is."""
-    from openexecutive.orchestrator.disclosure import with_mail_line
+    under its body (``orchestrator.disclosure``), or a JSON refusal for HTML
+    that could hide it. Runs after every gate, on a copy; a shape it doesn't
+    know is left as it is. ``bare``: the acknowledgement to a new sender,
+    whose line names nobody."""
+    from openexecutive.orchestrator.disclosure import applies, hides_what_follows, with_mail_line
+
+    def html_refusal(key: str, text: str, recipients: list[str] | None) -> str | None:
+        if applies(recipients) and hides_what_follows(text):
+            return _refuse(
+                str(tool_name), key, "<hidden-markup>",
+                reason=(
+                    "this HTML has markup that can hide text after it (a comment, a style or "
+                    "script block, or text styled out of sight), so the line saying it was "
+                    "written by an AI could be hidden — refusing. Send it as plain text, or "
+                    "as HTML without that markup."
+                ),
+            )
+        return None
 
     if tool_name in _GATED_GMAIL_TOOLS:
         out = dict(arguments)
         recipients = _mail_recipients(out.get("to"), out.get("cc"), out.get("bcc"))
         if isinstance(out.get("html_body"), str) and out["html_body"]:
-            out["html_body"] = with_mail_line(out["html_body"], recipients=recipients, as_html=True)
+            refused = html_refusal("html_body", out["html_body"], recipients)
+            if refused is not None:
+                return refused
+            out["html_body"] = with_mail_line(out["html_body"], recipients=recipients, as_html=True, bare=bare)
         if isinstance(out.get("body"), str) and out["body"]:
             as_html = str(out.get("body_format") or "").lower() == "html"
-            out["body"] = with_mail_line(out["body"], recipients=recipients, as_html=as_html)
+            refused = html_refusal("body", out["body"], recipients) if as_html else None
+            if refused is not None:
+                return refused
+            out["body"] = with_mail_line(out["body"], recipients=recipients, as_html=as_html, bare=bare)
         return out
     if normalized not in _GATED_M365_MAIL_TOOLS or normalized == _M365_SEND_DRAFT_TOOL:
         return arguments
@@ -1595,10 +1618,14 @@ def _with_disclosure(tool_name: Any, normalized: str, arguments: dict[str, Any])
     if not isinstance(body, dict):
         return arguments
     body = dict(body)
-    # A reply or forward carries its words as Comment; a new message or a
-    # draft as a Graph message (under Message for send_mail).
+    # A reply or forward carries its words as Comment, which Graph puts in
+    # the HTML reply; a new message or a draft as a Graph message (under
+    # Message for send_mail).
     if isinstance(body.get("Comment"), str) and body["Comment"]:
-        body["Comment"] = with_mail_line(body["Comment"])
+        refused = html_refusal("Comment", body["Comment"], None)
+        if refused is not None:
+            return refused
+        body["Comment"] = with_mail_line(body["Comment"], as_html=True)
         return {**arguments, "body": body}
     wrapped = isinstance(body.get("Message"), dict)
     message = body["Message"] if wrapped else body
@@ -1606,9 +1633,13 @@ def _with_disclosure(tool_name: Any, normalized: str, arguments: dict[str, Any])
     if not (isinstance(content, dict) and isinstance(content.get("content"), str) and content["content"]):
         return arguments
     as_html = str(content.get("contentType") or "").lower() == "html"
+    recipients = _m365_recipients(message)
+    refused = html_refusal("body", content["content"], recipients) if as_html else None
+    if refused is not None:
+        return refused
     content = {
         **content,
-        "content": with_mail_line(content["content"], recipients=_m365_recipients(message), as_html=as_html),
+        "content": with_mail_line(content["content"], recipients=recipients, as_html=as_html),
     }
     message = {**message, "body": content}
     return {**arguments, "body": {**body, "Message": message} if wrapped else message}
@@ -3095,7 +3126,15 @@ class MCPGateway:
         # out only; what is recorded below stays the words the model wrote.
         wire_arguments = arguments
         if tool_name in _GATED_GMAIL_TOOLS or normalized in _GATED_M365_MAIL_TOOLS:
-            wire_arguments = _with_disclosure(tool_name, normalized, arguments)
+            # The roster acknowledgement (the one send to an address nobody
+            # checked) gets the line that names nobody, as the ack itself.
+            grant = _roster_ack.get()
+            disclosed = _with_disclosure(
+                tool_name, normalized, arguments, bare=bool(grant is not None and grant["used"]),
+            )
+            if isinstance(disclosed, str):
+                return disclosed
+            wire_arguments = disclosed
         result = await session.call_tool(
             "call_tool",
             {"tool_name": tool_input["name"], "arguments": wire_arguments},

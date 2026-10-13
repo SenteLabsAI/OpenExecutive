@@ -115,7 +115,8 @@ def test_outlook_sends_replies_and_drafts_get_it() -> None:
     assert sent["body"]["Message"]["body"]["content"].endswith(disclosure.mail_line())
     reply = _with_disclosure("microsoft_365__reply-mail-message", "microsoft_365__reply_mail_message",
                              {"messageId": "m1", "body": {"Comment": "Sounds good."}})
-    assert reply["body"]["Comment"].endswith(disclosure.mail_line())
+    assert reply["body"]["Comment"].startswith("Sounds good.<hr><p")
+    assert disclosure.mail_line() in reply["body"]["Comment"]
     draft = _with_disclosure("microsoft_365__create-draft-email", "microsoft_365__create_draft_email",
                              {"body": message})
     assert draft["body"]["body"]["content"].endswith(disclosure.mail_line())
@@ -125,6 +126,40 @@ def test_outlook_sends_replies_and_drafts_get_it() -> None:
     # A shape it doesn't know is left as it is.
     odd: dict[str, Any] = {"body": "plain"}
     assert _with_disclosure("microsoft_365__send-mail", "microsoft_365__send_mail", odd) is odd
+
+
+def test_html_that_could_hide_the_line_is_refused() -> None:
+    tool = "google_workspace__send_gmail_message"
+    for hiding in ("<p>Hi</p><!--", '<p>Hi</p><div style="display: none">', "<p>Hi</p><style>",
+                   '<span style="font-size:0">'):
+        out = _with_disclosure(tool, tool, {"to": "joe@x.example", "body": hiding, "body_format": "html"})
+        assert isinstance(out, str) and "plain text" in out
+    fine = _with_disclosure(tool, tool, {"to": "joe@x.example", "body": '<p style="font-size:0.9em">Hi</p>',
+                                         "body_format": "html"})
+    assert isinstance(fine, dict)
+    # The owner's own HTML (a brief) goes as it is.
+    own = _with_disclosure(tool, tool, {"to": OWNER, "body": "<style>p{}</style>", "body_format": "html"})
+    assert isinstance(own, dict) and own["body"] == "<style>p{}</style>"
+    reply = _with_disclosure("microsoft_365__reply-mail-message", "microsoft_365__reply_mail_message",
+                             {"messageId": "m1", "body": {"Comment": "Ok <!--"}})
+    assert isinstance(reply, str)
+
+
+def test_the_line_counts_only_at_the_end_of_what_shows() -> None:
+    line = disclosure.mail_line()
+    quoted = f"New reply.\n\nOn Monday Ava wrote:\n> Old reply.\n> ---\n> {line}\n"
+    assert disclosure.with_mail_line(quoted, recipients=["joe@x.example"]).endswith(f"---\n{line}")
+    hidden = f"<p>New reply.</p><p hidden-title='{line}'></p>"
+    assert disclosure.with_mail_line(hidden, recipients=["joe@x.example"], as_html=True).endswith("</p>")
+    assert disclosure.with_mail_line(hidden, recipients=["joe@x.example"], as_html=True).count("<hr>") == 1
+
+
+def test_the_bare_line_names_nobody() -> None:
+    tool = "google_workspace__send_gmail_message"
+    out = _with_disclosure(tool, tool, {"to": "new@x.example", "body": "Thanks."}, bare=True)
+    assert isinstance(out, dict)
+    assert out["body"] == f"Thanks.\n\n---\n{disclosure.BARE_MAIL_LINE}"
+    assert "Acme" not in out["body"] and OWNER not in out["body"]
 
 
 # ── chat ──────────────────────────────────────────────────────────────────────
@@ -169,6 +204,10 @@ def test_each_person_starts_from_the_install_and_can_change_theirs(monkeypatch: 
     _env(monkeypatch, AI_DISCLOSURE_HANDLE_IT="false", AI_DISCLOSURE_APPROVED_SENDS="true")
     assert owner_disclosure.get(9) == owner_disclosure.Disclosure(9, handle_it=False, approved_sends=True)
     assert owner_disclosure.get(8).handle_it is False  # their own choice stays theirs
+    # A switch they never named still follows the install.
+    assert owner_disclosure.get(8).approved_sends is True
+    _env(monkeypatch, AI_DISCLOSURE_HANDLE_IT="true")
+    assert owner_disclosure.get(7).handle_it is True
 
 
 def test_sign_adds_the_line_by_the_kind_of_send(monkeypatch: pytest.MonkeyPatch) -> None:

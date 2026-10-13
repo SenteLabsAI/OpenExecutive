@@ -95,18 +95,22 @@ def set_(
     db_path: Path | None = None,
 ) -> Disclosure:
     """Change ``person_id``'s own switches (callers authorize first); None
-    leaves one as it is."""
-    current = get(person_id, db_path=db_path)
-    new_handle_it = current.handle_it if handle_it is None else handle_it
-    new_approved = current.approved_sends if approved_sends is None else approved_sends
+    leaves one as it is, still following the install if it did."""
     conn = _connect(db_path)
     try:
         conn.execute(
             f"INSERT INTO {DISCLOSURE_TABLE} (person_id, handle_it, approved_sends, updated_at, updated_by) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET handle_it = excluded.handle_it, "
-            "approved_sends = excluded.approved_sends, updated_at = excluded.updated_at, "
-            "updated_by = excluded.updated_by",
-            (person_id, int(new_handle_it), int(new_approved), datetime.now(UTC).isoformat(), updated_by),
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(person_id) DO UPDATE SET "
+            "handle_it = COALESCE(excluded.handle_it, handle_it), "
+            "approved_sends = COALESCE(excluded.approved_sends, approved_sends), "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (
+                person_id,
+                None if handle_it is None else int(handle_it),
+                None if approved_sends is None else int(approved_sends),
+                datetime.now(UTC).isoformat(),
+                updated_by,
+            ),
         )
         conn.commit()
     finally:
