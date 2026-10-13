@@ -15,6 +15,7 @@ Lazy imports throughout: the scheduler imports this inside its handlers.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import UTC, datetime
@@ -42,6 +43,23 @@ def failed_run_id(topic_tags: list[str]) -> str | None:
         if tag.startswith(RUN_TAG_PREFIX) and len(tag) > len(RUN_TAG_PREFIX):
             return tag[len(RUN_TAG_PREFIX):]
     return None
+
+
+def _tags(run_id: str) -> list[str]:
+    return ["workflow", f"{RUN_TAG_PREFIX}{run_id}"]
+
+
+def _has_failure_card(run_id: str) -> bool:
+    """Whether a failure card was filed for this run: what marks a run as a
+    scheduled one (a run started from /jobs never gets a card)."""
+    from openexecutive.alerts import store
+
+    with store._get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM alerts WHERE source = ? AND topic_tags LIKE ? LIMIT 1",
+            (SOURCE, f'%"{RUN_TAG_PREFIX}{run_id}"%'),
+        ).fetchone()
+    return row is not None
 
 
 def _dedup_key(workflow_name: str, scope: str) -> str:
@@ -75,6 +93,13 @@ def file_failed_run_card(
             source=SOURCE, dedup_key=dedup_key, severity="high", body=body
         )
         if hit is not None:
+            # Point the card at the newest failure, so Run again and Open the
+            # run use the run that just failed, not the first one.
+            with store._get_conn() as conn:
+                conn.execute(
+                    "UPDATE alerts SET topic_tags = ? WHERE id = ?",
+                    (json.dumps(_tags(run_id)), hit[0]),
+                )
             return hit[0]
         return store.insert_alert(
             source=SOURCE,
@@ -83,7 +108,7 @@ def file_failed_run_card(
             headline=headline,
             body=body,
             suggested_action=f"Run {title} again.",
-            topic_tags=["workflow", f"{RUN_TAG_PREFIX}{run_id}"],
+            topic_tags=_tags(run_id),
             dedup_key=dedup_key,
             routed_to_person_id=routed_to_person_id,
         )
@@ -106,6 +131,11 @@ def rerun_target(run: dict[str, Any]) -> tuple[str, str, int | None]:
     reruns ``run``, or :class:`RerunRefused` when it can't be rerun this way."""
     if run.get("status") != "error":
         raise RerunRefused(409, "Only a run that failed can be run again.")
+    # Only a scheduled run (one with a failure card) reruns this way: a run
+    # someone started from /jobs would otherwise be redelivered on the
+    # schedule's terms, to whoever the schedule sends to.
+    if not _has_failure_card(str(run.get("run_id") or "")):
+        raise RerunRefused(409, "Start this one again from its page.")
     name = str(run.get("workflow_name") or "")
     if name == "department_check_in":
         slug = str((run.get("inputs") or {}).get("department_slug") or "")

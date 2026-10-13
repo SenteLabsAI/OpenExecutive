@@ -42,12 +42,17 @@ def client(db: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def _failed_check_in(run_id: str = "r-1") -> None:
+def _failed_check_in(run_id: str = "r-1", *, scheduled: bool = True) -> None:
     wf_persistence.create_run(
         run_id, "department_check_in", "Check-in: finance",
         {"department_slug": "finance", "period_label": "2026-10-12"},
     )
     wf_persistence.fail_run(run_id, "boom")
+    if scheduled:  # the scheduler files the card; a /jobs run gets none
+        file_failed_run_card(
+            run_id=run_id, workflow_name="department_check_in", title="Finance check-in",
+            scope="finance",
+        )
 
 
 def _pending_reruns() -> list[episodic.ScheduledAction]:
@@ -59,10 +64,7 @@ def _pending_reruns() -> list[episodic.ScheduledAction]:
 
 def test_run_again_queues_one_rerun_and_closes_the_card(client: TestClient) -> None:
     _failed_check_in()
-    card = file_failed_run_card(
-        run_id="r-1", workflow_name="department_check_in", title="Finance check-in",
-        scope="finance",
-    )
+    card = alert_store.list_alerts()[0].id
     assert card is not None
 
     res = client.post("/workflows/runs/r-1/rerun")
@@ -106,6 +108,9 @@ def test_run_again_refuses_what_it_cannot_rerun(client: TestClient) -> None:
     res = client.post("/workflows/runs/manual/rerun")
     assert res.status_code == 409 and "its page" in res.json()["detail"]
     assert client.post("/workflows/runs/missing/rerun").status_code == 404
+    # A check-in started by hand has no failure card: not rerun on schedule terms.
+    _failed_check_in("by-hand", scheduled=False)
+    assert client.post("/workflows/runs/by-hand/rerun").status_code == 409
     assert _pending_reruns() == []
 
 
@@ -152,3 +157,12 @@ def test_a_failed_saved_workflow_files_a_card_for_its_recipient_and_a_rerun_does
     asyncio.run(runner._run_dynamic_workflow(rerun, now=__import__("datetime").datetime.now()))  # type: ignore[arg-type]
     assert chained == ["cash_check"]  # the one-off left the cadence alone
     assert alert_store.list_alerts()[0].occurrence_count == 2
+
+
+def test_a_repeat_failure_points_the_card_at_the_newest_run(db: Path) -> None:
+    _failed_check_in("monday")
+    _failed_check_in("tuesday")
+    (card,) = alert_store.list_alerts()
+    assert card.occurrence_count == 2
+    assert "failed_run:tuesday" in card.topic_tags
+    assert "failed_run:monday" not in card.topic_tags

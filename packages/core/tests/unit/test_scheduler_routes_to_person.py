@@ -634,7 +634,7 @@ def test_a_retried_attempt_files_no_card_and_repeat_failures_share_one(
 def test_run_again_runs_once_past_the_skip_rule_and_adds_no_occurrence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from openexecutive.workflows.failure_alerts import queue_rerun
+    from openexecutive.workflows.failure_alerts import file_failed_run_card, queue_rerun
 
     dept_store.seed_default_departments()  # no goals: a scheduled fire is skipped
     dept_registry.invalidate()
@@ -644,6 +644,10 @@ def test_run_again_runs_once_past_the_skip_rule_and_adds_no_occurrence(
         {"department_slug": "finance", "period_label": "2026-10-12"},
     )
     wf_persistence.fail_run("r-failed", "boom")
+    file_failed_run_card(
+        run_id="r-failed", workflow_name="department_check_in", title="Finance check-in",
+        scope="finance",
+    )
     queue_rerun(wf_persistence.get_run("r-failed") or {})
     (action,) = episodic.claim_due_actions(_now())
     assert action.scope_key == "rerun:r-failed"
