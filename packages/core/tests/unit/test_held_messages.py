@@ -4,6 +4,7 @@ the briefs go out — each exactly once."""
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -219,3 +220,61 @@ def test_drops_are_audited_without_their_text(ids: dict[str, int], monkeypatch: 
     ]
     assert any("undelivered" in d["details"]["reason"] for d in drops)
     assert all(d["private_to_person"] == pid and "secret" not in str(d) for d in drops)
+
+
+def test_only_the_stale_rows_are_dropped(ids: dict[str, int], sent: list[tuple[int, str]]) -> None:
+    pid = ids["teammate"]
+    held.hold(pid, "Stale", source="reflection", release_at=NOW, now=NOW - timedelta(days=8))
+    held.hold(pid, "Fresh", source="alert_review", release_at=NOW, now=NOW - timedelta(minutes=2))
+    assert asyncio.run(held.release_due(NOW)) == 1
+    [(_, text)] = sent
+    assert "Fresh" in text and "Stale" not in text
+    assert held.held_count(pid) == 0
+
+
+def test_a_failing_backoff_does_not_stop_the_pass(
+    ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held.hold(ids["principal"], "For Olivia", source="reflection", release_at=NOW, now=NOW)
+    held.hold(ids["teammate"], "For Ben", source="reflection", release_at=NOW, now=NOW)
+    got: list[int] = []
+
+    async def half(person: Any, text: str, *, label: str = "") -> PrincipalDelivery:
+        if person.id == ids["principal"]:
+            return PrincipalDelivery(False, "send failed", "send_failed")
+        got.append(person.id)
+        return PrincipalDelivery(True, "slack_dm → U1", "delivered", "slack_dm")
+
+    def locked(*a: Any, **k: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(runner, "deliver_to_person", half)
+    monkeypatch.setattr(held, "_backoff", locked)
+    assert asyncio.run(held.release_due(NOW)) == 1
+    assert got == [ids["teammate"]]
+
+
+def test_mark_sent_is_retried_after_a_delivery(
+    ids: dict[str, int], sent: list[tuple[int, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid = ids["teammate"]
+    held.hold(pid, "Once", source="reflection", release_at=NOW, now=NOW)
+    real = held.mark_sent
+    calls: list[int] = []
+
+    def flaky(*a: Any, **k: Any) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        real(*a, **k)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(held, "mark_sent", flaky)
+    monkeypatch.setattr(held.asyncio, "sleep", no_sleep)
+    assert asyncio.run(held.release_due(NOW)) == 1
+    assert len(calls) == 2 and held.held_count(pid) == 0
+    # Past the claim TTL nothing is sent again.
+    assert asyncio.run(held.release_due(NOW + held.CLAIM_TTL + timedelta(minutes=1))) == 0
+    assert len(sent) == 1

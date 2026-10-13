@@ -56,6 +56,8 @@ GIVE_UP_AFTER = timedelta(days=7)
 DIGEST_FALLBACK_AFTER = timedelta(hours=36)
 RELEASE_EVERY = timedelta(minutes=1)
 CLAIM_TTL = timedelta(minutes=10)
+# A delivered batch is marked sent with a few tries (see release_due).
+_MARK_SENT_TRIES = 3
 MAX_BACKOFF = timedelta(hours=1)
 HEADING = "While you were away"
 
@@ -476,12 +478,19 @@ async def release_due(now: datetime, *, db_path: Path | None = None) -> int:
                 _drop(ids, now, db_path)
                 _audit_dropped(person_id, len(ids), "no longer on the People list")
                 continue
-            oldest = datetime.fromisoformat(messages[0].created_at)
-            if now - oldest > GIVE_UP_AFTER:
-                logger.info("held_messages: dropped %d for person %s, too old", len(ids), person_id)
-                _drop(ids, now, db_path)
-                _audit_dropped(person_id, len(ids), f"undelivered for {GIVE_UP_AFTER.days} days")
-                continue
+            # Drop only the rows past the give-up age; newer ones still go.
+            stale = [
+                m.id for m in messages
+                if now - datetime.fromisoformat(m.created_at) > GIVE_UP_AFTER
+            ]
+            if stale:
+                logger.info("held_messages: dropped %d for person %s, too old", len(stale), person_id)
+                _drop(stale, now, db_path)
+                _audit_dropped(person_id, len(stale), f"undelivered for {GIVE_UP_AFTER.days} days")
+                messages = [m for m in messages if m.id not in set(stale)]
+                ids = [m.id for m in messages]
+                if not messages:
+                    continue
             settings = get_notification_settings(person_id)
             if in_quiet_hours(settings, now):
                 # A digest fallback, or quiet hours someone moved since: wait.
@@ -505,12 +514,22 @@ async def release_due(now: datetime, *, db_path: Path | None = None) -> int:
             continue
         if not delivery.ok:
             logger.info("held_messages: person %s's not sent (%s)", person_id, delivery.reason)
-            _backoff(messages, now, db_path)
+            with contextlib.suppress(Exception):
+                _backoff(messages, now, db_path)
             continue
-        try:
-            mark_sent(ids, now=now, db_path=db_path)
-        except Exception:
-            logger.warning("held_messages: couldn't mark person %s's sent", person_id, exc_info=True)
+        # It went: retry the mark a few times, since a row left claimed is
+        # claimable again after CLAIM_TTL and would be sent twice.
+        for attempt in range(_MARK_SENT_TRIES):
+            try:
+                mark_sent(ids, now=now, db_path=db_path)
+                break
+            except Exception:
+                if attempt == _MARK_SENT_TRIES - 1:
+                    logger.error(
+                        "held_messages: couldn't mark person %s's sent", person_id, exc_info=True
+                    )
+                else:
+                    await asyncio.sleep(0.5 * (attempt + 1))
         delivered += 1
         log_event(
             "held_messages_released",
