@@ -705,6 +705,8 @@ def recent_held_back(*, since: str, limit: int = 3) -> list[HeldBack]:
             details = ev.details or {}
             if details.get("surface") not in BRIEF_SURFACES or details.get("mode") != "enforce":
                 continue
+            if not details.get("held_back"):
+                continue  # nothing held (a repair-only pass): skip the payload read
             full = audit.get(ev.id)
             lines = ((full.full if full else None) or {}).get("held_back") or []
             lines = [str(ln) for ln in lines if str(ln).strip()]

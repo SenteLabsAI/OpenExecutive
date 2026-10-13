@@ -523,12 +523,13 @@ def test_recent_held_back_lists_enforced_brief_lines_newest_first(
     lines = [f"- line {i} naming Marcus Lee " + "x" * 300 for i in range(12)]
     audit.log(
         "grounding", "old", actor="executive",
-        details={"surface": "end-of-day digest", "mode": "enforce"},
+        details={"surface": "end-of-day digest", "mode": "enforce", "held_back": ["- yesterday's line"]},
         full={"held_back": ["- yesterday's line"]}, private=True,
     )
     audit.log(
         "grounding", "new", actor="executive",
-        details={"surface": "morning brief", "mode": "enforce"}, full={"held_back": lines},
+        details={"surface": "morning brief", "mode": "enforce", "held_back": lines[:5]},
+        full={"held_back": lines},
     )
     audit.log(  # report mode left nothing out
         "grounding", "r", actor="executive",
@@ -537,6 +538,11 @@ def test_recent_held_back_lists_enforced_brief_lines_newest_first(
     audit.log(  # not a brief
         "grounding", "t", actor="executive",
         details={"surface": "unattended turn", "mode": "enforce"}, full={"held_back": ["x"]},
+    )
+    audit.log(  # repair-only pass: nothing held, so the payload is never read
+        "grounding", "fix", actor="executive",
+        details={"surface": "morning brief", "mode": "enforce", "held_back": []},
+        full={"held_back": ["- not shown"]},
     )
     found = g.recent_held_back(since="2000-01-01T00:00:00+00:00")
     assert [h.surface for h in found] == ["morning brief", "end-of-day digest"]

@@ -123,8 +123,12 @@ async def delete_workflow_run(run_id: str, request: Request) -> dict[str, str]:
 
 
 @router.post("/workflows/runs/{run_id}/rerun")
-async def rerun_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
+def rerun_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     """Run a failed scheduled run again (the Run again on its Home card).
+
+    A plain ``def`` so FastAPI runs it in the threadpool: ``queue_rerun``
+    takes a threading lock around SQLite work, which must not block the
+    event loop.
 
     Queues the same scheduled action, due now, which delivers the way the
     scheduled run would have. The principal may, and for a saved workflow
