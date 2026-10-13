@@ -7368,7 +7368,17 @@ integrations:
     a request that fails its own check (at INFO, which the process runs at)
     and raises on an unparseable body or timestamp: unsigned traffic would
     otherwise write anything into the log. A signed body Bolt can't parse is
-    400. Bolt then verifies again, answers url_verification, and acks at once while
+    400. A signed request is then taken once: the route remembers the exact
+    x-slack-signature of each request it hands to Bolt (an identical replay
+    of any signed body inside the window carries the same one) and the
+    event_id of an event_callback body (unchanged across Slack's re-signed
+    retries), in a per-process in-memory set (TTL 660 s, twice the signature
+    window plus slop; at most 10,000 keys, oldest dropped first), and answers
+    a repeat 200 with an empty body without reaching Bolt, so Slack stops
+    retrying. Keys are recorded before Bolt runs (concurrent copies are
+    caught) and forgotten if Bolt raises or answers 5xx. Per process means
+    one machine; a restart forgets the set.
+    Bolt then verifies again, answers url_verification, and acks at once while
     the listener runs (Slack resends an event not acked within 3 s). The
     route is in _UNAUTHENTICATED_PATHS and passes the local-login Host
     gate as a self-verifying webhook. In BOTH modes a global middleware
