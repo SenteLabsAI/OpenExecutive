@@ -2736,6 +2736,32 @@ class MCPGateway:
         # as "every pinned tool is present" — only PinnedToolsProbe(missing=())
         # asserts that.
         self.pinned_tools: PinnedToolsProbe | None = None
+        # Servers whose sign-in has died (``mark_needs_reconnect``): the
+        # Connected Systems prompt section says so instead of "connected",
+        # and the Setup page shows it. Cleared by ``mark_reconnected`` or by
+        # the next call to one of that server's tools that answers without
+        # an authorization error.
+        self.needs_reconnect: set[str] = set()
+
+    def mark_needs_reconnect(self, server: str, reason: str | None = None) -> bool:
+        """Note that ``server``'s grant no longer works. True when this is
+        news (the first report), so the caller can log or notify once."""
+        if server in self.needs_reconnect:
+            return False
+        self.needs_reconnect.add(server)
+        logger.warning(
+            "MCP server %s needs reconnecting%s; the prompt now says so",
+            server, f": {reason[:200]}" if reason else "",
+        )
+        return True
+
+    def mark_reconnected(self, server: str) -> bool:
+        """The grant works again (a reconnect, or a call that succeeded)."""
+        if server not in self.needs_reconnect:
+            return False
+        self.needs_reconnect.discard(server)
+        logger.info("MCP server %s is connected again", server)
+        return True
 
     async def start(self, config_path: Path) -> None:
         from mcp import ClientSession, StdioServerParameters
@@ -3028,6 +3054,7 @@ class MCPGateway:
             and not _reveal_tokens.get()
         ):
             result_text = hide_roster_tokens(result_text)
+        self._note_grant_health(tool_name, result_text)
         if tool_name in drive_reads.DRIVE_READ_TOOLS:
             result_text = _remember_drive_read(tool_name, arguments, result_text)
         if normalized == _M365_DOWNLOAD_TOOL and isinstance(arguments.get("target"), str):
@@ -3056,6 +3083,19 @@ class MCPGateway:
                 },
             )
         return result_text
+
+    def _note_grant_health(self, tool_name: object, result_text: str) -> None:
+        """Read a tool's answer for a dead grant (``grant_failure``) and keep
+        ``needs_reconnect`` in step: an authorization failure marks the
+        server, an answer that is not one clears it."""
+        server = _server_of(tool_name)
+        if server is None:
+            return
+        failure = grant_failure(result_text)
+        if failure is not None:
+            self.mark_needs_reconnect(server, failure)
+        elif server in self.needs_reconnect:
+            self.mark_reconnected(server)
 
     async def load_mcp_server(self, tool_input: dict[str, Any]) -> str:
         from openexecutive.delegation.lockdown import outside_reach_refusal
@@ -3152,6 +3192,62 @@ def get_active_gateway() -> MCPGateway | None:
     return _active_gateway
 
 
+# What a Google or Microsoft tool answers once the stored grant is dead:
+# workspace-mcp relays google-auth's "invalid_grant: Token has been expired or
+# revoked", the Graph server a 401 / InvalidAuthenticationToken. A rate limit,
+# a missing scope on one call or a 403 on a single file is not a dead grant,
+# so none of those match.
+_GRANT_FAILURE_RE = re.compile(
+    r"invalid_grant|token has been (?:expired|revoked)|refresh ?token (?:is )?(?:expired|revoked|invalid)"
+    r"|invalidauthenticationtoken|(?:^|[^\w])401(?:[^\w]|$).{0,80}unauthori[sz]ed"
+    r"|unauthori[sz]ed.{0,80}(?:^|[^\w])401(?:[^\w]|$)|reauthentication (?:is )?required"
+    r"|credentials (?:have |are )?(?:expired|been revoked)|invalid authentication credentials"
+    r"|\bUNAUTHENTICATED\b",
+    re.IGNORECASE | re.DOTALL,
+)
+# How much of a result is read for it: an error comes first; a long mailbox
+# listing quoting the words "invalid_grant" is not one.
+_GRANT_FAILURE_SCAN_CHARS = 4000
+
+
+def grant_failure(result_text: object) -> str | None:
+    """The authorization failure a tool result reports, in a line, or None
+    when the result is not one. Only an error payload counts (``{"error":
+    …}``, or text that opens with an error marker), never a successful
+    answer that merely quotes those words."""
+    if not isinstance(result_text, str) or not result_text:
+        return None
+    head = result_text[:_GRANT_FAILURE_SCAN_CHARS]
+    error: str | None = None
+    try:
+        parsed = json.loads(head) if head.lstrip().startswith("{") else None
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        if "error" not in parsed:
+            return None
+        error = json.dumps(parsed.get("error"))[:_GRANT_FAILURE_SCAN_CHARS]
+    elif head.lstrip().lower().startswith(("error", "{\"error", "tool error", "exception", "failed")):
+        error = head
+    if error is None:
+        return None
+    match = _GRANT_FAILURE_RE.search(error)
+    if match is None:
+        return None
+    start = max(match.start() - 40, 0)
+    return " ".join(error[start:match.end() + 80].split())[:200]
+
+
+def _server_of(tool_name: object) -> str | None:
+    """The server a prefixed tool name belongs to (``google_workspace__x`` →
+    ``google_workspace``), or None."""
+    if not isinstance(tool_name, str):
+        return None
+    normalized = _normalize_tool_name(tool_name)
+    server, sep, _ = normalized.partition("__")
+    return server if sep and server else None
+
+
 def gateway_server_names(gateway: object) -> tuple[str, ...]:
     """The servers ``gateway`` started with, or () for no gateway (or a
     stand-in without the attribute)."""
@@ -3159,3 +3255,55 @@ def gateway_server_names(gateway: object) -> tuple[str, ...]:
     if not isinstance(names, tuple | list):
         return ()
     return tuple(n for n in names if isinstance(n, str))
+
+
+def gateway_reconnect_needed(gateway: object) -> tuple[str, ...]:
+    """The servers ``gateway`` has marked as needing a reconnect, sorted; ()
+    for no gateway or a stand-in without the attribute."""
+    names = getattr(gateway, "needs_reconnect", ())
+    if not isinstance(names, set | frozenset | tuple | list):
+        return ()
+    return tuple(sorted(n for n in names if isinstance(n, str)))
+
+
+# The supervisor that starts the gateway and retries while it is down
+# (orchestrator/gateway_boot.py). Set by the app lifespan next to the active
+# gateway, so code that is about to need the gateway can ask for a start now
+# (``ensure_active_gateway``) and the Setup page can say why it is down.
+_supervisor: Any = None
+
+
+def set_gateway_supervisor(supervisor: Any) -> None:
+    global _supervisor
+    _supervisor = supervisor
+
+
+def get_gateway_supervisor() -> Any:
+    return _supervisor
+
+
+async def ensure_active_gateway() -> MCPGateway | None:
+    """The active gateway, after a start attempt if it is down and the
+    supervisor is not already in one. The lazy re-check before a scheduled
+    delivery: with no supervisor (tests, a process started without the
+    lifespan) this is just ``get_active_gateway``."""
+    if _active_gateway is not None or _supervisor is None:
+        return _active_gateway
+    try:
+        await _supervisor.ensure()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("MCP gateway re-check failed")
+    return _active_gateway
+
+
+def gateway_problem() -> str | None:
+    """Why there is no active gateway, in one line, or None while there is
+    one. Without a supervisor the answer is only that it is not running."""
+    if _active_gateway is not None:
+        return None
+    if _supervisor is None:
+        return "the MCP gateway is not running"
+    problem = _supervisor.problem()
+    return str(problem) if problem else "the MCP gateway is not running"

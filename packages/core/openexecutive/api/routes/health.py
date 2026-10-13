@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from openexecutive.api.models import HealthResponse
+from openexecutive.api.models import GatewayHealth, HealthResponse
 
 router = APIRouter()
 
@@ -47,7 +47,24 @@ async def health_check(request: Request) -> HealthResponse:
         builtin_skills=builtin_skills_count,
         company_skills=company_skills_count,
         google_tools_missing=list(missing) if missing is not None else None,
+        gateway=gateway_health(request.app.state, settings),
     )
+
+
+def gateway_health(app_state: Any, settings: Any) -> GatewayHealth:
+    """The gateway's state for /health: from the supervisor when boot made
+    one, else from what is on the app (a gateway handed in without a
+    supervisor is up; none with MCP on means the config named no servers)."""
+    supervisor = getattr(app_state, "mcp_supervisor", None)
+    status = getattr(supervisor, "status", None)
+    if callable(status):
+        report = status()
+        as_dict = getattr(report, "as_dict", None)
+        data = as_dict() if callable(as_dict) else dict(report)
+        return GatewayHealth(**data)
+    if getattr(app_state, "mcp_gateway", None) is not None:
+        return GatewayHealth(state="up")
+    return GatewayHealth(state="no_servers" if getattr(settings, "mcp_enabled", False) else "off")
 
 
 _HONCHO_PROBE_TIMEOUT_S = 3.0

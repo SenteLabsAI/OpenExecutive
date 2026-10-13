@@ -40,6 +40,7 @@ def build_system_blocks(
     include_contacts: bool = False,
     delegation: bool = False,
     mcp_servers: Sequence[str] = (),
+    needs_reconnect: Sequence[str] = (),
     persona_instructions: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build system prompt blocks with correct cache_control ordering.
@@ -156,7 +157,9 @@ def build_system_blocks(
         # (Executive._script_tools): a setting, so constant per deployment.
         + (TOOL_BUILDING_ADDENDUM if mcp_enabled and _chat_scripts_on(settings) else "")
         + identity_addendum
-        + render_connected_systems(mcp_servers=mcp_servers, settings=settings)
+        + render_connected_systems(
+            mcp_servers=mcp_servers, settings=settings, needs_reconnect=needs_reconnect
+        )
         + (DELEGATION_ADDENDUM if delegation else "")
         + tz_addendum
     )

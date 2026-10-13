@@ -161,7 +161,7 @@ _UNAUTHENTICATED_PATHS: frozenset[str] = frozenset(
 )
 
 
-# How long the MCP gateway gets to come up. The child is
+# How long the MCP gateway gets to come up, per attempt. The child is
 # `uvx --from git+https://…/extensible-mcp`, which resolves and may clone that
 # repo on a cold start, so this is generous; what it must not be is unbounded.
 # `MCPGateway.start` builds `ClientSession` with no `read_timeout_seconds`, so
@@ -169,33 +169,10 @@ _UNAUTHENTICATED_PATHS: frozenset[str] = frozenset(
 # lifespan that never yields is a healthcheck that never passes, which is
 # #122's symptom with none of its traceback. A dead child is already fine
 # (the session's receive loop fails every pending request on close); it is the
-# silent one that needs a clock.
+# silent one that needs a clock. A failed attempt is retried in the
+# background with backoff (orchestrator/gateway_boot.py), so one slow or
+# faulty start no longer costs the whole process its MCP tools.
 _MCP_START_TIMEOUT_S = 120.0
-# Tearing down a gateway that just failed walks the same stdio machinery that
-# failed, so it gets a clock too.
-_MCP_CLOSE_TIMEOUT_S = 10.0
-
-
-async def _close_mcp_gateway_quietly(gateway: Any, log: logging.Logger) -> None:
-    """Reap a gateway that failed to start. Never raises, never hangs.
-
-    `MCPGateway.close` suppresses `Exception` around each step, which is not
-    enough here: anyio raises `BaseExceptionGroup` as soon as one sub-exception
-    is a `BaseException` such as `CancelledError`, and that is not an
-    `Exception`. Since this runs from inside an `except` block, anything it
-    raises replaces the actionable log we just wrote with the crash that log
-    exists to prevent.
-    """
-    try:
-        await asyncio.wait_for(gateway.close(), timeout=_MCP_CLOSE_TIMEOUT_S)
-    except asyncio.CancelledError:
-        raise
-    except BaseException:
-        log.warning(
-            "MCP gateway teardown after a failed start did not finish cleanly; "
-            "continuing shutdown of the failed gateway anyway",
-            exc_info=True,
-        )
 
 
 async def _start_mcp_gateway(
@@ -204,7 +181,11 @@ async def _start_mcp_gateway(
     """Bring the MCP gateway up, or leave MCP off and say why.
 
     Sets ``app.state.mcp_gateway`` — the gateway on success, ``None`` otherwise
-    — and returns the email-poller task that rides on it, or ``None``.
+    — and returns the email-poller task that rides on it, or ``None``. The
+    supervisor that made the attempt stays on ``app.state.mcp_supervisor``:
+    when the first attempt fails it keeps retrying with backoff, and a later
+    success wires the gateway, the pinned-tool priming and the email poller
+    exactly as a first-time success does here; ``/health`` reports its state.
 
     Never raises and never blocks indefinitely. The gateway spawns
     extensible-mcp as a subprocess, and a failure there used to propagate out
@@ -212,24 +193,22 @@ async def _start_mcp_gateway(
     that is a crash loop whose only outward symptom is a healthcheck that never
     passes (#122). Booting without MCP costs the Gmail/Calendar/Drive tool
     surface and the email poller; refusing to boot costs everything, so degrade
-    and log loudly enough to alert on.
-
-    ``except BaseException`` rather than ``except Exception``, with real
-    cancellation re-raised first: the failure in #122 surfaced from anyio, and
-    anyio wraps a task group's failures in ``BaseExceptionGroup`` as soon as one
-    of them is a ``BaseException`` such as ``CancelledError``. That group is not
-    an ``Exception``, so ``except Exception`` would let through the single
-    exception shape this function exists to contain.
+    and log loudly enough to alert on. The supervisor contains the same
+    failure shapes (``except BaseException`` with real cancellation re-raised
+    first: anyio wraps a task group's failures in ``BaseExceptionGroup`` as
+    soon as one of them is a ``CancelledError``, and that group is not an
+    ``Exception``).
     """
     app.state.mcp_gateway = None
+    app.state.mcp_supervisor = None
     if not settings.mcp_enabled:
         return None
 
     from openexecutive.config import mcp_config_file_present
+    from openexecutive.orchestrator.gateway_boot import GatewaySupervisor
     from openexecutive.orchestrator.mcp_gateway import (
-        MCPGateway,
         configured_server_names,
-        set_active_gateway,
+        set_gateway_supervisor,
     )
 
     log = logging.getLogger("openexecutive")
@@ -263,37 +242,23 @@ async def _start_mcp_gateway(
         )
         return None
 
-    gateway = MCPGateway()
-    try:
-        await asyncio.wait_for(
-            gateway.start(config_path), timeout=_MCP_START_TIMEOUT_S
-        )
-    except asyncio.CancelledError:
-        raise
-    except BaseException:
-        log.exception(
-            "MCP gateway failed to start within %.0fs; continuing WITHOUT MCP "
-            "tools and without the email poller. config=%s servers=[%s] (%s)",
-            _MCP_START_TIMEOUT_S, config_path, ", ".join(servers), why,
-        )
-        await _close_mcp_gateway_quietly(gateway, log)
+    supervisor = GatewaySupervisor(
+        config_path=config_path,
+        servers=servers,
+        app_state=app.state,
+        start_timeout_s=_MCP_START_TIMEOUT_S,
+        why=why,
+    )
+    app.state.mcp_supervisor = supervisor
+    set_gateway_supervisor(supervisor)
+    if not await supervisor.start():
         return None
-
-    app.state.mcp_gateway = gateway
-    set_active_gateway(gateway)
-    if "google_workspace" in servers:
-        # Discover the pinned Google tools now, so the model's first direct
-        # call_tool doesn't wait on the search. Held on app.state: a bare
-        # create_task is only weakly referenced.
-        app.state.mcp_prime_task = asyncio.create_task(gateway.prime_pinned_tools())
 
     # Say which mail/calendar backends the fixed code paths will use, and warn
     # (never fail) when a chosen backend's server is not in the config.
     from openexecutive.integrations.workspace.registry import log_provider_status
     log_provider_status(settings, config_path)
-
-    from openexecutive.integrations.email_poller import run_email_poller
-    return asyncio.create_task(run_email_poller(gateway))
+    return supervisor.poller_task
 
 
 # How long the lifespan waits for the Slack socket to cancel its pending
@@ -792,6 +757,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             if slack_connect_task is not None and not slack_connect_task.done():
                 slack_connect_task.cancel()
+
+    # The supervisor owns the poller it started (at boot or on a retry), the
+    # priming task and the retries themselves; closing it stops all three
+    # and the gateway. The task returned at boot is the same object, so the
+    # cancel below is a no-op after this.
+    supervisor = getattr(app.state, "mcp_supervisor", None)
+    if supervisor is not None:
+        from openexecutive.orchestrator.mcp_gateway import set_gateway_supervisor
+
+        set_gateway_supervisor(None)
+        with contextlib.suppress(Exception):
+            await supervisor.close()
 
     if email_poller_task is not None:
         email_poller_task.cancel()

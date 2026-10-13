@@ -155,6 +155,11 @@ class Snapshot:
     # nobody chose one, so UTC).
     brief_delivery: DeliveryOutcome | None = None
     brief_email_ready: bool = False
+    # Why the gateway that sends email is down (orchestrator.mcp_gateway.
+    # gateway_problem), or None while it is up; and the servers whose
+    # sign-in has died (``MCPGateway.needs_reconnect``).
+    gateway_problem: str | None = None
+    gateway_needs_reconnect: tuple[str, ...] = ()
     brief_next_runs: dict[str, datetime] = field(default_factory=dict)
     brief_zone: str | None = None
 
@@ -828,11 +833,21 @@ def check_gmail(snap: Snapshot) -> SetupCheck:
             "To connect Gmail, follow the Google Workspace steps in .env.example.",
         )
     if snap.mcp_gateway is None:
+        problem = snap.gateway_problem or "the MCP gateway is not running"
         return _result(
             "gmail",
             "error",
-            "The connection to Google didn't start, so email is off.",
-            f'The API log says why — look for "MCP gateway". Fix that, {_RESTART}',
+            f"The connection to Google didn't start, so email is off: {problem}.",
+            'It keeps retrying on its own. If it stays off, the API log says why — look for '
+            f'"MCP gateway". Fix that, {_RESTART}',
+        )
+    if "google_workspace" in snap.gateway_needs_reconnect:
+        return _result(
+            "gmail",
+            "error",
+            f"Google turned the Executive's sign-in as {settings.exec_email_address} away: "
+            "it expired or was revoked, so email, calendar and files are off.",
+            f"Sign Google in again as that address (scripts/mint-google-token.py), {_RESTART}",
         )
     missing = _google_sign_in_missing()
     if missing:
@@ -1051,8 +1066,9 @@ def check_brief(snap: Snapshot) -> SetupCheck:
         brief_name,
         channel_phrase,
         current_problem,
+        describe_problem,
     )
-    from openexecutive.scheduler.runner import delivery_order
+    from openexecutive.scheduler.runner import delivery_order, mail_gateway_problem
 
     if not snap.settings.scheduler_enabled:
         return _result("brief", "off", "Off, because the scheduler is turned off.")
@@ -1062,6 +1078,10 @@ def check_brief(snap: Snapshot) -> SetupCheck:
         return _result("brief", "warn", f"Not sent: {problem}.", fix, link="/people")
     plan = delivery_order(principal, email_ready=snap.brief_email_ready)
     if not plan:
+        blocked = mail_gateway_problem(principal)
+        if blocked is not None:
+            problem, fix = describe_problem("gateway_down", blocked)
+            return _result("brief", "error", f"Not sent by email: {problem}.", fix)
         problem, fix = DELIVERY_PROBLEMS["no_channel"]
         return _result(
             "brief",
@@ -1073,7 +1093,7 @@ def check_brief(snap: Snapshot) -> SetupCheck:
     last = snap.brief_delivery
     reason = current_problem(last, has_owner=True, can_deliver=True)
     if last is not None and reason is not None:
-        problem, fix = DELIVERY_PROBLEMS[reason]
+        problem, fix = describe_problem(reason, last.detail)
         return _result(
             "brief", "error", f"Your last {brief_name(last.kind)} wasn't sent: {problem}.", fix
         )
@@ -1151,6 +1171,10 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
     from openexecutive.briefing.brief_state import last_delivery_outcome
     from openexecutive.integrations.slack_bot import bot_user_id
     from openexecutive.memory.workspace_settings import get_user_timezone, get_workspace
+    from openexecutive.orchestrator.mcp_gateway import (
+        gateway_problem,
+        gateway_reconnect_needed,
+    )
     from openexecutive.people.store import find_principal_person, list_people
     from openexecutive.scheduler.runner import email_ready, next_brief_runs
 
@@ -1171,6 +1195,8 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
         slack_handler=getattr(app_state, "slack_handler", None),
         slack_bot_id_resolved=bot_user_id() is not None,
         mcp_gateway=getattr(app_state, "mcp_gateway", None),
+        gateway_problem=gateway_problem(),
+        gateway_needs_reconnect=gateway_reconnect_needed(getattr(app_state, "mcp_gateway", None)),
         brief_delivery=last_delivery_outcome(),
         brief_email_ready=email_ready(),
         brief_next_runs=next_brief_runs(now),

@@ -105,6 +105,7 @@ from openexecutive.orchestrator.mcp_gateway import (
     MCP_TOOL_NAMES,
     MCP_TOOLS,
     MCPGateway,
+    gateway_reconnect_needed,
     gateway_server_names,
 )
 from openexecutive.orchestrator.open_loop_tools import (
@@ -1275,6 +1276,7 @@ class Executive:
             include_contacts=_contacts_in_prompt(session),
             delegation=block0_delegation_on(session),
             mcp_servers=gateway_server_names(self._mcp_gateway),
+            needs_reconnect=gateway_reconnect_needed(self._mcp_gateway),
             persona_instructions=persona_instructions,
         )
         # turn_id ties every downstream audit row (knowledge_retrieval,
@@ -1594,6 +1596,7 @@ class Executive:
             include_contacts=_contacts_in_prompt(session),
             delegation=block0_delegation_on(session),
             mcp_servers=gateway_server_names(self._mcp_gateway),
+            needs_reconnect=gateway_reconnect_needed(self._mcp_gateway),
             persona_instructions=persona_instructions,
         )
         # turn_id covers both the draft and (later) the revision pass so a

@@ -1070,14 +1070,25 @@ async def _execute_action(
         logger.info("scheduler: action %d (__internal__) completed without dispatch", action.id)
         return
 
+    # The gateway the scheduler was started with is the one boot had, which
+    # is None when the first start failed; a retry may have brought one up
+    # since, and this is the moment to try once more if not
+    # (orchestrator.gateway_boot).
+    if gateway is None:
+        from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
+
+        gateway = await ensure_active_gateway()
+
     # Email channel requires MCP (the mail send tool is an MCP tool, whichever
     # backend EMAIL_PROVIDER names). Without a gateway, the Executive cannot
     # deliver — short-circuit with a clear error rather than burning attempts
     # on silent failures.
     if action.channel == "email" and gateway is None:
+        from openexecutive.orchestrator.mcp_gateway import gateway_problem
+
         mark_action_failed_or_retry(
             action.id,
-            "email channel requires MCP gateway, which is not configured",
+            f"email channel requires the MCP gateway: {gateway_problem()}",
         )
         logger.warning(
             "scheduler: action %d (email) cannot run without MCP gateway",
@@ -1792,22 +1803,51 @@ def google_workspace_ready() -> bool:
     return "google_workspace" in configured_server_names(get_settings().mcp_servers_config_path)
 
 
-def email_ready() -> bool:
-    """Whether the Executive can send email: the MCP gateway is up and runs
-    the server of the configured mail backend (``EMAIL_PROVIDER``: the Google
-    Workspace server for Gmail, the Microsoft 365 one for Outlook)."""
+def mail_server_configured() -> bool:
+    """Whether the MCP config names the server of the configured mail backend
+    (``EMAIL_PROVIDER``: the Google Workspace server for Gmail, the Microsoft
+    365 one for Outlook) — email is set up, whether or not the gateway that
+    runs it is up right now."""
     from openexecutive.config import get_settings
     from openexecutive.integrations.workspace.registry import get_mail_provider
-    from openexecutive.orchestrator.mcp_gateway import (
-        configured_server_names,
-        get_active_gateway,
-    )
+    from openexecutive.orchestrator.mcp_gateway import configured_server_names
 
-    if get_active_gateway() is None:
-        return False
     settings = get_settings()
     server = get_mail_provider(settings).server_name
     return server in configured_server_names(settings.mcp_servers_config_path)
+
+
+def email_ready() -> bool:
+    """Whether the Executive can send email: the MCP gateway is up and runs
+    the server of the configured mail backend (``mail_server_configured``)."""
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+
+    return get_active_gateway() is not None and mail_server_configured()
+
+
+def mail_gateway_problem(person: Person | None) -> str | None:
+    """Why email to ``person`` is blocked by the gateway, in a line, or None.
+
+    Only when email is the Executive's fault: ``person`` has an address and
+    the mail server is configured, but the gateway that sends is not
+    running. Nothing when email was never set up, or when it works.
+    """
+    from openexecutive.orchestrator.mcp_gateway import gateway_problem
+
+    if person is None or not getattr(person, "email", None) or not mail_server_configured():
+        return None
+    return gateway_problem()
+
+
+async def ensure_email_ready() -> bool:
+    """``email_ready``, after the lazy re-check: with the gateway down and
+    email otherwise set up, ask the supervisor for a start now rather than
+    sending nothing and waiting for the next scheduled retry."""
+    if mail_server_configured():
+        from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
+
+        await ensure_active_gateway()
+    return email_ready()
 
 
 def principal_delivery_plan() -> tuple[Person | None, list[str]]:
@@ -1836,22 +1876,25 @@ def _email_subject(label: str, now: datetime | None = None) -> str:
     return f"{label} — {local:%a} {local.day} {local:%b}"
 
 
-async def _email_principal(principal: Person, text: str, label: str) -> bool:
+async def _email_principal(principal: Person, text: str, label: str) -> str | None:
     """Send ``text`` (Markdown) to the principal's address through the active
     MCP gateway, formatted as HTML (``utils.markdown_email``).
 
     Sent as the Executive's own mailbox (the principal is on the roster, so
-    the gateway's egress gate allows it). False when there is no gateway or
-    the tool reports an error in-band.
+    the gateway's egress gate allows it). None on a clean send; otherwise
+    what went wrong in a line — no gateway, no address, or the error the
+    tool reported in-band — for the delivery record.
     """
     from openexecutive.integrations.workspace.registry import send_from_executive
-    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.orchestrator.mcp_gateway import gateway_problem, get_active_gateway
     from openexecutive.utils.markdown_email import markdown_to_email_html
     from openexecutive.workflows.action_step import looks_like_error
 
     gateway = get_active_gateway()
-    if gateway is None or not principal.email:
-        return False
+    if not principal.email:
+        return "no email address"
+    if gateway is None:
+        return gateway_problem() or "the MCP gateway is not running"
     result = await send_from_executive(
         gateway,
         to=principal.email,
@@ -1861,8 +1904,31 @@ async def _email_principal(principal: Person, text: str, label: str) -> bool:
     )
     if looks_like_error(result):
         logger.warning("scheduler: email to the principal failed: %s", result[:300])
-        return False
-    return True
+        return _error_line(result)
+    return None
+
+
+def _error_line(result: str) -> str:
+    """The error a tool handler reported, in a line: the ``error`` value of
+    its JSON, else the text itself, cut short."""
+    import json as _json
+
+    text = result
+    try:
+        parsed = _json.loads(result)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        error = parsed.get("error")
+        if error is not None:
+            text = error if isinstance(error, str) else _json.dumps(error)
+        elif parsed.get("status") != "sent":
+            text = f"status {parsed.get('status')!r}, not sent"
+    return " ".join(str(text).split())[:_FAILURE_LINE_MAX]
+
+
+# The longest per-channel failure kept in a delivery's detail.
+_FAILURE_LINE_MAX = 200
 
 
 @dataclass(frozen=True)
@@ -1886,9 +1952,12 @@ async def _deliver_to_principal(text: str, *, label: str = "Update") -> Principa
     action done (no point retrying the same misconfiguration) but audits the
     failure.
     """
-    principal, plan = principal_delivery_plan()
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
     if principal is None:
         return PrincipalDelivery(False, "no principal Person row found", "no_owner")
+    plan = delivery_order(principal, email_ready=await ensure_email_ready())
     return await _send_on_plan(principal, plan, text, label=label)
 
 
@@ -1896,7 +1965,8 @@ async def deliver_to_person(person: Person, text: str, *, label: str = "Update")
     """Send ``text`` to ``person`` alone, the way the briefs reach the
     principal: their own Slack or Discord DM, their Telegram chat, or email
     to their own address (``delivery_order``, which skips a Telegram group)."""
-    return await _send_on_plan(person, delivery_order(person, email_ready=email_ready()), text, label=label)
+    plan = delivery_order(person, email_ready=await ensure_email_ready())
+    return await _send_on_plan(person, plan, text, label=label)
 
 
 async def _send_on_plan(
@@ -1905,10 +1975,17 @@ async def _send_on_plan(
     """Try ``plan``'s channels for ``principal`` (any Person) in order until
     one sends."""
     if not plan:
+        # Email set up but its gateway down is the Executive's fault, not a
+        # missing setting: say so, with the start failure, instead of
+        # "nothing is set up" (which told the owner to connect what they had).
+        blocked = mail_gateway_problem(principal)
+        if blocked is not None:
+            return PrincipalDelivery(False, f"email not available: {blocked}", "gateway_down")
         return PrincipalDelivery(
             False, "no deliverable channel configured for principal", "no_channel"
         )
 
+    failures: list[str] = []
     for channel in plan:
         try:
             if channel == "slack_dm" and principal.slack_user_id:
@@ -1918,6 +1995,7 @@ async def _send_on_plan(
                 })
                 if _delivered_ok(result):
                     return _sent(channel, principal.slack_user_id)
+                failures.append(f"{channel}: {_error_line(result)}")
             elif channel == "discord_dm" and principal.discord_user_id:
                 from openexecutive.orchestrator.schedule_tools import handle_send_discord_dm
                 result = await handle_send_discord_dm({
@@ -1925,6 +2003,7 @@ async def _send_on_plan(
                 })
                 if _delivered_ok(result):
                     return _sent(channel, principal.discord_user_id)
+                failures.append(f"{channel}: {_error_line(result)}")
             elif channel == "telegram" and principal.telegram_chat_id:
                 from openexecutive.orchestrator.schedule_tools import (
                     handle_send_telegram_message,
@@ -1934,13 +2013,20 @@ async def _send_on_plan(
                 })
                 if _delivered_ok(result):
                     return _sent(channel, principal.telegram_chat_id)
-            elif channel == "email" and await _email_principal(principal, text, label):
-                return _sent(channel, principal.email)
-        except Exception:
+                failures.append(f"{channel}: {_error_line(result)}")
+            elif channel == "email":
+                error = await _email_principal(principal, text, label)
+                if error is None:
+                    return _sent(channel, principal.email)
+                failures.append(f"email: {error}")
+            else:
+                failures.append(f"{channel}: no id to send to")
+        except Exception as exc:
             logger.exception("scheduler: delivery via %s failed", channel)
+            failures.append(f"{channel}: {_error_line(str(exc) or type(exc).__name__)}")
 
     return PrincipalDelivery(
-        False, f"delivery failed on every channel ({', '.join(plan)})", "send_failed"
+        False, "delivery failed on every channel: " + "; ".join(failures), "send_failed"
     )
 
 
@@ -2146,7 +2232,8 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             delivery = await _deliver_to_principal(artifact, label=workflow.title)
             ok, detail = delivery.ok, delivery.detail
             brief_state.record_delivery_outcome(
-                kind, reason=delivery.reason, channel=delivery.channel
+                kind, reason=delivery.reason, channel=delivery.channel,
+                detail=None if ok else detail,
             )
             recorded = True
             if ok:
@@ -2179,7 +2266,8 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             fail_run(run_id, str(exc))
         if not recorded:
             brief_state.record_delivery_outcome(
-                kind, reason="send_failed" if sending else "not_written", channel=None
+                kind, reason="send_failed" if sending else "not_written", channel=None,
+                detail=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
             )
 
     # Always chain the next occurrence + mark this row done, so a single

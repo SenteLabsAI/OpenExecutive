@@ -170,6 +170,23 @@ class SyncedDocContent(BaseModel):
     content: str
 
 
+class GatewayHealth(BaseModel):
+    """The MCP gateway (orchestrator/gateway_boot.py): ``off`` (MCP not
+    enabled), ``no_servers`` (enabled, config names none), ``starting`` (an
+    attempt is running), ``up``, or ``down`` (every attempt failed so far;
+    ``next_retry_at`` says when the next one is). ``attempts`` counts starts
+    tried; ``last_error`` is the last failure's text, kept after a recovery.
+    ``email_poller`` is whether the poller that rides on the gateway runs."""
+
+    state: str
+    attempts: int = 0
+    last_error: str | None = None
+    last_failed_at: str | None = None
+    up_since: str | None = None
+    next_retry_at: str | None = None
+    email_poller: bool = False
+
+
 class HealthResponse(BaseModel):
     status: str
     builtin_knowledge_chunks: int
@@ -183,6 +200,10 @@ class HealthResponse(BaseModel):
     # Setup status says which. A non-empty list means a workspace-mcp rename or
     # a tool the configured services and tier never loaded.
     google_tools_missing: list[str] | None = None
+    # The MCP gateway's state (``GatewayHealth``). A hosted instance whose
+    # gateway failed to start used to look healthy here while no email went
+    # out or came in.
+    gateway: GatewayHealth | None = None
     version: str = "0.5.4"  # x-release-please-version
 
 

@@ -1963,13 +1963,13 @@ class BriefDeliveryNotice(BaseModel):
 
 def _brief_delivery_notice() -> BriefDeliveryNotice | None:
     from openexecutive.briefing.brief_state import (
-        DELIVERY_PROBLEMS,
         brief_name,
         current_problem,
+        describe_problem,
         last_delivery_outcome,
     )
     from openexecutive.config import get_settings
-    from openexecutive.scheduler.runner import principal_delivery_plan
+    from openexecutive.scheduler.runner import mail_gateway_problem, principal_delivery_plan
 
     # With the scheduler off no brief is coming; the Setup status page says so.
     if not get_settings().scheduler_enabled:
@@ -1978,10 +1978,16 @@ def _brief_delivery_notice() -> BriefDeliveryNotice | None:
     if last is None:
         return None
     principal, plan = principal_delivery_plan()
-    reason = current_problem(last, has_owner=principal is not None, can_deliver=bool(plan))
+    blocked = mail_gateway_problem(principal)
+    reason = current_problem(
+        last, has_owner=principal is not None, can_deliver=bool(plan),
+        gateway_down=blocked is not None,
+    )
     if reason is None:
         return None
-    problem, fix = DELIVERY_PROBLEMS[reason]
+    problem, fix = describe_problem(
+        reason, blocked if reason == "gateway_down" else last.detail
+    )
     return BriefDeliveryNotice(
         brief=brief_name(last.kind),
         at=last.at.isoformat(),

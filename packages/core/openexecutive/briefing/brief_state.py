@@ -20,10 +20,12 @@ delivery (after a successful send), so manual workflow runs never advance
 the window.
 
 Each run's outcome, sent or not, goes under ``brief_delivery:<kind>``
-(``record_delivery_outcome``): the reason in ``input_hash`` and the channel
-that sent it in ``narrative_text`` — a channel name, never an address. The
-Briefing's "not sent" notice and the Setup status page read it back through
-``current_problem``.
+(``record_delivery_outcome``): the reason in ``input_hash`` and, in
+``narrative_text``, the channel that sent it — a channel name, never an
+address — and, for a failure, what happened in a line (the tool's own error,
+or why no channel could be tried; ``detail``). The Briefing's "not sent"
+notice and the Setup status page read it back through ``current_problem``
+and ``describe_problem``.
 """
 from __future__ import annotations
 
@@ -129,8 +131,12 @@ def record_delivered(kind: str, fingerprint: str, text: str) -> None:
 
 # How a brief's latest run ended: sent, or why not (``not_written`` — the run
 # failed or produced nothing; the others are scheduler.runner.
-# PrincipalDelivery.reason).
-DeliveryReason = Literal["delivered", "no_owner", "no_channel", "send_failed", "not_written"]
+# PrincipalDelivery.reason). ``gateway_down`` is email set up but the MCP
+# gateway that sends it not running, which used to read as ``no_channel``
+# and so blamed the owner's setup for the Executive's own fault.
+DeliveryReason = Literal[
+    "delivered", "no_owner", "no_channel", "gateway_down", "send_failed", "not_written"
+]
 _DELIVERY_REASONS: frozenset[str] = frozenset(get_args(DeliveryReason))
 DELIVERY_SCOPE_PREFIX = "brief_delivery:"
 # The daily briefs (their send times show on the Setup status page).
@@ -155,6 +161,11 @@ DELIVERY_PROBLEMS: dict[str, tuple[str, str]] = {
     "no_channel": (
         "nothing is set up to send it to you",
         "Connect Gmail, or add your Slack, Telegram or Discord to your People profile.",
+    ),
+    "gateway_down": (
+        "the Executive's mail connection wasn't running",
+        "It keeps retrying on its own; if the Gmail light on the Setup status page stays red, "
+        "the API log says why.",
     ),
     "send_failed": (
         "every way of sending it failed",
@@ -186,21 +197,71 @@ class DeliveryOutcome:
     # The delivery channel that sent it ("email", "slack_dm", ...), if one did.
     channel: str | None
     at: datetime
+    # What happened when it wasn't sent, in a line: the tool's error, or why
+    # no channel could be tried. None for a delivered brief.
+    detail: str | None = None
+
+
+# The longest detail kept: a line for the notice, not a traceback.
+DETAIL_MAX_CHARS = 300
+# A grant that died shows in the detail like this (orchestrator.mcp_gateway.
+# grant_failure); the notice's fix then says to reconnect rather than to
+# look at the status page.
+_RECONNECT_HINT_RE = re.compile(
+    r"invalid_grant|expired|revoked|reconnect|unauthori[sz]ed|authentication", re.IGNORECASE
+)
 
 
 def record_delivery_outcome(
-    kind: str, *, reason: DeliveryReason, channel: str | None
+    kind: str, *, reason: DeliveryReason, channel: str | None, detail: str | None = None
 ) -> None:
     """Remember how this brief's latest run ended. Never raises."""
+    detail = " ".join(detail.split())[:DETAIL_MAX_CHARS] if detail else None
+    text = json.dumps({"channel": channel or "", "detail": detail}) if detail else (channel or "")
     try:
         narrative_cache.put(narrative_cache.BriefingNarrative(
             scope=f"{DELIVERY_SCOPE_PREFIX}{kind}",
             input_hash=reason,
-            narrative_text=channel or "",
+            narrative_text=text,
             generated_at=narrative_cache.utc_now_iso(),
         ))
     except Exception:
         logger.exception("brief_state: delivery outcome write failed for %s", kind)
+
+
+def _read_outcome_text(text: str) -> tuple[str | None, str | None]:
+    """``(channel, detail)`` from the stored row: a bare channel name (the
+    older shape, and every delivered brief) or the JSON a failure writes."""
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            channel = parsed.get("channel")
+            detail = parsed.get("detail")
+            return (
+                channel if isinstance(channel, str) and channel else None,
+                detail if isinstance(detail, str) and detail else None,
+            )
+    return (text or None), None
+
+
+def describe_problem(reason: DeliveryReason, detail: str | None = None) -> tuple[str, str]:
+    """``(problem, fix)`` for the notice: the reason in the user's words,
+    with what happened appended when it is known, and a fix that names a
+    reconnect when the detail shows a grant that died."""
+    problem, fix = DELIVERY_PROBLEMS[reason]
+    if not detail:
+        return problem, fix
+    if reason in ("send_failed", "gateway_down"):
+        problem = f"{problem} ({detail})"
+        if reason == "send_failed" and _RECONNECT_HINT_RE.search(detail):
+            fix = (
+                "The Executive's sign-in to its mailbox expired or was revoked: connect it again, "
+                "then the next brief goes out."
+            )
+    return problem, fix
 
 
 def last_delivery_outcome() -> DeliveryOutcome | None:
@@ -217,11 +278,13 @@ def last_delivery_outcome() -> DeliveryOutcome | None:
         at = parse_aware(row.generated_at) if row is not None else None
         if row is None or at is None or row.input_hash not in _DELIVERY_REASONS:
             continue
+        channel, detail = _read_outcome_text(row.narrative_text or "")
         outcome = DeliveryOutcome(
             kind=kind,
             reason=cast(DeliveryReason, row.input_hash),  # checked above
-            channel=row.narrative_text or None,
+            channel=channel,
             at=at,
+            detail=detail,
         )
         if latest is None or outcome.at > latest.at:
             latest = outcome
@@ -229,14 +292,19 @@ def last_delivery_outcome() -> DeliveryOutcome | None:
 
 
 def current_problem(
-    outcome: DeliveryOutcome | None, *, has_owner: bool, can_deliver: bool
+    outcome: DeliveryOutcome | None,
+    *,
+    has_owner: bool,
+    can_deliver: bool,
+    gateway_down: bool = False,
 ) -> DeliveryReason | None:
     """What still keeps the latest brief from the owner, or None.
 
     A failed send, or a brief that couldn't be written, stays reported until
     the next brief records a new outcome. Having nowhere to send it is judged
-    from now (``has_owner``, ``can_deliver``), not from the record, so a
-    partial fix reports the problem that is left: once a channel exists the
+    from now (``has_owner``, ``can_deliver``, ``gateway_down``: email is set
+    up but the gateway that sends it is not running), not from the record, so
+    a partial fix reports the problem that is left: once a channel exists the
     next brief will go, and there is nothing to report.
     """
     if outcome is None or outcome.reason == "delivered":
@@ -245,7 +313,9 @@ def current_problem(
         return outcome.reason
     if can_deliver:
         return None
-    return "no_channel" if has_owner else "no_owner"
+    if not has_owner:
+        return "no_owner"
+    return "gateway_down" if gateway_down else "no_channel"
 
 
 def split_proposals(
@@ -511,6 +581,7 @@ __all__ = [
     "SUPPRESSED_TEMPLATE",
     "DeliveryOutcome",
     "DeliveryReason",
+    "describe_problem",
     "brief_name",
     "build_brief_fingerprint",
     "channel_phrase",
