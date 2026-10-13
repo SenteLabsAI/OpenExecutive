@@ -300,6 +300,55 @@ def test_tests_present_warns_only() -> None:
     assert _level(pr_checks.check_tests_present, changed=changed) == "PASS"
 
 
+# --- pinned-actions ----------------------------------------------------------
+
+_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "      - uses: actions/checkout@v7",
+        "        uses: astral-sh/setup-uv@v7.6.0",
+        "      - uses: 'actions/setup-node@main'",
+        "      - uses: actions/checkout@3d3c42e  # short sha",
+    ],
+)
+def test_pinned_actions_fails_on_a_tag_or_branch(line: str) -> None:
+    lines = {".github/workflows/ci.yml": [line]}
+    assert _level(pr_checks.check_pinned_actions, changed=set(lines), added_lines=lines) == "FAIL"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"      - uses: actions/checkout@{_SHA} # v7.0.1",
+        f'        uses: "actions/checkout@{_SHA}"',
+        "      - uses: ./.github/actions/setup",
+        "      - uses: docker://alpine:3.20",
+        "      - run: echo uses: actions/checkout@v7",
+    ],
+)
+def test_pinned_actions_passes_shas_and_local_actions(line: str) -> None:
+    lines = {".github/workflows/ci.yml": [line]}
+    assert _level(pr_checks.check_pinned_actions, changed=set(lines), added_lines=lines) == "PASS"
+
+
+def test_pinned_actions_only_reads_workflow_files() -> None:
+    lines = {"docs/ci.md": ["- uses: actions/checkout@v7"]}
+    assert _level(pr_checks.check_pinned_actions, changed=set(lines), added_lines=lines) == "PASS"
+
+
+def test_every_workflow_in_the_repo_pins_its_actions() -> None:
+    root = _SCRIPT.parents[1]
+    lines = {
+        str(p.relative_to(root)): p.read_text().splitlines()
+        for p in (root / ".github").rglob("*.y*ml")
+    }
+    result = pr_checks.check_pinned_actions(Change(changed=set(lines), added_lines=lines))
+    assert result.level == "PASS", result.detail
+
+
 # --- git plumbing ------------------------------------------------------------
 
 
