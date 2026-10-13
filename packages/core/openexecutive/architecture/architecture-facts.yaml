@@ -3639,6 +3639,37 @@ departments:
     holding that scope ahead of WILDCARD-holders, so proposals can route
     to a domain owner instead of always falling back to the principal.
     A null/unknown `required_scope` falls back to WILDCARD (principal).
+    CHAT TURNS (orchestrator.department_gate): a team member's attended turn
+    (caller is a team member, not the principal; not unattended, not private
+    to the principal) wraps its sends and edits with the gate, in
+    Executive._stream_agent_loop beside Take the lead's `leading` wrap:
+    `turn_handlers` for GATED_TOOLS (take_the_lead.ACTING_TOOLS less
+    assign_open_loop, which refuses any session but the asker's so a held one
+    could never run, and run_workflow, whose action steps are approved step
+    by step), and `call_tool` (chat and run_script) for every name
+    `mcp_tool_acts` flags. The gate wrap sits inside guard_call_tool, so the
+    gateway's recipient and mailbox gates still run first. Level = strictest
+    of the speaker's department_slugs (escalate > propose_only >
+    auto_execute; unknown slug = propose_only; none = propose_only, routed
+    via _route_proposal). auto_execute runs; propose_only runs only when the
+    speaker holds one of take_the_lead.approval_ranges for it (or WILDCARD),
+    since they would be the approver anyway; escalate always holds, and an
+    approver equal to the speaker is replaced by the next one
+    (find_approvers, else the principal). An action reaching anyone outside
+    the team goes to the principal (only their approval opens contact
+    egress). A message only to the principal runs (nothing to approve). Held
+    = decision class `department_action` (idempotency key per speaker+call,
+    same live card on a repeat), alert source decision_scheduling routed to
+    the approver, private tag when the approver is the principal (else the
+    card shows the unquoted line), audit department_action_held (actor
+    person:<speaker>). Approve (api.routes.decisions,
+    principal_and_approver) runs take_the_lead.carry_out once after
+    claim_for_execution and audits department_action_done/_failed;
+    reject audits department_action_declined. The activity rail skips the
+    class, since its payload quotes the conversation. Fails closed: a gate
+    error holds. Why: gate_action used to run only for unattended work and
+    propose_meeting, so a seat's Slack DM or Gmail send from chat skipped
+    propose_only and escalate.
   cadence: |
     openexecutive.departments.cadence — supports `daily@HH:MM`,
     `weekly@DOW@HH:MM` or `weekly@DOW-HH:MM` (DOW is a 3-letter day,

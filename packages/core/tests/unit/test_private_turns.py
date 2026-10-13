@@ -1711,7 +1711,11 @@ def test_other_turns_search_and_call_every_mcp_tool_unchanged(
         "principal_web": _principal_web(roster),
         "teammate_web": _teammate_web(roster),
     }[surface]
-    provider, results, reached = _run_mcp_round(session)
+    # A teammate's sends also meet their department's authority first;
+    # that gate is test_department_gate's. This one is about the private
+    # turn's withholding, so it stands aside here.
+    with patch("openexecutive.orchestrator.department_gate.speaker", return_value=None):
+        provider, results, reached = _run_mcp_round(session)
     assert results["tu-1"] == _SEARCH_TEXT
     called = [args["tool_name"] for name, args in reached if name == "call_tool"]
     # Every call reaches the gateway; its own gates alone decide the rest.
@@ -1832,7 +1836,11 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
     tool_use = SimpleNamespace(
         type="tool_use", id="tu-1", name="send_company_broadcast", input={"text": "All hands at 3"}
     )
-    with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}):
+    with (
+        patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}),
+        # Department authority on a teammate's sends is test_department_gate's.
+        patch("openexecutive.orchestrator.department_gate.speaker", return_value=None),
+    ):
         provider = _run_loop(_teammate_web(roster), [tool_use], gateway=_gateway())
     handler.assert_awaited_once()
     offered = _offered(provider)

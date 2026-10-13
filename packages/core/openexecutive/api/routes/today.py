@@ -1028,6 +1028,7 @@ def _resolve_channel_target(
 
 # Held Take the lead actions (orchestrator.take_the_lead.DECISION_CLASS).
 TAKE_THE_LEAD_CLASS = "take_the_lead_action"
+DEPARTMENT_ACTION_CLASS = "department_action"
 
 # Terminal decision-instance status → human verb for the activity rail.
 _DECISION_STATUS_LABEL = {
@@ -1244,6 +1245,8 @@ def _build_activity(
             continue  # a meeting with one of the principal's contacts
         if instance.decision_class == TAKE_THE_LEAD_CLASS:
             continue  # its card quotes the message: the Take the lead rows below say what it did
+        if instance.decision_class == DEPARTMENT_ACTION_CLASS:
+            continue  # it quotes a teammate's conversation; the audit log keeps who approved it
         label = _DECISION_STATUS_LABEL.get(instance.status, "Resolved")
         detail = (
             _payload_headline(instance.final_payload_json)
