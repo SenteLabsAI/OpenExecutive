@@ -199,6 +199,10 @@ def next_window_for(
             return probe.astimezone(UTC).replace(second=0, microsecond=0)
         probe += step
 
+    if quiet is not None:
+        # Quiet hours cover every window in the horizon: the window wins,
+        # rather than the message never going.
+        return next_window_for(person, after=after)
     return None
 
 

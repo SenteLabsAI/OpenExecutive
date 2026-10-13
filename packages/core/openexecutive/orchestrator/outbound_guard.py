@@ -223,7 +223,14 @@ def check_hold(
         tag = current_tag()
         if tag is None:
             return None
-        from openexecutive.people.notifications import hold_for, is_urgent_send
+        from openexecutive.people.notifications import (
+            hold_for,
+            is_approval_send,
+            is_urgent_send,
+        )
+
+        if is_approval_send():
+            return None  # a question something waits on: never held
         from openexecutive.people.store import find_person_by_channel_ref
 
         person = find_person_by_channel_ref(channel, channel_ref)

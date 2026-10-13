@@ -13,11 +13,16 @@ The outbound guard stores a held DM here instead of sending it
   chose briefs gets that block on its own when the briefs go out
   (``schedule_digest_release``), since only the principal has a brief.
 
-A row is sent once: it is marked sent only after the delivery went, and left
-held when it didn't (the next pass retries). Rows nobody could deliver for
-``GIVE_UP_AFTER`` are dropped, so the table can't grow without end. A digest
-row that has waited ``DIGEST_FALLBACK_AFTER`` with no brief to carry it (the
-briefs not going out) is sent on its own.
+A row is sent once: whoever sends it (a release pass, a brief) first claims
+it (``claimed_at``, compare-and-set; a claim older than ``CLAIM_TTL`` is
+free again, so a crash mid-send can't strand a row), marks it sent only
+after the delivery went, and frees the claim when it didn't. A person
+outside their availability or on leave is postponed to when that ends; any
+other failed delivery backs off (``_backoff``). Rows nobody could deliver for
+``GIVE_UP_AFTER`` are dropped, as are the oldest past ``MAX_HELD_PER_PERSON``
+— each drop audited, private to the person, a count only. A digest row that
+has waited ``DIGEST_FALLBACK_AFTER`` with no brief to carry it (the briefs
+not going out) is sent on its own.
 
 The text is private to the person it was for: it is never listed anywhere,
 only counted (``held_count``) on their own Notifications page, and release
@@ -26,11 +31,18 @@ audit rows are private to them.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +55,8 @@ MAX_HELD_PER_PERSON = 50
 GIVE_UP_AFTER = timedelta(days=7)
 DIGEST_FALLBACK_AFTER = timedelta(hours=36)
 RELEASE_EVERY = timedelta(minutes=1)
+CLAIM_TTL = timedelta(minutes=10)
+MAX_BACKOFF = timedelta(hours=1)
 HEADING = "While you were away"
 
 _last_release_at: datetime | None = None
@@ -57,6 +71,8 @@ class HeldMessage:
     text: str
     created_at: str
     release_at: str | None
+    ref: str = ""
+    attempts: int = 0
 
 
 def _db(db_path: Path | None) -> Path:
@@ -75,9 +91,12 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             person_id INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT '',
+            ref TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL,
             created_at TEXT NOT NULL,
             release_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            claimed_at TEXT,
             sent_at TEXT,
             dropped_at TEXT
         );
@@ -95,12 +114,51 @@ def _iso(dt: datetime) -> str:
 
 def _rows(cur: sqlite3.Cursor) -> list[HeldMessage]:
     return [
-        HeldMessage(int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), r[5])
+        HeldMessage(int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), r[5], str(r[6]), int(r[7]))
         for r in cur.fetchall()
     ]
 
 
-_COLUMNS = "id, person_id, source, text, created_at, release_at"
+_COLUMNS = "id, person_id, source, text, created_at, release_at, ref, attempts"
+
+
+def _audit_dropped(person_id: int, count: int, reason: str) -> None:
+    """Say that held messages were dropped: private to the person, a count
+    and why, never their text. Never raises."""
+    if count <= 0:
+        return
+    try:
+        from openexecutive.audit import log_event
+
+        log_event(
+            "held_messages_dropped",
+            f"Dropped {count} held message(s) for person {person_id}: {reason}",
+            actor="scheduler",
+            details={"person_id": person_id, "count": count, "reason": reason},
+            private=True,
+            private_to_person=person_id,
+        )
+    except Exception:
+        logger.warning("held_messages: couldn't audit a drop", exc_info=True)
+
+
+# The ids held during the current block (``track_holds``), so the caller of a
+# proactive turn can tell "held" from "delivered".
+_tracked: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "held_messages_tracked", default=None
+)
+
+
+@contextlib.contextmanager
+def track_holds() -> Iterator[list[int]]:
+    """Collect the ids of the messages held inside the block. Wrap only
+    non-yielding code."""
+    ids: list[int] = []
+    token = _tracked.set(ids)
+    try:
+        yield ids
+    finally:
+        _tracked.reset(token)
 _OPEN = "sent_at IS NULL AND dropped_at IS NULL"
 
 
@@ -110,6 +168,7 @@ def hold(
     *,
     source: str,
     release_at: datetime | None,
+    ref: str = "",
     now: datetime | None = None,
     db_path: Path | None = None,
 ) -> int:
@@ -120,11 +179,12 @@ def hold(
     conn = _connect(db_path)
     try:
         cur = conn.execute(
-            f"INSERT INTO {TABLE} (person_id, source, text, created_at, release_at) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?)",
+            f"INSERT INTO {TABLE} (person_id, source, ref, text, created_at, release_at) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 person_id,
                 source[:64],
+                ref[:128],
                 text[:MAX_TEXT],
                 _iso(now),
                 _iso(release_at) if release_at is not None else None,
@@ -132,14 +192,77 @@ def hold(
         )
         held_id = int(cur.lastrowid or 0)
         # Cap what one person can have waiting: drop the oldest past it.
-        conn.execute(
+        capped = conn.execute(
             f"UPDATE {TABLE} SET dropped_at = ? WHERE person_id = ? AND {_OPEN} "  # noqa: S608
             f"AND id NOT IN (SELECT id FROM {TABLE} WHERE person_id = ? AND {_OPEN} "
             "ORDER BY id DESC LIMIT ?)",
             (_iso(now), person_id, person_id, MAX_HELD_PER_PERSON),
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    _audit_dropped(person_id, int(capped or 0), f"more than {MAX_HELD_PER_PERSON} waiting")
+    tracked = _tracked.get()
+    if tracked is not None:
+        tracked.append(held_id)
+    return held_id
+
+
+def waiting_for(person_id: int, ref: str, *, db_path: Path | None = None) -> bool:
+    """Whether a message about ``ref`` (e.g. ``alert:12``) is already waiting
+    for ``person_id``. False on a read error."""
+    if not ref:
+        return False
+    try:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                f"SELECT 1 FROM {TABLE} WHERE person_id = ? AND ref = ? AND {_OPEN} LIMIT 1",  # noqa: S608
+                (person_id, ref),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("held_messages: couldn't check what waits for person %s", person_id, exc_info=True)
+        return False
+    return row is not None
+
+
+def claim(ids: list[int], *, now: datetime | None = None, db_path: Path | None = None) -> list[int]:
+    """Take ``ids`` for sending; returns the ones this caller got (not sent,
+    dropped or claimed by someone else within ``CLAIM_TTL``)."""
+    if not ids:
+        return []
+    now = now or datetime.now(UTC)
+    stale = _iso(now - CLAIM_TTL)
+    got: list[int] = []
+    conn = _connect(db_path)
+    try:
+        for i in ids:
+            cur = conn.execute(
+                f"UPDATE {TABLE} SET claimed_at = ? WHERE id = ? AND {_OPEN} "  # noqa: S608
+                "AND (claimed_at IS NULL OR claimed_at < ?)",
+                (_iso(now), i, stale),
+            )
+            if cur.rowcount == 1:
+                got.append(i)
+        conn.commit()
+    finally:
+        conn.close()
+    return got
+
+
+def unclaim(ids: list[int], *, db_path: Path | None = None) -> None:
+    """Give back a claim whose send didn't go."""
+    if not ids:
+        return
+    conn = _connect(db_path)
+    try:
+        conn.executemany(
+            f"UPDATE {TABLE} SET claimed_at = NULL WHERE id = ? AND {_OPEN}",  # noqa: S608
+            [(i,) for i in ids],
         )
         conn.commit()
-        return held_id
     finally:
         conn.close()
 
@@ -265,12 +388,45 @@ def _postpone(ids: list[int], until: datetime, db_path: Path | None) -> None:
     conn = _connect(db_path)
     try:
         conn.executemany(
-            f"UPDATE {TABLE} SET release_at = ? WHERE id = ? AND {_OPEN}",  # noqa: S608
+            f"UPDATE {TABLE} SET release_at = ?, claimed_at = NULL WHERE id = ? AND {_OPEN}",  # noqa: S608
             [(_iso(until), i) for i in ids],
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def _backoff(messages: list[HeldMessage], now: datetime, db_path: Path | None) -> None:
+    """A delivery that failed for another reason: try again later, waiting
+    2, 4, 8 … minutes, at most ``MAX_BACKOFF``."""
+    attempts = max(m.attempts for m in messages) + 1
+    wait = min(timedelta(minutes=2 ** min(attempts, 10)), MAX_BACKOFF)
+    conn = _connect(db_path)
+    try:
+        conn.executemany(
+            f"UPDATE {TABLE} SET release_at = ?, attempts = ?, claimed_at = NULL "  # noqa: S608
+            f"WHERE id = ? AND {_OPEN}",
+            [(_iso(now + wait), attempts, m.id) for m in messages],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _unavailable_until(person: Person, now: datetime) -> datetime | None:
+    """When ``person`` can next be reached, while the outbound guard would
+    refuse them now for leave or availability windows; None when it
+    wouldn't."""
+    from datetime import time
+
+    from openexecutive.config import get_settings
+    from openexecutive.people.channel import is_within_availability, next_window_for
+
+    if not get_settings().outbound_respect_quiet_hours or is_within_availability(person, now=now):
+        return None
+    if person.on_leave_until is not None and now.astimezone(UTC).date() <= person.on_leave_until:
+        return datetime.combine(person.on_leave_until + timedelta(days=1), time.min, tzinfo=UTC)
+    return next_window_for(person, after=now)
 
 
 def render_block(messages: list[HeldMessage], *, zone: tzinfo) -> str:
@@ -308,17 +464,23 @@ async def release_due(now: datetime, *, db_path: Path | None = None) -> int:
         logger.warning("held_messages: couldn't read what is due", exc_info=True)
         return 0
     delivered = 0
-    for person_id, messages in due.items():
+    for person_id, due_messages in due.items():
+        got = set(claim([m.id for m in due_messages], now=now, db_path=db_path))
+        messages = [m for m in due_messages if m.id in got]
+        if not messages:
+            continue
         ids = [m.id for m in messages]
         try:
             person = get_person(person_id)
             if person is None or person.archived:
                 _drop(ids, now, db_path)
+                _audit_dropped(person_id, len(ids), "no longer on the People list")
                 continue
             oldest = datetime.fromisoformat(messages[0].created_at)
             if now - oldest > GIVE_UP_AFTER:
                 logger.info("held_messages: dropped %d for person %s, too old", len(ids), person_id)
                 _drop(ids, now, db_path)
+                _audit_dropped(person_id, len(ids), f"undelivered for {GIVE_UP_AFTER.days} days")
                 continue
             settings = get_notification_settings(person_id)
             if in_quiet_hours(settings, now):
@@ -327,15 +489,23 @@ async def release_due(now: datetime, *, db_path: Path | None = None) -> int:
                 if end is not None:
                     _postpone(ids, end, db_path)
                     continue
+            until = _unavailable_until(person, now)
+            if until is not None:
+                # On leave or outside their windows: the guard would refuse.
+                _postpone(ids, until, db_path)
+                continue
             text = render_block(messages, zone=zone_for(settings))
             rows = private_rows() if person.is_principal else rows_for_person(person_id)
             with rows:
                 delivery = await deliver_to_person(person, text, label=HEADING)
         except Exception:
             logger.warning("held_messages: releasing person %s's failed", person_id, exc_info=True)
+            with contextlib.suppress(Exception):
+                _backoff(messages, now, db_path)
             continue
         if not delivery.ok:
             logger.info("held_messages: person %s's not sent (%s)", person_id, delivery.reason)
+            _backoff(messages, now, db_path)
             continue
         try:
             mark_sent(ids, now=now, db_path=db_path)

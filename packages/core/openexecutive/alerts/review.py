@@ -531,6 +531,9 @@ def _bump_severity(current: str, requested: str | None) -> str:
 
 
 _DM_MAX_CHARS = 1200
+# `_dm`'s detail for a DM held by the recipient's notification settings
+# (people.held_messages): it goes later, so it is not yet a delivered nudge.
+_HELD_DETAIL = "held for their quiet hours or brief"
 
 
 def _dm_text(headline: str, text: str) -> str:
@@ -572,7 +575,7 @@ async def _dm(
     # Held by the person's own notification settings: it is saved and goes
     # when they asked to hear, so the move happened.
     if isinstance(parsed, dict) and parsed.get("status") == "held":
-        return True, "held for their quiet hours or brief"
+        return True, _HELD_DETAIL
     return False, str(parsed.get("error") if isinstance(parsed, dict) else raw)[:200]
 
 
@@ -859,12 +862,21 @@ async def _apply_nudge(ctx: _MoveContext) -> None:
         _audit(EVENT_REVIEWED, f"Nudge cap reached for '{alert.headline[:80]}'",
                {**ctx.base_details, "target_person_id": target, "cap": ctx.settings.nudge_cap})
         return
+    from openexecutive.people.held_messages import waiting_for
+
+    if waiting_for(target, f"alert:{ctx.alert_id}"):
+        return  # a DM about it already waits for their quiet hours or brief
     with _urgent_if(alert.severity == "urgent"):
         ok, detail = await _dm(
             target, v.message or f"Checking in on: {alert.headline}", headline=alert.headline,
             alert_id=ctx.alert_id,
         )
     ctx.summary.moves_used += 1
+    if ok and detail == _HELD_DETAIL:
+        # Not delivered yet: no nudge counted toward the cap.
+        _audit(EVENT_REVIEWED, f"Nudge about '{alert.headline[:80]}' held for the recipient",
+               {**ctx.base_details, "target_person_id": target, "held": True})
+        return
     if ok:
         ctx.summary.nudged += 1
         ctx.move_taken = "nudge"

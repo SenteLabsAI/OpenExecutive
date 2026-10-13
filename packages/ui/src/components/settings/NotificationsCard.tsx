@@ -240,8 +240,8 @@ export default function NotificationsCard() {
         titleId="urgent-through-label"
         description={
           current.urgent_through
-            ? "On: anything waiting on your approval, and critical alerts, reach you right away, even in quiet hours or when you get things in your briefs."
-            : "Off: urgent things wait with everything else."
+            ? "On: reminders about things waiting on your approval, and critical alerts, reach you right away, even in quiet hours or when you get things in your briefs."
+            : "Off: those wait with everything else. A question a workflow is waiting on you to answer always comes straight away."
         }
         action={
           <Switch

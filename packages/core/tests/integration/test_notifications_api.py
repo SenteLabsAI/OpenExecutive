@@ -142,3 +142,35 @@ def test_a_nudge_in_quiet_hours_waits_for_them_to_end(
     assert stored is not None and stored.status == "pending"
     run_at = datetime.fromisoformat(stored.run_at)
     assert abs((run_at - end_at).total_seconds()) < 60
+
+
+def test_a_dispatch_whose_message_was_held_is_audited_as_held(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sara = _id("Sara Kim")
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda et, summary, **kw: events.append((summary, kw)))
+
+    class _HoldingExec:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        async def chat(self, **_k: object) -> str:
+            held.hold(sara, "Nudge text", source="nudge_initiative", release_at=None)
+            return "ok"
+
+    class _Profile:
+        def is_empty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("openexecutive.orchestrator.executive.Executive", _HoldingExec)
+    monkeypatch.setattr("openexecutive.onboarding.profile_builder.load_or_create_profile", lambda: _Profile())
+    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda query: "")
+    episodic.insert_scheduled_action(
+        run_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(), channel="slack_dm",
+        channel_ref="U_SARA", intent_text="Chase Sara", kind="ad_hoc",
+    )
+    [claimed] = episodic.claim_due_actions(datetime.now(UTC))
+    asyncio.run(_execute_action(claimed, gateway=None))
+    [(summary, kw)] = [e for e in events if (e[1].get("details") or {}).get("action_id") == claimed.id]  # type: ignore[union-attr]
+    assert kw["details"]["phase"] == "held" and "held" in summary  # type: ignore[index]

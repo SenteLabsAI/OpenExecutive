@@ -108,11 +108,12 @@ async def deliver_gate_question(
     )
     try:
         from openexecutive.orchestrator.schedule_tools import handle_message_person
-        from openexecutive.people.notifications import urgent_send
+        from openexecutive.people.notifications import approval_send
 
-        # It waits on their approval: past their quiet hours and digest when
-        # they let urgent things through (people.notifications).
-        with urgent_send():
+        # The run waits on their answer, and only a reply to this question
+        # resolves it: never held by their quiet hours or digest
+        # (people.notifications).
+        with approval_send():
             raw = await handle_message_person(
                 {"person_id": event.person_id, "text": question}
             )
@@ -160,9 +161,7 @@ async def deliver_gate_question(
         )
         return event.model_copy(update={"delivery": "alerted"}), "alerted"
 
-    if status in ("suppressed", "held"):
-        # Held: they turned urgent things off, so it waits for their quiet
-        # hours or brief like any other message; no reply channel yet.
+    if status == "suppressed":
         logger.info(
             "gate_delivery: run %s send suppressed (%s) for person %s",
             run_id,

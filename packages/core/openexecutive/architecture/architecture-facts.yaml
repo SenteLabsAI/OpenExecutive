@@ -4251,8 +4251,9 @@ people:
     held, so existing installs behave as before.
     Scope: only the Executive's OWN outreach — a DM sent while a proactive
     source is tagged (attunement.outcomes.tag_proactive: scheduler dispatch
-    of nudges and follow-ups, reflection, research, alert review). A reply
-    in a conversation, a send someone asked for in chat, the briefs, the
+    of nudges, reflection, research, alert review). A reply
+    in a conversation, a send someone asked for in chat, a scheduled
+    follow-up (source followup, asked for at a time), the briefs, the
     cross-client digest, workflow artifacts and Act as me / note reminders
     are untagged and never held. Why not fold quiet hours into
     is_within_availability for everyone: the outbound guard's availability
@@ -4270,24 +4271,36 @@ people:
     `held_messages` (people.held_messages) and the tool returns
     {"status":"held"}; message_person returns it instead of trying the next
     channel (which would hold it twice), alert review counts it as a move
-    made, a workflow gate records it as `suppressed`. A store failure
-    sends instead (fail-open, never lost).
+    made for a route but does not count a nudge toward the cap (and no
+    second nudge is held while one about that alert waits, by `ref`). A
+    store failure sends instead (fail-open, never lost). A scheduler
+    dispatch whose turn held its message is audited phase `held`, not
+    `delivered` (held_messages.track_holds).
     Release: rows with release_at (quiet hours) go once due, per person as
     one "While you were away" message via scheduler.runner.deliver_to_person
-    (scheduler tick hook _maybe_release_held, once a minute; marked sent
-    only after delivery; postponed if quiet again; dropped after 7 days or
-    when the person is archived). Digest rows (release_at null) ride the
+    (scheduler tick hook _maybe_release_held, once a minute). Every sender
+    claims rows first (claimed_at compare-and-set, stale after 10 min), so a
+    release pass and a brief never both send one; marked sent only after
+    delivery, else the claim is freed. Postponed if quiet again, or to the
+    leave end / next availability window when the guard would refuse them;
+    any other failed delivery backs off 2, 4, 8 … min, capped at an hour.
+    Dropped after 7 days or when the person is archived, and the oldest past
+    the cap — each drop audited `held_messages_dropped`, private to the
+    person, a count and reason only. Digest rows (release_at null) ride the
     principal's next morning brief / EoD digest as one block appended to the
     delivered text (not the stored run artifact), marked sent only when the
     brief went; everyone else's are made due when those briefs run
     (only the principal gets briefs); a digest row unclaimed for 36 h goes
     on its own. Switching back to instant releases what waited. Cap 50 open
-    rows per person (oldest dropped). Follow-ups (source followup) are never
-    digest-held: they were asked for at a time.
-    Urgent: source nudge_stalled (approval nudges), workflow approval
-    questions (gate_delivery wraps message_person in
-    notifications.urgent_send) and alert-review DMs about an alert whose
-    severity is or becomes `urgent` are let through when urgent_through.
+    rows per person (oldest dropped).
+    Urgent: source nudge_stalled (approval nudges) and alert-review DMs
+    about an alert whose severity is or becomes `urgent`
+    (notifications.urgent_send) are let through when urgent_through. A
+    workflow approval question (gate_delivery wraps message_person in
+    notifications.approval_send) is never held, whatever the setting: only
+    a reply to it resolves the gate. If quiet hours cover every
+    availability window in the 14-day horizon, next_window_for falls back
+    to the next window rather than dropping the nudge.
     Not covered: nudges on the email channel (the MCP mail tool bypasses the
     send handlers — routing still defers them for quiet hours, but they are
     never digest-held); department channel broadcasts (rooms, not a person);

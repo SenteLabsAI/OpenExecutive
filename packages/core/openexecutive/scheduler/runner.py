@@ -1120,6 +1120,7 @@ async def _execute_action(
         )
         return
 
+    held_ids: list[int] = []
     try:
         from openexecutive.knowledge.retriever import retrieve
         from openexecutive.memory.episodic import format_for_prompt
@@ -1178,9 +1179,10 @@ async def _execute_action(
 
         executive = Executive(mcp_gateway=gateway)
         from openexecutive.attunement.outcomes import tag_proactive
+        from openexecutive.people.held_messages import track_holds
 
         source, ref = _outreach_source(action)
-        with tag_proactive(source, ref):
+        with tag_proactive(source, ref), track_holds() as held_ids:
             await executive.chat(
                 user_message=synthetic_message,
                 session=session,
@@ -1212,16 +1214,21 @@ async def _execute_action(
     mark_action_done(action.id)
     logger.info("scheduler: action %d done", action.id)
     from openexecutive.audit import log_event as audit_log
+    # What it sent was held for the recipient's quiet hours or brief
+    # (people.held_messages): say so, not "delivered".
+    phase = "held" if held_ids else "delivered"
     audit_log(
         "scheduled_action",
-        f"Scheduled action {action.id} delivered via {action.channel} → {action.channel_ref}",
+        f"Scheduled action {action.id} {phase} via {action.channel} → {action.channel_ref}"
+        + (f" ({len(held_ids)} message(s) held for the recipient)" if held_ids else ""),
         session_id=action.originating_session_id,
         actor="scheduler",
         details={
-            "phase": "delivered",
+            "phase": phase,
             "action_id": action.id,
             "channel": action.channel,
             "channel_ref": action.channel_ref,
+            **({"held_count": len(held_ids)} if held_ids else {}),
         },
     )
 
@@ -1762,7 +1769,13 @@ def _delivered_ok(result_json: str) -> bool:
         parsed = _json.loads(result_json)
     except (ValueError, TypeError):
         return False
-    return isinstance(parsed, dict) and "error" not in parsed and parsed.get("status") == "sent"
+    # "held": stored for the recipient's quiet hours or brief
+    # (people.held_messages), so trying the next channel would hold it twice.
+    return (
+        isinstance(parsed, dict)
+        and "error" not in parsed
+        and parsed.get("status") in ("sent", "held")
+    )
 
 
 # `Person.preferred_channel` values (people/models.py PreferredChannel) mapped
@@ -2256,10 +2269,16 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             # Messages the principal asked to get in their brief ride along
             # as one "While you were away" block (people.held_messages).
             delivered_text, held_ids = _with_held_messages(kind, artifact)
-            delivery = await _deliver_to_principal(delivered_text, label=workflow.title)
+            try:
+                delivery = await _deliver_to_principal(delivered_text, label=workflow.title)
+            except BaseException:
+                _unclaim_held(held_ids)
+                raise
             ok, detail = delivery.ok, delivery.detail
-            if ok and held_ids:
+            if ok:
                 _mark_held_sent(held_ids)
+            else:
+                _unclaim_held(held_ids)
             brief_state.record_delivery_outcome(
                 kind, reason=delivery.reason, channel=delivery.channel,
                 detail=None if ok else detail,
@@ -2321,19 +2340,22 @@ _DIGEST_BRIEF_KINDS: frozenset[str] = frozenset({"principal_brief_morning", "pri
 
 def _with_held_messages(kind: str, artifact: str) -> tuple[str, list[int]]:
     """``artifact`` with the principal's brief-held messages appended as one
-    "While you were away" block, and their ids (to mark sent once it went).
+    "While you were away" block, and their ids — claimed, so a release pass
+    can't send them too; mark them sent once it went, else unclaim them.
     The artifact unchanged when there are none or they can't be read."""
     if kind not in _DIGEST_BRIEF_KINDS:
         return artifact, []
     try:
-        from openexecutive.people.held_messages import for_brief, render_block
+        from openexecutive.people.held_messages import claim, for_brief, render_block
         from openexecutive.people.notifications import get_notification_settings, zone_for
         from openexecutive.people.store import find_principal_person
 
         principal = find_principal_person()
         if principal is None or principal.id is None:
             return artifact, []
-        held = for_brief(principal.id)
+        waiting = for_brief(principal.id)
+        got = set(claim([m.id for m in waiting]))
+        held = [m for m in waiting if m.id in got]
         if not held:
             return artifact, []
         zone = zone_for(get_notification_settings(principal.id))
@@ -2343,7 +2365,20 @@ def _with_held_messages(kind: str, artifact: str) -> tuple[str, list[int]]:
         return artifact, []
 
 
+def _unclaim_held(ids: list[int]) -> None:
+    if not ids:
+        return
+    try:
+        from openexecutive.people.held_messages import unclaim
+
+        unclaim(ids)
+    except Exception:
+        logger.exception("scheduler: couldn't unclaim %d held message(s)", len(ids))
+
+
 def _mark_held_sent(ids: list[int]) -> None:
+    if not ids:
+        return
     try:
         from openexecutive.people.held_messages import mark_sent
 

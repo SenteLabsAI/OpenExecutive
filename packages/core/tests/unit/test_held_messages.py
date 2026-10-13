@@ -154,3 +154,68 @@ def test_render_block_names_when_each_would_have_gone() -> None:
     msg = held.HeldMessage(1, 1, "reflection", "Hello", "2026-10-14T21:05:00+00:00", None)
     block = held.render_block([msg], zone=ZoneInfo("UTC"))
     assert block == f"**{held.HEADING}**\n\n- Wed 9:05 pm: Hello"
+
+
+def test_a_claimed_row_is_not_sent_twice(ids: dict[str, int], sent: list[tuple[int, str]]) -> None:
+    pid = ids["principal"]
+    later = datetime.now(UTC)
+    old = later - held.DIGEST_FALLBACK_AFTER - timedelta(minutes=1)
+    held.hold(pid, "Once", source="reflection", release_at=None, now=old)
+    # The brief claims it; a fallback release in the meantime skips it.
+    text, held_ids = runner._with_held_messages("principal_brief_morning", "brief")
+    assert "Once" in text and len(held_ids) == 1
+    assert asyncio.run(held.release_due(later)) == 0 and sent == []
+    # The brief failed: the claim is given back and the fallback sends it.
+    runner._unclaim_held(held_ids)
+    assert asyncio.run(held.release_due(later)) == 1 and len(sent) == 1
+
+
+def test_someone_on_leave_waits_without_retrying(
+    ids: dict[str, int], sent: list[tuple[int, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    pid = ids["teammate"]
+    people_store.update_person(pid, on_leave_until=NOW.date() + timedelta(days=2))
+    people_registry.invalidate()
+    monkeypatch.setattr(
+        "openexecutive.config.get_settings", lambda: SimpleNamespace(outbound_respect_quiet_hours=True)
+    )
+    held.hold(pid, "Back soon", source="reflection", release_at=NOW, now=NOW)
+    assert asyncio.run(held.release_due(NOW)) == 0 and sent == []
+    [row] = held._due(NOW + timedelta(days=3), None)[pid]
+    assert row.release_at == datetime(2026, 10, 17, 0, 0, tzinfo=UTC).isoformat()
+
+
+def test_a_failed_delivery_backs_off(ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = ids["teammate"]
+    held.hold(pid, "Try me", source="reflection", release_at=NOW, now=NOW)
+
+    async def failing(person: Any, text: str, *, label: str = "") -> PrincipalDelivery:
+        return PrincipalDelivery(False, "send failed", "send_failed")
+
+    monkeypatch.setattr(runner, "deliver_to_person", failing)
+    asyncio.run(held.release_due(NOW))
+    assert held._due(NOW + timedelta(minutes=1), None) == {}
+    assert pid in held._due(NOW + timedelta(minutes=2), None)
+    asyncio.run(held.release_due(NOW + timedelta(minutes=2)))
+    assert held._due(NOW + timedelta(minutes=5), None) == {}
+    [row] = held._due(NOW + timedelta(minutes=6), None)[pid]
+    assert row.attempts == 2
+
+
+def test_drops_are_audited_without_their_text(ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda et, summary, **kw: events.append((et, kw)))
+    pid = ids["teammate"]
+    for i in range(held.MAX_HELD_PER_PERSON + 1):
+        held.hold(pid, f"secret {i}", source="reflection", release_at=None, now=NOW)
+    held.hold(pid, "old secret", source="reflection", release_at=NOW, now=NOW - timedelta(days=8))
+    asyncio.run(held.release_due(NOW))
+    drops = [kw for et, kw in events if et == "held_messages_dropped"]
+    assert [d["details"]["reason"] for d in drops][:2] == [
+        f"more than {held.MAX_HELD_PER_PERSON} waiting",
+        f"more than {held.MAX_HELD_PER_PERSON} waiting",
+    ]
+    assert any("undelivered" in d["details"]["reason"] for d in drops)
+    assert all(d["private_to_person"] == pid and "secret" not in str(d) for d in drops)

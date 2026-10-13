@@ -288,3 +288,50 @@ def test_a_message_that_cannot_be_stored_is_sent() -> None:
         assert schedule_tools._hold_outbound(
             tool="send_slack_dm", channel="slack_dm", channel_ref="U1", text="hi",
         ) is None
+
+
+def test_follow_ups_are_never_held() -> None:
+    save_notification_settings(1, NotificationSettings(
+        quiet_hours=QuietHours(enabled=True), delivery="digest", urgent_through=False, timezone="UTC",
+    ))
+    assert hold_for(1, source=SOURCE_FOLLOWUP, now=WED_2300) is None
+    assert hold_for(1, source=SOURCE_FOLLOWUP, now=WED_1200) is None
+
+
+def test_a_question_something_waits_on_is_never_held() -> None:
+    from openexecutive.people.notifications import approval_send
+
+    pid = people_store.upsert_person(full_name="Ben", email="ben@co.example", slack_user_id="U1")
+    save_notification_settings(pid, NotificationSettings(
+        quiet_hours=QuietHours(enabled=True), delivery="digest", urgent_through=False, timezone="UTC",
+    ))
+    with tag_proactive(SOURCE_REFLECTION):
+        assert outbound_guard.check_hold("slack_dm", "U1", now=WED_2300) is not None
+        with urgent_send():  # urgent things turned off: held
+            assert outbound_guard.check_hold("slack_dm", "U1", now=WED_2300) is not None
+        with approval_send():
+            assert outbound_guard.check_hold("slack_dm", "U1", now=WED_2300) is None
+
+
+def test_quiet_hours_covering_every_window_fall_back_to_the_window() -> None:
+    from openexecutive.people.models import AvailabilityWindow
+
+    pid = people_store.upsert_person(full_name="Dee", email="dee@co.example", slack_user_id="U3")
+    people_store.set_availability(pid, [AvailabilityWindow(
+        weekdays=[0, 1, 2, 3, 4], start_local="23:00", end_local="23:30", timezone="UTC",
+    )])
+    save_notification_settings(pid, _quiet(start="22:00", end="07:00"))
+    person = people_store.get_person(pid)
+    assert person is not None
+    after = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
+    assert channel.next_window_for(person, after=after, quiet_hours=True) == channel.next_window_for(
+        person, after=after
+    ) is not None
+
+
+def test_runner_counts_a_held_send_as_delivered() -> None:
+    from openexecutive.scheduler.runner import _delivered_ok
+
+    assert _delivered_ok('{"status": "held", "reason": "x"}')
+    assert _delivered_ok('{"status": "sent"}')
+    assert not _delivered_ok('{"status": "suppressed", "reason": "x"}')

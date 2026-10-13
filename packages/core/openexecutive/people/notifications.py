@@ -7,12 +7,15 @@ Set by the person themselves on Settings → Notifications
 which are today's behaviour: no quiet hours, messages as they happen, urgent
 things through.
 
-What the settings hold back is the Executive's *own* outreach — a DM it sends
-while a proactive source is tagged (``attunement.outcomes.tag_proactive``:
-nudges and follow-ups the scheduler dispatches, the daily reflection, research
-findings, alert review). A message someone asked for in chat, the briefs
-themselves, and reminders a person set are never held here. Two places apply
-them:
+What the settings hold back is the Executive's *own* outreach on the chat
+channels — a Slack, Discord or Telegram DM it sends while a proactive source
+is tagged (``attunement.outcomes.tag_proactive``: nudges the scheduler
+dispatches, the daily reflection, research findings, alert review). A message
+someone asked for in chat, a follow-up someone scheduled, the briefs
+themselves and reminders a person set are never held. Mail is not held
+either: the mail send tool does not go through the DM send handlers, so an
+email nudge is only deferred past quiet hours by nudge routing, never held
+for a brief. Two places apply them:
 
 - **Nudge routing** (``people.channel`` with ``quiet_hours=True``): the nudge
   engine and the scheduler's ``proactive_nudge`` dispatch defer the nudge to
@@ -23,9 +26,10 @@ them:
   briefs", is stored in ``held_messages`` instead of sent, and goes out when
   quiet hours end or with their next brief (``people.held_messages``).
 
-"Let urgent things through" (on by default) exempts anything waiting on the
-person's approval (approval nudges, workflow approval questions) and
-critical alerts: callers mark those with :func:`urgent_send`.
+"Let urgent things through" (on by default) exempts approval nudges and
+critical alerts: callers mark those with :func:`urgent_send`. A question a
+workflow is waiting on (:func:`approval_send`) is never held at all, whatever
+the setting: the gate can only be answered by a reply to it.
 """
 from __future__ import annotations
 
@@ -226,15 +230,29 @@ def quiet_hours_end(settings: NotificationSettings, after: datetime) -> datetime
 # Urgency
 # --------------------------------------------------------------------------- #
 
-_urgent: contextvars.ContextVar[bool] = contextvars.ContextVar("notifications_urgent", default=False)
+# None, "urgent" (let through when they let urgent things through) or
+# "approval" (never held).
+_urgent: contextvars.ContextVar[str | None] = contextvars.ContextVar("notifications_urgent", default=None)
 
 
 @contextlib.contextmanager
 def urgent_send() -> Iterator[None]:
-    """Mark the DMs sent inside the block as urgent (waiting on the person's
-    approval, or a critical alert): "Let urgent things through" lets them past
-    quiet hours and the digest. Wrap only non-yielding code."""
-    token = _urgent.set(True)
+    """Mark the DMs sent inside the block as urgent (an approval nudge, or a
+    critical alert): "Let urgent things through" lets them past quiet hours
+    and the digest. Wrap only non-yielding code."""
+    token = _urgent.set("urgent")
+    try:
+        yield
+    finally:
+        _urgent.reset(token)
+
+
+@contextlib.contextmanager
+def approval_send() -> Iterator[None]:
+    """Mark the DMs sent inside the block as a question something is waiting
+    on (a workflow gate): never held, whatever the person's settings, since
+    only a reply to it resolves the wait. Wrap only non-yielding code."""
+    token = _urgent.set("approval")
     try:
         yield
     finally:
@@ -242,16 +260,19 @@ def urgent_send() -> Iterator[None]:
 
 
 def is_urgent_send() -> bool:
-    return _urgent.get()
+    return _urgent.get() is not None
+
+
+def is_approval_send() -> bool:
+    return _urgent.get() == "approval"
 
 
 # Proactive sources that are always urgent: a nudge about something waiting
 # on the person's approval (attunement.outcomes.SOURCE_NUDGE_STALLED).
 URGENT_SOURCES = frozenset({"nudge_stalled"})
-# Sources a digest never holds: a follow-up runs at the time someone asked
-# for, and folding it into an evening brief would defeat it. Quiet hours
-# still hold it until morning.
-DIGEST_EXEMPT_SOURCES = frozenset({"followup"})
+# Sources never held: a follow-up runs at the time someone asked for, so
+# neither quiet hours nor a brief may move it.
+NEVER_HELD_SOURCES = frozenset({"followup"})
 
 
 def quiet_applies(person_id: int | None, *, urgent: bool = False) -> NotificationSettings | None:
@@ -281,11 +302,13 @@ class Hold:
 def hold_for(person_id: int, *, source: str, now: datetime, urgent: bool = False) -> Hold | None:
     """Whether a proactive DM from ``source`` to ``person_id`` should wait,
     by the person's own settings. None means send it now."""
+    if source in NEVER_HELD_SOURCES:
+        return None
     settings = get_notification_settings(person_id)
     urgent = urgent or source in URGENT_SOURCES
     if urgent and settings.urgent_through:
         return None
-    if settings.delivery == "digest" and source not in DIGEST_EXEMPT_SOURCES:
+    if settings.delivery == "digest":
         return Hold(None, "they asked to get these in their brief; it will be in their next one")
     if in_quiet_hours(settings, now):
         end = quiet_hours_end(settings, now)
@@ -295,7 +318,7 @@ def hold_for(person_id: int, *, source: str, now: datetime, urgent: bool = False
 
 
 __all__ = [
-    "DIGEST_EXEMPT_SOURCES",
+    "NEVER_HELD_SOURCES",
     "URGENT_SOURCES",
     "Hold",
     "NotificationSettings",
@@ -303,6 +326,8 @@ __all__ = [
     "get_notification_settings",
     "hold_for",
     "in_quiet_hours",
+    "approval_send",
+    "is_approval_send",
     "is_urgent_send",
     "quiet_applies",
     "quiet_hours_end",

@@ -221,9 +221,14 @@ def _hold_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> s
         return None
     person_id, source, hold = held
     try:
+        from openexecutive.attunement.outcomes import current_tag
         from openexecutive.people.held_messages import hold as store_held
 
-        held_id = store_held(person_id, text, source=source, release_at=hold.release_at)
+        tag = current_tag()
+        held_id = store_held(
+            person_id, text, source=source, release_at=hold.release_at,
+            ref=tag[1] if tag else "",
+        )
     except Exception:
         logger.exception("hold_outbound: couldn't store the message; sending it")
         return None

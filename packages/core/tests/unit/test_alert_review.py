@@ -1045,3 +1045,27 @@ def test_ungrounded_rewrite_without_a_severity_change_changes_nothing(
     assert not any(e[0] == review.EVENT_CHANGED for e in audit_events)
     refused = [e for e in audit_events if e[2].get("text_ungrounded")]
     assert refused and refused[0][2]["text_ungrounded"] == ["Marcus Lee"]
+
+
+def test_a_held_nudge_does_not_count_toward_the_cap(db: Path, audit_events, monkeypatch) -> None:
+    from openexecutive.people import held_messages
+
+    _person(full_name="Pat", role="CEO", is_principal=True)
+    dana = _person(full_name="Dana", role="CFO", department_slugs=["finance"])
+    aid = _insert(db, "Waiting on Dana", topic_tags=["department:finance"], routed_to_person_id=dana)
+    sent: list[int] = []
+
+    async def held_dm(person_id: int, text: str, *, headline: str = "", alert_id: int | None = None):
+        sent.append(person_id)
+        held_messages.hold(person_id, text, source="alert_review", release_at=None, ref=f"alert:{alert_id}")
+        return True, review._HELD_DETAIL
+
+    monkeypatch.setattr(review, "_dm", held_dm)
+    monkeypatch.setattr(review, "_nudges_so_far", lambda alert_id: 0)
+    summary = review.ReviewSummary()
+    _apply(db, aid, _verdict(aid, recommended_move="nudge", message="Gentle ping"), summary=summary)
+    assert sent == [dana] and summary.nudged == 0
+    assert not any(e[0] == review.EVENT_NUDGED for e in audit_events)
+    # While it waits, the next pass doesn't hold another.
+    _apply(db, aid, _verdict(aid, recommended_move="nudge", message="again"), summary=summary)
+    assert sent == [dana]
