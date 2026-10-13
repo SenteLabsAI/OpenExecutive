@@ -1,7 +1,8 @@
 """Department cadence scheduler helpers.
 
 A *cadence* is a recurring proactive action tied to a department — e.g.
-``"daily@09:00"`` fires a check-in workflow every day at 09:00 UTC.
+``"weekly@mon@09:00"`` (what a new department starts with) fires a check-in
+workflow every Monday at 09:00 UTC.
 
 Department cadences are always read in UTC. ``_parse_cadence_spec`` also
 takes a zone, which the principal's own rhythm (the briefs and the
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 
@@ -343,3 +345,68 @@ def enqueue_next(
     except Exception:
         logger.exception("cadence.enqueue_next: insert failed for %r", slug)
         return None
+
+
+# Serialises reschedule_check_in: two settings saves at once (the PATCH route
+# runs in a thread pool) would otherwise each cancel and then each queue a
+# row, leaving two pending check-ins.
+_RESCHEDULE_LOCK = threading.Lock()
+
+
+def reschedule_check_in(slug: str, db_path: Path | None = None) -> int | None:
+    """Re-time *slug*'s next check-in after its cadence was edited.
+
+    Cancels the department's pending ``dept_cadence`` rows, then queues the
+    next occurrence of the spec it has now (``enqueue_next``). An empty spec
+    (the check-in switched off) or a solo workspace queues nothing, so the
+    edit takes effect at once instead of after one more check-in on the old
+    schedule. A check-in already running is left alone: it finishes, and the
+    runner's chain adds nothing while the new pending row exists (or, with
+    the check-in off, nothing at all). Returns the new row id, or ``None``.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    with _RESCHEDULE_LOCK:
+        resolved = _resolve_db_path(db_path)
+        if resolved.exists():
+            with _get_conn(resolved) as conn:
+                table_present = conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='scheduled_actions'"
+                ).fetchone()
+                if table_present is None:
+                    return None
+                conn.execute(
+                    "UPDATE scheduled_actions SET status = 'cancelled' "
+                    "WHERE kind = 'dept_cadence' AND department = ? "
+                    "  AND status = 'pending'",
+                    (slug,),
+                )
+        return enqueue_next(slug, db_path=db_path)
+
+
+def next_check_in_at(slug: str, db_path: Path | None = None) -> str | None:
+    """When *slug*'s next check-in is queued (ISO-8601, UTC), or ``None``.
+
+    Read from the pending ``dept_cadence`` row, so it is ``None`` when the
+    check-in is off, in a solo workspace, and before the scheduler has queued
+    one.
+    """
+    from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return None
+    with _get_conn(resolved) as conn:
+        table_present = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_actions'"
+        ).fetchone()
+        if table_present is None:
+            return None
+        row = conn.execute(
+            "SELECT run_at FROM scheduled_actions "
+            "WHERE kind = 'dept_cadence' AND department = ? AND status = 'pending' "
+            "ORDER BY run_at LIMIT 1",
+            (slug,),
+        ).fetchone()
+    return str(row["run_at"]) if row is not None else None

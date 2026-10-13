@@ -18,7 +18,12 @@ from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openexecutive.departments import registry, store
-from openexecutive.departments.cadence import CADENCE_FORMATS_HINT, is_valid_cadence_spec
+from openexecutive.departments.cadence import (
+    CADENCE_FORMATS_HINT,
+    is_valid_cadence_spec,
+    next_check_in_at,
+    reschedule_check_in,
+)
 from openexecutive.departments.models import (
     AuthorityLevel,
     DepartmentCharter,
@@ -100,6 +105,21 @@ class DepartmentPatch(BaseModel):
         return cleaned
 
 
+class DepartmentDetail(DepartmentState):
+    """One department as its page reads it: the state plus when its next
+    check-in is queued (ISO-8601 UTC, ``None`` when none is: the check-in is
+    off, the workspace is solo, or the scheduler has not queued it yet)."""
+
+    next_check_in_at: str | None = None
+
+
+def _detail(state: DepartmentState) -> DepartmentDetail:
+    return DepartmentDetail(
+        **state.model_dump(),
+        next_check_in_at=next_check_in_at(state.config.slug),
+    )
+
+
 class GoalCreate(BaseModel):
     """Only `key_result` (the goal itself) is required. A missing or blank
     `period_value` is filled with the current period for `period_type`, and
@@ -155,12 +175,12 @@ def list_departments() -> list[DepartmentState]:
     return store.list_departments()
 
 
-@router.get("/departments/{slug}", response_model=DepartmentState)
-def get_department(slug: str) -> DepartmentState:
+@router.get("/departments/{slug}", response_model=DepartmentDetail)
+def get_department(slug: str) -> DepartmentDetail:
     state = store.get_department(slug)
     if state is None:
         raise HTTPException(status_code=404, detail="Unknown department")
-    return state
+    return _detail(state)
 
 
 # --------------------------------------------------------------------------- #
@@ -188,14 +208,15 @@ def delete_department(slug: str) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.patch("/departments/{slug}", response_model=DepartmentState)
-def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentState:
-    if store.get_department(slug) is None:
+@router.patch("/departments/{slug}", response_model=DepartmentDetail)
+def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentDetail:
+    before = store.get_department(slug)
+    if before is None:
         raise HTTPException(status_code=404, detail="Unknown department")
 
     raw = patch.model_dump(exclude_unset=True)
     if not raw:
-        return _must_get(slug)
+        return _detail(before)
 
     # An unparseable spec would be stored and then silently skipped by the
     # scheduler, so reject it here. Only an exactly empty spec means "no
@@ -245,7 +266,18 @@ def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentState:
         watched_entities=patch.watched_entities,
     )
     registry.invalidate()
-    return _must_get(slug)
+    # A changed check-in cadence takes effect now: the pending check-in on the
+    # old schedule is cancelled and the next one on the new schedule queued
+    # (none when it was switched off with an empty spec).
+    if (
+        patch.cadences is not None
+        and patch.cadences.get("check_in", "") != before.config.cadences.get("check_in", "")
+    ):
+        try:
+            reschedule_check_in(slug)
+        except Exception:  # noqa: BLE001 - the edit is saved; the next fire re-chains.
+            logger.exception("departments.patch: could not re-time %r's check-in", slug)
+    return _detail(_must_get(slug))
 
 
 # --------------------------------------------------------------------------- #

@@ -3747,7 +3747,14 @@ export async function listDepartments(): Promise<DepartmentState[]> {
   return res.json();
 }
 
-export async function getDepartment(slug: string): Promise<DepartmentState> {
+/** One department as its page reads it (GET and PATCH /departments/{slug}). */
+export interface DepartmentDetail extends DepartmentState {
+  /** When the next check-in is queued (ISO, UTC); null when the check-in is
+   *  off, the workspace is solo, or none is queued yet. */
+  next_check_in_at: string | null;
+}
+
+export async function getDepartment(slug: string): Promise<DepartmentDetail> {
   const res = await fetch(`${API_BASE}/departments/${slug}`);
   if (!res.ok) throw new Error(`Failed to load department: ${res.statusText}`);
   return res.json();
@@ -3767,7 +3774,7 @@ export interface DepartmentPatch {
   watched_entities?: string[];
 }
 
-export async function updateDepartment(slug: string, patch: DepartmentPatch): Promise<DepartmentState> {
+export async function updateDepartment(slug: string, patch: DepartmentPatch): Promise<DepartmentDetail> {
   const res = await fetch(`${API_BASE}/departments/${slug}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

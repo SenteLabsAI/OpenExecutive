@@ -35,7 +35,7 @@ export const MODE_LABEL: Record<WorkspaceMode, string> = {
 // What changes, shown before the switch is made.
 const SWITCH_EFFECT: Record<WorkspaceMode, string> = {
   team:
-    "Departments and their daily check-ins come back, and the sidebar shows Departments and People again.",
+    "Departments and their check-ins come back, and the sidebar shows Departments and People again.",
   solo:
     "Department check-ins are paused and the sidebar shows your goals instead of departments. Nothing is deleted: your departments stay, as the areas your goals are grouped by, and switching back brings their check-ins back.",
 };
