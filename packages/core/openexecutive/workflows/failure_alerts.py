@@ -27,6 +27,8 @@ SOURCE = "workflow_failed"
 # Carried on the card so the UI can offer Run again for that run.
 RUN_TAG_PREFIX = "failed_run:"
 RERUN_SCOPE_PREFIX = "rerun:"
+# How many failed runs one coalesced card remembers (newest last).
+_KEEP_RUNS = 20
 # Serialises queue_rerun's check-then-insert, so two Run again taps at once
 # (the route can be called from several requests in parallel) queue it once.
 _RERUN_LOCK = threading.Lock()
@@ -38,15 +40,21 @@ def is_rerun(scope_key: str | None) -> bool:
 
 
 def failed_run_id(topic_tags: list[str]) -> str | None:
-    """The run a failure card offers to run again, from its tag."""
-    for tag in topic_tags:
-        if tag.startswith(RUN_TAG_PREFIX) and len(tag) > len(RUN_TAG_PREFIX):
-            return tag[len(RUN_TAG_PREFIX):]
-    return None
+    """The run a failure card offers to run again: the newest one it carries."""
+    runs = _run_ids(topic_tags)
+    return runs[-1] if runs else None
 
 
-def _tags(run_id: str) -> list[str]:
-    return ["workflow", f"{RUN_TAG_PREFIX}{run_id}"]
+def _run_ids(topic_tags: list[str]) -> list[str]:
+    return [
+        tag[len(RUN_TAG_PREFIX):]
+        for tag in topic_tags
+        if tag.startswith(RUN_TAG_PREFIX) and len(tag) > len(RUN_TAG_PREFIX)
+    ]
+
+
+def _tags(run_ids: list[str]) -> list[str]:
+    return ["workflow", *(f"{RUN_TAG_PREFIX}{r}" for r in run_ids[-_KEEP_RUNS:])]
 
 
 def _has_failure_card(run_id: str) -> bool:
@@ -93,12 +101,17 @@ def file_failed_run_card(
             source=SOURCE, dedup_key=dedup_key, severity="high", body=body
         )
         if hit is not None:
-            # Point the card at the newest failure, so Run again and Open the
-            # run use the run that just failed, not the first one.
+            # Add the newest failure last, so Run again and Open the run use
+            # the run that just failed, and an earlier run of the same card
+            # (open on /jobs, or a stale Home tab) still counts as scheduled.
             with store._get_conn() as conn:
+                row = conn.execute(
+                    "SELECT topic_tags FROM alerts WHERE id = ?", (hit[0],)
+                ).fetchone()
+                runs = [r for r in _run_ids(json.loads(row[0] or "[]") if row else []) if r != run_id]
                 conn.execute(
                     "UPDATE alerts SET topic_tags = ? WHERE id = ?",
-                    (json.dumps(_tags(run_id)), hit[0]),
+                    (json.dumps(_tags([*runs, run_id])), hit[0]),
                 )
             return hit[0]
         return store.insert_alert(
@@ -108,7 +121,7 @@ def file_failed_run_card(
             headline=headline,
             body=body,
             suggested_action=f"Run {title} again.",
-            topic_tags=_tags(run_id),
+            topic_tags=_tags([run_id]),
             dedup_key=dedup_key,
             routed_to_person_id=routed_to_person_id,
         )
@@ -158,8 +171,9 @@ def queue_rerun(run: dict[str, Any]) -> int:
     """Queue the scheduled action that reruns ``run``, due now, and close its
     failure card. Returns the action's id.
 
-    Refuses (409) while a rerun of the same run is already queued, so a
-    double tap runs it once.
+    Refuses (409) while a rerun of the same scheduled action is already
+    queued (from this run or an earlier one on the same card), so a double
+    tap runs it once.
     """
     from openexecutive.memory.episodic import (
         _get_conn,
@@ -172,9 +186,10 @@ def queue_rerun(run: dict[str, Any]) -> int:
     with _RERUN_LOCK:
         with _get_conn(_resolve_db_path(None)) as conn:
             queued = conn.execute(
-                "SELECT 1 FROM scheduled_actions WHERE scope_key = ? "
+                "SELECT 1 FROM scheduled_actions WHERE scope_key LIKE ? "
+                "AND kind = ? AND channel_ref = ? "
                 "AND status IN ('pending', 'running') LIMIT 1",
-                (scope_key,),
+                (f"{RERUN_SCOPE_PREFIX}%", kind, ref),
             ).fetchone()
         if queued is not None:
             raise RerunRefused(409, "It's already running again.")

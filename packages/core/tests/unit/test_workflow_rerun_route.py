@@ -14,7 +14,13 @@ from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic
 from openexecutive.workflows import persistence as wf_persistence
-from openexecutive.workflows.failure_alerts import file_failed_run_card
+from openexecutive.workflows.failure_alerts import (
+    RerunRefused,
+    failed_run_id,
+    file_failed_run_card,
+    queue_rerun,
+    rerun_target,
+)
 
 
 @pytest.fixture()
@@ -53,6 +59,12 @@ def _failed_check_in(run_id: str = "r-1", *, scheduled: bool = True) -> None:
             run_id=run_id, workflow_name="department_check_in", title="Finance check-in",
             scope="finance",
         )
+
+
+def _run(run_id: str) -> dict:
+    run = wf_persistence.get_run(run_id)
+    assert run is not None
+    return run
 
 
 def _pending_reruns() -> list[episodic.ScheduledAction]:
@@ -164,5 +176,11 @@ def test_a_repeat_failure_points_the_card_at_the_newest_run(db: Path) -> None:
     _failed_check_in("tuesday")
     (card,) = alert_store.list_alerts()
     assert card.occurrence_count == 2
-    assert "failed_run:tuesday" in card.topic_tags
-    assert "failed_run:monday" not in card.topic_tags
+    assert failed_run_id(card.topic_tags) == "tuesday"
+    # Monday's run still counts as scheduled, but a rerun of either one
+    # queues the same check-in, so the second tap is refused.
+    assert rerun_target(_run("monday"))[0] == "dept_cadence"
+    queue_rerun(_run("monday"))
+    with pytest.raises(RerunRefused) as again:
+        queue_rerun(_run("tuesday"))
+    assert again.value.status == 409
