@@ -27,6 +27,8 @@ from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from openexecutive.orchestrator.disclosure import with_chat_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -892,7 +894,9 @@ async def handle_send_telegram_message(tool_input: dict[str, Any]) -> str:
 
     from openexecutive.audit import log_event as audit_log
     try:
-        msg_id = await send_message(settings.telegram_bot_token, chat_id, text)
+        msg_id = await send_message(
+            settings.telegram_bot_token, chat_id, with_chat_line(text, f"telegram:{chat_id}")
+        )
     except Exception as exc:
         logger.exception("send_telegram_message: send failed")
         audit_log(
@@ -985,7 +989,9 @@ async def handle_send_slack_dm(tool_input: dict[str, Any]) -> str:
     client = AsyncWebClient(token=settings.slack_bot_token)
     try:
         # No previews: Slack would fetch a link in the text to unfurl it.
-        result = await client.chat_postMessage(channel=user_id, text=text, unfurl_links=False, unfurl_media=False)
+        result = await client.chat_postMessage(
+            channel=user_id, text=with_chat_line(text, f"slack_dm:{user_id}"), unfurl_links=False, unfurl_media=False,
+        )
     except Exception as exc:
         logger.exception("send_slack_dm: send failed")
         return json.dumps({"error": f"send failed: {exc}"})
@@ -1128,7 +1134,7 @@ async def handle_send_discord_dm(tool_input: dict[str, Any]) -> str:
 
     from openexecutive.audit import log_event as audit_log
     try:
-        msg_id = await send_dm(discord_user_id, text)
+        msg_id = await send_dm(discord_user_id, with_chat_line(text, f"discord_dm:{discord_user_id}"))
     except Exception as exc:
         logger.exception("send_discord_dm: send failed")
         audit_log(

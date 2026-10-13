@@ -333,8 +333,11 @@ async def _process_and_reply(
             channel_context_block=build_channel_context_block("google_chat"),
             attachment_blocks=image_blocks or None,
         )
+        from openexecutive.orchestrator.disclosure import with_chat_line
+
         await asyncio.to_thread(
-            send_reply, space_name, thread_name, response, service_account_file, service_account_email
+            send_reply, space_name, thread_name, with_chat_line(response, session_id),
+            service_account_file, service_account_email,
         )
     except Exception:
         logger.exception("Google Chat: handler error for message %s", message_name)

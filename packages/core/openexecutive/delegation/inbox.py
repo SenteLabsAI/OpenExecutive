@@ -1095,6 +1095,7 @@ async def _consider(
     (``_retry_later``); a Gmail failure is raised for the scan to back off."""
     from openexecutive.config import get_settings
     from openexecutive.delegation import caps, card_drafts, drafts, handle_it
+    from openexecutive.delegation import disclosure as ai_disclosure
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
     from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
@@ -1166,6 +1167,9 @@ async def _consider(
             person.id, message, thread, reply, verdict, relation=relation, own=own,
             exec_address=exec_address, now=now,
         ) if handling.enabled else "level"
+        # The AI line, by the person's own switch for this kind of send: in
+        # the words themselves, so card, draft and what goes all match.
+        reply.body = ai_disclosure.sign(person.id, reply.body, on_its_own=held is None)
         names = (person.full_name or "").split()
         # Write from the address the mail went to: one of their send-as
         # addresses rather than the primary when only that one was used.

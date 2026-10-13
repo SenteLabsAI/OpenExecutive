@@ -47,6 +47,19 @@ Settings.model_config["env_file"] = None
 
 
 @pytest.fixture(autouse=True)
+def _no_ai_disclosure(monkeypatch: pytest.MonkeyPatch):
+    """Leave the AI disclosure line (orchestrator.disclosure) off what tests
+    send, so a test's exact-text assertions don't depend on it, and forget
+    which chats have seen it. test_ai_disclosure.py turns it back on."""
+    from openexecutive.orchestrator import disclosure
+
+    monkeypatch.setenv("AI_DISCLOSURE", "false")
+    disclosure.reset()
+    yield
+    disclosure.reset()
+
+
+@pytest.fixture(autouse=True)
 def reset_active_gateway():
     """Ensure the module-level MCP gateway singleton is cleared between tests."""
     from openexecutive.orchestrator.mcp_gateway import set_active_gateway

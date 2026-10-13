@@ -243,6 +243,9 @@ async def _post_telegram_chat(chat_id: str, text: str) -> dict[str, Any]:
 async def _dispatch(
     integration: str, channel_id: str, text: str
 ) -> dict[str, Any]:
+    from openexecutive.orchestrator.disclosure import with_chat_line
+
+    text = with_chat_line(text, f"{integration}:{channel_id}")
     if integration == "slack":
         return await _post_slack_channel(channel_id, text)
     if integration == "discord":

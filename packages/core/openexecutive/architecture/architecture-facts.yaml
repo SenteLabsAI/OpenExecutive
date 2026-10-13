@@ -1331,6 +1331,30 @@ routing:
     the names from the handler map ("unknown tool — skipped"). The alert
     triage backstop matches: alerts.preferences.resolve_channels strips
     department_channel and company_broadcast in solo.
+  ai_disclosure_invariant: |
+    What the Executive sends to people says it is an AI assistant, added by
+    plain code, never the prompt (orchestrator.disclosure). Mail from its
+    own mailbox: the MCP gateway appends the mail line to every Gmail send
+    or draft and every Outlook send, reply, forward or draft
+    (mcp_gateway._with_disclosure) after every outbound gate passed and only
+    on the arguments sent to the server, so gates, outbound-context records
+    and audit rows see the model's words. Skipped when every recipient is
+    the principal, when the body already has it, and for send_draft_message
+    (the draft got it when made). Chat: the shorter line on the Executive's
+    Slack / Telegram / Discord / Google Chat replies and on send_slack_dm,
+    send_discord_dm, send_telegram_message and broadcast_tools._dispatch,
+    once per conversation per 24 hours (in memory; a restart shows it
+    again), applied at the send call only so the anti-spam guard and session
+    history see the text without it. AI_DISCLOSURE (default on) turns it
+    off; AI_DISCLOSURE_MAIL_TEXT / AI_DISCLOSURE_CHAT_TEXT reword it and are
+    ignored unless they say "AI". Fails open. Sends as a person (Act as me)
+    carry delegation.disclosure.LINE by that person's own switches
+    (delegation_disclosure: handle_it default AI_DISCLOSURE_HANDLE_IT=true,
+    approved_sends default AI_DISCLOSURE_APPROVED_SENDS=false), written into
+    the reply when it is drafted (inbox._consider, follow_ups) so card,
+    draft and sent mail match. PUT /delegation/disclosure changes them;
+    turning one off needs a signed caller. tests/conftest.py sets
+    AI_DISCLOSURE=false for the suite; test_ai_disclosure.py turns it on.
   outbound_antispam_invariant: |
     Every Per-Person DM (`send_slack_dm` / `send_discord_dm` /
     `send_telegram_message`) passes through a deterministic anti-spam guard

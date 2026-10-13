@@ -130,6 +130,7 @@ async def _follow_up(
     was made."""
     from openexecutive.config import get_settings
     from openexecutive.delegation import caps, card_drafts, drafts, handle_it, inbox
+    from openexecutive.delegation import disclosure as ai_disclosure
     from openexecutive.delegation.ghostwriter import ComposeError, Recipient, compose
     from openexecutive.delegation.gmail import DraftSpec, references_header
     from openexecutive.delegation.inbox_classifier import Verdict
@@ -184,6 +185,7 @@ async def _follow_up(
         held = handle_it.follow_up_refusal(
             person.id, sent, reply, relation=relation, own=own, exec_address=exec_address, now=now,
         )
+        reply.body = ai_disclosure.sign(person.id, reply.body, on_its_own=held is None)
         spec = DraftSpec(
             to=reply.to, cc=reply.cc, subject=reply.subject, body=reply.body, thread_id=thread.id,
             in_reply_to=reply.in_reply_to, references=reply.references,

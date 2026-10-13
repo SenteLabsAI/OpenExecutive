@@ -129,6 +129,34 @@ def test_off_it_leaves_a_card_as_before(owner: Any, models: dict[str, Any]) -> N
 # ── sending on its own ────────────────────────────────────────────────────────
 
 
+def test_a_reply_sent_on_its_own_says_an_ai_wrote_it(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.delegation import disclosure
+
+    monkeypatch.delenv("AI_DISCLOSURE", raising=False)
+    _on(owner)
+    mailbox, result = _scan_one(owner)
+    assert result.handled == 1
+    (spec,) = mailbox.specs
+    assert spec.body.endswith(disclosure.LINE)
+    assert inbox.card_payload(_only_card(owner))["draft_body"] == spec.body
+
+
+def test_a_reply_waiting_for_them_has_no_ai_line_unless_they_asked(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.delegation import disclosure
+
+    monkeypatch.delenv("AI_DISCLOSURE", raising=False)
+    mailbox, _ = _scan_one(owner)
+    assert disclosure.LINE not in mailbox.specs[0].body
+    disclosure.set_(owner.id, approved_sends=True, updated_by="test")
+    mailbox, _ = _scan_one(owner, _msg("m2", "t2"))
+    assert mailbox.specs[0].body.endswith(disclosure.LINE)
+
+
+
 def test_on_it_sends_a_reply_to_someone_they_know(db: Path, owner: Any, models: dict[str, Any]) -> None:
     _on(owner)
     mailbox, result = _scan_one(owner)

@@ -490,6 +490,18 @@ class Settings(BaseSettings):
     # identity addendum so the model has a concrete self-name and never
     # falls back to signing as a person from the company People roster.
     exec_display_name: str = Field("Open Executive", alias="EXEC_DISPLAY_NAME")
+    # AI disclosure (orchestrator.disclosure): a line on the mail and chat
+    # messages the Executive sends saying it is an AI assistant. On unless
+    # turned off. The texts replace the built-in wording; one that doesn't
+    # say "AI" is ignored, so the line can't be reworded into hiding it.
+    ai_disclosure: bool = Field(True, alias="AI_DISCLOSURE")
+    ai_disclosure_mail_text: str = Field("", alias="AI_DISCLOSURE_MAIL_TEXT", max_length=500)
+    ai_disclosure_chat_text: str = Field("", alias="AI_DISCLOSURE_CHAT_TEXT", max_length=200)
+    # Where each person's own switches start (delegation.disclosure): a line
+    # on the replies Handle it for me sends as them on its own, and on the
+    # drafts they approve and send themselves. Each person can change theirs.
+    ai_disclosure_handle_it: bool = Field(True, alias="AI_DISCLOSURE_HANDLE_IT")
+    ai_disclosure_approved_sends: bool = Field(False, alias="AI_DISCLOSURE_APPROVED_SENDS")
     email_poll_interval_seconds: int = Field(60, alias="EMAIL_POLL_INTERVAL_SECONDS")
 
     # Which Google services the co-located workspace-mcp child loads, and at

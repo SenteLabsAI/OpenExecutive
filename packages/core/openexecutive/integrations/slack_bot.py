@@ -1032,7 +1032,12 @@ async def create_slack_app():
 
                 # No unfurls: Slack would fetch a link in the reply on its own,
                 # and a reply can quote mail a sender wrote to carry data out in one.
-                await say(text=response, thread_ts=thread_ts, unfurl_links=False, unfurl_media=False)
+                from openexecutive.orchestrator.disclosure import with_chat_line
+
+                await say(
+                    text=with_chat_line(response, f"slack:{session_id}"),
+                    thread_ts=thread_ts, unfurl_links=False, unfurl_media=False,
+                )
 
                 # Persist AFTER the reply lands, and never let a persistence
                 # failure trigger the user-facing error path — the user

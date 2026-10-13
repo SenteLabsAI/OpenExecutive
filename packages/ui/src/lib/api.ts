@@ -1534,6 +1534,8 @@ export interface DelegationSettings {
   handle_it?: HandleIt | null;
   // Absent (or null) on a backend that predates per-setting training.
   training?: Training | null;
+  // Absent (or null) on a backend that predates the AI line on replies.
+  disclosure?: ReplyDisclosure | null;
   // The owner's "Let team members use Act as me", while the install allows
   // it; null (or absent) for everyone else.
   team?: DelegationTeam | null;
@@ -1600,6 +1602,16 @@ export interface Training {
   actions: boolean;
   drafts: boolean;
   learned: TrainingLearned[];
+}
+
+// The AI line on replies sent as you (delegation/disclosure.py): on replies
+// Handle it for me sends on its own, and on drafts you send. `enabled` is the
+// install's AI_DISCLOSURE; when it's off neither line is added.
+export interface ReplyDisclosure {
+  enabled: boolean;
+  handle_it: boolean;
+  approved_sends: boolean;
+  line: string;
 }
 
 export interface HandleIt {
@@ -1853,6 +1865,19 @@ export async function setTraining(update: Partial<Record<TrainingSetting, boolea
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change training.");
   return (await res.json()) as DelegationSettings;
+}
+
+export async function setReplyDisclosure(update: {
+  handle_it?: boolean;
+  approved_sends?: boolean;
+}): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/disclosure`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change the AI line on your replies.");
+  return res.json();
 }
 
 export async function setHandleIt(update: {

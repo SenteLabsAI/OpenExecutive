@@ -257,6 +257,24 @@ class HandleItUpdate(BaseModel):
     mode: str | None = None
 
 
+class DisclosureOut(BaseModel):
+    """The AI line on replies sent as the caller (delegation.disclosure):
+    on those Handle it for me sends on its own, and on drafts they send.
+    ``enabled`` is the install's AI_DISCLOSURE: off, neither is added."""
+
+    enabled: bool
+    handle_it: bool
+    approved_sends: bool
+    line: str
+
+
+class DisclosureUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handle_it: bool | None = None
+    approved_sends: bool | None = None
+
+
 class HandledReplyOut(BaseModel):
     decision_id: int
     sent_at: str
@@ -282,6 +300,8 @@ class DelegationOut(BaseModel):
     handle_it: HandleItOut | None = None
     # Absent on a backend that predates per-setting training.
     training: TrainingOut | None = None
+    # Absent on a backend that predates the AI line on replies.
+    disclosure: DisclosureOut | None = None
     # The principal's "Let team members use Act as me", while the install
     # allows it; None for anyone else.
     team: TeamOut | None = None
@@ -544,7 +564,19 @@ async def _state(person: Person) -> DelegationOut:
         inbox=_inbox_out(_person_id(person)),
         handle_it=_handle_it_out(_person_id(person)),
         training=_training_out(_person_id(person)),
+        disclosure=_disclosure_out(_person_id(person)),
         team=_team_out(person),
+    )
+
+
+def _disclosure_out(person_id: int) -> DisclosureOut:
+    from openexecutive.delegation import disclosure
+    from openexecutive.orchestrator.disclosure import enabled
+
+    switches = disclosure.get(person_id)
+    return DisclosureOut(
+        enabled=enabled(), handle_it=switches.handle_it, approved_sends=switches.approved_sends,
+        line=disclosure.LINE,
     )
 
 
@@ -898,6 +930,27 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
         if not inbox.get_watch(person_id).enabled:
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
     _set_handle_it(person_id, enabled=body.enabled, mode=body.mode)
+    return await _state(person)
+
+
+@router.put("/delegation/disclosure", response_model=DelegationOut)
+async def update_delegation_disclosure(request: Request, body: DisclosureUpdate) -> DelegationOut:
+    """The caller's own switches for the AI line on replies sent as them.
+    Turning one on only adds the line, so it needs no signed sign-in;
+    turning one off does, so nobody else can take it off their mail."""
+    from openexecutive.delegation import disclosure
+
+    changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    person = _signed_caller(request, narrowing=all(changes.values()))
+    person_id = _person_id(person)
+    before = disclosure.get(person_id)
+    changed = {k: v for k, v in changes.items() if getattr(before, k) != v}
+    if changed:
+        disclosure.set_(person_id, **changed, updated_by=f"person:{person_id}")
+        _audit(
+            "delegation_disclosure_changed", f"AI line on replies changed for person {person_id}",
+            {"person_id": person_id, **changed},
+        )
     return await _state(person)
 
 

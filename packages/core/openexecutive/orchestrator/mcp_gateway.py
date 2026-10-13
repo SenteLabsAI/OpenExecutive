@@ -1553,6 +1553,67 @@ def _check_calendar_attendees(tool: str, arguments: dict[str, Any]) -> str | Non
     return None
 
 
+def _mail_recipients(*values: Any) -> list[str]:
+    """Every address in Gmail-style ``to`` / ``cc`` / ``bcc`` values (a
+    string or a list of them)."""
+    found: list[str] = []
+    for value in values:
+        items = value if isinstance(value, list) else [value]
+        found += [a for _, a in getaddresses([v for v in items if isinstance(v, str)]) if a]
+    return found
+
+
+def _m365_recipients(message: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for key in ("toRecipients", "ccRecipients", "bccRecipients"):
+        entries = message.get(key)
+        for entry in entries if isinstance(entries, list) else []:
+            address = entry.get("emailAddress") if isinstance(entry, dict) else None
+            if isinstance(address, dict) and isinstance(address.get("address"), str):
+                found.append(address["address"])
+    return found
+
+
+def _with_disclosure(tool_name: Any, normalized: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """The Executive's own mail send or draft with the AI disclosure line
+    under its body (``orchestrator.disclosure``). Runs after every gate, on
+    a copy; a shape it doesn't know is left as it is."""
+    from openexecutive.orchestrator.disclosure import with_mail_line
+
+    if tool_name in _GATED_GMAIL_TOOLS:
+        out = dict(arguments)
+        recipients = _mail_recipients(out.get("to"), out.get("cc"), out.get("bcc"))
+        if isinstance(out.get("html_body"), str) and out["html_body"]:
+            out["html_body"] = with_mail_line(out["html_body"], recipients=recipients, as_html=True)
+        if isinstance(out.get("body"), str) and out["body"]:
+            as_html = str(out.get("body_format") or "").lower() == "html"
+            out["body"] = with_mail_line(out["body"], recipients=recipients, as_html=as_html)
+        return out
+    if normalized not in _GATED_M365_MAIL_TOOLS or normalized == _M365_SEND_DRAFT_TOOL:
+        return arguments
+    body = arguments.get("body")
+    if not isinstance(body, dict):
+        return arguments
+    body = dict(body)
+    # A reply or forward carries its words as Comment; a new message or a
+    # draft as a Graph message (under Message for send_mail).
+    if isinstance(body.get("Comment"), str) and body["Comment"]:
+        body["Comment"] = with_mail_line(body["Comment"])
+        return {**arguments, "body": body}
+    wrapped = isinstance(body.get("Message"), dict)
+    message = body["Message"] if wrapped else body
+    content = message.get("body")
+    if not (isinstance(content, dict) and isinstance(content.get("content"), str) and content["content"]):
+        return arguments
+    as_html = str(content.get("contentType") or "").lower() == "html"
+    content = {
+        **content,
+        "content": with_mail_line(content["content"], recipients=_m365_recipients(message), as_html=as_html),
+    }
+    message = {**message, "body": content}
+    return {**arguments, "body": {**body, "Message": message} if wrapped else message}
+
+
 def _pin_calendar_notifications(arguments: dict[str, Any]) -> dict[str, Any]:
     """Keep a manage_event call that named no attendees from emailing the
     event's existing guests.
@@ -3030,9 +3091,14 @@ class MCPGateway:
             if isinstance(expanded, str):
                 return expanded
             arguments, attached_artifacts = expanded
+        # Last, once every gate passed: the AI disclosure line, on what goes
+        # out only; what is recorded below stays the words the model wrote.
+        wire_arguments = arguments
+        if tool_name in _GATED_GMAIL_TOOLS or normalized in _GATED_M365_MAIL_TOOLS:
+            wire_arguments = _with_disclosure(tool_name, normalized, arguments)
         result = await session.call_tool(
             "call_tool",
-            {"tool_name": tool_input["name"], "arguments": arguments},
+            {"tool_name": tool_input["name"], "arguments": wire_arguments},
         )
         result_text = result.content[0].text if result.content else json.dumps({"result": None})
         # A pinned tool called before startup priming reached it: the prompt
@@ -3042,7 +3108,7 @@ class MCPGateway:
         if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
             result = await session.call_tool(
                 "call_tool",
-                {"tool_name": tool_input["name"], "arguments": arguments},
+                {"tool_name": tool_input["name"], "arguments": wire_arguments},
             )
             result_text = result.content[0].text if result.content else json.dumps({"result": None})
         # On the final result, retry or not: roster answer tokens are hidden

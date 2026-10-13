@@ -351,7 +351,9 @@ async def _process_and_reply(
                 channel_context_block=build_channel_context_block("telegram"),
                 person_id=person_id,
             )
-            await send_message(token, chat_id, response)
+            from openexecutive.orchestrator.disclosure import with_chat_line
+
+            await send_message(token, chat_id, with_chat_line(response, f"telegram:{session_id}"))
         except Exception:
             logger.exception("Telegram: handler error for message %s", message_id)
             try:

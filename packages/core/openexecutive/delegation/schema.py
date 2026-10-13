@@ -21,6 +21,7 @@ HANDLED_TABLE = "delegation_handled"
 REMINDERS_TABLE = "delegation_reminders"
 MAIL_READ_TABLE = "delegation_mail_read"
 TRAINING_TABLE = "delegation_training"
+DISCLOSURE_TABLE = "delegation_disclosure"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -35,6 +36,7 @@ TABLES: tuple[str, ...] = (
     REMINDERS_TABLE,
     MAIL_READ_TABLE,
     TRAINING_TABLE,
+    DISCLOSURE_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -191,6 +193,16 @@ _DDL: tuple[str, ...] = (
     "  updated_at TEXT,"
     "  updated_by TEXT,"
     "  PRIMARY KEY (person_id, setting)"
+    ")",
+    # The AI disclosure line on what is sent as a person (delegation.disclosure):
+    # one row per person who changed theirs. NULL follows the install's
+    # AI_DISCLOSURE_HANDLE_IT / AI_DISCLOSURE_APPROVED_SENDS.
+    f"CREATE TABLE IF NOT EXISTS {DISCLOSURE_TABLE} ("
+    "  person_id INTEGER PRIMARY KEY,"
+    "  handle_it INTEGER,"
+    "  approved_sends INTEGER,"
+    "  updated_at TEXT,"
+    "  updated_by TEXT"
     ")",
 )
 
