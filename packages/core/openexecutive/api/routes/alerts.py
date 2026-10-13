@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,9 +13,9 @@ from openexecutive.alerts.models import Alert, is_private_alert, visible_alert
 # feedback) was removed — those items now surface only through the briefing
 # (`/today`), which reads the live alert view (alerts/lifecycle.py). The
 # ingestion → triage → storage pipeline is unchanged; this router exposes the
-# queue-grooming endpoints the briefing calls: single ack, bulk ack, reopen
-# (the Undo for every autonomous close / expiry) and an on-demand run of the
-# Executive's relevance review.
+# queue-grooming endpoints the briefing calls: single ack, bulk ack, snooze,
+# reopen (the Undo for every autonomous close / expiry) and an on-demand run
+# of the Executive's relevance review.
 router = APIRouter()
 
 
@@ -78,6 +79,52 @@ def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
     return updated
 
 
+# Furthest a card can be snoozed: longer than this is a dismiss in disguise.
+_MAX_SNOOZE = timedelta(days=30)
+
+
+class SnoozeBody(BaseModel):
+    # When the card comes back; null clears a snooze (the Undo).
+    until: datetime | None
+
+
+@router.post("/alerts/{alert_id}/snooze", response_model=Alert)
+def snooze_alert(alert_id: int, body: SnoozeBody, request: Request) -> Alert:
+    """Hide a card from the live queue until ``until``; it comes back on its
+    own then. ``until: null`` brings it back now."""
+    existing = _visible_alert(alert_id, request)
+    if existing.source == "roster_request":
+        raise HTTPException(
+            status_code=409,
+            detail="Answer this one from its card: add them, say who they are, or ignore them.",
+        )
+    until: str | None = None
+    if body.until is not None:
+        when = body.until if body.until.tzinfo else body.until.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
+        if when <= now:
+            raise HTTPException(status_code=422, detail="Pick a time in the future.")
+        if when - now > _MAX_SNOOZE:
+            raise HTTPException(
+                status_code=422, detail="Snooze for 30 days at most, or dismiss the card."
+            )
+        until = when.astimezone(UTC).isoformat()
+    if not store.set_snoozed_until(alert_id, until):
+        raise HTTPException(status_code=409, detail="Only an open card can be snoozed.")
+    from openexecutive.audit import log_event as audit_log
+
+    audit_log(
+        "alert_snoozed" if until else "alert_unsnoozed",
+        f"Snoozed alert {alert_id} until {until}" if until else f"Unsnoozed alert {alert_id}",
+        actor="user",
+        details={"alert_id": alert_id, "until": until},
+    )
+    updated = store.get_alert(alert_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return updated
+
+
 class BulkAckBody(BaseModel):
     status: str = Field(..., pattern="^(ack|dismissed)$")
     # Explicit ids (what the UI sends — it knows which cards the caller owns)
@@ -102,8 +149,6 @@ def bulk_ack_alerts(body: BulkAckBody, request: Request) -> BulkAckResponse:
 
     before: str | None = None
     if body.older_than_days is not None:
-        from datetime import UTC, datetime, timedelta
-
         before = (datetime.now(UTC) - timedelta(days=body.older_than_days)).isoformat()
     targets = {
         a.id: a

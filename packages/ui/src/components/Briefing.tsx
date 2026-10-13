@@ -10,7 +10,9 @@ import {
   getToday,
   rejectDecision,
   reopenAlert,
+  rerunWorkflowRun,
   reviewAlerts,
+  snoozeAlert,
   type ProposalItem,
   type Today,
 } from "@/lib/api";
@@ -25,7 +27,9 @@ import {
   shouldRefreshOnFocus,
 } from "@/lib/narrativeFreshness";
 import { reviewRanLabel } from "@/lib/rhythmCards";
+import type { SnoozeChoice } from "@/lib/snooze";
 import InfoTip from "./InfoTip";
+import HeldBack from "./briefing/HeldBack";
 import { ACTION_CARDS_TIP, ActionCardItem, useActionCards } from "./ActionCards";
 import { REPLIES_WAITING_TIP, ReplyCardItem, useReplyCards } from "./RepliesWaiting";
 import Icon from "./Icon";
@@ -128,6 +132,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const [showAllNeedsYou, setShowAllNeedsYou] = useState(false);
   // "Re-check relevance" runs the Executive's review on demand.
   const [recheckBusy, setRecheckBusy] = useState(false);
+  // The card just snoozed, for the "Snoozed until …" notice and its Undo.
+  const [snoozed, setSnoozed] = useState<{ alertId: number; short: string } | null>(null);
   // Handled-rail rows undone this session (keyed per row, see handledKey).
   const [undoneRows, setUndoneRows] = useState<Set<string>>(new Set());
   // Which tile's side panel (or the brief) is open.
@@ -249,6 +255,53 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     } catch (e) {
       setActedAlertIds(prev);
       console.error("Dismiss failed", e);
+    }
+  }, [actedAlertIds, refreshToday]);
+
+  // Snooze: the card leaves now and the server brings it back at `until`.
+  // Undo clears the snooze and shows the card again.
+  const handleSnooze = useCallback(async (proposal: ProposalItem, choice: SnoozeChoice) => {
+    const prev = actedAlertIds;
+    setActedAlertIds(new Set(prev).add(proposal.alert_id));
+    try {
+      await snoozeAlert(proposal.alert_id, choice.until);
+      setSnoozed({ alertId: proposal.alert_id, short: choice.short });
+    } catch (e) {
+      setActedAlertIds(prev);
+      console.error("Snooze failed", e);
+    }
+  }, [actedAlertIds]);
+
+  const handleUnsnooze = useCallback(async () => {
+    if (!snoozed) return;
+    try {
+      await snoozeAlert(snoozed.alertId, null);
+      setActedAlertIds((prev) => {
+        const next = new Set(prev);
+        next.delete(snoozed.alertId);
+        return next;
+      });
+      setSnoozed(null);
+      refreshToday();
+    } catch (e) {
+      console.error("Undo snooze failed", e);
+    }
+  }, [snoozed, refreshToday]);
+
+  // Run again on a failed scheduled run: the server queues it and closes the
+  // card, so the card leaves at once and comes back only if it fails again.
+  const [rerunNotice, setRerunNotice] = useState<string | null>(null);
+  const handleRerun = useCallback(async (proposal: ProposalItem) => {
+    if (!proposal.failed_run_id) return;
+    const prev = actedAlertIds;
+    setActedAlertIds(new Set(prev).add(proposal.alert_id));
+    try {
+      await rerunWorkflowRun(proposal.failed_run_id);
+      setRerunNotice("Running it again now. The result goes where it normally would.");
+      refreshToday();
+    } catch (e) {
+      setActedAlertIds(prev);
+      setRerunNotice(e instanceof Error ? e.message : "Couldn't run it again.");
     }
   }, [actedAlertIds, refreshToday]);
 
@@ -569,6 +622,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
           onContinue={onContinue}
           onApprove={handleApprove}
           onDismiss={handleDismiss}
+          onSnooze={handleSnooze}
+          onRerun={handleRerun}
           onApproveWithEdits={handleApproveWithEdits}
           defaultBodyExpanded={emphasized}
           emphasized={emphasized}
@@ -728,6 +783,23 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                     {showNeedsYouMenu && <OverflowMenu size="sm" label="Needs you options" items={needsYouMenu} />}
                   </div>
                 </div>
+                {snoozed && (
+                  <p className="mb-3 flex flex-wrap items-center gap-x-3 text-sm text-fg-muted" role="status">
+                    Snoozed until {snoozed.short}.
+                    <button
+                      type="button"
+                      onClick={handleUnsnooze}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      Undo
+                    </button>
+                  </p>
+                )}
+                {rerunNotice && (
+                  <p className="mb-3 text-sm text-fg-muted" role="status">
+                    {rerunNotice}
+                  </p>
+                )}
                 {replies.notice && (
                   <p className={`mb-3 text-sm ${TONE_TEXT.emerald}`} role="status">
                     {replies.notice}
@@ -756,6 +828,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   </p>
                 ) : null}
               </section>
+
+              {(today.held_back?.length ?? 0) > 0 && <HeldBack items={today.held_back ?? []} />}
 
               {solo && (
                 <div className="mb-8">
@@ -840,6 +914,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                       onContinue={onContinue}
                       onApprove={handleApprove}
                       onDismiss={handleDismiss}
+                      onSnooze={handleSnooze}
+                      onRerun={handleRerun}
                       onApproveWithEdits={handleApproveWithEdits}
                     />
                   ))}

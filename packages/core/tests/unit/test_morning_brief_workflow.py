@@ -452,7 +452,7 @@ async def test_morning_brief_holds_back_a_fabricated_colleague_and_cites_figures
     assert "'Marcus Lee', '52'" in repair.calls[0]["messages"][0]["content"]  # type: ignore[index]
     assert "Marcus" not in artifact
     assert "- Renew Acme lease for 48 [1] units" in artifact
-    assert "_Held back 1 line " in artifact
+    assert "_I left out 1 line " in artifact
     assert "- [1] Needs you — Renew Acme lease for 48 units" in artifact
     step = next(e for e in events if e.type == "step_done" and e.step_id == "synthesize")
     assert "1 line(s) held back" in step.summary
@@ -484,7 +484,7 @@ async def test_eod_digest_keeps_a_repair_that_grounds_it(monkeypatch: pytest.Mon
     assert len(provider.calls) == 2
     assert provider.calls[1]["system"] == provider.calls[0]["system"]
     assert artifact.startswith("**Still pending**\n- Acme lease, 48 [1] units")
-    assert "Marcus" not in artifact and "Held back" not in artifact
+    assert "Marcus" not in artifact and "I left out" not in artifact
     [row] = rows
     assert row["details"]["repaired"] is True  # type: ignore[index]
     assert row["details"]["held_back"] == []  # type: ignore[index]

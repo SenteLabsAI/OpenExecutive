@@ -539,7 +539,12 @@ async def _execute_action(
         # is recorded `cancelled` (reason in last_error), not `done`: a done
         # cadence row reads as "the check-in ran", which the nudge engine
         # takes as covering the department's idle initiatives.
-        skip_reason = _dept_check_in_skip_reason(slug, now)
+        # Run again from a failure card runs once, skip rule or not: someone
+        # asked for it.
+        from openexecutive.workflows.failure_alerts import is_rerun
+
+        rerun = is_rerun(action.scope_key)
+        skip_reason = None if rerun else _dept_check_in_skip_reason(slug, now)
         if skip_reason is not None:
             logger.info("scheduler: dept_cadence %r skipped — %s", slug, skip_reason)
             _chain_dept_cadence(slug)
@@ -623,6 +628,9 @@ async def _execute_action(
                     fail_run(run_id, str(exc))
                 except Exception:
                     pass
+                if new_status == "failed":
+                    # Nobody watches a scheduled run: say so on Home.
+                    _file_dept_check_in_failure(slug, run_id)
         return
 
     # ------------------------------------------------------------------
@@ -1263,6 +1271,27 @@ def _chain_dept_cadence(slug: str) -> bool:
             "resumes at the next boot (bootstrap_cadences)", slug,
         )
         return False
+
+
+def _file_dept_check_in_failure(slug: str, run_id: str) -> None:
+    """The Home card for a check-in whose retries are spent. Never raises."""
+    from openexecutive.workflows.failure_alerts import file_failed_run_card
+
+    title = slug
+    try:
+        from openexecutive.departments import store as dept_store
+
+        state = dept_store.get_department(slug)
+        if state is not None and state.config.title:
+            title = state.config.title
+    except Exception:
+        logger.exception("scheduler: dept_cadence %r — title lookup failed", slug)
+    file_failed_run_card(
+        run_id=run_id,
+        workflow_name="department_check_in",
+        title=f"{title} check-in",
+        scope=slug,
+    )
 
 
 def _mark_check_in_skipped(action_id: int, reason: str) -> None:
@@ -2052,6 +2081,7 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         schedule_dynamic_workflow_cadence,
     )
     from openexecutive.workflows.dynamic_store import get_definition
+    from openexecutive.workflows.failure_alerts import file_failed_run_card, is_rerun
     from openexecutive.workflows.gate import checkpoint_gate
     from openexecutive.workflows.persistence import complete_run, create_run, fail_run
     from openexecutive.workflows.wait_for_human import WaitForHumanEvent
@@ -2112,6 +2142,13 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
         with contextlib.suppress(Exception):
             fail_run(run_id, str(exc))
+        file_failed_run_card(
+            run_id=run_id,
+            workflow_name=name,
+            title=defn.title or name,
+            scope=name,
+            routed_to_person_id=action.assigned_to_person_id,
+        )
     else:
         # Deliver AFTER the run is marked done, in its own guard — a delivery
         # failure (e.g. revoked token) must not regress a successfully
@@ -2132,7 +2169,9 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
                 )
 
     mark_action_done(action.id)
-    schedule_dynamic_workflow_cadence(defn, after=datetime.now(UTC))
+    # A Run again is a one-off: the cadence already has its next occurrence.
+    if not is_rerun(getattr(action, "scope_key", None)):
+        schedule_dynamic_workflow_cadence(defn, after=datetime.now(UTC))
 
 
 async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:

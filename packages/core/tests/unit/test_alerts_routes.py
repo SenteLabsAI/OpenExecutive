@@ -178,3 +178,34 @@ def test_someone_elses_drafted_artifact_is_not_found(
     monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: Viewer(person_id=8))
     res = client.post(f"/alerts/{theirs}/ack", json={"status": "dismissed"})
     assert res.status_code == 200 and res.json()["status"] == "dismissed"
+
+
+def test_snooze_hides_a_card_until_then_and_undo_brings_it_back(
+    client: TestClient, db: Path
+) -> None:
+    aid = _insert(db, "payout late")
+    until = (datetime.now(UTC) + timedelta(hours=3)).isoformat()
+    res = client.post(f"/alerts/{aid}/snooze", json={"until": until})
+    assert res.status_code == 200 and res.json()["snoozed_until"] is not None
+    assert aid not in {a.id for a in lifecycle.list_live_alerts(db_path=db)}
+
+    res = client.post(f"/alerts/{aid}/snooze", json={"until": None})
+    assert res.status_code == 200 and res.json()["snoozed_until"] is None
+    assert aid in {a.id for a in lifecycle.list_live_alerts(db_path=db)}
+
+
+def test_snooze_refuses_past_too_far_closed_and_roster_cards(
+    client: TestClient, db: Path
+) -> None:
+    aid = _insert(db, "open")
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    far = (datetime.now(UTC) + timedelta(days=31)).isoformat()
+    assert client.post(f"/alerts/{aid}/snooze", json={"until": past}).status_code == 422
+    assert client.post(f"/alerts/{aid}/snooze", json={"until": far}).status_code == 422
+    soon = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    closed = _insert(db, "closed")
+    alert_store.set_status(closed, "dismissed", db_path=db)
+    assert client.post(f"/alerts/{closed}/snooze", json={"until": soon}).status_code == 409
+    roster = _insert(db, "who is this", source="roster_request")
+    assert client.post(f"/alerts/{roster}/snooze", json={"until": soon}).status_code == 409
+    assert client.post("/alerts/9999/snooze", json={"until": soon}).status_code == 404

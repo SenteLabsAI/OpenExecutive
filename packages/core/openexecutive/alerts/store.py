@@ -357,6 +357,20 @@ def set_status(alert_id: int, status: str, db_path: Path | None = None) -> bool:
         return cursor.rowcount > 0
 
 
+def set_snoozed_until(
+    alert_id: int, until: str | None, db_path: Path | None = None
+) -> bool:
+    """Hide an ``unread`` alert from the live queue until ``until`` (ISO), or
+    clear the snooze with ``None``. Returns False when the row is missing or
+    no longer ``unread`` (a closed card has nothing to snooze)."""
+    with _get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE alerts SET snoozed_until = ? WHERE id = ? AND status = 'unread'",
+            (until, alert_id),
+        )
+        return cursor.rowcount > 0
+
+
 # --- Lifecycle helpers (alerts/lifecycle.py, alerts/review.py, routes) ---
 
 # Cap on ids per bulk UPDATE (SQLite's default variable limit is 32,766); the

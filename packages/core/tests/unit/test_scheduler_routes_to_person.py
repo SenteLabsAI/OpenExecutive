@@ -600,6 +600,59 @@ def test_check_in_failure_after_retries_still_chains(monkeypatch: pytest.MonkeyP
     assert _status(action) == "failed"
     pending = _pending_cadences()
     assert len(pending) == 1 and pending[0].id != action.id
+    # Nobody watched it fail: one card on Home offers Run again.
+    (card,) = alert_store.list_alerts()
+    assert card.source == "workflow_failed"
+    assert card.headline == "Finance check-in didn't finish"
+    (run,) = wf_persistence.list_runs(workflow_name="department_check_in")
+    assert f"failed_run:{run['run_id']}" in card.topic_tags
+
+
+def test_a_retried_attempt_files_no_card_and_repeat_failures_share_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch, fail=True)
+
+    asyncio.run(_execute_action(_cadence_action(), gateway=None))
+    assert alert_store.list_alerts() == []  # retries left: not a failure yet
+
+    with episodic._get_conn(episodic.DB_PATH) as conn:
+        conn.execute("UPDATE scheduled_actions SET status = 'cancelled'")
+    for _ in range(2):
+        asyncio.run(_execute_action(_cadence_action(attempts=3), gateway=None))
+        with episodic._get_conn(episodic.DB_PATH) as conn:
+            conn.execute("UPDATE scheduled_actions SET status = 'cancelled'")
+    (card,) = alert_store.list_alerts()
+    assert card.occurrence_count == 2
+
+
+def test_run_again_runs_once_past_the_skip_rule_and_adds_no_occurrence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.workflows.failure_alerts import queue_rerun
+
+    dept_store.seed_default_departments()  # no goals: a scheduled fire is skipped
+    dept_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+    wf_persistence.create_run(
+        "r-failed", "department_check_in", "Check-in: finance",
+        {"department_slug": "finance", "period_label": "2026-10-12"},
+    )
+    wf_persistence.fail_run("r-failed", "boom")
+    queue_rerun(wf_persistence.get_run("r-failed") or {})
+    (action,) = episodic.claim_due_actions(_now())
+    assert action.scope_key == "rerun:r-failed"
+
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == ["finance"]
+    assert _status(action) == "done"
+    assert len(_pending_cadences()) == 1  # the next occurrence, once
 
 
 def test_final_attempt_that_chained_before_failing_does_not_chain_twice(

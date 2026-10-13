@@ -4251,6 +4251,8 @@ export interface ProposalItem {
   // /decisions endpoints (which book/cancel server-side) instead of the
   // ack-and-handoff-to-chat flow. Null/absent for ordinary alert proposals.
   decision_instance_id?: number | null;
+  // A scheduled run that failed: the run its Run again queues once more.
+  failed_run_id?: string | null;
   // Set when the card is a roster request ("who is this new sender?"): the
   // briefing answers it at /people/requests/{id} instead of ack-and-chat.
   roster_request?: RosterRequestCard | null;
@@ -4282,6 +4284,15 @@ export interface ProposalItem {
 
 // One autonomous alert-review move since the last delivered morning brief
 // (routed / nudged / escalated / drafted / merged / closed / changed).
+// One brief's held-back lines: what it named that couldn't be matched to
+// your data. The brief's note points here ("Left out of your brief").
+export interface HeldBackItem {
+  event_id: number;
+  surface: string;
+  at: string;
+  lines: string[];
+}
+
 export interface HandledItem {
   kind: string;
   summary: string;
@@ -4348,6 +4359,8 @@ export interface Today {
   // What the Executive's alert review did on its own since the last morning
   // brief — the "handled overnight" rail with Undo. Optional/default-empty.
   handled_overnight?: HandledItem[];
+  // Lines grounding left out of your briefs in the last day (principal only).
+  held_back?: HeldBackItem[];
 }
 
 export async function getToday(): Promise<Today> {
@@ -4450,6 +4463,29 @@ export async function bulkAckAlerts(body: {
   });
   if (!res.ok) throw new Error(`Failed to bulk-ack alerts: ${res.statusText}`);
   return res.json();
+}
+
+// Hide a card from Home until `until`; it comes back on its own then.
+// `null` brings it back now (the Undo).
+export async function snoozeAlert(alertId: number, until: Date | null): Promise<void> {
+  const res = await fetch(`${API_BASE}/alerts/${alertId}/snooze`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ until: until ? until.toISOString() : null }),
+  });
+  if (!res.ok) throw new Error(`Failed to snooze alert ${alertId}: ${res.status} ${res.statusText}`);
+}
+
+// Run a failed scheduled run again (a check-in, a saved workflow on a
+// cadence). It is queued now and delivers the way the scheduled run would.
+export async function rerunWorkflowRun(runId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/workflows/runs/${encodeURIComponent(runId)}/rerun`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(typeof body?.detail === "string" ? body.detail : `Failed to run it again: ${res.statusText}`);
+  }
 }
 
 // Undo for an autonomous close / expiry / dismiss: back to the live queue.

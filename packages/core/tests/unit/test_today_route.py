@@ -2390,3 +2390,39 @@ def test_a_failed_regen_backs_off_instead_of_retrying_every_view(
     today_route._regen_failed_at["company"] = datetime.now(UTC) - timedelta(minutes=6)
     c.get("/today")
     assert calls["n"] == 2
+
+
+def test_held_back_lines_are_the_principals_alone(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import grounding
+
+    held = [grounding.HeldBack(event_id=4, surface="morning brief", at="2026-10-13T07:30:00+00:00",
+                               lines=["- Dana's renewal is worth $48K"])]
+    monkeypatch.setattr(grounding, "recent_held_back", lambda since, limit=3: held)
+    people_store.upsert_person(full_name="Founder", email="founder@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Alice Example", email="alice@example.com")
+
+    mine = client.get("/today", headers={"x-caller-email": "founder@example.com"}).json()
+    assert mine["held_back"] == [{
+        "event_id": 4, "surface": "morning brief", "at": "2026-10-13T07:30:00+00:00",
+        "lines": ["- Dana's renewal is worth $48K"],
+    }]
+    theirs = client.get("/today", headers={"x-caller-email": "alice@example.com"}).json()
+    assert theirs["held_back"] == []
+
+
+def test_a_failed_run_card_carries_its_run(client: TestClient) -> None:
+    from openexecutive.workflows.failure_alerts import file_failed_run_card
+
+    file_failed_run_card(
+        run_id="r-9", workflow_name="department_check_in", title="Finance check-in",
+        scope="finance",
+    )
+    alert_store.insert_alert(
+        source="triage", external_id="t-1", severity="medium", headline="other", body="b",
+        topic_tags=["failed_run:spoofed"],
+    )
+    by_headline = {p["headline"]: p for p in client.get("/today").json()["proposals"]}
+    assert by_headline["Finance check-in didn't finish"]["failed_run_id"] == "r-9"
+    assert by_headline["other"]["failed_run_id"] is None  # only a failure card names a run

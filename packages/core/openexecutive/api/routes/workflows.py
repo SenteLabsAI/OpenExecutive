@@ -7,6 +7,7 @@ Endpoints:
                                           (403 for a principal-only one unless the principal)
 - GET    /workflows/runs                  List recent runs across all workflows
 - GET    /workflows/runs/{run_id}         Get a specific past run (with artifact)
+- POST   /workflows/runs/{run_id}/rerun   Run a failed scheduled run again
 - DELETE /workflows/runs/{run_id}         Delete a past run
 """
 from __future__ import annotations
@@ -119,6 +120,47 @@ async def delete_workflow_run(run_id: str, request: Request) -> dict[str, str]:
     if not delete_run(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return {"status": "deleted", "run_id": run_id}
+
+
+@router.post("/workflows/runs/{run_id}/rerun")
+async def rerun_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Run a failed scheduled run again (the Run again on its Home card).
+
+    Queues the same scheduled action, due now, which delivers the way the
+    scheduled run would have. The principal may, and for a saved workflow
+    also the person it delivers to. A run someone started from /jobs is
+    started again from its page instead (409).
+    """
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.workflows.failure_alerts import (
+        RerunRefused,
+        queue_rerun,
+        rerun_target,
+    )
+
+    run = _visible_run(run_id, request)
+    try:
+        _kind, _ref, assignee = rerun_target(run)
+    except RerunRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    caller = _caller_person_id(request)
+    if not caller_is_principal(request) and (assignee is None or caller != assignee):
+        raise HTTPException(
+            status_code=403, detail="Only the principal, or the person it goes to, can run it again."
+        )
+    try:
+        action_id = queue_rerun(run)
+    except RerunRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    from openexecutive.audit import log_event as audit_log
+
+    audit_log(
+        "workflow_rerun",
+        f"Run again: {run.get('title') or run.get('workflow_name')}",
+        actor="user",
+        details={"run_id": run_id, "action_id": action_id},
+    )
+    return {"status": "queued", "run_id": run_id, "action_id": action_id}
 
 
 _WEB_DECISIONS = {"approve", "reject"}

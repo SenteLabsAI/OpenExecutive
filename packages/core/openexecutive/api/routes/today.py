@@ -192,6 +192,9 @@ class ProposalItem(BaseModel):
     # the /decisions endpoints (which book/cancel server-side) instead of the
     # ack-and-handoff-to-chat flow. Null for ordinary alert-backed proposals.
     decision_instance_id: int | None = None
+    # A scheduled run that failed (workflows/failure_alerts.py): the run the
+    # card's Run again queues once more. None on every other card.
+    failed_run_id: str | None = None
     # Set when this card is a roster request ("who is this new sender?",
     # people.roster_requests): the UI answers it at /people/requests/{id}
     # (add / same person as / ignore) instead of ack-and-chat. Private to the
@@ -464,6 +467,17 @@ class HandledItem(BaseModel):
     status: str = ""
 
 
+class HeldBackItem(BaseModel):
+    """Lines grounding left out of one of the principal's briefs (the
+    "Left out of your brief" block on Home, which the brief's note names)."""
+
+    event_id: int
+    # "morning brief" / "end-of-day digest"
+    surface: str
+    at: str
+    lines: list[str]
+
+
 class TodayResponse(BaseModel):
     departments: list[DepartmentBriefItem]
     people: list[PersonBriefItem]
@@ -497,6 +511,10 @@ class TodayResponse(BaseModel):
     # (routed / nudged / escalated / drafted / merged / closed), newest first
     # — the "Executive handled N overnight" pill. Additive, default empty.
     handled_overnight: list[HandledItem] = Field(default_factory=list)
+    # What grounding held back from the principal's briefs in the last day.
+    # Set by GET /today for the principal alone, after the narrative inputs
+    # are taken, so the held lines never reach a prompt.
+    held_back: list[HeldBackItem] = Field(default_factory=list)
 
 
 class ActivityItem(BaseModel):
@@ -792,6 +810,8 @@ def _build_today(
     from openexecutive.alerts.lifecycle import list_live_alerts
     from openexecutive.alerts.store import count_superseded_by
     from openexecutive.briefing.ranking import score_and_categorize
+    from openexecutive.workflows.failure_alerts import SOURCE as FAILED_RUN_SOURCE
+    from openexecutive.workflows.failure_alerts import failed_run_id
 
     # Live = unread AND inside its TTL AND not snoozed — the read-side twin of
     # the scheduler's expiry sweep, so the page is right before the sweep runs.
@@ -838,6 +858,11 @@ def _build_today(
             category=item_category,
             surfaced_reason=item_reason,
             decision_instance_id=_parse_decision_instance_id(alert.topic_tags or []),
+            failed_run_id=(
+                failed_run_id(alert.topic_tags or [])
+                if alert.source == FAILED_RUN_SOURCE
+                else None
+            ),
             roster_request=(
                 _roster_request_card(alert.topic_tags or [])
                 if alert.source == "roster_request" else None
@@ -1860,9 +1885,10 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
     from openexecutive.orchestrator.artifact_records import viewer_for_person
 
     caller = _resolve_caller_person_id(request)
+    principal = _is_principal(caller)
     response = _build_today(
         stale_out=stale,
-        include_private=_is_principal(caller),
+        include_private=principal,
         viewer=viewer_for_person(caller),
     )
     response.caller_person_id = caller
@@ -1873,7 +1899,24 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         caller_person_id=response.caller_person_id,
         background_tasks=background_tasks,
     )
+    if principal:
+        response.held_back = _held_back(datetime.now(UTC))
     return response
+
+
+# How far back Home lists what grounding left out of the briefs: today's
+# morning brief and last night's digest.
+_HELD_BACK_WINDOW = timedelta(hours=24)
+
+
+def _held_back(now: datetime) -> list[HeldBackItem]:
+    from openexecutive.briefing.grounding import recent_held_back
+
+    since = (now - _HELD_BACK_WINDOW).isoformat()
+    return [
+        HeldBackItem(event_id=h.event_id, surface=h.surface, at=h.at, lines=h.lines)
+        for h in recent_held_back(since=since)
+    ]
 
 
 @router.get("/today/activity", response_model=ActivityResponse, tags=["today"])

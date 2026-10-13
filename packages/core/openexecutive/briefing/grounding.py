@@ -43,14 +43,22 @@ logger = logging.getLogger(__name__)
 
 MODES = ("enforce", "report", "off")
 
+# Both point at the "Left out of your brief" block on Home, which lists the
+# held-back lines (``recent_held_back`` below, served by GET /today).
 HELD_BACK_NOTE = (
-    "_Held back {n} line{s} that named people or figures I couldn't match to "
-    "your data — /today has the full list._"
+    "_I left out {n} line{s} that named people or figures I couldn't match to "
+    "your data. They're under Left out of your brief on Home._"
 )
 HELD_BACK_ALL = (
     "Everything I drafted for this brief named people or figures I couldn't "
-    "match to your data, so I've held it back — /today has the full list."
+    "match to your data, so I've held it back. The lines are under Left out "
+    "of your brief on Home."
 )
+# The briefs whose held-back lines Home lists (``surface`` on the audit row).
+BRIEF_SURFACES = ("morning brief", "end-of-day digest")
+# Lines kept for Home per brief, and characters per line.
+_HELD_KEEP = 30
+_HELD_LINE_CHARS = 400
 SOURCES_HEADER = "**Sources**"
 
 _MAX_CITED_SOURCES = 9
@@ -651,13 +659,64 @@ def citations_enabled() -> bool:
         return True
 
 
-def _audit(summary: str, details: dict[str, Any], *, private: bool) -> None:
+def _audit(
+    summary: str,
+    details: dict[str, Any],
+    *,
+    private: bool,
+    held: list[str] | None = None,
+) -> None:
+    """Audit a grounding pass. ``held`` (every held-back line) goes in the
+    row's untruncated payload, which Home reads back; ``details`` keeps a
+    short preview for the audit list."""
     try:
         from openexecutive.audit import log_event
 
-        log_event("grounding", summary, actor="executive", details=details, private=private)
+        full = {"held_back": [h[:_HELD_LINE_CHARS] for h in held[:_HELD_KEEP]]} if held else None
+        log_event(
+            "grounding", summary, actor="executive", details=details, full=full, private=private
+        )
     except Exception:
         logger.debug("grounding: audit failed", exc_info=True)
+
+
+@dataclass
+class HeldBack:
+    """One brief's held-back lines, for Home."""
+
+    event_id: int
+    surface: str
+    at: str
+    lines: list[str]
+
+
+def recent_held_back(*, since: str, limit: int = 3) -> list[HeldBack]:
+    """The lines grounding held back from the principal's briefs since
+    ``since`` (ISO), newest brief first. Only ``enforce`` passes: in
+    ``report`` mode nothing was left out. Never raises.
+
+    Private rows included: callers serve this to the principal alone."""
+    try:
+        from openexecutive.audit.logger import get_audit_logger
+
+        audit = get_audit_logger()
+        out: list[HeldBack] = []
+        for ev in audit.query(event_type="grounding", since=since, limit=50):
+            details = ev.details or {}
+            if details.get("surface") not in BRIEF_SURFACES or details.get("mode") != "enforce":
+                continue
+            full = audit.get(ev.id)
+            lines = ((full.full if full else None) or {}).get("held_back") or []
+            lines = [str(ln) for ln in lines if str(ln).strip()]
+            if not lines:
+                continue
+            out.append(HeldBack(event_id=ev.id, surface=str(details["surface"]), at=ev.ts, lines=lines))
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:
+        logger.debug("grounding: held-back lines unavailable", exc_info=True)
+        return []
 
 
 # --------------------------------------------------------------------------- #
@@ -863,6 +922,7 @@ async def ground_brief(
                     "held_back": [h[:200] for h in result.held[:5]],
                 },
                 private=private,
+                held=result.held if mode == "enforce" else None,
             )
         return out, result
     except Exception:
@@ -1014,6 +1074,7 @@ class GroundingScope:
                     "held_back": [h[:200] for h in held[:5]],
                 },
                 private=self.private,
+                held=held,
             )
             return text[: m.start(2)] + kept + text[m.end(2):], held
         except Exception:

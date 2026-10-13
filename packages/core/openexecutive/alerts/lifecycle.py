@@ -119,11 +119,14 @@ def is_expired(
     if days is None:
         return False
     # A situation that keeps re-firing stays live: the age anchor is the
-    # later of created_at and last_seen_at (coalescing bumps the latter).
+    # latest of created_at and last_seen_at (coalescing bumps the latter).
+    # A snooze counts too, so a card snoozed past its TTL comes back when
+    # the snooze ends instead of expiring unseen.
     anchor = parse_aware(alert.created_at)
-    seen = parse_aware(getattr(alert, "last_seen_at", None))
-    if seen is not None and (anchor is None or seen > anchor):
-        anchor = seen
+    for later in (getattr(alert, "last_seen_at", None), getattr(alert, "snoozed_until", None)):
+        stamp = parse_aware(later)
+        if stamp is not None and (anchor is None or stamp > anchor):
+            anchor = stamp
     if anchor is None:
         return False
     now = now or datetime.now(UTC)

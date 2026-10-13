@@ -248,9 +248,9 @@ async def test_ground_brief_drops_cites_and_notes(
     assert "**At risk**" not in out
     assert "48 [1] units" in out
     assert "$1.2M [2] approved" in out
-    assert "_Held back 2 lines" in out
+    assert "_I left out 2 lines" in out and "Left out of your brief on Home" in out
     body, footer = out.split(SOURCES_HEADER)
-    assert "Held back" in body
+    assert "I left out" in body
     assert "- [1] Inbound since the last brief — " in footer
     assert "- [2] Inbound since the last brief — " in footer and "Budget $1,234,567" in footer
     # Never "[n]:" at a line start (a Markdown link reference definition).
@@ -261,6 +261,8 @@ async def test_ground_brief_drops_cites_and_notes(
     assert kw["details"]["names_bad"] == ["Marcus Lee"]
     assert kw["details"]["figures_bad"] == ["18%"]
     assert len(kw["details"]["held_back"]) == 2
+    # Every held line rides in the untruncated payload Home reads back.
+    assert len(kw["full"]["held_back"]) == 2
 
 
 @pytest.mark.asyncio
@@ -292,6 +294,7 @@ async def test_report_mode_leaves_text_and_audits(
     assert out == BRIEF
     assert result is not None and len(result.held) == 2
     assert _no_company_data and _no_company_data[0][2]["details"]["mode"] == "report"
+    assert _no_company_data[0][2]["full"] is None  # nothing was left out
 
 
 @pytest.mark.asyncio
@@ -334,7 +337,7 @@ async def test_repair_call_used_when_it_grounds(monkeypatch: pytest.MonkeyPatch)
     out, result = await ground_brief(BRIEF, context=CONTEXT, kind="k", system="SYS")
     assert prompts == ["'Marcus Lee', '18%'"]
     assert result is not None and result.repaired and result.held == []
-    assert "Held back" not in out
+    assert "I left out" not in out
     assert "Sales pipeline at risk" in out
 
 
@@ -508,3 +511,34 @@ async def test_citation_snippets_mask_links_and_mentions() -> None:
     footer = out.split(SOURCES_HEADER)[1]
     assert "evil.example" not in footer and "@everyone" not in footer
     assert "(link removed)" in footer and "al@b.co" in footer
+
+
+def test_recent_held_back_lists_enforced_brief_lines_newest_first(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.audit import logger as audit_logger_module
+
+    audit = audit_logger_module.AuditLogger(tmp_path / "audit.db")
+    monkeypatch.setattr(audit_logger_module, "get_audit_logger", lambda: audit)
+    lines = [f"- line {i} naming Marcus Lee " + "x" * 300 for i in range(12)]
+    audit.log(
+        "grounding", "old", actor="executive",
+        details={"surface": "end-of-day digest", "mode": "enforce"},
+        full={"held_back": ["- yesterday's line"]}, private=True,
+    )
+    audit.log(
+        "grounding", "new", actor="executive",
+        details={"surface": "morning brief", "mode": "enforce"}, full={"held_back": lines},
+    )
+    audit.log(  # report mode left nothing out
+        "grounding", "r", actor="executive",
+        details={"surface": "morning brief", "mode": "report"}, full=None,
+    )
+    audit.log(  # not a brief
+        "grounding", "t", actor="executive",
+        details={"surface": "unattended turn", "mode": "enforce"}, full={"held_back": ["x"]},
+    )
+    found = g.recent_held_back(since="2000-01-01T00:00:00+00:00")
+    assert [h.surface for h in found] == ["morning brief", "end-of-day digest"]
+    assert found[0].lines == lines  # all of them, past the 4 KB details cap
+    assert g.recent_held_back(since="2999-01-01T00:00:00+00:00") == []

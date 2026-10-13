@@ -878,11 +878,16 @@ routing:
     unrouted low/medium watchlist signals (`briefing.ranking.categorize`
     decides), computed from `created_at` at read/sweep time (no stored
     expiry, so a setting change applies to existing rows; 0 = never).
-    The age anchor is the later of `created_at` and `last_seen_at`, so a
-    situation that keeps re-firing (coalescing) stays live.
-    `list_live_alerts` = unread ∧ inside TTL ∧ `snoozed_until` null/past
-    (`snoozed_until` is a column only — nothing writes it yet; snooze UI is
-    a follow-up); `is_live(alert, now)` is the same predicate for one row;
+    The age anchor is the latest of `created_at`, `last_seen_at` and
+    `snoozed_until`, so a situation that keeps re-firing (coalescing) stays
+    live and a card snoozed past its TTL comes back instead of expiring.
+    `list_live_alerts` = unread ∧ inside TTL ∧ `snoozed_until` null/past.
+    Snooze is written by `POST /alerts/{id}/snooze` (`until` up to 30 days
+    ahead, or null to clear; `unread` rows only, never a roster request;
+    audited `alert_snoozed` / `alert_unsnoozed`) via
+    `store.set_snoozed_until`, from a card's ⋯ on Home (later today,
+    tomorrow 9:00, Monday 9:00 in the viewer's clock, with an Undo).
+    `is_live(alert, now)` is the same predicate for one row;
     `/today`, `briefing.context`, the briefs and the reflection all read it.
     `expire_stale_alerts` (called by the scheduler loop every 15 min and once
     at boot, `runner._maybe_sweep_alerts`) flips past-TTL rows to `expired`
@@ -4371,7 +4376,7 @@ scheduler:
     nudge engine's dedup lookup.
   kinds:
     - ad_hoc — user-facing follow-ups created by the Executive's `schedule_followup` tool. Default kind.
-    - "dept_cadence — internal action fired by department cadences. Not authority-gated (the check-in sends nothing). The runner first applies the skip rule (`department_check_in.needs_check_in` — no specialist, no Goals, or nothing new since the Goals were last reviewed; see `departments.cadence`) before creating any run; otherwise it invokes the `department_check_in` workflow. Every outcome re-enqueues the next occurrence via `cadence.enqueue_next` (idempotently) — a run, a skip, and a failure once its retries are spent. A skip is recorded `cancelled` with `skipped: <reason>` in `last_error`, so it never counts as a check-in that ran. In a solo workspace the runner marks the row `cancelled` (reason in last_error) without running it and without chaining — ahead of the authority gate, so a propose_only department cannot turn it into an approval card; cancelled rather than done, because the nudge engine reads a done dept_cadence row as a recent department pulse. Pending rows are cancelled when their department is deleted, and orphaned rows (department no longer exists) are swept by `cadence.cancel_orphaned_cadences` on lifespan boot."
+    - "dept_cadence — internal action fired by department cadences. Not authority-gated (the check-in sends nothing). The runner first applies the skip rule (`department_check_in.needs_check_in` — no specialist, no Goals, or nothing new since the Goals were last reviewed; see `departments.cadence`) before creating any run; otherwise it invokes the `department_check_in` workflow. Every outcome re-enqueues the next occurrence via `cadence.enqueue_next` (idempotently) — a run, a skip, and a failure once its retries are spent. That last case also files one Home card (`workflows.failure_alerts`, source `workflow_failed`, tag `failed_run:<run id>`, coalesced per department) whose Run again (`POST /workflows/runs/{id}/rerun`) queues a dept_cadence row due now with `scope_key` `rerun:<run id>`, which bypasses the skip rule; a failed dynamic_workflow files the same card routed to its recipient, and its rerun row skips `schedule_dynamic_workflow_cadence`. A skip is recorded `cancelled` with `skipped: <reason>` in `last_error`, so it never counts as a check-in that ran. In a solo workspace the runner marks the row `cancelled` (reason in last_error) without running it and without chaining — ahead of the authority gate, so a propose_only department cannot turn it into an approval card; cancelled rather than done, because the nudge engine reads a done dept_cadence row as a recent department pulse. Pending rows are cancelled when their department is deleted, and orphaned rows (department no longer exists) are swept by `cadence.cancel_orphaned_cadences` on lifespan boot."
     - awaiting_human — placed by the `wait_for_human` workflow step; the run resumes when an inbound message matches.
     - "dynamic_workflow — cadence-fired run of a user-created (dynamic) workflow. Enqueued by `workflows.dynamic_cadence.schedule_dynamic_workflow_cadence` (channel=`__internal__`, channel_ref=the workflow name, assigned_to_person_id=the delivery recipient). The runner's `_run_dynamic_workflow` resolves the stored definition, runs the generic `DynamicWorkflow`, DMs the artifact to the recipient via `handle_message_person`, and re-chains the next occurrence — same crash-survival pattern as the principal briefs. Saving/updating/deleting/deactivating the definition reconciles its pending rows via `dynamic_cadence.cancel_cadence_rows`. See the `workflows:` → `dynamic_user_created` key."
     - nudge_scan — internal heartbeat row owned by the nudge engine; the runner calls `nudge_engine.run_nudge_scan()` and chains the next tick via `nudge_engine.enqueue_next_scan()`. Bypasses outbound dispatch. Emission is also capped per `scope_key` at `NUDGE_MAX_PER_SCOPE` (default 3) delivered nudges (`episodic.count_nudges_for_scope`), so a parked item is not chased forever.
@@ -6668,8 +6673,14 @@ workflows:
     - Briefs (`ground_brief`, morning_brief + end_of_day_digest, after the
       quiet fallback): one repair call to the fast model with the list of
       ungrounded items; still-ungrounded lines are dropped, then headers
-      left empty; a "_Held back N lines …_" note is appended (all of it →
-      the HELD_BACK_ALL line). Each grounded figure then gets a server-chosen
+      left empty; an "_I left out N lines … under Left out of your brief on
+      Home._" note is appended (all of it → the HELD_BACK_ALL line). Every
+      held line is kept in the audit row's untruncated `full` payload (the
+      4 KB `details` cap would cut a list), and `recent_held_back` reads the
+      last day's back for `GET /today` `held_back` — principal only, set
+      after the narrative inputs are taken so held lines never reach a
+      prompt. Before this the note said "/today has the full list", and
+      nothing there listed them. Each grounded figure then gets a server-chosen
       ` [n]` (the value-matching line with the most words in common with the
       figure's clause) and a `**Sources**` list at the end (`- [n] <section>
       — <snippet>`, snippets stripped of []()<>*_`| and cut to 90 chars, at

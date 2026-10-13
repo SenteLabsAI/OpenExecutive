@@ -122,6 +122,20 @@ def test_zero_ttl_disables_expiry(db: Path) -> None:
     assert not lifecycle.is_expired(a, monitoring_days=3, action_days=0)
 
 
+def test_a_snooze_restarts_the_ttl_so_the_card_comes_back(db: Path) -> None:
+    aid = _insert(db, source="stock", severity="low", topic_tags=["external:stock"])
+    _backdate(db, aid, 2)
+    now = datetime.now(UTC)
+    # Snoozed for two days: past the 3-day monitoring TTL counted from creation.
+    alert_store.set_snoozed_until(aid, (now + timedelta(days=2)).isoformat(), db_path=db)
+    a = get_alert(aid, db_path=db)
+    assert a is not None
+    later = now + timedelta(days=2, hours=1)
+    assert not lifecycle.is_expired(a, later, monitoring_days=3, action_days=14)
+    assert lifecycle.is_live(a, later)
+    assert not lifecycle.is_live(a, now)
+
+
 def test_exempt_sources_never_expire(db: Path) -> None:
     art = _insert(db, source="artifact", severity="medium", topic_tags=["artifact"])
     dec = _insert(db, source="decision_scheduling", severity="medium")
