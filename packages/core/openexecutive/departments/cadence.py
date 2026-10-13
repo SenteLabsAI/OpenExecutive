@@ -356,33 +356,54 @@ _RESCHEDULE_LOCK = threading.Lock()
 def reschedule_check_in(slug: str, db_path: Path | None = None) -> int | None:
     """Re-time *slug*'s next check-in after its cadence was edited.
 
-    Cancels the department's pending ``dept_cadence`` rows, then queues the
-    next occurrence of the spec it has now (``enqueue_next``). An empty spec
-    (the check-in switched off) or a solo workspace queues nothing, so the
+    Queues the next occurrence of the spec it has now (``enqueue_next``),
+    then cancels the department's other pending ``dept_cadence`` rows, so the
     edit takes effect at once instead of after one more check-in on the old
-    schedule. A check-in already running is left alone: it finishes, and the
-    runner's chain adds nothing while the new pending row exists (or, with
-    the check-in off, nothing at all). Returns the new row id, or ``None``.
+    schedule. Queuing first means a failed insert leaves the old row in place
+    rather than no check-in at all. An empty spec (the check-in switched off)
+    or a solo workspace queues nothing and just cancels. A one-off rerun
+    (``scope_key`` ``rerun:...``) and a check-in already running are left
+    alone: the running one finishes, and the runner's chain adds nothing
+    while the new pending row exists. Returns the new row id, or ``None``.
     """
+    from openexecutive.departments import store as dept_store
     from openexecutive.memory.episodic import _get_conn, _resolve_db_path
+    from openexecutive.memory.workspace_settings import get_workspace
 
     with _RESCHEDULE_LOCK:
         resolved = _resolve_db_path(db_path)
-        if resolved.exists():
-            with _get_conn(resolved) as conn:
-                table_present = conn.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type='table' AND name='scheduled_actions'"
-                ).fetchone()
-                if table_present is None:
-                    return None
-                conn.execute(
-                    "UPDATE scheduled_actions SET status = 'cancelled' "
-                    "WHERE kind = 'dept_cadence' AND department = ? "
-                    "  AND status = 'pending'",
-                    (slug,),
-                )
-        return enqueue_next(slug, db_path=db_path)
+        if not resolved.exists():
+            return enqueue_next(slug, db_path=db_path)
+        with _get_conn(resolved) as conn:
+            table_present = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='scheduled_actions'"
+            ).fetchone()
+        if table_present is None:
+            return None
+        state = dept_store.get_department(slug, db_path=db_path)
+        wants_row = (
+            state is not None
+            and bool(state.config.cadences.get("check_in", ""))
+            and get_workspace(db_path).mode != "solo"
+        )
+        new_id = enqueue_next(slug, db_path=db_path)
+        if wants_row and new_id is None:
+            logger.warning(
+                "cadence.reschedule_check_in: could not queue %r's next check-in; "
+                "kept the one already queued",
+                slug,
+            )
+            return None
+        with _get_conn(resolved) as conn:
+            conn.execute(
+                "UPDATE scheduled_actions SET status = 'cancelled' "
+                "WHERE kind = 'dept_cadence' AND department = ? "
+                "  AND status = 'pending' AND id IS NOT ? "
+                "  AND COALESCE(scope_key, '') NOT LIKE 'rerun:%'",
+                (slug, new_id),
+            )
+        return new_id
 
 
 def next_check_in_at(slug: str, db_path: Path | None = None) -> str | None:

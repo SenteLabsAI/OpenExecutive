@@ -275,7 +275,7 @@ def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentDetail:
     ):
         try:
             reschedule_check_in(slug)
-        except Exception:  # noqa: BLE001 - the edit is saved; the next fire re-chains.
+        except Exception:  # noqa: BLE001 - the edit is saved; a failed re-time keeps the old row.
             logger.exception("departments.patch: could not re-time %r's check-in", slug)
     return _detail(_must_get(slug))
 

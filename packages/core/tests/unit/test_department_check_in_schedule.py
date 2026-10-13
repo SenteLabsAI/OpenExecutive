@@ -77,6 +77,39 @@ def test_reschedule_replaces_the_pending_row(db: Path) -> None:
     assert len(_pending("strategy", db)) == 1
 
 
+def test_reschedule_keeps_the_old_row_when_the_new_one_cannot_be_queued(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.departments import cadence
+
+    bootstrap_cadences()
+    [old] = _pending("finance", db)
+    store.update_department("finance", cadences={"check_in": "daily@14:30"})
+    monkeypatch.setattr(cadence, "enqueue_next", lambda slug, **kw: None)
+
+    assert reschedule_check_in("finance") is None
+    assert [a.id for a in _pending("finance", db)] == [old.id]
+
+
+def test_reschedule_leaves_a_queued_rerun_alone(db: Path) -> None:
+    bootstrap_cadences()
+    rerun_id = episodic.insert_scheduled_action(
+        run_at=datetime.now(UTC).isoformat(),
+        channel="__internal__",
+        channel_ref="finance",
+        intent_text="Run again: Finance check-in",
+        department="finance",
+        kind="dept_cadence",
+        scope_key="rerun:r-1",
+        db_path=db,
+    )
+    store.update_department("finance", cadences={"check_in": "daily@14:30"})
+
+    new_id = reschedule_check_in("finance")
+
+    assert sorted(a.id for a in _pending("finance", db)) == sorted([rerun_id, new_id])
+
+
 def test_reschedule_with_check_in_off_queues_nothing(db: Path) -> None:
     bootstrap_cadences()
     store.update_department("finance", cadences={"check_in": ""})
