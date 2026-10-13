@@ -75,7 +75,11 @@ def _seed_drive(company: Path, **state: Any) -> None:
                         "modified": "2026-09-29T08:00:00Z",
                         "synced_at": "2026-09-30T10:00:00+00:00",
                     },
-                    "1emptyAAAAAA": {"name": "Scan", "filename": ""},
+                    "1emptyAAAAAA": {
+                        "name": "Scan",
+                        "filename": "",
+                        "unreadable": "no text could be read: it looks scanned and local OCR is turned off",
+                    },
                 },
                 **state,
             }
@@ -95,7 +99,10 @@ def test_drive_files_list_and_open(client: TestClient, company: Path) -> None:
         "modified_at": "2026-09-29T08:00:00Z",
         "synced_at": "2026-09-30T10:00:00+00:00",
         "indexed": True,
+        "unreadable_reason": None,
     }
+    scan = next(f for f in body["files"] if f["id"] == "1emptyAAAAAA")
+    assert scan["indexed"] is False and "local OCR is turned off" in scan["unreadable_reason"]
     doc = client.get(f"/documents/drive/{DRIVE_ID}").json()
     assert doc["name"] == "Plan" and doc["content"].startswith("# Plan")
     assert client.get("/documents/drive/1emptyAAAAAA").status_code == 404

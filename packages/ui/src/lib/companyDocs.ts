@@ -24,6 +24,8 @@ export interface SyncedDocIn {
   synced_at: string | null;
   /** False when the file had no readable text, so nothing was indexed. */
   indexed: boolean;
+  /** Why it had no readable text, when the sync knows. */
+  unreadable_reason?: string | null;
 }
 
 export interface DocRow {
@@ -39,6 +41,8 @@ export interface DocRow {
   editedAt: string | null;
   domain: string | null;
   indexed: boolean;
+  /** Why a synced file has no readable text, when known. */
+  unreadableReason: string | null;
 }
 
 export const SOURCE_LABELS: Record<DocSource, string> = {
@@ -71,6 +75,7 @@ export function mergeDocs(
       editedAt: null,
       domain: shownDomain(d.domain),
       indexed: true,
+      unreadableReason: null,
     })),
     ...[
       ["drive", drive] as const,
@@ -88,6 +93,7 @@ export function mergeDocs(
         editedAt: f.modified_at,
         domain: null,
         indexed: f.indexed,
+        unreadableReason: f.indexed ? null : (f.unreadable_reason ?? null),
       })),
     ),
   ];
