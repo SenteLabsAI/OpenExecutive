@@ -140,7 +140,7 @@ def notice_client(monkeypatch: pytest.MonkeyPatch) -> Any:
     state: dict[str, Any] = {"principal": _owner(), "plan": [], "problem": None}
     monkeypatch.setattr(chat_route, "_caller_is_principal_or_unclaimed", lambda _r: True)
     monkeypatch.setattr(runner, "principal_delivery_plan", lambda: (state["principal"], state["plan"]))
-    monkeypatch.setattr(runner, "mail_gateway_problem", lambda _p: state["problem"])
+    monkeypatch.setattr(runner, "mail_gateway_problem", lambda _p, **_kw: state["problem"])
     app = FastAPI()
     app.include_router(today_route.router)
     return TestClient(app), state
@@ -183,7 +183,7 @@ class _Supervisor:
             mcp_gateway.set_active_gateway(self.gateway)
         return self.gateway
 
-    def problem(self) -> str | None:
+    def problem(self, *, with_error: bool = True) -> str | None:
         return None if self.gateway is not None else self._problem
 
 
@@ -297,6 +297,8 @@ def test_grant_failure_reads_an_authorization_error(text: str) -> None:
         json.dumps({"error": "Rate limit exceeded; retry after 30s"}),
         json.dumps({"error": "403 Forbidden: the caller does not have permission on file X"}),
         "Email sent! Message ID: m-1",
+        "Errors in Q3: the invalid_grant tickets were closed; token expired on the staging box",
+        "failed to find a slot; the token expired note is in the thread",
     ],
 )
 def test_grant_failure_ignores_other_answers(text: str) -> None:
@@ -398,7 +400,7 @@ def test_the_gmail_light_names_a_dead_grant(tmp_path: Path, monkeypatch: pytest.
 
 def test_the_brief_light_blames_the_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
-    monkeypatch.setattr(runner, "mail_gateway_problem", lambda _p: "the MCP gateway failed to start (1 attempt)")
+    monkeypatch.setattr(runner, "mail_gateway_problem", lambda _p, **_kw: "the MCP gateway failed to start (1 attempt)")
     check = check_brief(_snap(settings, brief_email_ready=False))
     assert check.state == "error"
     assert check.summary == (
@@ -412,4 +414,5 @@ def test_the_brief_light_repeats_a_failed_sends_detail(tmp_path: Path, monkeypat
     last = DeliveryOutcome(MORNING, "send_failed", None, NOW, detail="email: invalid_grant: revoked")
     check = check_brief(_snap(settings, brief_email_ready=True, brief_delivery=last))
     assert check.state == "error"
-    assert "invalid_grant" in check.summary and "connect it again" in (check.fix or "")
+    assert "invalid_grant" not in check.summary, "every team member reads this page"
+    assert "connect it again" in (check.fix or "")

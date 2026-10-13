@@ -1074,7 +1074,7 @@ async def _execute_action(
     # is None when the first start failed; a retry may have brought one up
     # since, and this is the moment to try once more if not
     # (orchestrator.gateway_boot).
-    if gateway is None:
+    if gateway is None and action.channel == "email":
         from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
 
         gateway = await ensure_active_gateway()
@@ -1825,7 +1825,7 @@ def email_ready() -> bool:
     return get_active_gateway() is not None and mail_server_configured()
 
 
-def mail_gateway_problem(person: Person | None) -> str | None:
+def mail_gateway_problem(person: Person | None, *, with_error: bool = True) -> str | None:
     """Why email to ``person`` is blocked by the gateway, in a line, or None.
 
     Only when email is the Executive's fault: ``person`` has an address and
@@ -1836,7 +1836,7 @@ def mail_gateway_problem(person: Person | None) -> str | None:
 
     if person is None or not getattr(person, "email", None) or not mail_server_configured():
         return None
-    return gateway_problem()
+    return gateway_problem(with_error=with_error)
 
 
 async def ensure_email_ready() -> bool:

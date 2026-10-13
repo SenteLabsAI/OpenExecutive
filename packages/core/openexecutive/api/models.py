@@ -175,12 +175,12 @@ class GatewayHealth(BaseModel):
     enabled), ``no_servers`` (enabled, config names none), ``starting`` (an
     attempt is running), ``up``, or ``down`` (every attempt failed so far;
     ``next_retry_at`` says when the next one is). ``attempts`` counts starts
-    tried; ``last_error`` is the last failure's text, kept after a recovery.
-    ``email_poller`` is whether the poller that rides on the gateway runs."""
+    tried. The failure's text stays in the log and the owner's Setup notice:
+    the route is open to anyone. ``email_poller`` is whether the poller that
+    rides on the gateway runs."""
 
     state: str
     attempts: int = 0
-    last_error: str | None = None
     last_failed_at: str | None = None
     up_since: str | None = None
     next_retry_at: str | None = None

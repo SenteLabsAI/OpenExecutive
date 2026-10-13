@@ -1078,8 +1078,10 @@ def check_brief(snap: Snapshot) -> SetupCheck:
         return _result("brief", "warn", f"Not sent: {problem}.", fix, link="/people")
     plan = delivery_order(principal, email_ready=snap.brief_email_ready)
     if not plan:
-        blocked = mail_gateway_problem(principal)
+        blocked = mail_gateway_problem(principal, with_error=False)
         if blocked is not None:
+            # The attempt count, not the error text: every team member reads
+            # this page; the owner's own notice on Home carries the text.
             problem, fix = describe_problem("gateway_down", blocked)
             return _result("brief", "error", f"Not sent by email: {problem}.", fix)
         problem, fix = DELIVERY_PROBLEMS["no_channel"]
@@ -1093,7 +1095,12 @@ def check_brief(snap: Snapshot) -> SetupCheck:
     last = snap.brief_delivery
     reason = current_problem(last, has_owner=True, can_deliver=True)
     if last is not None and reason is not None:
-        problem, fix = describe_problem(reason, last.detail)
+        # The fix may read the detail (a grant that died names a reconnect)
+        # but the summary never quotes it: every team member reads this page,
+        # and the text can name the owner's channels. Home carries it, for
+        # the owner alone.
+        problem, _ = describe_problem(reason)
+        _, fix = describe_problem(reason, last.detail)
         return _result(
             "brief", "error", f"Your last {brief_name(last.kind)} wasn't sent: {problem}.", fix
         )
@@ -1195,7 +1202,7 @@ def gather_snapshot(settings: Settings, *, local_login: bool, app_state: Any) ->
         slack_handler=getattr(app_state, "slack_handler", None),
         slack_bot_id_resolved=bot_user_id() is not None,
         mcp_gateway=getattr(app_state, "mcp_gateway", None),
-        gateway_problem=gateway_problem(),
+        gateway_problem=gateway_problem(with_error=False),
         gateway_needs_reconnect=gateway_reconnect_needed(getattr(app_state, "mcp_gateway", None)),
         brief_delivery=last_delivery_outcome(),
         brief_email_ready=email_ready(),

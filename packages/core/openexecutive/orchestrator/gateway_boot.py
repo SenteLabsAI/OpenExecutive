@@ -96,6 +96,11 @@ class GatewayStatus:
         }
 
 
+# How soon after a failed start ``ensure`` tries again on demand: the first
+# backoff step, so a burst of scheduled work doesn't chain start attempts.
+ENSURE_COOLDOWN_S = 30.0
+
+
 def _error_text(exc: BaseException) -> str:
     text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
     return text[:ERROR_TEXT_MAX]
@@ -120,8 +125,10 @@ class GatewaySupervisor:
         app_state: Any = None,
         start_timeout_s: float = START_TIMEOUT_S,
         backoff_s: Sequence[float] = BACKOFF_S,
+        ensure_cooldown_s: float = ENSURE_COOLDOWN_S,
         why: str = "",
     ) -> None:
+        self._ensure_cooldown_s = ensure_cooldown_s
         self._config_path = config_path
         self._servers = tuple(servers)
         self._app_state = app_state
@@ -164,15 +171,17 @@ class GatewaySupervisor:
             email_poller=self.poller_task is not None and not self.poller_task.done(),
         )
 
-    def problem(self) -> str | None:
-        """Why the gateway is down, in one line, or None while it is up."""
+    def problem(self, *, with_error: bool = True) -> str | None:
+        """Why the gateway is down, in one line, or None while it is up.
+        ``with_error`` appends the last failure's text: for the owner's own
+        notice and the log, not for a page every team member reads."""
         if self.gateway is not None:
             return None
         if self.attempts == 0:
             return "the MCP gateway has not started yet"
         if self._attempt is not None and not self._attempt.done():
             return f"the MCP gateway is starting (attempt {self.attempts + 1})"
-        detail = f": {self.last_error}" if self.last_error else ""
+        detail = f": {self.last_error}" if self.last_error and with_error else ""
         return f"the MCP gateway failed to start ({self.attempts} attempt{'s' if self.attempts != 1 else ''}){detail}"
 
     # -- attempts ------------------------------------------------------------
@@ -201,6 +210,14 @@ class GatewaySupervisor:
         child may well come up now."""
         if self.gateway is not None or self._closed:
             return self.gateway
+        if (
+            self.last_failed_at is not None
+            and (datetime.now(UTC) - self.last_failed_at).total_seconds() < self._ensure_cooldown_s
+            and (self._attempt is None or self._attempt.done())
+        ):
+            # Just failed: a start now would only fail the same way and hold
+            # the caller for the whole timeout. The retry loop has it.
+            return None
         try:
             await self.attempt()
         except asyncio.CancelledError:

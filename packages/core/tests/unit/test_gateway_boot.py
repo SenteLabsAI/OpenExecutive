@@ -87,7 +87,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, gateway: Any) -> list[Any]:
 def _supervisor(app_state: Any = None, **kw: Any) -> GatewaySupervisor:
     return GatewaySupervisor(
         config_path=CONFIG, servers=("google_workspace",), app_state=app_state,
-        start_timeout_s=1.0, backoff_s=(0.01, 0.02), **kw,
+        start_timeout_s=1.0, backoff_s=(0.01, 0.02), ensure_cooldown_s=0.0, **kw,
     )
 
 
@@ -159,7 +159,7 @@ def test_ensure_starts_now_instead_of_waiting_for_the_retry(monkeypatch: pytest.
     async def _run() -> tuple[Any, int]:
         sup = GatewaySupervisor(
             config_path=CONFIG, servers=("google_workspace",), start_timeout_s=1.0,
-            backoff_s=(3600.0,),  # the retry is an hour away
+            backoff_s=(3600.0,), ensure_cooldown_s=0.0,  # the retry is an hour away
         )
         assert await sup.start() is False
         got = await sup.ensure()
@@ -202,6 +202,27 @@ def test_ensure_waits_for_an_attempt_already_running(monkeypatch: pytest.MonkeyP
     assert starts == 1, "a second caller never starts a second child"
 
 
+def test_ensure_waits_out_a_fresh_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    gateway = _Flaky(fail_times=1)
+    _stub(monkeypatch, gateway)
+
+    async def _run() -> tuple[Any, int, str | None, str | None]:
+        sup = GatewaySupervisor(
+            config_path=CONFIG, servers=("google_workspace",), start_timeout_s=1.0,
+            backoff_s=(3600.0,), ensure_cooldown_s=3600.0,
+        )
+        assert await sup.start() is False
+        got = await sup.ensure()
+        out = (got, gateway.starts, sup.problem(), sup.problem(with_error=False))
+        await sup.close()
+        return out
+
+    got, starts, with_error, without = asyncio.run(_run())
+    assert got is None and starts == 1, "a start that just failed is not repeated on demand"
+    assert with_error == "the MCP gateway failed to start (1 attempt): RuntimeError: child died (1)"
+    assert without == "the MCP gateway failed to start (1 attempt)"
+
+
 def test_module_hooks_reach_the_supervisor(monkeypatch: pytest.MonkeyPatch) -> None:
     gateway = _Flaky(fail_times=1)
     _stub(monkeypatch, gateway)
@@ -211,6 +232,7 @@ def test_module_hooks_reach_the_supervisor(monkeypatch: pytest.MonkeyPatch) -> N
         assert mcp_gateway.gateway_problem() == "the MCP gateway is not running"
         sup = GatewaySupervisor(
             config_path=CONFIG, servers=("google_workspace",), start_timeout_s=1.0, backoff_s=(3600.0,),
+            ensure_cooldown_s=0.0,
         )
         mcp_gateway.set_gateway_supervisor(sup)
         out: list[Any] = [mcp_gateway.gateway_problem()]
@@ -287,7 +309,7 @@ def test_health_reports_the_supervisor_state() -> None:
     sup.next_retry_at = datetime(2026, 10, 13, 8, 5, tzinfo=UTC)
     body = _health({"mcp_supervisor": sup, "mcp_gateway": None})
     assert body == {
-        "state": "down", "attempts": 2, "last_error": "RuntimeError: child died",
+        "state": "down", "attempts": 2,
         "last_failed_at": "2026-10-13T08:00:00+00:00", "up_since": None,
         "next_retry_at": "2026-10-13T08:05:00+00:00", "email_poller": False,
     }

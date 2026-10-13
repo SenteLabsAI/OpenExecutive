@@ -61,6 +61,7 @@ def gateway_health(app_state: Any, settings: Any) -> GatewayHealth:
         report = status()
         as_dict = getattr(report, "as_dict", None)
         data = as_dict() if callable(as_dict) else dict(report)
+        data.pop("last_error", None)  # the route is unauthenticated
         return GatewayHealth(**data)
     if getattr(app_state, "mcp_gateway", None) is not None:
         return GatewayHealth(state="up")

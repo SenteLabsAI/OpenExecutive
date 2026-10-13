@@ -3210,6 +3210,13 @@ _GRANT_FAILURE_RE = re.compile(
 _GRANT_FAILURE_SCAN_CHARS = 4000
 
 
+# How a failed call reads as text (the gateway's gates and the MCP client
+# render errors these ways; workflows/action_step.py reads the same). A
+# successful answer that happens to open with "error" ("Errors in Q3…") is
+# not one, and a model-echoed argument never starts a result.
+_ERROR_TEXT_PREFIXES = ("Error: ", "Error calling tool ", "Tool error:", "Error executing tool ")
+
+
 def grant_failure(result_text: object) -> str | None:
     """The authorization failure a tool result reports, in a line, or None
     when the result is not one. Only an error payload counts (``{"error":
@@ -3227,7 +3234,7 @@ def grant_failure(result_text: object) -> str | None:
         if "error" not in parsed:
             return None
         error = json.dumps(parsed.get("error"))[:_GRANT_FAILURE_SCAN_CHARS]
-    elif head.lstrip().lower().startswith(("error", "{\"error", "tool error", "exception", "failed")):
+    elif head.lstrip().startswith(_ERROR_TEXT_PREFIXES):
         error = head
     if error is None:
         return None
@@ -3298,12 +3305,14 @@ async def ensure_active_gateway() -> MCPGateway | None:
     return _active_gateway
 
 
-def gateway_problem() -> str | None:
+def gateway_problem(*, with_error: bool = True) -> str | None:
     """Why there is no active gateway, in one line, or None while there is
-    one. Without a supervisor the answer is only that it is not running."""
+    one. Without a supervisor the answer is only that it is not running.
+    ``with_error=False`` leaves the failure's text out (a page every team
+    member reads)."""
     if _active_gateway is not None:
         return None
     if _supervisor is None:
         return "the MCP gateway is not running"
-    problem = _supervisor.problem()
+    problem = _supervisor.problem(with_error=with_error)
     return str(problem) if problem else "the MCP gateway is not running"
