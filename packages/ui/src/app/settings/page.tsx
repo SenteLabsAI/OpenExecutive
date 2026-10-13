@@ -18,15 +18,18 @@ import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   getAgentDetail,
   getHistory,
+  getNotificationSettings,
   getVersion,
   listPersonas,
   type HistoryState,
+  type NotificationSettings,
 } from "@/lib/api";
 import { retentionLabel } from "@/lib/history";
+import { tileStatus as notificationsTileStatus } from "@/lib/notifications";
 import { versionNotice } from "@/lib/versionNotice";
 
 // Settings — a hub of tiles, one per page (SETTINGS_PAGES): Your Executive,
-// About you, Workspace, Advanced and About. Each tile says what's on its page
+// Notifications, About you, Workspace, Advanced and About. Each tile says what's on its page
 // and, where it's cheap to know, how things stand right now. The one-page
 // Settings this replaces used anchors (`/settings#workspace`); a link that
 // still carries one is sent on to the matching page (Act as me's, to its tab
@@ -62,7 +65,13 @@ export default function SettingsPage() {
   const statuses = useTileStatuses();
   // About you has a tile only for someone with notes to keep (GET /memories/history
   // answers null for anyone not signed in or not on the People list).
-  const pages = SETTINGS_PAGES.filter((p) => p.id !== "memory" || statuses.memoryOffered);
+  // Notifications likewise only for someone on the People list (GET
+  // /notifications/settings answers null for anyone else).
+  const pages = SETTINGS_PAGES.filter(
+    (p) =>
+      (p.id !== "memory" || statuses.memoryOffered) &&
+      (p.id !== "notifications" || statuses.notificationsOffered),
+  );
 
   if (hash === null || target) return <main className="flex-1" />;
 
@@ -132,12 +141,14 @@ function SettingsTile({ page, status }: { page: SettingsPageDef; status?: TileSt
 function useTileStatuses(): {
   byPage: Partial<Record<SettingsPageId, TileStatus>>;
   memoryOffered: boolean;
+  notificationsOffered: boolean;
 } {
   const { status: run, unknown } = useExecutiveStatus();
   const { mode, effectiveTimezone, loading: workspaceLoading } = useWorkspace();
   const [voice, setVoice] = useState<string | null>(null);
   const [version, setVersion] = useState<TileStatus | null>(null);
   const [history, setHistory] = useState<HistoryState | null | "error">(null);
+  const [notifications, setNotifications] = useState<NotificationSettings | null | "error">(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -152,6 +163,11 @@ function useTileStatuses(): {
       .then((h) => setHistory(h))
       .catch((err) => {
         if ((err as Error)?.name !== "AbortError") setHistory("error");
+      });
+    getNotificationSettings(ctrl.signal)
+      .then((n) => setNotifications(n))
+      .catch((err) => {
+        if ((err as Error)?.name !== "AbortError") setNotifications("error");
       });
     getVersion(ctrl.signal)
       .then((v) => {
@@ -189,6 +205,10 @@ function useTileStatuses(): {
     };
   }
 
+  if (notifications && notifications !== "error") {
+    byPage.notifications = { text: notificationsTileStatus(notifications), tone: "none" };
+  }
+
   if (!workspaceLoading) {
     byPage.workspace = {
       text: [MODE_LABEL[mode], effectiveTimezone].filter(Boolean).join(" · "),
@@ -199,5 +219,5 @@ function useTileStatuses(): {
   byPage.advanced = { text: `${ADVANCED_ITEMS.length} tools for power users`, tone: "none" };
   if (version) byPage.about = version;
 
-  return { byPage, memoryOffered: history !== null };
+  return { byPage, memoryOffered: history !== null, notificationsOffered: notifications !== null };
 }

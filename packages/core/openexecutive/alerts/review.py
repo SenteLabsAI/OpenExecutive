@@ -24,6 +24,7 @@ Heartbeat plumbing (``alert_review_scan`` rows) mirrors ``scheduler/nudge_engine
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -530,6 +531,9 @@ def _bump_severity(current: str, requested: str | None) -> str:
 
 
 _DM_MAX_CHARS = 1200
+# `_dm`'s detail for a DM held by the recipient's notification settings
+# (people.held_messages): it goes later, so it is not yet a delivered nudge.
+_HELD_DETAIL = "held for their quiet hours or brief"
 
 
 def _dm_text(headline: str, text: str) -> str:
@@ -547,7 +551,9 @@ async def _dm(
     resolution + the outbound anti-spam guard). Returns (ok, detail).
 
     Tagged as alert-review outreach about ``alert_id``, so acknowledging or
-    dismissing that alert later resolves whether the DM landed."""
+    dismissing that alert later resolves whether the DM landed. A caller
+    about a critical alert wraps it in ``_urgent_if`` so it gets past the
+    person's quiet hours and digest (``people.notifications``)."""
     import json
 
     from openexecutive.attunement.outcomes import SOURCE_ALERT_REVIEW, tag_proactive
@@ -566,7 +572,19 @@ async def _dm(
     # review that would just mint another candidate to route next pass.
     if isinstance(parsed, dict) and "error" not in parsed and parsed.get("status") == "sent":
         return True, "sent"
+    # Held by the person's own notification settings: it is saved and goes
+    # when they asked to hear, so the move happened.
+    if isinstance(parsed, dict) and parsed.get("status") == "held":
+        return True, _HELD_DETAIL
     return False, str(parsed.get("error") if isinstance(parsed, dict) else raw)[:200]
+
+
+def _urgent_if(urgent: bool) -> contextlib.AbstractContextManager[None]:
+    """Mark the DMs inside as urgent (a critical alert: severity ``urgent``)
+    for the person's "Let urgent things through" (``people.notifications``)."""
+    from openexecutive.people.notifications import urgent_send
+
+    return urgent_send() if urgent else contextlib.nullcontext()
 
 
 def _nudges_so_far(alert_id: int) -> int:
@@ -815,10 +833,11 @@ async def _apply_route(ctx: _MoveContext) -> None:
         if alert.routed_to_person_id == target:
             return  # already routed there (by any pass or producer) — never re-DM
         alert_store.update_alert_routing(ctx.alert_id, target, db_path=ctx.db_path)
-        ok, detail = await _dm(
-            target, v.message or f"Can you own this? {alert.headline}", headline=alert.headline,
-            alert_id=ctx.alert_id,
-        )
+        with _urgent_if(alert.severity == "urgent"):
+            ok, detail = await _dm(
+                target, v.message or f"Can you own this? {alert.headline}", headline=alert.headline,
+                alert_id=ctx.alert_id,
+            )
     ctx.summary.moves_used += 1
     if ok:
         ctx.summary.routed += 1
@@ -843,11 +862,21 @@ async def _apply_nudge(ctx: _MoveContext) -> None:
         _audit(EVENT_REVIEWED, f"Nudge cap reached for '{alert.headline[:80]}'",
                {**ctx.base_details, "target_person_id": target, "cap": ctx.settings.nudge_cap})
         return
-    ok, detail = await _dm(
-        target, v.message or f"Checking in on: {alert.headline}", headline=alert.headline,
-        alert_id=ctx.alert_id,
-    )
+    from openexecutive.people.held_messages import waiting_for
+
+    if waiting_for(target, f"alert:{ctx.alert_id}"):
+        return  # a DM about it already waits for their quiet hours or brief
+    with _urgent_if(alert.severity == "urgent"):
+        ok, detail = await _dm(
+            target, v.message or f"Checking in on: {alert.headline}", headline=alert.headline,
+            alert_id=ctx.alert_id,
+        )
     ctx.summary.moves_used += 1
+    if ok and detail == _HELD_DETAIL:
+        # Not delivered yet: no nudge counted toward the cap.
+        _audit(EVENT_REVIEWED, f"Nudge about '{alert.headline[:80]}' held for the recipient",
+               {**ctx.base_details, "target_person_id": target, "held": True})
+        return
     if ok:
         ctx.summary.nudged += 1
         ctx.move_taken = "nudge"
@@ -869,12 +898,13 @@ async def _apply_escalate(ctx: _MoveContext) -> None:
         _audit(EVENT_REVIEWED, f"Escalation requested for '{alert.headline[:80]}' but no principal on roster",
                {**ctx.base_details, "stored": "relevant"})
         return
-    ok, detail = await _dm(
-        ctx.principal_id,
-        v.message or f"Needs you today: {alert.headline}\n{v.why_now or ''}".strip(),
-        headline=alert.headline,
-        alert_id=ctx.alert_id,
-    )
+    with _urgent_if(_bump_severity(alert.severity, v.severity) == "urgent"):
+        ok, detail = await _dm(
+            ctx.principal_id,
+            v.message or f"Needs you today: {alert.headline}\n{v.why_now or ''}".strip(),
+            headline=alert.headline,
+            alert_id=ctx.alert_id,
+        )
     ctx.summary.moves_used += 1
     if not ok:
         # Nothing reached the principal: leave the row untouched so the next

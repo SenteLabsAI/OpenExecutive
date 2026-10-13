@@ -108,10 +108,15 @@ async def deliver_gate_question(
     )
     try:
         from openexecutive.orchestrator.schedule_tools import handle_message_person
+        from openexecutive.people.notifications import approval_send
 
-        raw = await handle_message_person(
-            {"person_id": event.person_id, "text": question}
-        )
+        # The run waits on their answer, and only a reply to this question
+        # resolves it: never held by their quiet hours or digest
+        # (people.notifications).
+        with approval_send():
+            raw = await handle_message_person(
+                {"person_id": event.person_id, "text": question}
+            )
         parsed = json.loads(raw)
     except Exception:
         logger.exception(

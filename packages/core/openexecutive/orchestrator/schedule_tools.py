@@ -187,7 +187,7 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
 
     reason = check_outbound_allowed(channel, channel_ref, text)
     if reason is None:
-        return None
+        return _hold_outbound(tool=tool, channel=channel, channel_ref=channel_ref, text=text)
     from openexecutive.audit import log_event as audit_log
 
     audit_log(
@@ -205,6 +205,58 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
         },
     )
     return json.dumps({"status": "suppressed", "reason": reason})
+
+
+def _hold_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> str | None:
+    """Hold the Executive's own outreach back when the recipient asked for
+    that (quiet hours, "In my briefs": ``outbound_guard.check_hold``).
+
+    Returns the ``{"status": "held"}`` result once the message is stored
+    (``people.held_messages``), or ``None`` to send it now — including when
+    it couldn't be stored, so a message is never lost to the hold."""
+    from openexecutive.orchestrator.outbound_guard import check_hold
+
+    held = check_hold(channel, channel_ref)
+    if held is None:
+        return None
+    person_id, source, hold = held
+    try:
+        from openexecutive.attunement.outcomes import current_tag
+        from openexecutive.people.held_messages import hold as store_held
+
+        tag = current_tag()
+        held_id = store_held(
+            person_id, text, source=source, release_at=hold.release_at,
+            ref=tag[1] if tag else "",
+        )
+    except Exception:
+        logger.exception("hold_outbound: couldn't store the message; sending it")
+        return None
+    from openexecutive.audit import log_event as audit_log
+
+    audit_log(
+        "tool_invocation",
+        f"{tool} HELD for person {person_id}: {hold.reason}",
+        actor="executive",
+        details={
+            "tool": tool,
+            "kind": "outbound",
+            "ok": True,
+            "held": True,
+            "held_id": held_id,
+            "person_id": person_id,
+            "source": source,
+            "channel": channel,
+            "release_at": hold.release_at.isoformat() if hold.release_at else None,
+        },
+    )
+    return json.dumps({
+        "status": "held",
+        "reason": (
+            f"Not sent now: {hold.reason}. It is saved and will be delivered "
+            "then — do not send it again or schedule it."
+        ),
+    })
 
 
 def _resolve_recipient_person_id(channel: str, channel_ref: str) -> int | None:
@@ -1482,7 +1534,9 @@ async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = T
             parsed = json.loads(result)
         except (ValueError, TypeError):
             parsed = {}
-        if parsed.get("status") == "sent":
+        if parsed.get("status") in ("sent", "held"):
+            # Held: saved for when they asked to hear (quiet hours, their
+            # brief) — trying the next channel would hold it twice.
             return result
         last_error = parsed.get("error") or last_error
 

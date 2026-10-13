@@ -1,5 +1,6 @@
 import type { AnswerSources } from "@/lib/answerSources";
 import type { HistoryNote, HistoryState } from "@/lib/history";
+import type { NotificationSettings, NotificationSettingsUpdate } from "@/lib/notifications";
 import type { SetupStatus } from "@/lib/setupStatus";
 
 const API_BASE = "/api/backend";
@@ -1744,6 +1745,40 @@ export async function getDelegation(signal?: AbortSignal): Promise<DelegationSet
   const res = await fetch(`${API_BASE}/delegation`, { signal });
   if (res.status === 403 || res.status === 404) return null;
   if (!res.ok) throw await delegationError(res, "Couldn't load Act as me.");
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Settings → Notifications: the caller's own quiet hours, digest or instant,
+// and urgent things through (/notifications/settings).
+// ---------------------------------------------------------------------------
+
+export type {
+  Delivery,
+  NotificationSettings,
+  NotificationSettingsUpdate,
+  QuietDays,
+  QuietHours,
+} from "@/lib/notifications";
+
+// null when this viewer has none to set (403: not signed in or not on the
+// People list) or the backend predates it (404).
+export async function getNotificationSettings(signal?: AbortSignal): Promise<NotificationSettings | null> {
+  const res = await fetch(`${API_BASE}/notifications/settings`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load your notification settings.");
+  return res.json();
+}
+
+export async function updateNotificationSettings(
+  update: NotificationSettingsUpdate,
+): Promise<NotificationSettings> {
+  const res = await fetch(`${API_BASE}/notifications/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't save your notification settings.");
   return res.json();
 }
 

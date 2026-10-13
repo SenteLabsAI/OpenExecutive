@@ -167,6 +167,19 @@ def _maybe_send_reminders(now: datetime) -> bool:
         return False
 
 
+def _maybe_release_held(now: datetime) -> bool:
+    """Send the messages held for quiet hours once they end, and the ones held
+    for a brief that went to someone without one (people/held_messages.py).
+    A hook like the reminders. Never raises."""
+    try:
+        from openexecutive.people.held_messages import maybe_release
+
+        return maybe_release(now)
+    except Exception:
+        logger.exception("scheduler: held-message release failed to start")
+        return False
+
+
 def _maybe_sweep_alerts(now: datetime) -> int:
     """Run the expiry sweep if the interval has elapsed. Returns rows expired.
 
@@ -329,6 +342,7 @@ async def run_scheduler(
             _maybe_scan_inbox(now)
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
+            _maybe_release_held(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))
@@ -983,11 +997,21 @@ async def _execute_action(
             next_available_window,
             prefer_channel_for,
         )
-        from openexecutive.scheduler.nudge_engine import _leave_end_for
+        from openexecutive.scheduler.nudge_engine import (
+            SCOPE_PREFIX_STALLED,
+            _leave_end_for,
+        )
 
-        pref = prefer_channel_for(action.assigned_to_person_id, now=now)
+        # The person's own quiet hours defer it too; an approval nudge is
+        # urgent (people.notifications).
+        urgent = (action.scope_key or "").startswith(SCOPE_PREFIX_STALLED)
+        pref = prefer_channel_for(
+            action.assigned_to_person_id, now=now, quiet_hours=True, urgent=urgent
+        )
         if pref is None:
-            nxt = next_available_window(action.assigned_to_person_id, after=now)
+            nxt = next_available_window(
+                action.assigned_to_person_id, after=now, quiet_hours=True, urgent=urgent
+            )
             leave_end = _leave_end_for(action.assigned_to_person_id)
             defer_to = nxt
             if leave_end is not None and (defer_to is None or defer_to <= leave_end):
@@ -1104,6 +1128,7 @@ async def _execute_action(
         )
         return
 
+    held_ids: list[int] = []
     try:
         from openexecutive.knowledge.retriever import retrieve
         from openexecutive.memory.episodic import format_for_prompt
@@ -1162,9 +1187,10 @@ async def _execute_action(
 
         executive = Executive(mcp_gateway=gateway)
         from openexecutive.attunement.outcomes import tag_proactive
+        from openexecutive.people.held_messages import track_holds
 
         source, ref = _outreach_source(action)
-        with tag_proactive(source, ref):
+        with tag_proactive(source, ref), track_holds() as held_ids:
             await executive.chat(
                 user_message=synthetic_message,
                 session=session,
@@ -1196,16 +1222,21 @@ async def _execute_action(
     mark_action_done(action.id)
     logger.info("scheduler: action %d done", action.id)
     from openexecutive.audit import log_event as audit_log
+    # What it sent was held for the recipient's quiet hours or brief
+    # (people.held_messages): say so, not "delivered".
+    phase = "held" if held_ids else "delivered"
     audit_log(
         "scheduled_action",
-        f"Scheduled action {action.id} delivered via {action.channel} → {action.channel_ref}",
+        f"Scheduled action {action.id} {phase} via {action.channel} → {action.channel_ref}"
+        + (f" ({len(held_ids)} message(s) held for the recipient)" if held_ids else ""),
         session_id=action.originating_session_id,
         actor="scheduler",
         details={
-            "phase": "delivered",
+            "phase": phase,
             "action_id": action.id,
             "channel": action.channel,
             "channel_ref": action.channel_ref,
+            **({"held_count": len(held_ids)} if held_ids else {}),
         },
     )
 
@@ -1767,7 +1798,13 @@ def _delivered_ok(result_json: str) -> bool:
         parsed = _json.loads(result_json)
     except (ValueError, TypeError):
         return False
-    return isinstance(parsed, dict) and "error" not in parsed and parsed.get("status") == "sent"
+    # "held": stored for the recipient's quiet hours or brief
+    # (people.held_messages), so trying the next channel would hold it twice.
+    return (
+        isinstance(parsed, dict)
+        and "error" not in parsed
+        and parsed.get("status") in ("sent", "held")
+    )
 
 
 # `Person.preferred_channel` values (people/models.py PreferredChannel) mapped
@@ -2268,8 +2305,19 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             recorded = True
         else:
             sending = True
-            delivery = await _deliver_to_principal(artifact, label=workflow.title)
+            # Messages the principal asked to get in their brief ride along
+            # as one "While you were away" block (people.held_messages).
+            delivered_text, held_ids = _with_held_messages(kind, artifact)
+            try:
+                delivery = await _deliver_to_principal(delivered_text, label=workflow.title)
+            except BaseException:
+                _unclaim_held(held_ids)
+                raise
             ok, detail = delivery.ok, delivery.detail
+            if ok:
+                await _mark_held_sent(held_ids)
+            else:
+                _unclaim_held(held_ids)
             brief_state.record_delivery_outcome(
                 kind, reason=delivery.reason, channel=delivery.channel,
                 detail=None if ok else detail,
@@ -2309,6 +2357,11 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 detail=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
             )
 
+    if kind in _DIGEST_BRIEF_KINDS:
+        # Everyone else who chose "In my briefs" gets theirs now, on its own:
+        # only the principal has a brief to carry them.
+        _release_others_digests(now)
+
     # Always chain the next occurrence + mark this row done, so a single
     # bad brief doesn't kill the recurring rhythm. Worst case the next
     # tick re-attempts on the same shape of input. A solo-only kind whose
@@ -2318,6 +2371,65 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         logger.info("scheduler: %s not chained — the workspace is now in team mode", kind)
     else:
         _enqueue_next_principal_brief(kind, after=_chain_after(action))
+
+
+# The briefs that carry held messages ("In my briefs", people.notifications).
+_DIGEST_BRIEF_KINDS: frozenset[str] = frozenset({"principal_brief_morning", "principal_brief_eod"})
+
+
+def _with_held_messages(kind: str, artifact: str) -> tuple[str, list[int]]:
+    """``artifact`` with the principal's brief-held messages appended as one
+    "While you were away" block, and their ids — claimed, so a release pass
+    can't send them too; mark them sent once it went, else unclaim them.
+    The artifact unchanged when there are none or they can't be read."""
+    if kind not in _DIGEST_BRIEF_KINDS:
+        return artifact, []
+    try:
+        from openexecutive.people.held_messages import claim, for_brief, render_block
+        from openexecutive.people.notifications import get_notification_settings, zone_for
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        if principal is None or principal.id is None:
+            return artifact, []
+        waiting = for_brief(principal.id)
+        got = set(claim([m.id for m in waiting]))
+        held = [m for m in waiting if m.id in got]
+        if not held:
+            return artifact, []
+        zone = zone_for(get_notification_settings(principal.id))
+        return f"{artifact.rstrip()}\n\n{render_block(held, zone=zone)}", [m.id for m in held]
+    except Exception:
+        logger.exception("scheduler: couldn't add held messages to the brief")
+        return artifact, []
+
+
+def _unclaim_held(ids: list[int]) -> None:
+    if not ids:
+        return
+    try:
+        from openexecutive.people.held_messages import unclaim
+
+        unclaim(ids)
+    except Exception:
+        logger.exception("scheduler: couldn't unclaim %d held message(s)", len(ids))
+
+
+async def _mark_held_sent(ids: list[int]) -> None:
+    from openexecutive.people.held_messages import mark_sent_after_delivery
+
+    await mark_sent_after_delivery(ids)
+
+
+def _release_others_digests(now: datetime) -> None:
+    try:
+        from openexecutive.people.held_messages import schedule_digest_release
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        schedule_digest_release(now, except_person_id=principal.id if principal else None)
+    except Exception:
+        logger.exception("scheduler: couldn't release held messages with the briefs")
 
 
 def _outreach_source(action: ScheduledAction) -> tuple[str, str]:

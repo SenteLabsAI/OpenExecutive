@@ -201,6 +201,7 @@ test("the Settings hub: one tile per page, each with its own route", () => {
     SETTINGS_PAGES.map((p) => `${p.label} → ${p.href}`),
     [
       "Your Executive → /settings/executive",
+      "Notifications → /settings/notifications",
       "About you → /settings/memory",
       "Workspace → /settings/workspace",
       "Advanced → /settings/advanced",

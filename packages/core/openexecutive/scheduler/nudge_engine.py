@@ -30,7 +30,7 @@ runner. Each tick:
 
   3. Picks a delivery channel per candidate via
      ``people.channel.prefer_channel_for`` — respecting availability
-     windows and quiet hours. Defers via ``next_available_window`` when
+     windows and the person's own quiet hours (Settings → Notifications). Defers via ``next_available_window`` when
      the assignee is temporarily unreachable.
 
   4. Emits ``kind="proactive_nudge"`` rows with the resolved
@@ -442,7 +442,12 @@ def _route_candidate(
     )
 
     if candidate.person_id is not None:
-        pref = prefer_channel_for(candidate.person_id, now=now)
+        # The person's own quiet hours defer a nudge like an availability
+        # window does; an approval nudge is urgent (people.notifications).
+        urgent = candidate.source == "stalled"
+        pref = prefer_channel_for(
+            candidate.person_id, now=now, quiet_hours=True, urgent=urgent
+        )
         if pref is not None:
             people_channel, channel_ref = pref
             sched = _to_scheduled_channel(people_channel)
@@ -460,7 +465,9 @@ def _route_candidate(
         # the deferral to fall AFTER the leave end date — otherwise an
         # on-leave person with weekday 9-5 windows ends up in an infinite
         # defer→defer→defer loop until leave ends.
-        nxt = next_available_window(candidate.person_id, after=now)
+        nxt = next_available_window(
+            candidate.person_id, after=now, quiet_hours=True, urgent=urgent
+        )
         leave_end = _leave_end_for(candidate.person_id)
         deliver_at = nxt
         if leave_end is not None and (deliver_at is None or deliver_at <= leave_end):
