@@ -288,6 +288,7 @@ async def test_oversize_and_unreadable_files_are_recorded_without_chunks(tmp_pat
     assert DOCX not in store.file_ids() and TXT not in store.file_ids()
     files = _state(tmp_path)["files"]
     assert files[DOCX]["filename"] == "" and files[TXT]["filename"] == ""
+    assert files[DOCX]["unreadable"] == "larger than 20 MB" and "unreadable" not in files[TXT]
     drive.requests.clear()
     await _sync(drive, store)  # unchanged: not fetched again
     assert not [r for r in drive.requests if r.url.params.get("alt")]
@@ -666,3 +667,150 @@ async def test_a_file_that_fails_to_index_is_reported_and_cleared_once_it_syncs(
     stats = await _sync(_drive(), FakeStore())
     assert stats["failed"] == 0
     assert drive_sync.list_synced_files()["last_error"] is None
+
+
+# ---------------------------------------------------------------------------
+# Scanned PDFs: read with OCR the way uploads are, or recorded with a reason
+# ---------------------------------------------------------------------------
+
+PDF = "6pdfFFFFFFFF"
+PDF_MIME = "application/pdf"
+
+
+def _blank_pdf() -> bytes:
+    """A PDF with no text layer, as a scan has."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _drive_with_scan() -> FakeDrive:
+    drive = _drive()
+    drive.folders[ROOT].append(_item(PDF, "Signed contract", PDF_MIME, md5="ccc", size=900))
+    drive.content[PDF] = _blank_pdf()
+    return drive
+
+
+@pytest.fixture
+def _fresh_pdf_reader(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from openexecutive.knowledge import pdf_reader
+
+    pdf_reader._cache.clear()
+    yield pdf_reader
+    pdf_reader._cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_pdf_is_read_with_ocr_like_an_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_pdf_reader: Any
+) -> None:
+    """The real pdf_reader path: the text layer is empty, so the pages go to
+    local OCR (stubbed here: no model, no network)."""
+    pdf_reader = _fresh_pdf_reader
+    ocr_calls: list[int] = []
+
+    def fake_ocr(source: Any, max_pages: int) -> tuple[str, int]:
+        ocr_calls.append(max_pages)
+        return "--- page 1 ---\nThe term is five years.", 1
+
+    monkeypatch.setattr(pdf_reader, "_ocr_isolated", fake_ocr)
+    # The extractor that skips scans must not be what reads a Drive PDF.
+    monkeypatch.setattr(
+        drive_sync, "extract_text_from_file",
+        lambda p, **_: (_ for _ in ()).throw(AssertionError(p)) if p.suffix == ".pdf" else "x",
+    )
+    store = FakeStore()
+    stats = await _sync(_drive_with_scan(), store)
+
+    assert ocr_calls == [1] and stats["failed"] == 0
+    assert PDF in store.file_ids()
+    assert "five years" in " ".join(
+        r["text"] for r in store.collections[DRIVE] if r["metadata"]["drive_file_id"] == PDF
+    )
+    row = {f["id"]: f for f in drive_sync.list_synced_files()["files"]}[PDF]
+    assert row["indexed"] and row["unreadable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_scan_with_ocr_turned_off_is_recorded_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_pdf_reader: Any
+) -> None:
+    """PDF_OCR_ENABLED governs Drive as it does uploads, and the skip is not
+    silent: the knowledge page gets the reason, and the file is not refetched
+    every tick."""
+    pdf_reader = _fresh_pdf_reader
+    monkeypatch.setenv("PDF_OCR_ENABLED", "false")
+    monkeypatch.setattr(
+        pdf_reader, "_ocr_isolated", lambda *a: (_ for _ in ()).throw(AssertionError("OCR ran"))
+    )
+    drive, store = _drive_with_scan(), FakeStore()
+    stats = await _sync(drive, store)
+
+    assert stats["failed"] == 0 and PDF not in store.file_ids()
+    assert "local OCR is turned off" in _state(tmp_path)["files"][PDF]["unreadable"]
+    row = {f["id"]: f for f in drive_sync.list_synced_files()["files"]}[PDF]
+    assert row["indexed"] is False and "local OCR is turned off" in row["unreadable_reason"]
+
+    drive.requests.clear()
+    await _sync(drive, store)  # unchanged: not fetched again
+    assert not [r for r in drive.requests if r.url.params.get("alt")]
+
+
+@pytest.mark.asyncio
+async def test_a_scan_ocr_reads_nothing_from_is_recorded_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_pdf_reader: Any
+) -> None:
+    monkeypatch.setattr(_fresh_pdf_reader, "_ocr_isolated", lambda *a: ("   ", 1))
+    store = FakeStore()
+    await _sync(_drive_with_scan(), store)
+    assert PDF not in store.file_ids()
+    assert "no text could be read from its pages" in _state(tmp_path)["files"][PDF]["unreadable"]
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_met_by_busy_ocr_is_retried_not_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
+
+    async def busy(data: Any, **kw: Any) -> PdfReadResult:
+        return PdfReadResult("", "none", 1, "the PDF was not read: busy", busy=True)
+
+    monkeypatch.setattr(drive_sync, "read_pdf_text", busy)
+    store = FakeStore()
+    stats = await _sync(_drive_with_scan(), store)
+    assert stats["failed"] == 1
+    assert PDF not in _state(tmp_path)["files"]
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_read_is_read_as_an_upload_and_bounded_by_a_backstop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not metered as an inbound attachment (uploads aren't), and a read that
+    never returns is given up on and recorded, not left holding the tick."""
+    import openexecutive.knowledge.pdf_reader as pdf_reader
+
+    # The backstop sits above every limit the reader enforces itself.
+    assert pytest.approx(
+        pdf_reader._TEXT_LAYER_TIMEOUT_S + drive_sync._PDF_MODEL_ALLOWANCE_S
+        + pdf_reader._OCR_MAX_SLOT_WAIT_S + pdf_reader._OCR_TIME_BUDGET_S
+        + pdf_reader._OCR_PROCESS_SLACK_S
+    ) == drive_sync._PDF_READ_TIMEOUT_S
+
+    seen: list[dict[str, Any]] = []
+
+    async def hang(data: Any, **kw: Any) -> Any:
+        seen.append(kw)
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(drive_sync, "read_pdf_text", hang)
+    monkeypatch.setattr(drive_sync, "_PDF_READ_TIMEOUT_S", 0.05)
+    store = FakeStore()
+    await _sync(_drive_with_scan(), store)
+    assert seen and not seen[0].get("inbound")
+    assert "took over" in _state(tmp_path)["files"][PDF]["unreadable"]

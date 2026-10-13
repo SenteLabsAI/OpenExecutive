@@ -57,6 +57,19 @@ test("rows without dates sort by name and unreadable files stay listed", () => {
   assert.equal(rows[1].indexed, false);
 });
 
+test("an unreadable synced file carries the sync's reason; a readable one never does", () => {
+  const rows = mergeDocs(
+    [],
+    [
+      { ...synced("d1", "Scan", null, null, false), unreadable_reason: "OCR is turned off" },
+      { ...synced("d2", "Notes", null), unreadable_reason: "stale" },
+    ],
+    [synced("n1", "Page", null, null, false)],
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.name, r.unreadableReason]));
+  assert.deepEqual(by, { Scan: "OCR is turned off", Notes: null, Page: null });
+});
+
 test("filter by source and by name", () => {
   const rows = mergeDocs([upload("Board deck.pdf", 1)], [synced("d1", "Budget", null)], []);
   assert.deepEqual(filterDocs(rows, "drive", "").map((r) => r.name), ["Budget"]);

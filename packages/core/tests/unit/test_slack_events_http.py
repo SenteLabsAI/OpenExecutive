@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import time
+from collections import OrderedDict
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -47,6 +48,7 @@ def _no_slack(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(slack_bot, "_bot_user_id", None)
     monkeypatch.setattr(slack_bot, "_bot_id_last_attempt", None)
     monkeypatch.setattr(slack_events, "_listener", None)
+    monkeypatch.setattr(slack_events, "_seen", OrderedDict())
 
 
 def _signed(body: dict[str, Any], *, secret: str = SECRET, age_s: int = 0) -> tuple[bytes, dict[str, str]]:
@@ -231,3 +233,124 @@ def test_first_delivery_forgets_the_oldest_ids(monkeypatch: pytest.MonkeyPatch) 
     assert slack_bot._first_delivery("")  # no id: never treated as a repeat
     assert slack_bot._first_delivery("")
     slack_bot._seen_event_ids.clear()
+
+
+def _counting_handler(monkeypatch: pytest.MonkeyPatch, client: TestClient, *, fail: list[Any] | None = None) -> list[bytes]:
+    """Wrap the live listener's Bolt handler, recording each body it is handed.
+    ``fail`` holds what each call does first: an exception to raise or a status."""
+    from starlette.responses import Response
+
+    listener = slack_events._listener
+    assert listener is not None
+    real = listener.request_handler
+    seen: list[bytes] = []
+    outcomes = list(fail or [])
+
+    class Wrapped:
+        async def handle(self, request: Any) -> Any:
+            seen.append(await request.body())
+            if outcomes:
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return Response(status_code=outcome)
+            return await real.handle(request)
+
+    monkeypatch.setattr(listener, "request_handler", Wrapped())
+    return seen
+
+
+def test_an_identical_replay_never_reaches_bolt(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch)
+    logged: list[str] = []
+    monkeypatch.setattr(slack_events.logger, "info", lambda msg, *args: logged.append(msg % args))
+    with TestClient(create_app()) as client:
+        handled = _counting_handler(monkeypatch, client)
+        raw, headers = _signed(CHALLENGE)
+        first = client.post("/webhook/slack", content=raw, headers=headers)
+        again = client.post("/webhook/slack", content=raw, headers=headers)
+    assert first.status_code == 200 and first.json()["challenge"] == "abc123"
+    assert again.status_code == 200 and again.content == b""
+    assert len(handled) == 1
+    assert logged == ["Slack: dropped a repeated request to /webhook/slack (a replay)"]
+
+
+def test_a_replay_of_a_form_payload_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not only JSON events: any signed body is remembered by its signature."""
+    _settings(monkeypatch)
+    raw = b"payload=%7B%22type%22%3A%22block_actions%22%7D"
+    ts = str(int(time.time()))
+    digest = hmac.new(SECRET.encode(), f"v0:{ts}:".encode() + raw, hashlib.sha256).hexdigest()
+    headers = {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-slack-request-timestamp": ts,
+        "x-slack-signature": f"v0={digest}",
+    }
+    with TestClient(create_app()) as client:
+        handled = _counting_handler(monkeypatch, client)
+        client.post("/webhook/slack", content=raw, headers=headers)
+        again = client.post("/webhook/slack", content=raw, headers=headers)
+    assert again.status_code == 200 and again.content == b""
+    assert len(handled) == 1
+
+
+def test_a_resigned_slack_retry_of_an_event_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    _settings(monkeypatch)
+    with TestClient(create_app()) as client:
+        handled = _counting_handler(monkeypatch, client)
+        # No listener takes reaction_added in the real app, so Bolt answers 404.
+        raw, headers = _signed(_event("EvRetry"))
+        assert client.post("/webhook/slack", content=raw, headers=headers).status_code < 500
+        # Slack's retry: same event, a later timestamp, so a new signature.
+        raw2, headers2 = _signed({**_event("EvRetry"), "event_time": 1}, age_s=-1)
+        assert headers2["x-slack-signature"] != headers["x-slack-signature"]
+        retry = client.post("/webhook/slack", content=raw2, headers={**headers2, "x-slack-retry-num": "1"})
+        other = _signed(_event("EvOther"))
+        assert client.post("/webhook/slack", content=other[0], headers=other[1]).status_code < 500
+    assert retry.status_code == 200 and retry.content == b""
+    assert len(handled) == 2
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("bolt broke"), 500])
+def test_a_delivery_bolt_failed_can_be_retried(monkeypatch: pytest.MonkeyPatch, failure: Any) -> None:
+    _settings(monkeypatch)
+    with TestClient(create_app(), raise_server_exceptions=False) as client:
+        handled = _counting_handler(monkeypatch, client, fail=[failure])
+        raw, headers = _signed(_event("EvFail"))
+        first = client.post("/webhook/slack", content=raw, headers=headers)
+        retry = client.post("/webhook/slack", content=raw, headers={**headers, "x-slack-retry-num": "1"})
+    assert first.status_code == 500
+    assert retry.status_code < 500 and retry.content != b""
+    assert len(handled) == 2
+
+
+def test_seen_keys_expire_and_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(slack_events, "SEEN_MAX", 3)
+    assert slack_events._first_sight(["a"], now=0.0)
+    assert not slack_events._first_sight(["a"], now=10.0)
+    # A repeat records nothing, even for a key it carried that was new.
+    assert not slack_events._first_sight(["a", "b"], now=10.0)
+    assert slack_events._first_sight(["b"], now=10.0)
+    assert slack_events._first_sight(["a"], now=slack_events.SEEN_TTL_S + 1)  # "a" expired
+    for key in ("c", "d", "e"):
+        assert slack_events._first_sight([key], now=slack_events.SEEN_TTL_S + 2)
+    assert len(slack_events._seen) == 3
+    assert "b" not in slack_events._seen  # the oldest went first
+
+
+def test_ttl_covers_the_whole_signature_window() -> None:
+    assert slack_events.SEEN_TTL_S >= 2 * slack_events.SIGNATURE_MAX_AGE_S
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (json.dumps({"type": "event_callback", "event_id": "Ev7"}).encode(), ["sig:s", "event:Ev7"]),
+        (json.dumps({"type": "url_verification", "event_id": "Ev7"}).encode(), ["sig:s"]),
+        (json.dumps({"type": "event_callback", "event_id": 7}).encode(), ["sig:s"]),
+        (b"{not json", ["sig:s"]),
+        (b"payload=x", ["sig:s"]),
+    ],
+)
+def test_dedup_keys(body: bytes, expected: list[str]) -> None:
+    assert slack_events._dedup_keys(body, "s") == expected

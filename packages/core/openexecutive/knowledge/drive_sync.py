@@ -45,6 +45,13 @@ from openexecutive.knowledge.drive_client import (
 from openexecutive.knowledge.isolated import ParserBusy
 from openexecutive.knowledge.loader import extract_text_from_file, ingest_text_sync
 from openexecutive.knowledge.notion_sync import infer_domain
+from openexecutive.knowledge.pdf_reader import (
+    _OCR_MAX_SLOT_WAIT_S,
+    _OCR_PROCESS_SLACK_S,
+    _OCR_TIME_BUDGET_S,
+    _TEXT_LAYER_TIMEOUT_S,
+    read_pdf_text,
+)
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.memory.episodic import insert_scheduled_action
 
@@ -64,6 +71,18 @@ _MAX_UNZIPPED_BYTES = 100 * 1024 * 1024
 # worker thread cannot be killed, but the tick moves on and the file is
 # recorded as unreadable, so it is not retried until it changes.
 _EXTRACT_TIMEOUT_S = 120.0
+# A PDF is read by ``pdf_reader.read_pdf_text``, the path uploads take, which
+# kills its own children (text layer, then OCR) at their own limits. This is
+# only a backstop over all of it, with room for the opt-in model step
+# (PDF_PROVIDER_READING), so one stuck read cannot hold the tick forever.
+_PDF_MODEL_ALLOWANCE_S = 300.0
+_PDF_READ_TIMEOUT_S = (
+    _TEXT_LAYER_TIMEOUT_S
+    + _PDF_MODEL_ALLOWANCE_S
+    + _OCR_MAX_SLOT_WAIT_S
+    + _OCR_TIME_BUDGET_S
+    + _OCR_PROCESS_SLACK_S
+)
 _MAX_VISIBLE_ITEMS = 2000  # files + folders listed per tick, all folders together
 _MAX_DEPTH = 4  # subfolder levels below a configured folder
 _REQUEST_PAUSE_S = 0.2
@@ -77,8 +96,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "application/vnd.google-apps.presentation": ("text/plain", ".txt"),
     "application/vnd.google-apps.spreadsheet": (_XLSX, ".xlsx"),
 }
-# Stored files, downloaded and read with the knowledge loader's extractors
-# (no model call: a scanned PDF with no text layer yields nothing).
+# Stored files, downloaded and read with the knowledge loader's extractors.
+# A PDF goes through ``pdf_reader`` as an upload does, so a scan with no text
+# layer is read by local OCR (or the model, when PDF_PROVIDER_READING is on).
 _DOWNLOADS: dict[str, str] = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
@@ -187,6 +207,8 @@ class _TickFetch:
     incomplete: str | None = None
     # (item, text) per file fetched; "" when it had no readable text.
     fetched: list[tuple[DriveItem, str]] = field(default_factory=list)
+    # Why a fetched file has no text, by file id, for the knowledge page.
+    unreadable: dict[str, str] = field(default_factory=dict)
 
 
 async def _list_tree(
@@ -262,6 +284,26 @@ def _extract(data: bytes, suffix: str) -> str:
         return extract_text_from_file(path, timeout=_EXTRACT_TIMEOUT_S)
 
 
+async def _pdf_text(item: DriveItem, data: bytes) -> str:
+    """A PDF's text the way an upload reads it: the text layer, else OCR in a
+    child process under the OCR gate, with the same PDF_* switches. Raises
+    ``_Unreadable`` with the reader's reason when nothing could be read, and
+    ``ParserBusy`` when every parser was busy (a retry, not a verdict)."""
+    try:
+        result = await asyncio.wait_for(
+            read_pdf_text(data, filename=_safe_name(item.name)), timeout=_PDF_READ_TIMEOUT_S
+        )
+    except TimeoutError as exc:
+        raise _Unreadable(f"reading the PDF took over {_PDF_READ_TIMEOUT_S:.0f}s") from exc
+    if result.busy:
+        raise ParserBusy(result.note)
+    if not result.text.strip():
+        raise _Unreadable(result.note or "no text could be read from the PDF")
+    if result.note:
+        logger.info("drive_sync: %s read by %s (%s)", item.id, result.method, result.note)
+    return result.text
+
+
 async def _file_text(client: DriveClient, item: DriveItem) -> str:
     export = _EXPORTS.get(item.mime_type)
     if export is not None:
@@ -272,6 +314,8 @@ async def _file_text(client: DriveClient, item: DriveItem) -> str:
         if item.size is not None and item.size > _MAX_FILE_BYTES:
             raise DriveFileTooLarge(item.id)
         data = await client.download(item.id, max_bytes=_MAX_FILE_BYTES)
+    if suffix == ".pdf":
+        return await _pdf_text(item, data)
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_extract, data, suffix), timeout=_EXTRACT_TIMEOUT_S
@@ -326,9 +370,11 @@ async def _fetch_tick(
             text = await _file_text(client, item)
         except DriveFileTooLarge:
             logger.info("drive_sync: %s is over %d bytes — not synced", item.id, _MAX_FILE_BYTES)
+            fetch.unreadable[item.id] = f"larger than {_MAX_FILE_BYTES // (1024 * 1024)} MB"
             text = ""
         except _Unreadable as exc:
             logger.warning("drive_sync: %s is unreadable (%s) — not synced", item.id, exc)
+            fetch.unreadable[item.id] = str(exc)
             text = ""
         except Exception:
             stats["failed"] += 1
@@ -470,7 +516,7 @@ async def _apply_tick(
                 logger.exception("drive_sync: failed to index file %s", item.id)
                 continue
             name = _safe_name(item.name)
-            state["files"][item.id] = {
+            record: dict[str, Any] = {
                 "modified": item.modified,
                 "md5": item.md5,
                 "name": name,
@@ -478,6 +524,10 @@ async def _apply_tick(
                 "url": item.link,
                 "synced_at": synced_at,
             }
+            reason = fetch.unreadable.get(item.id)
+            if not chunks and reason:
+                record["unreadable"] = reason[:300]
+            state["files"][item.id] = record
             stats["updated"] += 1
             logger.info("drive_sync: indexed %s (%d chunks)", item.id, chunks)
 
@@ -638,7 +688,9 @@ def list_synced_files() -> dict[str, Any]:
     """What the knowledge page shows for Drive: one row per file on record.
 
     Read from the sync state (not Chroma), so it costs one small JSON read.
-    ``indexed`` is false for a file with no readable text. Entries written
+    ``indexed`` is false for a file with no readable text, and
+    ``unreadable_reason`` says why when the sync knows (a scan OCR could not
+    read, OCR turned off, a file over the size cap). Entries written
     before ``synced_at`` was recorded per file fall back to the tick time.
     """
     state = load_state()
@@ -659,6 +711,9 @@ def list_synced_files() -> dict[str, Any]:
                 if isinstance(rec.get("synced_at"), str)
                 else last_run,
                 "indexed": bool(filename),
+                "unreadable_reason": rec.get("unreadable")
+                if not filename and isinstance(rec.get("unreadable"), str)
+                else None,
             }
         )
     files.sort(key=lambda f: f["name"].lower())
