@@ -112,10 +112,13 @@ def claim(
             "SELECT status FROM alert_approvals WHERE alert_id = ? ORDER BY id DESC LIMIT 1",
             (alert_id,),
         ).fetchone()
-        if status_row["status"] in _OPEN_ALERT_STATUSES:
-            if last is not None and last["status"] == STATUS_RUNNING:
-                return None
-        elif not (status_row["status"] == "ack" and last is not None and last["status"] == STATUS_FAILED):
+        # The last approval decides first: running or done is never run
+        # again, whatever the card's status (an acked card can be set back
+        # to read). A failed one may be retried from ack.
+        if last is not None and last["status"] != STATUS_FAILED:
+            return None
+        retry = last is not None and status_row["status"] == "ack"
+        if status_row["status"] not in _OPEN_ALERT_STATUSES and not retry:
             return None
         conn.execute("UPDATE alerts SET status = 'ack' WHERE id = ?", (alert_id,))
         cursor = conn.execute(
