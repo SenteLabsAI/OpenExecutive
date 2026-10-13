@@ -1,3 +1,4 @@
+import type { AlertApproval } from "@/lib/approvals";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { HistoryNote, HistoryState } from "@/lib/history";
 import type { NotificationSettings, NotificationSettingsUpdate } from "@/lib/notifications";
@@ -4820,6 +4821,27 @@ export interface DecisionInstance {
   external_event_id: string | null;
   reversal_reason: string | null;
   severity: string;
+}
+
+// Approve a proposal card that has no decision behind it: the server records
+// who approved it, claims it and carries it out (alerts/approvals.py).
+export async function approveAlert(alertId: number, editedBody?: string): Promise<AlertApproval> {
+  const res = await fetch(`${API_BASE}/alerts/${alertId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edited_body: editedBody ?? null }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Failed to approve: ${res.statusText}${text ? ` — ${text}` : ""}`);
+  }
+  return res.json();
+}
+
+export async function getAlertApproval(approvalId: number): Promise<AlertApproval> {
+  const res = await fetch(`${API_BASE}/alerts/approvals/${approvalId}`);
+  if (!res.ok) throw new Error(`Failed to read approval ${approvalId}: ${res.statusText}`);
+  return res.json();
 }
 
 export async function approveDecision(

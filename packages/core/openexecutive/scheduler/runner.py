@@ -367,6 +367,24 @@ async def run_scheduler(
             raise
 
 
+def _record_held_action(card_id: int | None, action_id: int) -> None:
+    """Bind the card the gate just filed to the action it holds, so
+    approving it (POST /alerts/{id}/approve) queues that exact action
+    again. None means the card folded into one already open, which keeps
+    its own binding. Best effort: without it the card still reaches its
+    approver, and approving it runs as a chat turn instead."""
+    if card_id is None:
+        return
+    from openexecutive.alerts.approvals import record_held_action
+
+    try:
+        record_held_action(card_id, action_id)
+    except Exception:
+        logger.exception(
+            "scheduler: couldn't bind card %d to held action %d", card_id, action_id,
+        )
+
+
 async def _execute_action(
     action: ScheduledAction, gateway: MCPGateway | None
 ) -> None:
@@ -475,13 +493,14 @@ async def _execute_action(
                         action.id, decision.deliver_at.isoformat(),
                     )
                     return
-                propose_via_alert(
+                card_id = propose_via_alert(
                     department_slug=action.department,
                     person_id=decision.assignee_person_id,
                     summary=action.intent_text[:160],
                     body=action.intent_text,
                     suggested_action=_proposed_action_phrase(urgent=False),
                 )
+                _record_held_action(card_id, action.id)
             mark_action_done(action.id)
             logger.info(
                 "scheduler: action %d proposed to person %s — not dispatched",
@@ -500,7 +519,7 @@ async def _execute_action(
             # is kept from being lost); if it cannot be written the row is
             # retried with backoff and finally marked failed — never done.
             try:
-                escalate_via_alert(
+                card_id = escalate_via_alert(
                     action.department,
                     decision.assignee_person_id,
                     summary=f"[ESCALATION] {action.intent_text[:140]}",
@@ -526,6 +545,7 @@ async def _execute_action(
                         action.id, action.department,
                     )
                 return
+            _record_held_action(card_id, action.id)
             if decision.assignee_person_id is None:
                 logger.warning(
                     "scheduler: escalate for dept=%r has no approver — "

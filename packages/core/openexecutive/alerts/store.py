@@ -131,6 +131,10 @@ def initialize_db(db_path: Path | None = None) -> None:
             );
 
         """)
+        # Who approved which card, and what came of it (alerts/approvals.py).
+        from openexecutive.alerts.approvals import ensure_schema as ensure_approvals_schema
+
+        ensure_approvals_schema(conn)
 
 
 def _now() -> str:

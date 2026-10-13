@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, Literal, NamedTuple
 
@@ -1644,27 +1645,54 @@ class _StaysConnected(Request):
         return False
 
 
-async def _drain_background_turn(body: Any, session_id: str) -> None:
+def _is_error_event(event: Any) -> bool:
+    """Whether one SSE frame of a turn is its ``error`` event."""
+    if isinstance(event, bytes):
+        event = event.decode("utf-8", "replace")
+    if not isinstance(event, str) or not event.startswith("data: "):
+        return False
+    try:
+        payload = json.loads(event[len("data: "):])
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("type") == "error"
+
+
+async def _drain_background_turn(
+    body: Any, session_id: str, on_finished: Callable[[bool], None] | None = None,
+) -> None:
     """Run the turn's stream to its end. Its events have no reader; the turn
-    persists itself as it would for /chat."""
+    persists itself as it would for /chat. ``on_finished`` hears whether the
+    turn answered (False when it ended on an error event or raised)."""
+    answered = True
     try:
         async with contextlib.aclosing(body) as events:
-            async for _ in events:
-                pass
+            async for event in events:
+                if _is_error_event(event):
+                    answered = False
     except Exception:
+        answered = False
         logger.exception("chat.background_failed session_id=%s", session_id)
+    if on_finished is not None:
+        try:
+            on_finished(answered)
+        except Exception:
+            logger.exception("chat.background_on_finished_failed session_id=%s", session_id)
 
 
-@router.post("/chat/background", status_code=202, response_model=BackgroundChatResponse)
-async def chat_background(body: BackgroundChatRequest, request: Request) -> BackgroundChatResponse:
-    """Start a new chat and answer it on the server, to the end.
-
-    Unlike /chat, nobody needs to stay connected: a phone that approves a
-    card and closes the app still gets the work done, and the answer appears
-    in its chat list. Everything before the stream (who is calling, their
-    access, the session) is checked here as /chat checks it, so a refusal is
-    this request's error rather than a silent no-op later.
-    """
+async def start_background_turn(
+    request: Request,
+    *,
+    message: str,
+    memory_text: str | None = None,
+    on_finished: Callable[[bool], None] | None = None,
+) -> str:
+    """Start a new chat for the caller of ``request`` and answer it on the
+    server, to the end. Returns the new chat's session id. Raises 429 when the
+    caller already has as many running as they may, and any refusal of the
+    turn itself (who is calling, their access) as this call's error.
+    ``on_finished`` is called once the turn has ended, with whether it
+    answered."""
     owner = _stop_owner_key(request, _resolve_caller_person_id(request))
     # Claim the slot before the first await: the pre-stream work below takes
     # long enough for a burst of requests to all pass a check made earlier.
@@ -1679,17 +1707,19 @@ async def chat_background(body: BackgroundChatRequest, request: Request) -> Back
     session_id = str(uuid.uuid4())
     try:
         response = await _run_chat_turn(
-            message=body.message,
+            message=message,
             session_id=session_id,
             committee_review=False,
             attachment_blocks=None,
             request=_StaysConnected(request.scope, request.receive),
-            memory_text=body.memory_text,
+            memory_text=memory_text,
         )
     except BaseException:
         _release_background_slot(owner)
         raise
-    task = asyncio.create_task(_drain_background_turn(response.body_iterator, session_id))
+    task = asyncio.create_task(
+        _drain_background_turn(response.body_iterator, session_id, on_finished)
+    )
     _background_tasks.add(task)
 
     def _done(t: asyncio.Task[None]) -> None:
@@ -1698,6 +1728,22 @@ async def chat_background(body: BackgroundChatRequest, request: Request) -> Back
 
     task.add_done_callback(_done)
     logger.info("chat.background_started session_id=%s", session_id)
+    return session_id
+
+
+@router.post("/chat/background", status_code=202, response_model=BackgroundChatResponse)
+async def chat_background(body: BackgroundChatRequest, request: Request) -> BackgroundChatResponse:
+    """Start a new chat and answer it on the server, to the end.
+
+    Unlike /chat, nobody needs to stay connected: a phone that approves a
+    card and closes the app still gets the work done, and the answer appears
+    in its chat list. Everything before the stream (who is calling, their
+    access, the session) is checked here as /chat checks it, so a refusal is
+    this request's error rather than a silent no-op later.
+    """
+    session_id = await start_background_turn(
+        request, message=body.message, memory_text=body.memory_text,
+    )
     return BackgroundChatResponse(session_id=session_id)
 
 

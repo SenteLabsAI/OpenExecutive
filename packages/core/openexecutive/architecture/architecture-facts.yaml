@@ -3639,6 +3639,50 @@ departments:
     holding that scope ahead of WILDCARD-holders, so proposals can route
     to a domain owner instead of always falling back to the principal.
     A null/unknown `required_scope` falls back to WILDCARD (principal).
+    As the scheduler files a propose or escalate card it records which row
+    the card holds in `alert_held_actions` (`alerts.approvals.record_held_action`).
+    Approving one (`POST /alerts/{id}/approve`) queues a copy of that exact
+    row with no department, so the approval is the consent the gate waited
+    for and nothing re-reads the card's prose to decide what to send. The
+    binding is a server-side table on purpose: a first cut used a
+    `scheduled_action:<id>` topic tag, but tags, body and source can all be
+    written by a model (triage reading inbound mail, the Executive's
+    create_alert), and the review forwards an alert's tags onto a new gate
+    card, so a forged tag could re-send a held or already-sent action.
+  card_approvals: |
+    openexecutive.alerts.approvals + POST /alerts/{id}/approve. Approve on
+    a Today card is carried out on the server for every card. A
+    decision-backed card goes through /decisions as before. Every other
+    proposal (the alert review's, a department gate's) is approved here:
+    `approvals.claim` checks and flips the card to `ack` and inserts an
+    `alert_approvals` row (alert_id, approved_by_person_id, approved_at,
+    edited_body, status running|done|failed, outcome, session_id,
+    finished_at) inside one BEGIN IMMEDIATE transaction, so a double click
+    or two approvers never run it twice (409). A card whose last approval
+    failed can be claimed again (Try again); one still running at a restart
+    is marked failed on boot (`fail_stale_running`, api/main.py lifespan).
+    Audit rows: alert_approved (actor person:<id>), then
+    alert_approval_done or alert_approval_failed, private when the card is.
+    Work: a card bound to a held scheduled action re-queues that action (see
+    authority_gate); anything else runs one Executive turn as the approver
+    through `chat.start_background_turn` (the code behind POST
+    /chat/background), so the turn is that person's, under their own access,
+    and keeps going after the tab closes; its session_id is on the row and
+    the drain reports whether the stream ended on an error frame. The
+    instruction text moved from Briefing.tsx to
+    `api.routes.alerts.APPROVED_PROPOSAL_PROMPT` /
+    `APPROVED_WITH_EDITS_PROMPT`, with the same memory line the briefing's
+    other handoffs use; the card's text goes in a <proposal> block marked
+    as data, since it can quote inbound mail and the turn now runs with no
+    one watching. Who may approve: a routed card only its person or the
+    principal; an unrouted card only the principal (Today's "principal owns
+    unrouted" rule). GET /alerts/approvals/{id} answers only the approver,
+    the card's person and the principal, since the row quotes an edited
+    message. A failed row says the turn may have done part of the work, so
+    the person checks its chat before Try again. Why: the page used to ack the card and
+    paste the proposal into a new chat turn. Nothing recorded who approved
+    it, and if the tab closed before the turn ran the card was gone and
+    nothing was done.
   cadence: |
     openexecutive.departments.cadence — supports `daily@HH:MM`,
     `weekly@DOW@HH:MM` or `weekly@DOW-HH:MM` (DOW is a 3-letter day,

@@ -208,8 +208,8 @@ export default function ProposalCard({
   // Local edit-mode state. Entering edit mode replaces the body with a
   // textarea pre-filled with the proposal body; the action row becomes
   // Cancel / Send approval. Send approval pipes the edited text up through
-  // onApproveWithEdits so Briefing can ack the alert + seed the chat with a
-  // verbatim-send instruction.
+  // onApproveWithEdits, and the server sends exactly that text
+  // (POST /alerts/{id}/approve).
   const [editing, setEditing] = useState(false);
   const [editedBody, setEditedBody] = useState("");
   const [expanded, setExpanded] = useState(false);

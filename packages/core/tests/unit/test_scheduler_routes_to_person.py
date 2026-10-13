@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from openexecutive.alerts import approvals
 from openexecutive.alerts import store as alert_store
 from openexecutive.audit import logger as audit_logger_module
 from openexecutive.departments import registry as dept_registry
@@ -114,6 +115,9 @@ def test_propose_only_creates_alert_no_dispatch() -> None:
     assert len(alerts) == 1
     assert alerts[0].routed_to_person_id == approver_id
     assert "department:finance" in alerts[0].topic_tags
+    # Approving the card queues this exact action (POST /alerts/{id}/approve).
+    assert approvals.held_action_id(alerts[0].id) == action.id
+    assert alerts[0].source == "authority_gate"
     # The "If you approve:" line is now a concrete executive action,
     # not the old circular "Review and approve or reject this action."
     assert alerts[0].suggested_action.startswith("Send this")
@@ -244,6 +248,7 @@ def test_escalate_creates_urgent_alert_and_holds() -> None:
     assert alerts[0].severity == "high"  # ranks above routine proposals
     assert alerts[0].routed_to_person_id == principal_id
     assert "department:legal" in alerts[0].topic_tags
+    assert approvals.held_action_id(alerts[0].id) == action.id
     # Escalation phrasing is the concrete action with an urgency tail — what
     # approving the card will do, not something already done.
     assert alerts[0].suggested_action.startswith("Send this")

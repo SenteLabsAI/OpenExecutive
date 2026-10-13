@@ -367,6 +367,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     initialize_db()
     initialize_alerts_db()
+    # A card approval still running was cut off by the restart: mark it
+    # failed so the card can be approved again (alerts/approvals.py).
+    from openexecutive.alerts import approvals as alert_approvals
+
+    alert_approvals.fail_stale_running()
 
     # Solo / team mode and the user's time zone (memory.workspace_settings).
     # Right after the episodic DB so every bootstrap below reads it.
