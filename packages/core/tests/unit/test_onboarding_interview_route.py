@@ -15,6 +15,7 @@ must not behave like the fixture loader.
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -116,8 +117,13 @@ def client(
     return c
 
 
-def _start(client: TestClient, description: str = "We sell industrial tools.") -> str:
-    resp = client.post("/onboard/interview/start", data={"description": description})
+def _start(
+    client: TestClient, description: str = "We sell industrial tools.", caller: str | None = None
+) -> str:
+    # A session belongs to whoever started it, so a test that commits as
+    # someone starts as them too (the UI sends the same caller on every call).
+    headers = {"x-caller-email": caller} if caller else {}
+    resp = client.post("/onboard/interview/start", data={"description": description}, headers=headers)
     assert resp.status_code == 200, resp.text
     return resp.json()["session_id"]
 
@@ -836,7 +842,7 @@ def test_a_teammate_cannot_take_the_owner_role_by_rerunning_setup(
 
     _seed_owner_and_teammate()
     seeded.append(_draft())
-    sid = _start(client)
+    sid = _start(client, caller="bob@example.com")
     resp = client.post(
         "/onboard/interview/commit",
         json=_bob_as_owner(sid),
@@ -855,7 +861,7 @@ def test_the_owner_can_hand_the_role_on(
 
     _seed_owner_and_teammate()
     seeded.append(_draft())
-    sid = _start(client)
+    sid = _start(client, caller="dana@example.com")
     resp = client.post(
         "/onboard/interview/commit",
         json=_bob_as_owner(sid),
@@ -871,7 +877,7 @@ def test_anyone_may_rerun_setup_that_keeps_the_owner(
 ) -> None:
     _seed_owner_and_teammate()
     seeded.append(_draft())
-    sid = _start(client)
+    sid = _start(client, caller="bob@example.com")
     resp = client.post(
         "/onboard/interview/commit",
         json=_commit_body(sid),
@@ -934,7 +940,7 @@ def _seed_owner_without_email_and_teammate() -> None:
 def _commit_with_owner_email(
     client: TestClient, email: str, caller: str | None
 ) -> Any:
-    sid = _start(client)
+    sid = _start(client, caller=caller)
     body = _commit_body(sid)
     body["owner_email"] = email
     headers = {"x-caller-email": caller} if caller else {}
@@ -1174,3 +1180,75 @@ def test_a_store_failure_does_not_fail_the_turn(
     seeded.append(iv.Question(question="Who runs ops?"))
     sid = _start(client)
     assert client.get(f"/onboard/interview/{sid}").status_code == 200
+
+
+def test_a_turn_taken_on_another_worker_is_seen_here(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two workers hold the same session. The other one takes a turn (its
+    stored row is newer); this one must carry on from that, not from its
+    own stale copy, or its next save would overwrite the other's turns."""
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    stale = route._interview_sessions[sid]
+
+    # "Worker B": the same session, advanced and stored a moment later.
+    other = interview_store.load(sid)
+    assert other is not None
+    other.transcript.append(iv.Turn(role="user", text="Sam runs ops."))
+    other.transcript.append(iv.Turn(role="assistant", text="And finance?"))
+    other.questions_asked = 2
+    later = stale.stored_at + 1
+    monkeypatch.setattr(interview_store.time, "time", lambda: later)
+    interview_store.save(sid, other)
+
+    body = client.get(f"/onboard/interview/{sid}").json()
+    assert body["question"] == "And finance?"
+    assert body["questions_asked"] == 2
+    assert len(body["turns"]) == 4
+    assert route._interview_sessions[sid] is not stale
+
+
+def test_a_local_copy_as_new_as_the_store_is_kept(client: TestClient, seeded: list[Any]) -> None:
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    held = route._interview_sessions[sid]
+    client.get(f"/onboard/interview/{sid}")
+    assert route._interview_sessions[sid] is held
+
+
+def test_another_caller_cannot_read_or_continue_the_session(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    """The id is not a capability: a session answers only to whoever started
+    it, with the same 404 an unknown id gets."""
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client, caller="dana@example.com")
+    other = {"x-caller-email": "bob@example.com"}
+    assert client.get(f"/onboard/interview/{sid}", headers=other).status_code == 404
+    resp = client.post(
+        "/onboard/interview/message", json={"session_id": sid, "message": "Sam"}, headers=other
+    )
+    assert resp.status_code == 404
+    assert client.post("/onboard/interview/draft", json={"session_id": sid}, headers=other).status_code == 404
+    assert client.post("/onboard/interview/commit", json=_commit_body(sid), headers=other).status_code == 404
+    # Still theirs, also after a restart.
+    route._interview_sessions.clear()
+    assert (
+        client.get(f"/onboard/interview/{sid}", headers={"x-caller-email": "dana@example.com"}).status_code
+        == 200
+    )
+
+
+def test_an_abandoned_stored_session_is_swept_on_the_next_read(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    route._interview_sessions.clear()
+    later = time.time() + route._INTERVIEW_TTL_SECONDS + 1
+    monkeypatch.setattr(interview_store.time, "time", lambda: later)
+    assert interview_store.load("someone-else") is None
+    with sqlite3.connect(interview_store._path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM onboarding_interviews").fetchone()[0] == 0
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404

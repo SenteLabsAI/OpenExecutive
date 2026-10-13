@@ -8623,9 +8623,19 @@ company_onboarding:
     second worker, no longer loses the interview. The row is deleted the
     moment the commit succeeds (the transcript is unedited free text with the
     company's financials; the profile is on disk) and when the TTL sweep
-    evicts it; a store failure is a warning, never a failed turn. The browser
-    keeps only the session id (localStorage `oe.onboard.session`, lib/
-    firstRun.ts) plus the description typed before Continue, and
+    evicts it; a store failure is a warning, never a failed turn. Every
+    store call also sweeps expired and over-cap rows, PRAGMA secure_delete
+    zeroes deleted pages, and a blank client slot wipes the table
+    (clients/slots._BLANK_WIPE_TABLES). A session belongs to whoever
+    started it (InterviewSession.owner_key = api_caller.identity_key):
+    every read or turn by another caller is the same 404 an unknown id
+    gets, since the id alone is no longer a capability once sessions
+    outlive the process and a browser remembers its id. A held copy is
+    replaced by a newer stored row (`load(newer_than=stored_at)`), so two
+    workers never overwrite each other's turns. The browser keeps only the
+    session id (localStorage `oe.onboard.session`, lib/firstRun.ts) plus
+    the description typed before Continue (sessionStorage, cleared by
+    "later" and by Continue), and
     GET /onboard/interview/{id} resumes at the same question or draft; a 404
     (saved, expired) clears the memory and starts fresh.
   write_once_commit: |

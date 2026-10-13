@@ -282,6 +282,10 @@ async def get_onboard_status(session_id: str) -> OnboardStatusResponse:
 
 @dataclass
 class InterviewSession:
+    # Who started it (api_caller.identity_key): only they can read or carry
+    # it on. The id alone is not a capability now that sessions outlive the
+    # process and a browser remembers its id.
+    owner_key: str = ""
     transcript: list[Turn] = field(default_factory=list)
     questions_asked: int = 0
     draft: CompanyDraft | None = None
@@ -290,6 +294,8 @@ class InterviewSession:
     last_hint: str = ""
     saved: bool = False
     last_touched: float = field(default_factory=time.monotonic)
+    # Wall-clock time of the stored copy this one matches (interview_store).
+    stored_at: float = 0.0
 
 
 # The working table of this process, with a TTL and cap. Every turn is also
@@ -319,7 +325,8 @@ def _persist_interview(session_id: str, session: InterviewSession) -> None:
     interview_store.save(session_id, session)
 
 
-def _get_interview(session_id: str) -> InterviewSession:
+def _get_interview(session_id: str, request: Request) -> InterviewSession:
+    """The caller's session, or 404: unknown, expired, or someone else's."""
     _sweep_interview_sessions()
     session = _interview_sessions.get(session_id)
     if session is None:
@@ -327,9 +334,19 @@ def _get_interview(session_id: str) -> InterviewSession:
         session = interview_store.load(session_id)
         if session is not None:
             _interview_sessions[session_id] = session
+    elif not session.saved:
+        # Held here, but another worker may have taken turns since: a newer
+        # stored row wins, so two processes never overwrite each other.
+        fresher = interview_store.load(session_id, newer_than=session.stored_at)
+        if fresher is not None:
+            session = fresher
+            _interview_sessions[session_id] = session
     if session is None:
         raise HTTPException(status_code=404, detail="Setup session not found or expired.")
     session.last_touched = time.monotonic()
+    if session.owner_key != api_caller.identity_key(request):
+        # Not theirs: the same answer as an unknown id, so nothing is learnt.
+        raise HTTPException(status_code=404, detail="Setup session not found or expired.")
     _interview_sessions.move_to_end(session_id)
     return session
 
@@ -428,6 +445,7 @@ async def _advance_interview(
 
 @router.post("/onboard/interview/start", response_model=OnboardTurnResponse)
 async def start_interview(
+    request: Request,
     description: str = Form(""),
     files: list[UploadFile] = File(  # noqa: B008 — FastAPI multipart marker, mirrors chat.py
         default_factory=list
@@ -451,7 +469,7 @@ async def start_interview(
     extracted = await _gather_intake_attachments(files or [])
 
     session_id = str(uuid.uuid4())
-    session = InterviewSession()
+    session = InterviewSession(owner_key=api_caller.identity_key(request))
     _interview_sessions[session_id] = session
     # Sweep AFTER inserting: the cap is an invariant on what is stored, and
     # sweeping first would let the dict sit one over the cap until the next
@@ -516,7 +534,7 @@ async def understand_description(
 
 
 @router.post("/onboard/interview/message", response_model=OnboardTurnResponse)
-async def interview_message(body: OnboardMessageRequest) -> OnboardTurnResponse:
+async def interview_message(body: OnboardMessageRequest, request: Request) -> OnboardTurnResponse:
     # Bounded here, not with Field(max_length=...) — FastAPI's 422 body echoes
     # the rejected input, and this message may carry financials.
     if len(body.message) > ONBOARD_MESSAGE_MAX_CHARS:
@@ -524,7 +542,7 @@ async def interview_message(body: OnboardMessageRequest) -> OnboardTurnResponse:
             status_code=422,
             detail=f"Message is too long (limit {ONBOARD_MESSAGE_MAX_CHARS:,} characters).",
         )
-    session = _get_interview(body.session_id)
+    session = _get_interview(body.session_id, request)
     if session.saved:
         raise HTTPException(status_code=409, detail="This setup session was already saved.")
     if not body.message.strip():
@@ -550,9 +568,9 @@ async def interview_message(body: OnboardMessageRequest) -> OnboardTurnResponse:
 
 
 @router.post("/onboard/interview/draft", response_model=OnboardTurnResponse)
-async def interview_draft(body: OnboardSessionRequest) -> OnboardTurnResponse:
+async def interview_draft(body: OnboardSessionRequest, request: Request) -> OnboardTurnResponse:
     """Force a draft now, however much is still unknown."""
-    session = _get_interview(body.session_id)
+    session = _get_interview(body.session_id, request)
     if session.saved:
         raise HTTPException(status_code=409, detail="This setup session was already saved.")
     if not session.transcript:
@@ -564,9 +582,9 @@ async def interview_draft(body: OnboardSessionRequest) -> OnboardTurnResponse:
 
 
 @router.get("/onboard/interview/{session_id}", response_model=OnboardSessionResponse)
-async def get_interview(session_id: str) -> OnboardSessionResponse:
+async def get_interview(session_id: str, request: Request) -> OnboardSessionResponse:
     """Resume after a page refresh: the transcript plus any existing draft."""
-    session = _get_interview(session_id)
+    session = _get_interview(session_id, request)
     base = _turn_response(session_id, session)
     return OnboardSessionResponse(
         **base.model_dump(),
@@ -598,7 +616,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     )
     from openexecutive.onboarding.interview import DepartmentDraft, PersonDraft
 
-    session = _get_interview(body.session_id)
+    session = _get_interview(body.session_id, request)
     if session.saved:
         raise HTTPException(
             status_code=409,

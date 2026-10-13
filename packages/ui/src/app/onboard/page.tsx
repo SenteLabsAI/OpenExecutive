@@ -123,6 +123,7 @@ function OnboardFlow() {
 
   function later() {
     remember(STORAGE_KEYS.later, "1");
+    remember(STORAGE_KEYS.description, null);
     router.push("/");
   }
 

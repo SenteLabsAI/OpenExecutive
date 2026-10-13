@@ -16,16 +16,24 @@ export const STORAGE_KEYS = {
   checklistHidden: "oe.gettingStarted.hidden",
 } as const;
 
-function storage(): Storage | null {
+type Where = "local" | "session";
+
+// The description is the one thing here that is the person's own words
+// (it becomes the first interview turn, financials and all), so it lives in
+// sessionStorage: gone with the tab, never synced.
+const WHERE: Record<string, Where> = { [STORAGE_KEYS.description]: "session" };
+
+function storage(key: string): Storage | null {
   try {
-    return typeof window === "undefined" ? null : window.localStorage;
+    if (typeof window === "undefined") return null;
+    return WHERE[key] === "session" ? window.sessionStorage : window.localStorage;
   } catch {
     return null;
   }
 }
 
 export function remember(key: string, value: string | null): void {
-  const s = storage();
+  const s = storage(key);
   if (!s) return;
   try {
     if (value === null) s.removeItem(key);
@@ -36,7 +44,7 @@ export function remember(key: string, value: string | null): void {
 }
 
 export function recall(key: string): string | null {
-  const s = storage();
+  const s = storage(key);
   if (!s) return null;
   try {
     return s.getItem(key);

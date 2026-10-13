@@ -129,6 +129,9 @@ _BLANK_WIPE_TABLES = (
     "watchlist",
     "page_watch_state",
     "outbound_context",
+    # An in-progress setup interview: the previous client's unedited
+    # description and answers (financials included).
+    "onboarding_interviews",
     # Attunement's daily model-call counter (open loops themselves live in
     # scheduled_actions, and sender/feedback columns in chat_messages).
     "attunement_usage",
