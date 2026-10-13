@@ -415,7 +415,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logging.getLogger("openexecutive").exception("chat-app conversation split failed")
 
-    # Departments: persistent state layer over the 8 specialist agents. Init
+    # Departments: persistent state layer over the specialist agents. Init
     # AFTER episodic_db so the additive ALTERs (department column on decisions,
     # initiatives, advice_given, scheduled_actions) have already run by the
     # time anything else writes to those tables.

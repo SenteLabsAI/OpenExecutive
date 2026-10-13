@@ -105,7 +105,7 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "confirm_token and a summary of the plan. You MUST show the summary to "
         "the user and get explicit confirmation, then call save_workflow with "
         "the SAME definition and the confirm_token. Do NOT invent specialists, "
-        "people, or metrics — only use the 8 specialist roles and people the "
+        "people, or metrics — only use the specialist roles and people the "
         "user has identified. If validation fails, the response lists exactly "
         "what to fix; re-draft and try again. A workflow with action (tool) "
         "steps is saved switched OFF: after saving, give the user the link so "

@@ -1,4 +1,4 @@
-"""Departments package — persistent state layer for the 8 specialist agents.
+"""Departments package — persistent state layer for the specialist agents.
 
 See `plans/lets-plan-this-out-twinkling-crystal.md` for the full feature shape.
 Phase 1 ships only the model + store + registry + API; downstream phases

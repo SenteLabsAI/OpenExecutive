@@ -75,7 +75,7 @@ class DepartmentConfig(BaseModel):
     title: str
     # Key into orchestrator.router.SPECIALIST_REGISTRY. Nullable: some org
     # structures (nonprofits, SMBs) have departments that do not map to one
-    # of the 8 specialist agents — e.g. "Volunteer Coordination", "Family
+    # of the specialist agents — e.g. "Volunteer Coordination", "Family
     # Services". Those departments render as informational rows in the UI
     # and are skipped by specialist-routing workflows.
     specialist_key: str | None = None

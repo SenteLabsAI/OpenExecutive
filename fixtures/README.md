@@ -120,7 +120,7 @@ fixtures/companies/<name>/
 
 ### Authoring `departments.yaml`
 
-A department can be specialist-aligned (mapped to one of the 8 specialist agents) or informational-only:
+A department can be specialist-aligned (mapped to one of the 9 specialist agents) or informational-only:
 
 ```yaml
 departments:

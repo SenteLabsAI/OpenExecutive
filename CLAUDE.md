@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Open Executive is a multi-agent AI system acting as a virtual corporate executive. Python backend (FastAPI) + Next.js 15 frontend. The "Executive" is a single coherent persona backed by 8 specialist sub-agents, all powered by the Anthropic Claude API.
+Open Executive is a multi-agent AI system acting as a virtual corporate executive. Python backend (FastAPI) + Next.js 15 frontend. The "Executive" is a single coherent persona backed by 9 specialist sub-agents, all powered by the Anthropic Claude API.
 
 ## Repository Layout
 

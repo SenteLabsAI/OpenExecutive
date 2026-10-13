@@ -16,7 +16,7 @@ openexecutive/
 │   ├── core/                         # Python backend
 │   │   └── openexecutive/
 │   │       ├── orchestrator/         # Executive persona + routing loop
-│   │       ├── agents/               # 8 specialist agents + triage
+│   │       ├── agents/               # 9 specialist agents + triage
 │   │       ├── knowledge/            # ChromaDB store + RAG pipeline
 │   │       ├── memory/               # Company profile + episodic memory
 │   │       ├── onboarding/           # Conversational interview + commit; wizard fallback

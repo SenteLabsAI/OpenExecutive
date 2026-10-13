@@ -204,7 +204,7 @@ def test_gather_facts_core_hash_is_idempotent() -> None:
 def test_gather_facts_runs_without_kb() -> None:
     """Smoke-test the assembly path with KB disabled (no ChromaDB needed)."""
     bundle = gather_facts(include_kb=False)
-    # Pulled from the live registry — at minimum, the eight specialists + triage.
+    # Pulled from the live registry — at minimum, the nine specialists + triage.
     assert len(bundle.agents) >= 8
     # Workflows registry is non-empty.
     assert len(bundle.workflows) >= 1
