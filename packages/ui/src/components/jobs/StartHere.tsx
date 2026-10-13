@@ -4,7 +4,8 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import { WORKFLOW_STARTER_CHIPS, stashWorkflowDescription } from "@/lib/workflowStarters";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import { stashWorkflowDescription, workflowStarterChipsFor } from "@/lib/workflowStarters";
 
 const CHAT_DRAFT = "Help me set up a workflow that ";
 
@@ -25,6 +26,7 @@ export default function StartHere({
   onBrowseReadyMade: () => void;
 }) {
   const router = useRouter();
+  const { mode } = useWorkspace();
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -83,7 +85,7 @@ export default function StartHere({
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {WORKFLOW_STARTER_CHIPS.map((s) => (
+        {workflowStarterChipsFor(mode).map((s) => (
           <button
             key={s.label}
             type="button"

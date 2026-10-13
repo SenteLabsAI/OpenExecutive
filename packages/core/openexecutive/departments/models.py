@@ -83,7 +83,8 @@ class DepartmentConfig(BaseModel):
     authority_level: AuthorityLevel = AuthorityLevel.PROPOSE_ONLY
     head_person_id: int | None = None
     head_persona_slug: str | None = None
-    # cadence_name -> spec, e.g. {"check_in": "daily@09:00"}. Parsed by Phase 5.
+    # cadence_name -> spec, e.g. {"check_in": "weekly@mon@09:00"}; an empty spec
+    # means the check-in is off. Parsed by departments/cadence.py.
     cadences: dict[str, str] = Field(default_factory=dict)
     # Department-scoped broadcast channels. When set, OE can post to the
     # department's team room via `send_department_message` instead of (or

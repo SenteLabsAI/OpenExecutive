@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from openexecutive.departments.models import DepartmentCharter
 
-# Cadence spec used when seeding fresh departments. Phase 5 parses these
-# strings; until then they are just text on the row. Centralised here so the
-# eight seed entries below stay in sync.
-DEFAULT_CHECK_IN_CADENCE: str = "daily@09:00"
+# Check-in cadence a new department starts with (parsed by
+# departments/cadence.py). Weekly, Monday 09:00 UTC: a daily check-in was more
+# than most departments' goals move in a day. Only new departments get it;
+# an existing department keeps whatever cadence it has.
+DEFAULT_CHECK_IN_CADENCE: str = "weekly@mon@09:00"
 
 FINANCE_CHARTER = DepartmentCharter(
     mission=(

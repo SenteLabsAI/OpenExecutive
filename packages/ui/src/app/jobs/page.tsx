@@ -33,6 +33,8 @@ import {
   runStatusLabel,
 } from "@/lib/runStatus";
 import { cadenceLabel, cardAction, lastRunAt } from "@/lib/workflowCards";
+import { starterPicksFor } from "@/lib/workflowStarters";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
 const SECTION_ORDER: WorkflowSection[] = [
   "Board",
@@ -74,27 +76,6 @@ function inSectionFilter(w: WorkflowMeta, f: SectionFilter): boolean {
   if (f === "all") return true;
   return w.section === f;
 }
-
-// Ready-made workflows shown first in the ready-made panel, each with a plain
-// line on when to use it. The full list sits under them.
-const STARTER_PICKS: { name: string; useFor: string }[] = [
-  {
-    name: "investor_update",
-    useFor: "Send investors a short monthly email: highlights, numbers, asks.",
-  },
-  {
-    name: "board_prep",
-    useFor: "Get a full board deck drafted before your next meeting.",
-  },
-  {
-    name: "mbr",
-    useFor: "Review last month against plan and flag what needs a decision.",
-  },
-  {
-    name: "competitive_teardown",
-    useFor: "Size up a competitor and get battle-card material for sales.",
-  },
-];
 
 // Runs shown per workflow group before "Show more".
 const RUNS_PER_GROUP = 5;
@@ -571,8 +552,9 @@ function CatalogView({
   section: SectionFilter;
   onSectionChange: (s: SectionFilter) => void;
 }) {
+  const { mode } = useWorkspace();
   const byName = new Map(workflows.map((w) => [w.name, w] as const));
-  const picks = STARTER_PICKS.flatMap((p) => {
+  const picks = starterPicksFor(mode).flatMap((p) => {
     const w = byName.get(p.name);
     return w ? [{ workflow: w, useFor: p.useFor }] : [];
   });

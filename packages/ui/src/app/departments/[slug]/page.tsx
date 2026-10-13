@@ -8,19 +8,30 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
 import SidePanel from "@/components/ui/SidePanel";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   deleteDepartment,
   getDepartment,
   listPeople,
   updateDepartment,
   type DepartmentConfig,
-  type DepartmentState,
+  type DepartmentDetail,
   type Goal,
   type Person,
 } from "@/lib/api";
+import {
+  WEEKDAYS,
+  checkInSpec,
+  describeCheckIn,
+  formatNextCheckIn,
+  parseCheckIn,
+  withKind,
+  type CheckInChoice,
+  type Weekday,
+} from "@/lib/checkInCadence";
 
 // Auto-refresh cadence for the detail page. The `dept_cadence` scheduler
-// fires at most once per department per cadence (default daily), so any
+// fires at most once per department per cadence (default weekly), so any
 // poll faster than ~30s is overkill for review-driven status changes
 // but keeps the page feeling live for cross-tab edits.
 const POLL_INTERVAL_MS = 30_000;
@@ -74,6 +85,91 @@ const LABEL_CLS = "text-sm text-fg-muted flex flex-col gap-1.5";
 const HINT_CLS = "text-[13px] text-fg-subtle";
 const SECTION_INTRO_CLS = "text-[15px] text-fg-muted mb-4";
 
+const CHECK_IN_KINDS: { id: "daily" | "weekly" | "off"; label: string }[] = [
+  { id: "daily", label: "Daily" },
+  { id: "weekly", label: "Weekly" },
+  { id: "off", label: "Off" },
+];
+
+/**
+ * Daily / Weekly (a day and a time) / Off for the department's check-in.
+ * A spec the picker can't show (a quarterly one) stays as it is until one of
+ * the three is picked.
+ */
+function CheckInPicker({
+  value,
+  onChange,
+}: {
+  value: CheckInChoice;
+  onChange: (next: CheckInChoice) => void;
+}) {
+  const segCls = (active: boolean) =>
+    cls(
+      "flex-1 h-11 px-4 text-[15px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+      active ? "bg-accent/15 text-fg" : "text-fg-muted hover:text-fg hover:bg-surface-overlay",
+    );
+  return (
+    <fieldset className="space-y-3">
+      <legend className="text-sm text-fg-muted mb-1.5">Recurring check-in</legend>
+      <div role="radiogroup" aria-label="How often it checks in" className="flex rounded-xl border border-line overflow-hidden divide-x divide-line">
+        {CHECK_IN_KINDS.map((k) => (
+          <button
+            key={k.id}
+            type="button"
+            role="radio"
+            aria-checked={value.kind === k.id}
+            onClick={() => onChange(withKind(value, k.id))}
+            className={segCls(value.kind === k.id)}
+          >
+            {k.label}
+          </button>
+        ))}
+      </div>
+      {value.kind === "custom" && (
+        <p className={HINT_CLS}>
+          Currently <code className="font-mono">{value.spec}</code>. Pick Daily, Weekly or Off to change it.
+        </p>
+      )}
+      {(value.kind === "daily" || value.kind === "weekly") && (
+        <div className="flex flex-wrap gap-3">
+          {value.kind === "weekly" && (
+            <label className={cls(LABEL_CLS, "flex-1 min-w-[10rem]")}>
+              Day
+              <select
+                value={value.day}
+                onChange={(e) => onChange({ ...value, day: e.target.value as Weekday })}
+                className={FIELD_CLS}
+              >
+                {WEEKDAYS.map((d) => (
+                  <option key={d.id} value={d.id}>{d.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className={cls(LABEL_CLS, "flex-1 min-w-[10rem]")}>
+            Time (UTC)
+            <input
+              type="time"
+              step={60}
+              required
+              value={value.time}
+              onChange={(e) => {
+                if (e.target.value) onChange({ ...value, time: e.target.value.slice(0, 5) });
+              }}
+              className={FIELD_CLS}
+            />
+          </label>
+        </div>
+      )}
+      <p className={HINT_CLS}>
+        {value.kind === "off"
+          ? "No scheduled check-ins. The specialist still answers when you ask."
+          : "The specialist reviews this department\u2019s goals on this schedule. You\u2019ll see it on Home."}
+      </p>
+    </fieldset>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -82,8 +178,9 @@ export default function DepartmentDetailPage() {
   const params = useParams();
   const slug = params?.slug as string;
   const router = useRouter();
+  const { mode, effectiveTimezone } = useWorkspace();
 
-  const [dept, setDept] = useState<DepartmentState | null>(null);
+  const [dept, setDept] = useState<DepartmentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,7 +192,7 @@ export default function DepartmentDetailPage() {
   const [settingsForm, setSettingsForm] = useState({
     authority_level: "propose_only" as DepartmentConfig["authority_level"],
     mission: "",
-    cadences: {} as Record<string, string>,
+    checkIn: { kind: "off" } as CheckInChoice,
     headcount: "",
     budget_usd: "",
     head_person_id: null as number | null,
@@ -142,7 +239,7 @@ export default function DepartmentDetailPage() {
     if (!slug) return;
     let cancelled = false;
 
-    function applyDept(d: DepartmentState, isInitial: boolean) {
+    function applyDept(d: DepartmentDetail, isInitial: boolean) {
       if (cancelled) return;
       setDept(d);
       // Don't replace `goals` while any row is being edited — the row
@@ -157,7 +254,7 @@ export default function DepartmentDetailPage() {
         setSettingsForm({
           authority_level: d.config.authority_level,
           mission: d.config.charter.mission,
-          cadences: { ...d.config.cadences },
+          checkIn: parseCheckIn(d.config.cadences.check_in),
           headcount: d.headcount != null ? String(d.headcount) : "",
           budget_usd: d.budget_usd != null ? String(d.budget_usd) : "",
           head_person_id: d.config.head_person_id,
@@ -223,7 +320,7 @@ export default function DepartmentDetailPage() {
     setSettingsForm({
       authority_level: dept.config.authority_level,
       mission: dept.config.charter.mission,
-      cadences: { ...dept.config.cadences },
+      checkIn: parseCheckIn(dept.config.cadences.check_in),
       headcount: dept.headcount != null ? String(dept.headcount) : "",
       budget_usd: dept.budget_usd != null ? String(dept.budget_usd) : "",
       head_person_id: dept.config.head_person_id,
@@ -266,7 +363,8 @@ export default function DepartmentDetailPage() {
           scope: dept.config.charter.scope,
           out_of_scope: dept.config.charter.out_of_scope,
         },
-        cadences: settingsForm.cadences,
+        // The other named cadences ride along unchanged; "Off" is an empty spec.
+        cadences: { ...dept.config.cadences, check_in: checkInSpec(settingsForm.checkIn) },
         headcount: headcountNum,
         budget_usd: budgetNum,
         head_person_id: settingsForm.head_person_id,
@@ -367,18 +465,25 @@ export default function DepartmentDetailPage() {
                       <dd className="text-[15px] text-fg min-w-0 break-words">{value}</dd>
                     </div>
                   ))}
-                  {Object.entries(dept.config.cadences).length > 0 && (
-                    <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-4 py-3">
-                      <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">Recurring check-in</dt>
-                      <dd className="flex flex-wrap gap-1.5 min-w-0">
-                        {Object.entries(dept.config.cadences).map(([n, s]) => (
-                          <span key={n} className="px-2.5 py-1 rounded-lg bg-surface-overlay border border-line text-sm font-mono text-fg break-all">
-                            {n}: {s}
-                          </span>
-                        ))}
-                      </dd>
-                    </div>
-                  )}
+                  <div className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-4 py-3">
+                    <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">Recurring check-in</dt>
+                    <dd className="min-w-0">
+                      <div className="text-[15px] text-fg">
+                        {describeCheckIn(parseCheckIn(dept.config.cadences.check_in))}
+                      </div>
+                      {mode === "solo" ? (
+                        <div className="text-sm text-fg-muted mt-0.5">
+                          Paused while you use Open Executive just for yourself.
+                        </div>
+                      ) : (
+                        formatNextCheckIn(dept.next_check_in_at, effectiveTimezone) && (
+                          <div className="text-sm text-fg-muted mt-0.5">
+                            Next: {formatNextCheckIn(dept.next_check_in_at, effectiveTimezone)}
+                          </div>
+                        )
+                      )}
+                    </dd>
+                  </div>
                 </dl>
               </section>
 
@@ -558,35 +663,10 @@ export default function DepartmentDetailPage() {
                         })}
                       </fieldset>
 
-                      <div>
-                        <div className="text-sm text-fg-muted mb-1.5">Recurring check-in</div>
-                        {Object.entries(settingsForm.cadences).map(([name, spec]) => (
-                          <div key={name} className="flex items-center gap-2 mb-2">
-                            <input
-                              value={name}
-                              readOnly
-                              aria-label="Check-in name"
-                              className={`${FIELD_CLS} flex-1 min-w-0 font-mono text-sm text-fg-muted`}
-                            />
-                            <input
-                              value={spec}
-                              aria-label={`Schedule for ${name}`}
-                              onChange={(e) =>
-                                setSettingsForm((f) => ({
-                                  ...f,
-                                  cadences: { ...f.cadences, [name]: e.target.value },
-                                }))
-                              }
-                              className={`${FIELD_CLS} flex-1 min-w-0 font-mono text-sm`}
-                              placeholder="daily@09:00"
-                            />
-                          </div>
-                        ))}
-                        <p className={HINT_CLS}>
-                          When set, the specialist posts a check-in on this schedule. You&apos;ll see it on Home.
-                          Examples (UTC): <code className="font-mono">daily@09:00</code>, <code className="font-mono">weekly@mon@09:00</code>, <code className="font-mono">quarterly@01-09:00</code>.
-                        </p>
-                      </div>
+                      <CheckInPicker
+                        value={settingsForm.checkIn}
+                        onChange={(checkIn) => setSettingsForm((f) => ({ ...f, checkIn }))}
+                      />
                     </div>
                   )}
 
