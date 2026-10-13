@@ -38,6 +38,7 @@ from openexecutive.api.routes import (
     health,
     history,
     knowledge,
+    notifications,
     onboarding,
     people,
     personas,
@@ -969,6 +970,7 @@ def create_app() -> FastAPI:
     app.include_router(scheduled.router, tags=["scheduled"])
     app.include_router(executive.router, tags=["executive"])
     app.include_router(workspace.router, tags=["workspace"])
+    app.include_router(notifications.router, tags=["notifications"])
     app.include_router(watchlist.router, tags=["watchlist"])
     app.include_router(google_chat_router, tags=["google-chat"])
     app.include_router(telegram_router, tags=["telegram"])

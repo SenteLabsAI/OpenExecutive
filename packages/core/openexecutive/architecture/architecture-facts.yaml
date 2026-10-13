@@ -1395,6 +1395,11 @@ routing:
     and the `max_pending_*` caps on `schedule_followup`. Principal briefs and
     the internal heartbeat kinds (`__internal__` channel) never reach these
     handlers, so they are unaffected (see the `scheduler:` kinds note).
+    After the guard allows a send, the handlers apply the recipient's own
+    notification settings to the Executive's own (tagged) outreach:
+    `_hold_outbound` → `outbound_guard.check_hold` stores the DM in
+    `held_messages` and returns {"status":"held"} when they are in quiet
+    hours or chose "In my briefs" (people.notification_settings).
   reflection_then_decide: |
     Shift 5 introduces a new routing pattern: ``executive_reflection``
     is the first workflow that lets OE consume structured signal data
@@ -4232,6 +4237,63 @@ people:
     `prefer_channel_for()` also enforces availability windows (returns
     None if the person is on leave or outside all configured windows;
     no windows means always-on).
+  notification_settings: |
+    Each team member sets their own on Settings → Notifications
+    (GET/PUT /notifications/settings, api.routes.notifications; caller
+    resolved like the notes routes: a signed-in person on the People list,
+    or the principal under local login, else 403). One row per person in
+    `person_notification_settings` (people.notifications): quiet hours
+    (enabled, start/end HH:MM in their zone, may cross midnight, start !=
+    end; days every_day or weekdays — weekdays keeps the nightly window and
+    makes Saturday and Sunday quiet all day), delivery instant | digest
+    ("As they happen" / "In my briefs"), urgent_through (default true), and
+    an IANA timezone ("" = the workspace zone). No row = defaults = nothing
+    held, so existing installs behave as before.
+    Scope: only the Executive's OWN outreach — a DM sent while a proactive
+    source is tagged (attunement.outcomes.tag_proactive: scheduler dispatch
+    of nudges and follow-ups, reflection, research, alert review). A reply
+    in a conversation, a send someone asked for in chat, the briefs, the
+    cross-client digest, workflow artifacts and Act as me / note reminders
+    are untagged and never held. Why not fold quiet hours into
+    is_within_availability for everyone: the outbound guard's availability
+    check runs on every DM, briefs included, and would refuse the brief the
+    person scheduled inside their own quiet hours.
+    Two mechanisms: (1) nudge routing — people.channel's
+    is_within_availability / is_reachable_now / next_window_for /
+    prefer_channel_for / next_available_window take `quiet_hours=True,
+    urgent=` and then also treat quiet hours as unavailable; the nudge
+    engine's _route_candidate and the runner's proactive_nudge re-check pass
+    it, so a nudge row is deferred to the end of quiet hours (no model run
+    at 3am, fresh text); (2) the send handlers' `_hold_outbound` after the
+    anti-spam guard allows a send: outbound_guard.check_hold → if the
+    recipient is in quiet hours or chose digest, the text is stored in
+    `held_messages` (people.held_messages) and the tool returns
+    {"status":"held"}; message_person returns it instead of trying the next
+    channel (which would hold it twice), alert review counts it as a move
+    made, a workflow gate records it as `suppressed`. A store failure
+    sends instead (fail-open, never lost).
+    Release: rows with release_at (quiet hours) go once due, per person as
+    one "While you were away" message via scheduler.runner.deliver_to_person
+    (scheduler tick hook _maybe_release_held, once a minute; marked sent
+    only after delivery; postponed if quiet again; dropped after 7 days or
+    when the person is archived). Digest rows (release_at null) ride the
+    principal's next morning brief / EoD digest as one block appended to the
+    delivered text (not the stored run artifact), marked sent only when the
+    brief went; everyone else's are made due when those briefs run
+    (only the principal gets briefs); a digest row unclaimed for 36 h goes
+    on its own. Switching back to instant releases what waited. Cap 50 open
+    rows per person (oldest dropped). Follow-ups (source followup) are never
+    digest-held: they were asked for at a time.
+    Urgent: source nudge_stalled (approval nudges), workflow approval
+    questions (gate_delivery wraps message_person in
+    notifications.urgent_send) and alert-review DMs about an alert whose
+    severity is or becomes `urgent` are let through when urgent_through.
+    Not covered: nudges on the email channel (the MCP mail tool bypasses the
+    send handlers — routing still defers them for quiet hours, but they are
+    never digest-held); department channel broadcasts (rooms, not a person);
+    alerts.dispatcher channels (web SSE, a self-addressed email, and a Slack
+    DM stub); Act as me approval cards (untagged, and approvals anyway).
+    Department check-ins send no DM: their proposals become approval cards.
   scope_tokens: |
     People can be queried by scope token via
     GET /people/by-scope/{token} — e.g. "ceo", "head-of-marketing",
@@ -4438,6 +4500,18 @@ scheduler:
     503. Each cancel is audited `scheduled_action_cancelled` with the
     caller's email, "admin-token" or "local" as actor. Before this the UI
     could never send the admin token, so Cancel failed on every deploy.
+  held_messages: |
+    Loop-level hook `_maybe_release_held` (like the reminders): at most once
+    a minute it starts people.held_messages.maybe_release, which sends each
+    person their due held messages (quiet hours ended, or a digest made due
+    when the briefs ran) as one "While you were away" message through
+    deliver_to_person, private audit rows (`held_messages_released`). The
+    principal-brief handler appends the principal's digest rows to the
+    morning brief / EoD digest it delivers (_with_held_messages), marks them
+    sent only on delivery (_mark_held_sent), then _release_others_digests
+    makes everyone else's due. The proactive_nudge re-check calls
+    prefer_channel_for / next_available_window with quiet_hours=True
+    (urgent for `nudge:stalled:` scope keys). See people.notification_settings.
   nudge_engine: |
     openexecutive.scheduler.nudge_engine — periodic heartbeat (kind=
     `nudge_scan`, default every 15 min via NUDGE_SCAN_INTERVAL_MINUTES)

@@ -517,6 +517,33 @@ class TestRouteCandidate:
         assert routed.channel_ref == "U_OK"
         assert routed.deliver_at == now
 
+    def test_quiet_hours_defer_a_nudge_but_not_an_approval_nudge(self) -> None:
+        from openexecutive.people.notifications import (
+            NotificationSettings,
+            QuietHours,
+            save_notification_settings,
+        )
+
+        pid = _make_person(slack_user_id="U_Q", preferred="slack")
+        now = datetime(2026, 10, 14, 23, 0, tzinfo=UTC)
+        save_notification_settings(pid, NotificationSettings(
+            quiet_hours=QuietHours(enabled=True, start="22:00", end="07:00"), timezone="UTC",
+        ))
+        cand = nudge_engine.NudgeCandidate(
+            scope_key="x", intent_text="hi", source="initiative",
+            urgency_seconds=0, cooldown=timedelta(hours=1), person_id=pid,
+        )
+        routed = nudge_engine._route_candidate(cand, now, max_defer_days=3)
+        assert routed is not None
+        assert routed.deliver_at == datetime(2026, 10, 15, 7, 0, tzinfo=UTC)
+        assert routed.channel_ref == "U_Q"
+        urgent = nudge_engine.NudgeCandidate(
+            scope_key="y", intent_text="approve?", source="stalled",
+            urgency_seconds=0, cooldown=timedelta(hours=1), person_id=pid,
+        )
+        routed = nudge_engine._route_candidate(urgent, now, max_defer_days=3)
+        assert routed is not None and routed.deliver_at == now
+
     def test_archived_person_returns_none(self) -> None:
         pid = _make_person(preferred="slack")
         with sqlite3.connect(str(people_store.DB_PATH)) as conn:

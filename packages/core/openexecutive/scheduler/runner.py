@@ -167,6 +167,19 @@ def _maybe_send_reminders(now: datetime) -> bool:
         return False
 
 
+def _maybe_release_held(now: datetime) -> bool:
+    """Send the messages held for quiet hours once they end, and the ones held
+    for a brief that went to someone without one (people/held_messages.py).
+    A hook like the reminders. Never raises."""
+    try:
+        from openexecutive.people.held_messages import maybe_release
+
+        return maybe_release(now)
+    except Exception:
+        logger.exception("scheduler: held-message release failed to start")
+        return False
+
+
 def _maybe_sweep_alerts(now: datetime) -> int:
     """Run the expiry sweep if the interval has elapsed. Returns rows expired.
 
@@ -329,6 +342,7 @@ async def run_scheduler(
             _maybe_scan_inbox(now)
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
+            _maybe_release_held(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))
@@ -975,11 +989,21 @@ async def _execute_action(
             next_available_window,
             prefer_channel_for,
         )
-        from openexecutive.scheduler.nudge_engine import _leave_end_for
+        from openexecutive.scheduler.nudge_engine import (
+            SCOPE_PREFIX_STALLED,
+            _leave_end_for,
+        )
 
-        pref = prefer_channel_for(action.assigned_to_person_id, now=now)
+        # The person's own quiet hours defer it too; an approval nudge is
+        # urgent (people.notifications).
+        urgent = (action.scope_key or "").startswith(SCOPE_PREFIX_STALLED)
+        pref = prefer_channel_for(
+            action.assigned_to_person_id, now=now, quiet_hours=True, urgent=urgent
+        )
         if pref is None:
-            nxt = next_available_window(action.assigned_to_person_id, after=now)
+            nxt = next_available_window(
+                action.assigned_to_person_id, after=now, quiet_hours=True, urgent=urgent
+            )
             leave_end = _leave_end_for(action.assigned_to_person_id)
             defer_to = nxt
             if leave_end is not None and (defer_to is None or defer_to <= leave_end):
@@ -2229,8 +2253,13 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
             recorded = True
         else:
             sending = True
-            delivery = await _deliver_to_principal(artifact, label=workflow.title)
+            # Messages the principal asked to get in their brief ride along
+            # as one "While you were away" block (people.held_messages).
+            delivered_text, held_ids = _with_held_messages(kind, artifact)
+            delivery = await _deliver_to_principal(delivered_text, label=workflow.title)
             ok, detail = delivery.ok, delivery.detail
+            if ok and held_ids:
+                _mark_held_sent(held_ids)
             brief_state.record_delivery_outcome(
                 kind, reason=delivery.reason, channel=delivery.channel,
                 detail=None if ok else detail,
@@ -2270,6 +2299,11 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
                 detail=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
             )
 
+    if kind in _DIGEST_BRIEF_KINDS:
+        # Everyone else who chose "In my briefs" gets theirs now, on its own:
+        # only the principal has a brief to carry them.
+        _release_others_digests(now)
+
     # Always chain the next occurrence + mark this row done, so a single
     # bad brief doesn't kill the recurring rhythm. Worst case the next
     # tick re-attempts on the same shape of input. A solo-only kind whose
@@ -2279,6 +2313,54 @@ async def _run_principal_brief(action: ScheduledAction, now: datetime) -> None:
         logger.info("scheduler: %s not chained — the workspace is now in team mode", kind)
     else:
         _enqueue_next_principal_brief(kind, after=_chain_after(action))
+
+
+# The briefs that carry held messages ("In my briefs", people.notifications).
+_DIGEST_BRIEF_KINDS: frozenset[str] = frozenset({"principal_brief_morning", "principal_brief_eod"})
+
+
+def _with_held_messages(kind: str, artifact: str) -> tuple[str, list[int]]:
+    """``artifact`` with the principal's brief-held messages appended as one
+    "While you were away" block, and their ids (to mark sent once it went).
+    The artifact unchanged when there are none or they can't be read."""
+    if kind not in _DIGEST_BRIEF_KINDS:
+        return artifact, []
+    try:
+        from openexecutive.people.held_messages import for_brief, render_block
+        from openexecutive.people.notifications import get_notification_settings, zone_for
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        if principal is None or principal.id is None:
+            return artifact, []
+        held = for_brief(principal.id)
+        if not held:
+            return artifact, []
+        zone = zone_for(get_notification_settings(principal.id))
+        return f"{artifact.rstrip()}\n\n{render_block(held, zone=zone)}", [m.id for m in held]
+    except Exception:
+        logger.exception("scheduler: couldn't add held messages to the brief")
+        return artifact, []
+
+
+def _mark_held_sent(ids: list[int]) -> None:
+    try:
+        from openexecutive.people.held_messages import mark_sent
+
+        mark_sent(ids)
+    except Exception:
+        logger.exception("scheduler: couldn't mark %d held message(s) sent", len(ids))
+
+
+def _release_others_digests(now: datetime) -> None:
+    try:
+        from openexecutive.people.held_messages import schedule_digest_release
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        schedule_digest_release(now, except_person_id=principal.id if principal else None)
+    except Exception:
+        logger.exception("scheduler: couldn't release held messages with the briefs")
 
 
 def _outreach_source(action: ScheduledAction) -> tuple[str, str]:

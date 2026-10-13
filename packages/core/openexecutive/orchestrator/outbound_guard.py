@@ -21,6 +21,13 @@ suppress-and-log the send and the Executive can read the reason and adapt
 3. Quiet hours / availability — when ``outbound_respect_quiet_hours`` is set,
    refuse while the recipient is on leave or outside their availability windows.
 
+Separately, ``check_hold`` applies the recipient's own notification settings
+(``people.notifications``: quiet hours, "In my briefs") to the Executive's
+own outreach only — a DM sent while a proactive source is tagged
+(``attunement.outcomes.tag_proactive``). It does not refuse: the send handler
+stores the message (``people.held_messages``) and it goes when their quiet
+hours end or with their next brief.
+
 The delivery history is read from the ``status='done'`` ``scheduled_actions``
 rows that ``_record_send_to_activity`` already writes for every send, so there
 is no new table. The guard is *fail-open*: any internal lookup failure returns
@@ -44,6 +51,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from openexecutive.people.models import Person
+    from openexecutive.people.notifications import Hold
 
 logger = logging.getLogger(__name__)
 
@@ -192,3 +200,40 @@ def _evaluate(channel: str, channel_ref: str, text: str, now: datetime) -> str |
             return reason
 
     return None
+
+
+def check_hold(
+    channel: str,
+    channel_ref: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[int, str, Hold] | None:
+    """``(person_id, source, hold)`` when this DM is the Executive's own
+    outreach and the recipient's notification settings hold it back, else
+    None (send it now).
+
+    Only a tagged proactive send is ever held (``attunement.outcomes``): a
+    message someone asked for in chat, a brief, a reminder they set and a
+    release of held messages carry no tag. Fail-open like the guard: any
+    lookup error sends.
+    """
+    try:
+        from openexecutive.attunement.outcomes import current_tag
+
+        tag = current_tag()
+        if tag is None:
+            return None
+        from openexecutive.people.notifications import hold_for, is_urgent_send
+        from openexecutive.people.store import find_person_by_channel_ref
+
+        person = find_person_by_channel_ref(channel, channel_ref)
+        if person is None or person.id is None or person.archived:
+            return None
+        source = tag[0]
+        hold = hold_for(
+            person.id, source=source, now=now or datetime.now(UTC), urgent=is_urgent_send()
+        )
+        return None if hold is None else (person.id, source, hold)
+    except Exception:
+        logger.exception("outbound_guard: hold check failed; sending")
+        return None
