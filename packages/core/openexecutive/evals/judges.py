@@ -8,11 +8,32 @@ from openexecutive.audit.usage import log_model_usage
 from openexecutive.providers import get_provider
 
 # The judge routes through the provider abstraction (like every other LLM call),
-# so when OPENROUTER_ENABLED is on, judging bills the OpenRouter account too.
+# so when OPENROUTER_ENABLED is on, judging bills the OpenRouter account too,
+# and a slug listed in LOCAL_MODELS is judged by the local server.
+# EVAL_JUDGE_MODEL picks the model; unset, it is this one.
 _JUDGE_MODEL = "claude-opus-5-5"
 # Room for the judge's adaptive thinking (always on for Opus 5.5) before the
 # JSON verdict; 500 tokens could be spent thinking with nothing left to answer.
 _JUDGE_MAX_TOKENS = 4096
+
+
+def judge_model() -> str:
+    """The model that scores eval answers: ``EVAL_JUDGE_MODEL``, else Opus."""
+    from openexecutive.config import get_settings
+
+    return get_settings().eval_judge_model or _JUDGE_MODEL
+
+
+async def judge_message(prompt: str, *, max_tokens: int = _JUDGE_MAX_TOKENS) -> str:
+    """Send one judge prompt to the judge model and return the reply's text."""
+    model = judge_model()
+    message = await get_provider(model).messages_create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    log_model_usage(message, model=model, actor="eval_judge")
+    return _response_text(message)
 
 
 def _response_text(message: Any) -> str:
@@ -190,13 +211,7 @@ Rate each dimension (1=poor, 3=acceptable, 5=excellent):
 Respond in JSON format:
 {{"persona_coherence": N, "domain_accuracy": N, "actionability": N, "topic_coverage": N, "specificity": N, "overall": N, "notes": "brief explanation"}}"""
 
-    message = await get_provider(_JUDGE_MODEL).messages_create(
-        model=_JUDGE_MODEL,
-        max_tokens=_JUDGE_MAX_TOKENS,
-        messages=[{"role": "user", "content": judge_prompt}],
-    )
-    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
-    text = _response_text(message)
+    text = await judge_message(judge_prompt)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -240,13 +255,7 @@ Rate each dimension 1-5 (1=poor, 3=acceptable, 5=excellent):
 Respond in JSON:
 {{"structure": N, "specificity": N, "actionability": N, "coherence": N, "completeness": N, "overall": N, "notes": "brief"}}"""
 
-    message = await get_provider(_JUDGE_MODEL).messages_create(
-        model=_JUDGE_MODEL,
-        max_tokens=_JUDGE_MAX_TOKENS,
-        messages=[{"role": "user", "content": judge_prompt}],
-    )
-    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
-    text = _response_text(message)
+    text = await judge_message(judge_prompt)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -303,13 +312,7 @@ If any quality criterion is not met, overall must be 2 or lower and notes must n
 Respond in JSON:
 {{"faithfulness": N, "safety": N, "open_questions": N, "voice": N, "overall": N, "notes": "brief"}}"""
 
-    message = await get_provider(_JUDGE_MODEL).messages_create(
-        model=_JUDGE_MODEL,
-        max_tokens=_JUDGE_MAX_TOKENS,
-        messages=[{"role": "user", "content": judge_prompt}],
-    )
-    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
-    text = _response_text(message)
+    text = await judge_message(judge_prompt)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -383,13 +386,7 @@ ACTUAL DECISION:
 Respond in JSON:
 {{"severity_accuracy": N, "channel_appropriateness": N, "dedup_correctness": N, "overall": N, "notes": "brief"}}"""
 
-    message = await get_provider(_JUDGE_MODEL).messages_create(
-        model=_JUDGE_MODEL,
-        max_tokens=_JUDGE_MAX_TOKENS,
-        messages=[{"role": "user", "content": judge_prompt}],
-    )
-    log_model_usage(message, model=_JUDGE_MODEL, actor="eval_judge")
-    text = _response_text(message)
+    text = await judge_message(judge_prompt)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1

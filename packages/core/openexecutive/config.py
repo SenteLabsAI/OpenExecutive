@@ -320,6 +320,12 @@ class Settings(BaseSettings):
         Literal["none", "minimal", "low", "medium", "high"] | None
     ) = Field(None, alias="LOCAL_REASONING_EFFORT")
 
+    # The model that scores eval answers (`make eval` and the Evals page).
+    # Unset = Claude Opus. Any slug the registry routes works, so a slug in
+    # LOCAL_MODELS runs the judge on the local server too, for a run with no
+    # hosted API at all.
+    eval_judge_model: str | None = Field(None, alias="EVAL_JUDGE_MODEL")
+
     @field_validator("local_models", mode="before")
     @classmethod
     def _parse_local_models(cls, v: Any) -> list[str]:
