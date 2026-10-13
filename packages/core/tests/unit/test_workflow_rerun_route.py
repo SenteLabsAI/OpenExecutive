@@ -76,6 +76,27 @@ def test_run_again_queues_one_rerun_and_closes_the_card(client: TestClient) -> N
     assert len(_pending_reruns()) == 1
 
 
+def test_parallel_run_again_taps_queue_it_once(db: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from openexecutive.workflows.failure_alerts import RerunRefused, queue_rerun
+
+    _failed_check_in()
+    run = wf_persistence.get_run("r-1") or {}
+
+    def _tap(_: int) -> bool:
+        try:
+            queue_rerun(run)
+            return True
+        except RerunRefused:
+            return False
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        queued = list(pool.map(_tap, range(8)))
+    assert queued.count(True) == 1
+    assert len(_pending_reruns()) == 1
+
+
 def test_run_again_refuses_what_it_cannot_rerun(client: TestClient) -> None:
     wf_persistence.create_run("ok", "department_check_in", "t", {"department_slug": "finance"})
     wf_persistence.complete_run("ok", "# done")

@@ -16,6 +16,7 @@ Lazy imports throughout: the scheduler imports this inside its handlers.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +26,9 @@ SOURCE = "workflow_failed"
 # Carried on the card so the UI can offer Run again for that run.
 RUN_TAG_PREFIX = "failed_run:"
 RERUN_SCOPE_PREFIX = "rerun:"
+# Serialises queue_rerun's check-then-insert, so two Run again taps at once
+# (the route can be called from several requests in parallel) queue it once.
+_RERUN_LOCK = threading.Lock()
 
 
 def is_rerun(scope_key: str | None) -> bool:
@@ -135,23 +139,24 @@ def queue_rerun(run: dict[str, Any]) -> int:
 
     kind, ref, assignee = rerun_target(run)
     scope_key = f"{RERUN_SCOPE_PREFIX}{run['run_id']}"
-    with _get_conn(_resolve_db_path(None)) as conn:
-        queued = conn.execute(
-            "SELECT 1 FROM scheduled_actions WHERE scope_key = ? "
-            "AND status IN ('pending', 'running') LIMIT 1",
-            (scope_key,),
-        ).fetchone()
-    if queued is not None:
-        raise RerunRefused(409, "It's already running again.")
-    action_id = insert_scheduled_action(
-        run_at=datetime.now(UTC).isoformat(),
-        channel="__internal__",
-        channel_ref=ref,
-        intent_text=f"Run again: {run.get('title') or ref}",
-        kind=kind,
-        assigned_to_person_id=assignee,
-        scope_key=scope_key,
-    )
+    with _RERUN_LOCK:
+        with _get_conn(_resolve_db_path(None)) as conn:
+            queued = conn.execute(
+                "SELECT 1 FROM scheduled_actions WHERE scope_key = ? "
+                "AND status IN ('pending', 'running') LIMIT 1",
+                (scope_key,),
+            ).fetchone()
+        if queued is not None:
+            raise RerunRefused(409, "It's already running again.")
+        action_id = insert_scheduled_action(
+            run_at=datetime.now(UTC).isoformat(),
+            channel="__internal__",
+            channel_ref=ref,
+            intent_text=f"Run again: {run.get('title') or ref}",
+            kind=kind,
+            assigned_to_person_id=assignee,
+            scope_key=scope_key,
+        )
     _close_cards(_dedup_key(str(run.get("workflow_name") or ""), ref))
     return action_id
 
