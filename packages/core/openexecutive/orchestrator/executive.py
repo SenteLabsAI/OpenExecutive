@@ -39,7 +39,7 @@ from openexecutive.memory.workspace_settings import (
     pin_turn_principal_role,
     pin_turn_workspace_mode,
 )
-from openexecutive.orchestrator import extensions, take_the_lead, tool_groups
+from openexecutive.orchestrator import department_gate, extensions, take_the_lead, tool_groups
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -2105,6 +2105,13 @@ class Executive:
         leading = bool(unattended_withheld) and take_the_lead.executive_on()
         if leading:
             turn_handlers = take_the_lead.gated_handlers(turn_handlers, source="scheduled")
+        # A team member's turn (not the principal's): every send or edit goes
+        # through their department's authority first (department_gate), as
+        # unattended work goes through the scheduler's and Take the lead's.
+        seat = None if unattended_withheld else department_gate.speaker(current_session.get())
+        seat_session_id = getattr(current_session.get(), "session_id", None)
+        if seat is not None:
+            turn_handlers = department_gate.gated_handlers(turn_handlers, seat, session_id=seat_session_id)
         # Something new came in on a channel (mail, Slack, Telegram, …): with
         # Take the lead on, the reflection looks at it soon, batched.
         origin = str(getattr(current_session.get(), "origin_channel", "") or "")
@@ -2735,6 +2742,10 @@ class Executive:
                     "call_tool": guard_call_tool(
                         take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                         if leading
+                        else department_gate.gated_call_tool(
+                            self._mcp_gateway.call_tool, seat, session_id=seat_session_id,
+                        )
+                        if seat is not None
                         else self._mcp_gateway.call_tool
                     ),
                     "load_mcp_server": self._mcp_gateway.load_mcp_server,
@@ -2824,6 +2835,10 @@ class Executive:
                 script_call = guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
+                    else department_gate.gated_call_tool(
+                        self._mcp_gateway.call_tool, seat, session_id=seat_session_id,
+                    )
+                    if seat is not None
                     else self._mcp_gateway.call_tool
                 )
                 # The Executive's own tools a script may call this turn: the

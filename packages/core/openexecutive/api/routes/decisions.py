@@ -670,9 +670,101 @@ _DELEGATED_ACTIONS = DecisionClassSpec(
     after_reject=_actions_dismissed,
 )
 
+async def _carry_out_department_action(
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
+) -> DecisionInstance:
+    """A team member's send or edit their department held
+    (orchestrator.department_gate): do that exact call, once (claimed first),
+    as it stands, and record who approved it."""
+    from openexecutive.audit import log_event
+    from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
+    from openexecutive.orchestrator import take_the_lead
+
+    payload = _parse_payload(instance)
+    if not claim_for_execution(instance.id, resolver_person_id=resolver):
+        raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
+    try:
+        result = await take_the_lead.carry_out(payload, by_principal=_approver_is_principal(request))
+    except Exception as exc:
+        logger.exception("decisions/approve: department action %d failed", instance.id)
+        finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": type(exc).__name__})
+        _clear_decision_alert(instance.id, "dismissed")
+        _audit_department_action(log_event, "department_action_failed", instance, payload, resolver)
+        raise HTTPException(
+            status_code=502,
+            detail="Something went wrong, so it may not have gone through. Check before trying again.",
+        ) from None
+    failed = take_the_lead.result_failed(result)
+    finish_execution(
+        instance.id,
+        STATUS_FAILED if failed else STATUS_APPROVED_UNCHANGED,
+        final_payload={**payload, "result": result[:2000]},
+    )
+    _clear_decision_alert(instance.id, "dismissed" if failed else "ack")
+    _audit_department_action(
+        log_event, "department_action_failed" if failed else "department_action_done",
+        instance, payload, resolver,
+    )
+    if failed:
+        raise HTTPException(status_code=502, detail=f"It couldn't do that: {result[:300]}")
+    return _refresh(instance.id)
+
+
+def _audit_department_action(
+    log_event: Any, event_type: str, instance: DecisionInstance, payload: dict[str, Any],
+    resolver: int | None,
+) -> None:
+    verb = {
+        "department_action_done": "Approved and done",
+        "department_action_failed": "Approved, but it failed",
+        "department_action_declined": "Declined",
+    }[event_type]
+    try:
+        log_event(
+            event_type,
+            f"{verb}: {payload.get('summary') or payload.get('tool')}"[:240],
+            actor=f"person:{resolver}" if resolver is not None else "user",
+            details={
+                "decision_id": instance.id,
+                "tool": payload.get("tool"),
+                "requested_by_person_id": payload.get("requested_by_person_id"),
+                "department": payload.get("department"),
+                "resolved_by_person_id": resolver,
+            },
+            department=str(payload.get("department") or "") or None,
+            private=True,
+        )
+    except Exception:
+        logger.warning("decisions: couldn't audit department action %d", instance.id, exc_info=True)
+
+
+async def _department_action_declined(instance: DecisionInstance) -> None:
+    from openexecutive.audit import log_event
+
+    _audit_department_action(
+        log_event, "department_action_declined", instance, _parse_payload(instance),
+        instance.resolver_person_id,
+    )
+
+
+# A send or edit a team member asked for in chat that their department's
+# authority held (orchestrator.department_gate), for the approver it went to
+# or the principal. What it says quotes the conversation, so nobody else on
+# the team sees it.
+_DEPARTMENT_ACTION = DecisionClassSpec(
+    name="department_action",
+    principal_only=False,
+    principal_and_approver=True,
+    alert_source=DECISION_ALERT_SOURCE,
+    approve=_carry_out_department_action,
+    after_reject=_department_action_declined,
+)
+
 DECISION_CLASSES: dict[str, DecisionClassSpec] = {
     spec.name: spec
-    for spec in (_MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD, _DELEGATED_ACTIONS)
+    for spec in (
+        _MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD, _DELEGATED_ACTIONS, _DEPARTMENT_ACTION,
+    )
 }
 
 

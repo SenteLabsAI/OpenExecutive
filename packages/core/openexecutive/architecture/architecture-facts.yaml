@@ -3649,6 +3649,47 @@ departments:
     written by a model (triage reading inbound mail, the Executive's
     create_alert), and the review forwards an alert's tags onto a new gate
     card, so a forged tag could re-send a held or already-sent action.
+    CHAT TURNS (orchestrator.department_gate): a team member's attended turn
+    (caller is a team member, not the principal; not unattended, not private
+    to the principal; or a web caller signed in but on no People entry, such
+    as an archived teammate still let in, gated as someone in no department)
+    wraps its sends and edits with the gate, in
+    Executive._stream_agent_loop beside Take the lead's `leading` wrap:
+    `turn_handlers` for GATED_TOOLS (take_the_lead.ACTING_TOOLS less
+    assign_open_loop, which refuses any session but the asker's so a held one
+    could never run, and run_workflow, whose action steps are approved step
+    by step; under escalate those two are refused outright, since both lead
+    to sends later and neither can wait on a card), and `call_tool` (chat and run_script) for every name
+    `mcp_tool_acts` flags. The gate wrap sits inside guard_call_tool, so the
+    gateway's recipient and mailbox gates still run first. Level = strictest
+    of the speaker's department_slugs (escalate > propose_only >
+    auto_execute; unknown slug = propose_only; none = propose_only, routed
+    via _route_proposal). auto_execute runs; propose_only runs only when the
+    speaker holds a range from EVERY group of approval ranges it needs (one
+    group per kind the text touches: money, contract, people decision, board;
+    or WILDCARD), since they would be the approver anyway. Every group, not
+    the first: Take the lead's single-kind read let a $12 mention make a
+    petty-cash holder the approver of a termination letter; escalate always holds, and an
+    approver equal to the speaker is replaced by the next one
+    (find_approvers, else the principal). An action reaching anyone outside
+    the team goes to the principal (only their approval opens contact
+    egress). A message only to the principal runs (nothing to approve). Held
+    = decision class `department_action` (idempotency key per speaker+call,
+    same live card on a repeat), alert source decision_scheduling routed to
+    the approver, private tag when the approver is the principal (else the
+    card shows the unquoted line), audit department_action_held (actor
+    person:<speaker>, private to the principal or to the approver alone).
+    The payload keeps `details`, every field of the call in full, and the
+    UI's HeldActionCard loads it (GET /decisions/{id}) and keeps Approve off
+    until it is on screen: the summary keeps only the first 117 characters,
+    so an injected tail would otherwise be approved unseen. Approve (api.routes.decisions,
+    principal_and_approver) runs take_the_lead.carry_out once after
+    claim_for_execution and audits department_action_done/_failed;
+    reject audits department_action_declined. The activity rail skips the
+    class, since its payload quotes the conversation. Fails closed: a gate
+    error holds. Why: gate_action used to run only for unattended work and
+    propose_meeting, so a seat's Slack DM or Gmail send from chat skipped
+    propose_only and escalate.
   card_approvals: |
     openexecutive.alerts.approvals + POST /alerts/{id}/approve. Approve on
     a Today card is carried out on the server for every card. A

@@ -14,6 +14,7 @@ import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
 import { type SnoozeChoice, snoozeChoices } from "@/lib/snooze";
 import { hostOf } from "@/lib/url";
 
+import HeldActionCard, { isHeldAction } from "./HeldActionCard";
 import LeadTrainingCard, { isLeadTraining } from "./LeadTrainingCard";
 import { Chip, TONE_TEXT, buildMonitoringSeed, type ContinueHandler } from "./shared";
 
@@ -229,6 +230,11 @@ export default function ProposalCard({
   // Approve, Approve + allow, Edit and Decline (LeadTrainingCard).
   if (isLeadTraining(proposal)) {
     return <LeadTrainingCard proposal={proposal} emphasized={emphasized} onResolved={() => onDismiss?.(proposal)} />;
+  }
+  // A team member's chat send their department held: approved on its own
+  // card once the whole call is on screen (HeldActionCard).
+  if (isHeldAction(proposal)) {
+    return <HeldActionCard proposal={proposal} emphasized={emphasized} onResolved={() => onDismiss?.(proposal)} />;
   }
   function startEditing() {
     setEditedBody(proposal.body || proposal.headline);
