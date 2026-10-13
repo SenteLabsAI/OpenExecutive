@@ -427,6 +427,7 @@ def next_check_in_at(slug: str, db_path: Path | None = None) -> str | None:
         row = conn.execute(
             "SELECT run_at FROM scheduled_actions "
             "WHERE kind = 'dept_cadence' AND department = ? AND status = 'pending' "
+            "  AND COALESCE(scope_key, '') NOT LIKE 'rerun:%' "  # a one-off, not the schedule
             "ORDER BY run_at LIMIT 1",
             (slug,),
         ).fetchone()

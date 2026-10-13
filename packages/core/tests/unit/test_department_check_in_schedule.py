@@ -108,6 +108,9 @@ def test_reschedule_leaves_a_queued_rerun_alone(db: Path) -> None:
     new_id = reschedule_check_in("finance")
 
     assert sorted(a.id for a in _pending("finance", db)) == sorted([rerun_id, new_id])
+    # The page shows the schedule's next check-in, not the one-off rerun.
+    new = episodic.get_scheduled_action(new_id, db_path=db) if new_id else None
+    assert new is not None and next_check_in_at("finance") == new.run_at
 
 
 def test_reschedule_with_check_in_off_queues_nothing(db: Path) -> None:
