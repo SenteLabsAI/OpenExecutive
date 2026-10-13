@@ -2570,6 +2570,8 @@ export interface WorkflowRunDetail extends WorkflowRunSummary {
   state_json?: string | null;
   resolution_json?: string | null;
   resume_progress?: ResumeProgress | null;
+  // A failed scheduled run that Run again can queue.
+  rerunnable?: boolean;
 }
 
 /** The serialized gate in `state_json`, for rendering what a paused run is

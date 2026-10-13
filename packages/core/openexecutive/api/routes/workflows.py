@@ -111,7 +111,22 @@ async def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     """
     run = _visible_run(run_id, request)
     run["resume_progress"] = _resume_progress(run.pop("resume_state_json", None))
+    run["rerunnable"] = _rerunnable(run)
     return run
+
+
+def _rerunnable(run: dict[str, Any]) -> bool:
+    """Whether Run again can queue this run (a failed scheduled one), so the
+    run page offers the button only where it works."""
+    if run.get("status") != "error":
+        return False
+    from openexecutive.workflows.failure_alerts import RerunRefused, rerun_target
+
+    try:
+        rerun_target(run)
+    except RerunRefused:
+        return False
+    return True
 
 
 @router.delete("/workflows/runs/{run_id}")

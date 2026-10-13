@@ -184,3 +184,10 @@ def test_a_repeat_failure_points_the_card_at_the_newest_run(db: Path) -> None:
     with pytest.raises(RerunRefused) as again:
         queue_rerun(_run("tuesday"))
     assert again.value.status == 409
+
+
+def test_the_run_page_offers_run_again_only_where_it_works(client: TestClient) -> None:
+    _failed_check_in("scheduled")
+    _failed_check_in("by-hand", scheduled=False)
+    assert client.get("/workflows/runs/scheduled").json()["rerunnable"] is True
+    assert client.get("/workflows/runs/by-hand").json()["rerunnable"] is False

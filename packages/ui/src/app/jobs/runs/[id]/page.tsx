@@ -240,9 +240,11 @@ export default function RunDetailPage() {
               <div className="font-medium mb-1">Run failed</div>
               <div className="text-xs">{run.error}</div>
               <div className="mt-3 flex flex-wrap items-center gap-3">
-                <Button variant="secondary" onClick={handleRerun} disabled={rerunBusy}>
-                  Run again
-                </Button>
+                {run.rerunnable && (
+                  <Button variant="secondary" onClick={handleRerun} disabled={rerunBusy}>
+                    Run again
+                  </Button>
+                )}
                 <Link href={`/jobs/${run.workflow_name}`} className="text-xs text-accent hover:underline">
                   Start a new run instead
                 </Link>
