@@ -51,14 +51,14 @@ jobs:
             echo "::notice::Claude review skipped: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (see the header of .github/workflows/claude-code-review.yml)."
           fi
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.auth.outputs.ready == 'true'
         with:
           fetch-depth: 1
 
       - name: Review the PR
         if: steps.auth.outputs.ready == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

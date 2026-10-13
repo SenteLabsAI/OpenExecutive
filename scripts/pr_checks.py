@@ -14,6 +14,8 @@ Checks (see CLAUDE.md -> "Architecture Docs" and "PR Requirements"):
 - eval-scenarios  FAIL  a new agent or a domain-prompt change without an
                         evals/_scenarios/ change
 - tests-present   WARN  openexecutive/ code changed with no tests/ change
+- pinned-actions  FAIL  a workflow line added under .github/ uses an action by
+                        tag or branch instead of a full commit SHA
 
 A release-please version bump is not a code change: when a file release-please
 manages only has the version number rewritten on its marked lines (the release
@@ -94,6 +96,15 @@ CODE_EXT = (".py", ".ts", ".tsx", ".js", ".jsx")
 VERSION_MARKER = "x-release-please-version"
 RELEASE_PLEASE_FILES = {PKG + "api/main.py", PKG + "api/models.py"}
 SEMVER_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
+# A third-party action named by anything but a full commit SHA: a tag or
+# branch can be moved to new code, which then runs with the workflow's token
+# and secrets. Local actions (./path) and docker:// images are left alone.
+# Dependabot (github-actions) keeps the SHAs and their "# vX.Y.Z" comments
+# current.
+_USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?(?P<ref>[^\s'\"#]+)")
+_SHA_RE = re.compile(r"@[0-9a-f]{40}$")
+
+
 # These files name the stub patterns themselves.
 STUB_EXEMPT = {"scripts/pr_checks.py", TESTS + "unit/test_pr_checks.py"}
 
@@ -259,7 +270,30 @@ def check_tests_present(c: Change) -> Result:
     )
 
 
-CHECKS = (check_arch_drift, check_no_stubs, check_eval_scenarios, check_tests_present)
+def check_pinned_actions(c: Change) -> Result:
+    hits = []
+    for path, lines in sorted(c.added_lines.items()):
+        if not (path.startswith(".github/") and path.endswith((".yml", ".yaml"))):
+            continue
+        for line in lines:
+            m = _USES_RE.match(line)
+            if not m:
+                continue
+            ref = m.group("ref")
+            if ref.startswith(("./", "docker://")) or _SHA_RE.search(ref):
+                continue
+            hits.append(f"{path}: {ref}")
+    if hits:
+        return Result(
+            "pinned-actions",
+            "FAIL",
+            "actions not pinned to a commit SHA (use owner/repo@<40-hex sha> # vX.Y.Z): "
+            + " | ".join(hits[:5]),
+        )
+    return Result("pinned-actions", "PASS", "added workflow steps pin actions by SHA")
+
+
+CHECKS = (check_arch_drift, check_no_stubs, check_eval_scenarios, check_tests_present, check_pinned_actions)
 
 
 def run_checks(c: Change) -> list[Result]:

@@ -839,6 +839,21 @@ def _webhook_verifies_its_caller(path: str) -> bool:
     return False
 
 
+# The UI `make dev` serves. Allowed only off a public deployment: there,
+# anything listening on a visitor's localhost:3000 (another dev server, a
+# local tool) could otherwise read this API's answers with their cookies.
+_DEV_UI_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
+
+
+def _cors_origins() -> list[str]:
+    """Origins allowed through CORS: the ones in BACKEND_ALLOWED_ORIGINS
+    (comma-separated, e.g. "https://exec.example.com,https://exec.mycompany.com"),
+    plus the `make dev` UI unless OE_PUBLIC_DEPLOYMENT is set."""
+    extra = [o.strip() for o in os.environ.get("BACKEND_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    dev = [] if _is_public_deployment() else list(_DEV_UI_ORIGINS)
+    return [*dev, *extra]
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Open Executive API",
@@ -847,17 +862,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Allowed UI origins: localhost for `make dev`, plus any production
-    # origins listed in BACKEND_ALLOWED_ORIGINS (comma-separated, e.g.
-    # "https://exec.example.com,https://exec.mycompany.com").
-    extra_origins = [
-        o.strip()
-        for o in os.environ.get("BACKEND_ALLOWED_ORIGINS", "").split(",")
-        if o.strip()
-    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", *extra_origins],
+        allow_origins=_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
