@@ -584,6 +584,8 @@ export interface SyncedDoc {
   modified_at: string | null;
   synced_at: string | null;
   indexed: boolean;
+  /** Why a file has no readable text, when the sync knows (Drive only). */
+  unreadable_reason?: string | null;
 }
 
 export interface SyncedDocList {

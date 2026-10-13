@@ -1818,15 +1818,27 @@ knowledge:
         newest first, capped at DRIVE_MAX_FILES_PER_SCAN; the overflow waits
         for the next tick.
         - Text: Docs / Slides are exported as text/plain and Sheets as .xlsx
-          (Drive's CSV export holds only the first sheet). PDF / .docx /
-          .xlsx / txt / md / csv are downloaded and read with
-          loader.extract_text_from_file, with no model call, so a scanned PDF
-          yields nothing. Anything else, and anything over 20 MB, is skipped.
-          Downloads stream and stop at the cap. A .docx / .xlsx whose zip
-          declares more than 100 MB uncompressed is not parsed. Extraction
-          has a 120 s deadline (the worker thread cannot be killed, but the
-          tick moves on). An unreadable file is recorded with no chunks, so
-          it is not refetched until it changes.
+          (Drive's CSV export holds only the first sheet). .docx / .xlsx /
+          txt / md / csv are downloaded and read with
+          loader.extract_text_from_file. A PDF goes through
+          pdf_reader.read_pdf_text, the path uploads take (not inbound, so
+          PDF_VISION_MAX_PAGES, not the inbound budget): the text layer, else
+          the opt-in model step (PDF_PROVIDER_READING), else local OCR in a
+          child process under the two-slot OCR gate, with PDF_OCR_ENABLED
+          switching it off for Drive as for uploads. Why: a scanned contract
+          in a shared folder used to be skipped silently. Anything else, and
+          anything over 20 MB, is skipped. Downloads stream and stop at the
+          cap. A .docx / .xlsx whose zip declares more than 100 MB
+          uncompressed is not parsed. Non-PDF extraction has a 120 s deadline
+          (the worker thread cannot be killed, but the tick moves on); a PDF
+          read keeps pdf_reader's own child limits, under a backstop
+          (_PDF_READ_TIMEOUT_S, 1200 s: text layer + a model allowance + OCR
+          slot wait, budget and slack). Busy parsers / OCR slots are a retry
+          next tick, not a verdict. An unreadable file is recorded with no
+          chunks and its reason (`unreadable` in the state record, e.g. the
+          reader's "it looks scanned and local OCR is turned off"), logged,
+          and shown on the knowledge page through `unreadable_reason` in
+          `GET /documents/drive`; it is not refetched until it changes.
         - A file with no text is recorded with no chunks, so it is not
           refetched until it changes.
         - Text is written under <company_profile_dir>/docs/drive/
@@ -1884,7 +1896,8 @@ knowledge:
         .xls / .rtf / .odt / .odp / .ods are fetched as Graph's PDF rendering
         (`?format=pdf`) and read as PDF. The extractor, size caps, depth 4,
         2000-item cap, 120 s deadline and request pause are imported from
-        drive_sync, so the two stay in step. Text is written under
+        drive_sync, so the two stay in step. Unlike Drive, a PDF here is read
+        by that extractor (text layer only), so a scanned PDF yields nothing. Text is written under
         <company_profile_dir>/docs/onedrive/ (onedrive-<id>-<slug>.md, with
         an onedrive_key comment). Reconcile, skip rules, locking and resets
         (fixture load/reset, client-slot switch) are Drive's. A refused
@@ -7455,7 +7468,17 @@ integrations:
     a request that fails its own check (at INFO, which the process runs at)
     and raises on an unparseable body or timestamp: unsigned traffic would
     otherwise write anything into the log. A signed body Bolt can't parse is
-    400. Bolt then verifies again, answers url_verification, and acks at once while
+    400. A signed request is then taken once: the route remembers the exact
+    x-slack-signature of each request it hands to Bolt (an identical replay
+    of any signed body inside the window carries the same one) and the
+    event_id of an event_callback body (unchanged across Slack's re-signed
+    retries), in a per-process in-memory set (TTL 660 s, twice the signature
+    window plus slop; at most 10,000 keys, oldest dropped first), and answers
+    a repeat 200 with an empty body without reaching Bolt, so Slack stops
+    retrying. Keys are recorded before Bolt runs (concurrent copies are
+    caught) and forgotten if Bolt raises or answers 5xx. Per process means
+    one machine; a restart forgets the set.
+    Bolt then verifies again, answers url_verification, and acks at once while
     the listener runs (Slack resends an event not acked within 3 s). The
     route is in _UNAUTHENTICATED_PATHS and passes the local-login Host
     gate as a self-verifying webhook. In BOTH modes a global middleware

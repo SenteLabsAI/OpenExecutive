@@ -428,7 +428,8 @@ function DocListRow({
     if (row.addedAt) details.push(`Added ${new Date(row.addedAt).toLocaleDateString()}`);
     if (row.sizeBytes !== null) details.push(formatSize(row.sizeBytes));
   } else {
-    if (!row.indexed) details.push("No readable text");
+    if (!row.indexed)
+      details.push(row.unreadableReason ? `No readable text: ${row.unreadableReason}` : "No readable text");
     if (row.addedAt) details.push(`Synced ${formatRelativeTime(row.addedAt)}`);
     if (row.editedAt)
       details.push(
