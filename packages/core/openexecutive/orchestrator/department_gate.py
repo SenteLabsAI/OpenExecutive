@@ -20,7 +20,9 @@ server (``api.routes.decisions``). The model is told it is waiting and not
 to retry or work around it. The gate fails closed: an error holds the action.
 
 With several departments the strictest level applies; with none, the action
-is held as ``propose_only`` would hold it. The principal's own turns,
+is held as ``propose_only`` would hold it, and so is a web caller signed in
+but on no People entry. "Could approve it themselves" means holding a range
+for every kind of approval the action touches, not just the first. The principal's own turns,
 unattended runs (Take the lead's gate and the scheduler's) and Act as me are
 not this module's.
 """
@@ -49,6 +51,11 @@ DECISION_CLASS = "department_action"
 # asker's, so a held one could never be carried out) and starting a workflow
 # (run_workflow: its own action steps are approved step by step).
 GATED_TOOLS: frozenset[str] = take_the_lead.ACTING_TOOLS - {"assign_open_loop", "run_workflow"}
+
+# Not sends themselves but they lead to some later (the chase messages
+# people; a workflow's steps run with its approved tools), and neither can be
+# carried out from a card: under escalate they are refused instead.
+_REFUSED_ON_ESCALATE: frozenset[str] = take_the_lead.ACTING_TOOLS - GATED_TOOLS
 
 # Strictest first.
 _LEVEL_RANK: dict[AuthorityLevel, int] = {
@@ -83,6 +90,14 @@ def speaker(session: Any) -> Person | None:
         return None
     person_id = getattr(session, "caller_person_id", None)
     if person_id is None:
+        # Signed in on the web but on nobody's People entry (an archived
+        # teammate still allowed in, an allowlisted email): not the
+        # principal, so not ungated either. They wait like someone in no
+        # department.
+        if getattr(session, "from_web_chat", False) is True and getattr(
+            session, "web_caller_signed_in", False,
+        ) is True:
+            return Person(id=None, full_name="", kind="team")
         return None
     from openexecutive.people.store import get_person
 
@@ -111,25 +126,34 @@ def _department(person: Person) -> tuple[str, AuthorityLevel]:
     return best if best is not None else ("", AuthorityLevel.PROPOSE_ONLY)
 
 
-def approval_ranges(tool: str, tool_input: dict[str, Any]) -> list[AuthorityScope]:
-    """The People approval ranges that can say yes to this action, closest
-    fit first, as Take the lead reads them (money, a contract, a people
-    decision, the board); empty when it needs no particular range."""
+def approval_ranges(tool: str, tool_input: dict[str, Any]) -> list[list[AuthorityScope]]:
+    """The People approval ranges this action needs, one group per kind it
+    touches (money, a contract, a people decision, the board), each closest
+    fit first, as Take the lead reads them. Every group must be held: a $12
+    lunch in a termination letter still needs Hiring. Empty when it needs
+    no particular range."""
     text = "\n".join(take_the_lead._strings(tool_input))
-    kind = (
-        take_the_lead.MONEY if take_the_lead._MONEY_RE.search(text) or take_the_lead.amounts(text)
-        else take_the_lead.CONTRACTS if take_the_lead._CONTRACTS_RE.search(text)
-        else take_the_lead.PEOPLE_DECISIONS if take_the_lead._PEOPLE_RE.search(text)
-        else ""
-    )
-    return take_the_lead.approval_ranges(kind, text)
+    kinds = []
+    if take_the_lead._MONEY_RE.search(text) or take_the_lead.amounts(text):
+        kinds.append(take_the_lead.MONEY)
+    if take_the_lead._CONTRACTS_RE.search(text):
+        kinds.append(take_the_lead.CONTRACTS)
+    if take_the_lead._PEOPLE_RE.search(text):
+        kinds.append(take_the_lead.PEOPLE_DECISIONS)
+    groups = [take_the_lead.approval_ranges(kind, text) for kind in kinds]
+    board = take_the_lead.approval_ranges("", text)
+    if board:
+        groups.append(board)
+    return [group for group in groups if group]
 
 
-def _holds(person: Person, ranges: list[AuthorityScope]) -> bool:
-    """Whether ``person`` could approve it: they hold one of its ranges, or
-    approve everything."""
+def _holds(person: Person, groups: list[list[AuthorityScope]]) -> bool:
+    """Whether ``person`` could approve it: they hold a range from every
+    group it needs, or approve everything."""
     scopes = set(person.authority_scope)
-    return AuthorityScope.WILDCARD in scopes or any(r in scopes for r in ranges)
+    if AuthorityScope.WILDCARD in scopes:
+        return True
+    return bool(groups) and all(any(r in scopes for r in group) for group in groups)
 
 
 def _other_approver(scope: AuthorityScope | None, speaker_id: int | None) -> int | None:
@@ -158,7 +182,9 @@ def decide(
         return Verdict(run=True, reason="it only messages the owner")
     slug, level = _department(person)
     ranges = approval_ranges(tool, tool_input)
-    scope = ranges[0] if ranges else None
+    # One range routes to who holds it; several to someone who approves
+    # everything, since no one range covers them all.
+    scope = ranges[0][0] if len(ranges) == 1 else None
     if slug:
         gate = gate_action(slug, tool, required_scope=scope, now=now)
     else:
@@ -222,7 +248,11 @@ def hold(
     )
 
     base = "department_action:" + hashlib.sha256(
-        json.dumps([person.id, tool, tool_input, mcp], sort_keys=True, default=str).encode()
+        # Someone on no People entry is told apart by their chat.
+        json.dumps(
+            [person.id if person.id is not None else f"session:{session_id}", tool, tool_input, mcp],
+            sort_keys=True, default=str,
+        ).encode()
     ).hexdigest()[:32]
     idem: str | None = None
     for attempt in range(_HOLD_KEY_TRIES):
@@ -238,13 +268,18 @@ def hold(
     # What it would say quotes the conversation: a card on the team's Today
     # shows only the plain line; the approver opens the decision for the rest.
     shown = summary if private else take_the_lead.summarize(tool, tool_input, mcp=mcp, quote=False)
-    who = person.full_name or "Someone on the team"
+    who = person.full_name or (
+        "Someone on the team" if person.id is not None else "Someone signed in who isn't on People"
+    )
     escalated = verdict.level == AuthorityLevel.ESCALATE.value
     payload = {
         "tool": tool, "input": tool_input, "mcp": mcp, "summary": summary,
         "requested_by_person_id": person.id, "requested_by": who,
         "department": verdict.department, "level": verdict.level, "reason": verdict.reason,
         "fields": take_the_lead.editable_fields(tool, tool_input, mcp=mcp),
+        # Everything the call says, in full: the card shows this before it
+        # can be approved, since the summary keeps only the start.
+        "details": _details(tool_input),
     }
     decision_id = create_decision_instance(
         decision_class=DECISION_CLASS,
@@ -280,7 +315,7 @@ def hold(
     log_event(
         "department_action_held",
         f"Held for approval: {take_the_lead.summarize(tool, tool_input, mcp=mcp, quote=False)}",
-        actor=f"person:{person.id}",
+        actor=f"person:{person.id}" if person.id is not None else "user",
         details={
             "decision_id": decision_id, "tool": tool, "mcp": mcp,
             "requested_by_person_id": person.id, "department": verdict.department,
@@ -288,12 +323,24 @@ def hold(
             "reason": verdict.reason,
         },
         department=verdict.department or None,
+        # The principal's, or the approver's alone: it names who asked and
+        # what for.
         private=private,
+        private_to_person=None if private else verdict.approver_person_id,
     )
     return decision_id
 
 
 _HOLD_KEY_TRIES = 50
+
+
+def _details(tool_input: dict[str, Any]) -> list[dict[str, str]]:
+    """Each field of the call and its whole value, as text."""
+    out = []
+    for key, value in tool_input.items():
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+        out.append({"field": str(key), "value": text})
+    return out
 
 
 def _waiting(decision_id: int, verdict: Verdict) -> str:
@@ -343,7 +390,21 @@ def gated_handlers(handlers: dict[str, Any], person: Person, *, session_id: str 
     """``handlers`` with every send or edit behind ``person``'s department."""
     out = dict(handlers)
     for name, inner in handlers.items():
-        if name in GATED_TOOLS:
+        if name in _REFUSED_ON_ESCALATE:
+            async def _refused(tool_input: dict[str, Any], _name: str = name, _inner: Any = inner) -> Any:
+                try:
+                    escalated = _department(person)[1] == AuthorityLevel.ESCALATE
+                except Exception:
+                    escalated = True
+                if escalated:
+                    return json.dumps({"error": (
+                        f"{_name} was not done: this person's department escalates everything it "
+                        "does to a person, and this can't wait on a card. Say so. Do not retry."
+                    )})
+                return await _inner(tool_input)
+
+            out[name] = _refused
+        elif name in GATED_TOOLS:
             async def _wrapped(tool_input: dict[str, Any], _name: str = name, _inner: Any = inner) -> Any:
                 return await _gated(person, _name, _inner, tool_input, mcp=False, session_id=session_id)
 

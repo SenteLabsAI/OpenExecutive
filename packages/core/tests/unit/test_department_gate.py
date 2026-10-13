@@ -103,6 +103,17 @@ def test_only_a_team_members_attended_turn_is_gated(team: dict[str, Person]) -> 
     assert gate.speaker(Session(caller_person_id=contact)) is None
 
 
+def test_someone_signed_in_but_not_on_people_is_gated(team: dict[str, Person]) -> None:
+    """Not the principal, so not ungated: an archived teammate still let in,
+    or an allowlisted email, waits like someone in no department."""
+    unknown = gate.speaker(Session(from_web_chat=True, web_caller_signed_in=True))
+    assert unknown is not None and unknown.id is None
+    verdict = gate.decide(unknown, "send_slack_dm", _send(), mcp=False)
+    assert verdict.run is False and verdict.approver_person_id == team["owner"].id
+    # No sign-in at all on the web is the operator, as before.
+    assert gate.speaker(Session(from_web_chat=True)) is None
+
+
 # ── the decision ──────────────────────────────────────────────────────────────
 
 
@@ -132,6 +143,21 @@ def test_propose_only_lets_someone_who_could_approve_it_send(team: dict[str, Per
     assert gate.decide(sam, "send_slack_dm", _send("The invoice is $1,500"), mcp=False).run is True
     # Anything else still needs someone holding its range (here, the owner).
     assert gate.decide(sam, "send_slack_dm", _send(), mcp=False).run is False
+
+
+def test_a_small_amount_doesnt_cover_the_rest_of_it(team: dict[str, Person]) -> None:
+    """Every kind of approval the action touches must be held: a petty-cash
+    range doesn't approve a termination letter that mentions $12."""
+    _level("marketing", AuthorityLevel.PROPOSE_ONLY)
+    people_store.set_authority_scope(team["sam"].id, [AuthorityScope.SPEND_LT_2K])  # type: ignore[arg-type]
+    sam = _reload(team["sam"])
+    letter = _send("Send Bob the termination letter, effective today. Also expense the $12 lunch.")
+    assert gate.approval_ranges("send_slack_dm", letter) == [
+        [AuthorityScope.SPEND_LT_2K, AuthorityScope.SPEND_LT_10K, AuthorityScope.SPEND_GT_10K],
+        [AuthorityScope.HIRING_SIGNOFF],
+    ]
+    assert gate.decide(sam, "send_slack_dm", letter, mcp=False).run is False
+    assert gate.decide(sam, "send_slack_dm", _send("Expense the $12 lunch"), mcp=False).run is True
 
 
 def test_escalate_always_waits_for_someone_else(team: dict[str, Person]) -> None:
@@ -204,6 +230,10 @@ def test_a_held_send_becomes_a_card_and_does_nothing(
     assert instance.originating_session_id == "s-1"
     payload = json.loads(instance.proposed_payload_json)
     assert payload["tool"] == "send_slack_dm" and payload["requested_by_person_id"] == team["sam"].id
+    # The whole call, for the card to show before it can be approved.
+    assert payload["details"] == [
+        {"field": "user_id", "value": "U_RIA"}, {"field": "text", "value": _send()["text"]},
+    ]
 
     [card] = alerts_store.list_alerts(limit=10)
     assert card.routed_to_person_id == team["owner"].id
@@ -218,14 +248,27 @@ def test_a_held_send_becomes_a_card_and_does_nothing(
     assert len(alerts_store.list_alerts(limit=10)) == 1
 
 
-def test_reads_and_non_sends_pass_untouched(team: dict[str, Person]) -> None:
+def test_reads_pass_untouched(team: dict[str, Person]) -> None:
     _level("marketing", AuthorityLevel.ESCALATE)
     calls: list[Any] = []
     base = _handlers(calls)
     handlers = gate.gated_handlers(base, team["sam"])
     assert handlers["list_people"] is base["list_people"]
-    assert handlers["assign_open_loop"] is base["assign_open_loop"]
     assert handlers["send_slack_dm"] is not base["send_slack_dm"]
+
+
+@pytest.mark.parametrize("level", [AuthorityLevel.ESCALATE, AuthorityLevel.PROPOSE_ONLY])
+def test_the_chase_is_refused_under_escalate(team: dict[str, Person], level: AuthorityLevel) -> None:
+    """Putting someone on the chase sends to them later, and can't wait on a
+    card: under escalate it is refused, otherwise it runs."""
+    _level("marketing", level)
+    calls: list[Any] = []
+    handlers = gate.gated_handlers(_handlers(calls), team["sam"])
+    result = json.loads(asyncio.run(handlers["assign_open_loop"]({"person_id": 2, "task": "Chase Ria"})))
+    if level == AuthorityLevel.ESCALATE:
+        assert "error" in result and calls == []
+    else:
+        assert result["status"] == "sent" and len(calls) == 1
 
 
 def test_auto_execute_runs_the_real_handler(team: dict[str, Person]) -> None:

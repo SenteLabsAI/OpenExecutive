@@ -5201,6 +5201,33 @@ export async function getLeadCard(id: number, signal?: AbortSignal): Promise<Lea
   };
 }
 
+// What a team member's held chat action holds (a department_action
+// decision): who asked, why it waited, and every field of the call in full.
+// Only its approver and the owner can read it.
+export interface HeldActionPayload {
+  summary: string;
+  reason: string;
+  requestedBy: string;
+  details: { field: string; value: string }[];
+}
+
+export async function getHeldAction(id: number, signal?: AbortSignal): Promise<HeldActionPayload> {
+  const res = await fetch(`${API_BASE}/decisions/${id}`, { signal });
+  if (!res.ok) throw await leadError(res, "Couldn't load this card.");
+  const instance: DecisionInstance = await res.json();
+  const payload = JSON.parse(instance.proposed_payload_json || "{}");
+  const details = Array.isArray(payload.details) ? payload.details : [];
+  return {
+    summary: String(payload.summary ?? ""),
+    reason: String(payload.reason ?? ""),
+    requestedBy: String(payload.requested_by ?? ""),
+    details: details.map((d: { field?: unknown; value?: unknown }) => ({
+      field: String(d.field ?? ""),
+      value: String(d.value ?? ""),
+    })),
+  };
+}
+
 // Approve a Take the lead card: ``input`` changes its editable fields first,
 // ``allow`` (training cards, the owner's) lets it do this from now on.
 export async function approveLeadCard(

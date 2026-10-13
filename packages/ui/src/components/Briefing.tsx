@@ -41,6 +41,7 @@ import {
   inFlightNext,
 } from "./briefing/AwarenessPanels";
 import NarrativeBody from "./briefing/Narrative";
+import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
 import {
@@ -237,10 +238,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     const prev = actedAlertIds;
     setActedAlertIds(new Set(prev).add(proposal.alert_id));
     try {
-      // A roster request or a Take the lead training card was already
-      // answered on its own card (which also clears the companion alert):
-      // only hide it and re-sync.
-      if (proposal.roster_request || isLeadTraining(proposal)) {
+      // A roster request, a Take the lead training card or a held chat
+      // action was already answered on its own card (which also clears the
+      // companion alert): only hide it and re-sync.
+      if (proposal.roster_request || isLeadTraining(proposal) || isHeldAction(proposal)) {
         refreshToday();
         return;
       }
