@@ -1240,6 +1240,24 @@ def test_another_caller_cannot_read_or_continue_the_session(
     )
 
 
+def test_a_stranger_neither_keeps_a_session_alive_nor_caches_it(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    """A refused read must not touch the session (which would extend its TTL)
+    nor pull the stored transcript into this worker's table."""
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client, caller="dana@example.com")
+    held = route._interview_sessions[sid]
+    touched = held.last_touched
+    other = {"x-caller-email": "bob@example.com"}
+    assert client.get(f"/onboard/interview/{sid}", headers=other).status_code == 404
+    assert held.last_touched == touched
+
+    route._interview_sessions.clear()
+    assert client.get(f"/onboard/interview/{sid}", headers=other).status_code == 404
+    assert sid not in route._interview_sessions
+
+
 def test_an_abandoned_stored_session_is_swept_on_the_next_read(
     client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -326,27 +326,30 @@ def _persist_interview(session_id: str, session: InterviewSession) -> None:
 
 
 def _get_interview(session_id: str, request: Request) -> InterviewSession:
-    """The caller's session, or 404: unknown, expired, or someone else's."""
+    """The caller's session, or 404: unknown, expired, or someone else's.
+
+    The owner check comes before the session is touched or cached, so a
+    caller who guesses another person's id can neither keep it alive past
+    the TTL nor pull its transcript into this worker's table.
+    """
     _sweep_interview_sessions()
-    session = _interview_sessions.get(session_id)
+    held = _interview_sessions.get(session_id)
+    session = held
     if session is None:
         # Not held here: started before a restart, or on another worker.
         session = interview_store.load(session_id)
-        if session is not None:
-            _interview_sessions[session_id] = session
     elif not session.saved:
         # Held here, but another worker may have taken turns since: a newer
         # stored row wins, so two processes never overwrite each other.
         fresher = interview_store.load(session_id, newer_than=session.stored_at)
         if fresher is not None:
             session = fresher
-            _interview_sessions[session_id] = session
-    if session is None:
+    if session is None or session.owner_key != api_caller.identity_key(request):
+        # Someone else's gets the same answer as an unknown id.
         raise HTTPException(status_code=404, detail="Setup session not found or expired.")
+    if session is not held:
+        _interview_sessions[session_id] = session
     session.last_touched = time.monotonic()
-    if session.owner_key != api_caller.identity_key(request):
-        # Not theirs: the same answer as an unknown id, so nothing is learnt.
-        raise HTTPException(status_code=404, detail="Setup session not found or expired.")
     _interview_sessions.move_to_end(session_id)
     return session
 
