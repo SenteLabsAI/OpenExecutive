@@ -330,6 +330,24 @@ def release_digest_now(person_id: int, *, now: datetime, db_path: Path | None = 
         conn.close()
 
 
+def release_quiet_now(person_id: int, *, now: datetime, db_path: Path | None = None) -> int:
+    """Bring ``person_id``'s messages waiting on a later time forward to ``now``,
+    after they changed their quiet hours. The release pass still checks the
+    new quiet hours, so anything that is still quiet waits again. Returns how
+    many."""
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE {TABLE} SET release_at = ? WHERE person_id = ? AND {_OPEN} "  # noqa: S608
+            "AND release_at > ?",
+            (_iso(now), person_id, _iso(now)),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
 def schedule_digest_release(
     now: datetime, *, except_person_id: int | None, db_path: Path | None = None
 ) -> int:

@@ -131,16 +131,21 @@ def update_notifications(request: Request, body: NotificationsUpdate) -> Notific
     except Exception as exc:
         logger.exception("notifications: couldn't save person %s's settings", person.id)
         raise _refuse(503, "save_failed", "Couldn't save your notification settings.") from exc
-    if before.delivery == "digest" and saved.delivery == "instant":
-        # Back to "As they happen": what waited for their brief goes now.
-        from datetime import UTC, datetime
+    from datetime import UTC, datetime
 
-        from openexecutive.people.held_messages import release_digest_now
+    from openexecutive.people.held_messages import release_digest_now, release_quiet_now
 
-        try:
-            release_digest_now(person.id, now=datetime.now(UTC))
-        except Exception:
-            logger.warning("notifications: couldn't release person %s's held messages", person.id, exc_info=True)
+    now = datetime.now(UTC)
+    try:
+        if before.delivery == "digest" and saved.delivery == "instant":
+            # Back to "As they happen": what waited for their brief goes now.
+            release_digest_now(person.id, now=now)
+        if before.quiet_hours != saved.quiet_hours:
+            # Quiet hours changed: what waited for the old end time is due now,
+            # and the release pass holds it again if the new ones are quiet.
+            release_quiet_now(person.id, now=now)
+    except Exception:
+        logger.warning("notifications: couldn't release person %s's held messages", person.id, exc_info=True)
     from openexecutive.audit import log_event
 
     log_event(

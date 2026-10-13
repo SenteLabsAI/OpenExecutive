@@ -174,3 +174,16 @@ def test_a_dispatch_whose_message_was_held_is_audited_as_held(
     asyncio.run(_execute_action(claimed, gateway=None))
     [(summary, kw)] = [e for e in events if (e[1].get("details") or {}).get("action_id") == claimed.id]  # type: ignore[union-attr]
     assert kw["details"]["phase"] == "held" and "held" in summary  # type: ignore[index]
+
+
+def test_turning_quiet_hours_off_releases_what_waited(client: TestClient) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    sara = _id("Sara Kim")
+    client.put("/notifications/settings", headers=SARA, json=_body(delivery="instant"))
+    later = datetime.now(UTC) + timedelta(hours=8)
+    held.hold(sara, "Held overnight", source="reflection", release_at=later)
+    assert held._due(datetime.now(UTC) + timedelta(minutes=1), None) == {}
+    off = {"enabled": False, "start": "22:00", "end": "07:00", "days": "every_day"}
+    client.put("/notifications/settings", headers=SARA, json=_body(delivery="instant", quiet_hours=off))
+    assert sara in held._due(datetime.now(UTC) + timedelta(minutes=1), None)
