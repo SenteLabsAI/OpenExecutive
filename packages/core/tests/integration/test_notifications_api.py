@@ -187,3 +187,16 @@ def test_turning_quiet_hours_off_releases_what_waited(client: TestClient) -> Non
     off = {"enabled": False, "start": "22:00", "end": "07:00", "days": "every_day"}
     client.put("/notifications/settings", headers=SARA, json=_body(delivery="instant", quiet_hours=off))
     assert sara in held._due(datetime.now(UTC) + timedelta(minutes=1), None)
+
+
+def test_moving_time_zone_releases_what_waited(client: TestClient) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    sara = _id("Sara Kim")
+    client.put("/notifications/settings", headers=SARA, json=_body(delivery="instant"))
+    held.hold(sara, "Held overnight", source="reflection", release_at=datetime.now(UTC) + timedelta(hours=8))
+    client.put(
+        "/notifications/settings", headers=SARA,
+        json=_body(delivery="instant", timezone="America/New_York"),
+    )
+    assert sara in held._due(datetime.now(UTC) + timedelta(minutes=1), None)

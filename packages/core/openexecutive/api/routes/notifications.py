@@ -140,8 +140,8 @@ def update_notifications(request: Request, body: NotificationsUpdate) -> Notific
         if before.delivery == "digest" and saved.delivery == "instant":
             # Back to "As they happen": what waited for their brief goes now.
             release_digest_now(person.id, now=now)
-        if before.quiet_hours != saved.quiet_hours:
-            # Quiet hours changed: what waited for the old end time is due now,
+        if before.quiet_hours != saved.quiet_hours or before.timezone != saved.timezone:
+            # Quiet hours (or their zone) changed: what waited for the old end time is due now,
             # and the release pass holds it again if the new ones are quiet.
             release_quiet_now(person.id, now=now)
     except Exception:
