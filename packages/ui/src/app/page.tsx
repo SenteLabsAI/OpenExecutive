@@ -14,6 +14,8 @@ import AppSidebar from "@/components/shell/AppSidebar";
 import { profileWording } from "@/components/shell/navConfig";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
+import { GettingStartedCard, useGettingStarted } from "@/components/onboard/GettingStarted";
+import { useFirstRunRedirect } from "@/components/onboard/useFirstRunRedirect";
 import PausedBanner from "@/components/executive/PausedBanner";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { ChatMessage, DebugEvent, getSessionMessages } from "@/lib/api";
@@ -216,15 +218,24 @@ export default function HomePage() {
   const companyName = health?.company_name;
   const profileCopy = PROFILE_COPY[profileWording(workspaceMode, role.role_kind)];
 
+  // First run: the owner lands on setup until a profile exists (unless they
+  // chose to do it later), and the first days show a getting-started
+  // checklist in the banner slot.
+  const redirecting = useFirstRunRedirect(health?.company_profile_loaded);
+  const gettingStarted = useGettingStarted(health?.company_profile_loaded, companyName);
+
   // The briefing's one banner slot shows the most important notice: paused,
-  // then no profile, then a brief that wasn't sent. With none, the briefing
-  // shows its quiet-day note there instead.
+  // then the getting-started checklist, then no profile, then a brief that
+  // wasn't sent. With none, the briefing shows its quiet-day note there
+  // instead.
   const { status: execStatus, unknown: execStatusUnknown } = useExecutiveStatus();
   const deliveryNotice = useBriefDeliveryNotice();
   const homeBanner = execStatus?.paused && !execStatusUnknown ? (
     <div className="overflow-hidden rounded-2xl border border-amber-500/30 [&>div]:border-b-0">
       <PausedBanner />
     </div>
+  ) : gettingStarted.visible ? (
+    <GettingStartedCard {...gettingStarted} />
   ) : !isOnboarded && health ? (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-accent/25 bg-accent/5 px-4 py-3">
       <p className="text-[15px] text-fg-muted">{profileCopy.missingBanner}</p>
@@ -235,6 +246,9 @@ export default function HomePage() {
   ) : deliveryNotice ? (
     <BriefDeliveryNotice notice={deliveryNotice} />
   ) : undefined;
+
+  // Hold the page while the browser moves to setup.
+  if (redirecting) return <div className="h-full bg-surface" />;
 
   return (
     <div className="flex h-full relative">

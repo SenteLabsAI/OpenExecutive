@@ -34,6 +34,7 @@ from openexecutive.api.models import (
 )
 from openexecutive.config import get_settings
 from openexecutive.memory.company_profile import CompanyProfile
+from openexecutive.onboarding import interview_store
 from openexecutive.onboarding.interview import (
     MAX_QUESTIONS,
     MAX_TRANSCRIPT_CHARS,
@@ -291,11 +292,11 @@ class InterviewSession:
     last_touched: float = field(default_factory=time.monotonic)
 
 
-# In-memory, single-process — same assumption as _wizard_sessions above, but
-# with the TTL and cap that one is missing. Deliberately NOT persisted: the
-# transcript is unedited free text containing financials, and the artifact
-# worth keeping (the draft) is already in the client's hands. A page refresh
-# is covered by GET /onboard/interview/{id}.
+# The working table of this process, with a TTL and cap. Every turn is also
+# written through to SQLite (onboarding/interview_store.py), so a restart or
+# another worker finds the session again; a saved session's row is deleted
+# there at once, since the transcript carries the company's financials. A
+# page refresh is covered by GET /onboard/interview/{id}.
 _interview_sessions: OrderedDict[str, InterviewSession] = OrderedDict()
 _INTERVIEW_TTL_SECONDS = 2 * 3600
 _MAX_INTERVIEW_SESSIONS = 50
@@ -309,13 +310,23 @@ def _sweep_interview_sessions() -> None:
         if now - sess.last_touched > _INTERVIEW_TTL_SECONDS
     ]:
         _interview_sessions.pop(sid, None)
+        interview_store.delete(sid)
     while len(_interview_sessions) > _MAX_INTERVIEW_SESSIONS:
         _interview_sessions.popitem(last=False)
+
+
+def _persist_interview(session_id: str, session: InterviewSession) -> None:
+    interview_store.save(session_id, session)
 
 
 def _get_interview(session_id: str) -> InterviewSession:
     _sweep_interview_sessions()
     session = _interview_sessions.get(session_id)
+    if session is None:
+        # Not held here: started before a restart, or on another worker.
+        session = interview_store.load(session_id)
+        if session is not None:
+            _interview_sessions[session_id] = session
     if session is None:
         raise HTTPException(status_code=404, detail="Setup session not found or expired.")
     session.last_touched = time.monotonic()
@@ -411,6 +422,7 @@ async def _advance_interview(
         session.transcript.append(Turn(role="assistant", text=result.question))
         session.questions_asked += 1
         session.last_hint = result.hint
+    _persist_interview(session_id, session)
     return _turn_response(session_id, session)
 
 
@@ -453,6 +465,7 @@ async def start_interview(
     if not opening.strip():
         # Nothing to work with yet — ask the opening question without a model
         # call so an empty start is instant and free.
+        _persist_interview(session_id, session)
         return _turn_response(session_id, session)
 
     session.transcript.append(Turn(role="user", text=opening.strip()))
@@ -574,6 +587,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     """
     from openexecutive.onboarding.commit import (
         OwnerEmailError,
+        adopt_owner_row,
         check_owner_email,
         derive_org_structure,
         link_owner_email,
@@ -661,13 +675,15 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
                 'owner as "This is me", or ask them to run setup.'
             ),
         )
+    caller_email = api_caller.caller_email(request)
     try:
-        owner_email = check_owner_email(body.owner_email, principal_name)
+        owner_email = check_owner_email(
+            body.owner_email, principal_name, caller_email=caller_email
+        )
     except OwnerEmailError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Someone who isn't the owner may fill in the owner's missing email only
     # with the address they signed in with (owner_email_blocked explains why).
-    caller_email = api_caller.caller_email(request)
     try:
         email_blocked = owner_email_blocked(owner_email, caller_person_id, caller_email)
     except (OSError, sqlite3.Error) as exc:
@@ -703,9 +719,15 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
 
     # 4. Past this point the profile exists; nothing below may fail the request.
     session.saved = True
+    # The stored copy goes now: the transcript holds the financials, and the
+    # profile is on disk. This process still answers a repeat save with 409.
+    interview_store.delete(body.session_id)
 
     # 5-6. Best-effort seeding. Departments are reconciled additively — see
     #      onboarding/commit.py for why this must not mirror the fixture loader.
+    # The owner's seeded entry takes the drafted name first, so the upsert
+    # below updates it instead of adding a namesake (adopt_owner_row).
+    adopt_owner_row(owner_email, principal_name, caller_email)
     person_ids = save_onboarding_people(people)
     principal_id = person_ids.get(principal_name)
     if owner_email and principal_id is not None:

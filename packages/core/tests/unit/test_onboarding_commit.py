@@ -20,6 +20,7 @@ import pytest
 from openexecutive.departments import store as dept_store
 from openexecutive.onboarding.commit import (
     OwnerEmailError,
+    adopt_owner_row,
     check_owner_email,
     derive_org_structure,
     link_owner_email,
@@ -677,3 +678,66 @@ def test_a_specialist_is_wired_to_only_one_new_department(empty_dept_db: Path) -
     )
     keys = [d.config.specialist_key for d in dept_store.list_departments(db_path=empty_dept_db)]
     assert keys.count("chro") == 1
+
+
+# ── the owner's seeded entry: matched by the sign-in email ───────────────────
+
+
+def test_the_signed_in_owner_may_name_their_own_seeded_entry(people_db: Path) -> None:
+    """A hosted sign-up seeds the owner's entry from the address ("ada"), and
+    setup drafts the real name. Signed in as that address, the save goes
+    through instead of asking for "the name on the People page"."""
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    assert (
+        check_owner_email("ada@example.com", "Ada Lovelace", caller_email="ada@example.com")
+        == "ada@example.com"
+    )
+
+
+def test_someone_else_signed_in_still_gets_the_rename_error(people_db: Path) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("ada@example.com", "Ada Lovelace", caller_email="sam@example.com")
+    assert "current owner" in str(err.value)
+    with pytest.raises(OwnerEmailError):
+        check_owner_email("ada@example.com", "Ada Lovelace")
+
+
+def test_adopt_renames_the_owners_entry_so_the_upsert_updates_it(people_db: Path) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    assert adopt_owner_row("ada@example.com", "Ada Lovelace", "ada@example.com") is True
+    rows = people_store.list_people()
+    assert [p.full_name for p in rows] == ["Ada Lovelace"]
+    assert rows[0].is_principal and rows[0].email == "ada@example.com"
+
+    ids = save_onboarding_people(
+        [PersonDraft(full_name="Ada Lovelace", role="Owner", is_principal=True)]
+    )
+    assert len(people_store.list_people()) == 1
+    assert ids["Ada Lovelace"] == rows[0].id
+
+
+@pytest.mark.parametrize(
+    ("email", "caller"),
+    [
+        ("ada@example.com", "sam@example.com"),  # not the signed-in person
+        ("ada@example.com", None),  # no signed-in person
+        ("other@example.com", "other@example.com"),  # not the owner's address
+        ("", "ada@example.com"),  # nothing to match on
+    ],
+)
+def test_adopt_leaves_other_cases_alone(people_db: Path, email: str, caller: str | None) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    assert adopt_owner_row(email, "Ada Lovelace", caller) is False
+    assert [p.full_name for p in people_store.list_people()] == ["ada"]
+
+
+def test_adopt_never_renames_onto_an_existing_name(people_db: Path) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Ada Lovelace")
+    assert adopt_owner_row("ada@example.com", "Ada Lovelace", "ada@example.com") is False
+
+
+def test_adopt_is_a_no_op_when_the_name_already_matches(people_db: Path) -> None:
+    people_store.upsert_person(full_name="Ada Lovelace", email="ada@example.com", is_principal=True)
+    assert adopt_owner_row("ada@example.com", "ada lovelace", "ada@example.com") is False

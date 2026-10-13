@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AskOEProvider, useAskOE } from "@/components/askoe/AskOEContext";
 import AskOEPanel from "@/components/askoe/AskOEPanel";
@@ -17,6 +17,7 @@ import {
   PROFILE_NAV,
   profileWording,
 } from "@/components/shell/navConfig";
+import { useFirstRunRedirect } from "@/components/onboard/useFirstRunRedirect";
 import HubTabs from "@/components/ui/HubTabs";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
@@ -79,13 +80,46 @@ function isExempt(pathname: string): boolean {
   return EXEMPT_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+// Settings stays reachable before setup: its pages are where the Executive's
+// account is connected and where setup status is read.
+const FIRST_RUN_FREE_PREFIXES = ["/settings"];
+
+function firstRunGated(pathname: string): boolean {
+  return !isExempt(pathname) && !FIRST_RUN_FREE_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
+// The owner lands on setup from any page while no company profile exists
+// (useFirstRunRedirect; Home does the same with the /health it already has).
+function useFirstRunGate(pathname: string): boolean {
+  const gated = firstRunGated(pathname);
+  const [profileLoaded, setProfileLoaded] = useState<boolean | undefined>(undefined);
+  useEffect(() => {
+    if (!gated) return;
+    let cancelled = false;
+    fetch("/api/backend/health")
+      .then((r) => r.json())
+      .then((h: { company_profile_loaded?: boolean }) => {
+        if (!cancelled) setProfileLoaded(h.company_profile_loaded === true);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [gated]);
+  return useFirstRunRedirect(gated ? profileLoaded : undefined);
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { mode, role } = useWorkspace();
+  const redirecting = useFirstRunGate(pathname);
 
   if (isExempt(pathname)) {
     return <>{children}</>;
+  }
+  if (redirecting) {
+    return <div className="h-full bg-surface" />;
   }
 
   const segments = pathname.split("/").filter(Boolean);

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.utils.slug import DEPARTMENT_SLUG_FALLBACK, slugify
 
@@ -183,7 +183,9 @@ class OwnerEmailError(ValueError):
     fixed, input-free string, safe to return as an HTTP detail."""
 
 
-def check_owner_email(raw: str | None, principal_name: str) -> str | None:
+def check_owner_email(
+    raw: str | None, principal_name: str, *, caller_email: str | None = None
+) -> str | None:
     """Normalise the owner's sign-in email, or return None when left blank.
 
     Runs BEFORE the commit writes anything, and setup only ever FILLS IN a
@@ -216,6 +218,11 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
         logger.warning("check_owner_email: lookup failed (%s)", type(exc).__name__)
         raise OwnerEmailError("Could not check that email just now. Try again.") from exc
     if holder is not None and (own_row is None or holder.id != own_row.id):
+        if own_row is None and _is_own_seat(holder, email, caller_email):
+            # The signed-in owner's own entry under another name (the one a
+            # hosted sign-up seeds from the address, or an old spelling).
+            # adopt_owner_row renames it before the roster is saved.
+            return email
         if holder.is_principal:
             raise OwnerEmailError(
                 "That email is on the current owner's People entry, but setup would update "
@@ -233,6 +240,49 @@ def check_owner_email(raw: str | None, principal_name: str) -> str | None:
             "the People page."
         )
     return email
+
+
+def _is_own_seat(holder: Any, email: str, caller_email: str | None) -> bool:
+    """Whether ``holder`` is the signed-in caller's own principal entry: it is
+    the principal, it carries the address being saved, and that address is
+    the one the caller signed in with."""
+    return bool(
+        holder.is_principal
+        and caller_email
+        and email == caller_email.strip().lower()
+        and (holder.email or "").strip().lower() == email
+    )
+
+
+def adopt_owner_row(email: str | None, principal_name: str, caller_email: str | None) -> bool:
+    """Rename the caller's own principal entry to the name setup drafted.
+
+    A hosted sign-up seeds the owner's People entry from the sign-in address
+    when no name was given ("ada" for ada@example.com), and the interview
+    drafts the real name. The name-keyed upsert would then add a second row
+    and the email check would reject the save, so the matched entry takes
+    the drafted name first; the upsert finds it by that name and updates it.
+    Returns True when a row was renamed. Best-effort: a failure leaves the
+    roster as it was and the save goes on.
+    """
+    email = (email or "").strip().lower()
+    key = principal_name.strip().lower()
+    if not email or not key:
+        return False
+    from openexecutive.people.store import find_person_by_address, list_people, update_person
+
+    try:
+        holder = find_person_by_address(email)
+        if holder is None or holder.id is None or not _is_own_seat(holder, email, caller_email):
+            return False
+        if holder.full_name.strip().lower() == key:
+            return False
+        if any(p.full_name.strip().lower() == key for p in list_people()):
+            return False
+        return update_person(holder.id, full_name=principal_name.strip())
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("adopt_owner_row failed (%s)", type(exc).__name__)
+        return False
 
 
 def owner_change_blocked(principal_name: str, caller_person_id: int | None) -> bool:

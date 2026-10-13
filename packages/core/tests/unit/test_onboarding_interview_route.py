@@ -27,6 +27,7 @@ from openexecutive.api.models import ONBOARD_MESSAGE_MAX_CHARS
 from openexecutive.api.routes import onboarding as route
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding import interview as iv
+from openexecutive.onboarding import interview_store
 from openexecutive.onboarding.commit import (
     save_onboarding_people as _real_save_onboarding_people,
 )
@@ -97,6 +98,7 @@ def client(
 
     monkeypatch.setattr(route, "_fire_post_onboarding_research", _no_research)
     monkeypatch.setattr(route, "_interview_sessions", OrderedDict())
+    monkeypatch.setattr(interview_store, "DB_PATH", tmp_path / "interviews.db")
     monkeypatch.setattr(route, "_onboarding_research_fired", set())
     monkeypatch.setattr(route, "_wizard_sessions", {})
     # No people/department DB writes unless a test asks for them.
@@ -1100,3 +1102,75 @@ def test_solo_commit_keeps_workspace_settings_and_saves_one_person(
     saved = CompanyProfile.load_from_yaml(profile_path)
     assert saved.org_structure.departments == []
     assert saved.org_structure.leadership_team == ["Dana Reyes, Founder"]
+
+
+# ── persistence: a session outlives the process that started it ─────────────
+
+
+def test_session_is_found_again_after_the_process_forgets_it(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    """A restart (or another worker) empties the in-memory table; the stored
+    copy answers GET and the interview carries on from the same question."""
+    seeded.append(iv.Question(question="Who runs ops?", hint="A name is enough."))
+    sid = _start(client)
+    route._interview_sessions.clear()
+
+    resp = client.get(f"/onboard/interview/{sid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["phase"] == "question"
+    assert body["question"] == "Who runs ops?"
+    assert body["question_hint"] == "A name is enough."
+    assert [t["role"] for t in body["turns"]] == ["user", "assistant"]
+    assert body["questions_asked"] == 1
+
+    seeded.append(_draft())
+    route._interview_sessions.clear()
+    resp = client.post("/onboard/interview/message", json={"session_id": sid, "message": "Sam."})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phase"] == "draft"
+
+
+def test_stored_draft_survives_a_restart(client: TestClient, seeded: list[Any]) -> None:
+    seeded.append(_draft())
+    sid = _start(client)
+    route._interview_sessions.clear()
+    resp = client.get(f"/onboard/interview/{sid}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phase"] == "draft"
+    assert resp.json()["draft"]["name"] == "Northwind Tools"
+
+
+def test_saving_deletes_the_stored_transcript(
+    client: TestClient, seeded: list[Any], profile_path: Path
+) -> None:
+    """The transcript carries financials: once the profile is on disk, the
+    stored copy is gone, so a later GET does not bring it back."""
+    seeded.append(_draft())
+    sid = _start(client)
+    assert interview_store.load(sid) is not None
+    resp = client.post("/onboard/interview/commit", json=_commit_body(sid))
+    assert resp.status_code == 200, resp.text
+    assert interview_store.load(sid) is None
+    route._interview_sessions.clear()
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+def test_an_expired_session_is_gone_from_the_store_too(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    route._interview_sessions[sid].last_touched -= route._INTERVIEW_TTL_SECONDS + 1
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+    assert interview_store.load(sid) is None
+
+
+def test_a_store_failure_does_not_fail_the_turn(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(interview_store, "DB_PATH", Path("/nonexistent/dir/interviews.db"))
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    assert client.get(f"/onboard/interview/{sid}").status_code == 200

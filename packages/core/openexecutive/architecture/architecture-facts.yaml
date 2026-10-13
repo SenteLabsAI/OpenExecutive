@@ -8615,12 +8615,19 @@ company_onboarding:
     because FastAPI's 422 body echoes the rejected input).
   session_state: |
     In-memory OrderedDict in api/routes/onboarding.py, 2h TTL and a 50-session
-    cap, swept on every handler and after each insert. Deliberately NOT
-    persisted: the transcript is unedited free text containing financials, and
-    the artifact worth keeping (the draft) is already in the client's hands.
-    GET /onboard/interview/{id} covers the common loss case (page refresh); a
-    process restart mid-interview loses the interview, consistent with /demo
-    and /clients/generate. Single-process assumption, same as the scheduler.
+    cap, swept on every handler and after each insert, PLUS a write-through
+    copy in the episodic SQLite database (onboarding/interview_store.py, table
+    onboarding_interviews: session_id, payload JSON, updated_at; same TTL and
+    cap, enforced on every save). `_get_interview` reads the store when the
+    process does not hold the id, so a deploy or restart mid-interview, or a
+    second worker, no longer loses the interview. The row is deleted the
+    moment the commit succeeds (the transcript is unedited free text with the
+    company's financials; the profile is on disk) and when the TTL sweep
+    evicts it; a store failure is a warning, never a failed turn. The browser
+    keeps only the session id (localStorage `oe.onboard.session`, lib/
+    firstRun.ts) plus the description typed before Continue, and
+    GET /onboard/interview/{id} resumes at the same question or draft; a 404
+    (saved, expired) clears the memory and starts fresh.
   write_once_commit: |
     The interview NEVER writes. POST /onboard/interview/commit is the single
     write, ordered so nothing observable changes until the atomic save
@@ -8698,7 +8705,17 @@ company_onboarding:
     (the review screen pre-fills it; Setup status's owner light and the
     roster tools' refusal send them here, since the People page refuses
     them); a rostered teammate's own address is on their own entry, which
-    check_owner_email refuses. Decision: re-running setup stays open to
+    check_owner_email refuses. One case is adopted, not refused: the
+    address is the caller's own sign-in (api_caller.caller_email), it is on
+    the current principal's row, and that row carries another name (a
+    hosted sign-up seeds the owner's row from the address when no name was
+    given; or an old spelling). check_owner_email(caller_email=...) lets it
+    through and `adopt_owner_row` renames that row to the drafted name
+    right before save_onboarding_people, so the name-keyed upsert updates
+    the owner's entry instead of adding a namesake and then failing the
+    email check with "use the owner's name exactly as on the People page".
+    Guarded: never for another caller, never onto a name already on the
+    roster, no-op when the names already match. Decision: re-running setup stays open to
     anyone signed in who keeps the owner — PATCH /company-profile and the
     department routes already let them change the same profile and
     departments, so closing setup alone would protect nothing and would
@@ -8727,9 +8744,23 @@ company_onboarding:
     episodic store; the fixture generator may invent because it is building
     fiction. This gap is a decision, not an oversight.
   ui: |
-    /onboard — app/onboard/page.tsx phase machine (conversation -> draft ->
-    redirect), components/onboard/{OnboardConversation,OnboardDraftReview,
-    OnboardPeopleDraft,OnboardDepartmentsDraft}.tsx. The draft screen reuses
+    /onboard — app/onboard/page.tsx phase machine (describe -> confirm ->
+    conversation -> draft -> voice -> done), components/onboard/
+    {OnboardDescribe,OnboardConversation,OnboardDraftReview,OnboardPeopleDraft,
+    OnboardDepartmentsDraft,OnboardDone}.tsx. First run: the owner (the
+    principal, per /people/me) is sent to /onboard from Home and from every
+    AppShell page except /settings while /health says no profile exists
+    (useFirstRunRedirect; rule shouldRedirectToOnboard in lib/firstRun.ts),
+    unless they pressed "I'll do this later" (localStorage `oe.onboard.later`).
+    The done screen shows what was saved and the two accounts as two
+    separate things: the Executive's own mailbox (its Google or Microsoft
+    account; the morning brief comes from it) and, optional, the owner's own
+    mailbox for Act as me. Home's banner slot then shows the getting-started
+    checklist (GettingStarted.tsx; rows from gettingStartedItems: profile,
+    first question, the two mailboxes read from /setup/status checks `gmail`
+    and `your_gmail`, and in team mode the roster) until every required row
+    is done or it is hidden (`oe.gettingStarted.hidden`); it outranks the
+    no-profile banner and the quiet-day note. The draft screen reuses
     the /company-profile section editors via
     components/company-profile/ProfileSections.tsx, extracted for this purpose:
     the sections already took onSave as an injected prop, so onboarding passes
