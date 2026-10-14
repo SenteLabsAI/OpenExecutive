@@ -3655,8 +3655,12 @@ departments:
     as an archived teammate still let in, or a chat-channel turn (any
     origin_channel but email) whose sender matched no one, gated as someone
     in no department. Slack, Telegram and Discord reject unmatched senders
-    before the turn, so in practice that is Google Chat, whose webhook proves
-    Google and not the sender. Email is left out: inbound senders are never
+    before the turn, so in practice that is Google Chat. Google Chat matches
+    its sender by the Google account email on its signed event and sets
+    Session.gate_sender_person_id, read only by the gate (never
+    caller_person_id, since Google Chat is not a verified speaker surface),
+    so the principal there is not held and a teammate gets their own
+    department's authority. Email is left out: inbound senders are never
     on People and the mailbox has its own recipient gates)
     wraps its sends and edits with the gate, in
     Executive._stream_agent_loop beside Take the lead's `leading` wrap:

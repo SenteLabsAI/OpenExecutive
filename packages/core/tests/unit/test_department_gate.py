@@ -121,6 +121,21 @@ def test_a_chat_channel_sender_on_no_people_entry_is_gated(team: dict[str, Perso
     assert gate.decide(unknown, "send_slack_dm", _send(), mcp=False).run is False
 
 
+@pytest.mark.parametrize("channel", ["google_chat", "telegram", "discord", "slack"])
+def test_the_owner_on_a_chat_channel_is_not_gated(team: dict[str, Person], channel: str) -> None:
+    owner = team["owner"]
+    assert gate.speaker(Session(origin_channel=channel, caller_person_id=owner.id)) is None
+
+
+def test_google_chat_gates_its_sender_by_their_people_entry(team: dict[str, Person]) -> None:
+    """Google Chat names its sender for the gate alone: the owner goes, a
+    teammate gets their own department's authority."""
+    owner, sam = team["owner"], team["sam"]
+    assert gate.speaker(Session(origin_channel="google_chat", gate_sender_person_id=owner.id)) is None
+    teammate = gate.speaker(Session(origin_channel="google_chat", gate_sender_person_id=sam.id))
+    assert teammate is not None and teammate.id == sam.id
+
+
 def test_email_turns_are_left_to_the_mailbox(team: dict[str, Person]) -> None:
     """Whoever writes in is never on People; the mailbox's own gates cover
     its replies."""
