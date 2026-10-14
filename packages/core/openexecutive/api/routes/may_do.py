@@ -58,19 +58,21 @@ class MayDoOut(BaseModel):
 
 
 def _viewer(request: Request) -> Any:
-    from openexecutive.people.store import find_person_by_email, find_principal_person
+    """The person asking, through the app's one caller resolver
+    (``chat._resolve_caller_person_id``), so this page knows people the same
+    way every other page does; a deployment that maps a signed-in account to
+    its person there is followed here too. A request that names no one only
+    counts as the principal under local login."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.people.store import get_person
     from openexecutive.utils.deployment import is_local_login
 
     who = api_caller.caller(request)
+    if not who.email and not (who.defaults_to_principal and is_local_login()):
+        raise HTTPException(status_code=403, detail="Sign in to see what it may do.")
     try:
-        if who.email:
-            person = find_person_by_email(who.email)
-        elif who.defaults_to_principal and is_local_login():
-            person = find_principal_person()
-        else:
-            raise HTTPException(status_code=403, detail="Sign in to see what it may do.")
-    except HTTPException:
-        raise
+        person_id = _resolve_caller_person_id(request)
+        person = get_person(person_id) if person_id is not None else None
     except Exception as exc:
         logger.exception("may_do: caller lookup failed")
         raise HTTPException(status_code=503, detail="Couldn't read the People list.") from exc

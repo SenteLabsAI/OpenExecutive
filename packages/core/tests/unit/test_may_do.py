@@ -257,6 +257,19 @@ def test_the_owner_sees_all_three(client: TestClient, ids: dict[str, int]) -> No
     assert body["paused"] is False
 
 
+def test_it_knows_people_the_way_the_rest_of_the_app_does(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A deployment can map a signed-in account to its person in the shared
+    # caller resolver; the page must follow that, not look the email up again.
+    monkeypatch.setattr(
+        "openexecutive.api.routes.chat._resolve_caller_person_id", lambda request: ids["principal"],
+    )
+    resp = client.get("/what-it-may-do", headers={"x-caller-email": "signed-in@elsewhere.example"})
+    assert resp.status_code == 200
+    assert _section(resp.json(), "executive")["available"] is True
+
+
 def test_a_teammate_sees_their_own_and_the_departments(client: TestClient, ids: dict[str, int]) -> None:
     body = client.get("/what-it-may-do", headers=TEAMMATE).json()
     assert _section(body, "as_you")["available"] is False
