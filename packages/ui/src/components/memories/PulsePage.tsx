@@ -8,6 +8,7 @@ import RhythmSection, { FollowUpsCard, RecentActivity } from "./CadenceSection";
 import MemoryList from "./MemorySection";
 import { HeartbeatCard, usePulseData } from "./PulseHeader";
 import { ComingUp, DoneRecently, FocusedScreen, MemoryTiles } from "./PulseOverview";
+import { ValueScreen, YourMonthCard } from "./ValueSection";
 
 // The Pulse page is the Executive's memory + heartbeat: what it knows
 // (durable episodic memory) and the rhythm it runs on (recurring briefs,
@@ -15,13 +16,18 @@ import { ComingUp, DoneRecently, FocusedScreen, MemoryTiles } from "./PulseOverv
 // built from data that already exists — episodic memory rows and the
 // scheduled_actions queue grouped by `kind`.
 //
-// Layout: one overview with no tabs (the heartbeat card with its numbers,
+// Layout: one overview with no tabs ("Your month", the owner's count of what
+// it did for them; the heartbeat card with its numbers,
 // a tile per kind of memory, then Coming up beside Done recently), and a
 // focused screen behind each link, picked by `?tab=` so the older tab links
 // still land (lib/pulseView.ts). What it has learned about the signed-in
 // person is theirs alone, so it lives in Settings → About you, not here.
 
 const SCREENS: Record<Exclude<PulseView, "overview">, { title: string; description: string }> = {
+  value: {
+    title: "Your month",
+    description: "What the Executive did for you, counted from the record.",
+  },
   schedule: {
     title: "Schedule",
     description: "Everything the Executive will do on its own, soonest first.",
@@ -83,6 +89,7 @@ export default function PulsePage() {
             </div>
           )}
           {view === "activity" && <RecentActivity />}
+          {view === "value" && <ValueScreen />}
           {isMemoryView(view) && <MemoryList view={view} />}
         </FocusedScreen>
       )}
@@ -101,6 +108,7 @@ function Overview() {
           What your Executive does on its own, and what it remembers.
         </p>
       </header>
+      <YourMonthCard />
       <HeartbeatCard pulse={pulse} />
       <MemoryTiles pulse={pulse} />
       <div className="grid gap-6 md:grid-cols-2">

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from openexecutive.briefing.value_summary import ValueSummary
 from openexecutive.clients.cockpit import ClientCockpitCard, format_practice_for_today
 
 if TYPE_CHECKING:
@@ -2057,6 +2058,25 @@ async def get_brief_delivery(request: Request) -> BriefDeliveryNotice | None:
     if not await asyncio.to_thread(_caller_is_principal_or_unclaimed, request):
         return None
     return await asyncio.to_thread(_brief_delivery_notice)
+
+
+@router.get("/today/value", response_model=ValueSummary, tags=["today"])
+async def get_today_value(
+    request: Request,
+    period: str = Query("month", pattern="^(month|week)$"),
+    offset: int = Query(0, ge=0, le=24),
+) -> ValueSummary:
+    """What the Executive did for the owner this calendar month or week
+    (``offset`` periods back), with the period before beside each count and
+    the finished reports (``briefing.value_summary``). Every number is counted from the record,
+    none is written by a model. The owner's alone: it counts their private
+    rows, so anyone else gets 403."""
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.briefing.value_summary import summarize
+
+    if not await asyncio.to_thread(caller_is_principal, request):
+        raise HTTPException(status_code=403, detail="Only the owner sees this summary")
+    return await asyncio.to_thread(summarize, "week" if period == "week" else "month", offset)
 
 
 # --------------------------------------------------------------------------- #

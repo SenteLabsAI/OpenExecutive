@@ -11,6 +11,14 @@ from openexecutive.api.routes.people import router as people_router
 from openexecutive.memory import episodic
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
+from openexecutive.scheduler.runner import PrincipalDelivery
+
+sent: list[tuple[str, str]] = []
+
+
+async def _deliver(person, text: str, *, label: str = "Update") -> PrincipalDelivery:  # noqa: ANN001
+    sent.append((person.full_name, text))
+    return PrincipalDelivery(True, "fake", "delivered", "email")
 
 
 @pytest.fixture()
@@ -23,6 +31,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     people_registry.invalidate()
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
     monkeypatch.delenv("BACKEND_SHARED_SECRET", raising=False)
+    sent.clear()
+    monkeypatch.setattr("openexecutive.scheduler.runner.deliver_to_person", _deliver)
     people_store.upsert_person(full_name="Pat Principal", is_principal=True,
                                email="pat@northwind.test")
     people_store.upsert_person(full_name="Sara Kim", email="sara@northwind.test")
@@ -49,6 +59,10 @@ def test_assign_list_close(client: TestClient) -> None:
     loop = res.json()
     assert loop["owner_person_id"] == ben
     assert loop["description"] == "Sara Kim asked Ben Ortiz for: send me the Q3 numbers"
+    # … and Ben is told, once.
+    assert loop["notified"] == {"status": "sent", "channel": "email"}
+    assert sent == [("Ben Ortiz", sent[0][1])]
+    assert sent[0][1].startswith('Sara Kim asked you to take this on: "send me the Q3 numbers".')
 
     # … but cannot list Ben's loops; Ben and the principal (no header) can.
     assert client.get(f"/people/{ben}/open-loops", headers=as_sara).status_code == 403

@@ -18,8 +18,25 @@ from openexecutive.delegation.settings import TurnDelegation
 from openexecutive.memory import episodic
 from openexecutive.orchestrator import open_loop_tools
 from openexecutive.orchestrator.schedule_tools import current_session
+from openexecutive.people import held_messages
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
+from openexecutive.scheduler import runner
+
+
+class _FakeDelivery:
+    """Stands in for ``runner.deliver_to_person``: records what was sent."""
+
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok
+        self.sent: list[tuple[str, str, str]] = []
+
+    async def __call__(self, person: Any, text: str, *, label: str = "Update") -> Any:
+        self.sent.append((person.full_name, text, label))
+        return runner.PrincipalDelivery(
+            self.ok, "fake", "delivered" if self.ok else "no_channel",
+            "slack_dm" if self.ok else None,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +55,7 @@ def _isolated(
         lambda event_type, summary, **kw: audited.append((summary, kw.get("details") or {})),
     )
     monkeypatch.setattr("openexecutive.audit.usage.log_model_usage", lambda *a, **k: None)
+    monkeypatch.setattr(runner, "deliver_to_person", _FakeDelivery())
     open_loops._assigned_by_turn.clear()
     token = current_session.set(None)
     yield audited
@@ -306,14 +324,14 @@ def test_assign_chip_only_when_assigned() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _post(monkeypatch: pytest.MonkeyPatch, caller: int | None, person_id: int,
-          task: str = "send the vendor quote", due: date | None = None) -> int:
+async def _post(monkeypatch: pytest.MonkeyPatch, caller: int | None, person_id: int,
+                task: str = "send the vendor quote", due: date | None = None) -> int:
     from openexecutive.api.routes import chat as chat_route
     from openexecutive.api.routes import people as route
 
     monkeypatch.setattr(chat_route, "_resolve_caller_person_id", lambda req: caller)
     try:
-        route.assign_person_open_loop(
+        await route.assign_person_open_loop(
             person_id, route.OpenLoopCreate(task=task, due_date=due), request=None,  # type: ignore[arg-type]
         )
         return 201
@@ -321,37 +339,39 @@ def _post(monkeypatch: pytest.MonkeyPatch, caller: int | None, person_id: int,
         return exc.status_code
 
 
-def test_route_assigns(team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_route_assigns(team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.api.routes import chat as chat_route
     from openexecutive.api.routes import people as route
 
     monkeypatch.setattr(chat_route, "_resolve_caller_person_id", lambda req: team.principal)
-    out = route.assign_person_open_loop(
+    out = await route.assign_person_open_loop(
         team.sara, route.OpenLoopCreate(task="send the vendor quote"), request=None,  # type: ignore[arg-type]
     )
     assert out.owner_person_id == team.sara and out.owner_name == "Sara Kim"
     assert out.description == "Pat Principal asked Sara Kim for: send the vendor quote"
+    assert out.notified is not None and out.notified.status == "sent"
+    assert out.notified.channel == "slack_dm"
 
 
-def test_route_authorization_and_refusals(
+async def test_route_authorization_and_refusals(
     team: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Any active teammate may assign anyone on the team.
-    assert _post(monkeypatch, team.ben, team.sara) == 201
-    assert _post(monkeypatch, team.sara, team.sara, task="book the offsite") == 201
+    assert await _post(monkeypatch, team.ben, team.sara) == 201
+    assert await _post(monkeypatch, team.sara, team.sara, task="book the offsite") == 201
     # Unrostered, archived, or a contact: not someone on the team.
-    assert _post(monkeypatch, None, team.sara, task="other") == 403
-    assert _post(monkeypatch, team.gina, team.sara, task="other") == 403
-    assert _post(monkeypatch, team.carl, team.sara, task="other") == 403
+    assert await _post(monkeypatch, None, team.sara, task="other") == 403
+    assert await _post(monkeypatch, team.gina, team.sara, task="other") == 403
+    assert await _post(monkeypatch, team.carl, team.sara, task="other") == 403
     # A contact's page reads as missing to anyone but the principal …
-    assert _post(monkeypatch, team.ben, team.carl) == 404
+    assert await _post(monkeypatch, team.ben, team.carl) == 404
     # … and the principal can't make one owe a task.
-    assert _post(monkeypatch, team.principal, team.carl) == 409
-    assert _post(monkeypatch, team.principal, team.gina) == 409
-    assert _post(monkeypatch, team.principal, 9999) == 404
-    assert _post(monkeypatch, team.principal, team.sara, task="send the deck") == 201
-    assert _post(monkeypatch, team.principal, team.sara, task="send the deck") == 409  # duplicate
-    assert _post(monkeypatch, team.principal, team.sara, task=" ") == 422
+    assert await _post(monkeypatch, team.principal, team.carl) == 409
+    assert await _post(monkeypatch, team.principal, team.gina) == 409
+    assert await _post(monkeypatch, team.principal, 9999) == 404
+    assert await _post(monkeypatch, team.principal, team.sara, task="send the deck") == 201
+    assert await _post(monkeypatch, team.principal, team.sara, task="send the deck") == 409  # duplicate
+    assert await _post(monkeypatch, team.principal, team.sara, task=" ") == 422
 
 
 # --------------------------------------------------------------------------- #
@@ -389,3 +409,84 @@ async def test_a_teammate_cannot_tell_a_contact_from_no_one(team: SimpleNamespac
     nobody = await _tool(person_id=9999, task="send me the Q3 numbers")
     assert contact == nobody
     assert contact["reason"] == "unknown_owner"
+
+
+# --------------------------------------------------------------------------- #
+# The assignee is told
+# --------------------------------------------------------------------------- #
+
+
+async def test_tool_tells_the_assignee_once(team: SimpleNamespace,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeDelivery()
+    monkeypatch.setattr(runner, "deliver_to_person", fake)
+    _speak(team.principal, said="Ask Sara to send the vendor quote")
+    result = await _tool(person_id=team.sara, task="send the vendor quote")
+    assert result["notified"] == {"status": "sent", "channel": "slack_dm"}
+    [(name, text, label)] = fake.sent
+    assert name == "Sara Kim" and label == "New task"
+    assert text.startswith('Pat Principal asked you to take this on: "send the vendor quote".')
+    assert "It's due " in text and text.endswith("Reply here when it's done, or if you can't do it.")
+
+
+async def test_a_self_assigned_task_sends_nothing(team: SimpleNamespace,
+                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeDelivery()
+    monkeypatch.setattr(runner, "deliver_to_person", fake)
+    _speak(team.ben, said="track that I'll book the offsite")
+    result = await _tool(person_id=team.ben, task="book the offsite")
+    assert result["notified"]["status"] == "skipped" and fake.sent == []
+
+
+async def test_the_notice_can_be_turned_off(team: SimpleNamespace,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.attunement.assignment_notice import notify_assignee
+
+    fake = _FakeDelivery()
+    monkeypatch.setattr(runner, "deliver_to_person", fake)
+    monkeypatch.setenv("ATTUNEMENT_ASSIGN_NOTIFY_ENABLED", "false")
+    out = await notify_assignee(loop_id=1, owner_person_id=team.sara,
+                                assigned_by_person_id=team.principal, task="x", due_at=None)
+    assert out.status == "skipped" and fake.sent == []
+
+
+async def test_an_unreachable_assignee_is_reported(team: SimpleNamespace,
+                                                   monkeypatch: pytest.MonkeyPatch,
+                                                   _isolated: list) -> None:
+    from openexecutive.attunement.assignment_notice import notify_assignee
+
+    monkeypatch.setattr(runner, "deliver_to_person", _FakeDelivery(ok=False))
+    out = await notify_assignee(loop_id=7, owner_person_id=team.sara,
+                                assigned_by_person_id=team.principal, task="x", due_at=None)
+    assert out.status == "not_reached" and out.channel is None
+    assert any(d.get("loop_id") == 7 and d.get("status") == "not_reached" for _, d in _isolated)
+
+
+async def test_quiet_hours_hold_the_notice(team: SimpleNamespace,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.attunement.assignment_notice import notify_assignee
+    from openexecutive.people import notifications
+
+    fake = _FakeDelivery()
+    monkeypatch.setattr(runner, "deliver_to_person", fake)
+    release = datetime(2099, 1, 2, 8, tzinfo=UTC)
+    monkeypatch.setattr(
+        notifications, "hold_for",
+        lambda person_id, *, source, now, urgent=False: notifications.Hold(release, "quiet"),
+    )
+    out = await notify_assignee(loop_id=3, owner_person_id=team.sara,
+                                assigned_by_person_id=team.principal,
+                                task="send the deck", due_at=None)
+    assert out.status == "held" and fake.sent == []
+    assert held_messages.held_count(team.sara) == 1
+    assert held_messages.waiting_for(team.sara, "nudge:commitment:3")
+
+
+def test_notice_text_names_the_due_day() -> None:
+    from openexecutive.attunement.assignment_notice import notice_text
+
+    text = notice_text(assigner_name="Sara Kim", task="  send\nthe   quote ",
+                       due_at="2026-10-16T17:00:00+00:00")
+    assert text.startswith('Sara Kim asked you to take this on: "send the quote".')
+    assert "It's due " in text and "October" in text
+    assert "It's due" not in notice_text(assigner_name="S", task="x", due_at="garbage")

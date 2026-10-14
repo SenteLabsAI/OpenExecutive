@@ -167,6 +167,19 @@ def _maybe_send_reminders(now: datetime) -> bool:
         return False
 
 
+def _maybe_send_monthly_value(now: datetime) -> bool:
+    """The owner's monthly tally of what the Executive did, once, on the
+    first weekday of the month (briefing/value_summary.py). A hook like the
+    reminders, in both workspace modes. Never raises."""
+    try:
+        from openexecutive.briefing.value_summary import maybe_send_monthly
+
+        return maybe_send_monthly(now)
+    except Exception:
+        logger.exception("scheduler: monthly summary failed to start")
+        return False
+
+
 def _maybe_release_held(now: datetime) -> bool:
     """Send the messages held for quiet hours once they end, and the ones held
     for a brief that went to someone without one (people/held_messages.py).
@@ -343,6 +356,7 @@ async def run_scheduler(
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
             _maybe_release_held(now)
+            _maybe_send_monthly_value(now)
             due = claim_due_actions(now)
             if due:
                 logger.info("scheduler: %d due action(s)", len(due))

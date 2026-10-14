@@ -5,6 +5,7 @@
 /** The Pulse overview, or one of the focused screens it links to. */
 export type PulseView =
   | "overview"
+  | "value"
   | "schedule"
   | "activity"
   | "decisions"
@@ -30,6 +31,9 @@ export function pulseViewFor(tab: string | null | undefined): PulseView {
       return "schedule";
     case "activity":
       return "activity";
+    case "value":
+    case "month":
+      return "value";
     case "decisions":
     case "initiatives":
     case "advice":

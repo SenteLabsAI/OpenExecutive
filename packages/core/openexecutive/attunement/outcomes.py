@@ -51,6 +51,7 @@ SOURCE_FOLLOWUP = "followup"
 SOURCE_REFLECTION = "reflection"
 SOURCE_RESEARCH = "research"
 SOURCE_ALERT_REVIEW = "alert_review"
+SOURCE_TASK_ASSIGNED = "task_assigned"
 
 SOURCE_LABELS: dict[str, str] = {
     SOURCE_NUDGE_STALLED: "approval nudges",
@@ -61,6 +62,7 @@ SOURCE_LABELS: dict[str, str] = {
     SOURCE_REFLECTION: "standup DMs",
     SOURCE_RESEARCH: "research DMs",
     SOURCE_ALERT_REVIEW: "alert-review DMs",
+    SOURCE_TASK_ASSIGNED: "task notices",
 }
 
 OUTCOME_REPLIED = "replied"

@@ -27,6 +27,7 @@ import {
   type PersonKind,
   type WorkingStyle,
 } from "@/lib/api";
+import { assignNoticeLine } from "@/lib/assignNotice";
 import { isContact, shouldOfferTeamMode } from "@/lib/peopleKinds";
 
 // ---------------------------------------------------------------------------
@@ -292,7 +293,7 @@ function OpenLoopsSection({
         );
       }
       setAssigned(
-        `Assigned — due ${new Date(loop.due_at).toLocaleDateString()}. They'll be followed up if it isn't done by then.`,
+        `Assigned, due ${new Date(loop.due_at).toLocaleDateString()}. ${assignNoticeLine(loop.notified)}`,
       );
       setTask("");
       setDueDate("");

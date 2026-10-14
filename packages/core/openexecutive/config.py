@@ -1095,6 +1095,16 @@ class Settings(BaseSettings):
     attunement_max_open_loops_per_person: int = Field(
         15, alias="ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON"
     )
+    # Tell a person, once, when someone else assigns them a task
+    # (attunement/assignment_notice.py). Chasing it stays the nudge engine's.
+    attunement_assign_notify_enabled: bool = Field(
+        True, alias="ATTUNEMENT_ASSIGN_NOTIFY_ENABLED"
+    )
+    # The owner's monthly "what your Executive did" message, on the first
+    # weekday of the month (briefing/value_summary.py). Both workspace modes.
+    value_summary_monthly_enabled: bool = Field(
+        True, alias="VALUE_SUMMARY_MONTHLY_ENABLED"
+    )
     # Ceiling on open-loop extraction model calls per UTC day, across everyone.
     attunement_max_calls_per_day: int = Field(200, alias="ATTUNEMENT_MAX_CALLS_PER_DAY")
     # Outcome ledger: a proactive DM with no reply / action after this long is

@@ -4110,6 +4110,15 @@ export interface OpenLoop {
   description: string;
   due_at: string;
   created_at: string;
+  // Only on the response to an assignment: whether the person was told.
+  notified?: AssignNotice | null;
+}
+
+// "sent" on `channel`, "held" for their quiet hours or brief, "not_reached"
+// when no channel worked, "skipped" for their own task or with notices off.
+export interface AssignNotice {
+  status: "sent" | "held" | "not_reached" | "skipped";
+  channel: string | null;
 }
 
 export async function getPersonOpenLoops(id: number): Promise<OpenLoop[]> {
@@ -4119,7 +4128,8 @@ export async function getPersonOpenLoops(id: number): Promise<OpenLoop[]> {
 }
 
 // Assign this person a task: an open loop they are followed up on once it is
-// due (nobody is messaged now). The principal or anyone on the team may.
+// due. They are told once on their own channel when someone else assigns it.
+// The principal or anyone on the team may.
 // `dueDate` is a local YYYY-MM-DD; omit it for the default due window.
 export async function assignOpenLoop(
   personId: number,
@@ -4583,6 +4593,42 @@ export interface ActivityResponse {
 export async function getActivity(limit: number = 20): Promise<ActivityResponse> {
   const res = await fetch(`${API_BASE}/today/activity?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to load activity: ${res.statusText}`);
+  return res.json();
+}
+
+// What the Executive did for the owner this month or week, counted from the
+// record (GET /today/value). The owner's alone: anyone else gets null.
+export interface ValueLine {
+  key: string;
+  label: string;
+  count: number;
+  previous: number;
+}
+
+export interface ValueDeliverable {
+  run_id: string;
+  title: string;
+  workflow_name: string;
+  finished_at: string;
+}
+
+export interface ValueSummary {
+  period: "month" | "week";
+  label: string;
+  start: string;
+  end: string;
+  lines: ValueLine[];
+  deliverables: ValueDeliverable[];
+  deliverables_total: number;
+}
+
+export async function getValueSummary(
+  period: "month" | "week" = "month",
+  offset: number = 0,
+): Promise<ValueSummary | null> {
+  const res = await fetch(`${API_BASE}/today/value?period=${period}&offset=${offset}`);
+  if (res.status === 403) return null;
+  if (!res.ok) throw new Error(`Failed to load the summary: ${res.statusText}`);
   return res.json();
 }
 
