@@ -63,8 +63,8 @@ def _rows(section: may_do.Section) -> dict[str, may_do.Row]:
     return {r.id: r for r in section.rows}
 
 
-def _you(pid: int) -> may_do.Section:
-    return may_do.as_you(pid, can_have_it=True, signing=True)
+def _you(pid: int, *, principal: bool = True) -> may_do.Section:
+    return may_do.as_you(pid, can_have_it=True, signing=True, is_principal=principal)
 
 
 # ── as you ────────────────────────────────────────────────────────────────────
@@ -131,6 +131,20 @@ def test_everything_names_the_lead_and_what_it_rides_on(ids: dict[str, int]) -> 
     assert rows["links"].outcome == "waits" and rows["links"].what == "A reply with a link in it"
     assert rows["rules"].items == ("Anyone at acme.com",)
     assert "Everything" in section.notes[0] and "turns Everything off" in section.notes[0]
+
+
+def test_only_the_owner_sees_the_company_rules_by_name(ids: dict[str, int]) -> None:
+    # Take the lead as you is the owner's, but a row left on (say, by an
+    # earlier owner) must not hand the company's rules to anyone else.
+    pid = ids["teammate"]
+    _handling(pid, "careful")
+    ttl.set_(ttl.person_scope(pid), enabled=True, updated_by="t")
+    ttl.add_rule(ttl.person_scope(pid), "domain", "acme.com", created_by="t")
+    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "acquisition", created_by="t")
+    row = _rows(_you(pid, principal=False))["rules"]
+    assert row.items == ("Anyone at acme.com",)
+    assert "acquisition" not in row.why and "1 rule" in row.why
+    assert _rows(_you(pid))["rules"].items == ("Anyone at acme.com", "Words: acquisition")
 
 
 def test_training_holds_replies_and_counts_what_it_allowed(ids: dict[str, int]) -> None:

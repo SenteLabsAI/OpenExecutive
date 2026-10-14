@@ -129,8 +129,10 @@ def _plural(n: int, one: str, many: str | None = None) -> str:
     return f"{n} {one if n == 1 else (many or one + 's')}"
 
 
-def as_you(person_id: int, *, can_have_it: bool, signing: bool) -> Section:
-    """What goes out as ``person_id``, from their own mailbox."""
+def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bool = False) -> Section:
+    """What goes out as ``person_id``, from their own mailbox. The company's
+    rules are named only to the principal, as ``GET /take-the-lead`` does;
+    anyone else is told only how many there are."""
     from openexecutive.delegation import handle_it, inbox, training
     from openexecutive.delegation.settings import is_enabled
     from openexecutive.orchestrator import take_the_lead
@@ -301,10 +303,14 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool) -> Section:
             logger.warning("may_do: couldn't read the rules", exc_info=True)
             own, company = [], []
         if own or company:
+            shown = [*own, *company] if is_principal else own
+            why = "Your rules and your company's always hold at Everything."
+            if company and not is_principal:
+                why += f" Your company has {_plural(len(company), 'rule')}; the owner can see them."
             rows.append(Row(
                 "rules", "Replies matching your rules or your company's", "always_waits", "Waits for you",
-                "Your rules and your company's always hold at Everything.", SETTING_HANDLE_IT,
-                items=tuple(_rule_label(r.kind, r.value) for r in [*own, *company]),
+                why, SETTING_HANDLE_IT,
+                items=tuple(_rule_label(r.kind, r.value) for r in shown),
             ))
 
     # Messages and meetings it suggests from their mail.
@@ -552,7 +558,8 @@ def summary(person_id: int | None, *, can_have_it: bool, is_principal: bool) -> 
         paused = True
     signing = signing_ok()
     you = (
-        as_you(person_id, can_have_it=can_have_it, signing=signing) if person_id is not None
+        as_you(person_id, can_have_it=can_have_it, signing=signing, is_principal=is_principal)
+        if person_id is not None
         else as_you(0, can_have_it=False, signing=signing)
     )
     return MayDo(paused=paused, sections=[you, as_the_executive(is_principal=is_principal), departments()])
