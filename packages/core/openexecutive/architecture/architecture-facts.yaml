@@ -7396,6 +7396,29 @@ integrations:
     The old env-var allowlists (EMAIL_ALLOWED_SENDERS /
     TELEGRAM_ALLOWED_CHAT_IDS / DISCORD_ALLOWED_USER_IDS) have been
     removed; access is managed entirely via the /people UI.
+  mcp_tool_timeout: |
+    Every call through MCPGateway to the extensible-mcp child (call_tool,
+    search_tools, load_mcp_server and the M365 gate lookups in
+    _fetch_m365_json) goes through mcp_gateway._session_call, which bounds
+    it with MCP_TOOL_TIMEOUT_S (120 s) and raises GatewayCallTimeout (a
+    TimeoutError) past it. MCPGateway.call_tool turns that into an error
+    payload ({"error": "... did not answer within N s. It may still have
+    run ...", "timed_out": true}) and skips everything after the call: no
+    outbound linkage, artifact row or grant-health reading for a call that
+    may not have happened. Gate lookups read a timeout as a failed lookup
+    (None), which the gates refuse on. Why: a hung workspace server held
+    whatever awaited it for good: the serial email poller, a brief, a chat
+    turn until its whole-turn deadline.
+  chat_stream_keepalive: |
+    The /chat SSE body sends ": keepalive\n\n" (an SSE comment, skipped by
+    every reader; the UI reads only data: lines) when CHAT_STREAM_KEEPALIVE_S
+    (15 s, 0 = off) passes with the Executive's step still running.
+    _next_stream_step waits min(remaining, keepalive) and returns idle with
+    the step still in flight (pending); the loop yields the comment and
+    passes pending back, so nothing restarts. Every other exit cancels the
+    step, and the loop's finally cancels a pending one before the stream's
+    aclose. The whole-turn deadline is unchanged. Why: browsers and proxies
+    drop an idle stream well inside CHAT_STREAM_TIMEOUT_S.
   email_poller: |
     MCP poll loop in openexecutive.integrations.email_poller — runs
     as an asyncio task in the FastAPI lifespan, started by
@@ -7427,6 +7450,16 @@ integrations:
     block. The outbound gate at ``mcp_gateway._check_gmail_recipients`` /
     ``_check_m365_recipients`` is the actual security boundary against
     auto-replying to spam.
+    Deadlines: the loop is serial (one message at a time), so the
+    Executive turn on each email runs under asyncio.timeout
+    (EMAIL_TURN_TIMEOUT_S, 300 s). Past it the turn is cancelled
+    (EmailTurnTimeout; a TimeoutError raised inside the turn is not
+    mistaken for it), an integration_inbound row with outcome turn_timeout
+    is written (private when the mail is), and the message is marked read
+    and not run again, since the turn may already have replied. A message
+    whose handling raises is retried on the next polls up to _MAX_ATTEMPTS
+    (3) per run, then given up and marked read. Every gateway call it makes
+    is bounded by MCP_TOOL_TIMEOUT_S (see mcp_tool_timeout).
     Mail from one of the principal's CONTACTS gets a contact [POLICY]
     notice instead (`_contact_notice`): it names them (name, role /
     company), says not to reply unless the principal asks, and asks for

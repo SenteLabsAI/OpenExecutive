@@ -1851,6 +1851,32 @@ def _m365_implied_recipients(normalized: str, message: dict[str, Any]) -> list[s
 _Discover = Callable[[str], Awaitable[bool]]
 
 
+class GatewayCallTimeout(TimeoutError):
+    """A call through the MCP gateway got no answer within
+    ``MCP_TOOL_TIMEOUT_S``. The workspace server may still have run it."""
+
+
+def _tool_timeout_s() -> float:
+    """``MCP_TOOL_TIMEOUT_S``; a settings stub without it (tests patch
+    ``get_settings`` here) gets config's default."""
+    return float(getattr(get_settings(), "mcp_tool_timeout_s", 120.0))
+
+
+async def _session_call(session: Any, name: str, arguments: dict[str, Any]) -> Any:
+    """``session.call_tool`` with the per-call ceiling. Without one, a
+    workspace server that never answers (a hung Google or Microsoft request,
+    a stuck child process) held whatever awaited it for good: the email
+    poller, which handles one message at a time, a brief, a chat turn. The
+    call is cancelled on our side; the server may still finish it."""
+    timeout = _tool_timeout_s()
+    try:
+        return await asyncio.wait_for(session.call_tool(name, arguments), timeout=timeout)
+    except TimeoutError as exc:
+        tool = arguments.get("tool_name") if name == "call_tool" else name
+        logger.warning("MCPGateway: %s got no answer within %.0fs", str(tool)[:200], timeout)
+        raise GatewayCallTimeout(f"{str(tool)[:200]} got no answer within {timeout:.0f}s") from exc
+
+
 async def _fetch_m365_json(
     session: Any, tool_name: str, arguments: dict[str, Any], discover: _Discover | None = None,
 ) -> dict[str, Any] | None:
@@ -1860,8 +1886,8 @@ async def _fetch_m365_json(
     that only searched for the reply tool never returned the lookup: then
     ``discover`` it and read once more."""
     try:
-        result = await session.call_tool(
-            "call_tool", {"tool_name": tool_name, "arguments": arguments},
+        result = await _session_call(
+            session, "call_tool", {"tool_name": tool_name, "arguments": arguments},
         )
         text = result.content[0].text if result.content else ""
         if (
@@ -1871,8 +1897,8 @@ async def _fetch_m365_json(
             and _UNDISCOVERED_MARKER in text
             and await discover(tool_name)
         ):
-            result = await session.call_tool(
-                "call_tool", {"tool_name": tool_name, "arguments": arguments},
+            result = await _session_call(
+                session, "call_tool", {"tool_name": tool_name, "arguments": arguments},
             )
             text = result.content[0].text if result.content else ""
         parsed = json.loads(text) if isinstance(text, str) and text.strip() else None
@@ -2895,7 +2921,7 @@ class MCPGateway:
         # (extensible-mcp defaults to 5 results).
         if isinstance(tool_input.get("top_k"), int):
             args["top_k"] = tool_input["top_k"]
-        result = await session.call_tool("search_tools", args)
+        result = await _session_call(session, "search_tools", args)
         text = result.content[0].text if result.content else json.dumps({"tools": []})
         return _drop_blocked_tools(text)
 
@@ -3135,21 +3161,32 @@ class MCPGateway:
             if isinstance(disclosed, str):
                 return disclosed
             wire_arguments = disclosed
-        result = await session.call_tool(
-            "call_tool",
-            {"tool_name": tool_input["name"], "arguments": wire_arguments},
-        )
-        result_text = result.content[0].text if result.content else json.dumps({"result": None})
-        # A pinned tool called before startup priming reached it: the prompt
-        # told the model to call it directly, so discover it and retry once.
-        # The refused call ran nothing, and every gate above has already
-        # passed these same arguments.
-        if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
-            result = await session.call_tool(
-                "call_tool",
-                {"tool_name": tool_input["name"], "arguments": wire_arguments},
-            )
+        wire_input = {"tool_name": tool_input["name"], "arguments": wire_arguments}
+        try:
+            result = await _session_call(session, "call_tool", wire_input)
             result_text = result.content[0].text if result.content else json.dumps({"result": None})
+            # A pinned tool called before startup priming reached it: the prompt
+            # told the model to call it directly, so discover it and retry once.
+            # The refused call ran nothing, and every gate above has already
+            # passed these same arguments.
+            if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
+                result = await _session_call(session, "call_tool", wire_input)
+                result_text = result.content[0].text if result.content else json.dumps({"result": None})
+        except GatewayCallTimeout:
+            # An error payload, not a raise: the model reads it like any tool
+            # error, and every caller that checks for one (`_is_error_payload`)
+            # treats the call as failed. Not a failed send, though: the server
+            # may still have run it, so say to check before calling again.
+            # Nothing below runs: no outbound linkage or attachment row for a
+            # send that may not have happened, and no grant-health reading.
+            return json.dumps({
+                "error": (
+                    f"{str(tool_name)[:200]} did not answer within "
+                    f"{_tool_timeout_s():.0f}s. It may still have run: "
+                    "check its effect before calling it again."
+                ),
+                "timed_out": True,
+            })
         # On the final result, retry or not: roster answer tokens are hidden
         # from every mailbox read (Google Workspace or Microsoft 365) but the
         # poller's own.
@@ -3211,7 +3248,8 @@ class MCPGateway:
         url: str = tool_input["url"]
         if not url.startswith("https://"):
             return json.dumps({"error": "load_mcp_server requires an HTTPS URL"})
-        result = await session.call_tool(
+        result = await _session_call(
+            session,
             "load_mcp_server",
             {"name": tool_input["name"], "url": url},
         )

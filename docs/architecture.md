@@ -577,6 +577,9 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | `SLACK_SIGNING_SECRET` | No | — | Slack signing secret: hear Slack over HTTP at `/webhook/slack` instead of socket mode |
 | `EXEC_EMAIL_ADDRESS` | Yes | — | Executive Gmail address (Gmail MCP OAuth) |
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | Email poll frequency |
+| `EMAIL_TURN_TIMEOUT_S` | No | `300` | Ceiling on the Executive's answer to one inbound email; past it the message is marked read and skipped |
+| `MCP_TOOL_TIMEOUT_S` | No | `120` | Ceiling on one MCP gateway call (Gmail, Calendar, Drive, Outlook, OneDrive) |
+| `CHAT_STREAM_KEEPALIVE_S` | No | `15` | Interval of the SSE keepalive comment on a quiet chat stream; 0 turns it off |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token |
 | `TELEGRAM_WEBHOOK_SECRET` | No | — | Must match the `secret_token` given to `setWebhook`; checked against `X-Telegram-Bot-Api-Secret-Token` |
 | `GOOGLE_CHAT_PROJECT_NUMBER` | No | — | GCP project number |
