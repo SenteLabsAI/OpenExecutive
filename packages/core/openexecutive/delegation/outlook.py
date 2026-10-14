@@ -136,6 +136,8 @@ class OutlookCredential:
     client_id: str = ""
     tenant: str = "common"
     personal: bool = False
+    # The Graph scopes it was minted with (the file's ``scopes``), lowercased.
+    scopes: frozenset[str] = frozenset()
 
 
 def valid_id(value: object) -> bool:
@@ -192,7 +194,19 @@ def load_credential(email: str, *, directory: Path | None = None) -> OutlookCred
         client_id=str(values["client_id"]),
         tenant=tenant,
         personal=data.get("account") == "personal" or tenant in ("consumers", CONSUMER_TENANT_ID),
+        scopes=frozenset(
+            s.strip().lower() for s in data.get("scopes") or () if isinstance(s, str) and s.strip()
+        ) if isinstance(data.get("scopes"), list) else frozenset(),
     )
+
+
+def _refresh_scope(cred: OutlookCredential) -> str:
+    """The scopes a refresh asks for: the mail ones, plus the calendar one
+    only when the credential was minted with it (asking a mail-only one for
+    it would fail the refresh, and mail with it)."""
+    if "calendars.read" not in cred.scopes:
+        return REQUEST_SCOPE
+    return f"{REQUEST_SCOPE} {GRAPH_RESOURCE}Calendars.Read"
 
 
 def _store_rotated(email: str, old: str, new: str, directory: Path | None) -> None:
@@ -510,7 +524,7 @@ class DelegateOutlook:
             "grant_type": "refresh_token",
             "refresh_token": cred.refresh_token,
             "client_id": cred.client_id,
-            "scope": REQUEST_SCOPE,
+            "scope": _refresh_scope(cred),
         }
         try:
             resp = await client.post(f"{LOGIN_BASE}/{cred.tenant}/oauth2/v2.0/token", data=form)

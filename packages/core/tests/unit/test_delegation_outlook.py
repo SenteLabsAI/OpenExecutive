@@ -84,6 +84,7 @@ def test_the_script_writes_what_the_client_reads(tmp_path: Path) -> None:
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert load_credential(EMAIL, directory=tmp_path / "creds") == OutlookCredential(
         email=EMAIL, refresh_token="r1", client_id="cid", tenant="11111111-2222-3333-4444-555555555555",
+        scopes=frozenset({"user.read", "mail.readwrite", "mail.send"}),
     )
     # No secret is ever written into a person's file, and the token stays out of a repr.
     assert "client_secret" not in path.read_text()
@@ -766,3 +767,34 @@ def test_the_outlook_script_asks_for_the_calendar_only_with_the_flag() -> None:
     script = _script()
     assert "Calendars.Read" not in script.SCOPE
     assert "https://graph.microsoft.com/Calendars.Read" in script.scope_for((*script.GRAPH_SCOPES, script.CALENDAR_SCOPE))
+
+
+def test_the_refresh_asks_for_the_calendar_only_when_it_was_granted(tmp_path: Path) -> None:
+    script = _script()
+    payload = script.credential_payload(
+        EMAIL, "r1", "cid", "common", personal=False, graph_scopes=(*script.GRAPH_SCOPES, script.CALENDAR_SCOPE),
+    )
+    script.write_credential(tmp_path, EMAIL, payload)
+    with_calendar = load_credential(EMAIL, directory=tmp_path)
+    assert with_calendar is not None
+    assert unquote(_refresh_form(with_calendar)["scope"]).endswith("https://graph.microsoft.com/Calendars.Read")
+    _write(tmp_path)
+    mail_only = load_credential(EMAIL, directory=tmp_path)
+    assert mail_only is not None and "Calendars" not in unquote(_refresh_form(mail_only)["scope"])
+
+
+def _refresh_form(cred: OutlookCredential) -> dict[str, str]:
+    """The form one token refresh for ``cred`` posts."""
+    forms: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        forms.append(dict(pair.split("=", 1) for pair in request.content.decode().split("&")))
+        return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": ""})
+
+    async def refresh() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            await DelegateOutlook(EMAIL, credential=cred)._access_token(http)
+
+    ol._TOKENS.clear()
+    asyncio.run(refresh())
+    return forms[0]

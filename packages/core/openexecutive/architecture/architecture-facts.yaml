@@ -9660,7 +9660,10 @@ delegation:
     scopes: the token refresh still requires only the mail ones; the
     clients keep the scope string the refresh returns (_GRANTED) and
     list_events raises CalendarNotGranted (a GmailError, not an auth error)
-    before calling when it is missing, or on a 403. PUT /delegation/calendar
+    before calling when it is missing, or on a 403. An Outlook refresh asks
+    for Calendars.Read too only when the credential file's scopes list it
+    (_refresh_scope); a mail-only one never asks, so its refresh can't fail
+    on it. PUT /delegation/calendar
     {enabled}: on needs Act as me on, gmail_status connected and a one-hour
     list_events that works (409 act_as_me_off / calendar_not_granted, 503
     calendar_error); off always works; Act as me off turns it off;
