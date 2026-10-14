@@ -1391,8 +1391,57 @@ async def _run_executive(
             raise EmailTurnTimeout(timeout_s) from exc
         raise
     if source is None:
+        _note_reply_outcome(session, person, raw_email, message_id, thread_id, from_addr, response)
         return None
     return await _send_answer(source, response, answer_to, session_id or session.session_id)
+
+
+def _note_reply_outcome(
+    session: Any,
+    person: Any,
+    raw_email: str,
+    message_id: str,
+    thread_id: str,
+    from_addr: str,
+    response: Any,
+) -> None:
+    """After a mailbox email's turn: a card in Needs you when its sender, the
+    principal or a teammate, got no reply, and the thread's card resolved
+    when they did (``integrations.unanswered_mail``). Senders off the team
+    are not answered by design, and have their own paths (a roster request,
+    the contact notice). Never raises."""
+    from openexecutive.integrations import unanswered_mail
+
+    sender = from_addr.strip().lower()
+    if person is None or not sender:
+        return
+    thread_key = thread_id or sender
+    try:
+        addresses = {sender, *(a.strip().lower() for a in [person.email, *person.email_aliases] if a)}
+        if addresses & session.mail_sent_to or (message_id and message_id in session.mail_replied_ids):
+            unanswered_mail.close_card(thread_key)
+            return
+        from openexecutive.orchestrator.people_tools import teammate_turn_owner
+
+        from_principal = getattr(person, "is_principal", False) is True
+        # A teammate's own conversation is theirs alone: their card names
+        # only who is waiting, never what they asked.
+        own_turn = not from_principal and teammate_turn_owner(session) is not None
+        subject = ""
+        if not own_turn:
+            header, _body, _attachments = _split_gmail_content(raw_email)
+            line = next((ln for ln in header if ln.lower().startswith("subject:")), "")
+            subject = line[len("subject:"):].strip()
+        unanswered_mail.file_card(
+            thread_key=thread_key,
+            message_id=message_id,
+            sender_name=str(getattr(person, "full_name", "") or from_addr),
+            from_principal=from_principal,
+            subject=subject,
+            answer=response if from_principal and isinstance(response, str) else "",
+        )
+    except Exception:
+        logger.exception("email: could not note whether message=%s got its reply", message_id)
 
 
 async def _send_answer(source: InboundMail, response: Any, to: str, session_id: str) -> str:

@@ -2695,6 +2695,46 @@ def _record_m365_outbound_context(arguments: dict[str, Any]) -> None:
         )
 
 
+# Outlook replies that answer one message by its id (a draft only waits).
+_M365_SENT_REPLY_TOOLS = frozenset({
+    "microsoft_365__reply_mail_message",
+    "microsoft_365__reply_all_mail_message",
+})
+
+
+def _note_mail_sent(tool_name: str, normalized: str, arguments: dict[str, Any]) -> None:
+    """Mark on the conversation (``Session.mail_sent_to`` /
+    ``mail_replied_ids``) who a send the mailbox accepted went to, so the
+    email poller can tell whether an inbound email got its reply
+    (``integrations.unanswered_mail``). Nothing without a live session, and
+    never raises: the send already happened."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None:
+        return
+    try:
+        if tool_name == "google_workspace__send_gmail_message":
+            for field in _OUTBOUND_CONTEXT_RECIPIENT_FIELDS:
+                value = arguments.get(field)
+                items = value if isinstance(value, list) else [value]
+                for _name, addr in getaddresses([s for s in items if isinstance(s, str)]):
+                    if addr.strip():
+                        session.mail_sent_to.add(addr.strip().lower())
+        elif normalized == _M365_RECORD_SEND_TOOL:
+            message = _ci_get(_ci_get(arguments, "body"), "message")
+            for key in ("toRecipients", "ccRecipients"):
+                for addr in _m365_recipient_addresses(_ci_get(message, key)):
+                    if addr.strip():
+                        session.mail_sent_to.add(addr.strip().lower())
+        elif normalized in _M365_SENT_REPLY_TOOLS:
+            message_id = _ci_get(arguments, "messageId")
+            if isinstance(message_id, str) and message_id:
+                session.mail_replied_ids.add(message_id)
+    except Exception:
+        logger.exception("note_mail_sent: could not record the send (non-fatal)")
+
+
 # extensible-mcp's refusal for a tool no search in this session has returned
 # (DiscoveredToolsFilter, surfaced by its call_tool handler as "Error: ...").
 _UNDISCOVERED_MARKER = "has not been discovered via search_tools"
@@ -3229,6 +3269,8 @@ class MCPGateway:
             _record_email_outbound_context(arguments)
         elif normalized == _M365_RECORD_SEND_TOOL and not _is_error_payload(result_text):
             _record_m365_outbound_context(arguments)
+        if not _is_error_payload(result_text):
+            _note_mail_sent(tool_name, normalized, arguments)
         if attached_artifacts and not _is_error_payload(result_text):
             from openexecutive.audit import log_event as audit_log
 

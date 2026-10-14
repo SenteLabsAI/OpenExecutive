@@ -37,6 +37,13 @@ class Session:
     # The model may reach the Executive's mailbox only by these
     # (orchestrator.teammate_mail).
     mail_ids_seen: set[str] = field(default_factory=set)
+    # Who this conversation's mail actually reached: the lowercased to/cc
+    # addresses of every send the mailbox accepted, and the message ids an
+    # Outlook reply answered. The email poller reads them after an inbound
+    # email's turn to tell whether its sender got a reply
+    # (integrations.unanswered_mail).
+    mail_sent_to: set[str] = field(default_factory=set)
+    mail_replied_ids: set[str] = field(default_factory=set)
     # Which inbound channel this session arrived on ("slack", "discord",
     # "telegram", "google_chat", "email"), and the address on it. Empty for
     # web/CLI turns and runs nobody started from a channel. Used when a
