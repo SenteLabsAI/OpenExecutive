@@ -11,7 +11,8 @@ model makes (the chat's ``call_tool``, a script's calls, a workflow step run
 from chat) with three rules:
 
 1. **Searches leave teammates out.** A Gmail search gets ``-from: -to: -cc:``
-   for every other teammate's address and always asks for headers; an
+   for every other teammate's address, unless the reader is on the message
+   too (not on a background run), and always asks for headers; an
    Outlook list always selects who a message is from and to. What comes back
    is filtered again, entry by entry.
 2. **Mail is reached only by an id the conversation was shown.** Every other
@@ -132,6 +133,7 @@ class _Sides:
     reader: RosterAllow
     others: RosterAllow
     other_addresses: list[str]
+    reader_addresses: list[str] = field(default_factory=list)
     reader_id: int | None = None
     reader_is_principal: bool = False
     seen: set[str] = field(default_factory=set)
@@ -255,6 +257,12 @@ def _sides(session: Any) -> _Sides | None:
         reader=RosterAllow(reader),
         others=RosterAllow(others),
         other_addresses=sorted({a.strip().lower() for p in others for a in addresses_of(p) if a}),
+        # A background run reads as the principal but may report to someone
+        # else (a teammate's follow-up), so its searches keep every other
+        # teammate out even where the principal is on the mail too.
+        reader_addresses=[] if getattr(session, "unattended", False) is True else sorted(
+            {a.strip().lower() for p in reader for a in addresses_of(p) if a}
+        ),
         reader_id=reader_id,
         reader_is_principal=any(p.is_principal for p in reader),
         seen=seen if isinstance(seen, set) else set(),
@@ -337,6 +345,12 @@ def _gmail_query(query: str, sides: _Sides) -> str:
     excluded = " ".join(f"-{{from:{a} to:{a} cc:{a}}}" for a in sides.other_addresses)
     if not excluded:
         return query
+    if sides.reader_addresses:
+        # Mail the reader is on is theirs too, whoever else it went to: an
+        # email the Executive sent to the reader and a teammate stays
+        # findable. Reading it is still decided message by message.
+        mine = " ".join(f"from:{a} to:{a} cc:{a}" for a in sides.reader_addresses)
+        excluded = f"{{({excluded}) {mine}}}"
     return f"({query}) {excluded}" if query.strip() else excluded
 
 

@@ -109,8 +109,43 @@ def test_a_search_leaves_teammates_out_and_asks_for_headers(roster: SimpleNamesp
     sent = mailbox.calls[0]["arguments"]
     assert sent["include_headers"] is True
     assert sent["query"].startswith("(from:ben) ")
-    assert f"-{{from:{TEAMMATE} to:{TEAMMATE} cc:{TEAMMATE}}}" in sent["query"]
-    assert OWNER not in sent["query"]
+    assert sent["query"] == (
+        f"(from:ben) {{(-{{from:{TEAMMATE} to:{TEAMMATE} cc:{TEAMMATE}}}) "
+        f"from:{OWNER} to:{OWNER} cc:{OWNER}}}"
+    )
+
+
+def test_a_search_with_no_reader_leaves_every_teammate_out(roster: SimpleNamespace) -> None:
+    mailbox = FakeMailbox({SEARCH: _listing(VENDOR)})
+    with _reader(None):
+        _run(mailbox, SEARCH, query="q")
+    query = mailbox.calls[0]["arguments"]["query"]
+    assert f"-{{from:{TEAMMATE} to:{TEAMMATE} cc:{TEAMMATE}}}" in query
+    assert f"-{{from:{OWNER} to:{OWNER} cc:{OWNER}}}" in query
+    assert "{(" not in query
+
+
+def test_a_background_search_leaves_every_other_teammate_out(roster: SimpleNamespace) -> None:
+    # A follow-up reads as the principal but may report to a teammate.
+    roster.session.unattended = True
+    mailbox = FakeMailbox({SEARCH: _listing(VENDOR)})
+    _run(mailbox, SEARCH, query="q")
+    query = mailbox.calls[0]["arguments"]["query"]
+    assert query == f"(q) -{{from:{TEAMMATE} to:{TEAMMATE} cc:{TEAMMATE}}}"
+
+
+def test_mail_the_executive_sent_to_the_reader_and_a_teammate_is_found_and_read(
+    roster: SimpleNamespace,
+) -> None:
+    # The Executive emailed the owner and Ben together; the owner asks about it.
+    listing = _listing(EXEC)
+    message = _message(EXEC, f"{OWNER}, {TEAMMATE}", body="Meeting with Andrew at 2:00.")
+    mailbox = FakeMailbox({SEARCH: listing, READ: message})
+    with _reader(roster.owner):
+        found = _run(mailbox, SEARCH, query="in:sent Andrew")
+        read = _run(mailbox, READ, message_id="m1")
+    assert "Subject 1" in found and "Left out" not in found
+    assert "Meeting with Andrew at 2:00." in read
 
 
 def test_a_listing_drops_the_teammates_entries_and_remembers_the_rest(roster: SimpleNamespace) -> None:
