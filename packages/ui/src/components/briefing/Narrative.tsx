@@ -27,26 +27,32 @@ export default function NarrativeBody({
   stale,
   solo,
   onContinue,
+  intro = true,
 }: {
   narrative: string | null | undefined;
   stale: boolean;
   solo: boolean;
   onContinue?: ContinueHandler;
+  /** The side panel's explanation of what the brief is; off where the brief
+   * sits in the page under its own heading. */
+  intro?: boolean;
 }) {
   if (!narrative) {
     return (
       <div aria-live="polite" className="rounded-xl bg-accent/5 px-4 py-3 text-[15px] text-fg-muted animate-pulse">
-        {stale ? "Catching up on today…" : "No brief yet today."}
+        {stale ? "Writing today's brief…" : "No brief yet today. A new one is written every morning."}
       </div>
     );
   }
   return (
     <>
+      {intro && (
       <PanelIntro>
         The Executive&apos;s read on {solo ? "your work" : "the company"} right now — what came in today, what&apos;s
         stuck, what&apos;s next on your calendar, plus proposals and at-risk goals. Rewritten as the picture changes.
         {onContinue && " Tap a point to talk it through."}
       </PanelIntro>
+      )}
       <div className="prose prose-invert max-w-none text-[15px] prose-p:my-2 prose-ul:my-2 prose-headings:text-fg prose-strong:text-fg">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}

@@ -14,6 +14,8 @@ export const STORAGE_KEYS = {
   description: "oe.onboard.description",
   later: "oe.onboard.later",
   checklistHidden: "oe.gettingStarted.hidden",
+  // The question the last setup screen hands to Home, which asks it once.
+  firstQuestion: "oe.onboard.firstQuestion",
 } as const;
 
 type Where = "local" | "session";
@@ -21,7 +23,11 @@ type Where = "local" | "session";
 // The description is the one thing here that is the person's own words
 // (it becomes the first interview turn, financials and all), so it lives in
 // sessionStorage: gone with the tab, never synced.
-const WHERE: Record<string, Where> = { [STORAGE_KEYS.description]: "session" };
+const WHERE: Record<string, Where> = {
+  [STORAGE_KEYS.description]: "session",
+  // Built from their own priorities, and asked on the next page load only.
+  [STORAGE_KEYS.firstQuestion]: "session",
+};
 
 function storage(key: string): Storage | null {
   try {
@@ -58,6 +64,29 @@ export function clearSetupMemory(): void {
   remember(STORAGE_KEYS.session, null);
   remember(STORAGE_KEYS.description, null);
   remember(STORAGE_KEYS.later, null);
+}
+
+/** What reading your own mailbox does, in the one wording every screen uses:
+ * Handle it for me can send, so "never sends" would be untrue. */
+export const OWN_MAILBOX_SENDS = "Drafts replies as you. Sends only if you turn on Handle it for me.";
+
+const FIRST_QUESTION_MAX = 160;
+
+/**
+ * The first question the last setup screen offers, built from what setup
+ * just saved: the first of this year's priorities, else the north star,
+ * else a general opener. The person can edit it before it is asked.
+ */
+export function firstQuestion(
+  priorities: { current_year?: readonly string[] | null; north_star_metric?: string | null } | null | undefined,
+  solo: boolean,
+): string {
+  const tidy = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
+  const first = (priorities?.current_year ?? []).map(tidy).find(Boolean);
+  const star = tidy(priorities?.north_star_metric);
+  const pick = (first || star).slice(0, FIRST_QUESTION_MAX).trim();
+  if (pick) return `Where should I start this week on "${pick}"?`;
+  return solo ? "What should I focus on this week?" : "What should the team focus on this week?";
 }
 
 export interface RedirectInput {
@@ -155,7 +184,7 @@ export function gettingStartedItems(input: ChecklistInput): ChecklistItem[] {
     {
       id: "own_mailbox",
       title: "Let it read your own mailbox",
-      detail: "Optional. Drafts replies as you, never sends.",
+      detail: `Optional. ${OWN_MAILBOX_SENDS}`,
       done: ownMail === "ok",
       optional: true,
       href: FIRST_RUN_LINKS.ownMailbox,

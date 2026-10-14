@@ -90,6 +90,65 @@ def test_goal_text_is_one_line(setup: SimpleNamespace) -> None:
     assert "\nNEEDS YOU" not in text
 
 
+def _profile(priorities: list[str], north_star: str = "") -> Any:
+    from openexecutive.memory.company_profile import CompanyProfile, StrategicPriorities
+
+    return CompanyProfile(
+        name="Acme", strategic_priorities=StrategicPriorities(current_year=priorities, north_star_metric=north_star),
+    )
+
+
+def test_a_fresh_install_lists_the_priorities_from_setup(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Setup saves no goal rows, so a new install's week has only the profile.
+    setup.departments = [_dept("sales", "Sales", head=None)]
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda *a, **k: _profile(["Launch same-day delivery", "Launch same-day delivery", ""], "NRR above 110%"),
+    )
+    block = first_week.getting_started_shared(NOW)
+    assert "YOUR PRIORITIES THIS YEAR" in block.text
+    assert block.text.count("- Launch same-day delivery") == 1
+    assert "- North star: NRR above 110%" in block.text
+    assert "YOUR GOALS:" not in block.text
+    assert "priority:Launch same-day delivery" in block.keys
+    solo = first_week.getting_started_shared(NOW, solo=True)
+    assert "YOUR PRIORITIES THIS YEAR" in solo.text and "NO LEADER" not in solo.text
+
+
+def test_goal_rows_replace_the_priorities(setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda *a, **k: _profile(["Launch same-day delivery"]),
+    )
+    block = first_week.getting_started_shared(NOW)
+    assert "YOUR GOALS:" in block.text and "PRIORITIES" not in block.text
+
+
+def test_an_unreadable_profile_leaves_the_rest(setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    setup.departments = [_dept("sales", "Sales", head=None)]
+
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise OSError("gone")
+
+    monkeypatch.setattr("openexecutive.onboarding.profile_builder.load_or_create_profile", _boom)
+    block = first_week.getting_started_shared(NOW)
+    assert "NO LEADER" in block.text and "PRIORITIES" not in block.text
+
+
+async def test_the_brief_block_carries_the_priorities_too(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup.departments = []
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda *a, **k: _profile(["Land three retainer clients"]),
+    )
+    block = await first_week.getting_started(include_inbox=False, now=NOW, solo=True)
+    assert "- Land three retainer clients" in block.text
+
+
 class _Mailbox:
     def __init__(self, messages: list[Any]) -> None:
         self.messages = {m.id: m for m in messages}

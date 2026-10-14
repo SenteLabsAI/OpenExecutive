@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   checklistComplete,
   checklistProgress,
+  firstQuestion,
   gettingStartedItems,
+  OWN_MAILBOX_SENDS,
   shouldRedirectToOnboard,
 } from "../src/lib/firstRun.ts";
 
@@ -72,4 +74,23 @@ test("a team adds the roster row, and the optional row never blocks completion",
   assert.equal(items.at(-1).done, true);
   assert.equal(checklistComplete(items), true);
   assert.deepEqual(checklistProgress(items), { done: 4, total: 4 });
+});
+
+test("the first question comes from what setup saved", () => {
+  assert.equal(
+    firstQuestion({ current_year: ["  ", "Launch same-day delivery.", "Hire a CFO"], north_star_metric: "NRR" }, false),
+    'Where should I start this week on "Launch same-day delivery"?',
+  );
+  assert.equal(firstQuestion({ current_year: [], north_star_metric: "NRR above 110%" }, true),
+    'Where should I start this week on "NRR above 110%"?');
+  assert.equal(firstQuestion(null, true), "What should I focus on this week?");
+  assert.equal(firstQuestion({ current_year: [] }, false), "What should the team focus on this week?");
+  assert.ok(firstQuestion({ current_year: ["x".repeat(500)] }, true).length < 220);
+});
+
+test("the mailbox row says when it sends", () => {
+  const items = gettingStartedItems(base);
+  const own = items.find((i) => i.id === "own_mailbox");
+  assert.ok(own.detail.includes(OWN_MAILBOX_SENDS));
+  assert.ok(!/never sends/i.test(own.detail));
 });

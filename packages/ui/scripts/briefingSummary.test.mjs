@@ -89,3 +89,12 @@ test("a collapsed card keeps one status chip: deadline, then stale, then age", (
   assert.deepEqual(proposalStatusChip({ created_at: created }, now), { label: "2d old", tone: "neutral" });
   assert.equal(proposalStatusChip({ created_at: "" }, now), null);
 });
+
+test("the first week's summary line is the brief's move", async () => {
+  const { firstWeekMove } = await import("../src/lib/briefingSummary.ts");
+  const brief = "**Your first week starts with two leaders to name.**\n\n- **Sales** — no leader yet.\n\n**Move today:** name a leader for **Sales** on People, then ask about [pricing](/x).";
+  assert.equal(firstWeekMove(brief), "name a leader for Sales on People, then ask about pricing.");
+  assert.equal(firstWeekMove("**Move today: pick the Q4 owner**"), "pick the Q4 owner");
+  assert.equal(firstWeekMove("**Quiet right now.**"), null);
+  assert.equal(firstWeekMove(null), null);
+});

@@ -7,7 +7,11 @@ which is exactly when the principal is deciding whether the Executive is
 worth keeping. This block gives the first week's briefs something true to
 say, from what the install already holds:
 
-  • YOUR GOALS — the goals saved at onboarding, with department and target.
+  • YOUR GOALS — the goal rows on the install, with department and target.
+    Setup saves no goal rows (a team's departments start empty, a solo
+    workspace has none), so on a fresh install this is usually
+    • YOUR PRIORITIES THIS YEAR instead — ``strategic_priorities`` from the
+    profile setup just saved, read only while there are no goal rows.
   • DEPARTMENTS WITH NO LEADER — ``head_person_id`` unset, so its work and
     held sends route to the principal.
   • WAITING ON YOU IN YOUR OWN INBOX — only on the scheduler's delivery to
@@ -42,6 +46,7 @@ logger = logging.getLogger(__name__)
 FIRST_WEEK = timedelta(days=7)
 _GOALS_MAX = 8
 _LEADERLESS_MAX = 6
+_PRIORITIES_MAX = 5
 _INBOX_WINDOW = timedelta(hours=48)
 # Messages read for their headers, and senders listed.
 _INBOX_SCAN = 12
@@ -114,6 +119,41 @@ def _goal_lines(solo: bool = False) -> tuple[list[str], list[str], list[str]]:
             goals.append(line)
             keys.append(f"goal:{goal.id}:{goal.status}")
     return goals[:_GOALS_MAX], leaderless[:_LEADERLESS_MAX], keys
+
+
+def _priority_lines() -> tuple[list[str], list[str]]:
+    """(lines, keys) for this year's priorities from the saved profile: what
+    the principal said they are working on, before any goal row exists."""
+    from openexecutive.onboarding.profile_builder import load_or_create_profile
+
+    priorities = load_or_create_profile().strategic_priorities
+    lines: list[str] = []
+    keys: list[str] = []
+    for item in priorities.current_year:
+        text = _one_line(item)
+        if text and text not in keys:
+            lines.append(f"- {text}")
+            keys.append(text)
+    north_star = _one_line(priorities.north_star_metric, 90)
+    if north_star:
+        lines.append(f"- North star: {north_star}")
+        keys.append(f"north_star:{north_star}")
+    lines = lines[:_PRIORITIES_MAX]
+    return lines, [f"priority:{k}" for k in keys[: len(lines)]]
+
+
+def _goals_or_priorities(solo: bool) -> tuple[list[str], list[str], list[str], list[str]]:
+    """(goals, priorities, leaderless, keys). Priorities only while there are
+    no goal rows, so a goal the principal sets replaces them."""
+    goals, leaderless, keys = _goal_lines(solo)
+    priorities: list[str] = []
+    if not goals:
+        try:
+            priorities, priority_keys = _priority_lines()
+            keys += priority_keys
+        except Exception:
+            logger.warning("first_week: profile priorities unreadable", exc_info=True)
+    return goals, priorities, leaderless, keys
 
 
 async def _inbox_lines(now: datetime) -> tuple[list[str], list[str]]:
@@ -200,10 +240,13 @@ async def _calendar_lines(now: datetime) -> tuple[list[str], list[str]]:
 
 def _assemble(
     goals: list[str], leaderless: list[str], inbox: list[str], keys: list[str], meetings: list[str] | None = None,
+    priorities: list[str] | None = None,
 ) -> GettingStarted:
     parts: list[str] = []
     if goals:
-        parts += ["YOUR GOALS (set at onboarding):", *goals]
+        parts += ["YOUR GOALS:", *goals]
+    if priorities:
+        parts += ["YOUR PRIORITIES THIS YEAR (from setup; no goals are set yet):", *priorities]
     if leaderless:
         parts += [
             "DEPARTMENTS WITH NO LEADER (their work and held sends come to the principal "
@@ -225,11 +268,11 @@ def getting_started_shared(now: datetime | None = None, *, solo: bool = False) -
     if first_week_started(now) is None:
         return GettingStarted()
     try:
-        goals, leaderless, keys = _goal_lines(solo)
+        goals, priorities, leaderless, keys = _goals_or_priorities(solo)
     except Exception:
         logger.warning("first_week: departments unreadable", exc_info=True)
         return GettingStarted()
-    return _assemble(goals, leaderless, [], keys)
+    return _assemble(goals, leaderless, [], keys, priorities=priorities)
 
 
 async def getting_started(
@@ -241,10 +284,10 @@ async def getting_started(
     if await asyncio.to_thread(first_week_started, now) is None:
         return GettingStarted()
     try:
-        goals, leaderless, keys = await asyncio.to_thread(_goal_lines, solo)
+        goals, priorities, leaderless, keys = await asyncio.to_thread(_goals_or_priorities, solo)
     except Exception:
         logger.warning("first_week: departments unreadable", exc_info=True)
-        goals, leaderless, keys = [], [], []
+        goals, priorities, leaderless, keys = [], [], [], []
     inbox: list[str] = []
     if include_inbox:
         try:
@@ -261,7 +304,7 @@ async def getting_started(
         except Exception:
             logger.warning("first_week: the principal's own calendar couldn't be read", exc_info=True)
             meetings = []
-    return _assemble(goals, leaderless, inbox, keys, meetings)
+    return _assemble(goals, leaderless, inbox, keys, meetings, priorities=priorities)
 
 
 __all__ = [

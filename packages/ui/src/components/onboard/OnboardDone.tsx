@@ -1,69 +1,64 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ExecEmailRow from "@/components/onboard/ExecEmailRow";
 import { buttonClass } from "@/components/ui/Button";
-import { listDepartments, listPeople, type Person } from "@/lib/api";
-import { FIRST_RUN_LINKS } from "@/lib/firstRun";
+import { getCompanyProfile, listPeople } from "@/lib/api";
+import { FIRST_RUN_LINKS, OWN_MAILBOX_SENDS, STORAGE_KEYS, firstQuestion, remember } from "@/lib/firstRun";
 
 interface Props {
-  /** Personal (one person) or a team; sets which rows are shown. */
+  /** Personal (one person) or a team; sets the wording. */
   solo: boolean;
   /** Opens Home. */
   onDone: () => void;
 }
 
-// The last setup screen: what was saved, then the two connections that make
-// the Executive useful, each explained as its own thing. The first is the
-// Executive's own account (it reads, sends and keeps a calendar as that
-// account, and the morning brief comes from it). The second is the owner's
-// own mailbox for Act as me, which is optional. Both are also on the
-// getting-started checklist on Home, so skipping here loses nothing.
+// The last setup screen ends on a conversation: one question, built from the
+// priorities setup just saved, which Home asks as soon as it opens (handed
+// over in session storage, never the URL, so a link can't make someone ask
+// something). Under it, what the Executive can already do, written as things
+// to try: its own email, the brief, drafting replies as you. The connections
+// are also rows on Home's getting-started checklist, so nothing is lost by
+// asking first.
 export default function OnboardDone({ solo, onDone }: Props) {
   const [companyName, setCompanyName] = useState<string | null>(null);
-  const [owner, setOwner] = useState<Person | null>(null);
   const [peopleCount, setPeopleCount] = useState<number | null>(null);
-  const [departmentCount, setDepartmentCount] = useState<number | null>(null);
+  const [question, setQuestion] = useState<string>(() => firstQuestion(null, solo));
+  // Set once they type: a profile that loads late must not overwrite them.
+  const edited = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/backend/health")
-      .then((r) => r.json())
-      .then((h: { company_name?: string }) => {
-        if (!cancelled) setCompanyName(h.company_name?.trim() || null);
+    getCompanyProfile()
+      .then((p) => {
+        if (cancelled) return;
+        setCompanyName(p.name?.trim() || null);
+        if (!edited.current) setQuestion(firstQuestion(p.strategic_priorities, solo));
       })
       .catch(() => undefined);
     listPeople()
       .then((ps) => {
-        if (cancelled) return;
-        setOwner(ps.find((p) => p.is_principal) ?? null);
-        setPeopleCount(ps.length);
+        if (!cancelled) setPeopleCount(ps.length);
       })
       .catch(() => undefined);
-    if (!solo) {
-      listDepartments()
-        .then((ds) => {
-          if (!cancelled) setDepartmentCount(ds.length);
-        })
-        .catch(() => undefined);
-    }
     return () => {
       cancelled = true;
     };
   }, [solo]);
 
-  const rows: [string, string][] = [];
-  if (companyName) rows.push([solo ? "Your work" : "Company", companyName]);
-  if (owner) {
-    rows.push(["You", [owner.full_name, owner.role].filter(Boolean).join(", ")]);
-    if (owner.email) rows.push(["Sign-in", owner.email]);
-  }
-  if (!solo && peopleCount !== null) {
-    const parts = [`${peopleCount} ${peopleCount === 1 ? "person" : "people"}`];
-    if (departmentCount !== null) {
-      parts.push(`${departmentCount} ${departmentCount === 1 ? "department" : "departments"}`);
-    }
-    rows.push(["Team", parts.join(", ")]);
+  const knows = [
+    companyName,
+    !solo && peopleCount !== null && peopleCount > 1 ? `your ${peopleCount} people` : null,
+    "this year's priorities",
+  ].filter(Boolean) as string[];
+  const knowsLine = `It knows ${knows.length > 1 ? `${knows.slice(0, -1).join(", ")} and ${knows[knows.length - 1]}` : knows[0]}.`;
+
+  function ask() {
+    const text = question.trim();
+    if (!text) return;
+    remember(STORAGE_KEYS.firstQuestion, text);
+    onDone();
   }
 
   return (
@@ -72,82 +67,76 @@ export default function OnboardDone({ solo, onDone }: Props) {
         ✓
       </div>
       <h1 className="mt-3 text-2xl font-bold tracking-tight text-fg">Your Executive is ready</h1>
-      <p className="text-sm text-fg-muted mt-1">
-        Here is what was saved. Everything stays editable in Settings.
-      </p>
+      <p className="text-sm text-fg-muted mt-1">{knowsLine} Everything stays editable in Settings.</p>
 
-      {rows.length > 0 && (
-        <dl className="mt-6 rounded-2xl border border-line bg-surface-elevated px-4 py-1">
-          {rows.map(([k, v]) => (
-            <div
-              key={k}
-              className="flex justify-between gap-4 py-3 text-[15px] border-b border-line last:border-0"
-            >
-              <dt className="text-fg-muted">{k}</dt>
-              <dd className="text-fg text-right">{v}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          ask();
+        }}
+        className="mt-6 rounded-2xl border border-accent/30 bg-accent/5 p-4"
+      >
+        <label htmlFor="first-question" className="text-xs font-semibold uppercase tracking-wider text-accent">
+          Start here
+        </label>
+        <textarea
+          id="first-question"
+          value={question}
+          onChange={(e) => {
+            edited.current = true;
+            setQuestion(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              ask();
+            }
+          }}
+          rows={2}
+          className="mt-2 w-full resize-none rounded-xl border border-line-strong bg-surface-elevated px-3 py-2 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
+        />
+        <p className="mt-1 text-xs text-fg-muted">
+          Built from what you just saved. Change it, or ask anything else.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <button type="submit" disabled={!question.trim()} className={buttonClass("primary", "md")}>
+            Ask your first question
+          </button>
+          <button
+            type="button"
+            onClick={onDone}
+            className="text-sm font-semibold text-accent hover:underline cursor-pointer"
+          >
+            Open Home instead
+          </button>
+        </div>
+      </form>
 
-      <h2 className="mt-8 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-        Two accounts, two jobs
-      </h2>
-
-      <section className="mt-3 rounded-2xl border border-line bg-surface-overlay p-4">
-        <div className="flex items-start gap-3">
-          <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-fg text-fg-inverse text-sm font-bold">
-            1
+      <h2 className="mt-8 text-xs font-semibold uppercase tracking-wider text-fg-subtle">It can already</h2>
+      <ul className="mt-2 rounded-2xl border border-line bg-surface-elevated px-4">
+        <ExecEmailRow />
+        <li className="flex items-baseline gap-3 border-b border-line py-3 last:border-0">
+          <span aria-hidden className="w-5 flex-shrink-0 text-center">
+            ☀
           </span>
-          <div className="min-w-0">
-            <h3 className="text-[15px] font-semibold text-fg">Give your Executive its own email</h3>
-            <p className="mt-1 text-sm text-fg-muted leading-snug">
-              A Google or Microsoft account just for it, like exec@yourcompany.com. Free Gmail or
-              Outlook.com works. It reads, sends and keeps a calendar as that account, and your
-              morning brief comes from it.
-            </p>
-          </div>
-        </div>
-        <div className="mt-3">
-          <Link href={FIRST_RUN_LINKS.execMailbox} className={buttonClass("primary", "md")}>
-            Connect its account
-          </Link>
-        </div>
-      </section>
-
-      <section className="mt-3 rounded-2xl border border-line bg-surface-overlay p-4">
-        <div className="flex items-start gap-3">
-          <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-fg text-fg-inverse text-sm font-bold">
-            2
+          <p className="min-w-0 text-[15px] text-fg-muted leading-snug">
+            <span className="font-semibold text-fg">Brief you.</span> Your first brief is on Home now, and a new one
+            is written every morning.
+          </p>
+        </li>
+        <li className="flex items-baseline gap-3 border-b border-line py-3 last:border-0">
+          <span aria-hidden className="w-5 flex-shrink-0 text-center">
+            ✎
           </span>
-          <div className="min-w-0">
-            <h3 className="text-[15px] font-semibold text-fg">
-              Let it read your own mailbox{" "}
-              <span className="ml-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs font-semibold text-accent">
-                Optional
-              </span>
-            </h3>
-            <p className="mt-1 text-sm text-fg-muted leading-snug">
-              Your Gmail or Outlook, read only. It drafts replies as you and never sends them.
-            </p>
-          </div>
-        </div>
-        <div className="mt-3">
-          <Link href={FIRST_RUN_LINKS.ownMailbox} className={buttonClass("secondary", "md")}>
-            Connect my mailbox
-          </Link>
-        </div>
-      </section>
-
-      <p className="mt-8">
-        <button
-          type="button"
-          onClick={onDone}
-          className="text-sm font-semibold text-accent hover:underline cursor-pointer"
-        >
-          Skip for now, open Home →
-        </button>
-      </p>
+          <p className="min-w-0 text-[15px] text-fg-muted leading-snug">
+            <span className="font-semibold text-fg">Draft replies as you.</span>{" "}
+            <Link href={FIRST_RUN_LINKS.ownMailbox} className="font-semibold text-accent hover:underline">
+              Let it read your own mailbox
+            </Link>
+            . {OWN_MAILBOX_SENDS}
+          </p>
+        </li>
+      </ul>
     </div>
   );
 }

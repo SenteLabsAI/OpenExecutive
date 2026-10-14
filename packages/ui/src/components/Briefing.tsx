@@ -18,7 +18,8 @@ import {
   type Today,
 } from "@/lib/api";
 import type { AlertApproval } from "@/lib/approvals";
-import { briefingSummary, greeting, type SummaryPart } from "@/lib/briefingSummary";
+import { briefingSummary, firstWeekMove, greeting, type SummaryPart } from "@/lib/briefingSummary";
+import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
 import { groupHandled } from "@/lib/handled";
 import {
@@ -659,6 +660,13 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const showNeedsYouMenu = staleNeedsYouIds.length > 0 || mineProposals.length > 0;
 
   const hasBrief = Boolean(today && (today.narrative || today.narrative_stale));
+  // The first week (GETTING STARTED in the brief): the brief is the most
+  // useful thing on the page, so it opens in the page rather than behind
+  // "Read today's brief", and an empty summary line reads its move instead
+  // of "All clear".
+  const firstWeek = Boolean(today?.first_week);
+  const firstWeekBrief = firstWeek && hasBrief;
+  const move = firstWeek ? firstWeekMove(today?.narrative) : null;
   const briefFreshness = today
     ? today.narrative_stale
       ? "Refreshing…"
@@ -707,7 +715,15 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
             {today && (
               <p className="mt-2 text-base sm:text-lg text-fg-muted leading-snug">
                 {summary.length === 0
-                  ? "All clear — nothing needs you right now."
+                  ? move
+                    ? (
+                        <>
+                          <span className="font-semibold text-fg">Move today:</span> {move}
+                        </>
+                      )
+                    : firstWeek
+                      ? "Your first week. The brief below says where to start."
+                      : "All clear — nothing needs you right now."
                   : summary.map((part, i) => (
                       <span key={part.text}>
                         {part.target.kind === "href" ? (
@@ -764,6 +780,30 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
             </div>
           )}
 
+          {today && firstWeekBrief && (
+            <section
+              aria-labelledby="sec-getting-started-brief"
+              className="mb-6 rounded-2xl border border-accent/25 bg-accent/5 px-4 py-3 sm:px-5"
+            >
+              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-3">
+                <h2
+                  id="sec-getting-started-brief"
+                  className="text-xs font-semibold uppercase tracking-wider text-accent"
+                >
+                  Getting started · your first week
+                </h2>
+                {briefFreshness && <span className="text-xs text-fg-muted">{briefFreshness}</span>}
+              </div>
+              <NarrativeBody
+                narrative={today.narrative}
+                stale={today.narrative_stale ?? false}
+                solo={solo}
+                onContinue={onContinue}
+                intro={false}
+              />
+            </section>
+          )}
+
           {bannerSlot && <div className="mb-6">{bannerSlot}</div>}
 
           {today && (
@@ -779,7 +819,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   {replies.cards.length > 0 && <InfoTip align="left">{REPLIES_WAITING_TIP}</InfoTip>}
                   {actionCards.cards.length > 0 && <InfoTip align="left">{ACTION_CARDS_TIP}</InfoTip>}
                   <div className="ml-auto flex items-center gap-1">
-                    {hasBrief && (
+                    {hasBrief && !firstWeekBrief && (
                       <button
                         type="button"
                         onClick={() => setOpenPanel("brief")}
@@ -847,9 +887,17 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                       </div>
                     )}
                   </div>
+                ) : firstWeek ? (
+                  <p className="rounded-2xl border border-dashed border-line px-4 py-5 text-[15px] text-fg-muted">
+                    Nothing waiting on you yet. Decisions and replies to send land here.{" "}
+                    <Link href={FIRST_RUN_LINKS.ownMailbox} className="font-medium text-accent hover:underline">
+                      Let it read your mailbox
+                    </Link>{" "}
+                    to get draft replies here.
+                  </p>
                 ) : !isQuiet ? (
                   <p className="rounded-2xl border border-dashed border-line px-4 py-5 text-[15px] text-fg-muted">
-                    Nothing waiting on you.
+                    Nothing waiting on you. Decisions and replies to send land here.
                   </p>
                 ) : null}
               </section>
@@ -947,7 +995,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                     />
                   ))}
                   {otherProposals.length === 0 && (
-                    <p className="text-[15px] text-fg-muted">Nothing waiting on anyone else.</p>
+                    <p className="text-[15px] text-fg-muted">
+                      Nothing waiting on anyone else.
+                      {today.people.length <= 1 && " Add your team on People to see their work here."}
+                    </p>
                   )}
                 </div>
               </SidePanel>

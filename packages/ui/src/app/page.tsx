@@ -20,6 +20,7 @@ import PausedBanner from "@/components/executive/PausedBanner";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { ChatMessage, DebugEvent, getSessionMessages, updateSession } from "@/lib/api";
 import { downloadChat } from "@/lib/downloadChat";
+import { recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
 import { sessionTitle } from "@/lib/sessionChannel";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -170,6 +171,16 @@ export default function HomePage() {
     const params = new URLSearchParams(window.location.search);
     const sessionParam = params.get("session");
     const draftParam = params.get("draft");
+    // The last setup screen's first question: asked once, as if typed here.
+    // It comes from session storage the setup screen wrote, never from the
+    // URL, so it is the person's own and may send without a second tap.
+    const firstQuestion = recall(STORAGE_KEYS.firstQuestion);
+    if (firstQuestion) {
+      remember(STORAGE_KEYS.firstQuestion, null);
+      handleContinueFromBriefing(firstQuestion.slice(0, MAX_DRAFT_PARAM_CHARS));
+      if (params.toString()) router.replace("/");
+      return;
+    }
     if (params.get("new") === "1") {
       handleNewChat();
       if (draftParam) {
@@ -185,7 +196,7 @@ export default function HomePage() {
       };
       router.replace("/");
     }
-  }, [handleNewChat, router]);
+  }, [handleNewChat, handleContinueFromBriefing, router]);
 
   useEffect(() => {
     const pending = deepLinkRef.current;
