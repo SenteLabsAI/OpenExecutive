@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import SettingsCard from "@/components/settings/SettingsCard";
 import { HANDLE_IT_MODES } from "@/components/settings/HandleItCard";
-import { setReach, setTraining, type DelegationSettings, type ReachStep } from "@/lib/api";
+import { getDelegation, setReach, setTraining, type DelegationSettings, type ReachStep } from "@/lib/api";
 
 // How far it goes as you: the one dial for everything Act as me does from
 // your own mailbox (PUT /delegation/reach). It replaces three switches that
@@ -103,6 +103,13 @@ export default function ReachCard({
       setConfirming(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the setting.");
+      // A refused move up can stop part way, at a lower step: show where it is.
+      try {
+        const now = await getDelegation();
+        if (now) onSettings(now);
+      } catch {
+        // Keep what's shown; the error above already says it didn't save.
+      }
     } finally {
       setBusy(false);
     }
