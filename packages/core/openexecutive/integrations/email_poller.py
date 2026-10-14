@@ -640,7 +640,8 @@ async def _handle_one_email(
             )
             audit_log(
                 "integration_inbound",
-                f"Answer to email from {from_addr} cut off after {timeout_s:.0f}s",
+                f"Answer to email from {from_addr} cut off after {timeout_s:.0f}s; "
+                "a reply may already have gone",
                 actor="email",
                 session_id=session_id,
                 details={

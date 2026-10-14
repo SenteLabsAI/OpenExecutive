@@ -74,18 +74,21 @@ def _run_executive_patches() -> Any:
 def test_a_turn_past_the_ceiling_is_cut_off() -> None:
     _SlowExecutive.cancelled = False
     a, b, c, d = _run_executive_patches()
-    with a, b, c, d, patch.object(poller, "get_settings", return_value=_settings()):
-        with pytest.raises(poller.EmailTurnTimeout) as info:
-            asyncio.run(asyncio.wait_for(
-                poller._run_executive(
-                    gateway=AsyncMock(),
-                    raw_email=f"Subject: hi\nFrom: {TEAMMATE}\n\n--- BODY ---\nhello\n",
-                    message_id="m1",
-                    thread_id="t1",
-                    from_addr=TEAMMATE,
-                ),
-                timeout=5,
-            ))
+    with (
+        a, b, c, d,
+        patch.object(poller, "get_settings", return_value=_settings()),
+        pytest.raises(poller.EmailTurnTimeout) as info,
+    ):
+        asyncio.run(asyncio.wait_for(
+            poller._run_executive(
+                gateway=AsyncMock(),
+                raw_email=f"Subject: hi\nFrom: {TEAMMATE}\n\n--- BODY ---\nhello\n",
+                message_id="m1",
+                thread_id="t1",
+                from_addr=TEAMMATE,
+            ),
+            timeout=5,
+        ))
     assert info.value.timeout_s == 0.05
     assert _SlowExecutive.cancelled is True
 
@@ -200,3 +203,23 @@ def test_a_message_that_succeeds_on_retry_forgets_its_failures() -> None:
         asyncio.run(poller.poll_once(AsyncMock(), provider))  # type: ignore[arg-type]
     assert poller._failed_attempts == {}
     assert "flaky" in poller._processed_ids
+
+
+def test_the_cut_off_row_says_a_reply_may_have_gone() -> None:
+    rows: list[dict[str, Any]] = []
+    gateway = AsyncMock()
+    gateway.call_tool = AsyncMock(
+        return_value=f"Subject: Pilot\nFrom: {TEAMMATE}\nTo: {EXEC}\n\n--- BODY ---\nhello\n"
+    )
+    with (
+        patch(
+            "openexecutive.audit.log_event",
+            side_effect=lambda event_type, summary, **kw: rows.append({"summary": summary, **kw}),
+        ),
+        patch.object(poller, "get_settings", return_value=_settings()),
+        patch.object(poller, "_run_executive", new=AsyncMock(side_effect=poller.EmailTurnTimeout(0.05))),
+        patch.object(poller, "_mark_read", new=AsyncMock()),
+    ):
+        asyncio.run(poller._handle_email(gateway, "m1", "t1", EXEC))
+    cut = next(r for r in rows if r["details"].get("outcome") == "turn_timeout")
+    assert "may already have gone" in cut["summary"]

@@ -2761,10 +2761,33 @@ class Executive:
                         logger.info("→ %s  input=%s", tu["name"], _log_value(tu["name"], tu["input"]))
                 # Same isolation as the skill gather above: a gateway crash on
                 # one tool must not take the turn down with it.
-                mcp_results = await asyncio.gather(
-                    *(_mcp_dispatch[tu["name"]](tu["input"]) for tu in mcp_tool_uses),
-                    return_exceptions=True,
-                )
+                try:
+                    mcp_results = await asyncio.gather(
+                        *(_mcp_dispatch[tu["name"]](tu["input"]) for tu in mcp_tool_uses),
+                        return_exceptions=True,
+                    )
+                except asyncio.CancelledError:
+                    # The turn was cut off (a deadline, a stop) with these
+                    # calls in flight. A request already sent may still run
+                    # on the server, a send included, so each gets its row,
+                    # as run_script's calls do.
+                    for tu in mcp_tool_uses:
+                        tool_label = tu["input"].get("name", tu["name"]) if tu["name"] == "call_tool" else tu["name"]
+                        audit_log(
+                            "tool_invocation",
+                            f"mcp:{tool_label} CANCELLED",
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            actor="executive",
+                            details={
+                                "tool": tool_label,
+                                "kind": "mcp",
+                                "iteration": iteration,
+                                "ok": False,
+                                "cancelled": True,
+                            },
+                        )
+                    raise
                 for tu, raw in zip(mcp_tool_uses, mcp_results, strict=True):
                     tool_label = tu["input"].get("name", tu["name"]) if tu["name"] == "call_tool" else tu["name"]
                     if isinstance(raw, BaseException):

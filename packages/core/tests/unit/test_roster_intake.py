@@ -630,3 +630,34 @@ def test_the_answer_token_is_hidden_from_every_other_read_of_the_mailbox(
             return await gateway.call_tool(call)
 
     assert token in asyncio.run(_poller_read())
+
+
+def test_an_ack_send_that_timed_out_raises_uncertain() -> None:
+    gateway = AsyncMock()
+    gateway.call_tool = AsyncMock(
+        return_value='{"error": "send did not answer within 120s", "timed_out": true}'
+    )
+    with pytest.raises(roster_intake.AckUncertain):
+        asyncio.run(roster_intake.send_email_ack(gateway, STRANGER))
+    gateway.call_tool = AsyncMock(return_value='{"error": "refused"}')
+    with pytest.raises(RuntimeError):
+        asyncio.run(roster_intake.send_email_ack(gateway, STRANGER))
+
+
+def test_an_ack_that_may_have_gone_keeps_its_claim(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A send that timed out may have reached the sender: the claim stays
+    taken, so their next message draws no second acknowledgement."""
+    rows: list[str] = []
+    monkeypatch.setattr(roster_intake, "_audit", lambda event, *_a: rows.append(event))
+
+    async def _unsure(_text: str) -> None:
+        raise roster_intake.AckUncertain("timed out")
+
+    with patch.object(roster_intake, "notify_principal", new=AsyncMock()):
+        asyncio.run(roster_intake.intake(
+            "email", STRANGER, external_id="m1", payload={"message_id": "m1"}, send_ack=_unsure,
+        ))
+    assert rows.count("roster_ack_uncertain") == 1
+    assert not rr.claim_ack("email", STRANGER)

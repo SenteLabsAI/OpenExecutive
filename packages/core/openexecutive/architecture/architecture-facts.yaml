@@ -7408,7 +7408,12 @@ integrations:
     may not have happened. Gate lookups read a timeout as a failed lookup
     (None), which the gates refuse on. Why: a hung workspace server held
     whatever awaited it for good: the serial email poller, a brief, a chat
-    turn until its whole-turn deadline.
+    turn until its whole-turn deadline. The server is not told to cancel,
+    so a send that timed out may still go: the roster acknowledgement
+    (roster_intake.send_email_ack) raises AckUncertain on a timed_out
+    payload and keeps its claim (roster_ack_uncertain row) so no second
+    acknowledgement follows, and a turn cut off with MCP calls in flight
+    writes a CANCELLED tool_invocation row for each (Executive agent loop).
   chat_stream_keepalive: |
     The /chat SSE body sends ": keepalive\n\n" (an SSE comment, skipped by
     every reader; the UI reads only data: lines) when CHAT_STREAM_KEEPALIVE_S
