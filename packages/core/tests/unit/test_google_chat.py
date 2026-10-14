@@ -558,3 +558,17 @@ def test_files_from_someone_off_the_roster_are_not_downloaded(
         "(Attached files, not read — files are read only from people on the team: scan.pdf)"
         "\n\nWhat is this worth?"
     )
+
+
+@pytest.mark.parametrize("rostered", [True, False])
+def test_the_sender_is_named_to_the_department_gate_only(
+    monkeypatch: pytest.MonkeyPatch, rostered: bool
+) -> None:
+    """The sender's People entry reaches the department gate, so the owner's
+    own sends aren't held, but never `caller_person_id`: this surface grants
+    nothing else."""
+    captured = _run_with_attachments(monkeypatch, [], lambda *_a: b"", rostered=rostered)
+
+    session = captured["session"]
+    assert session.gate_sender_person_id == (3 if rostered else None)
+    assert session.caller_person_id is None
