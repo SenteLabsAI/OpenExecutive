@@ -8,7 +8,12 @@ from typing import Any
 import pytest
 
 from openexecutive.briefing import first_week
-from openexecutive.departments.models import DepartmentCharter, DepartmentConfig, DepartmentState, Goal
+from openexecutive.departments.models import (
+    DepartmentCharter,
+    DepartmentConfig,
+    DepartmentState,
+    Goal,
+)
 
 NOW = datetime(2026, 10, 14, 8, 0, tzinfo=UTC)
 
