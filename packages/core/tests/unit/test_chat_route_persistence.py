@@ -157,6 +157,37 @@ def test_resumed_session_sees_turns_saved_elsewhere(temp_db: Path, patched_deps:
     assert ("telegram", "42") in again.seen_channel_refs
 
 
+def test_resumed_session_keeps_live_history_when_the_store_cannot_be_read(
+    temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed re-read answers from the history already held, not an error."""
+
+    class _Req:
+        class _App:
+            class _State:
+                pass
+            state = _State()
+
+        app = _App()
+
+    req: Any = _Req()
+    sid = "abc-456"
+    session_store.save_message(sid, "user", "What is our runway?")
+    session_store.save_message(sid, "assistant", "About 14 months.")
+    first = asyncio.run(chat_route._get_or_create_session(sid, req))
+
+    def _locked(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(session_store, "load_messages", _locked)
+    again = asyncio.run(chat_route._get_or_create_session(sid, req))
+    assert again is first
+    assert [m["content"] for m in again.conversation_history] == [
+        "What is our runway?",
+        "About 14 months.",
+    ]
+
+
 def test_chat_endpoint_persists_session_before_streaming(
     temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

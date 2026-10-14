@@ -661,7 +661,11 @@ async def _get_or_create_session(session_id: str | None, request: Request) -> An
         # chat here answers as though those turns never happened. Runs under
         # the conversation's turn lock, so the previous turn here is saved.
         # Off the event loop: a long transcript is a real read on every turn.
-        cached.conversation_history = await asyncio.to_thread(load_messages, session_id)
+        # A failed read keeps the live history rather than failing the turn.
+        try:
+            cached.conversation_history = await asyncio.to_thread(load_messages, session_id)
+        except Exception:
+            logger.exception("chat.history_reload_failed session_id=%s", session_id)
         return cached
 
     new_id = session_id or str(uuid.uuid4())
