@@ -188,11 +188,13 @@ async def _calendar_lines(now: datetime) -> tuple[list[str], list[str]]:
             continue
         if len(lines) >= _MEETINGS_MAX:
             break
-        when = "all day" if event.all_day else (
-            f"{calendar.local_when(event.start, False, tz)[11:]}–{calendar.local_when(event.end, False, tz)[11:]}"
-        )
+        begins = calendar.local_when(event.start, False, tz)[11:]
+        ends = calendar.local_when(event.end, False, tz)[11:] if event.end else ""
+        when = "all day" if event.all_day else (f"{begins}–{ends}" if ends else begins)
         lines.append(f"- {when}: {_one_line(event.title, 90)}")
-        keys.append(f"meeting:{event.id}")
+        # Title and time, not the event id: a recurring meeting's id carries
+        # the day, which would change the fingerprint every morning.
+        keys.append(f"meeting:{when}:{_one_line(event.title, 90)}")
     return lines, keys
 
 

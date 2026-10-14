@@ -280,13 +280,18 @@ async def test_calendar_part_lists_todays_meetings_by_time_and_title(
         _event("e1", "Pilot review", "2026-10-14T13:00:00+00:00", "2026-10-14T13:30:00+00:00"),
         _event("e2", "Offsite", "2026-10-14", "2026-10-15", all_day=True),
         _event("e3", "Skipped one", "2026-10-14T15:00:00+00:00", "2026-10-14T16:00:00+00:00", response="declined"),
+        _event("e4_20261014T170000Z", "Standup", "2026-10-14T17:00:00+00:00", ""),
     ])
     _act_as_me(monkeypatch, mailbox, drafting=False, calendar=True)
     block = await first_week.getting_started(include_inbox=True, now=NOW)
     assert "ON YOUR CALENDAR TODAY" in block.text
     assert "- 09:00–09:30: Pilot review" in block.text and "- all day: Offsite" in block.text
     assert "Skipped one" not in block.text and "INBOX" not in block.text
-    assert block.private is True and "meeting:e1" in block.keys
+    assert "- 13:00: Standup" in block.text
+    # Keyed by time and title, so a recurring meeting's dated id doesn't
+    # change the fingerprint every day.
+    assert block.private is True and "meeting:09:00–09:30:Pilot review" in block.keys
+    assert not any("e4_" in k for k in block.keys)
     assert mailbox.window is not None and mailbox.window[0].isoformat() == "2026-10-14T00:00:00-04:00"
 
 

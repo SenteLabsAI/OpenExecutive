@@ -631,3 +631,13 @@ def test_my_calendar_refuses_a_bad_date_and_caps_the_span(calendar_on: None) -> 
     start, end, _limit = mailbox.windows[0]
     assert end - start == timedelta(days=31)
     assert _calendar(_session(mailbox), {"start": "2026-10-20"})["detail"] == "Nothing on their calendar for 2026-10-20."
+
+
+def test_my_calendar_says_when_the_read_came_back_full(calendar_on: None) -> None:
+    from openexecutive.delegation.gmail import MAX_EVENTS, CalendarEvent
+
+    full = [CalendarEvent(id=f"e{i}", title="x", start="2026-10-14", end="2026-10-15", all_day=True)
+            for i in range(MAX_EVENTS)]
+    result = _calendar(_session(CalendarMailbox(full)), {"start": "2026-10-14", "days": 31})
+    assert result["truncated"] is True and "fewer days" in result["note"]
+    assert "truncated" not in _calendar(_session(CalendarMailbox(full[:3])), {"start": "2026-10-14"})

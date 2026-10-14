@@ -675,7 +675,7 @@ _CALENDAR_YEARS = range(1971, 3000)
 async def handle_my_calendar(tool_input: dict[str, Any]) -> str:
     from openexecutive.delegation import calendar
     from openexecutive.delegation.ghostwriter import one_line
-    from openexecutive.delegation.gmail import CalendarNotGranted
+    from openexecutive.delegation.gmail import MAX_EVENTS, CalendarNotGranted
     from openexecutive.memory.workspace_settings import get_user_timezone
 
     tz = get_user_timezone()
@@ -712,7 +712,13 @@ async def handle_my_calendar(tool_input: dict[str, Any]) -> str:
             }
             for e in found
         ]
-        return json.dumps({"status": "ok", "time_zone": str(tz), "span": span, "events": events, "note": _CALENDAR_NOTE})
+        out: dict[str, Any] = {"status": "ok", "time_zone": str(tz), "span": span, "events": events}
+        if len(found) >= MAX_EVENTS:
+            out["truncated"] = True
+            out["note"] = f"{_CALENDAR_NOTE} Only the first {MAX_EVENTS} events came back: ask for fewer days."
+        else:
+            out["note"] = _CALENDAR_NOTE
+        return json.dumps(out)
 
     return await _run(MY_CALENDAR, ("searches", SEARCHES_PER_TURN, "searches"), read, switched_on)
 
