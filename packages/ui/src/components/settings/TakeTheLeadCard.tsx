@@ -71,6 +71,10 @@ export default function TakeTheLeadCard() {
     return (
       <SettingsCard>
         <p className="text-sm text-fg-muted">Couldn&apos;t load Take the lead.</p>
+        {/* The meeting row has its own endpoint, so it still works here. */}
+        <ul className="mt-3 flex flex-col">
+          <MeetingAskFirstRow />
+        </ul>
       </SettingsCard>
     );
   }

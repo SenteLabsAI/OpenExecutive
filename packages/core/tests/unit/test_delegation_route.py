@@ -525,3 +525,19 @@ def test_everything_is_the_owners_and_not_in_training(
     resp = _reach(client, "everything")
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "in_training"
     assert route.reach_of(ids["principal"]) == "balanced"
+
+
+def test_training_set_before_sending_holds_once_it_sends(
+    client: TestClient, ids: dict[str, int], gmail: dict[str, str], signed: None
+) -> None:
+    from openexecutive.delegation import handle_it, training
+
+    pid = ids["principal"]
+    gmail["status"] = "connected"
+    _reach(client, "inbox")
+    resp = client.put("/delegation/training", json={"replies": True, "follow_ups": True}, headers=OWNER)
+    assert resp.status_code == 200
+    _reach(client, "careful")
+    assert handle_it.get(pid).enabled
+    t = training.get(pid)
+    assert t.replies and t.follow_ups

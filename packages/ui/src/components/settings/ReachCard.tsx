@@ -130,7 +130,7 @@ export default function ReachCard({
     if (step.value === "off") return null;
     if (!connected && current === "off") return "Connect your mailbox first.";
     if (step.sends && !canSend) return "Needs signed sign-ins on this server.";
-    if (step.value === "everything" && training) return "Opens up once it's out of training.";
+    if (step.value === "everything" && (training || followUpsTraining)) return "Opens up once it's out of training.";
     return null;
   };
 
@@ -209,7 +209,9 @@ export default function ReachCard({
         </div>
       )}
 
-      {sending && (
+      {/* Shown from Drafts for my inbox up, so it can be in training before
+          the first move to a step that sends: training stays across moves. */}
+      {(sending || current === "inbox") && (
         <div className="mt-5 flex flex-col gap-3 border-t border-line pt-4">
           <label className="flex cursor-pointer items-start gap-3">
             <input
@@ -227,11 +229,13 @@ export default function ReachCard({
               <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
                 {current === "everything"
                   ? "Move to Most mail or below to train it."
-                  : "Every reply comes to you first. Tap Send + allow and it handles that person on its own from then on, within this step."}
+                  : !sending
+                    ? "Tick this before moving to a step that sends, and every reply comes to you first until you allow that person."
+                    : "Every reply comes to you first. Tap Send + allow and it handles that person on its own from then on, within this step."}
               </span>
             </span>
           </label>
-          {training && (
+          {(training || followUpsTraining) && (
             <label className="ml-8 flex cursor-pointer items-start gap-3">
               <input
                 type="checkbox"
