@@ -240,3 +240,11 @@ def test_today_header_is_not_quiet_in_the_first_week(monkeypatch: pytest.MonkeyP
     # A teammate's own header never carries it.
     viewer_ctx, _ = today_route._narrative_context(empty, None, {"name": "Sam", "role": "Ops"}, "team")
     assert first_week.HEADER not in viewer_ctx
+
+
+def test_the_quiet_banner_gives_way_only_to_a_header_that_carries_the_block() -> None:
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.briefing import narrative_cache
+
+    assert today_route._first_week_header(f"x\n{first_week.HEADER}\n- Sales") is True
+    assert today_route._first_week_header(narrative_cache.QUIET_CONTEXT) is False

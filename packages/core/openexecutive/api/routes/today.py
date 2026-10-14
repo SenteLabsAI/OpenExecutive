@@ -520,10 +520,10 @@ class TodayResponse(BaseModel):
     first_week: bool = False
 
 
-def _first_week(now: datetime) -> bool:
-    from openexecutive.briefing.first_week import first_week_started
+def _first_week_header(context: str) -> bool:
+    from openexecutive.briefing.first_week import HEADER
 
-    return first_week_started(now) is not None
+    return HEADER in context
 
 
 class ActivityItem(BaseModel):
@@ -904,7 +904,6 @@ def _build_today(
         people=person_items,
         proposals=proposal_items,
         handled_overnight=_handled_overnight(now, include_private=include_private),
-        first_week=_first_week(now),
     )
 
     # In-flight commitments (pending follow-ups / nudges) + people we're
@@ -1718,6 +1717,9 @@ def _attach_narrative(
     try:
         mode = get_workspace().mode
         context, _activity = _narrative_context(today_data, viewer, desc, mode, scope)
+        # The "Quiet day" banner gives way only to a header that carries
+        # GETTING STARTED (the principal's or the company's, with something in it).
+        response.first_week = _first_week_header(context)
         nhash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
         cached = narrative_cache.get(scope)
         is_stale = cached is None or cached.input_hash != nhash
