@@ -690,6 +690,12 @@ def test_a_refused_calendar_read_is_not_granted_not_a_reconnect() -> None:
     _seen, client = _calendar_google("", status=403)
     with pytest.raises(gm.CalendarNotGranted):
         asyncio.run(client.list_events(*_DAY))
+    # With the scope granted, a refusal is the project's, not the sign-in's.
+    gm._TOKENS.clear()
+    _seen, granted = _calendar_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]), status=403)
+    with pytest.raises(gm.GmailError) as refused:
+        asyncio.run(granted.list_events(*_DAY))
+    assert not isinstance(refused.value, (gm.CalendarNotGranted, gm.GmailAuthError))
 
 
 def test_the_script_asks_for_the_calendar_only_with_the_flag() -> None:

@@ -1229,9 +1229,13 @@ class DelegateGmail:
             try:
                 data = await self._request(client, "GET", "/events", params=params, base=CALENDAR_BASE)
             except GmailAuthError as exc:
-                if str(exc) == "forbidden":
-                    raise CalendarNotGranted("calendar read refused") from exc
-                raise
+                if str(exc) != "forbidden":
+                    raise
+                # With the scope granted, a refusal is the project's (the API
+                # not enabled, a quota), and reconnecting wouldn't fix it.
+                if SCOPE_CALENDAR in granted.split():
+                    raise GmailError("calendar read refused with the scope granted") from exc
+                raise CalendarNotGranted("calendar read refused") from exc
         items_raw = data.get("items")
         items: list[Any] = items_raw if isinstance(items_raw, list) else []
         events = [parse_google_event(item) for item in items if isinstance(item, dict)]
