@@ -9,6 +9,34 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.5.6](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.5...v0.5.6) (2026-10-14)
+
+
+### Added
+
+* **briefing:** approve a proposal card on the server ([#458](https://github.com/SenteLabsAI/OpenExecutive/issues/458)) ([99eca81](https://github.com/SenteLabsAI/OpenExecutive/commit/99eca81dcb5fc71d6511495f5a739f1af767ea1a))
+* **briefing:** open the first week's briefs with getting-started moves ([#465](https://github.com/SenteLabsAI/OpenExecutive/issues/465)) ([1a28256](https://github.com/SenteLabsAI/OpenExecutive/commit/1a28256e14c11f9e50a5b7a01d0c7510f4e844bd))
+* **chat:** pin, rename, share, export and redo the last turn ([#471](https://github.com/SenteLabsAI/OpenExecutive/issues/471)) ([8068e43](https://github.com/SenteLabsAI/OpenExecutive/commit/8068e43144ca80aae699dbbb16ff9f63e0ffb29f))
+* **delegation:** add What it may do and one dial for acting as you ([#473](https://github.com/SenteLabsAI/OpenExecutive/issues/473)) ([c8eec03](https://github.com/SenteLabsAI/OpenExecutive/commit/c8eec039c1cba71405a8b516c8b30d7c75fc9d33))
+* **delegation:** read the person's own calendar under Act as me ([#469](https://github.com/SenteLabsAI/OpenExecutive/issues/469)) ([b94352b](https://github.com/SenteLabsAI/OpenExecutive/commit/b94352bb7c3be8f4d6659cfc325d1aa798cc3b75))
+* **onboarding:** open the first hour on a question and the first week's brief ([#476](https://github.com/SenteLabsAI/OpenExecutive/issues/476)) ([6a232ec](https://github.com/SenteLabsAI/OpenExecutive/commit/6a232ec1f4eba0bcd698c8f4d158b13823a21047))
+* **orchestrator:** hold a chat-channel sender's sends when they match no one on People ([#462](https://github.com/SenteLabsAI/OpenExecutive/issues/462)) ([5541ed0](https://github.com/SenteLabsAI/OpenExecutive/commit/5541ed062d2579a4764afb3681b766a1b0543478))
+* **orchestrator:** put a team member's chat sends and edits under department authority ([#459](https://github.com/SenteLabsAI/OpenExecutive/issues/459)) ([8b195c2](https://github.com/SenteLabsAI/OpenExecutive/commit/8b195c2b566e92394aecfffb90ae921585b15202))
+* **today:** show the owner what the Executive did and tell people their tasks ([#464](https://github.com/SenteLabsAI/OpenExecutive/issues/464)) ([de3c788](https://github.com/SenteLabsAI/OpenExecutive/commit/de3c7888792b57590feadd16d37845dee43427eb))
+* **ui:** redraw the Executive's mark as the Council Ring ([#461](https://github.com/SenteLabsAI/OpenExecutive/issues/461)) ([35808c2](https://github.com/SenteLabsAI/OpenExecutive/commit/35808c2b36456892aa67ab1f797a5574f26a1f08))
+
+
+### Fixed
+
+* **chat:** re-read a resumed chat's transcript every turn ([#468](https://github.com/SenteLabsAI/OpenExecutive/issues/468)) ([f9fcb8b](https://github.com/SenteLabsAI/OpenExecutive/commit/f9fcb8bc3ffdf1d632d97310be26e482c9333189))
+* **delegation:** resolve the Act as me caller through the shared caller resolver ([#478](https://github.com/SenteLabsAI/OpenExecutive/issues/478)) ([7e04496](https://github.com/SenteLabsAI/OpenExecutive/commit/7e044965182380bf4f9f83401e5e39e7eac686e4))
+* **delegation:** resolve the What it may do viewer through the shared caller resolver ([#477](https://github.com/SenteLabsAI/OpenExecutive/issues/477)) ([7189ce5](https://github.com/SenteLabsAI/OpenExecutive/commit/7189ce55f0067e500a7a9fe40453b99ab37d7fbd))
+* **delegation:** show all-day calendar events on their own day ([#470](https://github.com/SenteLabsAI/OpenExecutive/issues/470)) ([00290b4](https://github.com/SenteLabsAI/OpenExecutive/commit/00290b4206aa626bbf500594311d2e7001f81203))
+* **integrations:** give email turns, gateway calls and the chat stream deadlines ([#463](https://github.com/SenteLabsAI/OpenExecutive/issues/463)) ([a7ef7a9](https://github.com/SenteLabsAI/OpenExecutive/commit/a7ef7a920a0fa87a94de2758f48c62dd1ea6543a))
+* **integrations:** log a mail source whose loop stops with an error ([#474](https://github.com/SenteLabsAI/OpenExecutive/issues/474)) ([5bf5dba](https://github.com/SenteLabsAI/OpenExecutive/commit/5bf5dbaa32796db0ca11c2b4f47927819e1a8a5b))
+* **integrations:** put an email that got no reply in Needs you ([#479](https://github.com/SenteLabsAI/OpenExecutive/issues/479)) ([4b6ede6](https://github.com/SenteLabsAI/OpenExecutive/commit/4b6ede6bd942e3b012eba67b60cd0373b02abcb6))
+* **orchestrator:** find mail the reader is on even when a teammate is too ([#475](https://github.com/SenteLabsAI/OpenExecutive/issues/475)) ([25c827b](https://github.com/SenteLabsAI/OpenExecutive/commit/25c827bdcc3df9f7cf050a6b72ea89bd0747d43b))
+
 ## [0.5.5](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.4...v0.5.5) (2026-10-13)
 
 
