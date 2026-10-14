@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Icon from "@/components/Icon";
 import { buttonClass } from "@/components/ui/Button";
-import ChatHistory from "@/components/sessions/ChatHistory";
+import ChatHistory, { ChatRow } from "@/components/sessions/ChatHistory";
 import { useSessions } from "@/components/sessions/SessionsContext";
-import { searchSessions, type SessionSummary } from "@/lib/api";
+import { listSharedSessions, searchSessions, type SessionSummary } from "@/lib/api";
 import {
   CHANNEL_LABELS,
   CHANNEL_ORDER,
@@ -20,7 +20,8 @@ type ChannelFilter = SessionChannel | "all";
 
 // Full conversation history: every chat, including conversations that
 // arrived through Slack, Telegram and Discord. Each row opens its chat;
-// Delete is in the row's ⋯ menu and asks first.
+// Delete is in the row's ⋯ menu and asks first. Chats others shared with
+// the viewer list apart, under "Shared with you", and open to read.
 export default function ChatsPage() {
   const router = useRouter();
   const { sessions, loaded, error, refresh, remove } = useSessions();
@@ -33,6 +34,21 @@ export default function ChatsPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Chats teammates shared, to read. Kept out of the channel tabs and counts.
+  // A failure just leaves the section hidden.
+  const [shared, setShared] = useState<SessionSummary[]>([]);
+  useEffect(() => {
+    let live = true;
+    listSharedSessions()
+      .then((list) => {
+        if (live) setShared(list);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const trimmed = query.trim();
   useEffect(() => {
@@ -83,6 +99,25 @@ export default function ChatsPage() {
   );
   const searching = trimmed.length > 0;
   const shownCounts = useMemo(() => (shown ? countByChannel(shown) : counts), [shown, counts]);
+
+  // Hidden while searching: the search covers the viewer's own chats.
+  const sharedSection =
+    shared.length > 0 && !searching ? (
+      <section aria-labelledby="shared-with-you" className="mt-8 first:mt-0">
+        <h2 id="shared-with-you" className="px-1 mb-2 text-sm font-semibold text-fg-muted">
+          Shared with you <span className="font-normal text-fg-subtle">{shared.length}</span>
+        </h2>
+        <div className="space-y-2">
+          {shared.map((s) => (
+            <ChatRow
+              key={s.session_id}
+              session={s}
+              onSelect={(id) => router.push(`/chats/shared/${encodeURIComponent(id)}`)}
+            />
+          ))}
+        </div>
+      </section>
+    ) : null;
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
@@ -161,10 +196,14 @@ export default function ChatsPage() {
               </button>
             </p>
           ) : sessions.length === 0 ? (
-            <p className="px-1 py-6 text-[15px] text-fg-muted">
-              No conversations yet. Start one with New chat.
-            </p>
+            <>
+              {sharedSection}
+              <p className="px-1 py-6 text-[15px] text-fg-muted">
+                No conversations yet. Start one with New chat.
+              </p>
+            </>
           ) : (
+            <>
             <ChatHistory
               sessions={visible}
               searching={searching}
@@ -176,7 +215,10 @@ export default function ChatsPage() {
                 router.push(`/?session=${encodeURIComponent(id)}${find}`);
               }}
               onDelete={remove}
+              onChanged={refresh}
             />
+            {sharedSection}
+            </>
           )}
         </div>
       </main>

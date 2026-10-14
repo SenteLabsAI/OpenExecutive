@@ -962,6 +962,14 @@ export interface SessionSummary {
   match_count?: number;
   /** Search results only: the newest matching message around the match. */
   snippet?: string;
+  /** Set only while the owner has it pinned; pinned chats list first. */
+  pinned_at?: string;
+  /** A chat someone else shared with the caller: readable, not writable. */
+  read_only?: boolean;
+  /** Shared chats only: the owner's name. */
+  shared_by?: string;
+  /** Shared-with-me list only: when it was shared. */
+  shared_at?: string;
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
@@ -988,6 +996,106 @@ export async function deleteSession(sessionId: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete session");
+}
+
+// The session routes' `detail` (a string for 409s, a list for 422s), or `fallback`.
+async function sessionError(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  if (typeof body.detail === "string") return new Error(body.detail);
+  const first = Array.isArray(body.detail) ? (body.detail[0] as { msg?: unknown }) : undefined;
+  return new Error(typeof first?.msg === "string" ? first.msg : fallback);
+}
+
+/** One chat, as its owner or as someone it was shared with (`read_only`). */
+export async function getSession(sessionId: string): Promise<SessionSummary> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`);
+  if (res.status === 404) throw new Error("not_found");
+  if (!res.ok) throw new Error("Failed to load session");
+  return res.json();
+}
+
+/** Chats other people shared with the caller, to read. */
+export async function listSharedSessions(): Promise<SessionSummary[]> {
+  const res = await fetch(`${API_BASE}/sessions/shared-with-me`);
+  if (!res.ok) throw new Error("Failed to list shared chats");
+  return res.json();
+}
+
+/** Rename and / or pin the caller's own chat. A renamed chat keeps its name. */
+export async function updateSession(
+  sessionId: string,
+  patch: { title?: string; pinned?: boolean },
+): Promise<SessionSummary> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't update this chat.");
+  return res.json();
+}
+
+export interface SessionShare {
+  person_id: number;
+  full_name: string;
+  shared_at: string;
+}
+
+/** Who the owner shared this chat with. */
+export async function getSessionShares(sessionId: string): Promise<SessionShare[]> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/shares`);
+  if (!res.ok) throw await sessionError(res, "Couldn't load who this chat is shared with.");
+  return res.json();
+}
+
+/** Shares the chat with exactly these team members (anyone left out is
+ * unshared). Throws the server's reason, e.g. a chat that read the owner's
+ * own mail stays private. */
+export async function setSessionShares(sessionId: string, personIds: number[]): Promise<SessionShare[]> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/shares`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ person_ids: personIds }),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't share this chat.");
+  return res.json();
+}
+
+/** The filename in a Content-Disposition header, or null. */
+export function dispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      // Malformed encoding: fall through to the plain filename.
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain ? plain[1].trim() : null;
+}
+
+/** The whole chat as Markdown, with the file name the server chose. */
+export async function exportSession(sessionId: string): Promise<{ text: string; filename: string }> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/export`);
+  if (!res.ok) throw await sessionError(res, "Couldn't download this chat.");
+  const text = await res.text();
+  return { text, filename: dispositionFilename(res.headers.get("Content-Disposition")) ?? "chat.md" };
+}
+
+/** Takes back the chat's last turn (`lastMessageId` must still be its last
+ * reply) and returns the words it answered, to send again. Throws the
+ * server's reason on a 409 (still answering, moved on, not a web chat). */
+export async function rewindSession(sessionId: string, lastMessageId: number): Promise<string> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ last_message_id: lastMessageId }),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't redo that answer.");
+  const data = (await res.json()) as { message: string };
+  return data.message;
 }
 
 export interface SuggestedPromptsResponse {

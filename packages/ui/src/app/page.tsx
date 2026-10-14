@@ -18,7 +18,9 @@ import { GettingStartedCard, useGettingStarted } from "@/components/onboard/Gett
 import { useFirstRunRedirect } from "@/components/onboard/useFirstRunRedirect";
 import PausedBanner from "@/components/executive/PausedBanner";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import { ChatMessage, DebugEvent, getSessionMessages } from "@/lib/api";
+import { ChatMessage, DebugEvent, getSessionMessages, updateSession } from "@/lib/api";
+import { downloadChat } from "@/lib/downloadChat";
+import { sessionTitle } from "@/lib/sessionChannel";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -247,6 +249,41 @@ export default function HomePage() {
     <BriefDeliveryNotice notice={deliveryNotice} />
   ) : undefined;
 
+  // The open chat, when it is one of the caller's own saved chats: its
+  // Pin, Rename and Download sit in the header's ⋯ menu.
+  const openChat =
+    mode === "chat" && activeSessionId
+      ? sessions.find((s) => s.session_id === activeSessionId)
+      : undefined;
+  const chatItems = openChat
+    ? [
+        {
+          label: openChat.pinned_at ? "Unpin" : "Pin",
+          onSelect: () => {
+            updateSession(openChat.session_id, { pinned: !openChat.pinned_at })
+              .then(refreshSessions)
+              .catch(() => window.alert("Couldn't pin this chat."));
+          },
+        },
+        {
+          label: "Rename",
+          onSelect: () => {
+            const title = window.prompt("Name this chat", sessionTitle(openChat))?.trim();
+            if (!title) return;
+            updateSession(openChat.session_id, { title: title.slice(0, 120) })
+              .then(refreshSessions)
+              .catch(() => window.alert("Couldn't rename this chat."));
+          },
+        },
+        {
+          label: "Download",
+          onSelect: () => {
+            downloadChat(openChat.session_id).catch(() => window.alert("Couldn't download this chat."));
+          },
+        },
+      ]
+    : [];
+
   // Hold the page while the browser moves to setup.
   if (redirecting) return <div className="h-full bg-surface" />;
 
@@ -303,6 +340,7 @@ export default function HomePage() {
           <OverflowMenu
             label="Home options"
             items={[
+              ...chatItems,
               {
                 label: debugOpen ? "Hide agent activity" : "Show agent activity",
                 onSelect: () => setDebugOpen((o) => !o),

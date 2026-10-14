@@ -52,3 +52,18 @@ test("an unparseable timestamp falls into Older instead of throwing", () => {
   const groups = groupSessionsByDate([at("bad", "not-a-date")], NOW);
   assert.deepEqual(groups.map((g) => g.key), ["older"]);
 });
+
+test("pinned chats come first in Pinned, whatever their date", () => {
+  const pinned = (id, updated) => ({ ...at(id, updated), pinned_at: daysAgo(0) });
+  const groups = groupSessionsByDate(
+    [at("today", daysAgo(0)), pinned("old-pin", daysAgo(90)), pinned("new-pin", daysAgo(0))],
+    NOW,
+  );
+  assert.deepEqual(
+    groups.map((g) => [g.key, g.label, g.items.map((i) => i.session_id)]),
+    [
+      ["pinned", "Pinned", ["old-pin", "new-pin"]],
+      ["today", "Today", ["today"]],
+    ],
+  );
+});

@@ -2324,6 +2324,26 @@ memory:
     session_store.delete_session drops the rows. Complements, not replaces,
     the folder sync (knowledge collections: DRIVE): a synced folder is known
     without a search; this remembers whatever else a conversation read.
+  chat_controls: |
+    The owner's controls on a saved chat (api/routes/sessions.py). Pin
+    (sessions.pinned_at; pinned chats list first) and rename
+    (sessions.title_locked: session_store.update_session_title, the automatic
+    title, never overwrites a name the owner gave). Share, read-only, with
+    named team members (session_shares; PUT /sessions/{id}/shares sets the
+    exact list; contacts, the archived and the owner refused). A reader may
+    open, list (GET /sessions/shared-with-me) and export the chat and nothing
+    else; every write route keeps the usual owner check. A mail_private chat
+    (Act as me read the owner's mail) is never shared and stops being
+    readable by earlier readers. Export (memory/chat_export.py) is Markdown
+    with each message under its writer's People name or Executive and the
+    reply's sources. Try again and Edit both call POST
+    /sessions/{id}/rewind, which, under the conversation's turn lock and
+    only while the given reply is still the chat's last row, deletes the
+    last turn and returns the person's words; the page resends them (or the
+    edit) as an ordinary /chat turn through the same gates. Web chats only:
+    a chat-app conversation's reply also lives in that app. The page asks
+    first when the reply being redone already did something (action chips),
+    since the new turn could do it again.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking

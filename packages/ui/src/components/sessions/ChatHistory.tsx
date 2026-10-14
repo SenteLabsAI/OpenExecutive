@@ -1,10 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
-import type { SessionSummary } from "@/lib/api";
+import {
+  getPeopleViewer,
+  getSessionShares,
+  listPeople,
+  setSessionShares,
+  updateSession,
+  type Person,
+  type SessionSummary,
+} from "@/lib/api";
+import { downloadChat } from "@/lib/downloadChat";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import { highlightParts, matchLabel } from "@/lib/chatSearch";
 import { CHANNEL_LABELS, sessionChannel, sessionTitle } from "@/lib/sessionChannel";
@@ -23,11 +32,13 @@ interface ChatHistoryProps {
   onSelect: (sessionId: string) => void;
   /** Deletes after the row has asked; resolves false when it failed. */
   onDelete: (sessionId: string) => Promise<boolean>;
+  /** Reloads the list after a rename or a pin. */
+  onChanged: () => void;
 }
 
 // Date-grouped conversation list for /chats — the full history the sidebar's
 // short Recent list links to.
-export default function ChatHistory({ sessions, searching, query = "", onSelect, onDelete }: ChatHistoryProps) {
+export default function ChatHistory({ sessions, searching, query = "", onSelect, onDelete, onChanged }: ChatHistoryProps) {
   const [collapsedOverride, setCollapsedOverride] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Set<string>>(new Set());
 
@@ -73,7 +84,14 @@ export default function ChatHistory({ sessions, searching, query = "", onSelect,
             {!collapsed && (
               <div className="mt-1 space-y-2">
                 {visible.map((s) => (
-                  <ChatRow key={s.session_id} session={s} query={query} onSelect={onSelect} onDelete={onDelete} />
+                  <ChatRow
+                    key={s.session_id}
+                    session={s}
+                    query={query}
+                    onSelect={onSelect}
+                    onDelete={onDelete}
+                    onChanged={onChanged}
+                  />
                 ))}
                 {hiddenCount > 0 && (
                   <button
@@ -93,27 +111,37 @@ export default function ChatHistory({ sessions, searching, query = "", onSelect,
   );
 }
 
-function ChatRow({
+type RowPanel = "delete" | "rename" | "share" | null;
+
+export function ChatRow({
   session,
-  query,
+  query = "",
   onSelect,
   onDelete,
+  onChanged,
 }: {
   session: SessionSummary;
-  query: string;
+  query?: string;
   onSelect: (sessionId: string) => void;
-  onDelete: (sessionId: string) => Promise<boolean>;
+  /** Absent for a chat shared with the viewer, which only they can't delete. */
+  onDelete?: (sessionId: string) => Promise<boolean>;
+  onChanged?: () => void;
 }) {
-  // Delete is in the row's ⋯ menu and asks here, in the row, first.
-  const [confirming, setConfirming] = useState(false);
+  // Delete, Rename and Share open a panel here, in the row; the ⋯ menu
+  // holds them all.
+  const [panel, setPanel] = useState<RowPanel>(null);
   const [deleting, setDeleting] = useState(false);
   const [failed, setFailed] = useState(false);
+  // What the last quick action (pin, download) couldn't do, if anything.
+  const [actionError, setActionError] = useState<string | null>(null);
   const channel = sessionChannel(session.session_id);
+  const readOnly = !!session.read_only;
   const messages =
     matchLabel(session.match_count) ??
     `${session.message_count} message${session.message_count === 1 ? "" : "s"}`;
 
   const confirmDelete = async () => {
+    if (!onDelete) return;
     setDeleting(true);
     setFailed(false);
     const ok = await onDelete(session.session_id);
@@ -123,6 +151,41 @@ function ChatRow({
       setFailed(true);
     }
   };
+
+  const togglePin = async () => {
+    setActionError(null);
+    try {
+      await updateSession(session.session_id, { pinned: !session.pinned_at });
+      onChanged?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't pin this chat.");
+    }
+  };
+
+  const download = async () => {
+    setActionError(null);
+    try {
+      await downloadChat(session.session_id);
+    } catch {
+      setActionError("Couldn't download this chat.");
+    }
+  };
+
+  const open = (next: RowPanel) => {
+    setActionError(null);
+    setFailed(false);
+    setPanel(next);
+  };
+
+  const menu = readOnly
+    ? [{ label: "Download", onSelect: () => void download() }]
+    : [
+        { label: session.pinned_at ? "Unpin" : "Pin", onSelect: () => void togglePin() },
+        { label: "Rename", onSelect: () => open("rename") },
+        { label: "Share", onSelect: () => open("share") },
+        { label: "Download", onSelect: () => void download() },
+        ...(onDelete ? [{ label: "Delete chat", danger: true, onSelect: () => open("delete") }] : []),
+      ];
 
   return (
     <div className="rounded-2xl border border-line bg-surface-elevated transition-colors hover:border-line-strong">
@@ -141,7 +204,17 @@ function ChatRow({
             )}
           </span>
           <span className="block text-sm text-fg-subtle mt-0.5">
-            {formatRelativeTime(session.updated_at)} · {messages}
+            {readOnly ? (
+              <>
+                Shared by {session.shared_by ?? "someone on your team"} ·{" "}
+                {formatRelativeTime(session.shared_at ?? session.updated_at)}
+              </>
+            ) : (
+              <>
+                {session.pinned_at && <span className="text-fg-muted">Pinned · </span>}
+                {formatRelativeTime(session.updated_at)} · {messages}
+              </>
+            )}
           </span>
           {session.snippet && (
             <span className="block text-sm text-fg-muted mt-1.5 line-clamp-2 break-words">
@@ -157,12 +230,14 @@ function ChatRow({
             </span>
           )}
         </button>
-        <OverflowMenu
-          label="More actions for this chat"
-          items={[{ label: "Delete chat", danger: true, onSelect: () => setConfirming(true) }]}
-        />
+        <OverflowMenu label="More actions for this chat" items={menu} />
       </div>
-      {(confirming || failed) && (
+      {actionError && (
+        <p role="alert" className="border-t border-line px-4 py-3 text-sm text-fg">
+          {actionError}
+        </p>
+      )}
+      {(panel === "delete" || failed) && (
         <div role="alert" className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">
           <p className="mr-auto text-sm text-fg">
             {failed ? "Couldn't delete this chat. Try again?" : "Delete this chat? This cannot be undone."}
@@ -174,7 +249,7 @@ function ChatRow({
             size="sm"
             variant="ghost"
             onClick={() => {
-              setConfirming(false);
+              setPanel(null);
               setFailed(false);
             }}
             disabled={deleting}
@@ -183,6 +258,202 @@ function ChatRow({
           </Button>
         </div>
       )}
+      {panel === "rename" && (
+        <RenamePanel
+          session={session}
+          onDone={(changed) => {
+            setPanel(null);
+            if (changed) onChanged?.();
+          }}
+        />
+      )}
+      {panel === "share" && <SharePanel sessionId={session.session_id} onClose={() => setPanel(null)} />}
+    </div>
+  );
+}
+
+function RenamePanel({ session, onDone }: { session: SessionSummary; onDone: (changed: boolean) => void }) {
+  const [title, setTitle] = useState(sessionTitle(session));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const trimmed = title.trim();
+
+  const save = async () => {
+    if (!trimmed || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await updateSession(session.session_id, { title: trimmed.slice(0, 120) });
+      onDone(true);
+    } catch (err) {
+      setSaving(false);
+      setError(err instanceof Error ? err.message : "Couldn't rename this chat.");
+    }
+  };
+
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <input
+        type="text"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onDone(false);
+          }
+        }}
+        maxLength={120}
+        autoFocus
+        aria-label="Chat name"
+        className="flex-1 min-w-[12rem] h-10 rounded-lg bg-surface border border-line px-3 text-[15px] text-fg focus:outline-none focus:border-accent/60 focus:ring-2 focus:ring-accent/20"
+      />
+      <Button size="sm" variant="primary" type="submit" disabled={!trimmed || saving}>
+        {saving ? "Saving…" : "Save"}
+      </Button>
+      <Button size="sm" variant="ghost" type="button" onClick={() => onDone(false)} disabled={saving}>
+        Cancel
+      </Button>
+      {error && (
+        <p role="alert" className="basis-full text-sm text-red-400">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+interface ShareState {
+  people: Person[];
+  chosen: Set<number>;
+}
+
+// Who the chat is shared with, to read: team members only, never the owner.
+// Loaded when the panel opens (it mounts then), keyed by the chat it is for.
+function SharePanel({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const [loaded, setLoaded] = useState<ShareState | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // State is only set once the requests answer, never synchronously here.
+  const fetchShares = useCallback(
+    (isLive: () => boolean) => {
+      Promise.all([listPeople(), getPeopleViewer(), getSessionShares(sessionId)])
+        .then(([people, viewer, shares]) => {
+          if (!isLive()) return;
+          const team = people.filter(
+            (p) => p.kind === "team" && !p.archived && p.id !== viewer.person_id,
+          );
+          setLoaded({ people: team, chosen: new Set(shares.map((s) => s.person_id)) });
+        })
+        .catch(() => {
+          if (isLive()) setLoadError(true);
+        });
+    },
+    [sessionId],
+  );
+  useEffect(() => {
+    let live = true;
+    fetchShares(() => live);
+    return () => {
+      live = false;
+    };
+  }, [fetchShares]);
+  const load = () => {
+    setLoadError(false);
+    fetchShares(() => true);
+  };
+
+  const toggle = (id: number) => {
+    setSaved(false);
+    setLoaded((prev) => {
+      if (!prev) return prev;
+      const chosen = new Set(prev.chosen);
+      if (chosen.has(id)) chosen.delete(id);
+      else chosen.add(id);
+      return { ...prev, chosen };
+    });
+  };
+
+  const save = async () => {
+    if (!loaded) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const shares = await setSessionShares(sessionId, Array.from(loaded.chosen));
+      setLoaded({ ...loaded, chosen: new Set(shares.map((s) => s.person_id)) });
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't share this chat.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-line px-4 py-3 space-y-3">
+      <p className="text-sm text-fg">Share this chat to read with:</p>
+      {loadError ? (
+        <p role="alert" className="text-sm text-fg-muted">
+          Couldn&apos;t load your team.{" "}
+          <button type="button" onClick={load} className="font-medium text-accent hover:underline cursor-pointer">
+            Try again
+          </button>
+        </p>
+      ) : !loaded ? (
+        <p className="text-sm text-fg-muted">Loading your team…</p>
+      ) : loaded.people.length === 0 ? (
+        <p className="text-sm text-fg-muted">There&apos;s no one else on your team to share with yet.</p>
+      ) : (
+        <ul className="max-h-60 overflow-y-auto space-y-0.5">
+          {loaded.people.map((p) => (
+            <li key={p.id}>
+              <label className="flex items-center gap-3 min-h-[2.5rem] px-2 rounded-lg hover:bg-surface-overlay cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={loaded.chosen.has(p.id)}
+                  onChange={() => toggle(p.id)}
+                  className="h-4 w-4 flex-shrink-0 accent-[rgb(var(--accent-strong))]"
+                />
+                <span className="text-[15px] text-fg">{p.full_name}</span>
+                {p.role && <span className="text-sm text-fg-subtle truncate">{p.role}</span>}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-red-400">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {saved && (
+          <p role="status" className="mr-auto text-sm text-fg-muted">
+            {loaded && loaded.chosen.size > 0 ? "Shared." : "Not shared with anyone."}
+          </p>
+        )}
+        <Button
+          size="sm"
+          variant="primary"
+          className={saved ? "" : "ml-auto"}
+          onClick={() => void save()}
+          disabled={!loaded || saving || loaded.people.length === 0}
+        >
+          {saving ? "Saving…" : "Save"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onClose} disabled={saving}>
+          {saved ? "Close" : "Cancel"}
+        </Button>
+      </div>
     </div>
   );
 }

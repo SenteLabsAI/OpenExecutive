@@ -1,6 +1,6 @@
 import type { SessionSummary } from "@/lib/api";
 
-export type GroupKey = "today" | "yesterday" | "prev7" | "prev30" | "older";
+export type GroupKey = "pinned" | "today" | "yesterday" | "prev7" | "prev30" | "older";
 
 export interface SessionGroup {
   key: GroupKey;
@@ -9,6 +9,7 @@ export interface SessionGroup {
 }
 
 const GROUP_ORDER: { key: GroupKey; label: string }[] = [
+  { key: "pinned", label: "Pinned" },
   { key: "today", label: "Today" },
   { key: "yesterday", label: "Yesterday" },
   { key: "prev7", label: "Previous 7 Days" },
@@ -23,7 +24,8 @@ const DAY_MS = 86_400_000;
  * sorted newest-first (the API returns `updated_at DESC`), so item order within
  * each bucket is preserved. Empty buckets are dropped. `now` is injectable so
  * the bucketing is deterministically testable. Unparseable timestamps fall into
- * "Older" rather than throwing.
+ * "Older" rather than throwing. Pinned chats go first, in "Pinned", whatever
+ * their date.
  */
 export function groupSessionsByDate(
   sessions: SessionSummary[],
@@ -39,6 +41,7 @@ export function groupSessionsByDate(
   const thirtyDaysAgo = startOfToday - 30 * DAY_MS;
 
   const buckets: Record<GroupKey, SessionSummary[]> = {
+    pinned: [],
     today: [],
     yesterday: [],
     prev7: [],
@@ -49,7 +52,9 @@ export function groupSessionsByDate(
   for (const s of sessions) {
     const t = new Date(s.updated_at).getTime();
     let key: GroupKey;
-    if (Number.isNaN(t)) {
+    if (s.pinned_at) {
+      key = "pinned";
+    } else if (Number.isNaN(t)) {
       key = "older";
     } else if (t >= startOfToday) {
       key = "today";
