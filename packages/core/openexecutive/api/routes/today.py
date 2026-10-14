@@ -1647,7 +1647,7 @@ def _narrative_context(
         # here; the header's hot path reads no mailbox).
         from openexecutive.briefing.first_week import getting_started_shared
 
-        getting_started = getting_started_shared().text
+        getting_started = getting_started_shared(solo=mode == "solo").text
     if (
         _nothing_needs_attention(today_data, mode)
         and (live is None or live.is_empty())

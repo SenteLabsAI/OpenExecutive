@@ -262,7 +262,9 @@ class MorningBriefWorkflow(Workflow):
         # their own inbox), so a new install's first brief is never "quiet".
         from openexecutive.briefing.first_week import getting_started
 
-        first_week = await getting_started(include_inbox=PRINCIPAL_DELIVERY.get(), now=now)
+        first_week = await getting_started(
+            include_inbox=PRINCIPAL_DELIVERY.get(), now=now, solo=mode == "solo",
+        )
         # Did this brief actually draw on anything private to the principal?
         # Then its text stays out of the shared run history (the principal
         # gets it where it is delivered).

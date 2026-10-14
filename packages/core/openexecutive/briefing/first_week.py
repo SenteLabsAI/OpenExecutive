@@ -26,6 +26,7 @@ Never raises: a failed source leaves its part out.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,8 @@ _INBOX_WINDOW = timedelta(hours=48)
 # Messages read for their headers, and senders listed.
 _INBOX_SCAN = 12
 _INBOX_MAX = 5
+# The whole inbox read, so a hung mailbox never holds the brief.
+_INBOX_TIMEOUT_S = 30.0
 _TEXT_MAX = 120
 
 HEADER = (
@@ -84,8 +87,9 @@ def first_week_started(now: datetime | None = None) -> datetime | None:
     return started if started <= now < started + FIRST_WEEK else None
 
 
-def _goal_lines() -> tuple[list[str], list[str], list[str]]:
-    """(goal lines, leaderless lines, keys)."""
+def _goal_lines(solo: bool = False) -> tuple[list[str], list[str], list[str]]:
+    """(goal lines, leaderless lines, keys). Solo has no team, so no
+    department names and no leaders to name."""
     from openexecutive.departments.store import list_departments
 
     goals: list[str] = []
@@ -93,11 +97,11 @@ def _goal_lines() -> tuple[list[str], list[str], list[str]]:
     keys: list[str] = []
     for dept in list_departments():
         title = _one_line(dept.config.title, 60)
-        if dept.config.head_person_id is None:
+        if dept.config.head_person_id is None and not solo:
             leaderless.append(f"- {title}")
             keys.append(f"leaderless:{dept.config.slug}")
         for goal in dept.goals:
-            line = f"- [{title}] {_one_line(goal.key_result)}"
+            line = f"- {_one_line(goal.key_result)}" if solo else f"- [{title}] {_one_line(goal.key_result)}"
             if goal.target:
                 line += f" — target {_one_line(goal.target, 60)}"
             if goal.period_value:
@@ -117,7 +121,7 @@ async def _inbox_lines(now: datetime) -> tuple[list[str], list[str]]:
     from openexecutive.delegation.inbox import get_watch
     from openexecutive.people.store import find_principal_person
 
-    principal = find_principal_person()
+    principal = await asyncio.to_thread(find_principal_person)
     if principal is None or principal.id is None or not principal.email:
         return [], []
     if not (delegation_settings.can_delegate(principal) and delegation_settings.is_enabled(principal.id)):
@@ -128,13 +132,14 @@ async def _inbox_lines(now: datetime) -> tuple[list[str], list[str]]:
     if await gmail_status(principal.email, gmail=mailbox) != "connected":
         return [], []
     ids = await mailbox.inbox_message_ids(after=now - _INBOX_WINDOW, max_results=_INBOX_SCAN)
+    # Read together, so a slow mailbox costs the brief one wait, not twelve.
+    messages = await asyncio.gather(*(mailbox.get_message(mid) for mid, _thread in ids))
     lines: list[str] = []
     keys: list[str] = []
     seen: set[str] = set()
-    for message_id, _thread_id in ids:
+    for (message_id, _thread_id), message in zip(ids, messages, strict=True):
         if len(lines) >= _INBOX_MAX:
             break
-        message = await mailbox.get_message(message_id)
         if message.bulk or message.delivery_report or message.mailing_list or message.auto_generated:
             continue
         sender = (message.from_addr or "").lower()
@@ -165,36 +170,36 @@ def _assemble(goals: list[str], leaderless: list[str], inbox: list[str], keys: l
     return GettingStarted(text="\n".join([HEADER, *parts]), keys=keys, private=bool(inbox))
 
 
-def getting_started_shared(now: datetime | None = None) -> GettingStarted:
+def getting_started_shared(now: datetime | None = None, *, solo: bool = False) -> GettingStarted:
     """The block without the principal's own inbox: goals and departments,
     which everyone may see. Synchronous, for the /today header's hot path."""
     if first_week_started(now) is None:
         return GettingStarted()
     try:
-        goals, leaderless, keys = _goal_lines()
+        goals, leaderless, keys = _goal_lines(solo)
     except Exception:
         logger.warning("first_week: departments unreadable", exc_info=True)
         return GettingStarted()
     return _assemble(goals, leaderless, [], keys)
 
 
-async def getting_started(*, include_inbox: bool, now: datetime | None = None) -> GettingStarted:
+async def getting_started(
+    *, include_inbox: bool, now: datetime | None = None, solo: bool = False,
+) -> GettingStarted:
     """The GETTING STARTED block for a brief, or an empty one outside the
     first week. ``include_inbox`` only on a delivery to the principal alone."""
-    import asyncio
-
     now = now or datetime.now(UTC)
-    if first_week_started(now) is None:
+    if await asyncio.to_thread(first_week_started, now) is None:
         return GettingStarted()
     try:
-        goals, leaderless, keys = await asyncio.to_thread(_goal_lines)
+        goals, leaderless, keys = await asyncio.to_thread(_goal_lines, solo)
     except Exception:
         logger.warning("first_week: departments unreadable", exc_info=True)
         goals, leaderless, keys = [], [], []
     inbox: list[str] = []
     if include_inbox:
         try:
-            inbox, inbox_keys = await _inbox_lines(now)
+            inbox, inbox_keys = await asyncio.wait_for(_inbox_lines(now), timeout=_INBOX_TIMEOUT_S)
             keys += inbox_keys
         except Exception:
             logger.warning("first_week: the principal's own inbox couldn't be read", exc_info=True)

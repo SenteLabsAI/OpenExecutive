@@ -71,6 +71,13 @@ def test_shared_block_lists_goals_and_departments_with_no_leader(setup: SimpleNa
     assert sorted(block.keys) == ["goal:7:on_track", "leaderless:sales"]
 
 
+def test_solo_names_no_departments_or_leaders(setup: SimpleNamespace) -> None:
+    block = first_week.getting_started_shared(NOW, solo=True)
+    assert "- Close 10 new accounts — target 10 (Q4 2026)" in block.text
+    assert "[Sales]" not in block.text and "NO LEADER" not in block.text
+    assert block.keys == ["goal:7:on_track"]
+
+
 def test_block_is_empty_after_the_first_week(setup: SimpleNamespace) -> None:
     setup.principal = _principal(NOW - timedelta(days=30))
     assert first_week.getting_started_shared(NOW).text == ""
@@ -220,13 +227,13 @@ def test_today_header_is_not_quiet_in_the_first_week(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(today_route, "_narrative_activity", lambda viewer, desc: [])
     monkeypatch.setattr(
         "openexecutive.briefing.first_week.getting_started_shared",
-        lambda now=None: first_week.GettingStarted(),
+        lambda now=None, solo=False: first_week.GettingStarted(),
     )
     ctx, _ = today_route._narrative_context(empty, None, None, "team")
     assert ctx == narrative_cache.QUIET_CONTEXT
     monkeypatch.setattr(
         "openexecutive.briefing.first_week.getting_started_shared",
-        lambda now=None: first_week.GettingStarted(text=f"{first_week.HEADER}\n- Sales", keys=["leaderless:sales"]),
+        lambda now=None, solo=False: first_week.GettingStarted(text=f"{first_week.HEADER}\n- Sales", keys=["leaderless:sales"]),
     )
     ctx, _ = today_route._narrative_context(empty, None, None, "team")
     assert first_week.HEADER in ctx
