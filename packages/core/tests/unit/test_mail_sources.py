@@ -342,3 +342,10 @@ def test_held_mail_goes_back_to_what_read_it(registry: dict[str, MailSource]) ->
     with patch.object(poller, "replay_held_email", new=AsyncMock(return_value=True)) as replay:
         assert asyncio.run(mail_sources.replay_held_mail(mailbox, None)) is True
     replay.assert_awaited_once()
+
+
+def test_a_source_session_never_shares_the_mailboxs(turn: dict[str, Any]) -> None:
+    mail = _mail(TEAMMATE, proven=True, send=_Sent())
+    mail.session_id = ""
+    _handle(mail)
+    assert turn["turns"][0]["session"].session_id == "email:relay:t1"

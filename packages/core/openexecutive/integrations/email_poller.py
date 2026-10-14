@@ -721,7 +721,10 @@ async def _handle_mail(
         # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
         # with the integration_inbound row. Falls back to from_addr when the
         # backend exposes no thread id.
-        session_id = mail.session_id or f"email:{thread_id or from_addr}"
+        # A source's ids may come from the sender's headers, so its sessions
+        # never share the mailbox's namespace.
+        prefix = "email" if mailbox is not None else f"email:{mail.source}"
+        session_id = mail.session_id or f"{prefix}:{thread_id or from_addr}"
         audit_log(
             "integration_inbound",
             f"Inbound email from {from_addr}: {subject}" if subject else f"Inbound email from {from_addr}",
