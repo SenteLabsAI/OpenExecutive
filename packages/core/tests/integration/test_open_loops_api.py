@@ -60,9 +60,10 @@ def test_assign_list_close(client: TestClient) -> None:
     assert loop["owner_person_id"] == ben
     assert loop["description"] == "Sara Kim asked Ben Ortiz for: send me the Q3 numbers"
     # … and Ben is told, once.
-    assert loop["notified"] == {"status": "sent", "channel": "email"}
+    # Sara is a teammate, so she isn't told which channel reaches Ben.
+    assert loop["notified"] == {"status": "sent", "channel": None}
     assert sent == [("Ben Ortiz", sent[0][1])]
-    assert sent[0][1].startswith('Sara Kim asked you to take this on: "send me the Q3 numbers".')
+    assert sent[0][1].startswith("Sara Kim asked you to take this on: `send me the Q3 numbers`.")
 
     # … but cannot list Ben's loops; Ben and the principal (no header) can.
     assert client.get(f"/people/{ben}/open-loops", headers=as_sara).status_code == 403

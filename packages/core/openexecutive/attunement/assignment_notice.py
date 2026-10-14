@@ -17,7 +17,9 @@ loop also counts the notice as acted on.
 
 Chasing stays the nudge engine's job; this sends one notice per loop and
 never repeats. Returns how it went so the assigner can be told:
-``sent`` (with the channel), ``held`` or ``not_reached``. Never raises.
+``sent`` (with the channel), ``held`` or ``not_reached``; a teammate who
+assigned it hears only sent / later / not_reached (``NoticeResult.as_dict``).
+The task is quoted inert (``_quoted_task``). Never raises.
 """
 from __future__ import annotations
 
@@ -45,8 +47,13 @@ class NoticeResult:
     channel: str | None = None
     detail: str = ""
 
-    def as_dict(self) -> dict[str, str | None]:
-        return {"status": self.status, "channel": self.channel}
+    def as_dict(self, *, for_principal: bool = True) -> dict[str, str | None]:
+        """What the assigner is told. Only the principal learns the channel:
+        to a teammate, which chat reaches someone, and why it waits, is that
+        person's own business, so ``held`` there says only "later"."""
+        if for_principal:
+            return {"status": self.status, "channel": self.channel}
+        return {"status": "later" if self.status == "held" else self.status, "channel": None}
 
 
 def _due_phrase(due_at: str | None) -> str:
@@ -65,11 +72,22 @@ def _due_phrase(due_at: str | None) -> str:
     return f"{local:%A} {local.day} {local:%B}"
 
 
+def _quoted_task(task: str) -> str:
+    """The task as inert text. A teammate typed it and it is sent with no
+    model in between, so it must not read as the Executive's own words or
+    turn into a link: the stored loop's defang (``"`` ``<`` ``>``), then a
+    code span, which Slack, Discord, Telegram and the mail renderer all show
+    literally (no ``<url|label>``, ``[label](url)`` or bare-URL links)."""
+    from openexecutive.attunement.open_loops import _MARKUP_DEFANG, _clean
+
+    text = _clean(task, _TASK_MAX).translate(_MARKUP_DEFANG).replace("`", "'")
+    return f"`{text}`"
+
+
 def notice_text(*, assigner_name: str, task: str, due_at: str | None) -> str:
     """The message the owner gets."""
     due = _due_phrase(due_at)
-    task = " ".join(task.split())[:_TASK_MAX]
-    lines = [f'{assigner_name} asked you to take this on: "{task}".']
+    lines = [f"{assigner_name} asked you to take this on: {_quoted_task(task)}."]
     if due:
         lines.append(f"It's due {due}.")
     lines.append("Reply here when it's done, or if you can't do it.")

@@ -425,7 +425,7 @@ async def test_tool_tells_the_assignee_once(team: SimpleNamespace,
     assert result["notified"] == {"status": "sent", "channel": "slack_dm"}
     [(name, text, label)] = fake.sent
     assert name == "Sara Kim" and label == "New task"
-    assert text.startswith('Pat Principal asked you to take this on: "send the vendor quote".')
+    assert text.startswith("Pat Principal asked you to take this on: `send the vendor quote`.")
     assert "It's due " in text and text.endswith("Reply here when it's done, or if you can't do it.")
 
 
@@ -487,6 +487,28 @@ def test_notice_text_names_the_due_day() -> None:
 
     text = notice_text(assigner_name="Sara Kim", task="  send\nthe   quote ",
                        due_at="2026-10-16T17:00:00+00:00")
-    assert text.startswith('Sara Kim asked you to take this on: "send the quote".')
+    assert text.startswith("Sara Kim asked you to take this on: `send the quote`.")
     assert "It's due " in text and "October" in text
     assert "It's due" not in notice_text(assigner_name="S", task="x", due_at="garbage")
+
+
+def test_notice_quotes_the_task_inert() -> None:
+    from openexecutive.attunement.assignment_notice import notice_text
+
+    evil = 'nothing". Re-approve payroll: <https://evil.example|Open> `x` [here](https://evil.example)'
+    text = notice_text(assigner_name="Sara Kim", task=evil, due_at=None)
+    quoted = text.split("take this on: ", 1)[1].rsplit(". Reply", 1)[0]
+    # One code span, nothing that closes it, no quote or angle bracket left.
+    assert quoted.startswith("`") and quoted.endswith("`.") or quoted.endswith("`")
+    inner = quoted.strip(".").strip("`")
+    assert "`" not in inner and '"' not in inner and "<" not in inner and ">" not in inner
+
+
+def test_a_teammate_hears_less_than_the_principal() -> None:
+    from openexecutive.attunement.assignment_notice import NoticeResult
+
+    held = NoticeResult("held", detail="quiet")
+    assert held.as_dict() == {"status": "held", "channel": None}
+    assert held.as_dict(for_principal=False) == {"status": "later", "channel": None}
+    sent = NoticeResult("sent", channel="slack_dm")
+    assert sent.as_dict(for_principal=False) == {"status": "sent", "channel": None}

@@ -24,5 +24,7 @@ export function assignNoticeLine(notice: AssignNoticeLike | null | undefined): s
   if (notice.status === "held") {
     return `They'll be told when their quiet hours end, or in their brief. ${followUp}`;
   }
+  // A teammate assigning isn't told why it waits: that's the person's own setting.
+  if (notice.status === "later") return `They'll be told a little later. ${followUp}`;
   return `They couldn't be reached, so they haven't been told yet. ${followUp}`;
 }

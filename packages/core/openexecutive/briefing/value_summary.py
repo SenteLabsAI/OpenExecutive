@@ -190,6 +190,11 @@ def _audit_count(conn: sqlite3.Connection | None, bounds: tuple[str, str],
     return _count(conn, "audit_log", f"{_AUDIT_SCOPE} AND {extra}", (*bounds, *params))
 
 
+# A run a teammate started is theirs alone, not even the owner's
+# (``workflows.persistence.run_visible_to``): only team runs count.
+_TEAM_RUN = "owner_person_id IS NULL"
+
+
 def _in(values: tuple[str, ...]) -> str:
     return "(" + ",".join("?" * len(values)) + ")"
 
@@ -267,7 +272,7 @@ def _counts(audit: sqlite3.Connection | None, db: sqlite3.Connection | None,
         ),
         "reports": _count(
             db, "workflow_runs",
-            f"status = 'done' AND updated_at >= ? AND updated_at < ? "
+            f"status = 'done' AND updated_at >= ? AND updated_at < ? AND {_TEAM_RUN} "
             f"AND workflow_name NOT IN {_in(_RHYTHM_WORKFLOWS)}",
             (*bounds, *_RHYTHM_WORKFLOWS),
         ),
@@ -317,13 +322,16 @@ _LABELS: dict[str, str] = {
 def _deliverables(db: sqlite3.Connection | None, bounds: tuple[str, str]) -> list[Deliverable]:
     if db is None or "workflow_runs" not in _tables(db):
         return []
-    rows = db.execute(
-        "SELECT run_id, title, workflow_name, updated_at FROM workflow_runs "
-        "WHERE status = 'done' AND updated_at >= ? AND updated_at < ? "
-        f"AND workflow_name NOT IN {_in(_RHYTHM_WORKFLOWS)} "
-        "ORDER BY updated_at DESC LIMIT ?",
-        (*bounds, *_RHYTHM_WORKFLOWS, _MAX_DELIVERABLES),
-    ).fetchall()
+    try:
+        rows = db.execute(
+            "SELECT run_id, title, workflow_name, updated_at FROM workflow_runs "
+            f"WHERE status = 'done' AND updated_at >= ? AND updated_at < ? AND {_TEAM_RUN} "
+            f"AND workflow_name NOT IN {_in(_RHYTHM_WORKFLOWS)} "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (*bounds, *_RHYTHM_WORKFLOWS, _MAX_DELIVERABLES),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []  # an older schema without the column
     return [
         Deliverable(run_id=r["run_id"], title=r["title"] or r["workflow_name"],
                     workflow_name=r["workflow_name"], finished_at=r["updated_at"])
@@ -464,7 +472,7 @@ async def send_monthly(now: datetime) -> bool:
         if local.date() != _first_weekday(local.date()) or not FIRST_HOUR <= local.hour < LAST_HOUR:
             return False
         summary = summarize("month", 1, now=now, zone=zone)
-        month = summary.start[:7]
+        month = _month_start(local.date(), 1).isoformat()[:7]
         if summary.is_empty() or not _claim_month(month, now):
             return False
         text = render_message(summary, link=value_link())

@@ -4116,8 +4116,9 @@ export interface OpenLoop {
 
 // "sent" on `channel`, "held" for their quiet hours or brief, "not_reached"
 // when no channel worked, "skipped" for their own task or with notices off.
+// A teammate assigning gets no channel and "later" in place of "held".
 export interface AssignNotice {
-  status: "sent" | "held" | "not_reached" | "skipped";
+  status: "sent" | "held" | "later" | "not_reached" | "skipped";
   channel: string | null;
 }
 

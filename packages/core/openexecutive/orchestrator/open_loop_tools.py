@@ -133,6 +133,13 @@ def _audit(tool: str, ok: bool, summary: str, details: dict[str, Any]) -> None:
     )
 
 
+def _is_principal(person_id: int) -> bool:
+    from openexecutive.people.store import get_person
+
+    person = get_person(person_id)
+    return bool(person is not None and person.is_principal)
+
+
 def _is_private_surface(session: Any) -> bool:
     """Whether a reply in this session is seen only by the person asking.
 
@@ -404,7 +411,7 @@ async def handle_assign_open_loop(tool_input: dict[str, Any]) -> str:
         "owner_person_id": person_id,
         "owner": loop.owner_name if loop is not None else None,
         "due_at": result.due_at,
-        "notified": notice.as_dict(),
+        "notified": notice.as_dict(for_principal=_is_principal(assigner)),
     })
 
 

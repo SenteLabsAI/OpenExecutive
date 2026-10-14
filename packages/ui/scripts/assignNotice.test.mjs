@@ -14,6 +14,7 @@ test("a sent notice names the channel", () => {
 
 test("held, unreached and skipped notices read plainly", () => {
   assert.match(assignNoticeLine({ status: "held", channel: null }), /quiet hours end/);
+  assert.match(assignNoticeLine({ status: "later", channel: null }), /a little later/);
   assert.match(assignNoticeLine({ status: "not_reached", channel: null }), /couldn't be reached/);
   assert.equal(assignNoticeLine({ status: "skipped", channel: null }), FOLLOW);
   assert.equal(assignNoticeLine(undefined), FOLLOW);

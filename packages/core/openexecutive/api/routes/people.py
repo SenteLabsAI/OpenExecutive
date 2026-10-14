@@ -490,7 +490,8 @@ class AssignNoticeOut(BaseModel):
     """Whether the person was told about a task just assigned to them:
     ``sent`` (on ``channel``), ``held`` for their quiet hours or brief,
     ``not_reached`` (no channel worked) or ``skipped`` (their own task, or
-    notices are off)."""
+    notices are off). A teammate assigning gets no channel, and ``later``
+    in place of ``held``: those are the person's own settings."""
 
     status: str
     channel: str | None = None
@@ -610,7 +611,9 @@ async def assign_person_open_loop(
         description=loop.description,
         due_at=loop.due_at,
         created_at=loop.created_at,
-        notified=AssignNoticeOut(status=notice.status, channel=notice.channel),
+        notified=AssignNoticeOut.model_validate(
+            notice.as_dict(for_principal=bool(assigner.is_principal))
+        ),
     )
 
 

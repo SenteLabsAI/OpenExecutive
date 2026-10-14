@@ -136,6 +136,11 @@ def test_other_lines(db: Path, team: SimpleNamespace) -> None:
     _run(db, "r2", "morning_brief", "2026-10-03T09:00:00+00:00")
     _run(db, "r3", "board_prep", "2026-10-04T09:00:00+00:00", status="failed")
     _run(db, "r4", "board_prep", "2026-09-04T09:00:00+00:00")
+    # A run Sara started is hers alone: not counted, not listed.
+    _run(db, "r5", "competitive_teardown", "2026-10-06T09:00:00+00:00")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE workflow_runs SET owner_person_id = ? WHERE run_id = 'r5'",
+                     (team.sara,))
     summary = _summary()
     assert _count(summary, "inbox_sent") == (1, 0)
     assert _count(summary, "inbox_drafted") == (1, 0)
