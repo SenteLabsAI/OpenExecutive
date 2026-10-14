@@ -21,7 +21,7 @@ to retry or work around it. The gate fails closed: an error holds the action.
 
 With several departments the strictest level applies; with none, the action
 is held as ``propose_only`` would hold it, and so is a web caller signed in
-but on no People entry. "Could approve it themselves" means holding a range
+but on no People entry, or a chat-channel sender matched to no one. "Could approve it themselves" means holding a range
 for every kind of approval the action touches, not just the first. The principal's own turns,
 unattended runs (Take the lead's gate and the scheduler's) and Act as me are
 not this module's.
@@ -97,6 +97,15 @@ def speaker(session: Any) -> Person | None:
         if getattr(session, "from_web_chat", False) is True and getattr(
             session, "web_caller_signed_in", False,
         ) is True:
+            return Person(id=None, full_name="", kind="team")
+        # The same on a chat channel (Slack, Telegram, Discord, Google
+        # Chat): a sender it couldn't match to anyone on People. Slack,
+        # Telegram and Discord turn those away before the turn starts;
+        # Google Chat's webhook proves Google, not the sender, so it never
+        # names one. Email is left out: whoever writes in is never on People,
+        # and its replies go through the mailbox's own gates.
+        channel = str(getattr(session, "origin_channel", "") or "")
+        if channel and channel != "email":
             return Person(id=None, full_name="", kind="team")
         return None
     from openexecutive.people.store import get_person
@@ -269,7 +278,7 @@ def hold(
     # shows only the plain line; the approver opens the decision for the rest.
     shown = summary if private else take_the_lead.summarize(tool, tool_input, mcp=mcp, quote=False)
     who = person.full_name or (
-        "Someone on the team" if person.id is not None else "Someone signed in who isn't on People"
+        "Someone on the team" if person.id is not None else "Someone who isn't on People"
     )
     escalated = verdict.level == AuthorityLevel.ESCALATE.value
     payload = {
