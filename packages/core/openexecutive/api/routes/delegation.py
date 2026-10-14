@@ -493,13 +493,17 @@ def _caller(request: Request) -> Person:
     followed here too. A request that names no one only counts as the
     principal under local login."""
     from openexecutive.api.routes.chat import _resolve_caller_person_id
-    from openexecutive.people.store import get_person
+    from openexecutive.people.store import find_principal_person, get_person
 
     who = api_caller.caller(request)
     if not who.email and not (who.defaults_to_principal and local_login()):
         raise _refuse(403, "sign_in_required", "Sign in to change Act as me.")
     try:
         person_id = _resolve_caller_person_id(request)
+        if person_id is None:
+            # The resolver reads a roster it can't open as "no one"; read it
+            # once more so an outage answers 503, not "not for you".
+            find_principal_person()
         person = get_person(person_id) if person_id is not None else None
     except Exception as exc:
         logger.exception("delegation: caller lookup failed")

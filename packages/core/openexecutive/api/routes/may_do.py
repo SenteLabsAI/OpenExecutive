@@ -64,7 +64,7 @@ def _viewer(request: Request) -> Any:
     its person there is followed here too. A request that names no one only
     counts as the principal under local login."""
     from openexecutive.api.routes.chat import _resolve_caller_person_id
-    from openexecutive.people.store import get_person
+    from openexecutive.people.store import find_principal_person, get_person
     from openexecutive.utils.deployment import is_local_login
 
     who = api_caller.caller(request)
@@ -72,6 +72,10 @@ def _viewer(request: Request) -> Any:
         raise HTTPException(status_code=403, detail="Sign in to see what it may do.")
     try:
         person_id = _resolve_caller_person_id(request)
+        if person_id is None:
+            # The resolver reads a roster it can't open as "no one"; read it
+            # once more so an outage answers 503, not "not for you".
+            find_principal_person()
         person = get_person(person_id) if person_id is not None else None
     except Exception as exc:
         logger.exception("may_do: caller lookup failed")
