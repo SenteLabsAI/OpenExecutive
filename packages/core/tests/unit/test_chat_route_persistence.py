@@ -112,6 +112,51 @@ def test_get_or_create_session_idempotent(temp_db: Path, patched_deps: None) -> 
     assert s1.session_id == "abc-123"
 
 
+def test_resumed_session_sees_turns_saved_elsewhere(temp_db: Path, patched_deps: None) -> None:
+    """Going back to a chat here sees the turns another channel added to it.
+
+    A chat app's conversation (Telegram, Slack) can be continued on the web,
+    then in the app, then here again. The app's adapter saves its turns
+    straight to the store, so the Session cached here must re-read them or
+    the next answer misses them.
+    """
+
+    class _Req:
+        class _App:
+            class _State:
+                pass
+            state = _State()
+
+        app = _App()
+
+    req: Any = _Req()
+    sid = "telegram:42"
+    session_store.save_message(sid, "user", "Draft the board update")
+    session_store.save_message(sid, "assistant", "Here is a draft.")
+
+    first = chat_route._get_or_create_session(sid, req)
+    assert [m["content"] for m in first.conversation_history] == [
+        "Draft the board update",
+        "Here is a draft.",
+    ]
+    first.seen_channel_refs.add(("telegram", "42"))
+
+    # Two turns in the Telegram app, saved by its adapter.
+    session_store.save_message(sid, "user", "Make it shorter")
+    session_store.save_message(sid, "assistant", "Shorter draft.")
+
+    again = chat_route._get_or_create_session(sid, req)
+    assert again is first
+    assert [m["content"] for m in again.get_recent_history()] == [
+        "Draft the board update",
+        "Here is a draft.",
+        "Make it shorter",
+        "Shorter draft.",
+    ]
+    # The rest of the live session is kept.
+    assert ("telegram", "42") in again.seen_channel_refs
+
+
 def test_chat_endpoint_persists_session_before_streaming(
     temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,10 +284,8 @@ def test_chat_endpoint_persists_partial_turn_on_disconnect(
 
     # The live in-memory Session must agree with what was persisted. The
     # Executive's own post-turn block is skipped when its generator is closed
-    # early, and `_get_or_create_session` never re-reads history for a session
-    # it already holds — so without the route mirroring the turn here, the NEXT
-    # turn in this process would prompt as though this one never happened while
-    # a page reload showed it.
+    # early, so without the route mirroring the turn here the live Session
+    # would disagree with the store until the next turn re-read it.
     session = chat_route._sessions[rows[0]["session_id"]]
     assert session.conversation_history == [
         {"role": "user", "content": "explain our burn rate"},

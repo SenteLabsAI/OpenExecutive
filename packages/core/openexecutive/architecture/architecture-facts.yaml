@@ -5031,10 +5031,17 @@ chat:
 
     The route also mirrors a broken-out turn into the live in-memory Session.
     The Executive's post-turn block is skipped whenever its generator closes
-    early, and `_get_or_create_session` never re-reads history for a session it
-    already holds — so without this the NEXT turn would prompt as though the
-    stopped turn never happened while a page reload showed it. This applies to
-    the disconnect and timeout paths too, where it was a latent bug.
+    early, so without this the live Session would disagree with what was saved.
+    This applies to the disconnect and timeout paths too.
+
+    `_get_or_create_session` re-reads the stored transcript into a cached
+    Session on every web turn (under the conversation's turn lock, so the
+    previous web turn is saved). The store, not the cache, is the
+    conversation: a chat app's adapter (Telegram, Slack, Discord, Google Chat,
+    Teams) saves its turns straight to `chat_messages`, so a chat continued in
+    the app and then reopened on the web or phone would otherwise be answered
+    without them. The rest of the cached Session (seen channel refs, mail ids)
+    is kept.
 
   ask_oe_page_context: |
     The Ask OE side panel (packages/ui/src/components/askoe/*, available on
