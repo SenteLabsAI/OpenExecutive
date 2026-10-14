@@ -158,12 +158,17 @@ def approve_finding(request: Request, finding_id: int, body: FindingApprove) -> 
     )
     if resolved is None:
         raise HTTPException(status_code=409, detail="This one was already decided.")
-    lesson = store.create_lesson(
-        text,
-        source_finding_id=finding.id,
-        approved_by_person_id=person_id,
-        updated_by=f"person:{person_id}",
-    )
+    try:
+        lesson = store.create_lesson(
+            text,
+            source_finding_id=finding.id,
+            approved_by_person_id=person_id,
+            updated_by=f"person:{person_id}",
+        )
+    except Exception:
+        # The proposal is not lost: back to the screen for another try.
+        store.reopen_finding(finding_id)
+        raise
     resolved = store.attach_lesson(finding_id, lesson.id)
     log_event(
         "chat_review",
@@ -197,8 +202,11 @@ def dismiss_finding(request: Request, finding_id: int, body: FindingDismiss) -> 
 @router.put("/reflection/lessons/{lesson_id}")
 def update_lesson(request: Request, lesson_id: int, body: LessonUpdate) -> dict[str, Any]:
     person_id = _owner(request)
-    if store.get_lesson(lesson_id) is None:
+    current = store.get_lesson(lesson_id)
+    if current is None:
         raise HTTPException(status_code=404, detail="No such lesson.")
+    if current.status != "active":
+        raise HTTPException(status_code=409, detail="A retired lesson can't be edited.")
     text = None
     if body.text is not None:
         text = lessons_mod.normalize(body.text)
@@ -206,13 +214,15 @@ def update_lesson(request: Request, lesson_id: int, body: LessonUpdate) -> dict[
         if why:
             raise HTTPException(status_code=400, detail=f"That can't be a lesson: {why}.")
     lesson = store.update_lesson(lesson_id, text=text, locked=body.locked, updated_by=f"person:{person_id}")
+    if lesson is None:
+        raise HTTPException(status_code=409, detail="A retired lesson can't be edited.")
     log_event(
         "chat_review",
         f"Lesson edited: {(text or '')[:120]}" if text else "Lesson lock changed",
         actor="user",
         details={"lesson_id": lesson_id, "locked": body.locked, "person_id": person_id},
     )
-    return {"lesson": lesson.as_dict() if lesson else None}
+    return {"lesson": lesson.as_dict()}
 
 
 @router.delete("/reflection/lessons/{lesson_id}")

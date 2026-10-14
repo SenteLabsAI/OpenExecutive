@@ -107,8 +107,15 @@ async def run_look_back(now: datetime | None = None, *, db_path: Path | None = N
 
         results = list(await asyncio.gather(*(one(c) for c in chosen)))
         reviewed = sum(1 for r in results if "error" not in r)
-        newest = max([c.last_message_id for c in chosen], default=owner.last_message_id)
-        store.advance_watermark(newest, db_path=db_path)
+        # The watermark moves past conversations that were actually read.
+        # review_session never raises, so a provider outage comes back as
+        # per-session errors: those stay below the mark and the next morning
+        # tries them again. A session that failed below a newer one that
+        # succeeded is left behind on purpose, or one bad conversation
+        # would hold the mark forever.
+        read = [c.last_message_id for c, r in zip(chosen, results, strict=True) if "error" not in r]
+        if read:
+            store.advance_watermark(max(read), db_path=db_path)
         filed = store.file_stale_proposals(db_path=db_path)
         store.finish_run(run_id, sessions_reviewed=reviewed, db_path=db_path)
         found = sum(int(r.get("findings", 0)) for r in results)

@@ -668,12 +668,26 @@ def update_lesson(
         args.append(1 if locked else 0)
     args.append(lesson_id)
     with _conn(db_path) as conn:
-        conn.execute(f"UPDATE executive_lessons SET {', '.join(sets)} WHERE id = ?", args)
-        row = conn.execute("SELECT * FROM executive_lessons WHERE id = ?", (lesson_id,)).fetchone()
-        if row is None:
+        cur = conn.execute(
+            f"UPDATE executive_lessons SET {', '.join(sets)} WHERE id = ? AND status = 'active'", args
+        )
+        if cur.rowcount != 1:
+            # Missing or retired: a retired lesson is history, not a draft.
             return None
+        row = conn.execute("SELECT * FROM executive_lessons WHERE id = ?", (lesson_id,)).fetchone()
         _history(conn, lesson_id, str(row["text"]), str(row["status"]), updated_by)
     return _lesson_row(row)
+
+
+def reopen_finding(finding_id: int, *, db_path: Path | None = None) -> None:
+    """Put an approved finding back to proposed when making its lesson failed."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "UPDATE chat_review_findings SET status = 'proposed', resolved_at = NULL, "
+            "resolved_by_person_id = NULL, resolution_note = '' WHERE id = ? AND status = 'approved' "
+            "AND lesson_id IS NULL",
+            (finding_id,),
+        )
 
 
 def retire_lesson(

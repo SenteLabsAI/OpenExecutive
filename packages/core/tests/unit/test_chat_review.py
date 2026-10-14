@@ -415,6 +415,31 @@ def test_a_failing_conversation_does_not_end_the_run(monkeypatch: pytest.MonkeyP
     assert store.list_runs()[0].status == "done"
 
 
+def test_an_outage_leaves_the_watermark_where_it_was(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: _settings())
+    monkeypatch.setattr(run, "_principal_id", lambda: 1)
+    _turn("a", "Question one?", "Answer.", feedback="down")
+    _, newest = _turn("b", "Question two?", "Answer.", stopped=True)
+
+    async def down(model: str, turn: str) -> dict[str, Any]:
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(review, "_call_model", down)
+    summary = asyncio.run(run.run_look_back())
+    assert summary["reviewed"] == 0 and summary["errors"] == 2
+    assert store.get_settings().last_message_id == 0
+    # The next morning picks the same conversations again.
+    chosen, _ = pick.pick_sessions(since_message_id=store.get_settings().last_message_id, limit=10, principal_id=1)
+    assert {c.session_id for c in chosen} == {"a", "b"}
+
+    async def fine(model: str, turn: str) -> dict[str, Any]:
+        return {"findings": []}
+
+    monkeypatch.setattr(review, "_call_model", fine)
+    assert asyncio.run(run.run_look_back(datetime(2026, 10, 16, 6, tzinfo=UTC)))["reviewed"] == 2
+    assert store.get_settings().last_message_id == newest
+
+
 # --------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------
@@ -470,6 +495,25 @@ def test_owner_reads_approves_with_edits_and_the_lesson_reaches_the_block(monkey
     retired = client.request("DELETE", f"/reflection/lessons/{lesson['id']}", json={"reason": "done"}).json()["lesson"]
     assert retired["status"] == "retired"
     assert lessons.build_lessons_block() == ""
+    # A retired lesson is history: no edits, no history row.
+    assert client.put(f"/reflection/lessons/{lesson['id']}", json={"text": "Something else entirely, please."}).status_code == 409
+    assert store.get_lesson(lesson["id"]).text.startswith("When someone asks")  # type: ignore[union-attr]
+
+
+def test_a_failed_lesson_write_puts_the_proposal_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    fid = _proposal()
+    client = _client(monkeypatch, principal=True)
+
+    def boom(*a: Any, **kw: Any) -> store.Lesson:
+        raise sqlite3.OperationalError("database is locked")
+
+    real = store.create_lesson
+    monkeypatch.setattr(store, "create_lesson", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        client.post(f"/reflection/findings/{fid}/approve", json={})
+    assert store.get_finding(fid).status == "proposed"  # type: ignore[union-attr]
+    monkeypatch.setattr(store, "create_lesson", real)
+    assert client.post(f"/reflection/findings/{fid}/approve", json={}).status_code == 200
 
 
 def test_dismiss_and_settings(monkeypatch: pytest.MonkeyPatch) -> None:
