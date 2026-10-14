@@ -488,3 +488,44 @@ async def test_eod_digest_keeps_a_repair_that_grounds_it(monkeypatch: pytest.Mon
     [row] = rows
     assert row["details"]["repaired"] is True  # type: ignore[index]
     assert row["details"]["held_back"] == []  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_the_first_week_block_reaches_the_brief_its_fingerprint_and_privacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing import first_week
+    from openexecutive.workflows import morning_brief
+
+    calls = _capture(monkeypatch)
+    _stub_aggregators(monkeypatch)
+    asked: list[bool] = []
+
+    async def _getting_started(*, include_inbox: bool, now: object = None, solo: bool = False) -> object:
+        asked.append(include_inbox)
+        if include_inbox:
+            return first_week.GettingStarted(
+                text=f"{first_week.HEADER}\nWAITING ON YOU IN YOUR OWN INBOX (…):\n- Dana Reyes: Renewal",
+                keys=["inbox:m1"], private=True,
+            )
+        return first_week.GettingStarted()
+
+    plain = [e async for e in MorningBriefWorkflow().run(MorningBriefInput(), MagicMock())]
+    monkeypatch.setattr(first_week, "getting_started", _getting_started)
+    shared = [e async for e in MorningBriefWorkflow().run(MorningBriefInput(), MagicMock())]
+    assert first_week.HEADER not in str(calls[-1]["rendered_context"])
+    token = morning_brief.PRINCIPAL_DELIVERY.set(True)
+    try:
+        delivered = [e async for e in MorningBriefWorkflow().run(MorningBriefInput(force_full=True), MagicMock())]
+    finally:
+        morning_brief.PRINCIPAL_DELIVERY.reset(token)
+    assert asked == [False, True]
+    assert "- Dana Reyes: Renewal" in str(calls[-1]["rendered_context"])
+
+    def result(events: list[object]) -> dict[str, object]:
+        return next(e for e in events if e.type == "result").data  # type: ignore[attr-defined]
+
+    assert result(shared)["private_to_principal"] is False
+    assert result(delivered)["private_to_principal"] is True
+    assert result(shared)["brief_fingerprint"] == result(plain)["brief_fingerprint"]
+    assert result(delivered)["brief_fingerprint"] != result(shared)["brief_fingerprint"]

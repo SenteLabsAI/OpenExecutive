@@ -4402,6 +4402,9 @@ export interface Today {
   // Optional for older API builds + test mocks.
   narrative_generated_at?: string | null;
   narrative_stale?: boolean;
+  // The install's first week: the brief opens with getting-started moves,
+  // so the page doesn't call the day quiet. Optional for older API builds.
+  first_week?: boolean;
   // In-flight commitments (pending follow-ups/nudges) + people we're awaiting
   // a reply from. Optional/default-empty for older API builds + test mocks.
   in_flight?: InFlightItem[];

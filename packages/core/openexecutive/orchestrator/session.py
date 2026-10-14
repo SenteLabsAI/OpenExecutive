@@ -72,6 +72,13 @@ class Session:
     # An adapter sets either only when it resolved `caller_person_id` from the
     # sender identity it verified itself, never from anything the message says.
     speaker_verified: bool = False
+    # The sender's People entry on a channel that names its sender but isn't
+    # one `people_tools` verifies (Google Chat, by the Google account email on
+    # its signed event). Read only by the department gate
+    # (`department_gate.speaker`), so the principal there isn't held and a
+    # teammate gets their own department's authority. Never a grant for
+    # anything else, and never set alongside `caller_person_id`.
+    gate_sender_person_id: int | None = None
     private_chat: bool = False
     # The live alert board as the server derived it this turn, recorded by
     # `briefing.context.render_and_trust`. `ack_alert` refuses anything else on

@@ -516,6 +516,15 @@ class TodayResponse(BaseModel):
     # Set by GET /today for the principal alone, after the narrative inputs
     # are taken, so the held lines never reach a prompt.
     held_back: list[HeldBackItem] = Field(default_factory=list)
+    # The install's first week (``briefing.first_week``): the header opens
+    # with getting-started moves, so the page doesn't call the day quiet.
+    first_week: bool = False
+
+
+def _first_week_header(context: str) -> bool:
+    from openexecutive.briefing.first_week import HEADER
+
+    return HEADER in context
 
 
 class ActivityItem(BaseModel):
@@ -1611,7 +1620,8 @@ def _narrative_context(
 
     The whole-company scopes (``principal`` / ``company``) also get the live
     blocks (`_header_live`) — what came in today, what is stuck, the rest of
-    the calendar — private rows only in the principal's own scope. A
+    the calendar — private rows only in the principal's own scope, and in
+    the first week the GETTING STARTED block (``briefing.first_week``). A
     teammate's header is unchanged.
 
     On a quiet board — nothing awaiting a decision and nothing live — it
@@ -1627,11 +1637,22 @@ def _narrative_context(
     live = None
     window = "today so far"
     now_label: str | None = None
+    getting_started = ""
     if viewer_desc is None:
         live, window, now_label = _header_live(
             include_private=scope == narrative_cache.DEFAULT_SCOPE
         )
-    if _nothing_needs_attention(today_data, mode) and (live is None or live.is_empty()):
+        # The first week: goals and departments with no leader, so a new
+        # install's header has something to say (never the owner's own inbox
+        # here; the header's hot path reads no mailbox).
+        from openexecutive.briefing.first_week import getting_started_shared
+
+        getting_started = getting_started_shared(solo=mode == "solo").text
+    if (
+        _nothing_needs_attention(today_data, mode)
+        and (live is None or live.is_empty())
+        and not getting_started
+    ):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)
     context = render_briefing_context(
@@ -1642,6 +1663,7 @@ def _narrative_context(
         live=live,
         live_window=window,
         now_label=now_label,
+        getting_started=getting_started,
     )
     return context, activity
 
@@ -1696,6 +1718,9 @@ def _attach_narrative(
     try:
         mode = get_workspace().mode
         context, _activity = _narrative_context(today_data, viewer, desc, mode, scope)
+        # The "Quiet day" banner gives way only to a header that carries
+        # GETTING STARTED (the principal's or the company's, with something in it).
+        response.first_week = _first_week_header(context)
         nhash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
         cached = narrative_cache.get(scope)
         is_stale = cached is None or cached.input_hash != nhash
