@@ -283,7 +283,11 @@ class _StreamStep(NamedTuple):
     """One step of the SSE driver loop.
 
     Exactly one of these is true: `item` holds a produced value, or `exhausted`
-    / `stopped` / `timed_out` says why nothing was produced.
+    / `stopped` / `timed_out` / `idle` says why nothing was produced.
+
+    `idle` means the keepalive interval passed with the step still running:
+    `pending` is that step, still in flight, for the caller to send a
+    keepalive and hand back to the next call. The caller owns cancelling it.
     """
 
     item: Any = None
@@ -291,6 +295,15 @@ class _StreamStep(NamedTuple):
     exhausted: bool = False
     stopped: bool = False
     timed_out: bool = False
+    idle: bool = False
+    pending: asyncio.Task[Any] | None = None
+
+
+# What the SSE stream sends while a turn is quiet: a comment line, which every
+# SSE reader (the web chat's included, which reads only `data:` lines) skips.
+# It keeps a browser or a proxy from dropping the connection as idle during a
+# slow tool call or specialist round.
+_SSE_KEEPALIVE = ": keepalive\n\n"
 
 
 async def _cancel_stream_step(anext_task: asyncio.Task[Any], turn_id: str) -> None:
@@ -329,8 +342,16 @@ async def _next_stream_step(
     stop_waiter: asyncio.Task[bool] | None,
     remaining: float,
     turn_id: str,
+    *,
+    keepalive_s: float = 0.0,
+    pending: asyncio.Task[Any] | None = None,
 ) -> _StreamStep:
     """Advance `stream` one step, racing the stop switch and the deadline.
+
+    With `keepalive_s`, it also returns `idle` once that long passes with the
+    step still running and the deadline not yet reached, leaving the step in
+    flight (`pending`); the caller sends a keepalive and passes it back as
+    `pending` to go on waiting on the same step.
 
     Extracted from the driver loop because the ordering here is load-bearing in
     several ways and is much easier to reason about — and to test — on its own.
@@ -348,13 +369,19 @@ async def _next_stream_step(
     # and like it this COPIES the current context, so the `set_turn` /
     # `set_session` bindings made in `event_generator` are inherited by every
     # step. See that function's comment for why that matters.
-    anext_task: asyncio.Task[Any] = asyncio.ensure_future(stream.__anext__())
+    anext_task: asyncio.Task[Any] = (
+        pending if pending is not None else asyncio.ensure_future(stream.__anext__())
+    )
+    # Whether the step is handed back still running (`idle`), the one exit
+    # that does not cancel it.
+    keep = False
+    wait_s = min(remaining, keepalive_s) if keepalive_s > 0 else remaining
     try:
         waiters: set[asyncio.Future[Any]] = {anext_task}
         if stop_waiter is not None:
             waiters.add(stop_waiter)
         await asyncio.wait(
-            waiters, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+            waiters, timeout=wait_s, return_when=asyncio.FIRST_COMPLETED
         )
 
         if anext_task.done():
@@ -370,11 +397,15 @@ async def _next_stream_step(
 
         if stop_waiter is not None and stop_waiter.done():
             return _StreamStep(stopped=True)
+        if wait_s < remaining:
+            keep = True
+            return _StreamStep(idle=True, pending=anext_task)
         return _StreamStep(timed_out=True)
     finally:
-        # Every exit: stop, deadline, AND an outer cancellation from a client
-        # disconnect. Never leave the step running.
-        await _cancel_stream_step(anext_task, turn_id)
+        # Every exit but `idle`: stop, deadline, AND an outer cancellation
+        # from a client disconnect. Never leave the step running unowned.
+        if not keep:
+            await _cancel_stream_step(anext_task, turn_id)
 
 
 def _request_stop(client_turn_id: str, owner: str) -> str | None:
@@ -1388,6 +1419,9 @@ async def _run_chat_turn(
                 if stop_event is not None
                 else None
             )
+            # A step left running across a keepalive (`_StreamStep.idle`).
+            # Every way out of the loop below cancels it in its `finally`.
+            pending: asyncio.Task[Any] | None = None
             try:
                 while True:
                     if stop_event is not None and stop_event.is_set():
@@ -1416,8 +1450,15 @@ async def _run_chat_turn(
                         break
 
                     step = await _next_stream_step(
-                        stream, stop_waiter, remaining, turn_id
+                        stream, stop_waiter, remaining, turn_id,
+                        keepalive_s=settings.chat_stream_keepalive_s,
+                        pending=pending,
                     )
+                    pending = step.pending
+
+                    if step.idle:
+                        yield _SSE_KEEPALIVE
+                        continue
 
                     if step.exhausted:
                         break
@@ -1465,6 +1506,10 @@ async def _run_chat_turn(
                         )
                     break
             finally:
+                if pending is not None:
+                    # Before the stream's `aclose` below, which raises on a
+                    # generator whose step is still running.
+                    await _cancel_stream_step(pending, turn_id)
                 if stop_waiter is not None:
                     # Otherwise: "Task was destroyed but it is pending".
                     stop_waiter.cancel()

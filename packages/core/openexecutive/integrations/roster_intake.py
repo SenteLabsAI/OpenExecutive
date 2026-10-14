@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Coroutine
@@ -98,6 +99,12 @@ def _suggest(channel: str, ref: str, display_name: str, profile_email: str | Non
         person = resolve_email_sender(profile_email, include_contacts=True)
         suggested = person.id if person is not None else None
     return on_company, suggested
+
+
+class AckUncertain(Exception):
+    """Raised by an adapter's ``send_ack`` when it cannot tell whether the
+    acknowledgement went (the send timed out). Its claim is kept: a second
+    acknowledgement is worse than a missing one."""
 
 
 class AckWithheld(Exception):
@@ -216,6 +223,14 @@ async def _acknowledge(
             )
             await asyncio.to_thread(
                 rr.release_ack, channel, request.channel_ref, request_id=request.id
+            )
+        except AckUncertain as uncertain:
+            # The send may have gone: the claim is kept, so the sender's next
+            # message does not draw a second acknowledgement.
+            _audit(
+                "roster_ack_uncertain",
+                f"Acknowledgement to a new {rr.channel_label(channel)} sender may have gone: {uncertain}",
+                {"request_id": request.id, "channel": channel},
             )
         except Exception:
             logger.warning("roster_intake: acknowledgement on %s failed", channel, exc_info=True)
@@ -399,8 +414,20 @@ async def send_email_ack(gateway: Any, to: str) -> None:
                 "body": ACK_TEXT,
             },
         })
+    if _timed_out(result):
+        raise AckUncertain("the send did not answer in time; it may have gone")
     if looks_like_error(result):
         raise RuntimeError("acknowledgement email refused or failed")
+
+
+def _timed_out(result: Any) -> bool:
+    """Whether the gateway gave up waiting on the send (``timed_out`` in its
+    error payload), as opposed to refusing or failing it."""
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else None
+    except ValueError:
+        return False
+    return isinstance(parsed, dict) and parsed.get("timed_out") is True
 
 
 # Mail no human is waiting on an answer to. The header checks apply only to

@@ -430,6 +430,12 @@ class Settings(BaseSettings):
     # typically 5–12s.
     committee_extra_timeout_s: float = Field(60.0, alias="COMMITTEE_EXTRA_TIMEOUT_S")
 
+    # How often a streaming chat turn sends an SSE comment while nothing else
+    # is going out (a slow tool call, a long specialist round). Browsers and
+    # proxies drop an idle stream, often after 30-60s, well inside the
+    # whole-turn deadline above. 0 turns it off.
+    chat_stream_keepalive_s: float = Field(15.0, alias="CHAT_STREAM_KEEPALIVE_S", ge=0)
+
     # Per-call ceiling for the onboarding interview. It used to borrow
     # chat_stream_timeout_s, which meant raising that to 300s would have let the
     # wizard's 2-attempt retry loop hang for up to 600s before surfacing
@@ -503,6 +509,16 @@ class Settings(BaseSettings):
     ai_disclosure_handle_it: bool = Field(True, alias="AI_DISCLOSURE_HANDLE_IT")
     ai_disclosure_approved_sends: bool = Field(False, alias="AI_DISCLOSURE_APPROVED_SENDS")
     email_poll_interval_seconds: int = Field(60, alias="EMAIL_POLL_INTERVAL_SECONDS")
+    # Whole-turn ceiling for the Executive's answer to one inbound email. The
+    # poller handles mail one message at a time, so a turn with no ceiling held
+    # every message behind it. A timed-out message is marked read and not tried
+    # again: the turn may already have replied.
+    email_turn_timeout_s: float = Field(300.0, alias="EMAIL_TURN_TIMEOUT_S", gt=0)
+    # Ceiling on one call through the MCP gateway (Gmail, Calendar, Drive,
+    # Outlook, OneDrive, tool search). A call past it is abandoned and reported
+    # as not answered, so a hung workspace server can't hold a turn, a brief or
+    # the email poller.
+    mcp_tool_timeout_s: float = Field(120.0, alias="MCP_TOOL_TIMEOUT_S", gt=0)
 
     # Which Google services the co-located workspace-mcp child loads, and at
     # which tier. These are the same two variables `docker/workspace-mcp-launch.sh`
