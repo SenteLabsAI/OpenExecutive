@@ -341,7 +341,8 @@ def _quote_in(quote: str, message: str) -> bool:
 
 def check_evidence(raw: Any, t: Transcript) -> list[store.Evidence]:
     """The cited evidence that checks out: an id in this conversation, and a
-    quote found in that message. Everything else is dropped."""
+    non-empty quote found in that message. Everything else is dropped, so a
+    finding cannot point at a message it never read."""
     out: list[store.Evidence] = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
@@ -357,7 +358,7 @@ def check_evidence(raw: Any, t: Transcript) -> list[store.Evidence]:
         if m is None:
             continue
         quote = str(item.get("quote") or "").strip()
-        if quote and not _quote_in(quote, m.content):
+        if not quote or not _quote_in(quote, m.content):
             continue
         out.append(store.Evidence(message_id=message_id, quote=_clip(quote, 300)))
     return out

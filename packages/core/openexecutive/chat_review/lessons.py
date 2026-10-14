@@ -40,13 +40,45 @@ LESSONS_BLOCK_HEADER = (
 
 # A lesson that would read as a standing grant. Lexical, so it narrows the
 # space rather than closes it; what bounds the risk is that a lesson reaches
-# the prompt only after the owner approved it on the Reflection screen.
+# the prompt only after the owner approved it on the Reflection screen, and
+# that the acting gates run on every tool call whatever a lesson says.
+#
+# Two layers: phrases that read as a grant on their own, and softer phrases
+# ("right away", "pre-approved", "no need to") that count only next to a verb
+# that moves money, mail or data. Over-rejecting a clumsy wording is fine; the
+# screen says why and the owner rewords it.
+_ACT_VERBS = (
+    r"(send\w*|pay\w*|approv\w*|transfer\w*|wir(e|es|ing)|book\w*|delet\w*|shar(e|es|ing)|"
+    r"forward\w*|sign\w*|releas\w*|publish\w*|post\w*|email\w*|repl(y|ies|ying)|cancel\w*|"
+    r"updat\w*|execut\w*|purchas\w*|order\w*|invoic\w*|refund\w*|disclos\w*|act)"
+)
+_ACTS = re.compile(rf"\b{_ACT_VERBS}\b", re.IGNORECASE)
 _GRANT = re.compile(
-    r"\b(without (asking|checking|confirm\w*|approval)|"
-    r"skip (the )?(confirm\w*|check\w*|approval|gate)|"
-    r"(don'?t|do not|never) (ask|check|confirm|wait)( for)?( (approval|permission|me|the owner))?|"
-    r"(always|automatically|just) (send|pay|approve|transfer|book|delete|share|forward)|"
-    r"you (may|can|are allowed to) (send|pay|approve|transfer|delete|share) (anything|everything|without))\b",
+    r"\b(without (asking|checking|confirm\w*|approval|permission|waiting|a check)|"
+    r"skip\w* (the |any |its |that )?(confirm\w*|check\w*|approval|gate|ask\w*|review)|"
+    r"(don'?t|do not|never|no need to|not need\w* to|needn'?t|stop) "
+    r"(ask\w*|check\w*|confirm\w*|wait\w*|hold\w*|verif\w*)|"
+    r"pre[- ]?approved|pre[- ]?authori[sz]ed|approved in advance|standing (approval|permission|authori\w+)|"
+    r"(no|without) (further |prior |extra )?(approval|confirmation|sign[- ]?off|permission|check)"
+    r"( is)?( needed| required| necessary)?|"
+    r"(approval|confirmation|permission|a check) is not (needed|required|necessary)|"
+    r"you (may|can|are allowed to|are cleared to|have permission to|have my permission to)\b|"
+    r"(treat|consider|count) (this|it|that|these|them) as (approved|approval|permission|consent))\b",
+    re.IGNORECASE,
+)
+_SOFT_GRANT = re.compile(
+    r"\b(right away|immediately|straight away|at once|on (your|its) own|automatically|unprompted|"
+    r"in the same turn|same turn|carr(y|ies) over|as (already )?agreed|already agreed|"
+    r"(is|are|was|were) (not needed|unnecessary|optional)|"
+    r"(always|just|simply|go ahead and) " + _ACT_VERBS + r")\b",
+    re.IGNORECASE,
+)
+# An address, spelled plainly or obfuscated ("rufus at sentelabs dot com"):
+# a lesson may name a person or a tool, not where to send things.
+_ADDRESS = re.compile(
+    r"[\w.+-]+\s*(@|\(at\)|\[at\]|\sat\s)\s*[\w-]+(\s*(\.|\(dot\)|\[dot\]|\sdot\s)\s*[\w-]+)+|"
+    r"\b[\w-]+(\s*(\(dot\)|\[dot\]|\sdot\s)\s*)(com|net|org|io|ai|co|dev|app)\b|"
+    r"\+?\d[\d\s().-]{8,}\d",
     re.IGNORECASE,
 )
 _URL = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -66,7 +98,9 @@ def lesson_rejection(text: str) -> str | None:
         return "a lesson cannot carry a link"
     if _MARKUP.search(t):
         return "a lesson is plain text"
-    if _GRANT.search(t):
+    if _ADDRESS.search(t):
+        return "a lesson cannot name an address or a number to send things to"
+    if _GRANT.search(t) or (_SOFT_GRANT.search(t) and _ACTS.search(t)):
         return "a lesson cannot grant permission to act or skip a check"
     return None
 

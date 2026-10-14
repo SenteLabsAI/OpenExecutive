@@ -67,14 +67,22 @@ def _owner_sessions(
     # A channel adapter writes its session row after the turn, so a
     # conversation may have messages and no row yet: start from the messages.
     cols = _columns(conn, "sessions")
-    mail_filter = " WHERE COALESCE(s.mail_private, 0) = 0" if "mail_private" in cols else ""
+    where: list[str] = []
+    args: list[Any] = []
+    if "mail_private" in cols:
+        where.append("COALESCE(s.mail_private, 0) = 0")
+    if "caller_person_id" in cols:
+        # A session a teammate opened is theirs, even before its messages
+        # carry a sender: excluded until they opt in.
+        where.append("(s.caller_person_id IS NULL OR s.caller_person_id = ?)")
+        args.append(principal_id if principal_id is not None else -1)
+    args.append(since_message_id)
     rows = conn.execute(
         "SELECT m.session_id, s.title, MAX(m.id) AS last_id, COUNT(m.id) AS n "
         "FROM chat_messages m LEFT JOIN sessions s ON s.session_id = m.session_id"
-        f"{mail_filter} "
-        "GROUP BY m.session_id HAVING MAX(m.id) > ? "
-        "ORDER BY MAX(m.id) DESC",
-        (since_message_id,),
+        + (" WHERE " + " AND ".join(where) if where else "")
+        + " GROUP BY m.session_id HAVING MAX(m.id) > ? ORDER BY MAX(m.id) DESC",
+        args,
     ).fetchall()
     out: list[Candidate] = []
     msg_cols = _columns(conn, "chat_messages")

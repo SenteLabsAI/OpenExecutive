@@ -2,7 +2,7 @@
 found, the lessons the owner approved, and the owner's switches.
 
 GET    /reflection/look-back                 — settings, this week's counts, the runs with their findings, the lessons
-PUT    /reflection/look-back/settings        — the owner's switches (on/off, ask first / apply on its own)
+PUT    /reflection/look-back/settings        — the owner's switch (on/off)
 POST   /reflection/findings/{id}/approve     — a lesson proposal becomes an active lesson (optionally edited)
 POST   /reflection/findings/{id}/dismiss     — the owner passed on it
 PUT    /reflection/lessons/{id}              — edit or lock a lesson
@@ -10,6 +10,11 @@ DELETE /reflection/lessons/{id}              — retire a lesson
 
 Owner only: every route answers 403 to anyone else, since the review reads the
 owner's own conversations. Nothing here notifies anyone.
+
+Every lesson is approved by a person here. Nothing on the review path creates
+a lesson from model output on its own: ``apply_mode`` is stored for a later
+"apply on its own" step and is always ``ask`` today, so the API refuses any
+other value.
 """
 from __future__ import annotations
 
@@ -32,13 +37,13 @@ class LookBackSettings(BaseModel):
     enabled: bool
     apply_mode: str
     clean_approvals: int
-    auto_apply_available: bool
     last_run_at: str | None
 
 
 class LookBackSettingsUpdate(BaseModel):
     enabled: bool | None = None
-    apply_mode: str | None = Field(None, pattern="^(ask|auto)$")
+    # Only "ask" exists today; anything else is a 422 from the pattern.
+    apply_mode: str | None = Field(None, pattern="^ask$")
 
 
 class LookBackResponse(BaseModel):
@@ -85,7 +90,6 @@ def _settings_payload() -> LookBackSettings:
         enabled=s.enabled,
         apply_mode=s.apply_mode,
         clean_approvals=clean,
-        auto_apply_available=clean >= store.AUTO_APPLY_AFTER_APPROVALS,
         last_run_at=s.last_run_at,
     )
 
@@ -115,11 +119,6 @@ def get_look_back(request: Request, runs: int = 30) -> LookBackResponse:
 @router.put("/reflection/look-back/settings", response_model=LookBackSettings)
 def put_look_back_settings(request: Request, body: LookBackSettingsUpdate) -> LookBackSettings:
     person_id = _owner(request)
-    if body.apply_mode == "auto" and store.clean_approvals() < store.AUTO_APPLY_AFTER_APPROVALS:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Apply on its own opens after {store.AUTO_APPLY_AFTER_APPROVALS} approvals with no edits.",
-        )
     store.save_settings(enabled=body.enabled, apply_mode=body.apply_mode, updated_by=f"person:{person_id}")
     log_event(
         "chat_review",
@@ -141,25 +140,31 @@ def approve_finding(request: Request, finding_id: int, body: FindingApprove) -> 
     if finding.kind != "lesson":
         # Gaps and product issues have nothing to apply; approving means "noted".
         resolved = store.resolve_finding(finding_id, status="approved", person_id=person_id)
-        return {"finding": resolved.as_dict() if resolved else None, "lesson": None}
+        if resolved is None:
+            raise HTTPException(status_code=409, detail="This one was already decided.")
+        return {"finding": resolved.as_dict(), "lesson": None}
     text = lessons_mod.normalize(body.text if body.text is not None else finding.proposal)
     why = lessons_mod.lesson_rejection(text)
     if why:
         raise HTTPException(status_code=400, detail=f"That can't be a lesson: {why}.")
     edited = text != lessons_mod.normalize(finding.proposal)
+    # Decide the finding first: the conditional update wins for exactly one
+    # caller, so two approvals of one proposal make one lesson, not two.
+    resolved = store.resolve_finding(
+        finding_id,
+        status="approved",
+        person_id=person_id,
+        note="edited" if edited else "",
+    )
+    if resolved is None:
+        raise HTTPException(status_code=409, detail="This one was already decided.")
     lesson = store.create_lesson(
         text,
         source_finding_id=finding.id,
         approved_by_person_id=person_id,
         updated_by=f"person:{person_id}",
     )
-    resolved = store.resolve_finding(
-        finding_id,
-        status="approved",
-        person_id=person_id,
-        note="edited" if edited else "",
-        lesson_id=lesson.id,
-    )
+    resolved = store.attach_lesson(finding_id, lesson.id)
     log_event(
         "chat_review",
         f"Lesson approved{' with edits' if edited else ''}: {text[:120]}",
@@ -178,13 +183,15 @@ def dismiss_finding(request: Request, finding_id: int, body: FindingDismiss) -> 
     if finding.status != "proposed":
         raise HTTPException(status_code=409, detail="This one was already decided.")
     resolved = store.resolve_finding(finding_id, status="dismissed", person_id=person_id, note=body.reason)
+    if resolved is None:
+        raise HTTPException(status_code=409, detail="This one was already decided.")
     log_event(
         "chat_review",
         f"Finding dismissed: {finding.title[:120]}",
         actor="user",
         details={"finding_id": finding.id, "kind": finding.kind, "person_id": person_id},
     )
-    return {"finding": resolved.as_dict() if resolved else None}
+    return {"finding": resolved.as_dict()}
 
 
 @router.put("/reflection/lessons/{lesson_id}")

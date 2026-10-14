@@ -256,6 +256,9 @@ function FindingCard({ finding, onChange }: { finding: LookBackFinding; onChange
           <p className="rounded-lg bg-surface-overlay px-3 py-2 text-[15px] text-fg">{finding.proposal}</p>
         )
       )}
+      {waiting && finding.kind === "lesson" && (
+        <p className="text-xs text-fg-muted">Approving puts this line into every conversation in the workspace, from the next one on.</p>
+      )}
       {finding.kind !== "lesson" && <p className="text-[15px] text-fg">{finding.proposal}</p>}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-2">
@@ -379,7 +382,7 @@ export function LookBackSwitches() {
   if (error) return <p className="text-sm text-rose-500">{error}</p>;
   if (data === undefined) return <Skeleton className="h-6 w-full" />;
 
-  async function save(body: { enabled?: boolean; apply_mode?: "ask" | "auto" }) {
+  async function save(body: { enabled?: boolean }) {
     setSaving(true);
     setSaveError(null);
     try {
@@ -406,37 +409,15 @@ export function LookBackSwitches() {
             <Link href="/memories?tab=reflection" className="font-medium text-accent underline-offset-2 hover:underline">
               Pulse → Reflection
             </Link>
-            , and nothing changes until you approve it there. Your chats stay in your workspace. Private mail chats are never read.
+            , and nothing changes until you approve it there. Your chats stay in your workspace. Private mail chats and your teammates&apos; conversations are never read.
           </p>
         </div>
         <Switch checked={s.enabled} disabled={saving} labelledBy="look-back-switch" onChange={(v) => save({ enabled: v })} />
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="text-[15px] text-fg">Changes it proposes</span>
-        <div className="inline-flex rounded-lg border border-line overflow-hidden text-sm">
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => save({ apply_mode: "ask" })}
-            className={`px-3 py-1.5 ${s.apply_mode === "ask" ? "bg-surface-overlay font-medium text-fg" : "text-fg-muted"}`}
-          >
-            Ask me first
-          </button>
-          <button
-            type="button"
-            disabled={saving || !s.auto_apply_available}
-            title={s.auto_apply_available ? undefined : "Opens after ten approvals with no edits"}
-            onClick={() => save({ apply_mode: "auto" })}
-            className={`px-3 py-1.5 ${s.apply_mode === "auto" ? "bg-surface-overlay font-medium text-fg" : "text-fg-muted"} disabled:opacity-50`}
-          >
-            Apply on its own
-          </button>
-        </div>
-      </div>
       <p className="text-sm text-fg-muted">
-        {s.auto_apply_available
-          ? "You've approved enough as written that it can apply lessons on its own. The screen still lists each one."
-          : `Apply on its own opens after ten approvals with no edits (${s.clean_approvals} so far). Facts always go to Corrections first.`}
+        Every lesson waits for you: nothing it proposes takes effect until you approve it, and an approved lesson applies to
+        every conversation in this workspace, your teammates&apos; included. Facts always go to Corrections first.
+        {s.clean_approvals > 0 && ` ${s.clean_approvals} approved as written so far.`}
       </p>
       {saveError && <p className="text-sm text-rose-500">{saveError}</p>}
     </div>

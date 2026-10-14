@@ -5696,9 +5696,10 @@ export interface ExecutiveLesson {
 
 export interface LookBackSettings {
   enabled: boolean;
-  apply_mode: "ask" | "auto";
+  /** Always "ask" today: every lesson is approved by the owner. */
+  apply_mode: "ask";
+  /** Approvals made without edits, counted for a later "apply on its own". */
   clean_approvals: number;
-  auto_apply_available: boolean;
   last_run_at: string | null;
 }
 
@@ -5737,7 +5738,7 @@ async function reflectionWrite<T>(path: string, method: "POST" | "PUT" | "DELETE
   return res.json();
 }
 
-export function updateLookBackSettings(body: { enabled?: boolean; apply_mode?: "ask" | "auto" }) {
+export function updateLookBackSettings(body: { enabled?: boolean }) {
   return reflectionWrite<LookBackSettings>("/reflection/look-back/settings", "PUT", body);
 }
 

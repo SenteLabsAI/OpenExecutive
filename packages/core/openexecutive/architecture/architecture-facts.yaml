@@ -3315,9 +3315,11 @@ chat_review:
     tool error or product limit; recorded, never leaves the install).
   invariants:
     - Lessons are validated in code before storing (lessons.lesson_rejection): one line, 12-300 chars, no link or markup, nothing that reads as a grant to act or skip a check. The acting gates run on every tool call regardless of a lesson.
-    - Every finding's evidence is checked: message ids must be from the reviewed conversation and each quote must be found in that message; a fact needs a verbatim quote from the person's own message.
+    - Every finding's evidence is checked: message ids must be from the reviewed conversation and each item needs a non-empty quote found in that message; a fact needs a verbatim quote from the person's own message.
     - Never notifies (no Needs you card, no brief line, no email). Never reads mail_private sessions or a teammate's conversation. Never changes behaviour without the owner's approval.
-    - Apply on its own (apply_mode=auto) opens only after ten approvals with no edits (store.clean_approvals); the route answers 409 before that.
+    - Every lesson is approved by a person. apply_mode is always 'ask' (the route refuses any other value); clean approvals are counted so a later apply-on-its-own step can be earned, but no code path creates a lesson from model output.
+    - Approving is atomic: the finding's conditional UPDATE (status = 'proposed') wins for exactly one caller before the lesson is created; the nightly run claims its day in one write transaction (store.claim_run), so two schedulers waking together make one run.
+    - Lessons are workspace-global: the block goes into every chat turn, teammates' included, which the settings copy says.
   tables: chat_review_settings, chat_review_runs, chat_review_findings, executive_lessons, executive_lesson_history (episodic DB, created from initialize_db).
   routes: GET /reflection/look-back; PUT /reflection/look-back/settings; POST /reflection/findings/{id}/approve|dismiss; PUT|DELETE /reflection/lessons/{id}. Owner only.
   settings: CHAT_REVIEW_ENABLED (operator, default on), CHAT_REVIEW_MODEL (default claude-sonnet-5-5), CHAT_REVIEW_MAX_SESSIONS (default 15).

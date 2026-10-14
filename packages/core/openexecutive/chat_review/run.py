@@ -59,24 +59,6 @@ def _audit(summary: str, details: dict[str, Any]) -> None:
         logger.exception("chat_review: audit row failed")
 
 
-def _claim(now: datetime, *, db_path: Path | None) -> tuple[bool, str]:
-    """Whether a run may start now, and why not when it may not."""
-    day = _local_day(now)
-    if store.last_run_for_day(day, db_path) is not None:
-        return False, "already ran today"
-    running = store.running_run(db_path)
-    if running is not None:
-        try:
-            started = datetime.fromisoformat(running.started_at)
-        except ValueError:
-            started = now - _STALE_RUN
-        if now - started < _STALE_RUN:
-            return False, "a run is in progress"
-        store.finish_run(running.id, sessions_reviewed=running.sessions_reviewed,
-                         status="failed", error="did not finish", db_path=db_path)
-    return True, ""
-
-
 async def run_look_back(now: datetime | None = None, *, db_path: Path | None = None) -> dict[str, Any]:
     """One look back over the conversations since the last one. Returns a
     summary dict (``skipped`` names the gate that stopped it). Never raises."""
@@ -96,16 +78,19 @@ async def run_look_back(now: datetime | None = None, *, db_path: Path | None = N
         owner = store.get_settings(db_path)
         if not owner.enabled:
             return {"skipped": "owner switch off"}
-        ok, why = _claim(now, db_path=db_path)
-        if not ok:
+        # Claim the day first, in one transaction, so two schedulers waking
+        # together (or a restart mid-run) never review the same night twice.
+        claimed, why = store.claim_run(day=_local_day(now), now=now, stale_after=_STALE_RUN, db_path=db_path)
+        if claimed is None:
             return {"skipped": why}
+        run_id = claimed
         chosen, considered = pick.pick_sessions(
             since_message_id=owner.last_message_id,
             limit=limit,
             principal_id=_principal_id(),
             db_path=db_path,
         )
-        run_id = store.start_run(day=_local_day(now), sessions_considered=considered, db_path=db_path)
+        store.set_sessions_considered(run_id, considered, db_path=db_path)
     except Exception:  # noqa: BLE001
         logger.exception("chat_review: could not start")
         return {"skipped": "could not start"}

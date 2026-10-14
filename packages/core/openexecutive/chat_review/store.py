@@ -275,6 +275,49 @@ def start_run(*, day: str, sessions_considered: int, db_path: Path | None = None
         return int(cur.lastrowid or 0)
 
 
+def claim_run(*, day: str, now: datetime, stale_after: timedelta, db_path: Path | None = None) -> tuple[int | None, str]:
+    """Start today's run if none has: the check and the insert share one
+    write transaction, so two schedulers waking together get one run between
+    them. Returns ``(run_id, "")`` or ``(None, why)``. A run still marked
+    running after ``stale_after`` is written off as failed and replaced."""
+    with _conn(db_path) as conn:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute(
+                "SELECT 1 FROM chat_review_runs WHERE day = ? AND status != 'failed' LIMIT 1", (day,)
+            ).fetchone():
+                conn.execute("ROLLBACK")
+                return None, "already ran today"
+            cutoff = _iso(now - stale_after)
+            if conn.execute(
+                "SELECT 1 FROM chat_review_runs WHERE status = 'running' AND started_at >= ? LIMIT 1",
+                (cutoff,),
+            ).fetchone():
+                conn.execute("ROLLBACK")
+                return None, "a run is in progress"
+            conn.execute(
+                "UPDATE chat_review_runs SET status = 'failed', finished_at = ?, error = 'did not finish' "
+                "WHERE status = 'running'",
+                (_iso(now),),
+            )
+            cur = conn.execute(
+                "INSERT INTO chat_review_runs (started_at, status, day, sessions_considered) "
+                "VALUES (?, 'running', ?, 0)",
+                (_iso(now), day),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        return int(cur.lastrowid or 0), ""
+
+
+def set_sessions_considered(run_id: int, count: int, *, db_path: Path | None = None) -> None:
+    with _conn(db_path) as conn:
+        conn.execute("UPDATE chat_review_runs SET sessions_considered = ? WHERE id = ?", (int(count), run_id))
+
+
 def finish_run(
     run_id: int,
     *,
@@ -477,15 +520,30 @@ def resolve_finding(
     lesson_id: int | None = None,
     db_path: Path | None = None,
 ) -> Finding | None:
-    """Record what the owner did. Only a ``proposed`` finding changes."""
+    """Record what the owner did. Only a ``proposed`` finding changes; the
+    single conditional UPDATE is what makes two concurrent decisions on one
+    finding resolve to exactly one. Returns None when nothing changed (the
+    finding was missing or already decided)."""
     if status not in ("approved", "dismissed", "filed", "recorded"):
         raise ValueError(f"not a resolution: {status!r}")
     with _conn(db_path) as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE chat_review_findings SET status = ?, resolved_at = ?, resolved_by_person_id = ?, "
             "resolution_note = ?, lesson_id = COALESCE(?, lesson_id) "
             "WHERE id = ? AND status = 'proposed'",
             (status, _iso(_now()), person_id, note[:500], lesson_id, finding_id),
+        )
+        if cur.rowcount != 1:
+            return None
+    return get_finding(finding_id, db_path)
+
+
+def attach_lesson(finding_id: int, lesson_id: int, *, db_path: Path | None = None) -> Finding | None:
+    """Point an approved finding at the lesson made from it."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "UPDATE chat_review_findings SET lesson_id = ? WHERE id = ? AND status = 'approved'",
+            (lesson_id, finding_id),
         )
     return get_finding(finding_id, db_path)
 
