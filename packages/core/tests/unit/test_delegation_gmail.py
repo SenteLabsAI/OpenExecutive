@@ -11,6 +11,7 @@ import json
 import re
 import stat
 import time
+from datetime import UTC, datetime
 from email import policy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -344,6 +345,8 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
         "send_draft",
         # Checks an id's shape (Gmail's and Outlook's differ); no call.
         "valid_id",
+        # Read my calendar (delegation.calendar): read-only.
+        "list_events",
     }
     # Gmail's send endpoints (/settings/sendAs is a read, and allowed): the
     # draft one, once, and never messages.send, which sends any text.
@@ -624,3 +627,73 @@ def test_bounces_and_invites_are_marked() -> None:
     ooo = _message({"From": "dana@northpeak.example", "X-Autoreply": "yes"}, plain="Away")
     assert parse_message(ooo).bulk is True
     assert parse_message(_message({"From": "dana@northpeak.example"}, plain="Hi")).received_at == ""
+
+
+
+# --------------------------------------------------------------------------- #
+# Read my calendar
+# --------------------------------------------------------------------------- #
+
+
+def _calendar_google(scope: str, *, items: list[dict[str, Any]] | None = None, status: int = 200) -> tuple[
+    list[httpx.Request], DelegateGmail
+]:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if status != 200:
+            return httpx.Response(status, json={"error": {"code": status, "errors": [{"reason": "insufficientPermissions"}]}})
+        return httpx.Response(200, json={"items": items or []})
+
+    return seen, DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+
+
+_DAY = (datetime(2026, 10, 14, 7, tzinfo=UTC), datetime(2026, 10, 15, 7, tzinfo=UTC))
+
+
+def test_their_calendar_is_read_with_the_calendar_scope() -> None:
+    items = [
+        {"id": "e1", "summary": "Pilot review", "start": {"dateTime": "2026-10-14T09:00:00-07:00"},
+         "end": {"dateTime": "2026-10-14T09:30:00-07:00"}, "location": "Room 4",
+         "organizer": {"email": "dana@northpeak.example", "displayName": "Dana"},
+         "attendees": [{"email": EMAIL, "self": True, "responseStatus": "accepted"},
+                       {"email": "dana@northpeak.example", "displayName": "Dana"}]},
+        {"id": "e2", "summary": "Offsite", "start": {"date": "2026-10-14"}, "end": {"date": "2026-10-15"},
+         "organizer": {"email": EMAIL, "self": True}},
+        {"id": "e3", "status": "cancelled", "start": {"dateTime": "2026-10-14T10:00:00Z"}},
+        {"id": "e4", "eventType": "workingLocation", "start": {"date": "2026-10-14"}},
+    ]
+    seen, client = _calendar_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]), items=items)
+    events = asyncio.run(client.list_events(*_DAY, max_results=5))
+    assert [e.id for e in events] == ["e1", "e2"]
+    first, offsite = events
+    assert (first.title, first.location, first.response) == ("Pilot review", "Room 4", "accepted")
+    assert first.organizer == "Dana <dana@northpeak.example>" and first.attendees == ("Dana <dana@northpeak.example>",)
+    assert offsite.all_day and offsite.start == "2026-10-14" and offsite.response == "organizer"
+    call = seen[-1]
+    assert call.method == "GET" and call.url.path == "/calendar/v3/calendars/primary/events"
+    assert call.url.params["timeMin"] == "2026-10-14T07:00:00Z" and call.url.params["singleEvents"] == "true"
+    assert call.url.params["maxResults"] == "5"
+
+
+def test_a_sign_in_without_the_calendar_says_so_before_asking_google() -> None:
+    seen, client = _calendar_google(" ".join(gm.SCOPES))
+    with pytest.raises(gm.CalendarNotGranted):
+        asyncio.run(client.list_events(*_DAY))
+    assert all(r.url.host == "oauth2.googleapis.com" for r in seen)
+
+
+def test_a_refused_calendar_read_is_not_granted_not_a_reconnect() -> None:
+    _seen, client = _calendar_google("", status=403)
+    with pytest.raises(gm.CalendarNotGranted):
+        asyncio.run(client.list_events(*_DAY))
+
+
+def test_the_script_asks_for_the_calendar_only_with_the_flag() -> None:
+    script = _script()
+    payload = script.credential_payload(EMAIL, "r", "c", "s", scopes=[*script.SCOPES, script.CALENDAR_SCOPE])
+    assert payload["scopes"][-1] == gm.SCOPE_CALENDAR
+    assert script.credential_payload(EMAIL, "r", "c", "s")["scopes"] == list(gm.SCOPES)

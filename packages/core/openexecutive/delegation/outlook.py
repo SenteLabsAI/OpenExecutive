@@ -63,6 +63,9 @@ from openexecutive.delegation.gmail import (
     _AUTOREPLY_HEADERS,
     _BULK_PRECEDENCE,
     _REPORT_SENDERS,
+    MAX_EVENTS,
+    CalendarEvent,
+    CalendarNotGranted,
     CreatedDraft,
     DraftChanged,
     DraftInfo,
@@ -92,6 +95,9 @@ LOGIN_BASE = "https://login.microsoftonline.com"
 GRAPH_RESOURCE = "https://graph.microsoft.com/"
 GRAPH_SCOPES: tuple[str, ...] = ("User.Read", "Mail.ReadWrite", "Mail.Send")
 REQUEST_SCOPE = " ".join(["offline_access", *(GRAPH_RESOURCE + s for s in GRAPH_SCOPES)])
+# Read my calendar (delegation.calendar): optional, granted when they connected
+# with --calendar. Microsoft's token lists every Graph scope they consented to.
+CALENDAR_SCOPES: frozenset[str] = frozenset({"calendars.read", "calendars.readwrite"})
 # The tenant every personal Microsoft account (Outlook.com, Hotmail) is in.
 CONSUMER_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
 CREDENTIAL_VERSION = 1
@@ -118,6 +124,9 @@ _THREAD_LIMIT = 50
 
 # Access tokens by (address, refresh token) — never written anywhere.
 _TOKENS: dict[str, tuple[str, float]] = {}
+# The scopes Microsoft said each of those tokens carries ("" when it didn't say).
+_GRANTED: dict[str, str] = {}
+_EVENT_SELECT = "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,responseStatus,showAs"
 
 
 @dataclass(frozen=True)
@@ -236,6 +245,56 @@ def _addresses(entries: object) -> list[str]:
     if not isinstance(entries, list):
         return []
     return [a for _, a in (_address(e) for e in entries) if "@" in a]
+
+
+def _who(entry: object) -> str:
+    name, address = _address(entry)
+    name = clean_header(name)
+    return f"{name} <{address}>" if name and address else (name or address)
+
+
+def _graph_when(value: object, all_day: bool) -> str:
+    """Graph's ``{dateTime, timeZone}`` (UTC, asked for) as ISO 8601: the
+    date alone for an all-day event."""
+    raw = str(value.get("dateTime") or "") if isinstance(value, dict) else ""
+    if not raw:
+        return ""
+    if all_day:
+        return raw[:10]
+    try:
+        return datetime.fromisoformat(raw[:19]).replace(tzinfo=UTC).isoformat()
+    except ValueError:
+        return ""
+
+
+def parse_event(raw: dict[str, Any]) -> CalendarEvent | None:
+    """An Outlook event, or None for a cancelled one."""
+    if raw.get("isCancelled") is True:
+        return None
+    all_day = raw.get("isAllDay") is True
+    start = _graph_when(raw.get("start"), all_day)
+    if not start:
+        return None
+    status_raw = raw.get("responseStatus")
+    status: dict[str, Any] = status_raw if isinstance(status_raw, dict) else {}
+    response = {
+        "organizer": "organizer", "accepted": "accepted", "declined": "declined",
+        "tentativelyAccepted": "tentative", "notResponded": "needs_action",
+    }.get(str(status.get("response") or ""), "")
+    location_raw = raw.get("location")
+    location: dict[str, Any] = location_raw if isinstance(location_raw, dict) else {}
+    attendees = [a for a in raw.get("attendees") or [] if isinstance(a, dict)]
+    return CalendarEvent(
+        id=str(raw.get("id") or ""),
+        title=clean_header(str(raw.get("subject") or "")) or "(no title)",
+        start=start,
+        end=_graph_when(raw.get("end"), all_day),
+        all_day=all_day,
+        location=clean_header(str(location.get("displayName") or "")),
+        organizer=_who(raw.get("organizer")),
+        attendees=tuple(w for w in (_who(a) for a in attendees[:25]) if w),
+        response=response,
+    )
 
 
 def _header_list(raw: dict[str, Any]) -> list[tuple[str, str]]:
@@ -482,6 +541,7 @@ class DelegateOutlook:
             cred = replace(cred, refresh_token=rotated)
             self._credential = cred
         _TOKENS[_token_key(cred)] = (token, time.time() + ttl)
+        _GRANTED[_token_key(cred)] = granted
         return token
 
     async def _request(
@@ -493,9 +553,10 @@ class DelegateOutlook:
         params: Any = None,
         json_body: dict[str, Any] | None = None,
         if_match: str = "",
+        prefer: str = _PREFER,
     ) -> dict[str, Any]:
         token = await self._access_token(client)
-        headers = {"Authorization": f"Bearer {token}", "Prefer": _PREFER}
+        headers = {"Authorization": f"Bearer {token}", "Prefer": prefer}
         if if_match:
             headers["If-Match"] = if_match
         try:
@@ -555,6 +616,35 @@ class DelegateOutlook:
         address. A personal account that signs in with another address (even
         a Gmail one) is matched by that sign-in address."""
         return normalize_email(str(me.get("mail") or me.get("userPrincipalName") or ""))
+
+    async def list_events(self, start: datetime, end: datetime, *, max_results: int = MAX_EVENTS) -> list[CalendarEvent]:
+        """The events on their calendar between ``start`` and ``end``,
+        recurring ones expanded, in order (``calendarView``), times in UTC.
+        Read-only (``Calendars.Read``)."""
+        async with self._client() as client:
+            await self._access_token(client)
+            granted = _GRANTED.get(_token_key(self._cred()), "")
+            if granted and not CALENDAR_SCOPES & _granted(granted):
+                raise CalendarNotGranted("Calendars.Read not granted")
+            params = {
+                "startDateTime": start.astimezone(UTC).isoformat(),
+                "endDateTime": end.astimezone(UTC).isoformat(),
+                "$orderby": "start/dateTime",
+                "$top": str(max(1, min(max_results, MAX_EVENTS))),
+                "$select": _EVENT_SELECT,
+            }
+            try:
+                data = await self._request(
+                    client, "GET", "/calendarView", params=params, prefer='outlook.timezone="UTC"',
+                )
+            except GmailAuthError as exc:
+                if str(exc) == "forbidden":
+                    raise CalendarNotGranted("calendar read refused") from exc
+                raise
+        items_raw = data.get("value")
+        items: list[Any] = items_raw if isinstance(items_raw, list) else []
+        events = [parse_event(item) for item in items if isinstance(item, dict)]
+        return [e for e in events if e is not None]
 
     async def profile_email(self) -> str:
         """The address of the mailbox the credential opens, from the directory."""

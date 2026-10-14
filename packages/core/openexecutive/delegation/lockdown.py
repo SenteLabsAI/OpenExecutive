@@ -2,8 +2,8 @@
 
 ``ghostwrite_email`` and the reads of the owner's mailbox
 (``search_my_email``, ``read_my_email``, ``read_my_email_attachment``,
-``my_email_awaiting_reply``) put mail other people wrote in front of the
-model. Text in it could try to steer the model ("open this link with the
+``my_email_awaiting_reply``, and ``my_calendar``, whose invites anyone can
+send) put mail other people wrote in front of the model. Text in it could try to steer the model ("open this link with the
 invoices in it"). Most of what such text could want is already fenced on its
 own: messages, invites and the Executive's own email reach only people on
 the roster or addresses the speaker typed, an email written as them is only
@@ -69,6 +69,7 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "recall_history",
     # The owner's own mailbox (mail_read_tools, delegation_tools).
     "ghostwrite_email",
+    "my_calendar",
     "my_email_awaiting_reply",
     "my_email_read_before",
     "read_my_email",

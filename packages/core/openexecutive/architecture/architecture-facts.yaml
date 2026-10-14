@@ -2758,7 +2758,10 @@ memory:
       to five people who wrote to the owner's own mailbox in 48 hours as
       sender and subject (no message text, bulk mail skipped). Counts
       against the quiet check, its keys enter the fingerprint, the inbox
-      part marks the run private. The /today header gets the shared part
+      part marks the run private. With Read my calendar on (and the same
+      Act as me and gmail_status gates) it also lists up to eight of
+      today's events on their own calendar as time and title, declined
+      ones skipped, keys meeting:<event id>, also private. The /today header gets the shared part
       only (getting_started_shared, no mailbox read); GET /today sets
       first_week so the UI drops the "Quiet day" banner.
     - Due-today reminders (memory.history_reminders, from the scheduler
@@ -9649,6 +9652,28 @@ delegation:
     a link), Telegram sendMessage sets link_preview_options.is_disabled,
     Slack's reply say passes unfurl_links/unfurl_media False, and every
     Discord reply send passes suppress_embeds=True.
+  calendar: |
+    Read my calendar (delegation.calendar, table delegation_calendar, one
+    row per person, absent/unreadable = off). Read-only, on the Act as me
+    sign-in: Google calendar.readonly, Microsoft Calendars.Read, added by
+    connect-own-gmail.py / connect-own-outlook.py --calendar. Optional
+    scopes: the token refresh still requires only the mail ones; the
+    clients keep the scope string the refresh returns (_GRANTED) and
+    list_events raises CalendarNotGranted (a GmailError, not an auth error)
+    before calling when it is missing, or on a 403. PUT /delegation/calendar
+    {enabled}: on needs Act as me on, gmail_status connected and a one-hour
+    list_events that works (409 act_as_me_off / calendar_not_granted, 503
+    calendar_error); off always works; Act as me off turns it off;
+    delegation_calendar_changed audit, private. GET /delegation carries
+    calendar {enabled, connect_command (provider's command + --calendar)}.
+    my_calendar (mail_read_tools, in MAIL_READ_TOOLS so DELEGATION_TOOLS,
+    MAILBOX_TOOL_NAMES, the lockdown allow-list and the my_calendar
+    redaction substring): refuses calendar_off before anything opens, then a
+    searches slot, _open_mailbox (touched_mail, read_mail), events from
+    start (default today) for 1-31 days in get_user_timezone, singleEvents /
+    calendarView, cancelled and working-location left out, one-line fields,
+    data-not-instructions note. Nothing kept. The Act as me addendum names
+    it and says reading the calendar counts as reading their mail.
   forward_and_remind: |
     ghostwrite_email takes forward (a thread id) with to: a draft forwarding
     the thread's latest non-draft message, intent the note above it (the

@@ -22,6 +22,7 @@ REMINDERS_TABLE = "delegation_reminders"
 MAIL_READ_TABLE = "delegation_mail_read"
 TRAINING_TABLE = "delegation_training"
 DISCLOSURE_TABLE = "delegation_disclosure"
+CALENDAR_TABLE = "delegation_calendar"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -37,6 +38,7 @@ TABLES: tuple[str, ...] = (
     MAIL_READ_TABLE,
     TRAINING_TABLE,
     DISCLOSURE_TABLE,
+    CALENDAR_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -201,6 +203,14 @@ _DDL: tuple[str, ...] = (
     "  person_id INTEGER PRIMARY KEY,"
     "  handle_it INTEGER,"
     "  approved_sends INTEGER,"
+    "  updated_at TEXT,"
+    "  updated_by TEXT"
+    ")",
+    # Read my calendar (delegation.calendar): one row per person who set it.
+    # Absent means off.
+    f"CREATE TABLE IF NOT EXISTS {CALENDAR_TABLE} ("
+    "  person_id INTEGER PRIMARY KEY,"
+    "  enabled INTEGER NOT NULL DEFAULT 0,"
     "  updated_at TEXT,"
     "  updated_by TEXT"
     ")",

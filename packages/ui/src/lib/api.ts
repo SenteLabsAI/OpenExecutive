@@ -1540,6 +1540,8 @@ export interface DelegationSettings {
   training?: Training | null;
   // Absent (or null) on a backend that predates the AI line on replies.
   disclosure?: ReplyDisclosure | null;
+  // Absent (or null) on a backend that predates Read my calendar.
+  calendar?: ReadMyCalendar | null;
   // The owner's "Let team members use Act as me", while the install allows
   // it; null (or absent) for everyone else.
   team?: DelegationTeam | null;
@@ -1606,6 +1608,14 @@ export interface Training {
   actions: boolean;
   drafts: boolean;
   learned: TrainingLearned[];
+}
+
+// Read my calendar (delegation/calendar.py): your own calendar, read-only,
+// through the same sign-in as your mailbox when it was connected with
+// --calendar (connect_command).
+export interface ReadMyCalendar {
+  enabled: boolean;
+  connect_command: string;
 }
 
 // The AI line on replies sent as you (delegation/disclosure.py): on replies
@@ -1903,6 +1913,16 @@ export async function setTraining(update: Partial<Record<TrainingSetting, boolea
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change training.");
   return (await res.json()) as DelegationSettings;
+}
+
+export async function setReadMyCalendar(enabled: boolean): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/calendar`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change Read my calendar.");
+  return res.json();
 }
 
 export async function setReplyDisclosure(update: {

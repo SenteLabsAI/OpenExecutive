@@ -8,12 +8,13 @@ it uses: a Microsoft sign-in as you (device code: open the link it prints and
 type the code, from any browser), asking only for your profile and mail
 (read, write drafts, and send the drafts you approve), and writes one file
 named from a hash of your address. A person has one mailbox for Act as me:
-this replaces a Gmail file for the same address.
+this replaces a Gmail file for the same address. With --calendar it also
+asks to read your calendar (Calendars.Read), for Read my calendar.
 
 It uses the Executive's own Entra app (the one the Microsoft 365 setup in
 .env.example registers; "Allow public client flows" must be on). Its delegated
 Microsoft Graph permissions must include User.Read, Mail.ReadWrite, Mail.Send
-and offline_access. A personal Microsoft account needs an app that accepts
+and offline_access (and Calendars.Read for --calendar). A personal Microsoft account needs an app that accepts
 personal accounts, with MS365_MCP_TENANT_ID=common or consumers.
 
     export MS365_MCP_CLIENT_ID=...
@@ -47,7 +48,14 @@ from typing import Any
 LOGIN_BASE = "https://login.microsoftonline.com"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName"
 GRAPH_SCOPES = ("User.Read", "Mail.ReadWrite", "Mail.Send")
-SCOPE = " ".join(["openid", "offline_access", *(f"https://graph.microsoft.com/{s}" for s in GRAPH_SCOPES)])
+CALENDAR_SCOPE = "Calendars.Read"
+
+
+def scope_for(graph_scopes: tuple[str, ...]) -> str:
+    return " ".join(["openid", "offline_access", *(f"https://graph.microsoft.com/{s}" for s in graph_scopes)])
+
+
+SCOPE = scope_for(GRAPH_SCOPES)
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 # The tenant every personal Microsoft account (Outlook.com, Hotmail) is in.
 CONSUMER_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
@@ -61,7 +69,8 @@ def email_key(email: str) -> str:
 
 
 def credential_payload(
-    email: str, refresh_token: str, client_id: str, tenant: str, *, personal: bool
+    email: str, refresh_token: str, client_id: str, tenant: str, *, personal: bool,
+    graph_scopes: tuple[str, ...] = GRAPH_SCOPES,
 ) -> dict[str, Any]:
     """The file's content — the format delegation.outlook.load_credential reads."""
     microsoft: dict[str, str] = {"refresh_token": refresh_token, "client_id": client_id, "tenant": tenant}
@@ -70,7 +79,7 @@ def credential_payload(
         "provider": "microsoft",
         "email": email.strip().lower(),
         "account": "personal" if personal else "work",
-        "scopes": list(GRAPH_SCOPES),
+        "scopes": list(graph_scopes),
         "microsoft": microsoft,
     }
 
@@ -127,8 +136,8 @@ def _profile_email(access_token: str) -> str:
     return str(me.get("mail") or me.get("userPrincipalName") or "").strip().lower()
 
 
-def _sign_in(tenant: str, client_id: str) -> dict[str, Any]:
-    status, code = _post(f"{LOGIN_BASE}/{tenant}/oauth2/v2.0/devicecode", {"client_id": client_id, "scope": SCOPE})
+def _sign_in(tenant: str, client_id: str, scope: str = SCOPE) -> dict[str, Any]:
+    status, code = _post(f"{LOGIN_BASE}/{tenant}/oauth2/v2.0/devicecode", {"client_id": client_id, "scope": scope})
     if status != 200 or "device_code" not in code:
         sys.exit(f"error: Microsoft refused the sign-in request: {code.get('error_description') or code.get('error') or status}")
     print(str(code.get("message") or f"Open {code.get('verification_uri')} and enter {code.get('user_code')}."))
@@ -153,7 +162,9 @@ def _sign_in(tenant: str, client_id: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--email", required=True, help="Your own Outlook address (as on your People entry)")
+    parser.add_argument("--calendar", action="store_true", help="Also allow reading your calendar (Read my calendar)")
     args = parser.parse_args()
+    graph_scopes = (*GRAPH_SCOPES, CALENDAR_SCOPE) if args.calendar else GRAPH_SCOPES
     email = args.email.strip().lower()
     if "@" not in email:
         sys.exit("error: --email must be an email address")
@@ -165,8 +176,9 @@ def main() -> int:
     if not TENANT_RE.fullmatch(tenant):
         sys.exit("error: MS365_MCP_TENANT_ID must be a tenant id, common, organizations or consumers")
 
-    print(f"Sign in as {email} and allow read, draft and send access to your mail.")
-    token = _sign_in(tenant, client_id)
+    calendar = ", and read-only access to your calendar" if args.calendar else ""
+    print(f"Sign in as {email} and allow read, draft and send access to your mail{calendar}.")
+    token = _sign_in(tenant, client_id, scope_for(graph_scopes))
     refresh_token = str(token.get("refresh_token") or "")
     if not refresh_token:
         sys.exit("error: Microsoft returned no refresh token — check the app allows offline_access.")
@@ -183,7 +195,7 @@ def main() -> int:
     )
     path = write_credential(
         directory, email,
-        credential_payload(email, refresh_token, client_id, stored_tenant, personal=personal),
+        credential_payload(email, refresh_token, client_id, stored_tenant, personal=personal, graph_scopes=graph_scopes),
     )
     print(f"Saved {path}")
     print("Copy it into the API's DELEGATION_GOOGLE_CREDENTIALS_DIR (Docker: /data/delegation_google/),")

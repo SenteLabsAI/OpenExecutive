@@ -383,3 +383,60 @@ def test_a_style_is_written_from_their_words_without_saving(
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "too_many"
     assert client.post("/delegation/voice/describe", json={"description": "x"}, headers=TEAMMATE).status_code == 403
     assert client.post("/delegation/voice/describe", json={"nope": 1}, headers=OWNER).status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# Read my calendar
+# --------------------------------------------------------------------------- #
+
+
+class _Calendar:
+    def __init__(self, outcome: Exception | None = None) -> None:
+        self.outcome = outcome
+        self.asked = 0
+
+    async def list_events(self, start: Any, end: Any, *, max_results: int = 100) -> list[Any]:
+        self.asked += 1
+        if self.outcome is not None:
+            raise self.outcome
+        return []
+
+
+def test_read_my_calendar_turns_on_only_once_the_calendar_opens(
+    client: TestClient,
+    ids: dict[str, int],
+    gmail: dict[str, str],
+    audit: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import calendar
+    from openexecutive.delegation.gmail import CalendarNotGranted
+
+    box = _Calendar(CalendarNotGranted("no"))
+    monkeypatch.setattr(route, "gmail_for", lambda email: box)
+    body = client.get("/delegation", headers=OWNER).json()
+    assert body["calendar"] == {
+        "enabled": False, "connect_command": body["gmail"]["connect_command"] + " --calendar",
+    }
+    resp = client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "act_as_me_off"
+    gmail["status"] = "connected"
+    client.put("/delegation", json={"enabled": True}, headers=OWNER)
+    resp = client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "calendar_not_granted"
+    box.outcome = GmailError("down")
+    assert client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER).status_code == 503
+    assert calendar.enabled(ids["principal"]) is False
+    box.outcome = None
+    body = client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER).json()
+    assert body["calendar"]["enabled"] is True and calendar.enabled(ids["principal"]) is True
+    assert calendar.enabled(ids["teammate"]) is False
+    # Act as me off takes it with it, and it is audited privately each way.
+    client.put("/delegation", json={"enabled": False}, headers=OWNER)
+    assert calendar.enabled(ids["principal"]) is False
+    changed = [kw for et, kw in audit if et == "delegation_calendar_changed"]
+    assert [kw["details"]["enabled"] for kw in changed] == [True, False]
+    assert all(kw["private"] is True for kw in changed)
+    # Off never needs the calendar.
+    box.outcome = CalendarNotGranted("no")
+    assert client.put("/delegation/calendar", json={"enabled": False}, headers=OWNER).status_code == 200

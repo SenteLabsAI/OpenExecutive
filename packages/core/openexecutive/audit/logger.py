@@ -100,6 +100,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_actions_held",      # a card of allowed actions waited for them after all; details.reason says why
     "delegation_training_changed",  # a person put Act as me settings in or out of training (PUT /delegation/training)
     "delegation_disclosure_changed",  # a person changed the AI line on replies sent as them (PUT /delegation/disclosure)
+    "delegation_calendar_changed",  # a person turned Read my calendar on or off (PUT /delegation/calendar, or off with Act as me)
     "fact_retired",                 # the principal (or the teammate who recorded it) retired a standing fact from the Pulse page (memory/facts.py)
     "fact_reviewed",                # the principal approved or declined a teammate's proposed standing fact
     "fact_approval_changed",        # the principal turned "needs my approval" on or off for a teammate's standing facts

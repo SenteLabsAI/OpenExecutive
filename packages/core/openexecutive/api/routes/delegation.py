@@ -20,7 +20,13 @@ Routes:
                                     watcher's switch and health
   PUT    /delegation              — {enabled}; turning it on needs the caller's
                                     own Gmail connected (409 otherwise); turning
-                                    it off turns the inbox watcher off too
+                                    it off turns the inbox watcher and Read my
+                                    calendar off too
+  PUT    /delegation/calendar     — {enabled}: Read my calendar
+                                    (delegation.calendar); on needs Act as me
+                                    on and a calendar read that works (409
+                                    calendar_not_granted when their sign-in
+                                    lacks it, 503 when it can't be reached)
   PUT    /delegation/inbox        — {enabled?, mailbox_drafts?}: "Draft
                                     replies to my inbox"; turning it on needs
                                     Act as me on and Gmail connected (409),
@@ -268,6 +274,20 @@ class DisclosureOut(BaseModel):
     line: str
 
 
+class CalendarOut(BaseModel):
+    """Read my calendar (delegation.calendar): the caller's own switch, and
+    the command that connects their mailbox with calendar access."""
+
+    enabled: bool
+    connect_command: str
+
+
+class CalendarUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
 class DisclosureUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -302,6 +322,8 @@ class DelegationOut(BaseModel):
     training: TrainingOut | None = None
     # Absent on a backend that predates the AI line on replies.
     disclosure: DisclosureOut | None = None
+    # Absent on a backend that predates Read my calendar.
+    calendar: CalendarOut | None = None
     # The principal's "Let team members use Act as me", while the install
     # allows it; None for anyone else.
     team: TeamOut | None = None
@@ -501,6 +523,15 @@ def _outlook_connect_command(email: str | None) -> str:
     return f"uv run python scripts/connect-own-outlook.py --email {target}"
 
 
+def _calendar_out(person: Person) -> CalendarOut:
+    from openexecutive.delegation import calendar
+
+    email = person.email or ""
+    outlook = bool(email) and credential_provider(email) == "microsoft"
+    command = _outlook_connect_command(email) if outlook else _connect_command(email)
+    return CalendarOut(enabled=calendar.enabled(person.id), connect_command=f"{command} --calendar")
+
+
 def _inbox_out(person_id: int) -> InboxOut:
     from openexecutive.delegation import inbox
 
@@ -565,6 +596,7 @@ async def _state(person: Person) -> DelegationOut:
         handle_it=_handle_it_out(_person_id(person)),
         training=_training_out(_person_id(person)),
         disclosure=_disclosure_out(_person_id(person)),
+        calendar=_calendar_out(person),
         team=_team_out(person),
     )
 
@@ -682,6 +714,7 @@ async def update_delegation(request: Request, body: DelegationUpdate) -> Delegat
         # The inbox watcher needs Act as me; off here, it starts from scratch
         # (watch_since) when turned on again, never catching up.
         _set_inbox(person_id, False)
+        _set_calendar(person_id, False)
         # Where their emails are (read_my_email's list): only kept while it's on.
         # Best-effort, so a failure here never keeps Act as me on.
         from openexecutive.delegation import mail_reads
@@ -930,6 +963,51 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
         if not inbox.get_watch(person_id).enabled:
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
     _set_handle_it(person_id, enabled=body.enabled, mode=body.mode)
+    return await _state(person)
+
+
+def _set_calendar(person_id: int, enabled: bool) -> None:
+    from openexecutive.delegation import calendar
+
+    if calendar.enabled(person_id) == enabled:
+        return
+    calendar.set_enabled(person_id, enabled, updated_by=f"person:{person_id}")
+    _audit(
+        "delegation_calendar_changed",
+        f"Read my calendar turned {'on' if enabled else 'off'} by person {person_id}",
+        {"person_id": person_id, "enabled": enabled},
+    )
+
+
+@router.put("/delegation/calendar", response_model=DelegationOut)
+async def update_delegation_calendar(request: Request, body: CalendarUpdate) -> DelegationOut:
+    """Read my calendar, for the caller alone. On needs Act as me on and a
+    calendar read that works (their sign-in must include the calendar); off
+    always works."""
+    from datetime import UTC, datetime, timedelta
+
+    from openexecutive.delegation import calendar
+    from openexecutive.delegation.gmail import CalendarNotGranted
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    if body.enabled:
+        if not is_enabled(person_id):
+            raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+        status = await gmail_status(person.email)
+        if status != "connected":
+            raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
+        now = datetime.now(UTC)
+        try:
+            await gmail_for(person.email or "").list_events(now, now + timedelta(hours=1), max_results=1)
+        except CalendarNotGranted as exc:
+            raise _refuse(409, "calendar_not_granted", calendar.NOT_GRANTED) from exc
+        except GmailAuthError as exc:
+            raise _refuse(409, "gmail_needs_reconnect", STATUS_MESSAGES["needs_reconnect"]) from exc
+        except GmailError as exc:
+            logger.warning("delegation: calendar check failed for person %s", person_id, exc_info=True)
+            raise _refuse(503, "calendar_error", "Couldn't reach your calendar just now. Try again in a moment.") from exc
+    _set_calendar(person_id, body.enabled)
     return await _state(person)
 
 

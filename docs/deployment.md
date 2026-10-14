@@ -321,6 +321,14 @@ a personal account that signs in with another address (a Gmail one, say) and
 has no Outlook address of its own on file is matched by that sign-in address,
 so use it on the People page and with `--email`.
 
+**Read my calendar (optional).** Run either script with `--calendar` to also
+grant read-only access to the person's own calendar (`calendar.readonly` on
+Google, which the OAuth client's consent screen must list; the delegated
+`Calendars.Read` permission on the Microsoft app). Then turn on **Read my
+calendar** in Delegate → Act as me. The Executive reads events fresh each time
+and keeps nothing; a credential minted without `--calendar` keeps working for
+mail, and the switch says to reconnect with the flag.
+
 ```bash
 MS365_MCP_CLIENT_ID=<app id> uv run python scripts/connect-own-outlook.py --email you@example.com
 ```

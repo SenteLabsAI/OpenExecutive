@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -109,7 +110,7 @@ def _mail(mid: str, addr: str, name: str, subject: str, **flags: bool) -> Simple
 
 def _act_as_me(
     monkeypatch: pytest.MonkeyPatch, mailbox: _Mailbox, *, on: bool = True, drafting: bool = True,
-    status: str = "connected",
+    status: str = "connected", calendar: bool = False,
 ) -> None:
     async def _status(email: str, *, gmail: Any = None) -> str:
         return status
@@ -120,6 +121,10 @@ def _act_as_me(
     monkeypatch.setattr("openexecutive.delegation.gmail.gmail_status", _status)
     monkeypatch.setattr(
         "openexecutive.delegation.inbox.get_watch", lambda pid, **k: SimpleNamespace(enabled=drafting)
+    )
+    monkeypatch.setattr("openexecutive.delegation.calendar.enabled", lambda pid, **k: calendar)
+    monkeypatch.setattr(
+        "openexecutive.memory.workspace_settings.get_user_timezone", lambda *a, **k: ZoneInfo("America/New_York")
     )
 
 
@@ -248,3 +253,53 @@ def test_the_quiet_banner_gives_way_only_to_a_header_that_carries_the_block() ->
 
     assert today_route._first_week_header(f"x\n{first_week.HEADER}\n- Sales") is True
     assert today_route._first_week_header(narrative_cache.QUIET_CONTEXT) is False
+
+
+
+class _Calendar(_Mailbox):
+    def __init__(self, events: list[Any]) -> None:
+        super().__init__([])
+        self.events = events
+        self.window: tuple[datetime, datetime] | None = None
+
+    async def list_events(self, start: datetime, end: datetime, *, max_results: int = 100) -> list[Any]:
+        self.window = (start, end)
+        return self.events
+
+
+def _event(eid: str, title: str, start: str, end: str, **kw: Any) -> Any:
+    from openexecutive.delegation.gmail import CalendarEvent
+
+    return CalendarEvent(id=eid, title=title, start=start, end=end, **kw)
+
+
+async def test_calendar_part_lists_todays_meetings_by_time_and_title(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mailbox = _Calendar([
+        _event("e1", "Pilot review", "2026-10-14T13:00:00+00:00", "2026-10-14T13:30:00+00:00"),
+        _event("e2", "Offsite", "2026-10-14", "2026-10-15", all_day=True),
+        _event("e3", "Skipped one", "2026-10-14T15:00:00+00:00", "2026-10-14T16:00:00+00:00", response="declined"),
+    ])
+    _act_as_me(monkeypatch, mailbox, drafting=False, calendar=True)
+    block = await first_week.getting_started(include_inbox=True, now=NOW)
+    assert "ON YOUR CALENDAR TODAY" in block.text
+    assert "- 09:00–09:30: Pilot review" in block.text and "- all day: Offsite" in block.text
+    assert "Skipped one" not in block.text and "INBOX" not in block.text
+    assert block.private is True and "meeting:e1" in block.keys
+    assert mailbox.window is not None and mailbox.window[0].isoformat() == "2026-10-14T00:00:00-04:00"
+
+
+@pytest.mark.parametrize("consent", [dict(calendar=False), dict(on=False), dict(status="needs_reconnect")])
+async def test_calendar_part_needs_its_switch_and_a_connected_mailbox(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, consent: dict[str, Any]
+) -> None:
+    class Untouchable(_Calendar):
+        async def list_events(self, start: datetime, end: datetime, *, max_results: int = 100) -> list[Any]:
+            raise AssertionError("read the calendar without consent")
+
+    _act_as_me(monkeypatch, Untouchable([]), drafting=False, **{"calendar": True, **consent})
+    block = await first_week.getting_started(include_inbox=True, now=NOW)
+    assert "CALENDAR" not in block.text and block.private is False
+    not_delivery = await first_week.getting_started(include_inbox=False, now=NOW)
+    assert "CALENDAR" not in not_delivery.text

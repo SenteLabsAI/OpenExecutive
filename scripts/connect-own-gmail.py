@@ -5,7 +5,9 @@ Act as me lets the Executive write drafts as you, in your own Gmail — never
 from its own account, and never through the MCP gateway the model can reach.
 This mints the credential it uses: a browser sign-in as you, asking only for
 Gmail read + compose (drafts), and writes one file named from a hash of your
-address.
+address. With --calendar it also asks to read your calendar (read-only), for
+Read my calendar under Act as me; run it again with --calendar to add that
+to a sign-in you made without it.
 
 Run it where you can open a browser, with the Executive's Google OAuth client
 exported (the same Desktop client scripts/mint-google-token.py uses):
@@ -36,6 +38,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
 ]
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 CREDENTIAL_VERSION = 1
@@ -46,12 +49,14 @@ def email_key(email: str) -> str:
     return hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
 
 
-def credential_payload(email: str, refresh_token: str, client_id: str, client_secret: str) -> dict[str, Any]:
+def credential_payload(
+    email: str, refresh_token: str, client_id: str, client_secret: str, *, scopes: list[str] | None = None
+) -> dict[str, Any]:
     """The file's content — the format delegation.gmail.load_credential reads."""
     return {
         "version": CREDENTIAL_VERSION,
         "email": email.strip().lower(),
-        "scopes": SCOPES,
+        "scopes": scopes or SCOPES,
         "authorized_user": {
             "refresh_token": refresh_token,
             "client_id": client_id,
@@ -91,7 +96,9 @@ def _profile_email(access_token: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--email", required=True, help="Your own Gmail address (as on your People entry)")
+    parser.add_argument("--calendar", action="store_true", help="Also allow reading your calendar (Read my calendar)")
     args = parser.parse_args()
+    scopes = [*SCOPES, CALENDAR_SCOPE] if args.calendar else SCOPES
     email = args.email.strip().lower()
     if "@" not in email:
         sys.exit("error: --email must be an email address")
@@ -110,9 +117,10 @@ def main() -> int:
                 "redirect_uris": ["http://localhost"],
             }
         },
-        scopes=SCOPES,
+        scopes=scopes,
     )
-    print(f"Opening a browser: sign in as {email} and allow read + draft access to Gmail.")
+    calendar = " and read-only access to your calendar" if args.calendar else ""
+    print(f"Opening a browser: sign in as {email} and allow read + draft access to Gmail{calendar}.")
     creds = flow.run_local_server(port=0, prompt="consent", access_type="offline", login_hint=email)
     if not creds.refresh_token:
         sys.exit("error: Google returned no refresh token — run it again (it asks for consent each time).")
@@ -124,7 +132,7 @@ def main() -> int:
         os.environ.get("DELEGATION_GOOGLE_CREDENTIALS_DIR") or pathlib.Path.cwd() / "delegation-credentials"
     )
     path = write_credential(
-        directory, email, credential_payload(email, creds.refresh_token, client_id, client_secret)
+        directory, email, credential_payload(email, creds.refresh_token, client_id, client_secret, scopes=scopes)
     )
     print(f"Saved {path}")
     print("Copy it into the API's DELEGATION_GOOGLE_CREDENTIALS_DIR (Docker: /data/delegation_google/),")

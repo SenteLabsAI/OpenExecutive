@@ -19,12 +19,14 @@ import {
   setDelegationEnabled,
   setDelegationTeam,
   setInboxWatch,
+  setReadMyCalendar,
   setTraining,
   updateVoiceProfile,
   type DelegationSettings,
   type DelegationTeam,
   type DescribedVoice,
   type InboxWatch,
+  type ReadMyCalendar,
   type VoiceProfile,
 } from "@/lib/api";
 import { formatAgo } from "@/lib/setupStatus";
@@ -289,6 +291,10 @@ export default function ActAsMeCard({
         />
       )}
 
+      {settings.calendar && (
+        <CalendarSection calendar={settings.calendar} actAsMeOn={on} onSettings={setSettings} />
+      )}
+
       {children}
 
       <AdvancedFold
@@ -473,6 +479,69 @@ function InboxSection({
             </span>
           </span>
         </label>
+      )}
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+    </SettingsCard>
+  );
+}
+
+// Read my calendar (PUT /delegation/calendar): the Executive reads your own
+// calendar, read-only, when you ask about your day. Turning it on checks the
+// calendar opens; a sign-in made without it shows the command that adds it.
+function CalendarSection({
+  calendar,
+  actAsMeOn,
+  onSettings,
+}: {
+  calendar: ReadMyCalendar;
+  actAsMeOn: boolean;
+  onSettings: (next: DelegationSettings) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = calendar.enabled;
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onSettings(await setReadMyCalendar(!on));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the setting.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsCard
+      title="Read my calendar"
+      titleId="act-as-me-calendar-label"
+      description={
+        on
+          ? "Ask about your day or your week in chat and it reads your own calendar. It never changes it."
+          : actAsMeOn
+            ? "Off: it can't see your calendar. On, it reads it when you ask, and never changes it."
+            : "Turn on Write drafts as me first."
+      }
+      action={
+        <Switch
+          checked={on}
+          onChange={() => void toggle()}
+          disabled={busy || (!on && !actAsMeOn)}
+          labelledBy="act-as-me-calendar-label"
+        />
+      }
+    >
+      {!on && actAsMeOn && (
+        <div>
+          <p className="text-sm text-fg-muted leading-relaxed">
+            If you connected your mailbox before, run this once to add your calendar to the sign-in:
+          </p>
+          <pre className="mt-2 whitespace-pre-wrap break-all rounded-xl border border-line bg-surface px-3 py-2 text-xs text-fg font-mono">
+            {calendar.connect_command}
+          </pre>
+        </div>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </SettingsCard>
