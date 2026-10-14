@@ -131,8 +131,20 @@ def start_mail_sources() -> list[asyncio.Task[None]]:
             continue
         if on:
             logger.info("mail source %s: starting", source.name)
-            tasks.append(asyncio.create_task(source.run(), name=f"mail-source-{source.name}"))
+            task = asyncio.create_task(source.run(), name=f"mail-source-{source.name}")
+            task.add_done_callback(_log_if_crashed)
+            tasks.append(task)
     return tasks
+
+
+def _log_if_crashed(task: asyncio.Task[None]) -> None:
+    """A source's loop that ended with an error stops reading mail: say so
+    when it happens, not at shutdown."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("%s stopped: no more mail is read from it", task.get_name(), exc_info=exc)
 
 
 async def replay_held_mail(message: Any, request: Any) -> bool:

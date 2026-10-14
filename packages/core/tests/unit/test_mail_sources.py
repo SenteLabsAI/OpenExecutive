@@ -349,3 +349,22 @@ def test_a_source_session_never_shares_the_mailboxs(turn: dict[str, Any]) -> Non
     mail.session_id = ""
     _handle(mail)
     assert turn["turns"][0]["session"].session_id == "email:relay:t1"
+
+
+def test_a_crashed_source_is_logged(
+    registry: dict[str, MailSource], caplog: pytest.LogCaptureFixture
+) -> None:
+    async def _run() -> None:
+        raise RuntimeError("network down")
+
+    mail_sources.register_mail_source(MailSource(name="relay", run=_run))
+
+    async def _start() -> None:
+        tasks = mail_sources.start_mail_sources()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    with caplog.at_level("ERROR", logger="openexecutive.integrations.mail_sources"):
+        asyncio.run(_start())
+    assert "mail-source-relay stopped" in caplog.text
+
