@@ -646,7 +646,7 @@ def forget_session(session_id: str) -> bool:
     return had_starter or had_session
 
 
-def _get_or_create_session(session_id: str | None, request: Request) -> Any:
+async def _get_or_create_session(session_id: str | None, request: Request) -> Any:
     from openexecutive.memory.session_store import load_messages
     from openexecutive.onboarding.profile_builder import load_or_create_profile
     from openexecutive.orchestrator.session import Session
@@ -660,7 +660,8 @@ def _get_or_create_session(session_id: str | None, request: Request) -> Any:
         # and never reach this cache. Without the re-read, going back to the
         # chat here answers as though those turns never happened. Runs under
         # the conversation's turn lock, so the previous turn here is saved.
-        cached.conversation_history = load_messages(session_id)
+        # Off the event loop: a long transcript is a real read on every turn.
+        cached.conversation_history = await asyncio.to_thread(load_messages, session_id)
         return cached
 
     new_id = session_id or str(uuid.uuid4())
@@ -673,7 +674,7 @@ def _get_or_create_session(session_id: str | None, request: Request) -> Any:
 
     if session_id:
         # Server may have restarted — reload history from DB so conversation continues.
-        history = load_messages(session_id)
+        history = await asyncio.to_thread(load_messages, session_id)
         if history:
             session.conversation_history = history
 
@@ -979,7 +980,7 @@ async def _run_chat_turn(
             _release_stop(client_turn_id, turn_id)
             raise
     try:
-        session = _get_or_create_session(requested_id, request)
+        session = await _get_or_create_session(requested_id, request)
     except BaseException:
         _release_stop(client_turn_id, turn_id)
         if lock_key is not None:

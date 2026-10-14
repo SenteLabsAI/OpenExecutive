@@ -106,8 +106,8 @@ def test_get_or_create_session_idempotent(temp_db: Path, patched_deps: None) -> 
         app = _App()
 
     req: Any = _Req()
-    s1 = chat_route._get_or_create_session("abc-123", req)
-    s2 = chat_route._get_or_create_session("abc-123", req)
+    s1 = asyncio.run(chat_route._get_or_create_session("abc-123", req))
+    s2 = asyncio.run(chat_route._get_or_create_session("abc-123", req))
     assert s1 is s2
     assert s1.session_id == "abc-123"
 
@@ -134,7 +134,7 @@ def test_resumed_session_sees_turns_saved_elsewhere(temp_db: Path, patched_deps:
     session_store.save_message(sid, "user", "Draft the board update")
     session_store.save_message(sid, "assistant", "Here is a draft.")
 
-    first = chat_route._get_or_create_session(sid, req)
+    first = asyncio.run(chat_route._get_or_create_session(sid, req))
     assert [m["content"] for m in first.conversation_history] == [
         "Draft the board update",
         "Here is a draft.",
@@ -145,7 +145,7 @@ def test_resumed_session_sees_turns_saved_elsewhere(temp_db: Path, patched_deps:
     session_store.save_message(sid, "user", "Make it shorter")
     session_store.save_message(sid, "assistant", "Shorter draft.")
 
-    again = chat_route._get_or_create_session(sid, req)
+    again = asyncio.run(chat_route._get_or_create_session(sid, req))
     assert again is first
     assert [m["content"] for m in again.get_recent_history()] == [
         "Draft the board update",
