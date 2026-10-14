@@ -10344,6 +10344,23 @@ delegation:
     (422 bad_mode) and GET /delegation/handled ({replies: [...]}, each with
     source), see handle_it; DelegationOut.handle_it is {enabled, mode,
     available, sent_today}; reply cards carry source ("follow_up" or "").
+  may_do: |
+    Delegate -> What it may do (delegation.may_do, GET /what-it-may-do) is
+    read-only: one row per thing that can go out without asking, its
+    outcome (goes, waits, always_waits, drafts, off) and the setting that
+    decides it. It reads the same settings the gates read, so it cannot say
+    something they don't do: As you from settings.is_enabled,
+    inbox.get_watch, handle_it.get / RULES / leading, training.get /
+    learned and the person's rules; As the Executive (principal only) from
+    take_the_lead.get, Lead.asks_first, the company's rules and the
+    meeting_scheduling class mode; Departments from the registry. Invariant:
+    a meeting Take the lead thinks of always waits, because both meeting
+    gates need someone on a verified surface in the turn; Book meetings
+    without asking covers only meetings someone asks for in chat (and in a
+    team workspace also needs Operations on auto_execute). Department levels
+    never hold Take the lead's own actions; Always asks first and the
+    company's rules do. It writes nothing and reads no mail. 403 for a
+    contact, anyone not on People, or no caller outside local login.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
     command and Check again, the Write drafts as me switch, the Draft

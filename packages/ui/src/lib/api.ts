@@ -4870,6 +4870,48 @@ export async function declineWatchSuggestion(
 }
 
 // ---------------------------------------------------------------------------
+// Delegate → What it may do (GET /what-it-may-do): read-only. What goes out
+// without asking, as you and as the Executive, and each department's level,
+// each with the setting that decides it.
+// ---------------------------------------------------------------------------
+
+export type MayDoOutcome = "goes" | "waits" | "always_waits" | "drafts" | "off";
+
+export interface MayDoRow {
+  id: string;
+  what: string;
+  outcome: MayDoOutcome;
+  then: string;
+  why: string;
+  /** act_as_me | handle_it | take_the_lead | pause | department:<slug> | "" */
+  setting: string;
+  items: string[];
+}
+
+export interface MayDoSection {
+  key: "as_you" | "executive" | "departments";
+  title: string;
+  available: boolean;
+  unavailable: string;
+  notes: string[];
+  rows: MayDoRow[];
+  footer: string;
+  goes: number;
+}
+
+export interface WhatItMayDo {
+  paused: boolean;
+  sections: MayDoSection[];
+}
+
+export async function getWhatItMayDo(signal?: AbortSignal): Promise<WhatItMayDo | null> {
+  const res = await fetch(`${API_BASE}/what-it-may-do`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw new Error("Couldn't load what it may do.");
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
 // Decisions / Trust Ledger (first-climb autonomy)
 // ---------------------------------------------------------------------------
 

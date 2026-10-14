@@ -194,8 +194,8 @@ export default function TakeTheLeadCard() {
         {lead.enabled && (
           <>
             <p className="rounded-xl bg-surface-overlay/60 px-4 py-3 text-sm leading-relaxed text-fg-muted">
-              Department approval levels still apply. A department on Proposes still sends its meetings to its head for
-              a yes. Set a department to Acts on its own to let it book without asking.
+              Department levels don&apos;t hold what it does here: the switches and rules below do. A meeting it thinks
+              of always waits for a yes, whatever Book meetings without asking says.
             </p>
             <div>
               <h3 className="text-[15px] font-semibold text-fg">Always asks first</h3>

@@ -21,9 +21,8 @@ import {
 import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/principalRole";
 
 // Settings → Workspace: who Open Executive is for (personal, or for your
-// team), your role when it's just you, the time zone its briefs run in, and
-// whether it books meetings without asking, as one card each, with company
-// email domains under Advanced. Mode, role and zone go through PUT
+// team), your role when it's just you, and the time zone its briefs run in,
+// as one card each, with company email domains under Advanced. Mode, role and zone go through PUT
 // /workspace and then the app-wide WorkspaceProvider is refreshed so the nav
 // and pages follow. The page supplies the title; this is the body.
 
@@ -366,7 +365,9 @@ function RoleSection() {
 // "Book meetings without asking" — the meeting_scheduling decision class
 // between "propose" (each booking waits for approval in the briefing) and
 // "auto_execute". Hidden when this backend has no such setting (404). Shown
-// on Delegate → Take the lead, with what else the Executive does by itself.
+// on Delegate → Take the lead. It covers bookings someone asks for in chat:
+// both meeting gates need a person on a verified surface in the turn, so a
+// booking Take the lead thinks of always waits (calendar_tools).
 export function MeetingAutonomySwitch() {
   const [mode, setMode] = useState<DecisionClassMode | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "absent" | "error">("loading");
@@ -420,8 +421,8 @@ export function MeetingAutonomySwitch() {
       titleId="ws-meetings-label"
       description={
         on
-          ? "The Executive books meetings on your calendar on its own."
-          : "Each meeting the Executive wants to book waits for your approval in the briefing."
+          ? "When you or a teammate ask in chat, it books the meeting without waiting for a yes (with a team, only while Operations acts on its own). A meeting it thinks of on its own still waits for one."
+          : "Each meeting it wants to book waits for a yes on Today, even when you asked for it in chat."
       }
       action={<Switch checked={on} onChange={() => void toggle()} disabled={busy} labelledBy="ws-meetings-label" />}
     >

@@ -241,6 +241,7 @@ export function HandleItSection({
               : mode === "on"
                 ? "It sends replies and follow-ups on its own, to the people below. Whatever it doesn't send waits for you on Today."
                 : "Every reply waits for you to tap Send."}
+            {mode === "on" && lead && " Putting it in training or turning it off also turns Everything off."}
           </p>
         </div>
         {on && (

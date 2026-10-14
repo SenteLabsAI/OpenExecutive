@@ -65,6 +65,11 @@ const DESCRIPTION_MAX_CHARS = 2000;
 const CHECK_POLL_MS = 3000;
 const MAX_CHECK_POLLS = 40;
 
+// "a", "a and b", "a, b and c".
+function listOf(names: string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 function lines(text: string): string[] {
   return text
     .split("\n")
@@ -178,6 +183,12 @@ export default function ActAsMeCard({
   // training also offers "Do it like this next time" on a draft you changed
   // (Drafts in training, delegation/training.py).
   const draftsMode: DraftsMode = !on ? "off" : settings.training?.drafts ? "training" : "on";
+  // What turning it off takes with it (PUT /delegation), named before you do.
+  const alsoOff = [
+    settings.inbox?.enabled ? "Draft replies to my inbox" : null,
+    settings.handle_it?.enabled ? "Handle it for me" : null,
+    settings.calendar?.enabled ? "Read my calendar" : null,
+  ].filter((name): name is string => name !== null);
   const pickDrafts = async (next: DraftsMode) => {
     setBusy(true);
     setError(null);
@@ -272,6 +283,7 @@ export default function ActAsMeCard({
             : draftsMode === "on"
               ? "It writes drafts as you, in the style under How I write."
               : "The Executive only ever writes as itself."}
+          {draftsMode !== "off" && alsoOff.length > 0 && ` Turning it off also turns off ${listOf(alsoOff)}.`}
         </p>
         {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
       </SettingsCard>
@@ -435,7 +447,7 @@ function InboxSection({
       description={
         on
           ? handleItOn
-            ? "When mail comes in that needs you, it writes a first reply. Handle it for me, on the next tab, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them."
+            ? "When mail comes in that needs you, it writes a first reply. Handle it for me, on the next tab, sends the simple ones; the rest wait on Today, where you send, edit or dismiss them. Turning this off also turns off Handle it for me."
             : "When mail comes in that needs you, it writes a first reply and puts it on Today, where you can edit it, send it or dismiss it. Nothing is sent until you tap Send."
           : actAsMeOn
             ? "Off: it only drafts when you ask it to in chat."
