@@ -21,9 +21,12 @@ import {
   FALLBACK_ACTIVITY_LABEL,
   getFollowupSuggestion,
   getSuggestedPrompts,
+  rewindSession,
   setMessageFeedback,
   streamChat,
 } from "@/lib/api";
+import { confirmRedoText, dropLastTurn, lastTurn } from "@/lib/chatTurns";
+import { downloadChat } from "@/lib/downloadChat";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { matchingMessages } from "@/lib/chatSearch";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
@@ -62,6 +65,9 @@ interface ChatProps {
   // Chats page): the chat starts at the newest message containing them and
   // steps through the others.
   initialFind?: string;
+  // A chat someone else shared with the viewer: shown to read, with no
+  // composer and no rating, Try again or Edit.
+  readOnly?: { sharedBy: string };
 }
 
 // The browser's own highlight for found words, where it has one
@@ -91,7 +97,7 @@ function endsOnReply(messages: ChatMessage[] | undefined): boolean {
 const FALLBACK_SUBTITLE =
   "Pick up where we left off — decisions to revisit, drafts to push forward, people to pull in.";
 
-export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart, initialFind }: ChatProps) {
+export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart, initialFind, readOnly }: ChatProps) {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
 
@@ -145,8 +151,16 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setFind(null);
     setFindPos(null);
   };
+  // Try again / Edit on the last turn. `editingReplyId` is the reply the
+  // edit replaces: once the chat's last reply changes, the edit is over.
+  const [editingReplyId, setEditingReplyId] = useState<number | null>(null);
+  const [redoing, setRedoing] = useState(false);
+  const [redoError, setRedoError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState(false);
 
   useEffect(() => {
+    // A shared chat is only read: nothing to suggest.
+    if (readOnly) return;
     const ctrl = new AbortController();
     getSuggestedPrompts(ctrl.signal)
       .then((r) => {
@@ -163,6 +177,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         setIsLoadingPrompts(false);
       });
     return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function clearFollowup() {
@@ -187,7 +202,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // Opening an existing session suggests a follow-up to its last reply.
   // Later session switches are handled in the sync effect below.
   useEffect(() => {
-    if (initialSessionId && endsOnReply(initialMessages)) loadFollowup(initialSessionId);
+    if (!readOnly && initialSessionId && endsOnReply(initialMessages)) loadFollowup(initialSessionId);
     return () => followupCtrlRef.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -318,6 +333,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     }
     const message = (text ?? input).trim();
     if ((!message && pendingFiles.length === 0) || isLoading) return;
+    setRedoError(null);
     const restored = restoredHandoffRef.current;
     restoredHandoffRef.current = undefined;
     const turnMemoryText =
@@ -552,6 +568,103 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setMessageFeedback(sessionId, target.id, value).catch(() => apply(previous));
   }
 
+  // What the last turn allows. Not while anything is in flight, and never
+  // on a chat shared to read.
+  const turn = lastTurn(messages, sessionId);
+  const canRedo =
+    !readOnly && turn.canRedo && !isLoading && !redoing && !streamingContent && queued.length === 0;
+  // Not tied to canRedo: the edit stays on while its rewind is in flight.
+  const editing = !readOnly && editingReplyId !== null && editingReplyId === turn.replyId;
+
+  // Takes the last turn back on the server, then here. Returns the words it
+  // answered, or null when the server refused (the reason shows above the
+  // composer and nothing else changes).
+  async function takeBackLastTurn(): Promise<string | null> {
+    if (!sessionId || turn.replyId === null) return null;
+    if (turn.didSomething) {
+      const reply = turn.replyIndex !== null ? messages[turn.replyIndex] : undefined;
+      if (!window.confirm(confirmRedoText(reply?.actions))) return null;
+    }
+    setRedoError(null);
+    setRedoing(true);
+    try {
+      const asked = await rewindSession(sessionId, turn.replyId);
+      clearFollowup();
+      setMessages((prev) => dropLastTurn(prev));
+      return asked;
+    } catch (err) {
+      setRedoError(err instanceof Error ? err.message : "Couldn't redo that answer.");
+      return null;
+    } finally {
+      setRedoing(false);
+    }
+  }
+
+  // Try again: the same words as a new turn. Sent like a queued follow-up so
+  // whatever is in the composer (text, files) stays there.
+  async function handleRetry() {
+    const asked = await takeBackLastTurn();
+    if (asked !== null) void handleSend(asked, undefined, true);
+  }
+
+  // Edit: the last message goes back in the composer; sending replaces it
+  // and its answer.
+  function startEdit() {
+    if (turn.replyIndex === null || turn.userIndex === null) return;
+    const words = dropLastTurn(messages).length;
+    const text = messages
+      .slice(words, turn.replyIndex)
+      .filter((m) => m.role === "user")
+      .map((m) => m.content)
+      .join("\n\n");
+    setRedoError(null);
+    setEditingReplyId(turn.replyId);
+    setInput(text);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(text.length, text.length);
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    });
+  }
+
+  function cancelEdit() {
+    setEditingReplyId(null);
+    setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  }
+
+  async function sendEdit() {
+    const text = input.trim();
+    if (!text) return;
+    const asked = await takeBackLastTurn();
+    if (asked === null) return;
+    setEditingReplyId(null);
+    setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    // Files picked before the edit stay for the next message.
+    void handleSend(text, undefined, true);
+  }
+
+  // Enter and the Send button: an edit replaces the last turn.
+  function submit() {
+    if (redoing) return;
+    if (editing) void sendEdit();
+    else void handleSend();
+  }
+
+  async function handleDownload() {
+    if (!sessionId) return;
+    setDownloadError(false);
+    try {
+      await downloadChat(sessionId);
+    } catch {
+      setDownloadError(true);
+    }
+  }
+
   // The "still working" line: before the reply starts, and again under the
   // partial reply whenever the Executive goes quiet to run a tool.
   const status = turnStatus({
@@ -595,7 +708,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      submit();
+    }
+    if (e.key === "Escape" && editing) {
+      e.preventDefault();
+      cancelEdit();
     }
   }
 
@@ -678,7 +795,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           </div>
         )}
         <div ref={messagesRef} className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-          {isEmpty ? (
+          {isEmpty && readOnly ? (
+            <p className="py-10 text-center text-[15px] text-fg-muted">This chat is empty.</p>
+          ) : isEmpty ? (
             /* Empty state */
             <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
               <div className="mb-6">
@@ -738,10 +857,12 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   sources={msg.role === "assistant" ? msg.sources : undefined}
                   feedback={msg.role === "assistant" ? msg.feedback : undefined}
                   onFeedback={
-                    msg.role === "assistant" && msg.id && sessionId
+                    !readOnly && msg.role === "assistant" && msg.id && sessionId
                       ? (v) => handleFeedback(i, v)
                       : undefined
                   }
+                  onRetry={canRedo && i === turn.replyIndex ? () => void handleRetry() : undefined}
+                  onEdit={canRedo && !editing && i === turn.userIndex ? startEdit : undefined}
                 />
                 </div>
               ))}
@@ -788,9 +909,56 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         </div>
       </div>
 
-      {/* Input */}
+      {readOnly ? (
+        <div className="border-t border-line bg-surface px-4 sm:px-6 py-3 sm:py-4">
+          <div className="max-w-3xl mx-auto flex flex-wrap items-center gap-3">
+            <p className="mr-auto text-sm text-fg-muted">
+              Shared with you by {readOnly.sharedBy}. You can read it but not write in it.
+            </p>
+            {downloadError && (
+              <p role="alert" className="text-sm text-red-400">
+                Couldn&apos;t download this chat.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleDownload()}
+              disabled={!sessionId}
+              className="min-h-[2.5rem] px-3 rounded-lg border border-line text-sm font-medium text-fg hover:bg-surface-overlay disabled:opacity-50 cursor-pointer"
+            >
+              Download
+            </button>
+          </div>
+        </div>
+      ) : (
+      /* Input */
       <div className="border-t border-line bg-surface px-4 sm:px-6 py-3 sm:py-4">
         <div className="max-w-3xl mx-auto">
+          {redoError && (
+            <div role="alert" className="mb-2 flex items-start gap-2 rounded-lg border border-line bg-surface-elevated px-3 py-2 text-sm text-fg">
+              <span className="mr-auto">{redoError}</span>
+              <button
+                type="button"
+                onClick={() => setRedoError(null)}
+                aria-label="Dismiss"
+                className="-my-1 inline-flex h-8 w-8 items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-surface-overlay cursor-pointer"
+              >
+                <Icon name="close" size="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          {editing && (
+            <div className="mb-2 flex items-center gap-2 rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-sm text-fg">
+              <span className="mr-auto">Editing your last message. Sending replaces it and its answer.</span>
+              <button
+                type="button"
+                onClick={cancelEdit}
+                className="min-h-[2rem] px-2 rounded-md font-medium text-fg-muted hover:text-fg hover:bg-surface-overlay cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           {/* Committee review is switched in the + menu; while it is on, this
               chip says so and turns it off. */}
           {committeeEnabled && (
@@ -859,7 +1027,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                       ? `Attach files (limit ${MAX_FILES_PER_TURN} per message)`
                       : "Attach files or photos",
                   onSelect: () => fileInputRef.current?.click(),
-                  disabled: isLoading || pendingFiles.length >= MAX_FILES_PER_TURN,
+                  // An edit replaces the words only.
+                  disabled: isLoading || editing || pendingFiles.length >= MAX_FILES_PER_TURN,
                 },
                 {
                   label: committeeEnabled ? "Turn off committee review" : "Committee review (slower, reviewed)",
@@ -913,9 +1082,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             {(!isLoading || input.trim()) && (
               <button
                 type="button"
-                onClick={() => handleSend()}
-                disabled={!input.trim() && pendingFiles.length === 0}
-                aria-label={isLoading ? "Add to what it's working on" : "Send message"}
+                onClick={submit}
+                disabled={editing ? !input.trim() || redoing : !input.trim() && pendingFiles.length === 0}
+                aria-label={isLoading ? "Add to what it's working on" : editing ? "Send edited message" : "Send message"}
                 className="flex-shrink-0 w-11 h-11 rounded-xl bg-accent-strong hover:bg-accent-strong/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 flex items-center justify-center cursor-pointer"
               >
                 <Icon name="arrow-send" size="w-4 h-4" className="text-white" />
@@ -946,6 +1115,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           </p>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -491,6 +491,38 @@ def initialize_db(db_path: Path | None = None) -> None:
                 "WHERE chat_messages.session_id = sessions.session_id) "
                 "WHERE mail_private = 1 AND mail_read_at IS NULL"
             )
+        # Chat list controls (session_store.set_pinned / rename_session): when
+        # the owner pinned the chat (NULL = not pinned), and 1 once they named
+        # it, so the auto-title never writes over their name.
+        if "pinned_at" not in _sessions_existing:
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN pinned_at TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        if "title_locked" not in _sessions_existing:
+            try:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        # Who a chat's owner shared it with, to read (session_store.share_session).
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_shares (
+                session_id          TEXT NOT NULL,
+                person_id           INTEGER NOT NULL,
+                shared_by_person_id INTEGER,
+                created_at          TEXT NOT NULL,
+                PRIMARY KEY (session_id, person_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_shares_person ON session_shares(person_id)"
+        )
 
         # Trust-ledger tables (first-climb autonomy, Build 1+2).
         # `decision_instances` is the correlation unit: links a proposal, its

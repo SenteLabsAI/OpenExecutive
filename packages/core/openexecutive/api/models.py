@@ -285,6 +285,14 @@ class SessionSummary(BaseModel):
     # Set on the plain list: the chat's last message as one line, "You: "
     # before the person's own words, for a list that says what each chat is.
     preview: str | None = None
+    # When its owner pinned it to the top of their list; absent when not.
+    pinned_at: str | None = None
+    # A chat someone shared with the caller (`GET /sessions/shared-with-me`,
+    # or opened by id): it is theirs to read, not to write in, `shared_by`
+    # names its owner and `shared_at` says when.
+    read_only: bool | None = None
+    shared_by: str | None = None
+    shared_at: str | None = None
 
 
 class TargetCustomerData(BaseModel):

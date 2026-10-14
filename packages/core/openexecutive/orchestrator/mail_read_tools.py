@@ -703,7 +703,7 @@ async def handle_my_calendar(tool_input: dict[str, Any]) -> str:
             {
                 "title": one_line(e.title, 160),
                 "start": calendar.local_when(e.start, e.all_day, tz),
-                "end": calendar.local_when(e.end, e.all_day, tz),
+                "end": calendar.last_day(e.start, e.end) if e.all_day else calendar.local_when(e.end, False, tz),
                 **({"all_day": True} if e.all_day else {}),
                 **({"location": one_line(e.location, 160)} if e.location else {}),
                 **({"organizer": one_line(e.organizer, 160)} if e.organizer else {}),

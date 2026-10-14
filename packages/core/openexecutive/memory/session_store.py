@@ -38,8 +38,37 @@ def create_session(
 
 
 def update_session_title(session_id: str, title: str, db_path: Path = DB_PATH) -> None:
+    """The automatic title (a placeholder, then a generated one). Never
+    replaces a name the owner gave the chat (``rename_session``)."""
     with _get_conn(db_path) as conn:
-        conn.execute("UPDATE sessions SET title = ? WHERE session_id = ?", (title, session_id))
+        conn.execute(
+            "UPDATE sessions SET title = ? WHERE session_id = ? AND title_locked = 0",
+            (title, session_id),
+        )
+
+
+def rename_session(session_id: str, title: str, db_path: Path = DB_PATH) -> bool:
+    """The owner's own name for a chat, kept from then on. False when there
+    is no such chat."""
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE sessions SET title = ?, title_locked = 1 WHERE session_id = ?",
+            (title, session_id),
+        )
+        return cur.rowcount > 0
+
+
+def set_pinned(session_id: str, pinned: bool, db_path: Path = DB_PATH) -> bool:
+    """Pin a chat to the top of its owner's list, or unpin it. Pinning again
+    keeps the first pin's time. False when there is no such chat."""
+    now = datetime.now(UTC).isoformat()
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE sessions SET pinned_at = CASE WHEN ? THEN COALESCE(pinned_at, ?) END "
+            "WHERE session_id = ?",
+            (1 if pinned else 0, now, session_id),
+        )
+        return cur.rowcount > 0
 
 
 def update_session_timestamp(session_id: str, db_path: Path = DB_PATH) -> None:
@@ -127,9 +156,11 @@ def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, An
     out: list[dict[str, Any]] = []
     for row in rows:
         msg: dict[str, Any] = {"role": row["role"], "content": row["content"]}
-        # The row id lets the UI attach 👍/👎 to a reloaded reply. Only on
-        # assistant rows, alongside `feedback`, for the same reason as
-        # `actions` below: untouched user rows keep their exact shape.
+        # The row id lets the UI attach 👍/👎 to a reloaded reply, and name
+        # the turn it takes back when the person edits their message or asks
+        # again (``rewind_last_turn``). Only on assistant rows, alongside
+        # `feedback`, for the same reason as `actions` below: untouched user
+        # rows keep their exact shape.
         if row["role"] == "assistant":
             msg["id"] = row["id"]
             if row["feedback"]:
@@ -166,7 +197,8 @@ def list_sessions(
     caller_person_id: int,
     db_path: Path = DB_PATH,
 ) -> list[dict[str, Any]]:
-    """List sessions owned by `caller_person_id`, newest first.
+    """List sessions owned by `caller_person_id`: pinned ones first (newest
+    pin first, with ``pinned_at``), then the rest newest first.
 
     Legacy rows with caller_person_id IS NULL (created before this column
     existed) are excluded — the comparison `NULL = ?` never matches in
@@ -180,13 +212,13 @@ def list_sessions(
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT s.session_id, s.title, s.created_at, s.updated_at,
+            SELECT s.session_id, s.title, s.created_at, s.updated_at, s.pinned_at,
                    COUNT(m.id) AS message_count, MAX(m.id) AS last_id
             FROM sessions s
             LEFT JOIN chat_messages m ON m.session_id = s.session_id
             WHERE s.caller_person_id = ?
             GROUP BY s.session_id
-            ORDER BY s.updated_at DESC
+            ORDER BY s.pinned_at IS NULL, s.pinned_at DESC, s.updated_at DESC
             """,
             (caller_person_id,),
         ).fetchall()
@@ -213,6 +245,8 @@ def list_sessions(
             k: row[k]
             for k in ("session_id", "title", "created_at", "updated_at", "message_count")
         }
+        if row["pinned_at"]:
+            item["pinned_at"] = row["pinned_at"]
         msg = last.get(row["last_id"]) if row["last_id"] is not None else None
         item["preview"] = _preview(msg["role"], msg["content"]) if msg is not None else None
         out.append(item)
@@ -340,6 +374,7 @@ def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
         return False
     with _get_conn(db_path) as conn:
         conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_shares WHERE session_id = ?", (session_id,))
         cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         deleted = cur.rowcount > 0
     delete_session_drive_memory(session_id, db_path)
@@ -352,7 +387,7 @@ def get_session_metadata(session_id: str, db_path: Path = DB_PATH) -> dict[str, 
     with _get_conn(db_path) as conn:
         row = conn.execute(
             """
-            SELECT s.session_id, s.title, s.created_at, s.updated_at,
+            SELECT s.session_id, s.title, s.created_at, s.updated_at, s.pinned_at,
                    COUNT(m.id) AS message_count
             FROM sessions s
             LEFT JOIN chat_messages m ON m.session_id = s.session_id
@@ -361,7 +396,12 @@ def get_session_metadata(session_id: str, db_path: Path = DB_PATH) -> dict[str, 
             """,
             (session_id,),
         ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    meta = dict(row)
+    if not meta.get("pinned_at"):
+        meta.pop("pinned_at", None)
+    return meta
 
 
 def get_session_owner(session_id: str, db_path: Path = DB_PATH) -> tuple[bool, int | None]:
@@ -451,3 +491,160 @@ def session_mail_private(session_id: str, db_path: Path = DB_PATH) -> bool:
             return False
         raise
     return bool(row is not None and row["mail_private"])
+
+
+def rewind_last_turn(
+    session_id: str, last_message_id: int, db_path: Path = DB_PATH
+) -> list[str] | None:
+    """Remove the conversation's last turn: its last reply and the person's
+    messages it answered (everything after the reply before it). Returns
+    those messages' words, oldest first, for the turn that replaces it.
+
+    ``last_message_id`` must be the id of the conversation's last row and that
+    row a reply, so a stale page (another tab already moved the chat on)
+    removes nothing. None when it isn't."""
+    if not db_path.exists():
+        return None
+    with _get_conn(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        last = conn.execute(
+            "SELECT id, role FROM chat_messages WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if last is None or last["id"] != last_message_id or last["role"] != "assistant":
+            return None
+        before = conn.execute(
+            "SELECT MAX(id) AS id FROM chat_messages "
+            "WHERE session_id = ? AND role = 'assistant' AND id < ?",
+            (session_id, last_message_id),
+        ).fetchone()
+        since = int(before["id"]) if before is not None and before["id"] is not None else 0
+        asked = conn.execute(
+            "SELECT content FROM chat_messages "
+            "WHERE session_id = ? AND role = 'user' AND id > ? AND id < ? ORDER BY id",
+            (session_id, since, last_message_id),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM chat_messages WHERE session_id = ? AND id > ? AND id <= ?",
+            (session_id, since, last_message_id),
+        )
+    return [str(row["content"]) for row in asked]
+
+
+# Sharing: a chat's owner lets named teammates read it. Read only: they can't
+# write in it, and an Act as me conversation is never shared
+# (``session_mail_private``; the routes refuse it).
+
+
+def shared_with(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Who ``session_id`` is shared with: ``person_id`` and ``shared_at``,
+    oldest share first."""
+    if not db_path.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT person_id, created_at FROM session_shares WHERE session_id = ? "
+            "ORDER BY created_at, person_id",
+            (session_id,),
+        ).fetchall()
+    return [{"person_id": int(r["person_id"]), "shared_at": r["created_at"]} for r in rows]
+
+
+def is_shared_with(session_id: str, person_id: int, db_path: Path = DB_PATH) -> bool:
+    if not db_path.exists():
+        return False
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM session_shares WHERE session_id = ? AND person_id = ?",
+            (session_id, person_id),
+        ).fetchone()
+    return row is not None
+
+
+def set_shares(
+    session_id: str,
+    person_ids: list[int],
+    shared_by_person_id: int | None,
+    db_path: Path = DB_PATH,
+) -> tuple[list[int], list[int]]:
+    """Share ``session_id`` with exactly ``person_ids``. Returns the ids added
+    and the ids removed; someone already on the list keeps their share time."""
+    now = datetime.now(UTC).isoformat()
+    wanted = set(person_ids)
+    with _get_conn(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        have = {
+            int(r["person_id"])
+            for r in conn.execute(
+                "SELECT person_id FROM session_shares WHERE session_id = ?", (session_id,)
+            )
+        }
+        added = sorted(wanted - have)
+        removed = sorted(have - wanted)
+        for pid in removed:
+            conn.execute(
+                "DELETE FROM session_shares WHERE session_id = ? AND person_id = ?",
+                (session_id, pid),
+            )
+        for pid in added:
+            conn.execute(
+                "INSERT INTO session_shares (session_id, person_id, shared_by_person_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (session_id, pid, shared_by_person_id, now),
+            )
+    return added, removed
+
+
+def list_shared_with_person(person_id: int, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """The chats shared with ``person_id``, newest activity first, each with
+    its owner (``owner_person_id``) and when it was shared (``shared_at``).
+    An Act as me conversation is left out even if it was shared before it
+    read mail."""
+    if not db_path.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT s.session_id, s.title, s.created_at, s.updated_at,
+                   s.caller_person_id AS owner_person_id, sh.created_at AS shared_at,
+                   (SELECT COUNT(*) FROM chat_messages m
+                     WHERE m.session_id = s.session_id) AS message_count
+            FROM session_shares sh
+            JOIN sessions s ON s.session_id = sh.session_id
+            WHERE sh.person_id = ? AND s.mail_private = 0
+            ORDER BY s.updated_at DESC
+            """,
+            (person_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def export_rows(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Every message of ``session_id`` with who wrote it, for an export:
+    ``role``, ``content``, ``created_at``, ``sender_person_id``, ``stopped``
+    and the reply's ``sources`` (decoded, or None)."""
+    if not db_path.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT role, content, created_at, sender_person_id, stopped, sources "
+            "FROM chat_messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        sources = None
+        if row["sources"]:
+            try:
+                sources = json.loads(row["sources"])
+            except (ValueError, TypeError):
+                sources = None
+        out.append({
+            "role": row["role"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "sender_person_id": row["sender_person_id"],
+            "stopped": bool(row["stopped"]),
+            "sources": sources if isinstance(sources, dict) else None,
+        })
+    return out

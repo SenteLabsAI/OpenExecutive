@@ -580,6 +580,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     email_poller_task = await _start_mcp_gateway(app, settings)
 
+    # Mail read from anywhere but the Executive's own mailbox: whatever a
+    # deployment registered (integrations.mail_sources). None by default.
+    from openexecutive.integrations.mail_sources import start_mail_sources
+
+    mail_source_tasks = start_mail_sources()
+
     if settings.scheduler_enabled:
         from openexecutive.scheduler import run_scheduler
 
@@ -781,6 +787,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         email_poller_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await email_poller_task
+
+    for task in mail_source_tasks:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
     if scheduler_task is not None:
         scheduler_task.cancel()

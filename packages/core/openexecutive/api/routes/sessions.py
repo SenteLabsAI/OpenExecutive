@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import Any, Literal
 
@@ -9,17 +10,30 @@ from pydantic import BaseModel, Field
 from openexecutive.api.models import SessionSummary
 from openexecutive.api.routes import chat as chat_route
 from openexecutive.api.routes.chat import (
+    _acquire_session_turn,
+    _is_channel_namespaced,
+    _release_session_turn,
     _resolve_caller_person_id,
     _session_access,
     forget_session,
 )
+from openexecutive.memory import chat_export
 from openexecutive.memory.session_store import (
     delete_session,
     get_session_metadata,
+    get_session_owner,
+    is_shared_with,
     list_sessions,
+    list_shared_with_person,
     load_messages,
+    rename_session,
+    rewind_last_turn,
     search_sessions,
+    session_mail_private,
     set_message_feedback,
+    set_pinned,
+    set_shares,
+    shared_with,
 )
 
 router = APIRouter()
@@ -58,22 +72,267 @@ def _require_session_access(request: Request, session_id: str) -> int | None:
     return caller
 
 
-@router.get("/sessions/{session_id}", response_model=SessionSummary)
+def _require_read_access(request: Request, session_id: str) -> bool:
+    """404 unless the caller may read this session. True when they may only
+    read it: its owner shared it with them (``set_shares``), and it never read
+    its owner's own mail. Anyone who may use it (``_require_session_access``)
+    gets False."""
+    caller = _resolve_caller_person_id(request)
+    if _session_access(request, session_id, caller) == "allowed":
+        return False
+    if caller is not None and is_shared_with(session_id, caller) and not session_mail_private(session_id):
+        return True
+    raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _require_owner(request: Request, session_id: str) -> int:
+    """404 unless the caller owns this chat (the principal owns an ownerless
+    legacy one); returns their id. Pinning, naming, sharing and redoing a
+    turn are the owner's, not the principal's on someone else's chat."""
+    caller = _require_session_access(request, session_id)
+    exists, owner = get_session_owner(session_id)
+    if caller is None or not exists:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if owner == caller:
+        return caller
+    if owner is None and session_id not in chat_route._session_starters:
+        # An ownerless legacy chat is the principal's, but not one someone
+        # the roster can't resolve is talking in right now.
+        from openexecutive.people.store import get_person
+
+        person = get_person(caller)
+        if person is not None and person.is_principal and not person.archived:
+            return caller
+    raise HTTPException(status_code=404, detail="Session not found")
+
+
+def _owner_rows(session_id: str, owner: int | None) -> contextlib.AbstractContextManager[None]:
+    """Audit rows about a chat stay as private as the chat: a teammate's own,
+    or one that read its owner's mail, is its owner's alone, as every row its
+    turns wrote is (``chat._session_access``)."""
+    from openexecutive.audit.context import rows_for_person
+
+    if chat_route._teammates_own(owner) or session_mail_private(session_id):
+        return rows_for_person(owner)
+    return contextlib.nullcontext()
+
+
+def _person_name(person_id: int | None) -> str | None:
+    if person_id is None:
+        return None
+    from openexecutive.people.store import get_person
+
+    person = get_person(int(person_id))
+    return person.full_name if person is not None else None
+
+
+@router.get(
+    "/sessions/shared-with-me",
+    response_model=list[SessionSummary],
+    response_model_exclude_none=True,
+)
+def get_shared_sessions(request: Request) -> list[SessionSummary]:
+    """Chats other people shared with the caller, to read, newest first, each
+    with who shared it (``shared_by``) and when (``shared_at``)."""
+    caller = _resolve_caller_person_id(request)
+    if caller is None:
+        return []
+    out: list[SessionSummary] = []
+    for row in list_shared_with_person(caller):
+        out.append(SessionSummary(
+            session_id=row["session_id"],
+            title=row["title"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            message_count=row["message_count"],
+            shared_by=_person_name(row["owner_person_id"]) or "Someone on your team",
+            shared_at=row["shared_at"],
+            read_only=True,
+        ))
+    return out
+
+
+@router.get("/sessions/{session_id}", response_model=SessionSummary, response_model_exclude_none=True)
 def get_session(session_id: str, request: Request) -> SessionSummary:
-    _require_session_access(request, session_id)
+    read_only = _require_read_access(request, session_id)
+    meta = get_session_metadata(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    summary = SessionSummary(**meta)
+    if read_only:
+        # Only the owner pins, so a reader never sees the owner's pin.
+        _, owner = get_session_owner(session_id)
+        summary.pinned_at = None
+        summary.read_only = True
+        summary.shared_by = _person_name(owner) or "Someone on your team"
+    return summary
+
+
+@router.get("/sessions/{session_id}/messages")
+def get_session_messages(session_id: str, request: Request) -> list[dict]:
+    read_only = _require_read_access(request, session_id)
+    meta = get_session_metadata(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = load_messages(session_id)
+    if read_only:
+        # The owner's ratings are theirs.
+        for msg in messages:
+            msg.pop("feedback", None)
+    return messages
+
+
+class SessionUpdate(BaseModel):
+    """Rename and / or pin a chat. A field left out is left as it is."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    pinned: bool | None = None
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionSummary, response_model_exclude_none=True)
+def update_session(session_id: str, body: SessionUpdate, request: Request) -> SessionSummary:
+    """The owner names their chat (the automatic title never replaces it
+    after) or pins it to the top of their list."""
+    _require_owner(request, session_id)
+    if body.title is not None:
+        title = " ".join(body.title.split())
+        if not title:
+            raise HTTPException(status_code=422, detail="A title can't be blank")
+        rename_session(session_id, title)
+    if body.pinned is not None:
+        set_pinned(session_id, body.pinned)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return SessionSummary(**meta)
 
 
-@router.get("/sessions/{session_id}/messages")
-def get_session_messages(session_id: str, request: Request) -> list[dict]:
-    _require_session_access(request, session_id)
+class ShareEntry(BaseModel):
+    person_id: int
+    full_name: str
+    shared_at: str
+
+
+class SharesUpdate(BaseModel):
+    """Everyone the chat should be shared with; anyone not listed is unshared."""
+
+    person_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+def _share_list(session_id: str) -> list[ShareEntry]:
+    out: list[ShareEntry] = []
+    for row in shared_with(session_id):
+        name = _person_name(row["person_id"])
+        if name is not None:
+            out.append(ShareEntry(person_id=row["person_id"], full_name=name, shared_at=row["shared_at"]))
+    return out
+
+
+@router.get("/sessions/{session_id}/shares", response_model=list[ShareEntry])
+def get_session_shares(session_id: str, request: Request) -> list[ShareEntry]:
+    """Who the owner shared this chat with."""
+    _require_owner(request, session_id)
+    return _share_list(session_id)
+
+
+@router.put("/sessions/{session_id}/shares", response_model=list[ShareEntry])
+def put_session_shares(session_id: str, body: SharesUpdate, request: Request) -> list[ShareEntry]:
+    """Share the chat, to read, with exactly these team members.
+
+    Team members only (not contacts, not archived, not the owner). A chat
+    that read its owner's own mail (Act as me) is never shared: 409."""
+    owner = _require_owner(request, session_id)
+    person_ids = sorted(set(body.person_ids))
+    if person_ids and session_mail_private(session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="This chat read your own mail, so it stays yours alone.",
+        )
+    from openexecutive.people.store import get_person
+
+    for pid in person_ids:
+        person = get_person(pid)
+        if person is None or person.archived or person.kind != "team" or pid == owner:
+            raise HTTPException(status_code=422, detail=f"Can't share with person {pid}")
+    added, removed = set_shares(session_id, person_ids, owner)
+    if added or removed:
+        from openexecutive.audit import log_event
+
+        with _owner_rows(session_id, owner):
+            log_event(
+                "session_shared",
+                f"Chat shared with {len(person_ids)} people (+{len(added)} -{len(removed)})",
+                session_id=session_id,
+                actor="user",
+                details={"by_person_id": owner, "added": added, "removed": removed},
+            )
+    return _share_list(session_id)
+
+
+@router.get("/sessions/{session_id}/export")
+def export_session(session_id: str, request: Request) -> Response:
+    """The chat as a Markdown file, for anyone who may read it."""
+    _require_read_access(request, session_id)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return load_messages(session_id)
+    _, owner = get_session_owner(session_id)
+    text = chat_export.to_markdown(meta, owner_person_id=owner)
+    return Response(
+        content=text,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{chat_export.file_name(meta["title"])}"'
+        },
+    )
+
+
+class RewindRequest(BaseModel):
+    """The id of the reply being replaced, which must still be the chat's last."""
+
+    last_message_id: int
+
+
+class RewindResponse(BaseModel):
+    """The words of the turn just removed, to send again (Try again) or as
+    the starting point of an edit."""
+
+    message: str
+
+
+@router.post("/sessions/{session_id}/rewind", response_model=RewindResponse)
+async def rewind_session(session_id: str, body: RewindRequest, request: Request) -> RewindResponse:
+    """Take back the chat's last turn so the owner can ask it again, as it
+    was (Try again) or edited. The page then sends the message as a normal
+    turn, through the same gates as any other.
+
+    Web chats only: a Slack, Telegram or Discord conversation also lives in
+    that app, where the reply can't be taken back. 409 while a turn is
+    answering in this chat, or when the page's last reply is no longer the
+    chat's last (another tab moved on)."""
+    owner = _require_owner(request, session_id)
+    if _is_channel_namespaced(session_id):
+        raise HTTPException(status_code=409, detail="Only a chat started here can be redone.")
+    lock = await _acquire_session_turn(session_id, 0.5)
+    if lock is None:
+        raise HTTPException(status_code=409, detail="The Executive is still answering in this chat.")
+    try:
+        asked = rewind_last_turn(session_id, body.last_message_id)
+    finally:
+        _release_session_turn(session_id, lock)
+    if asked is None:
+        raise HTTPException(status_code=409, detail="This chat has moved on. Reload it and try again.")
+    from openexecutive.audit import log_event
+
+    with _owner_rows(session_id, owner):
+        log_event(
+            "session_rewound",
+            f"Last turn taken back (reply {body.last_message_id})",
+            session_id=session_id,
+            actor="user",
+            details={"last_message_id": body.last_message_id, "messages": len(asked)},
+        )
+    return RewindResponse(message="\n\n".join(asked))
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -2324,6 +2324,26 @@ memory:
     session_store.delete_session drops the rows. Complements, not replaces,
     the folder sync (knowledge collections: DRIVE): a synced folder is known
     without a search; this remembers whatever else a conversation read.
+  chat_controls: |
+    The owner's controls on a saved chat (api/routes/sessions.py). Pin
+    (sessions.pinned_at; pinned chats list first) and rename
+    (sessions.title_locked: session_store.update_session_title, the automatic
+    title, never overwrites a name the owner gave). Share, read-only, with
+    named team members (session_shares; PUT /sessions/{id}/shares sets the
+    exact list; contacts, the archived and the owner refused). A reader may
+    open, list (GET /sessions/shared-with-me) and export the chat and nothing
+    else; every write route keeps the usual owner check. A mail_private chat
+    (Act as me read the owner's mail) is never shared and stops being
+    readable by earlier readers. Export (memory/chat_export.py) is Markdown
+    with each message under its writer's People name or Executive and the
+    reply's sources. Try again and Edit both call POST
+    /sessions/{id}/rewind, which, under the conversation's turn lock and
+    only while the given reply is still the chat's last row, deletes the
+    last turn and returns the person's words; the page resends them (or the
+    edit) as an ordinary /chat turn through the same gates. Web chats only:
+    a chat-app conversation's reply also lives in that app. The page asks
+    first when the reply being redone already did something (action chips),
+    since the new turn could do it again.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking
@@ -7478,6 +7498,45 @@ integrations:
     step, and the loop's finally cancels a pending one before the stream's
     aclose. The whole-turn deadline is unchanged. Why: browsers and proxies
     drop an idle stream well inside CHAT_STREAM_TIMEOUT_S.
+  mail_sources: |
+    Mail read from anywhere but the Executive's own mailbox goes through
+    openexecutive.integrations.mail_sources, a vendor-neutral hook with
+    nothing registered by default and no settings of its own. A deployment
+    registers a MailSource (name, run loop, enabled check, replay of a held
+    message) before the app starts; the lifespan starts every enabled one
+    (start_mail_sources) and cancels it on shutdown. The source hands each
+    message to handle_inbound as an InboundMail: the parsed message, the
+    address it came to, a prove_sender check (DMARC, or SPF and DKIM
+    aligned, as the source can tell), send_answer (how the turn's answer is
+    mailed), an optional attachment reader, the payload a held message
+    keeps, and a session id. handle_inbound runs the email poller's own
+    rules (email_poller._handle_mail, shared with the mailbox): skip self
+    and automated senders, hide roster / fact tokens, resolve the sender
+    (team, contact, stranger), private-to-principal rows, the teammate's
+    own rows only when proven, the untrusted-content wrapping, the
+    principal's own proven mail, the forwarded-by-principal framing,
+    co-present recipients, reply hydration and the turn deadline.
+    What differs from the mailbox, because a source mails the answer
+    itself rather than the model calling a send tool: a stranger is held
+    for the principal silently (no acknowledgement, no turn) and comes back
+    through the "email" replayer (mail_sources.replay_held_mail dispatches
+    on the payload's mail_source key; the mailbox's held mail carries none
+    and goes to email_poller.replay_held_email); a contact's mail, and mail
+    claiming a teammate that nothing proves (private to the principal), is
+    answered to the principal, never the sender; the answer carries the AI
+    line (disclosure.with_mail_line) and an integration_outbound /
+    integration_outbound_blocked row. Roster-request and fact
+    confirmations are answered only from the mailbox they were sent from.
+    Source names "google" and "microsoft" are reserved for the mailbox, and
+    handle_inbound refuses a source that isn't registered (its held mail
+    could never go back to it). While the Executive is paused
+    (scheduler.pause) handle_inbound does nothing and returns PAUSED, so
+    the source keeps the message. A stranger the roster queue won't take
+    (declined lately, the daily cap) is logged "not held", never as held;
+    a sender who is neither team nor contact by the time the turn runs gets
+    no answer at all. A source's attachment text is scrubbed of roster /
+    fact tokens, and its message ids never open anything in the mailbox
+    (no allow_mail_ids).
   email_poller: |
     MCP poll loop in openexecutive.integrations.email_poller — runs
     as an asyncio task in the FastAPI lifespan, started by
