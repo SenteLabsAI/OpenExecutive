@@ -2754,7 +2754,7 @@ memory:
     - The first week (briefing.first_week, seven days from the principal's
       People row) gives the briefs a GETTING STARTED block so a new install
       is never "quiet": onboarding goals, departments with no
-      head_person_id and, only on PRINCIPAL_DELIVERY with Act as me on, up
+      head_person_id and, only on PRINCIPAL_DELIVERY with Act as me and Draft replies to my inbox on (the watcher's consent) and gmail_status connected, up
       to five people who wrote to the owner's own mailbox in 48 hours as
       sender and subject (no message text, bulk mail skipped). Counts
       against the quiet check, its keys enter the fingerprint, the inbox

@@ -11,11 +11,12 @@ say, from what the install already holds:
   • DEPARTMENTS WITH NO LEADER — ``head_person_id`` unset, so its work and
     held sends route to the principal.
   • WAITING ON YOU IN YOUR OWN INBOX — only on the scheduler's delivery to
-    the principal alone, and only when they have Act as me on: up to
+    the principal alone, and only when they have Act as me and Draft replies
+    to my inbox both on (the consent the inbox watcher reads under) and the
+    mailbox opens as theirs: up to
     ``_INBOX_MAX`` people who wrote in the last ``_INBOX_WINDOW``, as sender
     and subject. The same "where, never what" rule Act as me keeps
-    (``delegation.mail_reads``): no message text enters the brief. When
-    Act as me is on but Draft replies to my inbox is off, one line says so.
+    (``delegation.mail_reads``): no message text enters the brief.
 
 The first week is ``FIRST_WEEK`` from when the principal's People row was
 created (onboarding writes it). Before that, or after it, the block is empty
@@ -108,9 +109,12 @@ def _goal_lines() -> tuple[list[str], list[str], list[str]]:
 
 async def _inbox_lines(now: datetime) -> tuple[list[str], list[str]]:
     """(lines, keys) for who wrote to the principal's own mailbox lately.
-    Empty unless they have Act as me on and the mailbox opens."""
+    Empty unless they have Act as me and Draft replies to my inbox on (the
+    same consent the inbox watcher reads under) and the mailbox opens as
+    theirs."""
     from openexecutive.delegation import settings as delegation_settings
-    from openexecutive.delegation.gmail import gmail_for
+    from openexecutive.delegation.gmail import gmail_for, gmail_status
+    from openexecutive.delegation.inbox import get_watch
     from openexecutive.people.store import find_principal_person
 
     principal = find_principal_person()
@@ -118,7 +122,11 @@ async def _inbox_lines(now: datetime) -> tuple[list[str], list[str]]:
         return [], []
     if not (delegation_settings.can_delegate(principal) and delegation_settings.is_enabled(principal.id)):
         return [], []
+    if not get_watch(principal.id).enabled:
+        return [], []
     mailbox = gmail_for(principal.email)
+    if await gmail_status(principal.email, gmail=mailbox) != "connected":
+        return [], []
     ids = await mailbox.inbox_message_ids(after=now - _INBOX_WINDOW, max_results=_INBOX_SCAN)
     lines: list[str] = []
     keys: list[str] = []
@@ -137,14 +145,6 @@ async def _inbox_lines(now: datetime) -> tuple[list[str], list[str]]:
         kind = " (calendar invite)" if message.calendar_invite else ""
         lines.append(f"- {who}: {_one_line(message.subject or '(no subject)', 90)}{kind}")
         keys.append(f"inbox:{message_id}")
-    if lines:
-        from openexecutive.delegation.inbox import get_watch
-
-        if not get_watch(principal.id).enabled:
-            lines.append(
-                "- (Draft replies to my inbox is off: turning it on in Settings → Act as me "
-                "puts a reply draft for mail like this on Today for you to review.)"
-            )
     return lines, keys
 
 

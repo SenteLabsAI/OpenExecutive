@@ -100,10 +100,17 @@ def _mail(mid: str, addr: str, name: str, subject: str, **flags: bool) -> Simple
     return SimpleNamespace(id=mid, from_addr=addr, from_name=name, subject=subject, **{**base, **flags})
 
 
-def _act_as_me(monkeypatch: pytest.MonkeyPatch, mailbox: _Mailbox, *, on: bool = True, drafting: bool = False) -> None:
+def _act_as_me(
+    monkeypatch: pytest.MonkeyPatch, mailbox: _Mailbox, *, on: bool = True, drafting: bool = True,
+    status: str = "connected",
+) -> None:
+    async def _status(email: str, *, gmail: Any = None) -> str:
+        return status
+
     monkeypatch.setattr("openexecutive.delegation.settings.can_delegate", lambda p: True)
     monkeypatch.setattr("openexecutive.delegation.settings.is_enabled", lambda pid, **k: on)
     monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_status", _status)
     monkeypatch.setattr(
         "openexecutive.delegation.inbox.get_watch", lambda pid, **k: SimpleNamespace(enabled=drafting)
     )
@@ -125,24 +132,36 @@ async def test_inbox_part_lists_people_who_wrote_by_sender_and_subject(
     assert "Re: Renewal terms" not in block.text  # one line per sender
     assert "Weekly digest" not in block.text
     assert "- sam@partner.test: Board dinner (calendar invite)" in block.text
-    assert "Draft replies to my inbox is off" in block.text
     assert block.private is True
     assert "inbox:m1" in block.keys
     assert mailbox.after == NOW - timedelta(hours=48)
 
 
-async def test_inbox_part_needs_act_as_me_and_the_principals_delivery(
+@pytest.mark.parametrize(
+    "consent", [dict(on=False), dict(drafting=False), dict(status="needs_reconnect"), dict(status="mismatch")]
+)
+async def test_inbox_part_needs_both_switches_and_a_connected_mailbox(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, consent: dict[str, Any]
+) -> None:
+    class Untouchable(_Mailbox):
+        async def inbox_message_ids(self, *, after: datetime, max_results: int = 25) -> list[tuple[str, str]]:
+            raise AssertionError("read the mailbox without consent")
+
+    _act_as_me(monkeypatch, Untouchable([]), **consent)
+    block = await first_week.getting_started(include_inbox=True, now=NOW)
+    assert "INBOX" not in block.text and block.private is False
+    assert "Close 10 new accounts" in block.text
+
+
+async def test_inbox_part_needs_the_principals_delivery(
     setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     mailbox = _Mailbox([_mail("m1", "dana@client.test", "Dana", "Renewal")])
-    _act_as_me(monkeypatch, mailbox, on=False)
-    off = await first_week.getting_started(include_inbox=True, now=NOW)
-    assert "INBOX" not in off.text and off.private is False
-    _act_as_me(monkeypatch, mailbox, on=True, drafting=True)
+    _act_as_me(monkeypatch, mailbox)
     not_delivery = await first_week.getting_started(include_inbox=False, now=NOW)
     assert "INBOX" not in not_delivery.text
-    drafting = await first_week.getting_started(include_inbox=True, now=NOW)
-    assert "Dana" in drafting.text and "Draft replies to my inbox is off" not in drafting.text
+    delivery = await first_week.getting_started(include_inbox=True, now=NOW)
+    assert "Dana" in delivery.text
 
 
 async def test_a_mailbox_failure_leaves_the_rest(setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
