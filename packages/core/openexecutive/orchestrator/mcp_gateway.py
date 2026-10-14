@@ -1862,13 +1862,16 @@ def _tool_timeout_s() -> float:
     return float(getattr(get_settings(), "mcp_tool_timeout_s", 120.0))
 
 
-async def _session_call(session: Any, name: str, arguments: dict[str, Any]) -> Any:
+async def _session_call(
+    session: Any, name: str, arguments: dict[str, Any], timeout: float | None = None,
+) -> Any:
     """``session.call_tool`` with the per-call ceiling. Without one, a
     workspace server that never answers (a hung Google or Microsoft request,
     a stuck child process) held whatever awaited it for good: the email
     poller, which handles one message at a time, a brief, a chat turn. The
     call is cancelled on our side; the server may still finish it."""
-    timeout = _tool_timeout_s()
+    if timeout is None:
+        timeout = _tool_timeout_s()
     try:
         return await asyncio.wait_for(session.call_tool(name, arguments), timeout=timeout)
     except TimeoutError as exc:
@@ -2860,6 +2863,20 @@ class MCPGateway:
         # the next call to one of that server's tools that answers without
         # an authorization error.
         self.needs_reconnect: set[str] = set()
+        # MCP_TOOL_TIMEOUT_S, read on first use (`_call_timeout`) and kept:
+        # `get_settings()` builds a fresh Settings on every call.
+        self._tool_timeout_s: float | None = None
+
+    def _call_timeout(self, settings: Settings | None = None) -> float:
+        """The per-call ceiling, read once per gateway (from ``settings``
+        when the caller already holds a read)."""
+        if self._tool_timeout_s is None:
+            self._tool_timeout_s = (
+                float(getattr(settings, "mcp_tool_timeout_s", 120.0))
+                if settings is not None
+                else _tool_timeout_s()
+            )
+        return self._tool_timeout_s
 
     def mark_needs_reconnect(self, server: str, reason: str | None = None) -> bool:
         """Note that ``server``'s grant no longer works. True when this is
@@ -2921,7 +2938,7 @@ class MCPGateway:
         # (extensible-mcp defaults to 5 results).
         if isinstance(tool_input.get("top_k"), int):
             args["top_k"] = tool_input["top_k"]
-        result = await _session_call(session, "search_tools", args)
+        result = await _session_call(session, "search_tools", args, self._call_timeout())
         text = result.content[0].text if result.content else json.dumps({"tools": []})
         return _drop_blocked_tools(text)
 
@@ -2984,6 +3001,7 @@ class MCPGateway:
 
         settings = get_settings()
         pinned = pinned_google_tools(settings)
+        self._call_timeout(settings)
         try:
             missing = [n for n in sorted(pinned) if not await self._discover(n, settings)]
         except asyncio.CancelledError:
@@ -3163,14 +3181,14 @@ class MCPGateway:
             wire_arguments = disclosed
         wire_input = {"tool_name": tool_input["name"], "arguments": wire_arguments}
         try:
-            result = await _session_call(session, "call_tool", wire_input)
+            result = await _session_call(session, "call_tool", wire_input, self._call_timeout())
             result_text = result.content[0].text if result.content else json.dumps({"result": None})
             # A pinned tool called before startup priming reached it: the prompt
             # told the model to call it directly, so discover it and retry once.
             # The refused call ran nothing, and every gate above has already
             # passed these same arguments.
             if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
-                result = await _session_call(session, "call_tool", wire_input)
+                result = await _session_call(session, "call_tool", wire_input, self._call_timeout())
                 result_text = result.content[0].text if result.content else json.dumps({"result": None})
         except GatewayCallTimeout:
             # An error payload, not a raise: the model reads it like any tool
@@ -3182,7 +3200,7 @@ class MCPGateway:
             return json.dumps({
                 "error": (
                     f"{str(tool_name)[:200]} did not answer within "
-                    f"{_tool_timeout_s():.0f}s. It may still have run: "
+                    f"{self._call_timeout():.0f}s. It may still have run: "
                     "check its effect before calling it again."
                 ),
                 "timed_out": True,
@@ -3252,6 +3270,7 @@ class MCPGateway:
             session,
             "load_mcp_server",
             {"name": tool_input["name"], "url": url},
+            self._call_timeout(),
         )
         return result.content[0].text if result.content else json.dumps({"ok": True})
 
