@@ -21,6 +21,7 @@ from openexecutive.audit.redaction import (
     audit_tool_result_full,
 )
 from openexecutive.audit.usage import log_model_usage
+from openexecutive.chat_review.lessons import build_lessons_block
 from openexecutive.config import get_settings
 from openexecutive.delegation.lockdown import (
     mail_touched_withheld_error,
@@ -1027,6 +1028,7 @@ class Executive:
         page_context_block: str = "",
         working_style: str = "",
         standing_facts: str = "",
+        lessons: str = "",
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         history = session.get_recent_history()
@@ -1077,6 +1079,14 @@ class Executive:
         if standing_facts:
             user_content_parts.append(
                 {"type": "text", "text": f"<standing_facts>\n{standing_facts}\n</standing_facts>"}
+            )
+        # Lessons the owner approved after the reflection looked back at earlier
+        # conversations (chat_review/lessons.py). They say what to do differently
+        # in this workspace and never authorise an action; the gates still run.
+        # User turn, never a cached system block: it changes whenever a lesson does.
+        if lessons:
+            user_content_parts.append(
+                {"type": "text", "text": f"<lessons>\n{lessons}\n</lessons>"}
             )
         if episodic_context:
             user_content_parts.append(
@@ -1315,6 +1325,7 @@ class Executive:
             from openexecutive.attunement.style import build_style_block
 
             working_style = build_style_block(person_id)
+            lessons = await asyncio.to_thread(build_lessons_block)
             if standing_facts is None:
                 # A SQLite read: off the event loop, like the other context.
                 standing_facts = await asyncio.to_thread(render_facts_for_prompt)
@@ -1331,6 +1342,7 @@ class Executive:
                 page_context_block=page_context_block,
                 working_style=working_style,
                 standing_facts=standing_facts,
+                lessons=lessons,
             )
 
             _emit_memory_snapshot(
@@ -1346,6 +1358,7 @@ class Executive:
                 committee=False,
                 working_style=working_style,
                 standing_facts=standing_facts,
+                lessons=lessons,
             )
             consulted: list[str] = []
             async for item in self._stream_agent_loop(
@@ -1642,6 +1655,7 @@ class Executive:
         from openexecutive.attunement.style import build_style_block
 
         working_style = build_style_block(person_id)
+        lessons = await asyncio.to_thread(build_lessons_block)
         if standing_facts is None:
             standing_facts = await asyncio.to_thread(render_facts_for_prompt)
         messages = self._build_messages(
@@ -1657,6 +1671,7 @@ class Executive:
             page_context_block=page_context_block,
             working_style=working_style,
             standing_facts=standing_facts,
+            lessons=lessons,
         )
 
         # ----- Phase 1: drafting -----------------------------------------
@@ -1683,6 +1698,7 @@ class Executive:
             committee=True,
             working_style=working_style,
             standing_facts=standing_facts,
+            lessons=lessons,
         )
 
         async for item in self._stream_agent_loop(

@@ -8,6 +8,7 @@ import RhythmSection, { FollowUpsCard, RecentActivity } from "./CadenceSection";
 import MemoryList from "./MemorySection";
 import { HeartbeatCard, usePulseData } from "./PulseHeader";
 import { ComingUp, DoneRecently, FocusedScreen, MemoryTiles } from "./PulseOverview";
+import { ReflectionCard, ReflectionScreen } from "./ReflectionSection";
 import { ValueScreen, YourMonthCard } from "./ValueSection";
 
 // The Pulse page is the Executive's memory + heartbeat: what it knows
@@ -56,6 +57,11 @@ const SCREENS: Record<Exclude<PulseView, "overview">, { title: string; descripti
     title: "Your notes",
     description: "What you said, in chat and in replies you approved. Only you see these.",
   },
+  reflection: {
+    title: "Reflection",
+    description:
+      "Each morning it looks back at yesterday's conversations and writes up what it could have done better. Nothing changes until you approve it here.",
+  },
 };
 
 export default function PulsePage() {
@@ -90,6 +96,7 @@ export default function PulsePage() {
           )}
           {view === "activity" && <RecentActivity />}
           {view === "value" && <ValueScreen />}
+          {view === "reflection" && <ReflectionScreen />}
           {isMemoryView(view) && <MemoryList view={view} />}
         </FocusedScreen>
       )}
@@ -109,6 +116,7 @@ function Overview() {
         </p>
       </header>
       <YourMonthCard />
+      <ReflectionCard />
       <HeartbeatCard pulse={pulse} />
       <MemoryTiles pulse={pulse} />
       <div className="grid gap-6 md:grid-cols-2">

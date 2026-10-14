@@ -71,6 +71,7 @@ SECTIONS_FOR: dict[str, set[str]] = {
     "providers": {"agents", "lifecycle", "review"},
     "audit": {"audit"},
     "attunement": {"attunement"},
+    "chat_review": {"chat_review"},
     "monitoring": {"external_monitoring"},
     "mcp_server": {"mcp_server"},
     "clients": {"clients", "peer_memory"},

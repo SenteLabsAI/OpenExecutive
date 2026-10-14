@@ -12,7 +12,8 @@ export type PulseView =
   | "initiatives"
   | "advice"
   | "corrections"
-  | "history";
+  | "history"
+  | "reflection";
 
 export const MEMORY_VIEWS = ["decisions", "initiatives", "advice", "corrections", "history"] as const;
 export type MemoryView = (typeof MEMORY_VIEWS)[number];
@@ -39,6 +40,7 @@ export function pulseViewFor(tab: string | null | undefined): PulseView {
     case "advice":
     case "corrections":
     case "history":
+    case "reflection":
       return tab;
     default:
       return "overview";

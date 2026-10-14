@@ -133,6 +133,14 @@ SECTIONS: list[SectionSpec] = [
         diagram_kind="flowchart",
     ),
     SectionSpec(
+        id="chat_review",
+        title="Reflection, Looking Back",
+        sub="The reflection's second step reads yesterday's conversations, records where the Executive fell short, and proposes lessons the owner approves on the Reflection screen; approved lessons ride every chat turn.",
+        kb_query="reflection look back chat review findings lessons proposals owner approves",
+        wants_mermaid=True,
+        diagram_kind="flowchart",
+    ),
+    SectionSpec(
         id="attunement",
         title="Attunement (Open Loops)",
         sub="How the Executive keeps track of what each person owes: sender attribution, 👍/👎 feedback, and open loops from anyone on the roster that the nudge engine chases once due and closes when done.",

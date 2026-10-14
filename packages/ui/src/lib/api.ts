@@ -5632,3 +5632,133 @@ export async function rollbackSavedTool(name: string, version: number): Promise<
   if (!res.ok) throw await savedToolError(res, "Couldn't switch the version.");
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Reflection, looking back (GET /reflection/look-back and its writes). The
+// reflection's second step reads yesterday's conversations and proposes
+// lessons; the owner reads and decides on Pulse → Reflection. Owner only: a
+// 403 reads as "not yours", and the screen says so.
+// ---------------------------------------------------------------------------
+
+export type FindingKind = "fact" | "lesson" | "gap" | "product";
+export type FindingStatus = "proposed" | "approved" | "dismissed" | "filed" | "recorded";
+
+export interface FindingEvidence {
+  message_id: number;
+  quote: string;
+}
+
+export interface LookBackFinding {
+  id: number;
+  run_id: number;
+  created_at: string;
+  session_id: string;
+  kind: FindingKind;
+  severity: "low" | "medium" | "high";
+  title: string;
+  what_happened: string;
+  evidence: FindingEvidence[];
+  proposal: string;
+  status: FindingStatus;
+  resolved_at: string | null;
+  resolved_by_person_id: number | null;
+  resolution_note: string;
+  lesson_id: number | null;
+  fact_id: number | null;
+}
+
+export interface LookBackRun {
+  id: number;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "done" | "failed";
+  day: string;
+  sessions_considered: number;
+  sessions_reviewed: number;
+  findings_count: number;
+  error: string;
+  findings: LookBackFinding[];
+}
+
+export interface ExecutiveLesson {
+  id: number;
+  text: string;
+  status: "active" | "retired";
+  locked: boolean;
+  source_finding_id: number | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: string;
+  approved_by_person_id: number | null;
+  retired_at: string | null;
+  retired_reason: string;
+}
+
+export interface LookBackSettings {
+  enabled: boolean;
+  apply_mode: "ask" | "auto";
+  clean_approvals: number;
+  auto_apply_available: boolean;
+  last_run_at: string | null;
+}
+
+export interface LookBack {
+  settings: LookBackSettings;
+  week: { conversations_reviewed: number; findings: number; lessons_active: number; waiting: number };
+  runs: LookBackRun[];
+  lessons: ExecutiveLesson[];
+  waiting: LookBackFinding[];
+}
+
+/** Null when the viewer is not the owner (403). */
+export async function getLookBack(): Promise<LookBack | null> {
+  const res = await fetch(`${API_BASE}/reflection/look-back`);
+  if (res.status === 403) return null;
+  if (!res.ok) throw new Error(`Failed to load the look back: ${res.statusText}`);
+  return res.json();
+}
+
+async function reflectionWrite<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = (await res.json()) as { detail?: string };
+      if (data.detail) detail = data.detail;
+    } catch {
+      // keep the status text
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export function updateLookBackSettings(body: { enabled?: boolean; apply_mode?: "ask" | "auto" }) {
+  return reflectionWrite<LookBackSettings>("/reflection/look-back/settings", "PUT", body);
+}
+
+export function approveFinding(findingId: number, text?: string) {
+  return reflectionWrite<{ finding: LookBackFinding | null; lesson: ExecutiveLesson | null }>(
+    `/reflection/findings/${findingId}/approve`,
+    "POST",
+    text === undefined ? {} : { text },
+  );
+}
+
+export function dismissFinding(findingId: number, reason = "") {
+  return reflectionWrite<{ finding: LookBackFinding | null }>(`/reflection/findings/${findingId}/dismiss`, "POST", {
+    reason,
+  });
+}
+
+export function updateLesson(lessonId: number, body: { text?: string; locked?: boolean }) {
+  return reflectionWrite<{ lesson: ExecutiveLesson | null }>(`/reflection/lessons/${lessonId}`, "PUT", body);
+}
+
+export function retireLesson(lessonId: number, reason = "") {
+  return reflectionWrite<{ lesson: ExecutiveLesson | null }>(`/reflection/lessons/${lessonId}`, "DELETE", { reason });
+}

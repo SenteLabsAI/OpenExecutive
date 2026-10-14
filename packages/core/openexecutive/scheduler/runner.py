@@ -2516,10 +2516,26 @@ async def _run_executive_reflection(
     """
     assert action.id is not None
     await _reflect(now, kind="executive_reflection")
+    # The reflection's second half: look back at yesterday's conversations
+    # and propose lessons on the Reflection screen (chat_review/run.py). Its
+    # own step with no acting tools, after the standup has acted; it never
+    # raises and never notifies anyone.
+    await _look_back(now)
     # Always chain + mark done so a single failed reflection doesn't
     # kill the recurring rhythm.
     mark_action_done(action.id)
     _enqueue_next_principal_brief("executive_reflection", after=_chain_after(action))
+
+
+async def _look_back(now: datetime) -> None:
+    """Run the look back after the standup step. Never raises."""
+    try:
+        from openexecutive.chat_review.run import run_look_back
+
+        summary = await run_look_back(now)
+        logger.info("scheduler: look back %s", summary)
+    except Exception:
+        logger.exception("scheduler: look back failed")
 
 
 # Take the lead as the Executive: new mail or chat wakes the reflection early

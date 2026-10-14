@@ -407,6 +407,12 @@ def initialize_db(db_path: Path | None = None) -> None:
 
         _ensure_history_schema(conn)
 
+        # Reflection, looking back: runs, findings and the approved lessons
+        # (chat_review/store.py).
+        from openexecutive.chat_review.store import ensure_schema as _ensure_chat_review_schema
+
+        _ensure_chat_review_schema(conn)
+
         # Attunement outcome ledger: one row per proactive DM to a rostered
         # person, resolved replied / acted / void / ignored
         # (attunement/outcomes.py).

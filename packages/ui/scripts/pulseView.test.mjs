@@ -15,6 +15,7 @@ test("pulseViewFor keeps the old tab links working", () => {
   assert.equal(pulseViewFor("followups"), "schedule");
   assert.equal(pulseViewFor("schedule"), "schedule");
   assert.equal(pulseViewFor("activity"), "activity");
+  assert.equal(pulseViewFor("reflection"), "reflection");
   assert.equal(pulseViewFor("value"), "value");
   assert.equal(pulseViewFor("month"), "value");
   assert.equal(pulseViewFor("corrections"), "corrections");

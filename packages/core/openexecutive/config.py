@@ -1101,6 +1101,14 @@ class Settings(BaseSettings):
     # loop the nudge engine's commitment source chases once it is due, and a
     # later "sent it" from the same person closes it. Rows live in
     # scheduled_actions (kind="open_loop"); see attunement/open_loops.py.
+    # Reflection, looking back (chat_review/): the reflection's second step
+    # reads yesterday's conversations and proposes lessons on the Reflection
+    # screen. CHAT_REVIEW_ENABLED is the operator's switch; the owner has their
+    # own on the screen. CHAT_REVIEW_MAX_SESSIONS caps the conversations one
+    # run reads (cost: one model call each).
+    chat_review_enabled: bool = Field(True, alias="CHAT_REVIEW_ENABLED")
+    chat_review_model: str = Field("claude-sonnet-5-5", alias="CHAT_REVIEW_MODEL")
+    chat_review_max_sessions: int = Field(15, alias="CHAT_REVIEW_MAX_SESSIONS")
     attunement_enabled: bool = Field(True, alias="ATTUNEMENT_ENABLED")
     attunement_open_loops_enabled: bool = Field(True, alias="ATTUNEMENT_OPEN_LOOPS_ENABLED")
     # When no due date is stated, the loop is due this many days after it opens.

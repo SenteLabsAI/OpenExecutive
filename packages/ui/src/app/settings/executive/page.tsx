@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import ExecutiveRunSwitch from "@/components/executive/ExecutiveRunSwitch";
 import VoicePicker from "@/components/executive/VoicePicker";
+import { LookBackSwitches } from "@/components/memories/ReflectionSection";
 import SettingsCard from "@/components/settings/SettingsCard";
 import SettingsSubpage from "@/components/settings/SettingsSubpage";
 
@@ -12,7 +13,7 @@ import SettingsSubpage from "@/components/settings/SettingsSubpage";
 const ALWAYS_DOES: { title: string; text: string }[] = [
   { title: "Morning brief and evening digest", text: "Sums up your day and what's waiting for you." },
   { title: "Nudges", text: "Reminds people about things they owe you." },
-  { title: "Looks over your day", text: "Spots what's stuck or coming up and tells you." },
+  { title: "Reflection", text: "Looks over your day before the brief: spots what's stuck or coming up and tells you. Looking back at its chats has its own switch below." },
   { title: "Research and monitoring", text: "Follows the topics and sources you asked it to watch." },
 ];
 
@@ -44,6 +45,13 @@ export default function ExecutiveSettingsPage() {
             </li>
           ))}
         </ul>
+      </SettingsCard>
+
+      <SettingsCard
+        title="Reflection, looking back"
+        description="The other half of its reflection: what it could have done better in yesterday's conversations, written up for you to read when you choose."
+      >
+        <LookBackSwitches />
       </SettingsCard>
 
       <p className="text-[15px] text-fg-muted">
