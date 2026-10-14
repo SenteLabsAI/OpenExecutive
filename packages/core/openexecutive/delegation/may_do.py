@@ -442,7 +442,7 @@ def as_the_executive(*, is_principal: bool) -> Section:
 
     rows.append(Row(
         "meetings", "Booking a meeting it thought of", "always_waits", "Waits for its approver",
-        "Always. Book meetings without asking covers only meetings someone asks for in chat, "
+        "Always. Always asks first: Meetings asked for in chat covers only meetings someone asks for in chat, "
         "and it never cancels a meeting on its own.",
         SETTING_TAKE_THE_LEAD,
     ))
@@ -476,12 +476,12 @@ def _meetings_in_chat() -> Row:
     if class_mode != "auto_execute":
         return Row(
             "meetings_chat", what, "waits", "Waits for its approver",
-            "Book meetings without asking is off.", SETTING_TAKE_THE_LEAD,
+            "Always asks first: Meetings asked for in chat is on.", SETTING_TAKE_THE_LEAD,
         )
     if get_workspace().mode == "solo":
         return Row(
             "meetings_chat", what, "goes", "Books it",
-            "Book meetings without asking is on: when you ask, it books.", SETTING_TAKE_THE_LEAD,
+            "Always asks first: Meetings asked for in chat is off, so when you ask, it books.", SETTING_TAKE_THE_LEAD,
         )
     from openexecutive.departments import registry as dept_registry
 
@@ -490,11 +490,11 @@ def _meetings_in_chat() -> Row:
     if level == "auto_execute":
         return Row(
             "meetings_chat", what, "goes", "Books it",
-            "Book meetings without asking is on, and Operations acts on its own.", department_setting("operations"),
+            "Meetings asked for in chat is off in Always asks first, and Operations acts on its own.", department_setting("operations"),
         )
     return Row(
         "meetings_chat", what, "waits", "Waits for its approver",
-        "Book meetings without asking is on, but Operations isn't set to Acts on its own.",
+        "Meetings asked for in chat is off in Always asks first, but Operations isn't set to Acts on its own.",
         department_setting("operations"),
     )
 

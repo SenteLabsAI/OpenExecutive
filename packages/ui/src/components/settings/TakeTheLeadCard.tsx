@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { MeetingAskFirstRow } from "@/components/settings/WorkspaceCard";
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
@@ -192,40 +193,40 @@ export default function TakeTheLeadCard() {
           </div>
         )}
         {lead.enabled && (
-          <>
-            <p className="rounded-xl bg-surface-overlay/60 px-4 py-3 text-sm leading-relaxed text-fg-muted">
-              Department levels don&apos;t hold what it does here: the switches and rules below do. A meeting it thinks
-              of always waits for a yes, whatever Book meetings without asking says.
-            </p>
-            <div>
-              <h3 className="text-[15px] font-semibold text-fg">Always asks first</h3>
-              <p className="mt-1 text-sm text-fg-muted">
-                These wait for you, or for whoever approves that area (like spending or hiring), with a card on Today.
-              </p>
-              <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
-                {lead.ask_first.map((item) => {
-                  const id = `ask-first-${item.kind}`;
-                  return (
-                    <li key={item.kind} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
-                      <span className="min-w-0">
-                        <span id={id} className="block text-[15px]">
-                          {item.label}
-                        </span>
-                        <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">{item.hint}</span>
-                      </span>
-                      <Switch
-                        checked={item.on}
-                        onChange={() => void save({ ask_first: { [item.kind]: !item.on } })}
-                        disabled={busy}
-                        labelledBy={id}
-                      />
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          </>
+          <p className="rounded-xl bg-surface-overlay/60 px-4 py-3 text-sm leading-relaxed text-fg-muted">
+            Department levels don&apos;t hold what it does here: the switches and rules below do. A meeting it thinks
+            of always waits for a yes.
+          </p>
         )}
+        <div>
+          <h3 className="text-[15px] font-semibold text-fg">Always asks first</h3>
+          <p className="mt-1 text-sm text-fg-muted">
+            These wait for you, or for whoever approves that area (like spending or hiring), with a card on Today.
+            {!lead.enabled && " While Take the lead is off, only the last one applies: the rest are kept for when it's on."}
+          </p>
+          <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">
+            {lead.ask_first.map((item) => {
+              const id = `ask-first-${item.kind}`;
+              return (
+                <li key={item.kind} className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
+                  <span className="min-w-0">
+                    <span id={id} className="block text-[15px]">
+                      {item.label}
+                    </span>
+                    <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">{item.hint}</span>
+                  </span>
+                  <Switch
+                    checked={item.on}
+                    onChange={() => void save({ ask_first: { [item.kind]: !item.on } })}
+                    disabled={busy}
+                    labelledBy={id}
+                  />
+                </li>
+              );
+            })}
+            <MeetingAskFirstRow />
+          </ul>
+        </div>
         <div>
           <h3 className="text-[15px] font-semibold text-fg">Company rules</h3>
           <p className="mt-1 mb-3 text-sm text-fg-muted">

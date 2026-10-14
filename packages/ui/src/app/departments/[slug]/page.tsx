@@ -59,7 +59,7 @@ const AUTHORITY_META: Record<
     hint: "The specialist drafts actions and routes them to a person for approval before anything happens.",
   },
   escalate: {
-    label: "Escalates to a human",
+    label: "Escalates to a person",
     hint: "The specialist will not act — it forwards everything to a human.",
   },
 };

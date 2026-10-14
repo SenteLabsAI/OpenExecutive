@@ -2,11 +2,10 @@
 
 import DelegatePage from "@/components/delegate/DelegatePage";
 import TakeTheLeadCard from "@/components/settings/TakeTheLeadCard";
-import { MeetingAutonomySwitch } from "@/components/settings/WorkspaceCard";
 
 // Delegate → Take the lead: what the Executive does in its own name without
-// waiting to be asked, and booking meetings without asking. Pause, on
-// Settings → Your Executive, stops all of it.
+// waiting to be asked, with its Always asks first list (meetings asked for
+// in chat included). Pause, on Settings → Your Executive, stops all of it.
 export default function TakeTheLeadPage() {
   return (
     <DelegatePage
@@ -14,7 +13,6 @@ export default function TakeTheLeadPage() {
       description="What the Executive does in its own name, without waiting to be asked. People can see it's the Executive."
     >
       <TakeTheLeadCard />
-      <MeetingAutonomySwitch />
     </DelegatePage>
   );
 }

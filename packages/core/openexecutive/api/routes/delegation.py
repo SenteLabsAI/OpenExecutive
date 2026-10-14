@@ -27,6 +27,13 @@ Routes:
                                     on and a calendar read that works (409
                                     calendar_not_granted when their sign-in
                                     lacks it, 503 when it can't be reached)
+  PUT    /delegation/reach        — {step}: How far it goes as you, one dial
+                                    over Act as me, the inbox watcher, Handle
+                                    it for me and its level, and Everything
+                                    (off, when_asked, inbox, careful,
+                                    balanced, bold, everything). Down turns
+                                    the higher switches off; up turns each on
+                                    through its own route and its checks
   PUT    /delegation/inbox        — {enabled?, mailbox_drafts?}: "Draft
                                     replies to my inbox"; turning it on needs
                                     Act as me on and Gmail connected (409),
@@ -103,7 +110,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -1129,6 +1136,82 @@ async def update_take_the_lead_as_you(request: Request, body: LeadUpdate) -> Del
         )
     return await _state(person)
 
+
+# How far it goes as you: one dial over Write drafts as me, Draft replies to
+# my inbox, Handle it for me and its level, and Everything (Take the lead as
+# you). Each step adds to the one before it.
+REACH_STEPS: tuple[str, ...] = ("off", "when_asked", "inbox", "careful", "balanced", "bold", "everything")
+_SENDING_FROM = REACH_STEPS.index("careful")
+
+
+class ReachUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step: Literal["off", "when_asked", "inbox", "careful", "balanced", "bold", "everything"]
+
+
+def reach_of(person_id: int) -> str:
+    """Where ``person_id`` is on the dial, from the switches it sets."""
+    from openexecutive.delegation import handle_it, inbox, training
+
+    if not is_enabled(person_id):
+        return "off"
+    if not inbox.get_watch(person_id).enabled:
+        return "when_asked"
+    stored = handle_it.get(person_id)
+    if not stored.enabled:
+        return "inbox"
+    if not training.get(person_id).replies and handle_it.leading(person_id):
+        return "everything"
+    return stored.mode
+
+
+@router.put("/delegation/reach", response_model=DelegationOut)
+async def update_delegation_reach(request: Request, body: ReachUpdate) -> DelegationOut:
+    """Move the dial. Going down turns the higher switches off first, top
+    down, and needs no signed sign-in. Going up turns each one on in order
+    through its own route, so every check that switch makes still applies
+    (the mailbox connected, signed sign-ins, the owner alone for Everything,
+    not in training); the first one that refuses stops the move there, at a
+    step that is itself whole. Training is left as it is."""
+    from openexecutive.delegation import handle_it
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    target = REACH_STEPS.index(body.step)
+    current = REACH_STEPS.index(reach_of(person_id))
+    if target == current:
+        return await _state(person)
+
+    # Down: highest first, so nothing is ever on above a switch that's off.
+    if target < REACH_STEPS.index("everything"):
+        _lead_off(person_id)
+    if target < _SENDING_FROM:
+        _set_handle_it(person_id, enabled=False, mode=None)
+    if target < REACH_STEPS.index("inbox"):
+        _set_inbox(person_id, False)
+    if target < REACH_STEPS.index("when_asked"):
+        return await update_delegation(request, DelegationUpdate(enabled=False))
+
+    # Up, or across the sending steps: each switch through its own route.
+    if not is_enabled(person_id):
+        await update_delegation(request, DelegationUpdate(enabled=True))
+    if target >= REACH_STEPS.index("inbox"):
+        from openexecutive.delegation import inbox
+
+        if not inbox.get_watch(person_id).enabled:
+            await update_delegation_inbox(request, InboxUpdate(enabled=True))
+    if target >= _SENDING_FROM:
+        mode = body.step if body.step in handle_it.MODES else None
+        stored = handle_it.get(person_id)
+        if stored.enabled and mode is not None and handle_it.MODES.index(mode) < handle_it.MODES.index(stored.mode):
+            # A lower level only holds more back: no signed sign-in needed.
+            _set_handle_it(person_id, enabled=None, mode=mode)
+        elif not stored.enabled or (mode is not None and mode != stored.mode):
+            await update_delegation_handle_it(request, HandleItUpdate(enabled=True, mode=mode))
+    if body.step == "everything":
+        await update_take_the_lead_as_you(request, LeadUpdate(enabled=True))
+    return await _state(person)
 
 def _rules_out(person_id: int) -> LeadRulesOut:
     from openexecutive.orchestrator import take_the_lead

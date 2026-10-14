@@ -362,13 +362,14 @@ function RoleSection() {
   );
 }
 
-// "Book meetings without asking" — the meeting_scheduling decision class
-// between "propose" (each booking waits for approval in the briefing) and
-// "auto_execute". Hidden when this backend has no such setting (404). Shown
-// on Delegate → Take the lead. It covers bookings someone asks for in chat:
-// both meeting gates need a person on a verified surface in the turn, so a
-// booking Take the lead thinks of always waits (calendar_tools).
-export function MeetingAutonomySwitch() {
+// Meetings someone asks for in chat, as a row of Take the lead's Always asks
+// first list: the meeting_scheduling decision class between "propose" (asks
+// first: each booking waits for a yes on Today) and "auto_execute". Hidden
+// when this backend has no such setting (404). It covers only bookings
+// someone asks for in chat: both meeting gates need a person on a verified
+// surface in the turn, so a booking Take the lead thinks of always waits
+// (calendar_tools), and with a team Operations must act on its own too.
+export function MeetingAskFirstRow() {
   const [mode, setMode] = useState<DecisionClassMode | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "absent" | "error">("loading");
   const [busy, setBusy] = useState(false);
@@ -393,20 +394,12 @@ export function MeetingAutonomySwitch() {
   }, []);
 
   if (state === "absent" || state === "loading") return null;
-  if (state === "error") {
-    return (
-      <SettingsCard>
-        <p className="text-sm text-fg-muted">Couldn&apos;t load the meeting-booking setting.</p>
-      </SettingsCard>
-    );
-  }
-
-  const on = mode === "auto_execute";
+  const asks = mode !== "auto_execute";
   const toggle = async () => {
     setBusy(true);
     setError(null);
     try {
-      const next = await setDecisionClassMode(MEETING_SCHEDULING_CLASS, on ? "propose" : "auto_execute");
+      const next = await setDecisionClassMode(MEETING_SCHEDULING_CLASS, asks ? "auto_execute" : "propose");
       setMode(next.mode);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the setting.");
@@ -416,17 +409,21 @@ export function MeetingAutonomySwitch() {
   };
 
   return (
-    <SettingsCard
-      title="Book meetings without asking"
-      titleId="ws-meetings-label"
-      description={
-        on
-          ? "When you or a teammate ask in chat, it books the meeting without waiting for a yes (with a team, only while Operations acts on its own). A meeting it thinks of on its own still waits for one."
-          : "Each meeting it wants to book waits for a yes on Today, even when you asked for it in chat."
-      }
-      action={<Switch checked={on} onChange={() => void toggle()} disabled={busy} labelledBy="ws-meetings-label" />}
-    >
-      {error && <p className="text-sm text-red-500">{error}</p>}
-    </SettingsCard>
+    <li className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
+      <span className="min-w-0">
+        <span id="ask-first-meetings" className="block text-[15px]">
+          Meetings asked for in chat
+        </span>
+        <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">
+          {state === "error"
+            ? "Couldn't load this setting."
+            : error ??
+              "Meetings you or a teammate ask it to book (with a team, Operations must also act on its own). A meeting it thinks of itself always waits."}
+        </span>
+      </span>
+      {state === "ready" && (
+        <Switch checked={asks} onChange={() => void toggle()} disabled={busy} labelledBy="ask-first-meetings" />
+      )}
+    </li>
   );
 }

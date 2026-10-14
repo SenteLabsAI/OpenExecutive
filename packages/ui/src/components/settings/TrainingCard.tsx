@@ -15,9 +15,9 @@ import {
 
 // Training on Delegate → Act as me (delegation/training.py), the way Take the
 // lead has it: like someone new, each job can be In training, where it brings
-// you its work first and learns who and how from what you approve. Each job's
-// card carries its own Off / In training / On (Write drafts as me, Handle it
-// for me); this file holds the note at the top, the Suggested actions card
+// you its work first and learns who and how from what you approve. Replies,
+// follow-ups and drafts are trained from How far it goes as you (ReachCard);
+// this file holds the note at the top, the Suggested actions card
 // (Always ask / In training, PUT /delegation/training) and, at the bottom, one
 // "What it's learned" list, each item named by its job, with Remove
 // (DELETE /delegation/learned/{id}).

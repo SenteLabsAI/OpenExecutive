@@ -238,7 +238,7 @@ def test_escalate_creates_urgent_alert_and_holds() -> None:
     ) as mock_chat:
         asyncio.run(_execute_action(action, gateway=None))
 
-    # Nothing is sent: "Escalates to a human" promises the specialist will not act.
+    # Nothing is sent: "Escalates to a person" promises the specialist will not act.
     mock_chat.assert_not_called()
 
     # An urgent card went to the approver instead.

@@ -1506,7 +1506,7 @@ export async function updateWorkspace(update: WorkspaceUpdate): Promise<Workspac
 
 // ----------------------------------------------------------------------------
 // Act as me — the Executive drafts email AS you, in your own Drafts (Gmail or Outlook),
-// when you ask it to or (with Draft replies to my inbox on) for mail that
+// when you ask it to or (with Drafts for my inbox or above) for mail that
 // needs you. It sends only a reply card's draft, when you tap Send. The owner
 // can have it, and team members too once the owner lets them.
 // ----------------------------------------------------------------------------
@@ -2161,7 +2161,7 @@ export interface DecisionClassSetting {
   mode: DecisionClassMode;
 }
 
-// The class behind "Book meetings without asking".
+// The class behind "Meetings asked for in chat" in Take the lead's Always asks first.
 export const MEETING_SCHEDULING_CLASS = "meeting_scheduling";
 
 /** The class's mode, or null when this backend has no setting for it (404). */
@@ -4866,6 +4866,20 @@ export async function declineWatchSuggestion(
     const text = await res.text().catch(() => "");
     throw new Error(`Failed to decline suggestion: ${res.statusText}${text ? ` — ${text}` : ""}`);
   }
+  return res.json();
+}
+
+// How far it goes as you (PUT /delegation/reach): one dial over Act as me,
+// the inbox watcher, Handle it for me and its level, and Everything.
+export type ReachStep = "off" | "when_asked" | "inbox" | HandleItMode | "everything";
+
+export async function setReach(step: ReachStep): Promise<DelegationSettings> {
+  const res = await fetch(`${API_BASE}/delegation/reach`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change how far it goes.");
   return res.json();
 }
 
