@@ -798,3 +798,15 @@ def _refresh_form(cred: OutlookCredential) -> dict[str, str]:
     ol._TOKENS.clear()
     asyncio.run(refresh())
     return forms[0]
+
+
+def test_an_outlook_all_day_event_keeps_its_day_east_and_west_of_utc() -> None:
+    def day(start: str, end: str) -> tuple[str, str]:
+        event = ol.parse_event({"id": "e", "subject": "Offsite", "isAllDay": True,
+                                "start": {"dateTime": start}, "end": {"dateTime": end}})
+        assert event is not None
+        return event.start, event.end
+
+    # Tokyo's 14th, shown in UTC, starts at 15:00 on the 13th; New York's at 04:00 on the 14th.
+    assert day("2026-10-13T15:00:00.0000000", "2026-10-14T15:00:00.0000000") == ("2026-10-14", "2026-10-15")
+    assert day("2026-10-14T04:00:00.0000000", "2026-10-15T04:00:00.0000000") == ("2026-10-14", "2026-10-15")

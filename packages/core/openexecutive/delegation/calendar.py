@@ -109,6 +109,17 @@ def local_when(value: str, all_day: bool, tz: ZoneInfo) -> str:
     return moment.astimezone(tz).strftime("%Y-%m-%d %H:%M")
 
 
+def last_day(start: str, end: str) -> str:
+    """An all-day event's last day: its ``end`` is the day after (both
+    Google and Graph), so a one-day event ends on its start."""
+    try:
+        first = date.fromisoformat(start[:10])
+        after = date.fromisoformat(end[:10])
+    except ValueError:
+        return start[:10]
+    return max(first, after - timedelta(days=1)).isoformat()
+
+
 async def events_for(mailbox: Any, start: datetime, end: datetime, *, max_results: int = 100) -> list[Any]:
     """``mailbox.list_events``: their own calendar, through the client for
     their mailbox (Gmail or Outlook)."""

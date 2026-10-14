@@ -610,7 +610,8 @@ def test_my_calendar_lists_their_day_in_their_time_zone(calendar_on: None) -> No
     pilot, offsite = result["events"]
     assert pilot["start"] == "2026-10-14 09:00" and pilot["end"] == "2026-10-14 09:30"
     assert "\n" not in pilot["title"] and pilot["their_answer"] == "accepted" and pilot["location"] == "Room 4"
-    assert offsite == {"title": "Offsite", "start": "2026-10-14", "end": "2026-10-15", "all_day": True}
+    # The providers' all-day end is the day after; a one-day event ends the day it starts.
+    assert offsite == {"title": "Offsite", "start": "2026-10-14", "end": "2026-10-14", "all_day": True}
     start, end, _limit = mailbox.windows[0]
     assert start.isoformat() == "2026-10-14T00:00:00-07:00" and end - start == timedelta(days=2)
     assert session.turn_delegation.touched_mail is True and session.turn_delegation.read_mail is True

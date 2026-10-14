@@ -273,12 +273,16 @@ def _graph_when(value: object, all_day: bool) -> str:
     raw = str(value.get("dateTime") or "") if isinstance(value, dict) else ""
     if not raw:
         return ""
-    if all_day:
-        return raw[:10]
     try:
-        return datetime.fromisoformat(raw[:19]).replace(tzinfo=UTC).isoformat()
+        moment = datetime.fromisoformat(raw[:19])
     except ValueError:
         return ""
+    if all_day:
+        # Midnight in the mailbox's own zone, shown in UTC: east of UTC that
+        # is the afternoon before (Tokyo's 14th is 15:00 on the 13th), so
+        # round to the nearest midnight.
+        return (moment + timedelta(hours=12)).date().isoformat()
+    return moment.replace(tzinfo=UTC).isoformat()
 
 
 def parse_event(raw: dict[str, Any]) -> CalendarEvent | None:
