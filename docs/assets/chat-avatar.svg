@@ -1,14 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- Background: brand surface.900 -->
-  <rect width="256" height="256" rx="48" fill="#111113"/>
-  <!-- "OE" initials in brand indigo accent -->
-  <text
-    x="128"
-    y="155"
-    font-family="Inter, ui-sans-serif, system-ui, sans-serif"
-    font-size="96"
-    font-weight="600"
-    text-anchor="middle"
-    fill="#818cf8"
-  >OE</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="256" height="256">
+  <!-- The Council mark: the Executive at the centre, its nine specialists on a
+       ring around it, white on the brand indigo (indigo-600). Same drawing as
+       packages/ui/src/components/BrandMark.tsx and packages/ui/src/app/icon.svg. -->
+  <defs><mask id="r" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="#fff"/><g fill="#000"><circle cx="24" cy="10" r="3.8"/><circle cx="33" cy="13.28" r="3.8"/><circle cx="37.79" cy="21.57" r="3.8"/><circle cx="36.12" cy="31" r="3.8"/><circle cx="28.79" cy="37.16" r="3.8"/><circle cx="19.21" cy="37.16" r="3.8"/><circle cx="11.88" cy="31" r="3.8"/><circle cx="10.21" cy="21.57" r="3.8"/><circle cx="15" cy="13.28" r="3.8"/></g></mask></defs>
+  <rect width="48" height="48" rx="12" fill="#4f46e5"/>
+  <circle cx="24" cy="24" r="14" fill="none" stroke="#fff" stroke-width="2.2" stroke-opacity=".85" mask="url(#r)"/><g fill="#fff"><circle cx="24" cy="10" r="2.9"/><circle cx="33" cy="13.28" r="2.9"/><circle cx="37.79" cy="21.57" r="2.9"/><circle cx="36.12" cy="31" r="2.9"/><circle cx="28.79" cy="37.16" r="2.9"/><circle cx="19.21" cy="37.16" r="2.9"/><circle cx="11.88" cy="31" r="2.9"/><circle cx="10.21" cy="21.57" r="2.9"/><circle cx="15" cy="13.28" r="2.9"/><circle cx="24" cy="24" r="6"/></g>
 </svg>
