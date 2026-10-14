@@ -901,6 +901,7 @@ def _emit_memory_snapshot(
     committee: bool,
     working_style: str = "",
     standing_facts: str = "",
+    lessons: str = "",
 ) -> None:
     """One memory_snapshot per turn: what was in the prompt before the API call.
 
@@ -938,6 +939,7 @@ def _emit_memory_snapshot(
             "system_blocks": _system_block_names(system_blocks),
             "working_style_chars": len(working_style),
             "standing_facts_chars": len(standing_facts),
+            "lessons_chars": len(lessons),
         },
         # Do NOT duplicate the raw user_message here — chat_turn already
         # persists it in its own row. The episodic_context and
@@ -950,6 +952,7 @@ def _emit_memory_snapshot(
             "system_blocks": _system_block_names(system_blocks),
             "working_style": working_style,
             "standing_facts": standing_facts,
+            "lessons": lessons,
         },
         # Recall that quotes the speaker's own documents keeps the row theirs.
         **_recalled_documents_owner(retrieved_context),
