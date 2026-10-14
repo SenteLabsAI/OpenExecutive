@@ -364,7 +364,12 @@ def test_a_crashed_source_is_logged(
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.sleep(0)
 
-    with caplog.at_level("ERROR", logger="openexecutive.integrations.mail_sources"):
+    # The app's logging setup stops ``openexecutive`` loggers propagating, so
+    # once any test has built the app, caplog only sees what reaches it here.
+    mail_sources.logger.addHandler(caplog.handler)
+    try:
         asyncio.run(_start())
+    finally:
+        mail_sources.logger.removeHandler(caplog.handler)
     assert "mail-source-relay stopped" in caplog.text
 
