@@ -50,7 +50,7 @@ import re
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from email.message import Message
 from email.utils import parseaddr
 from pathlib import Path
@@ -267,9 +267,9 @@ def _who(entry: object) -> str:
     return f"{name} <{address}>" if name and address else (name or address)
 
 
-def _graph_when(value: object, all_day: bool) -> str:
+def _graph_when(value: object, all_day: bool, tz: tzinfo = UTC) -> str:
     """Graph's ``{dateTime, timeZone}`` (UTC, asked for) as ISO 8601: the
-    date alone for an all-day event."""
+    date alone for an all-day event, read in ``tz`` (the person's zone)."""
     raw = str(value.get("dateTime") or "") if isinstance(value, dict) else ""
     if not raw:
         return ""
@@ -279,18 +279,21 @@ def _graph_when(value: object, all_day: bool) -> str:
         return ""
     if all_day:
         # Midnight in the mailbox's own zone, shown in UTC: east of UTC that
-        # is the afternoon before (Tokyo's 14th is 15:00 on the 13th), so
-        # round to the nearest midnight.
-        return (moment + timedelta(hours=12)).date().isoformat()
+        # is the day before (Tokyo's 14th is 15:00 on the 13th, Auckland's
+        # 11:00). Read it in the person's zone, rounded to the nearest
+        # midnight there in case the mailbox's zone differs a little.
+        local = moment.replace(tzinfo=UTC).astimezone(tz)
+        return (local + timedelta(hours=12)).date().isoformat()
     return moment.replace(tzinfo=UTC).isoformat()
 
 
-def parse_event(raw: dict[str, Any]) -> CalendarEvent | None:
-    """An Outlook event, or None for a cancelled one."""
+def parse_event(raw: dict[str, Any], tz: tzinfo = UTC) -> CalendarEvent | None:
+    """An Outlook event, or None for a cancelled one. ``tz`` is the zone an
+    all-day event's date is read in."""
     if raw.get("isCancelled") is True:
         return None
     all_day = raw.get("isAllDay") is True
-    start = _graph_when(raw.get("start"), all_day)
+    start = _graph_when(raw.get("start"), all_day, tz)
     if not start:
         return None
     status_raw = raw.get("responseStatus")
@@ -306,7 +309,7 @@ def parse_event(raw: dict[str, Any]) -> CalendarEvent | None:
         id=str(raw.get("id") or ""),
         title=clean_header(str(raw.get("subject") or "")) or "(no title)",
         start=start,
-        end=_graph_when(raw.get("end"), all_day),
+        end=_graph_when(raw.get("end"), all_day, tz),
         all_day=all_day,
         location=clean_header(str(location.get("displayName") or "")),
         organizer=_who(raw.get("organizer")),
@@ -661,7 +664,9 @@ class DelegateOutlook:
                 raise
         items_raw = data.get("value")
         items: list[Any] = items_raw if isinstance(items_raw, list) else []
-        events = [parse_event(item) for item in items if isinstance(item, dict)]
+        # The window is in the person's zone (calendar.day_window).
+        zone = start.tzinfo or UTC
+        events = [parse_event(item, zone) for item in items if isinstance(item, dict)]
         return [e for e in events if e is not None]
 
     async def profile_email(self) -> str:
