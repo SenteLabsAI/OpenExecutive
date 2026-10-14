@@ -61,47 +61,62 @@ def _note(session: Session, person: Any, *, message_id: str = "m1", answer: str 
     )
 
 
+def _proven(**kw: Any) -> Session:
+    s = Session(**kw)
+    s.email_sender_authenticated = True
+    return s
+
+
 class TestTheCard:
     def test_a_teammate_with_no_reply_gets_a_private_card_for_the_principal(
         self, people: SimpleNamespace
     ) -> None:
-        _note(Session(), people.teammate)
+        _note(_proven(), people.teammate)
 
         [card] = _cards()
-        assert card.headline == "Ann Teammate is waiting on a reply: Re: Ocean Breeze LP"
+        assert card.headline == "Ann Teammate is waiting on a reply"
         assert is_private_alert(card)
         assert card.routed_to_person_id == people.principal_id
-        # What the Executive wrote stays out of a teammate's card.
+        # Their conversation is theirs: neither what they asked nor what the
+        # Executive wrote reaches the principal.
+        assert "Ocean Breeze" not in card.body
         assert "My answer" not in card.body
 
     def test_a_repeat_in_the_thread_folds_into_one_card(self, people: SimpleNamespace) -> None:
-        _note(Session(), people.teammate, message_id="m1")
-        _note(Session(), people.teammate, message_id="m2")
-        _note(Session(), people.teammate, message_id="m3")
+        _note(_proven(), people.teammate, message_id="m1")
+        _note(_proven(), people.teammate, message_id="m2")
+        _note(_proven(), people.teammate, message_id="m3")
 
         [card] = _cards()
         assert card.occurrence_count == 3
 
-    def test_the_principals_own_mail_carries_what_the_executive_wrote(
+    def test_the_principals_proven_mail_carries_what_the_executive_wrote(
         self, people: SimpleNamespace
     ) -> None:
-        _note(Session(), people.principal, answer="Brennan replied on Oct 9.")
+        session = Session()
+        session.email_authenticated = True
+        _note(session, people.principal, answer="Brennan replied on Oct 9.")
 
         [card] = _cards()
-        assert card.headline.startswith("Your email got no reply")
+        assert card.headline == "Your email got no reply: Re: Ocean Breeze LP"
         assert "Brennan replied on Oct 9." in card.body
 
-    def test_a_teammates_own_turn_leaves_the_subject_out(
-        self, people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    def test_mail_only_claiming_the_principal_never_reads_as_theirs(
+        self, people: SimpleNamespace
     ) -> None:
-        import openexecutive.orchestrator.people_tools as people_tools
+        _note(Session(), people.principal, answer="Click https://evil.example now")
 
-        monkeypatch.setattr(people_tools, "teammate_turn_owner", lambda _s: people.teammate.id)
+        [card] = _cards()
+        assert card.headline == "An email from John Principal's address got no reply"
+        assert "evil" not in card.body
+        assert "Ocean Breeze" not in card.headline + card.body
+
+    def test_an_unproven_teammate_mail_says_so(self, people: SimpleNamespace) -> None:
         _note(Session(), people.teammate)
 
         [card] = _cards()
-        assert card.headline == "Ann Teammate is waiting on a reply"
-        assert "Ocean Breeze" not in card.body
+        assert card.headline == "An email from Ann Teammate's address got no reply"
+        assert "could not prove" in card.body
 
 
 class TestAReply:
@@ -113,8 +128,8 @@ class TestAReply:
         assert _cards() == []
 
     def test_a_later_reply_resolves_the_card(self, people: SimpleNamespace) -> None:
-        _note(Session(), people.teammate, message_id="m1")
-        answered = Session()
+        _note(_proven(), people.teammate, message_id="m1")
+        answered = _proven()
         answered.mail_sent_to.add("ann@example.com")
         _note(answered, people.teammate, message_id="m2")
 

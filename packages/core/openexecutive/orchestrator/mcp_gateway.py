@@ -3269,7 +3269,9 @@ class MCPGateway:
             _record_email_outbound_context(arguments)
         elif normalized == _M365_RECORD_SEND_TOOL and not _is_error_payload(result_text):
             _record_m365_outbound_context(arguments)
-        if not _is_error_payload(result_text):
+        # A plain-text "Error …" result (FastMCP, extensible-mcp) is no send
+        # either: marking it would hide the unanswered-email card.
+        if not _is_error_payload(result_text) and not result_text.lstrip().lower().startswith("error"):
             _note_mail_sent(tool_name, normalized, arguments)
         if attached_artifacts and not _is_error_payload(result_text):
             from openexecutive.audit import log_event as audit_log

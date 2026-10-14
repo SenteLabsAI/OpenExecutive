@@ -14,9 +14,10 @@ and :func:`close_card` resolves it once a later turn does reply there.
 
 The card is private to the principal (``PRIVATE_ALERT_TAG``, routed to them):
 only their own /today shows it. On their own mail it carries what the
-Executive wrote, which never reached them. A teammate's own conversation
-with the Executive is theirs alone (``people_tools.teammate_turn_owner``),
-so their card names only who is waiting.
+Executive wrote, which never reached them, but only when the mailbox proved
+the mail is theirs. A teammate's card names only who is waiting: their own
+conversation with the Executive is theirs alone, and an unproven mail's
+text is whoever sent it. An unproven mail says so on its card.
 
 Never raises: a card left unfiled costs the card, never the email.
 """
@@ -55,15 +56,17 @@ def file_card(
     message_id: str,
     sender_name: str,
     from_principal: bool,
+    verified: bool = True,
     subject: str = "",
     answer: str = "",
 ) -> int | None:
     """File (or bump) the card for an email whose sender got no reply.
 
     ``thread_key`` tells repeats apart (the mailbox thread id, else the
-    sender's address). ``subject`` is left out of the card when empty;
-    ``answer`` (what the Executive wrote) is kept only on the principal's own
-    mail. Returns the card's id, or None when nothing was filed."""
+    sender's address). ``from_principal`` only for mail proven to be the
+    principal's; ``subject`` and ``answer`` (what the Executive wrote) are
+    kept only then. ``verified`` False says the mail only claims to be from
+    ``sender_name``. Returns the card's id, or None when nothing was filed."""
     from openexecutive.alerts import store
     from openexecutive.alerts.models import PRIVATE_ALERT_TAG
 
@@ -79,14 +82,22 @@ def file_card(
             + (f" What it wrote:\n\n{written}" if written else "")
         )
         action = "Read what it wrote, or ask it again."
-    else:
+    elif verified:
         name = _one_line(sender_name, 80) or "A teammate"
-        headline = f"{name} is waiting on a reply{': ' + topic if topic else ''}"
+        headline = f"{name} is waiting on a reply"
         body = (
-            f"{name} emailed the Executive{about} and no reply went out. "
+            f"{name} emailed the Executive and no reply went out. "
             f"Reply to {name} yourself, or ask the Executive about it."
         )
         action = f"Reply to {name}."
+    else:
+        name = _one_line(sender_name, 80) or "someone on the team"
+        headline = f"An email from {name}'s address got no reply"
+        body = (
+            f"An email from {name}'s address reached the Executive and no reply went out. "
+            "The mailbox could not prove they sent it, so check with them before acting on it."
+        )
+        action = f"Check with {name}."
     dedup_key = _dedup_key(thread_key)
     try:
         hit = store.coalesce_alert(

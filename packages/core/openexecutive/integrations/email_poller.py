@@ -1421,14 +1421,15 @@ def _note_reply_outcome(
         if addresses & session.mail_sent_to or (message_id and message_id in session.mail_replied_ids):
             unanswered_mail.close_card(thread_key)
             return
-        from openexecutive.orchestrator.people_tools import teammate_turn_owner
-
-        from_principal = getattr(person, "is_principal", False) is True
-        # A teammate's own conversation is theirs alone: their card names
-        # only who is waiting, never what they asked.
-        own_turn = not from_principal and teammate_turn_owner(session) is not None
+        # Only mail Gmail proved is the principal's carries its subject and
+        # what the Executive wrote: a forged From must not put the model's
+        # answer to it on Home as "your email". A teammate's card never
+        # carries either: their own conversation is theirs alone, and an
+        # unproven one's subject is whatever the sender typed.
+        from_principal = getattr(person, "is_principal", False) is True and session.email_authenticated
+        verified = from_principal or session.email_sender_authenticated is True
         subject = ""
-        if not own_turn:
+        if from_principal:
             header, _body, _attachments = _split_gmail_content(raw_email)
             line = next((ln for ln in header if ln.lower().startswith("subject:")), "")
             subject = line[len("subject:"):].strip()
@@ -1437,6 +1438,7 @@ def _note_reply_outcome(
             message_id=message_id,
             sender_name=str(getattr(person, "full_name", "") or from_addr),
             from_principal=from_principal,
+            verified=verified,
             subject=subject,
             answer=response if from_principal and isinstance(response, str) else "",
         )
