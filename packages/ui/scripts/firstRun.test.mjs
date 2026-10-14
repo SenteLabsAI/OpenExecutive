@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   checklistComplete,
   checklistProgress,
+  checklistVisible,
   firstQuestion,
   gettingStartedItems,
   OWN_MAILBOX_SENDS,
@@ -93,4 +94,13 @@ test("the mailbox row says when it sends", () => {
   const own = items.find((i) => i.id === "own_mailbox");
   assert.ok(own.detail.includes(OWN_MAILBOX_SENDS));
   assert.ok(!/never sends/i.test(own.detail));
+});
+
+test("the checklist waits for every answer, so it never flashes", () => {
+  const open = gettingStartedItems(base);
+  assert.equal(checklistVisible({ hidden: false, loaded: false, items: open }), false);
+  assert.equal(checklistVisible({ hidden: false, loaded: true, items: open }), true);
+  assert.equal(checklistVisible({ hidden: true, loaded: true, items: open }), false);
+  const done = open.map((i) => ({ ...i, done: true }));
+  assert.equal(checklistVisible({ hidden: false, loaded: true, items: done }), false);
 });

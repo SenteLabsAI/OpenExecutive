@@ -7,7 +7,7 @@ import { buttonClass } from "@/components/ui/Button";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { getSetupStatus, listPeople } from "@/lib/api";
 import {
-  checklistComplete,
+  checklistVisible,
   checklistProgress,
   gettingStartedItems,
   recall,
@@ -36,6 +36,7 @@ export function useGettingStarted(
   const { mode } = useWorkspace();
   const [checks, setChecks] = useState<readonly SetupCheck[] | null>(null);
   const [teamSize, setTeamSize] = useState<number>(1);
+  const [peopleLoaded, setPeopleLoaded] = useState(false);
   // Read once, on the client: the card only renders after /health answers.
   const [hidden, setHidden] = useState<boolean>(() => recall(STORAGE_KEYS.checklistHidden) === "1");
 
@@ -47,7 +48,8 @@ export function useGettingStarted(
       .catch(() => setChecks([]));
     listPeople()
       .then((ps) => setTeamSize(ps.length))
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setPeopleLoaded(true));
     return () => ctrl.abort();
   }, [hidden, profileLoaded]);
 
@@ -68,8 +70,11 @@ export function useGettingStarted(
     setHidden(true);
   }, []);
 
-  const visible =
-    !hidden && profileLoaded !== undefined && !(checks !== null && checklistComplete(items));
+  const visible = checklistVisible({
+    hidden,
+    loaded: profileLoaded !== undefined && checks !== null && sessionsLoaded && peopleLoaded,
+    items,
+  });
   return { items, visible, hide };
 }
 

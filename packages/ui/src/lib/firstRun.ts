@@ -218,3 +218,17 @@ export function checklistProgress(items: readonly ChecklistItem[]): { done: numb
 export function checklistComplete(items: readonly ChecklistItem[]): boolean {
   return items.every((i) => i.optional || i.done);
 }
+
+/**
+ * Whether Home shows the checklist: only once every answer it depends on is
+ * in. Drawn while they load, the rows read as not done and the card flashes
+ * up for someone whose setup is finished, then vanishes.
+ */
+export function checklistVisible(input: {
+  hidden: boolean;
+  /** /health, /setup/status, the sessions and the roster have all answered. */
+  loaded: boolean;
+  items: readonly ChecklistItem[];
+}): boolean {
+  return !input.hidden && input.loaded && !checklistComplete(input.items);
+}
