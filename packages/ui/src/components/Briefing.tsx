@@ -665,8 +665,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
       : narrativeUpdatedLabel(today.narrative_generated_at, new Date())
     : null;
 
+  // In the first week the brief above opens with getting-started moves, so
+  // the day isn't "quiet" even with nothing on the board yet.
   const quietBanner =
-    isQuiet && activeDepts.length > 0 ? (
+    isQuiet && activeDepts.length > 0 && !today?.first_week ? (
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-3">
         <span className={`text-[15px] ${TONE_TEXT.emerald}`}>Quiet day — nothing needs your attention.</span>
         {!solo && (

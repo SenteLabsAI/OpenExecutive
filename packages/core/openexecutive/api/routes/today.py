@@ -515,6 +515,15 @@ class TodayResponse(BaseModel):
     # Set by GET /today for the principal alone, after the narrative inputs
     # are taken, so the held lines never reach a prompt.
     held_back: list[HeldBackItem] = Field(default_factory=list)
+    # The install's first week (``briefing.first_week``): the header opens
+    # with getting-started moves, so the page doesn't call the day quiet.
+    first_week: bool = False
+
+
+def _first_week(now: datetime) -> bool:
+    from openexecutive.briefing.first_week import first_week_started
+
+    return first_week_started(now) is not None
 
 
 class ActivityItem(BaseModel):
@@ -895,6 +904,7 @@ def _build_today(
         people=person_items,
         proposals=proposal_items,
         handled_overnight=_handled_overnight(now, include_private=include_private),
+        first_week=_first_week(now),
     )
 
     # In-flight commitments (pending follow-ups / nudges) + people we're
@@ -1610,7 +1620,8 @@ def _narrative_context(
 
     The whole-company scopes (``principal`` / ``company``) also get the live
     blocks (`_header_live`) — what came in today, what is stuck, the rest of
-    the calendar — private rows only in the principal's own scope. A
+    the calendar — private rows only in the principal's own scope, and in
+    the first week the GETTING STARTED block (``briefing.first_week``). A
     teammate's header is unchanged.
 
     On a quiet board — nothing awaiting a decision and nothing live — it
@@ -1626,11 +1637,22 @@ def _narrative_context(
     live = None
     window = "today so far"
     now_label: str | None = None
+    getting_started = ""
     if viewer_desc is None:
         live, window, now_label = _header_live(
             include_private=scope == narrative_cache.DEFAULT_SCOPE
         )
-    if _nothing_needs_attention(today_data, mode) and (live is None or live.is_empty()):
+        # The first week: goals and departments with no leader, so a new
+        # install's header has something to say (never the owner's own inbox
+        # here; the header's hot path reads no mailbox).
+        from openexecutive.briefing.first_week import getting_started_shared
+
+        getting_started = getting_started_shared().text
+    if (
+        _nothing_needs_attention(today_data, mode)
+        and (live is None or live.is_empty())
+        and not getting_started
+    ):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)
     context = render_briefing_context(
@@ -1641,6 +1663,7 @@ def _narrative_context(
         live=live,
         live_window=window,
         now_label=now_label,
+        getting_started=getting_started,
     )
     return context, activity
 

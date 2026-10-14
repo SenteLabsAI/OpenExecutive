@@ -257,11 +257,18 @@ class MorningBriefWorkflow(Workflow):
                 owner_notes = await asyncio.to_thread(
                     history_brief.due_soon_block, owner.id, history_brief.local_today(now),
                 )
+        # The first week's GETTING STARTED block (goals, departments with no
+        # leader and, on the delivery to the principal alone, who wrote to
+        # their own inbox), so a new install's first brief is never "quiet".
+        from openexecutive.briefing.first_week import getting_started
+
+        first_week = await getting_started(include_inbox=PRINCIPAL_DELIVERY.get(), now=now)
         # Did this brief actually draw on anything private to the principal?
         # Then its text stays out of the shared run history (the principal
         # gets it where it is delivered).
         private_used = private_ok and (
             bool(owner_notes.text)
+            or first_week.private
             or teammate_changes != in_force_changes
             or live.calendar is not None
             or any(
@@ -289,6 +296,7 @@ class MorningBriefWorkflow(Workflow):
             pending_watch_suggestions=pending_suggestions, mode=mode,
             live_keys=live.keys, reflection_flags=reflection_flags,
             teammate_changes=teammate_changes, owner_notes=owner_notes.keys,
+            getting_started=first_week.keys,
         )
         previous = brief_state.last_delivered(BRIEF_KIND)
         suppressed = (
@@ -368,7 +376,7 @@ class MorningBriefWorkflow(Workflow):
                 pending_watch_suggestions=pending_suggestions, mode=mode,
                 live=live, live_window="since the last brief",
                 reflection_flags=reflection_flags, teammate_changes=teammate_changes,
-                owner_notes=owner_notes.text,
+                owner_notes=owner_notes.text, getting_started=first_week.text,
             )
             # standalone=True → the enumerated DM brief (no cards beside it),
             # not the /today header synthesis.
