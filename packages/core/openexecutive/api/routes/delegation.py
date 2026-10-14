@@ -487,19 +487,20 @@ def _refuse(status_code: int, code: str, message: str) -> HTTPException:
 
 
 def _caller(request: Request) -> Person:
-    """The signed-in caller, when they may have Act as me; else 403."""
-    from openexecutive.people.store import find_person_by_email, find_principal_person
+    """The signed-in caller, when they may have Act as me; else 403. Found
+    through the app's one caller resolver (``chat._resolve_caller_person_id``),
+    so a deployment that maps a signed-in account to its person there is
+    followed here too. A request that names no one only counts as the
+    principal under local login."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.people.store import get_person
 
     who = api_caller.caller(request)
+    if not who.email and not (who.defaults_to_principal and local_login()):
+        raise _refuse(403, "sign_in_required", "Sign in to change Act as me.")
     try:
-        if who.email:
-            person = find_person_by_email(who.email)
-        elif who.defaults_to_principal and local_login():
-            person = find_principal_person()
-        else:
-            raise _refuse(403, "sign_in_required", "Sign in to change Act as me.")
-    except HTTPException:
-        raise
+        person_id = _resolve_caller_person_id(request)
+        person = get_person(person_id) if person_id is not None else None
     except Exception as exc:
         logger.exception("delegation: caller lookup failed")
         raise _refuse(503, "roster_unavailable", "Couldn't read the People list.") from exc
