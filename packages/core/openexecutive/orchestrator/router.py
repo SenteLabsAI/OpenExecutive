@@ -55,7 +55,10 @@ SPECIALIST_TOOLS: list[dict[str, Any]] = [
         "name": "consult_specialist",
         "description": (
             "Consult a specialist executive agent for domain-specific analysis. "
-            "Use this to get deep expertise from the relevant functional leader. "
+            "Use this to get deep expertise from the relevant functional leader "
+            "whenever a question asks for judgment in their area: a decision, a plan, "
+            "an analysis, a negotiation, a hire, a contract term, a pricing or fundraising "
+            "move, a board message. Not for lookups, scheduling, status or routine drafting. "
             "You may call this multiple times in parallel for cross-domain questions."
         ),
         "input_schema": {

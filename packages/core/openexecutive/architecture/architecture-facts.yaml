@@ -684,6 +684,16 @@ providers:
 routing:
   pattern: Anthropic tool use with a single `consult_specialist` tool. Multiple parallel tool_use blocks per assistant turn fan out to specialists concurrently.
   parallel_function: openexecutive.orchestrator.router.route_parallel
+  when_to_consult: |
+    The persona's Domain Expertise section ("Going deeper") and the
+    consult_specialist tool description say when: a question asking for
+    judgment in a specialist's area (decision, plan, analysis, negotiation,
+    hire, contract term, pricing/fundraising move, board message, or a
+    department's own targets and stance) is consulted before answering;
+    lookups, scheduling, status, routine drafting and questions about the
+    Executive itself are not. Without this the Executive answered nearly
+    everything itself. Chat evals score it: required_routing / no_routing,
+    checked by evals.scenarios.routing_check.
   fanout_cap: |
     The number of parallel `consult_specialist` calls dispatched in a single
     turn is bounded by `MAX_PARALLEL_SPECIALISTS` (config). Default 0 is inert

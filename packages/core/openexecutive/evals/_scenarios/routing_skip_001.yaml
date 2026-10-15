@@ -1,0 +1,16 @@
+id: routing_skip_001
+domain: routing
+description: "Routine drafting: a short thank-you note needs no specialist. The Executive writes it itself."
+company_context:
+  name: Larkfield Partners
+  stage: Bootstrapped
+  industry: Accounting practice
+  headcount: 6
+query: "Draft a two-line thank-you note to Priya for introducing us to the Halvorsen team last week."
+no_routing: true
+expected_topics:
+  - thanks_priya_for_the_introduction
+  - names_the_halvorsen_team
+quality_criteria:
+  brief: true
+  ready_to_send: true

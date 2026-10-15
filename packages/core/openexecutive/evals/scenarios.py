@@ -42,6 +42,40 @@ def scenario_kind(s: dict[str, Any]) -> str:
     return "chat"
 
 
+def scenario_routing(s: dict[str, Any]) -> tuple[list[str], bool]:
+    """A chat scenario's routing expectation: ``(required, none)``.
+
+    ``required_routing`` lists the specialists the Executive must consult;
+    ``no_routing: true`` says it must consult none (a lookup or a routine
+    draft). Raises ``ValueError`` on a malformed or contradictory pair.
+    """
+    required = s.get("required_routing") or []
+    if not isinstance(required, list) or not all(isinstance(r, str) and r for r in required):
+        raise ValueError("`required_routing` must be a list of specialist names")
+    none = s.get("no_routing", False)
+    if not isinstance(none, bool):
+        raise ValueError("`no_routing` must be true or false")
+    if none and required:
+        raise ValueError("`no_routing` and `required_routing` cannot both be set")
+    return list(required), none
+
+
+def routing_check(s: dict[str, Any], consulted: list[str]) -> dict[str, Any] | None:
+    """Whether the turn consulted the specialists the scenario expects.
+
+    ``None`` when the scenario sets no expectation. Otherwise
+    ``{"consulted", "missing", "ok"}``: every required specialist was
+    consulted (others may be too), or none was when ``no_routing`` is set.
+    """
+    required, none = scenario_routing(s)
+    if not required and not none:
+        return None
+    seen = sorted(set(consulted))
+    missing = [r for r in required if r not in seen]
+    ok = not seen if none else not missing
+    return {"consulted": seen, "missing": missing, "ok": ok}
+
+
 def _load_builtin_scenarios() -> list[dict[str, Any]]:
     scenarios_dir = _scenarios_dir()
     if not scenarios_dir.exists():
@@ -348,6 +382,8 @@ def validate_scenario_yaml(raw: str) -> dict[str, Any]:
             scenario_inbox(s)
         except ValueError as e:
             raise ValueError(f"`inbox`: {e}") from e
+
+    scenario_routing(s)
 
     k = scenario_kind(s)
     if k == "chat" and not s.get("query"):

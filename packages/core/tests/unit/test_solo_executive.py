@@ -46,7 +46,8 @@ from ._agent_loop_fakes import FinalMsg, ScriptedProvider, TextBlock, ToolUseBlo
 # deliberately: the inbound-email reply step names the `--- REPLY ---` block
 # instead of the Gmail send tool, so it holds for Outlook too. And once more:
 # the Skills paragraph saves repeatable work as a workflow, not a playbook.
-TEAM_PERSONA_SHA256 = "1132deffbe673c84c5d69aa93240c0c237904bd612bb1c51ce69967599d10be0"
+# And again: Domain Expertise says when to consult a specialist.
+TEAM_PERSONA_SHA256 = "3f46b161c65c1c16d731f48728a8f8eef3dadd2da30f425dd935a6188b2acf62"
 
 SOLO_HEADINGS = (
     "## You Work for One Person",
