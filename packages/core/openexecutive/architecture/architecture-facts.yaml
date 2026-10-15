@@ -10436,7 +10436,10 @@ delegation:
     signed sign-in. Up calls each switch's own route in order, so the
     mailbox, signed sign-ins, owner-only and not-in-training checks all
     still apply, and the first refusal stops at a whole step. Training is
-    never changed by the dial.
+    never changed by the dial. The dial is shown on Delegate -> Act as me
+    only (with Your rules at everything, and how many went today); Handle
+    it for me shows the step read-only with a link to it, then What it
+    sent; What it may do links act_as_me and handle_it rows to it.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
     command and Check again, the Write drafts as me switch, the Draft

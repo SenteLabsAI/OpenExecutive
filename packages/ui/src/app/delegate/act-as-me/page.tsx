@@ -9,8 +9,9 @@ import { LearnedCard, SuggestedActionsCard, TrainingNote } from "@/components/se
 // Delegate → Act as me: drafts written as you, in your own mailbox, and how
 // you write. Like someone new, each job can be in training (Off / In training
 // / On on its own card, as on Take the lead), and what it learned there is
-// listed at the bottom. What it sends as you on its own is the next tab,
-// Handle it for me.
+// listed at the bottom. How far it goes as you (ReachCard, inside
+// ActAsMeCard) is the one dial for writing and sending as you; the Handle it
+// for me tab shows where it is and what it sent.
 export default function ActAsMePage() {
   const load = useDelegation();
   const training = load.state === "ready" ? load.settings?.training : null;

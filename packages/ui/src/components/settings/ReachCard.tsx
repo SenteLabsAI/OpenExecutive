@@ -1,10 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
+import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import SettingsCard from "@/components/settings/SettingsCard";
-import { HANDLE_IT_MODES } from "@/components/settings/HandleItCard";
-import { getDelegation, setReach, setTraining, type DelegationSettings, type ReachStep } from "@/lib/api";
+import {
+  addMyLeadRule,
+  deleteMyLeadRule,
+  getDelegation,
+  getMyLeadRules,
+  setReach,
+  setTraining,
+  type DelegationSettings,
+  type LeadRule,
+  type ReachStep,
+} from "@/lib/api";
+import { HANDLE_IT_MODES, LEAD_LINE, REACH_ANCHOR, reachOf, sentTodayLine } from "@/lib/reach";
 
 // How far it goes as you: the one dial for everything Act as me does from
 // your own mailbox (PUT /delegation/reach). It replaces three switches that
@@ -12,7 +24,9 @@ import { getDelegation, setReach, setTraining, type DelegationSettings, type Rea
 // replies to my inbox and Handle it for me with its level. The first steps
 // write and never send; the rest are Handle it for me, which sends. Moving
 // down says what stops before it saves. In training (Replies and Follow-ups,
-// delegation/training.py) applies to the sending steps.
+// delegation/training.py) applies to the sending steps. It is shown on
+// Delegate → Act as me only; Handle it for me shows where it is and what it
+// sent, and links back here (REACH_HREF).
 
 type Step = {
   value: ReachStep;
@@ -20,18 +34,6 @@ type Step = {
   line: string;
   sends: boolean;
 };
-
-const LEAD_LINE =
-  "It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.";
-
-export function reachOf(settings: DelegationSettings): ReachStep {
-  if (!settings.enabled) return "off";
-  if (!settings.inbox?.enabled) return "when_asked";
-  const h = settings.handle_it;
-  if (!h?.enabled) return "inbox";
-  if (h.lead) return "everything";
-  return h.mode;
-}
 
 function stepsFor(settings: DelegationSettings, mailbox: string): Step[] {
   const sending: Step[] = HANDLE_IT_MODES.map((m) => ({
@@ -84,6 +86,15 @@ export default function ReachCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<ReachStep | null>(null);
+
+  // Linked from Handle it for me or What it may do (REACH_HREF): the card
+  // appears after the settings load, so the browser's own jump to the
+  // anchor has already passed it.
+  useEffect(() => {
+    if (window.location.hash === `#${REACH_ANCHOR}`) {
+      document.getElementById(REACH_ANCHOR)?.scrollIntoView({ block: "start" });
+    }
+  }, []);
 
   const mailbox = settings.gmail?.provider === "microsoft" ? "Outlook" : "Gmail";
   const steps = stepsFor(settings, mailbox);
@@ -140,6 +151,7 @@ export default function ReachCard({
   ];
 
   return (
+    <div id={REACH_ANCHOR} className="scroll-mt-24">
     <SettingsCard
       title="How far it goes as you"
       titleId="reach-label"
@@ -282,7 +294,46 @@ export default function ReachCard({
           </span>
         </label>
       )}
+      {current === "everything" && <YourRules />}
+      {sending && (
+        <p className="mt-5 border-t border-line pt-4 text-sm text-fg-muted">
+          {sentTodayLine(settings.handle_it?.sent_today ?? 0)}{" "}
+          <Link href="/delegate/handle-it" className="font-medium text-accent underline-offset-2 hover:underline">
+            What it sent
+          </Link>
+        </p>
+      )}
       {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
     </SettingsCard>
+    </div>
+  );
+}
+
+// At Everything, your own rules: a reply matching one waits for you, on top
+// of your company's rules (GET/POST/DELETE /delegation/lead-rules).
+function YourRules() {
+  const [rules, setRules] = useState<LeadRule[] | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getMyLeadRules(controller.signal)
+      .then(setRules)
+      .catch(() => setRules(null));
+    return () => controller.abort();
+  }, []);
+
+  return (
+    <div className="mt-5 border-t border-line pt-4">
+      <h3 className="text-[15px] font-semibold text-fg">Your rules</h3>
+      <p className="mt-1 mb-3 text-sm text-fg-muted">
+        Replies matching one of these wait for you, on top of your company&apos;s rules.
+      </p>
+      <LeadRulesEditor
+        rules={rules ?? []}
+        emptyText="No rules of your own yet."
+        onAdd={async (kind, value) => setRules(await addMyLeadRule(kind, value))}
+        onDelete={async (id) => setRules(await deleteMyLeadRule(id))}
+      />
+    </div>
   );
 }
