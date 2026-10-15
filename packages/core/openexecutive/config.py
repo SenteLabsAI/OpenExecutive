@@ -1,5 +1,7 @@
 import logging
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -1538,5 +1540,41 @@ def mcp_config_file_present(config_path: Path) -> bool:
         return False
 
 
+# get_settings() is called hundreds of times a minute (every key decrypt,
+# every per-tenant check), and building Settings re-parses the environment
+# and .env for every field: ~5 ms each, most of an idle server's CPU. So it
+# is built once and rebuilt only when what it reads changes: the
+# environment, the working directory (relative path defaults), the .env
+# file, and whether the MCP config file exists (_resolve_mcp).
+_settings_lock = threading.Lock()
+_settings_cache: tuple[tuple[object, ...], bool, Settings] | None = None
+
+
+def _settings_key() -> tuple[object, ...]:
+    try:
+        stat = _ENV_FILE.stat()
+        env_file: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        env_file = None
+    try:
+        cwd: str | None = os.getcwd()
+    except OSError:
+        cwd = None
+    return (tuple(os.environ.items()), cwd, env_file)
+
+
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    """The current settings. Each call returns its own copy, so a caller that
+    changes a field never changes anyone else's."""
+    global _settings_cache
+    key = _settings_key()
+    with _settings_lock:
+        cached = _settings_cache
+    if cached is not None:
+        cached_key, mcp_file, settings = cached
+        if cached_key == key and mcp_config_file_present(settings.mcp_servers_config_path) == mcp_file:
+            return settings.model_copy(deep=True)
+    settings = Settings()  # type: ignore[call-arg]
+    with _settings_lock:
+        _settings_cache = (key, mcp_config_file_present(settings.mcp_servers_config_path), settings)
+    return settings.model_copy(deep=True)
