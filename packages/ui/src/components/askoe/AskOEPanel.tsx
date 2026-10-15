@@ -319,13 +319,13 @@ export default function AskOEPanel() {
         aria-hidden="true"
       />
       <aside
-        aria-label="Ask OE"
+        aria-label={`Help with ${ctx.pageTitle}`}
         className="fixed top-8 bottom-0 right-0 z-40 w-[min(24rem,100vw)] lg:static lg:z-auto lg:w-[380px] flex-shrink-0 border-l border-line bg-surface-elevated flex flex-col"
       >
         <div className="h-14 px-4 border-b border-line flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <Icon name="bolt" size="w-4 h-4" className="text-indigo-300 flex-shrink-0" />
-            <span className="text-sm font-semibold text-fg truncate">Ask OE</span>
+            <span className="text-sm font-semibold text-fg truncate">{ctx.pageTitle}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -341,7 +341,7 @@ export default function AskOEPanel() {
               type="button"
               onClick={() => ctx.setOpen(false)}
               title="Close (Ctrl/Cmd + .)"
-              aria-label="Close Ask OE"
+              aria-label="Close help"
               className="min-h-touch min-w-touch flex items-center justify-center text-fg-muted hover:text-fg rounded-lg hover:bg-surface-overlay transition-colors"
             >
               <Icon name="close" size="w-4 h-4" />

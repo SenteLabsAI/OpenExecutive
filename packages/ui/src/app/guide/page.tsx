@@ -10,7 +10,7 @@ import PageSideNav from '@/components/shell/PageSideNav';
 // packages/core/openexecutive/guide/sections.py.
 const SECTIONS = [
   { id: 'chat', label: 'Chat & Briefing', sub: "The main surface — talk to the Executive, and land on a briefing of what's happened." },
-  { id: 'ask_oe', label: 'Ask OE', sub: 'The page-aware assistant panel — explains any screen and fills forms for you to review.' },
+  { id: 'ask_oe', label: 'Help with this page', sub: 'The sparkle button at the top right: explains any screen, answers how the app works, and fills forms for you to review.' },
   { id: 'today', label: 'Today / Morning Brief', sub: 'What needs you right now: proposals, department health, and people with open items.' },
   { id: 'pulse', label: 'Pulse (Memory)', sub: "The Executive's running memory — decisions made, initiatives in flight, advice gathered, corrections kept." },
   { id: 'review', label: 'Review Queue', sub: 'On Knowledge, under Advanced. Built-in knowledge is trusted by default. Review what you upload or edit, or send a domain for review yourself.' },

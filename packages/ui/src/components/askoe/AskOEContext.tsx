@@ -117,6 +117,8 @@ interface AskOEContextValue {
   markSuggested: (names: string[]) => void;
   clearSuggested: (name?: string) => void;
   buildPageContext: () => PageContext;
+  /** The current page's name, shown as the panel's title. */
+  pageTitle: string;
 }
 
 const AskOECtx = createContext<AskOEContextValue | null>(null);
@@ -197,6 +199,8 @@ export function AskOEProvider({ children }: { children: React.ReactNode }) {
     };
   }, [pathname]);
 
+  const pageTitle = resolveRouteMeta(pathname).title;
+
   const value = useMemo<AskOEContextValue>(
     () => ({
       open,
@@ -210,6 +214,7 @@ export function AskOEProvider({ children }: { children: React.ReactNode }) {
       markSuggested,
       clearSuggested,
       buildPageContext,
+      pageTitle,
     }),
     [
       open,
@@ -222,6 +227,7 @@ export function AskOEProvider({ children }: { children: React.ReactNode }) {
       markSuggested,
       clearSuggested,
       buildPageContext,
+      pageTitle,
     ]
   );
 

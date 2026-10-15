@@ -32,8 +32,8 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="ask_oe",
-        title="Ask OE",
-        sub="The page-aware assistant panel — explains any screen and fills forms for you to review.",
+        title="Help with this page",
+        sub="The sparkle button at the top right: explains any screen, answers how the app works, and fills forms for you to review.",
     ),
     GuideSection(
         id="today",
