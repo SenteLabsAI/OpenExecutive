@@ -1101,6 +1101,11 @@ class Settings(BaseSettings):
     # loop the nudge engine's commitment source chases once it is due, and a
     # later "sent it" from the same person closes it. Rows live in
     # scheduled_actions (kind="open_loop"); see attunement/open_loops.py.
+    # Do what it says (orchestrator/claim_check.py): a reply that claims a
+    # change no tool call made gets one more round to make it or say it
+    # can't. One small ROUTING_MODEL call, only when the reply uses a word
+    # that can claim a change.
+    claim_check_enabled: bool = Field(True, alias="CLAIM_CHECK_ENABLED")
     attunement_enabled: bool = Field(True, alias="ATTUNEMENT_ENABLED")
     attunement_open_loops_enabled: bool = Field(True, alias="ATTUNEMENT_OPEN_LOOPS_ENABLED")
     # When no due date is stated, the loop is due this many days after it opens.

@@ -60,6 +60,14 @@ def _no_ai_disclosure(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_claim_check(monkeypatch: pytest.MonkeyPatch):
+    """Keep the end-of-turn claim check (orchestrator.claim_check) from making
+    a provider call in tests that script a turn; test_claim_check.py turns it
+    back on."""
+    monkeypatch.setenv("CLAIM_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def reset_active_gateway():
     """Ensure the module-level MCP gateway singleton is cleared between tests."""
     from openexecutive.orchestrator.mcp_gateway import set_active_gateway

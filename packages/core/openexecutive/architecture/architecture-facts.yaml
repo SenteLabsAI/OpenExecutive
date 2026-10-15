@@ -4923,6 +4923,17 @@ chat:
     debounces it and opens a message match with /?session=…&find=…, and
     the chat starts on that message with previous/next and highlights
     the words (CSS Custom Highlight API where the browser has it).
+  claim_check: |
+    Do what it says (orchestrator/claim_check.py). At the end of the
+    agent loop, a reply that uses a word able to claim a change (done,
+    removed, closed, I'll remind you…) is checked by one forced-tool call
+    on ROUTING_MODEL against the turn's tool calls (name + first 160 chars
+    of each result). A claim no call made, copied word for word from the
+    reply (code-checked), gets one more round with a user-turn note: make
+    the change or say it isn't done. Once a turn, never on the last
+    iteration, fails open. Why: replies said "Done" or "I'll treat it as
+    closed" with no tool call, and the brief kept the item.
+    CLAIM_CHECK_ENABLED (default true).
   module: openexecutive.api.routes.chat
   endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works. POST /chat/background starts a new chat the server answers to the end with no reader (202 + session_id; the caller request is wrapped so is_disconnected is always false, the stream is drained by a task kept in _background_tasks; at most 3 per owner key in _background_counts, claimed before the first await so a burst cannot pass together, else 429).
   sse_event_types:

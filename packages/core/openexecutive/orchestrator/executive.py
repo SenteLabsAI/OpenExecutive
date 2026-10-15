@@ -39,7 +39,13 @@ from openexecutive.memory.workspace_settings import (
     pin_turn_principal_role,
     pin_turn_workspace_mode,
 )
-from openexecutive.orchestrator import department_gate, extensions, take_the_lead, tool_groups
+from openexecutive.orchestrator import (
+    claim_check,
+    department_gate,
+    extensions,
+    take_the_lead,
+    tool_groups,
+)
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -2141,6 +2147,12 @@ class Executive:
             turn_budget=self._settings.tool_results_turn_max_chars,
         )
 
+        # Every tool call this turn with the start of its result, for the
+        # end-of-turn check that the reply claims nothing it didn't do
+        # (claim_check); checked once a turn.
+        turn_calls: list[tuple[str, str]] = []
+        claim_checked = False
+
         for iteration in range(1, max_iterations + 1):
             logger.info(
                 "iter %d/%d", iteration, max_iterations,
@@ -2277,7 +2289,35 @@ class Executive:
                     )
 
             if final_msg.stop_reason != "tool_use":
-                return
+                # Do what it says: a reply that claims a change no call this
+                # turn made gets one more round to make it or say it can't.
+                if claim_checked or iteration >= max_iterations:
+                    return
+                claim_checked = True
+                reply_text = "\n".join(
+                    str(b.get("text", "")) for b in response_content if b.get("type") == "text"
+                )
+                claim = await claim_check.unbacked_claim(
+                    claim_check.last_person_message(messages), reply_text, turn_calls,
+                )
+                if claim is None:
+                    return
+                audit_log(
+                    "claim_check",
+                    "Reply claimed a change no tool made; one more round",
+                    session_id=getattr(current_session.get(), "session_id", None),
+                    turn_id=turn_id,
+                    actor="executive",
+                    details={"iteration": iteration, "calls": len(turn_calls)},
+                    full={"claim": claim},
+                    private=private_turn,
+                )
+                current_messages.append({"role": "assistant", "content": response_content})
+                current_messages.append(
+                    {"role": "user", "content": [{"type": "text", "text": claim_check.nudge(claim)}]}
+                )
+                yield "\n\n"
+                continue
 
             # open_tools is answered here; a use_tool call becomes the call it
             # stands for (same id), so every guard, handler, chip and audit
@@ -3143,6 +3183,8 @@ class Executive:
             # leaves non-model consumers (the propose_form_values JSON
             # parse above, the audit trail) reading the full text.
             tool_results: list[dict[str, Any]] = []
+            for tu in tool_uses:
+                turn_calls.append((tu["name"], str(results_by_id.get(tu["id"], ""))))
             for tu in tool_uses:
                 content = reading_budget.cap(
                     tu["name"],
