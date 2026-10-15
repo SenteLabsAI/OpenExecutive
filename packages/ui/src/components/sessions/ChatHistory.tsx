@@ -7,6 +7,7 @@ import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   getPeopleViewer,
   getSessionShares,
+  leaveSharedChat,
   listPeople,
   setSessionShares,
   updateSession,
@@ -111,7 +112,7 @@ export default function ChatHistory({ sessions, searching, query = "", onSelect,
   );
 }
 
-type RowPanel = "delete" | "rename" | "share" | null;
+type RowPanel = "delete" | "rename" | "share" | "leave" | null;
 
 export function ChatRow({
   session,
@@ -123,7 +124,7 @@ export function ChatRow({
   session: SessionSummary;
   query?: string;
   onSelect: (sessionId: string) => void;
-  /** Absent for a chat shared with the viewer, which only they can't delete. */
+  /** Absent for a chat shared with the viewer, which only its owner deletes. */
   onDelete?: (sessionId: string) => Promise<boolean>;
   onChanged?: () => void;
 }) {
@@ -135,7 +136,7 @@ export function ChatRow({
   // What the last quick action (pin, download) couldn't do, if anything.
   const [actionError, setActionError] = useState<string | null>(null);
   const channel = sessionChannel(session.session_id);
-  const readOnly = !!session.read_only;
+  const sharedWithYou = !!session.shared_with_you;
   const messages =
     matchLabel(session.match_count) ??
     `${session.message_count} message${session.message_count === 1 ? "" : "s"}`;
@@ -177,8 +178,25 @@ export function ChatRow({
     setPanel(next);
   };
 
-  const menu = readOnly
-    ? [{ label: "Download", onSelect: () => void download() }]
+  const leave = async () => {
+    setDeleting(true);
+    setActionError(null);
+    try {
+      await leaveSharedChat(session.session_id);
+      onChanged?.();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't leave this chat.");
+    } finally {
+      setDeleting(false);
+      setPanel(null);
+    }
+  };
+
+  const menu = sharedWithYou
+    ? [
+        { label: "Download", onSelect: () => void download() },
+        { label: "Leave chat", danger: true, onSelect: () => open("leave") },
+      ]
     : [
         { label: session.pinned_at ? "Unpin" : "Pin", onSelect: () => void togglePin() },
         { label: "Rename", onSelect: () => open("rename") },
@@ -204,9 +222,9 @@ export function ChatRow({
             )}
           </span>
           <span className="block text-sm text-fg-subtle mt-0.5">
-            {readOnly ? (
+            {sharedWithYou ? (
               <>
-                Shared by {session.shared_by ?? "someone on your team"} ·{" "}
+                {session.shared_by ?? "Someone on your team"} added you ·{" "}
                 {formatRelativeTime(session.shared_at ?? session.updated_at)}
               </>
             ) : (
@@ -266,6 +284,19 @@ export function ChatRow({
             if (changed) onChanged?.();
           }}
         />
+      )}
+      {panel === "leave" && (
+        <div role="alert" className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">
+          <p className="mr-auto text-sm text-fg">
+            Leave this chat? {session.shared_by ?? "Its owner"} can add you again.
+          </p>
+          <Button size="sm" variant="danger" onClick={() => void leave()} disabled={deleting}>
+            {deleting ? "Leaving…" : "Leave"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setPanel(null)} disabled={deleting}>
+            Cancel
+          </Button>
+        </div>
       )}
       {panel === "share" && <SharePanel sessionId={session.session_id} onClose={() => setPanel(null)} />}
     </div>
@@ -334,9 +365,18 @@ interface ShareState {
   chosen: Set<number>;
 }
 
-// Who the chat is shared with, to read: team members only, never the owner.
-// Loaded when the panel opens (it mounts then), keyed by the chat it is for.
-function SharePanel({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+// Who the chat is shared with: team members only, never the owner. They join
+// it and write in it with the owner. Loaded when the panel opens (it mounts
+// then), keyed by the chat it is for. `onSaved` hears every change saved.
+export function SharePanel({
+  sessionId,
+  onClose,
+  onSaved,
+}: {
+  sessionId: string;
+  onClose: () => void;
+  onSaved?: () => void;
+}) {
   const [loaded, setLoaded] = useState<ShareState | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -391,6 +431,7 @@ function SharePanel({ sessionId, onClose }: { sessionId: string; onClose: () => 
       const shares = await setSessionShares(sessionId, Array.from(loaded.chosen));
       setLoaded({ ...loaded, chosen: new Set(shares.map((s) => s.person_id)) });
       setSaved(true);
+      onSaved?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't share this chat.");
     } finally {
@@ -400,7 +441,10 @@ function SharePanel({ sessionId, onClose }: { sessionId: string; onClose: () => 
 
   return (
     <div className="border-t border-line px-4 py-3 space-y-3">
-      <p className="text-sm text-fg">Share this chat to read with:</p>
+      <div>
+        <p className="text-sm text-fg">Share this chat with:</p>
+        <p className="text-sm text-fg-muted">They join the chat and can write in it with you.</p>
+      </div>
       {loadError ? (
         <p role="alert" className="text-sm text-fg-muted">
           Couldn&apos;t load your team.{" "}

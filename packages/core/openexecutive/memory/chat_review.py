@@ -74,6 +74,7 @@ _SURFACE_FIELDS = (
     "origin_channel",
     "origin_channel_ref",
     "private_chat",
+    "shared_chat",
 )
 
 

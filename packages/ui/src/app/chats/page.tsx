@@ -35,9 +35,10 @@ export default function ChatsPage() {
     refresh();
   }, [refresh]);
 
-  // Chats teammates shared, to read. Kept out of the channel tabs and counts.
-  // A failure just leaves the section hidden.
+  // Chats teammates shared with the viewer, to write in with them. Kept out
+  // of the channel tabs and counts. A failure just leaves the section hidden.
   const [shared, setShared] = useState<SessionSummary[]>([]);
+  const [sharedVersion, setSharedVersion] = useState(0);
   useEffect(() => {
     let live = true;
     listSharedSessions()
@@ -48,7 +49,7 @@ export default function ChatsPage() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [sharedVersion]);
 
   const trimmed = query.trim();
   useEffect(() => {
@@ -113,6 +114,7 @@ export default function ChatsPage() {
               key={s.session_id}
               session={s}
               onSelect={(id) => router.push(`/chats/shared/${encodeURIComponent(id)}`)}
+              onChanged={() => setSharedVersion((v) => v + 1)}
             />
           ))}
         </div>

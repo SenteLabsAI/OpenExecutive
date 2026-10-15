@@ -144,12 +144,18 @@ def set_message_feedback(
         return cur.rowcount > 0
 
 
-def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+def load_messages(
+    session_id: str, db_path: Path = DB_PATH, *, with_senders: bool = False
+) -> list[dict[str, Any]]:
+    """The conversation, oldest first. ``with_senders`` adds who wrote each
+    user message (``sender_person_id``, when known), for a chat more than one
+    person writes in (``shared_with``)."""
     if not db_path.exists():
         return []
     with _get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, role, content, action_chips, stopped, feedback, sources FROM chat_messages "
+            "SELECT id, role, content, action_chips, stopped, feedback, sources, sender_person_id "
+            "FROM chat_messages "
             "WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
@@ -165,6 +171,8 @@ def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, An
             msg["id"] = row["id"]
             if row["feedback"]:
                 msg["feedback"] = row["feedback"]
+        elif with_senders and row["sender_person_id"] is not None:
+            msg["sender_person_id"] = int(row["sender_person_id"])
         raw = row["action_chips"]
         if raw:
             try:
@@ -230,7 +238,7 @@ def list_sessions(
             batch = last_ids[at:at + _IN_BATCH]
             marks = ",".join("?" * len(batch))
             for msg in conn.execute(
-                "SELECT id, role, substr(content, 1, ?) AS content FROM chat_messages "
+                "SELECT id, role, substr(content, 1, ?) AS content, sender_person_id FROM chat_messages "
                 f"WHERE id IN ({marks})",
                 [_PREVIEW_READ_CHARS, *batch],
             ):
@@ -248,7 +256,9 @@ def list_sessions(
         if row["pinned_at"]:
             item["pinned_at"] = row["pinned_at"]
         msg = last.get(row["last_id"]) if row["last_id"] is not None else None
-        item["preview"] = _preview(msg["role"], msg["content"]) if msg is not None else None
+        # In a shared chat the last message may be a teammate's: no "You: ".
+        mine = msg is not None and msg["sender_person_id"] in (None, caller_person_id)
+        item["preview"] = _preview(msg["role"], msg["content"], mine=mine) if msg is not None else None
         out.append(item)
     return out
 
@@ -268,9 +278,10 @@ _MARKDOWN_MARKS = re.compile(
 )
 
 
-def _preview(role: str | None, content: str | None) -> str | None:
+def _preview(role: str | None, content: str | None, *, mine: bool = True) -> str | None:
     """The chat's last message as one plain line, about ``_PREVIEW_CHARS``
-    long, with "You: " before the person's own words; None for no message."""
+    long, with "You: " before the person's own words (``mine``: not someone
+    else's in a shared chat); None for no message."""
     if content is None:
         return None
     text = _MARKDOWN_MARKS.sub(lambda m: m.group(1) or " ", str(content))
@@ -280,7 +291,7 @@ def _preview(role: str | None, content: str | None) -> str | None:
     if len(text) > _PREVIEW_CHARS:
         cut = text.rfind(" ", 0, _PREVIEW_CHARS)
         text = text[: cut if cut > _PREVIEW_CHARS // 2 else _PREVIEW_CHARS].rstrip(" ,.;:") + "…"
-    return f"You: {text}" if role == "user" else text
+    return f"You: {text}" if role == "user" and mine else text
 
 
 _SEARCH_LIMIT = 50
@@ -531,9 +542,10 @@ def rewind_last_turn(
     return [str(row["content"]) for row in asked]
 
 
-# Sharing: a chat's owner lets named teammates read it. Read only: they can't
-# write in it, and an Act as me conversation is never shared
-# (``session_mail_private``; the routes refuse it).
+# Sharing: a chat's owner adds named teammates to it. They read it and write
+# in it with the owner, each turn answered as whoever sent it; only the owner
+# renames, pins, shares or deletes it. An Act as me conversation is never
+# shared (``session_mail_private``; the routes refuse it).
 
 
 def shared_with(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
@@ -593,6 +605,33 @@ def set_shares(
                 (session_id, pid, shared_by_person_id, now),
             )
     return added, removed
+
+
+def leave_share(session_id: str, person_id: int, db_path: Path = DB_PATH) -> bool:
+    """Take ``person_id`` out of a chat shared with them. False when it wasn't."""
+    if not db_path.exists():
+        return False
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM session_shares WHERE session_id = ? AND person_id = ?",
+            (session_id, person_id),
+        )
+        return cur.rowcount > 0
+
+
+def last_turn_sender(session_id: str, db_path: Path = DB_PATH) -> int | None:
+    """Who wrote the conversation's newest message from a person, or None."""
+    if not db_path.exists():
+        return None
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT sender_person_id FROM chat_messages WHERE session_id = ? AND role = 'user' "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    if row is None or row["sender_person_id"] is None:
+        return None
+    return int(row["sender_person_id"])
 
 
 def list_shared_with_person(person_id: int, db_path: Path = DB_PATH) -> list[dict[str, Any]]:

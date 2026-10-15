@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Chat from "@/components/Chat";
 import { getSession, getSessionMessages, type ChatMessage, type SessionSummary } from "@/lib/api";
@@ -11,11 +11,12 @@ type Loaded =
   | { id: string; state: "ok"; session: SessionSummary; messages: ChatMessage[] }
   | { id: string; state: "gone" | "error" };
 
-// A chat a teammate shared with the viewer, to read: the conversation with
-// no composer, and a Download button. Opened from "Shared with you" on /chats.
+// A chat a teammate shared with the viewer: they write in it with the
+// teammate, live, and can leave it. Opened from "Shared with you" on /chats.
 export default function SharedChatPage() {
   const params = useParams();
   const id = typeof params.id === "string" ? decodeURIComponent(params.id) : "";
+  const router = useRouter();
   // Keyed by the chat it is for, so a different id shows "Loading" until its
   // own answer arrives (no state set synchronously in the effect).
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -62,12 +63,15 @@ export default function SharedChatPage() {
         <p className="max-w-3xl mx-auto w-full px-4 sm:px-6 py-8 text-[15px] text-fg-muted">
           Couldn&apos;t load this chat. Try again in a moment.
         </p>
-      ) : chat.session.read_only ? (
+      ) : chat.session.shared_with_you ? (
         <div className="flex-1 min-h-0">
           <Chat
             initialMessages={chat.messages}
             initialSessionId={id}
-            readOnly={{ sharedBy: chat.session.shared_by ?? "someone on your team" }}
+            member={{
+              sharedBy: chat.session.shared_by ?? "someone on your team",
+              onLeft: () => router.push("/chats"),
+            }}
           />
         </div>
       ) : (

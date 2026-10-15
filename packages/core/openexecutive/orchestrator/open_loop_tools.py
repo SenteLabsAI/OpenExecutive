@@ -146,9 +146,10 @@ def _is_private_surface(session: Any) -> bool:
     Web chat and 1:1 DMs are private. Slack / Discord channels and threads,
     Telegram groups (negative chat ids), Google Chat spaces and email (which can
     carry cc's) are not — a list rendered there is read by everyone present,
-    the same reason Slack keeps the alert board out of shared channels."""
+    the same reason Slack keeps the alert board out of shared channels. So is
+    a web chat its owner shared with teammates (``Session.shared_chat``)."""
     if getattr(session, "from_web_chat", False):
-        return True
+        return getattr(session, "shared_chat", False) is not True
     sid = str(getattr(session, "session_id", "") or "")
     if sid.startswith(("slack:dm:", "discord:dm:")):
         return True

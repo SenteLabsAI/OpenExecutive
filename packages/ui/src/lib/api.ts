@@ -230,6 +230,11 @@ export async function* streamChat(
     throw new Error(`Chat request failed: ${detail}`);
   }
 
+  yield* sseData<StreamItem>(response);
+}
+
+/** Each `data:` line of a server-sent event stream, parsed. */
+async function* sseData<T>(response: Response): AsyncGenerator<T> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("No response body");
 
@@ -248,7 +253,7 @@ export async function* streamChat(
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           try {
-            const data: StreamItem = JSON.parse(line.slice(6));
+            const data: T = JSON.parse(line.slice(6));
             yield data;
           } catch {
             // skip malformed lines
@@ -964,8 +969,9 @@ export interface SessionSummary {
   snippet?: string;
   /** Set only while the owner has it pinned; pinned chats list first. */
   pinned_at?: string;
-  /** A chat someone else shared with the caller: readable, not writable. */
-  read_only?: boolean;
+  /** A chat someone else shared with the caller: they write in it with its
+   * owner, who alone renames, pins, shares or deletes it. */
+  shared_with_you?: boolean;
   /** Shared chats only: the owner's name. */
   shared_by?: string;
   /** Shared-with-me list only: when it was shared. */
@@ -1006,7 +1012,7 @@ async function sessionError(res: Response, fallback: string): Promise<Error> {
   return new Error(typeof first?.msg === "string" ? first.msg : fallback);
 }
 
-/** One chat, as its owner or as someone it was shared with (`read_only`). */
+/** One chat, as its owner or as someone it was shared with (`shared_with_you`). */
 export async function getSession(sessionId: string): Promise<SessionSummary> {
   const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`);
   if (res.status === 404) throw new Error("not_found");
@@ -1014,7 +1020,7 @@ export async function getSession(sessionId: string): Promise<SessionSummary> {
   return res.json();
 }
 
-/** Chats other people shared with the caller, to read. */
+/** Chats other people shared with the caller. */
 export async function listSharedSessions(): Promise<SessionSummary[]> {
   const res = await fetch(`${API_BASE}/sessions/shared-with-me`);
   if (!res.ok) throw new Error("Failed to list shared chats");
@@ -1033,6 +1039,83 @@ export async function updateSession(
   });
   if (!res.ok) throw await sessionError(res, "Couldn't update this chat.");
   return res.json();
+}
+
+/** Someone in a shared chat; the owner is listed first. */
+export interface ChatPerson {
+  person_id: number;
+  full_name: string;
+  owner: boolean;
+}
+
+/** Who is in a chat. `people` is empty while nobody else is in it. */
+export interface ChatPeople {
+  you: number | null;
+  people: ChatPerson[];
+}
+
+export async function getSessionPeople(sessionId: string, signal?: AbortSignal): Promise<ChatPeople> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/people`, { signal });
+  if (res.status === 404) throw new Error("not_found");
+  if (!res.ok) throw new Error("Failed to load who is in this chat");
+  return res.json();
+}
+
+/** Tell the others in a shared chat the caller is writing. Never throws. */
+export async function sendTyping(sessionId: string): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/typing`, { method: "POST" });
+  } catch {
+    // Only a hint: a lost one changes nothing.
+  }
+}
+
+/** Leave a chat someone shared with the caller. */
+export async function leaveSharedChat(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/shares/me`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't leave this chat.");
+}
+
+/** A turn running in a shared chat, as `ready` hands it to a page that opens
+ * while it runs. */
+export interface LiveTurnSnapshot {
+  turn_key: string;
+  sender_person_id: number | null;
+  sender_name: string;
+  content: string;
+  reply: string;
+  actions: ActionTaken[];
+}
+
+/** What GET /sessions/{id}/live sends (`api/chat_live.py`). */
+export type LiveChatEvent =
+  | { type: "ready"; turn: LiveTurnSnapshot | null }
+  | {
+      type: "turn_started";
+      turn_key: string;
+      sender_person_id: number | null;
+      sender_name: string;
+      content: string;
+    }
+  | { type: "chunk"; turn_key: string; content: string }
+  | { type: "thinking"; turn_key: string }
+  | { type: "activity"; turn_key: string; label: string }
+  | ({ turn_key: string } & ActionTaken)
+  | { type: "phase"; turn_key: string; phase: CommitteePhase }
+  | { type: "turn_ended"; turn_key: string }
+  | { type: "typing"; person_id: number; name: string }
+  | { type: "people" | "removed" | "deleted" | "resync" };
+
+/** Follow a shared chat as it happens. Ends when the server ends the stream
+ * (`removed`, `deleted`, `resync` come last) or `signal` aborts. Throws
+ * "not_found" when the caller isn't in the chat. */
+export async function* followChat(sessionId: string, signal: AbortSignal): AsyncGenerator<LiveChatEvent> {
+  const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/live`, { signal });
+  if (res.status === 404) throw new Error("not_found");
+  if (!res.ok) throw new Error("Couldn't follow this chat");
+  yield* sseData<LiveChatEvent>(res);
 }
 
 export interface SessionShare {
@@ -1152,6 +1235,9 @@ export interface ChatMessage {
   // lets the reply be rated.
   id?: number;
   feedback?: "up" | "down" | null;
+  // User rows of a shared chat only: who wrote it.
+  sender_person_id?: number;
+  sender_name?: string;
 }
 
 export interface Decision {

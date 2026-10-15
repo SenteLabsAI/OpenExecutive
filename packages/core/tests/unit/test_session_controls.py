@@ -1,5 +1,6 @@
 """Pin, rename, share, export and take back the last turn of a chat
-(api/routes/sessions.py, memory/session_store.py, memory/chat_export.py)."""
+(api/routes/sessions.py, memory/session_store.py, memory/chat_export.py), and
+writing in a chat someone shared with you (api/routes/chat.py)."""
 from __future__ import annotations
 
 import json
@@ -140,8 +141,11 @@ def test_only_the_owner_pins_renames_or_shares(client: TestClient, people: dict[
     assert client.patch("/sessions/slack:channel:C1", json={"pinned": True}, headers=RIYA).status_code == 404
 
 
-def test_a_shared_chat_is_read_only_for_who_it_is_shared_with(
-    client: TestClient, people: dict[str, int], _reset_route_state: list[tuple[str, dict[str, Any]]]
+def test_a_shared_chat_is_one_both_write_in(
+    client: TestClient,
+    people: dict[str, int],
+    _reset_route_state: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sid = _chat_of(people["sabin"])
     # A teammate's own chat is theirs alone until they share it.
@@ -154,29 +158,122 @@ def test_a_shared_chat_is_read_only_for_who_it_is_shared_with(
     assert _reset_route_state[-1][1]["added"] == [people["alex"]]
 
     shared = client.get("/sessions/shared-with-me", headers=ALEX).json()
-    assert [(s["session_id"], s["shared_by"], s["read_only"]) for s in shared] == [(sid, "Sabin", True)]
+    assert [(s["session_id"], s["shared_by"], s["shared_with_you"]) for s in shared] == [(sid, "Sabin", True)]
     assert client.get("/sessions/shared-with-me", headers=RIYA).json() == []
     # It is not in Alex's own list.
     assert sid not in [s["session_id"] for s in client.get("/sessions", headers=ALEX).json()]
 
     meta = client.get(f"/sessions/{sid}", headers=ALEX).json()
-    assert meta["read_only"] is True and meta["shared_by"] == "Sabin"
+    assert meta["shared_with_you"] is True and meta["shared_by"] == "Sabin"
+    assert "shared_with_you" not in client.get(f"/sessions/{sid}", headers=SABIN).json()
     assert len(client.get(f"/sessions/{sid}/messages", headers=ALEX).json()) == 4
     assert client.get(f"/sessions/{sid}/export", headers=ALEX).status_code == 200
+    people_resp = client.get(f"/sessions/{sid}/people", headers=ALEX).json()
+    assert people_resp == {
+        "you": people["alex"],
+        "people": [
+            {"person_id": people["sabin"], "full_name": "Sabin", "owner": True},
+            {"person_id": people["alex"], "full_name": "Alex", "owner": False},
+        ],
+    }
+    assert client.get(f"/sessions/{sid}/people", headers=RIYA).status_code == 404
 
-    # Reading is all: no deleting, rating, renaming, redoing or writing in it.
+    # The chat stays its owner's: no deleting, rating, renaming, sharing or
+    # redoing it.
     assert client.delete(f"/sessions/{sid}", headers=ALEX).status_code == 404
     assert client.patch(f"/sessions/{sid}", json={"title": "Mine"}, headers=ALEX).status_code == 404
+    assert client.put(f"/sessions/{sid}/shares", json={"person_ids": []}, headers=ALEX).status_code == 404
+    assert client.post(
+        f"/sessions/{sid}/messages/{_last_id(sid)}/feedback", json={"feedback": "up"}, headers=ALEX
+    ).status_code == 404
     assert client.post(
         f"/sessions/{sid}/rewind", json={"last_message_id": _last_id(sid)}, headers=ALEX
     ).status_code == 404
-    client.post("/chat", json={"message": "hi", "session_id": sid}, headers=ALEX).read()
-    assert len(session_store.load_messages(sid)) == 4
 
-    # Unsharing takes it away.
+    # But Alex writes in it, as Alex, and the Executive is told who said what.
+    from openexecutive.orchestrator import executive as exec_mod
+
+    seen: list[dict[str, Any]] = []
+
+    class _Capture:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **kwargs: Any) -> AsyncIterator[str]:
+            seen.append({**kwargs, "history": list(kwargs["session"].conversation_history),
+                         "shared_chat": kwargs["session"].shared_chat})
+            yield "ok"
+
+    monkeypatch.setattr(exec_mod, "Executive", _Capture)
+    client.post("/chat", json={"message": "hi", "session_id": sid}, headers=ALEX).read()
+    rows = session_store.load_messages(sid, with_senders=True)
+    assert [(m["role"], m["content"], m.get("sender_person_id")) for m in rows[-2:]] == [
+        ("user", "hi", people["alex"]), ("assistant", "ok", None),
+    ]
+    assert session_store.get_session_owner(sid) == (True, people["sabin"])
+    turn = seen[-1]
+    assert turn["user_message"] == "[Alex]: hi"
+    assert turn["memory_text"] == "hi"
+    assert turn["person_id"] == people["alex"]
+    assert turn["shared_chat"] is True
+    assert "Sabin, Alex" in turn["channel_context_block"]
+    assert turn["history"][0] == {"role": "user", "content": "[Sabin]: question 0"}
+
+    # Each person's message says who wrote it.
+    msgs = client.get(f"/sessions/{sid}/messages", headers=SABIN).json()
+    assert [m.get("sender_name") for m in msgs if m["role"] == "user"] == ["Sabin", "Sabin", "Alex"]
+    # The owner's list doesn't call Alex's words theirs.
+    listed = {s["session_id"]: s for s in client.get("/sessions", headers=SABIN).json()}
+    assert listed[sid]["preview"] == "ok"
+
+    # A chat of one is told nothing.
+    own = _chat_of(people["riya"], "riya-own")
+    client.post("/chat", json={"message": "solo", "session_id": own}, headers=RIYA).read()
+    assert seen[-1]["user_message"] == "solo" and seen[-1]["channel_context_block"] == ""
+    assert seen[-1]["shared_chat"] is False
+
+    # Unsharing takes it away; writing then starts a chat of their own.
     client.put(f"/sessions/{sid}/shares", json={"person_ids": []}, headers=SABIN)
     assert client.get(f"/sessions/{sid}/messages", headers=ALEX).status_code == 404
     assert client.get("/sessions/shared-with-me", headers=ALEX).json() == []
+    before = len(session_store.load_messages(sid))
+    client.post("/chat", json={"message": "still here?", "session_id": sid}, headers=ALEX).read()
+    assert len(session_store.load_messages(sid)) == before
+
+
+def test_someone_can_leave_a_chat_shared_with_them(client: TestClient, people: dict[str, int]) -> None:
+    sid = _chat_of(people["alex"])
+    client.put(f"/sessions/{sid}/shares", json={"person_ids": [people["riya"], people["sabin"]]}, headers=ALEX)
+    assert client.delete(f"/sessions/{sid}/shares/me", headers=RIYA).status_code == 204
+    assert [s["full_name"] for s in client.get(f"/sessions/{sid}/shares", headers=ALEX).json()] == ["Sabin"]
+    assert client.get(f"/sessions/{sid}", headers=RIYA).status_code == 404
+    # Only someone it was shared with leaves; the owner deletes instead.
+    assert client.delete(f"/sessions/{sid}/shares/me", headers=RIYA).status_code == 404
+    assert client.delete(f"/sessions/{sid}/shares/me", headers=ALEX).status_code == 404
+
+
+def test_a_chat_apps_conversation_isnt_shared(client: TestClient, people: dict[str, int]) -> None:
+    sid = _chat_of(people["alex"], "telegram:42")
+    assert client.put(
+        f"/sessions/{sid}/shares", json={"person_ids": [people["riya"]]}, headers=ALEX
+    ).status_code == 409
+
+
+def test_redo_in_a_shared_chat_is_only_for_your_own_last_message(
+    client: TestClient, people: dict[str, int]
+) -> None:
+    sid = _chat_of(people["alex"])
+    client.put(f"/sessions/{sid}/shares", json={"person_ids": [people["riya"]]}, headers=ALEX)
+    assert client.post(
+        f"/sessions/{sid}/rewind", json={"last_message_id": _last_id(sid)}, headers=ALEX
+    ).status_code == 200
+    session_store.save_message(sid, "user", "riya asks", sender_person_id=people["riya"])
+    session_store.save_message(sid, "assistant", "answer")
+    resp = client.post(f"/sessions/{sid}/rewind", json={"last_message_id": _last_id(sid)}, headers=ALEX)
+    assert resp.status_code == 409
+    assert session_store.load_messages(sid)[-2]["content"] == "riya asks"
 
 
 def test_sharing_refuses_contacts_the_owner_and_a_chat_that_read_mail(

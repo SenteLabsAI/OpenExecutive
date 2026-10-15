@@ -12,6 +12,7 @@ import { groupActions, opensDetails, type ChipGroup } from "@/lib/actionChips";
 import { loadsInline } from "@/lib/markdownImages";
 import { isMailboxLink } from "@/lib/replyCards";
 import { hostOf } from "@/lib/url";
+import { initials } from "@/lib/initials";
 import FeatureName from "@/components/FeatureName";
 import { ChatActionCards } from "@/components/ActionCards";
 
@@ -42,6 +43,9 @@ interface MessageProps {
   onRetry?: () => void;
   // The user's last message only: put it back in the composer to change.
   onEdit?: () => void;
+  // A shared chat's messages from people: who wrote it. Someone else's sits
+  // on the left under their name; the viewer's own stays on the right.
+  author?: { name: string; mine: boolean };
 }
 
 // The small text buttons under a message (Copy, Try again, Edit).
@@ -264,6 +268,7 @@ export default function Message({
   status,
   onRetry,
   onEdit,
+  author,
 }: MessageProps) {
   // Approval cards this reply left, shown under it (ActionCards).
   const cardIds = useMemo(
@@ -273,6 +278,25 @@ export default function Message({
         .filter((id): id is number => typeof id === "number"),
     [actions],
   );
+  if (role === "user" && author && !author.mine) {
+    return (
+      <div className="flex gap-2.5 mb-6">
+        <span
+          aria-hidden
+          className="mt-5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-surface-overlay ring-1 ring-line text-[11px] font-semibold text-fg"
+        >
+          {initials(author.name)}
+        </span>
+        <div className="min-w-0">
+          <div className="mb-1 text-xs font-medium text-fg-muted">{author.name}</div>
+          <div className="max-w-xl px-4 py-3 rounded-2xl rounded-tl-sm bg-surface-elevated border border-line text-fg text-sm leading-relaxed">
+            <p className="whitespace-pre-wrap">{content}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (role === "user") {
     return (
       <div className="flex flex-col items-end mb-6">

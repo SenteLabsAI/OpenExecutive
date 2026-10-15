@@ -176,6 +176,11 @@ class Session:
     # route. A header-less request resolves to the principal but is no
     # sign-in: Act as me needs one (or local login).
     web_caller_signed_in: bool = False
+    # True when this web chat is shared (``session_store.shared_with``): more
+    # than one person reads and writes in it, so it is no private
+    # conversation (``delegation.settings.private_conversation``). Set per
+    # turn by the chat route.
+    shared_chat: bool = False
     # Whose documents this session reads and publishes, when that is not its
     # own speaker (``artifact_records.current_viewer``): a session a workflow
     # mints inside someone's turn (``executive_research``'s synthesis) is

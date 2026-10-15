@@ -288,9 +288,10 @@ class SessionSummary(BaseModel):
     # When its owner pinned it to the top of their list; absent when not.
     pinned_at: str | None = None
     # A chat someone shared with the caller (`GET /sessions/shared-with-me`,
-    # or opened by id): it is theirs to read, not to write in, `shared_by`
-    # names its owner and `shared_at` says when.
-    read_only: bool | None = None
+    # or opened by id): they read it and write in it with its owner, but only
+    # the owner renames, pins, shares or deletes it. `shared_by` names the
+    # owner and `shared_at` says when.
+    shared_with_you: bool | None = None
     shared_by: str | None = None
     shared_at: str | None = None
 

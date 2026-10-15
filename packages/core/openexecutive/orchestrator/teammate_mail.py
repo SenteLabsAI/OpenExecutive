@@ -37,7 +37,9 @@ is answering when Gmail authenticated it; on any other turn every
 teammate's mail is left out. A conversation in which a teammate other than
 the principal was shown their own mail becomes theirs alone, as Act as me's
 do (``session_store.mark_mail_private``), and so do the rest of that turn's
-audit rows. A background run the model drives (a follow-up, the reflection)
+audit rows. In a web chat its owner shared with teammates
+(``Session.shared_chat``) a teammate is no reader: everyone in it would see
+their mail. A background run the model drives (a follow-up, the reflection)
 reads as the principal it reports to; a workflow step outside any session
 reads as nobody. An Outlook inbox rule that forwards, or names another
 teammate, is refused. The internal callers that reach the gateway directly
@@ -227,6 +229,11 @@ def _reader_id(session: Any) -> int | None:
         return principal.id if principal is not None else None
     teammate = teammate_on_verified_surface(session)
     if teammate is not None:
+        # A chat the owner shared is read by everyone in it, and their mail
+        # with the Executive can't become theirs alone there
+        # (``mark_mail_private`` keeps the owner's): none of it is shown.
+        if getattr(session, "shared_chat", False) is True:
+            return None
         return int(teammate.id)
     if (
         str(getattr(session, "origin_channel", "") or "") == "email"

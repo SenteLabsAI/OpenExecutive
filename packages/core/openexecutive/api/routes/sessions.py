@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from openexecutive.api import chat_live
 from openexecutive.api.models import SessionSummary
 from openexecutive.api.routes import chat as chat_route
 from openexecutive.api.routes.chat import (
+    _SSE_KEEPALIVE,
     _acquire_session_turn,
     _is_channel_namespaced,
     _release_session_turn,
     _resolve_caller_person_id,
     _session_access,
+    _shared_member,
+    chat_people,
     forget_session,
 )
 from openexecutive.memory import chat_export
@@ -22,7 +30,8 @@ from openexecutive.memory.session_store import (
     delete_session,
     get_session_metadata,
     get_session_owner,
-    is_shared_with,
+    last_turn_sender,
+    leave_share,
     list_sessions,
     list_shared_with_person,
     load_messages,
@@ -72,16 +81,16 @@ def _require_session_access(request: Request, session_id: str) -> int | None:
     return caller
 
 
-def _require_read_access(request: Request, session_id: str) -> bool:
-    """404 unless the caller may read this session. True when they may only
-    read it: its owner shared it with them (``set_shares``), and it never read
-    its owner's own mail. Anyone who may use it (``_require_session_access``)
-    gets False."""
+def _require_chat_access(request: Request, session_id: str) -> tuple[int | None, bool]:
+    """404 unless the caller may read and write in this chat; returns their
+    id and whether they are in it because its owner shared it with them
+    (``chat._shared_member``). Anyone who may use it
+    (``_require_session_access``) is no member."""
     caller = _resolve_caller_person_id(request)
     if _session_access(request, session_id, caller) == "allowed":
-        return False
-    if caller is not None and is_shared_with(session_id, caller) and not session_mail_private(session_id):
-        return True
+        return caller, False
+    if _shared_member(session_id, caller):
+        return caller, True
     raise HTTPException(status_code=404, detail="Session not found")
 
 
@@ -132,8 +141,8 @@ def _person_name(person_id: int | None) -> str | None:
     response_model_exclude_none=True,
 )
 def get_shared_sessions(request: Request) -> list[SessionSummary]:
-    """Chats other people shared with the caller, to read, newest first, each
-    with who shared it (``shared_by``) and when (``shared_at``)."""
+    """Chats other people shared with the caller, newest first, each with who
+    shared it (``shared_by``) and when (``shared_at``)."""
     caller = _resolve_caller_person_id(request)
     if caller is None:
         return []
@@ -147,39 +156,137 @@ def get_shared_sessions(request: Request) -> list[SessionSummary]:
             message_count=row["message_count"],
             shared_by=_person_name(row["owner_person_id"]) or "Someone on your team",
             shared_at=row["shared_at"],
-            read_only=True,
+            shared_with_you=True,
         ))
     return out
 
 
 @router.get("/sessions/{session_id}", response_model=SessionSummary, response_model_exclude_none=True)
 def get_session(session_id: str, request: Request) -> SessionSummary:
-    read_only = _require_read_access(request, session_id)
+    _, member = _require_chat_access(request, session_id)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
     summary = SessionSummary(**meta)
-    if read_only:
-        # Only the owner pins, so a reader never sees the owner's pin.
+    if member:
+        # Only the owner pins, so a member never sees the owner's pin.
         _, owner = get_session_owner(session_id)
         summary.pinned_at = None
-        summary.read_only = True
+        summary.shared_with_you = True
         summary.shared_by = _person_name(owner) or "Someone on your team"
     return summary
 
 
 @router.get("/sessions/{session_id}/messages")
 def get_session_messages(session_id: str, request: Request) -> list[dict]:
-    read_only = _require_read_access(request, session_id)
+    """The chat's messages. In a shared chat each person's message also says
+    who wrote it (``sender_person_id``, ``sender_name``)."""
+    _, member = _require_chat_access(request, session_id)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    messages = load_messages(session_id)
-    if read_only:
-        # The owner's ratings are theirs.
-        for msg in messages:
+    people = chat_people(session_id)
+    names = {pid: name for pid, name, _ in people}
+    owner_id = next((pid for pid, _, is_owner in people if is_owner), None)
+    messages = load_messages(session_id, with_senders=bool(names))
+    for msg in messages:
+        sender = msg.get("sender_person_id")
+        if sender is None and "sender_person_id" in msg and owner_id is not None:
+            # Written before anyone recorded who sent it: the owner's.
+            sender = msg["sender_person_id"] = owner_id
+        if sender in names:
+            msg["sender_name"] = names[sender]
+        if member:
+            # The owner's ratings are theirs.
             msg.pop("feedback", None)
     return messages
+
+
+class ChatPerson(BaseModel):
+    person_id: int
+    full_name: str
+    owner: bool
+
+
+class ChatPeople(BaseModel):
+    """Who is in a chat. ``people`` is empty for a chat nobody else is in."""
+
+    you: int | None
+    people: list[ChatPerson]
+
+
+@router.get("/sessions/{session_id}/people", response_model=ChatPeople)
+def get_session_people(session_id: str, request: Request) -> ChatPeople:
+    """Everyone in the chat, its owner first, for anyone in it."""
+    caller, _ = _require_chat_access(request, session_id)
+    return ChatPeople(
+        you=caller,
+        people=[ChatPerson(person_id=pid, full_name=name, owner=owner) for pid, name, owner in chat_people(session_id)],
+    )
+
+
+@router.post("/sessions/{session_id}/typing", status_code=status.HTTP_204_NO_CONTENT)
+def post_session_typing(session_id: str, request: Request) -> Response:
+    """Tell the others in a shared chat that the caller is writing. Sent at
+    most every couple of seconds while they type; a chat of one has nobody to
+    tell."""
+    caller, _ = _require_chat_access(request, session_id)
+    if caller is not None and chat_live.watchers(session_id) > 1:
+        name = _person_name(caller)
+        if name:
+            chat_live.typing(session_id, caller, name)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# How often an open chat's stream says it is still there, and checks the
+# caller may still see it. Under the proxies' idle timeouts.
+_LIVE_KEEPALIVE_S = 20.0
+
+
+def _still_in(request: Request, session_id: str, caller: int | None, member: bool) -> bool:
+    if member:
+        return _shared_member(session_id, caller)
+    return _session_access(request, session_id, caller) == "allowed"
+
+
+@router.get("/sessions/{session_id}/live")
+async def live_session(session_id: str, request: Request) -> StreamingResponse:
+    """The chat as it happens, for a page that has it open: someone's
+    message and the reply as it is written, who is typing, and who joined
+    or left (``chat_live``). It says ``ready`` first, with the turn running
+    now if any; the page then reads the saved chat. 429 when too many pages
+    have it open."""
+    caller, member = await asyncio.to_thread(_require_chat_access, request, session_id)
+    watcher = chat_live.subscribe(session_id, caller)
+    if watcher is None:
+        raise HTTPException(status_code=429, detail="This chat is open in too many places.")
+
+    async def stream() -> AsyncIterator[str]:
+        try:
+            ready = {"type": "ready", "session_id": session_id, "turn": chat_live.snapshot(session_id)}
+            yield f"data: {json.dumps(ready)}\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(watcher.queue.get(), timeout=_LIVE_KEEPALIVE_S)
+                except TimeoutError:
+                    if await request.is_disconnected():
+                        return
+                    if not await asyncio.to_thread(_still_in, request, session_id, caller, member):
+                        yield f"data: {json.dumps({'type': 'removed', 'session_id': session_id})}\n\n"
+                        return
+                    yield _SSE_KEEPALIVE
+                    continue
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("type") in ("removed", "deleted", "resync"):
+                    return
+        finally:
+            chat_live.unsubscribe(watcher)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class SessionUpdate(BaseModel):
@@ -237,12 +344,16 @@ def get_session_shares(session_id: str, request: Request) -> list[ShareEntry]:
 
 @router.put("/sessions/{session_id}/shares", response_model=list[ShareEntry])
 def put_session_shares(session_id: str, body: SharesUpdate, request: Request) -> list[ShareEntry]:
-    """Share the chat, to read, with exactly these team members.
+    """Share the chat with exactly these team members, who then read it and
+    write in it with its owner. Only a chat started here: a chat app's
+    conversation lives in that app.
 
     Team members only (not contacts, not archived, not the owner). A chat
     that read its owner's own mail (Act as me) is never shared: 409."""
     owner = _require_owner(request, session_id)
     person_ids = sorted(set(body.person_ids))
+    if person_ids and _is_channel_namespaced(session_id):
+        raise HTTPException(status_code=409, detail="Only a chat started here can be shared.")
     if person_ids and session_mail_private(session_id):
         raise HTTPException(
             status_code=409,
@@ -266,13 +377,39 @@ def put_session_shares(session_id: str, body: SharesUpdate, request: Request) ->
                 actor="user",
                 details={"by_person_id": owner, "added": added, "removed": removed},
             )
+        if removed:
+            chat_live.end_for(session_id, set(removed), "removed")
+        chat_live.publish(session_id, {"type": "people"})
     return _share_list(session_id)
+
+
+@router.delete("/sessions/{session_id}/shares/me", status_code=status.HTTP_204_NO_CONTENT)
+def leave_session(session_id: str, request: Request) -> Response:
+    """Leave a chat someone shared with the caller. It goes from their list;
+    its owner can add them again."""
+    caller, member = _require_chat_access(request, session_id)
+    if not member or caller is None or not leave_share(session_id, caller):
+        raise HTTPException(status_code=404, detail="Session not found")
+    from openexecutive.audit import log_event
+
+    _, owner = get_session_owner(session_id)
+    with _owner_rows(session_id, owner):
+        log_event(
+            "session_shared",
+            "Left a shared chat",
+            session_id=session_id,
+            actor="user",
+            details={"by_person_id": caller, "added": [], "removed": [caller]},
+        )
+    chat_live.end_for(session_id, {caller}, "removed")
+    chat_live.publish(session_id, {"type": "people"})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/sessions/{session_id}/export")
 def export_session(session_id: str, request: Request) -> Response:
-    """The chat as a Markdown file, for anyone who may read it."""
-    _require_read_access(request, session_id)
+    """The chat as a Markdown file, for anyone in it."""
+    _require_chat_access(request, session_id)
     meta = get_session_metadata(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -313,6 +450,9 @@ async def rewind_session(session_id: str, body: RewindRequest, request: Request)
     owner = _require_owner(request, session_id)
     if _is_channel_namespaced(session_id):
         raise HTTPException(status_code=409, detail="Only a chat started here can be redone.")
+    if chat_people(session_id) and last_turn_sender(session_id) != owner:
+        # In a shared chat the last message may be someone else's words.
+        raise HTTPException(status_code=409, detail="The last message is someone else's, so it can't be redone.")
     lock = await _acquire_session_turn(session_id, 0.5)
     if lock is None:
         raise HTTPException(status_code=409, detail="The Executive is still answering in this chat.")
@@ -343,6 +483,7 @@ def delete_session_route(session_id: str, request: Request) -> Response:
     # is the delete the caller asked for.
     if not forget_session(session_id) and not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
+    chat_live.end_for(session_id, None, "deleted")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -413,11 +554,10 @@ async def get_followup_suggestion(session_id: str, request: Request) -> dict[str
 
     Grounded in the tail of the conversation. ``suggestion`` is null when the
     conversation does not end on a reply, or when the fast model fails — the
-    composer then falls back to its static placeholder. Only the session's
-    own caller, or the principal, may ask: the suggestion paraphrases the
-    conversation.
+    composer then falls back to its static placeholder. Only someone in the
+    chat may ask: the suggestion paraphrases the conversation.
     """
-    _require_session_access(request, session_id)
+    _require_chat_access(request, session_id)
 
     messages = load_messages(session_id)
     last = messages[-1] if messages else None

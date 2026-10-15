@@ -16,6 +16,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from openexecutive.api import caller as api_caller
+from openexecutive.api import chat_live
 from openexecutive.api.models import (
     AddChatMessageRequest,
     BackgroundChatRequest,
@@ -304,6 +305,9 @@ class _StreamStep(NamedTuple):
 # It keeps a browser or a proxy from dropping the connection as idle during a
 # slow tool call or specialist round.
 _SSE_KEEPALIVE = ": keepalive\n\n"
+# The steps of a reply the other pages of a shared chat follow live
+# (``chat_live.turn_event``), besides its text and the thinking pings.
+_LIVE_STEPS = frozenset({"activity", "action_taken", "phase"})
 
 
 async def _cancel_stream_step(anext_task: asyncio.Task[Any], turn_id: str) -> None:
@@ -630,6 +634,86 @@ def _session_access(
     return "forbidden"
 
 
+def _shared_member(session_id: str, caller_person_id: int | None) -> bool:
+    """Whether the owner of web chat ``session_id`` shared it with this caller,
+    who then reads it and writes in it with them (``session_store.set_shares``).
+    Never a chat that read its owner's mail, nor a chat app's conversation.
+    Only the turn and the read routes use this: renaming, pinning, sharing,
+    rating and deleting stay with whoever may use the chat
+    (``_session_access``). Fails closed."""
+    if caller_person_id is None or _is_channel_namespaced(session_id):
+        return False
+    from openexecutive.memory.session_store import is_shared_with
+
+    try:
+        shared = is_shared_with(session_id, caller_person_id)
+    except Exception:
+        logger.exception("chat: couldn't read who session %s is shared with", session_id)
+        return False
+    return shared and not _mail_private(session_id)
+
+
+def chat_people(session_id: str) -> list[tuple[int, str, bool]]:
+    """Everyone in a shared web chat: ``(person_id, full name, is_owner)``,
+    the owner first, then whoever it is shared with in the order they were
+    added. Empty when it is shared with nobody (or can't be read), so a chat
+    of one stays as it was. People no longer on the roster are left out."""
+    from openexecutive.memory.session_store import get_session_owner, shared_with
+    from openexecutive.people.store import get_person
+
+    if _is_channel_namespaced(session_id):
+        return []
+    try:
+        shares = shared_with(session_id)
+        if not shares:
+            return []
+        _, owner = get_session_owner(session_id)
+        ids = ([owner] if owner is not None else []) + [r["person_id"] for r in shares]
+        out: list[tuple[int, str, bool]] = []
+        for pid in ids:
+            person = get_person(int(pid))
+            if person is not None:
+                out.append((int(pid), person.full_name, pid == owner))
+        return out
+    except Exception:
+        logger.exception("chat: couldn't read who is in session %s", session_id)
+        return []
+
+
+def _named_history(
+    history: list[dict[str, Any]], names: dict[int, str], owner_id: int | None = None
+) -> list[dict[str, Any]]:
+    """The conversation with each person's message starting ``[Name]:``, so the
+    Executive can tell who said what in a chat several people write in (the
+    convention Discord threads use, ``_format_user_content``). Rows from
+    ``load_messages(with_senders=True)``; the sender id is dropped. A message
+    saved without a sender (before the chat was shared) is ``owner_id``'s."""
+    out: list[dict[str, Any]] = []
+    for row in history:
+        msg = {k: v for k, v in row.items() if k != "sender_person_id"}
+        sender = row.get("sender_person_id")
+        if sender is None:
+            sender = owner_id
+        if row.get("role") == "user" and isinstance(msg.get("content"), str) and sender in names:
+            msg["content"] = f"[{names[sender]}]: {msg['content']}"
+        out.append(msg)
+    return out
+
+
+def _shared_chat_block(names: list[str]) -> str:
+    """What the Executive is told about a shared web chat, in the user turn
+    (``channel_context_block``; never a cached system block, as it names the
+    people in it)."""
+    return (
+        "This is a shared chat in the web app. Everyone in it reads every "
+        f"message and every reply: {', '.join(names)}. Each person's message "
+        "starts with [Name] for who wrote it; answer whoever wrote the latest "
+        "one. Anything private to one of them (their own notes, mail or what "
+        "you remember about them) stays out of this chat unless they bring it "
+        "up here themselves."
+    )
+
+
 def _is_current_session(session: Any) -> bool:
     """Whether ``session`` is still the live one for its id — False once it was
     deleted (or its id reclaimed after a reset) while a turn held it."""
@@ -906,8 +990,12 @@ async def _run_chat_turn(
     # turn can't use is swapped for a fresh chat before the stop switch arms.
     requested_id = _clean_session_id(session_id)
     access: SessionAccess = "missing"
+    # Someone the owner shared this chat with, writing in it with them.
+    member = False
     if requested_id is not None:
         access = _session_access(request, requested_id, caller_person_id)
+        if access == "forbidden" and _shared_member(requested_id, caller_person_id):
+            access, member = "allowed", True
         if access in ("forbidden", "orphaned"):
             # Someone else's chat, or an ownerless one nobody here can vouch
             # for (its starter was lost to a restart). Continue in a fresh
@@ -940,9 +1028,12 @@ async def _run_chat_turn(
             delete_session(requested_id)
     # Only the chat's starter binds an ownerless row to themselves. Anyone else
     # allowed in (the principal) must not take it over just by continuing it.
-    bind_owner = requested_id is None or (
-        requested_id not in _session_starters
-        or _is_session_starter(request, requested_id, caller_person_id)
+    bind_owner = not member and (
+        requested_id is None
+        or (
+            requested_id not in _session_starters
+            or _is_session_starter(request, requested_id, caller_person_id)
+        )
     )
     client_turn_id = _clean_client_turn_id(client_turn_id)
     stop_event: asyncio.Event | None = None
@@ -999,6 +1090,37 @@ async def _run_chat_turn(
     # the principal but is no sign-in, so it never gets Act as me.
     session.web_caller_signed_in = api_caller.signed_in(request)
     is_first_turn = len(session.conversation_history) == 0
+
+    # A chat its owner shared (``chat_people``): everyone in it reads every
+    # turn, so it is no private conversation (``Session.shared_chat``), the
+    # Executive is told who is in it and who said what, and the pages it is
+    # open on follow the turn live (``chat_live``). A chat of one is as before.
+    people = chat_people(session.session_id) if access == "allowed" else []
+    session.shared_chat = bool(people)
+    exec_message = message
+    turn_memory_text = memory_text
+    shared_block = ""
+    speaker_name = ""
+    if people:
+        names = {pid: name for pid, name, _ in people}
+        owner_id = next((pid for pid, _, is_owner in people if is_owner), None)
+        try:
+            from openexecutive.memory.session_store import load_messages
+
+            history = await asyncio.to_thread(
+                load_messages, session.session_id, with_senders=True
+            )
+            session.conversation_history = _named_history(history, names, owner_id)
+        except Exception:
+            logger.exception("chat.shared_history_failed session_id=%s", session.session_id)
+        speaker_name = names.get(caller_person_id, "") if caller_person_id is not None else ""
+        if speaker_name:
+            exec_message = f"[{speaker_name}]: {message}"
+            # Peer memory and the learning passes keep the person's own words.
+            if turn_memory_text is None:
+                turn_memory_text = message
+        shared_block = _shared_chat_block(list(names.values()))
+    live_key = client_turn_id or turn_id
 
     logger.info(
         "chat.turn_start turn_id=%s session_id=%s is_first_turn=%s msg_len=%d attachments=%d",
@@ -1262,6 +1384,14 @@ async def _run_chat_turn(
         stopped = False
 
         try:
+            if session.shared_chat:
+                chat_live.turn_started(
+                    session.session_id,
+                    turn_key=live_key,
+                    sender_person_id=caller_person_id,
+                    sender_name=speaker_name,
+                    content=message,
+                )
             # Flush knowledge_retrieved (and any other pre-stream events) first.
             for evt in collector._events:
                 yield f"data: {json.dumps(collector.to_sse_dict(evt))}\n\n"
@@ -1270,7 +1400,7 @@ async def _run_chat_turn(
 
             if committee_review:
                 stream = executive.stream_chat_with_committee(
-                    user_message=message,
+                    user_message=exec_message,
                     session=session,
                     retrieved_context=retrieved_context,
                     episodic_context=episodic_context,
@@ -1281,13 +1411,14 @@ async def _run_chat_turn(
                     briefing_context=briefing_context,
                     page_context_block=page_context_block,
                     turn_id=turn_id,
-                    memory_text=memory_text,
+                    memory_text=turn_memory_text,
+                    channel_context_block=shared_block,
                     turn_sources=turn_sources,
                     inbox=inbox,
                 ).__aiter__()
             else:
                 stream = executive.stream_chat(
-                    user_message=message,
+                    user_message=exec_message,
                     session=session,
                     retrieved_context=retrieved_context,
                     episodic_context=episodic_context,
@@ -1298,7 +1429,8 @@ async def _run_chat_turn(
                     briefing_context=briefing_context,
                     page_context_block=page_context_block,
                     turn_id=turn_id,
-                    memory_text=memory_text,
+                    memory_text=turn_memory_text,
+                    channel_context_block=shared_block,
                     turn_sources=turn_sources,
                     inbox=inbox,
                 ).__aiter__()
@@ -1478,22 +1610,30 @@ async def _run_chat_turn(
                         item = step.item
                         if isinstance(item, str):
                             if item == Executive._THINKING:
-                                data = json.dumps({
+                                live_evt: dict[str, Any] = {
                                     "type": "thinking",
                                     "session_id": session.session_id,
-                                })
+                                }
                             else:
                                 full_response += item
                                 chunk_count += 1
-                                data = json.dumps({
+                                live_evt = {
                                     "type": "chunk",
                                     "content": item,
                                     "session_id": session.session_id,
-                                })
-                            yield f"data: {data}\n\n"
+                                }
+                            if session.shared_chat:
+                                chat_live.turn_event(session.session_id, live_key, live_evt)
+                            yield f"data: {json.dumps(live_evt)}\n\n"
                         else:
                             if isinstance(item, dict) and item.get("type") == "action_taken":
                                 action_chips.append(item)
+                            if (
+                                session.shared_chat
+                                and isinstance(item, dict)
+                                and item.get("type") in _LIVE_STEPS
+                            ):
+                                chat_live.turn_event(session.session_id, live_key, item)
                             yield f"data: {json.dumps(item)}\n\n"
 
                         if stop_event is not None and stop_event.is_set():
@@ -1648,6 +1788,10 @@ async def _run_chat_turn(
             _release_stop(client_turn_id, turn_id)
             if lock_key is not None:
                 _release_session_turn(lock_key, turn_lock)
+            if session.shared_chat:
+                # Saved by now (every path persists before it ends): the
+                # other pages read the chat again.
+                chat_live.turn_ended(session.session_id, live_key)
 
     return StreamingResponse(
         event_generator(),

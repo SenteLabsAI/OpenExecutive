@@ -266,6 +266,8 @@ export default function HomePage() {
     mode === "chat" && activeSessionId
       ? sessions.find((s) => s.session_id === activeSessionId)
       : undefined;
+  // Bumped by the ⋯ menu's Share; Chat opens its Share panel on each bump.
+  const [shareRequest, setShareRequest] = useState(0);
   const chatItems = openChat
     ? [
         {
@@ -285,6 +287,11 @@ export default function HomePage() {
               .then(refreshSessions)
               .catch(() => window.alert("Couldn't rename this chat."));
           },
+        },
+        {
+          label: "Share",
+          // Chat opens its Share panel, above the conversation.
+          onSelect: () => setShareRequest((n) => n + 1),
         },
         {
           label: "Download",
@@ -401,6 +408,7 @@ export default function HomePage() {
               initialMemoryText={pendingMemoryText}
               onTurnComplete={handleTurnComplete}
               onTurnStart={() => setIsTurnInFlight(true)}
+              shareRequest={shareRequest}
             />
           )}
         </div>
