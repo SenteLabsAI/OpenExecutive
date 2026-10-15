@@ -658,11 +658,13 @@ def _shared_member(session_id: str, caller_person_id: int | None) -> bool:
     return not _mail_private(session_id)
 
 
-def chat_people(session_id: str) -> list[tuple[int, str, bool]]:
+def chat_people(session_id: str, *, strict: bool = False) -> list[tuple[int, str, bool]]:
     """Everyone in a shared web chat: ``(person_id, full name, is_owner)``,
     the owner first, then whoever it is shared with in the order they were
     added. Empty when it is shared with nobody (or can't be read), so a chat
-    of one stays as it was. People no longer on the roster are left out."""
+    of one stays as it was. People no longer on the roster are left out.
+    ``strict`` raises when the list can't be read, for a caller that must
+    not take that for "nobody else is in it"."""
     from openexecutive.memory.session_store import get_session_owner, shared_with
     from openexecutive.people.store import get_person
 
@@ -684,6 +686,8 @@ def chat_people(session_id: str) -> list[tuple[int, str, bool]]:
             out.append((int(pid), person.full_name, pid == owner))
         return out
     except Exception:
+        if strict:
+            raise
         logger.exception("chat: couldn't read who is in session %s", session_id)
         return []
 
@@ -1118,9 +1122,15 @@ async def _run_chat_turn(
     # turn, so it is no private conversation (``Session.shared_chat``), the
     # Executive is told who is in it and who said what, and the pages it is
     # open on follow the turn live (``chat_live``). A chat of one is as before.
-    people = chat_people(session.session_id) if access == "allowed" else []
-    # A member's turn is in a shared chat even when the list couldn't be read.
-    session.shared_chat = bool(people) or member
+    unreadable = False
+    try:
+        people = chat_people(session.session_id, strict=True) if access == "allowed" else []
+    except Exception:
+        logger.exception("chat: couldn't read who is in session %s", session.session_id)
+        people, unreadable = [], True
+    # Fails closed: a turn whose company can't be read, and every member's
+    # turn, is treated as a shared one.
+    session.shared_chat = bool(people) or member or unreadable
     exec_message = message
     turn_memory_text = memory_text
     shared_block = ""

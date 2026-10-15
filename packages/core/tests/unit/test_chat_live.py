@@ -351,3 +351,30 @@ def test_the_principals_private_cards_stay_out_of_a_shared_chat(monkeypatch: pyt
     alone = SimpleNamespace(shared_chat=False, caller_person_id=None)
     assert context.render_and_trust(alone) == "board\n\nroster"
     assert seen == [False, True]
+
+
+def test_a_turn_whose_company_cant_be_read_is_a_shared_one(
+    client: TestClient, people: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import executive as exec_mod
+
+    sid = _chat_of(people["alex"])
+    seen: list[bool] = []
+
+    class _Capture:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **kwargs: Any) -> AsyncIterator[str]:
+            seen.append(kwargs["session"].shared_chat)
+            yield "ok"
+
+    def _broken(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(exec_mod, "Executive", _Capture)
+    monkeypatch.setattr(session_store, "shared_with", _broken)
+    client.post("/chat", json={"message": "hi", "session_id": sid}, headers=ALEX).read()
+    assert seen == [True]

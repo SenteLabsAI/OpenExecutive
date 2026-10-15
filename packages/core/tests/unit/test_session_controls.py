@@ -148,6 +148,9 @@ def test_a_shared_chat_is_one_both_write_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sid = _chat_of(people["sabin"])
+    # A message saved before senders were recorded.
+    session_store.save_message(sid, "user", "older question")
+    session_store.save_message(sid, "assistant", "older answer")
     # A teammate's own chat is theirs alone until they share it.
     assert client.get(f"/sessions/{sid}/messages", headers=ALEX).status_code == 404
 
@@ -166,7 +169,11 @@ def test_a_shared_chat_is_one_both_write_in(
     meta = client.get(f"/sessions/{sid}", headers=ALEX).json()
     assert meta["shared_with_you"] is True and meta["shared_by"] == "Sabin"
     assert "shared_with_you" not in client.get(f"/sessions/{sid}", headers=SABIN).json()
-    assert len(client.get(f"/sessions/{sid}/messages", headers=ALEX).json()) == 4
+    msgs = client.get(f"/sessions/{sid}/messages", headers=ALEX).json()
+    assert len(msgs) == 6
+    # Every user message names its writer, one saved before the chat was
+    # shared (no sender recorded) as the owner.
+    assert {m.get("sender_name") for m in msgs if m["role"] == "user"} == {"Sabin"}
     assert client.get(f"/sessions/{sid}/export", headers=ALEX).status_code == 200
     people_resp = client.get(f"/sessions/{sid}/people", headers=ALEX).json()
     assert people_resp == {
@@ -230,7 +237,7 @@ def test_a_shared_chat_is_one_both_write_in(
 
     # Each person's message says who wrote it.
     msgs = client.get(f"/sessions/{sid}/messages", headers=SABIN).json()
-    assert [m.get("sender_name") for m in msgs if m["role"] == "user"] == ["Sabin", "Sabin", "Alex"]
+    assert [m.get("sender_name") for m in msgs if m["role"] == "user"] == ["Sabin", "Sabin", "Sabin", "Alex"]
     # The owner's list doesn't call Alex's words theirs.
     listed = {s["session_id"]: s for s in client.get("/sessions", headers=SABIN).json()}
     assert listed[sid]["preview"] == "ok"

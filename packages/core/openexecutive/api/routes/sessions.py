@@ -191,7 +191,7 @@ def get_session_messages(session_id: str, request: Request) -> list[dict]:
     messages = load_messages(session_id, with_senders=bool(names))
     for msg in messages:
         sender = msg.get("sender_person_id")
-        if sender is None and "sender_person_id" in msg and owner_id is not None:
+        if sender is None and msg.get("role") == "user" and owner_id is not None:
             # Written before anyone recorded who sent it: the owner's.
             sender = msg["sender_person_id"] = owner_id
         if sender in names:
@@ -487,6 +487,8 @@ async def rewind_session(session_id: str, body: RewindRequest, request: Request)
             actor="user",
             details={"last_message_id": body.last_message_id, "messages": len(asked)},
         )
+    # Anyone else with the chat open reads it again without the turn.
+    chat_live.publish(session_id, {"type": "turn_ended", "turn_key": "rewind"})
     return RewindResponse(message="\n\n".join(asked))
 
 
