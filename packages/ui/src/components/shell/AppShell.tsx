@@ -9,6 +9,7 @@ import AskOEPanel from "@/components/askoe/AskOEPanel";
 import Icon from "@/components/Icon";
 import PausedBanner from "@/components/executive/PausedBanner";
 import AppSidebar from "@/components/shell/AppSidebar";
+import { PageCrumbProvider, usePageCrumbLabel } from "@/components/shell/PageCrumb";
 import {
   buildMobilePrimary,
   hubForPath,
@@ -128,6 +129,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <AskOEProvider>
+      <PageCrumbProvider>
       <div className="flex h-full bg-surface text-fg">
         {/* Mobile backdrop */}
         {drawerOpen && (
@@ -169,6 +171,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             right sheet below. Renders nothing while closed. */}
         <AskOEPanel />
       </div>
+      </PageCrumbProvider>
     </AskOEProvider>
   );
 }
@@ -182,6 +185,8 @@ function TopBar({
 }) {
   const { mode, role } = useWorkspace();
   const profileLabel = PROFILE_NAV[profileWording(mode, role.role_kind)].label;
+  // A page showing one record names it in place of the id in the URL.
+  const pageLabel = usePageCrumbLabel("/" + segments.join("/"));
   // Breadcrumb chain. Only the top-level section (segment[0]) is a real
   // route in this app — intermediate segments like `runs` in
   // `/jobs/runs/<id>` or `session` in `/audit/session/<id>` are not
@@ -193,7 +198,12 @@ function TopBar({
     const href = linkable ? "/" + segment : null;
     return {
       href,
-      label: idx === 0 && segment === "company-profile" ? profileLabel : labelFor(segment),
+      label:
+        idx === segments.length - 1 && idx > 0 && pageLabel
+          ? pageLabel
+          : idx === 0 && segment === "company-profile"
+            ? profileLabel
+            : labelFor(segment),
     };
   });
   // The Advanced pages (Agent Council, Audit log, ...) live at their own

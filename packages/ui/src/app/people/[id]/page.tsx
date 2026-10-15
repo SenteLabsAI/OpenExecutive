@@ -3,7 +3,9 @@
 import { useParams, useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
+import Icon from "@/components/Icon";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
@@ -29,6 +31,7 @@ import {
 } from "@/lib/api";
 import { assignNoticeLine } from "@/lib/assignNotice";
 import { isContact, shouldOfferTeamMode } from "@/lib/peopleKinds";
+import { onLeaveLine, reachLine } from "@/lib/personReach";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,7 +50,13 @@ const ALL_SCOPES = [
   { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
 ];
 
-const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
+const CHANNELS = [
+  { value: "any", label: "Any channel" },
+  { value: "email", label: "Email" },
+  { value: "slack", label: "Slack" },
+  { value: "discord", label: "Discord" },
+  { value: "telegram", label: "Telegram" },
+];
 
 const INPUT_CLS =
   "w-full h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent";
@@ -538,8 +547,7 @@ export default function PersonDetailPage() {
   const [tab, setTab] = useState<PersonTab>("overview");
   const tabsId = useId();
 
-  // Edit-mode disclosure panels
-  const [showContact, setShowContact] = useState(false);
+  // Edit mode keeps the chat ids and leave date in a closed Advanced fold.
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Edit form state — mirrors the person fields we allow editing
@@ -566,17 +574,13 @@ export default function PersonDetailPage() {
       .then((p) => {
         setPerson(p);
         resetForm(p);
-        // Auto-open sections that already have data so existing values aren't hidden
-        if (p.email || (p.email_aliases?.length ?? 0) > 0 || p.slack_user_id || p.discord_user_id || p.telegram_chat_id || p.preferred_channel !== "any" || p.response_sla_hours !== 24) {
-          setShowContact(true);
-        }
-        if (p.on_leave_until) {
-          setShowAdvanced(true);
-        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }, [personId]);
+
+  // The breadcrumb names the person rather than the id in the URL.
+  usePageCrumb(person?.full_name);
 
   // Contacts are outside the team: no approvals, no reply SLA, no
   // availability windows, no departments — and nothing to chase.
@@ -844,75 +848,85 @@ export default function PersonDetailPage() {
                       </label>
                     )}
 
-                    {/* Contact & routing */}
-                    <DisclosureSection
-                      label="Contact & routing"
-                      open={showContact}
-                      onToggle={() => setShowContact((v) => !v)}
-                    >
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <label className={LABEL_CLS}>
-                            Preferred channel
-                            <select
-                              value={form.preferred_channel}
-                              onChange={(e) => setForm((f) => ({ ...f, preferred_channel: e.target.value }))}
-                              className={INPUT_CLS}
-                            >
-                              {CHANNELS.map((c) => (
-                                <option key={c} value={c}>{c}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <p className={HINT_CLS}>
-                            Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : form.preferred_channel}.
-                          </p>
-                        </div>
-                        {!formContact && (
-                        <div>
-                          <label className={LABEL_CLS}>
-                            Expected reply within
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min={1}
-                                value={form.response_sla_hours}
-                                onChange={(e) => setForm((f) => ({ ...f, response_sla_hours: e.target.value }))}
-                                className={`${INPUT_CLS} flex-1 min-w-0`}
-                              />
-                              <span className="text-sm text-fg-muted flex-shrink-0">hours</span>
-                            </div>
-                          </label>
-                          <p className={HINT_CLS}>
-                            Items show as overdue on Home after {form.response_sla_hours || 24}h with no reply.
-                          </p>
-                        </div>
-                        )}
-                      </div>
+                    <label className={LABEL_CLS}>
+                      Email
+                      <input
+                        type="email"
+                        value={form.email}
+                        onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                        className={INPUT_CLS}
+                      />
+                    </label>
 
+                    <label className={LABEL_CLS}>
+                      Other addresses
+                      <textarea
+                        value={form.email_aliases}
+                        onChange={(e) => setForm((f) => ({ ...f, email_aliases: e.target.value }))}
+                        rows={2}
+                        placeholder="anna.personal@gmail.com"
+                        className={`${INPUT_CLS} h-auto py-2.5`}
+                      />
+                      <span className={HINT_CLS}>
+                        One per line. Mail from these reaches them, and they can be emailed
+                        here. Only the address above signs in.
+                      </span>
+                    </label>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className={LABEL_CLS}>
+                          Preferred channel
+                          <select
+                            value={form.preferred_channel}
+                            onChange={(e) => setForm((f) => ({ ...f, preferred_channel: e.target.value }))}
+                            className={INPUT_CLS}
+                          >
+                            {CHANNELS.map((c) => (
+                              <option key={c.value} value={c.value}>{c.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <p className={HINT_CLS}>
+                          Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : (CHANNELS.find((c) => c.value === form.preferred_channel)?.label ?? form.preferred_channel)}.
+                        </p>
+                      </div>
+                      {!formContact && (
+                      <div>
+                        <label className={LABEL_CLS}>
+                          Expected reply within
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={1}
+                              value={form.response_sla_hours}
+                              onChange={(e) => setForm((f) => ({ ...f, response_sla_hours: e.target.value }))}
+                              className={`${INPUT_CLS} flex-1 min-w-0`}
+                            />
+                            <span className="text-sm text-fg-muted flex-shrink-0">hours</span>
+                          </div>
+                        </label>
+                        <p className={HINT_CLS}>
+                          Items show as overdue on Home after {form.response_sla_hours || 24}h with no reply.
+                        </p>
+                      </div>
+                      )}
+                    </div>
+
+                    {/* Advanced */}
+                    <DisclosureSection
+                      label="Advanced"
+                      open={showAdvanced}
+                      onToggle={() => setShowAdvanced((v) => !v)}
+                    >
                       <label className={LABEL_CLS}>
-                        Email
+                        On leave until
                         <input
-                          type="email"
-                          value={form.email}
-                          onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                          type="date"
+                          value={form.on_leave_until}
+                          onChange={(e) => setForm((f) => ({ ...f, on_leave_until: e.target.value }))}
                           className={INPUT_CLS}
                         />
-                      </label>
-
-                      <label className={LABEL_CLS}>
-                        Other addresses
-                        <textarea
-                          value={form.email_aliases}
-                          onChange={(e) => setForm((f) => ({ ...f, email_aliases: e.target.value }))}
-                          rows={2}
-                          placeholder="anna.personal@gmail.com"
-                          className={`${INPUT_CLS} h-auto py-2.5`}
-                        />
-                        <span className={HINT_CLS}>
-                          One per line. Mail from these reaches them, and they can be emailed
-                          here — but only the address above signs in.
-                        </span>
                       </label>
 
                       <label className={LABEL_CLS}>
@@ -948,43 +962,33 @@ export default function PersonDetailPage() {
                         />
                       </label>
                     </DisclosureSection>
-
-                    {/* Advanced */}
-                    <DisclosureSection
-                      label="Advanced"
-                      open={showAdvanced}
-                      onToggle={() => setShowAdvanced((v) => !v)}
-                    >
-                      <label className={LABEL_CLS}>
-                        On leave until
-                        <input
-                          type="date"
-                          value={form.on_leave_until}
-                          onChange={(e) => setForm((f) => ({ ...f, on_leave_until: e.target.value }))}
-                          className={INPUT_CLS}
-                        />
-                      </label>
-                    </DisclosureSection>
                   </div>
                 ) : (
-                  <dl className="divide-y divide-line">
+                  <ul className="divide-y divide-line">
                     {[
-                      ["Kind", contact ? "Contact — outside the team" : "Team member"],
-                      ["Preferred channel", person.preferred_channel],
-                      ...(contact ? [] : [["Expected reply within", `${person.response_sla_hours} hours`]]),
-                      ["Email", person.email ?? "—"],
-                      ["Other addresses", (person.email_aliases ?? []).join(", ") || "—"],
-                      ["Slack user ID", person.slack_user_id ?? "—"],
-                      ["Discord user ID", person.discord_user_id ?? "—"],
-                      ["Telegram chat ID", person.telegram_chat_id ?? "—"],
-                      ["On leave until", person.on_leave_until ?? "—"],
-                    ].map(([label, value]) => (
-                      <div key={label} className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-4 py-3">
-                        <dt className="sm:w-48 flex-shrink-0 text-sm text-fg-muted">{label}</dt>
-                        <dd className="text-[15px] text-fg break-words min-w-0">{value}</dd>
-                      </div>
+                      {
+                        icon: "mail" as const,
+                        text: person.email ?? "No email",
+                        sub: (person.email_aliases ?? []).length > 0 ? `Also ${(person.email_aliases ?? []).join(", ")}` : null,
+                      },
+                      {
+                        icon: "chat" as const,
+                        text: reachLine(person, { self: viewerPersonId === personId, contact }),
+                        sub: null,
+                      },
+                      ...(onLeaveLine(person.on_leave_until)
+                        ? [{ icon: "pause" as const, text: onLeaveLine(person.on_leave_until) ?? "", sub: null }]
+                        : []),
+                    ].map((row) => (
+                      <li key={row.icon} className="flex items-start gap-3 py-3.5">
+                        <Icon name={row.icon} size="w-4 h-4" className="mt-1 text-fg-subtle flex-shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-[15px] text-fg break-words">{row.text}</p>
+                          {row.sub && <p className="text-sm text-fg-muted break-words">{row.sub}</p>}
+                        </div>
+                      </li>
                     ))}
-                  </dl>
+                  </ul>
                 )}
               </section>
 
