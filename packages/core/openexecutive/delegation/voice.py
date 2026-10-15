@@ -235,8 +235,9 @@ def add_conversation_rule(
 ) -> tuple[str | None, str | None]:
     """Add one habit (``kind="habit"``) or avoid line the person stated in a
     chat (``memory.chat_review`` checks the quote); ``(line, None)`` when
-    stored, ``(None, reason)`` when not. A locked profile is never changed;
-    when the list is full the oldest line makes room."""
+    stored, ``(None, reason)`` when not. A locked or full list is never
+    changed (its lines may be ones the person typed), and an edit or lock
+    made while this ran wins."""
     if kind not in ("habit", "avoid"):
         return None, "bad_kind"
     clean = _normalize(text)
@@ -251,10 +252,33 @@ def add_conversation_rule(
     lines: list[str] = list(getattr(profile, key))
     if clean.casefold() in {line.casefold() for line in profile.habits + profile.avoid}:
         return None, "duplicate"
-    lines = [*lines, clean][-cap:]
-    setattr(profile, key, lines)
-    save_voice(person_id, profile, locked=False, updated_by=UPDATED_BY_CONVERSATION,
-               db_path=db_path)
+    if len(lines) >= cap:
+        return None, "full"
+    setattr(profile, key, [*lines, clean])
+    now = datetime.now(UTC).isoformat()
+    body = json.dumps(asdict(profile))
+    conn = sqlite3.connect(str(_db(db_path)))
+    try:
+        ensure_schema(conn)
+        cur = conn.execute(
+            f"INSERT INTO {VOICE_TABLE} "  # noqa: S608 — constant table name
+            "(person_id, profile, locked, learned_at, sample_count, updated_at, updated_by) "
+            "VALUES (?, ?, 0, NULL, 0, ?, ?) ON CONFLICT(person_id) DO UPDATE SET "
+            "profile = excluded.profile, updated_at = excluded.updated_at, "
+            "updated_by = excluded.updated_by "
+            f"WHERE {VOICE_TABLE}.locked = 0 AND {VOICE_TABLE}.updated_at IS ?",
+            (person_id, body, now, UPDATED_BY_CONVERSATION, stored.updated_at),
+        )
+        if cur.rowcount == 0:
+            return None, "changed_meanwhile"
+        conn.execute(
+            f"INSERT INTO {VOICE_HISTORY_TABLE} "  # noqa: S608 — constant table name
+            "(person_id, created_at, profile, locked, updated_by) VALUES (?, ?, ?, 0, ?)",
+            (person_id, now, body, UPDATED_BY_CONVERSATION),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return clean, None
 
 

@@ -28,8 +28,9 @@ change must quote at least four of that person's own words from the turns read
 the fact, the brief item) must be named in their words; both are checked in
 code before the handler runs. The replies are shown as untrusted content
 (they can quote mail and documents) and tool results not at all. It closes
-loops, keeps facts, cancels or moves follow-ups, marks a draft sent and learns
-style; it never sends, books, deletes, drops a fact, changes a goal or grants
+loops, keeps facts, cancels or moves follow-ups and learns style. A chat
+draft's state is left to the brief's own check of the mailbox's Drafts. It
+never sends, books, deletes, drops a fact, changes a goal or grants
 permission to act. What it can't fix goes into the next brief as one line
 (``raise_in_brief``, the principal only).
 
@@ -466,15 +467,7 @@ _QUOTE_MIN_WORDS = 4
 _STOPWORDS = frozenset(
     ["the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "my", "me", "i", "it", "is", "was", "that", "this", "with", "from", "at", "by", "be", "please", "can", "you", "your", "we", "our", "they", "them", "he", "she", "his", "her", "its", "are", "were", "has", "have", "had", "will", "would", "should", "could", "just", "about", "out", "off", "up", "down", "into", "over"]
 )
-# "I sent it", "already deleted the draft", "sent that one" — a past-tense
-# claim, never a request ("send it") or a negation ("don't send it yet").
-_DRAFT_SENT_RE = re.compile(
-    r"\b(sent|deleted|binned|trashed)\b(?!\s+(to|for)\b)", re.IGNORECASE
-)
-_NEGATION_RE = re.compile(
-    r"\b(don'?t|do not|didn'?t|did not|haven'?t|have not|hasn'?t|not|never|yet|before|unless|if)\b",
-    re.IGNORECASE,
-)
+
 
 
 def _chat_tools() -> tuple[dict[str, dict[str, Any]], dict[str, Callable[[dict[str, Any]], Awaitable[str]]]]:
@@ -489,13 +482,12 @@ def _chat_tools() -> tuple[dict[str, dict[str, Any]], dict[str, Callable[[dict[s
         correction_tools.CANCEL_FOLLOWUP_TOOL,
         correction_tools.MOVE_FOLLOWUP_TOOL,
         correction_tools.LEAVE_OUT_OF_BRIEF_TOOL,
-        correction_tools.MARK_DRAFT_SENT_TOOL,
     ]
     handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
         **{k: v for k, v in open_loop_tools.OPEN_LOOP_TOOL_HANDLERS.items()
            if k in ("list_open_loops", "close_open_loop")},
         "remember_fact": fact_tools.FACT_TOOL_HANDLERS["remember_fact"],
-        **correction_tools.CORRECTION_TOOL_HANDLERS,
+        **{k: v for k, v in correction_tools.CORRECTION_TOOL_HANDLERS.items() if k != "mark_draft_sent"},
     }
     return {d["name"]: d for d in defs}, handlers
 
@@ -674,7 +666,7 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
     The quote gate shows they said something; this ties it to the target:
     a long enough quote, and the thing changed named in their own words (a
     loop's or follow-up's text, the fact, the item left out of the brief,
-    what was sent). Style lines carry their own quote check."""
+    nothing else). Style lines carry their own quote check."""
     quote = str(tool_input.get("source_quote") or "")
     if len(quote.split()) < _QUOTE_MIN_WORDS:
         return f"source_quote needs at least {_QUOTE_MIN_WORDS} of their words"
@@ -701,10 +693,6 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
         target = str(tool_input.get("item") or "")
     elif name == "raise_in_brief":
         target = str(tool_input.get("line") or "")
-    elif name == "mark_draft_sent":
-        if _DRAFT_SENT_RE.search(quote) and not _NEGATION_RE.search(quote):
-            return None
-        return "they didn't say they sent or deleted it"
     else:
         return None
     named = _content_words(target)
@@ -760,7 +748,7 @@ async def _apply(
         return json.dumps({"status": "raised"} if row else {"status": "refused", "detail": "empty, a repeat, or too many"})
     handler_input = dict(tool_input)
     # The chat tools that take no quote don't expect one.
-    if name in ("close_open_loop", "cancel_followup", "move_followup", "mark_draft_sent"):
+    if name in ("close_open_loop", "cancel_followup", "move_followup"):
         handler_input.pop("source_quote", None)
     return await handlers[name](handler_input)
 

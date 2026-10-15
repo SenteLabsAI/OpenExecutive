@@ -237,43 +237,15 @@ def test_a_filler_quote_or_an_unnamed_target_is_refused(db: Path, roster: Simple
     provider.script = [[
         ("close_open_loop", {"loop_id": loop_id, "source_quote": "ok thanks"}),
         ("close_open_loop", {"loop_id": loop_id, "source_quote": "that is all for now"}),
-        ("mark_draft_sent", {"source_quote": "that is all for now"}),
     ]]
     _review(db)
     assert get_open_loop(loop_id) is not None
-    assert [r["status"] for r in _tool_results(provider)] == ["refused"] * 3
+    assert [r["status"] for r in _tool_results(provider)] == ["refused"] * 2
 
 
-@pytest.mark.parametrize(("said", "marked"), [
-    ("I sent the Halcyon draft already this morning", True),
-    ("Deleted that draft for the Halcyon quote", True),
-    ("Please don't send the draft to Halcyon yet, I want to rework it", False),
-    ("Can you send the Halcyon draft now please", False),
-    ("I have not sent the Halcyon draft yet", False),
-])
-def test_a_draft_is_marked_sent_only_on_a_past_tense_claim(
-    db: Path, roster: SimpleNamespace, provider: _Provider, said: str, marked: bool
-) -> None:
-    from openexecutive.delegation import drafts
-
-    drafts.record(roster.principal.id, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d1",
-                  message_id="m1", now=datetime.now(UTC) - timedelta(hours=1))
-    _record(roster.principal, text=said)
-    provider.script = [[("mark_draft_sent", {"source_quote": said})]]
-    _review(db)
-    waiting = drafts.count_waiting(roster.principal.id, datetime.now(UTC) - timedelta(days=1))
-    assert waiting == (0 if marked else 1)
-
-
-def test_one_common_word_does_not_name_a_loop(db: Path, roster: SimpleNamespace,
-                                              provider: _Provider) -> None:
-    loop_id = open_loop(owner_person_id=roster.principal.id, description="Send Q3 report to finance team",
-                        due_at=NOW + timedelta(days=1))
-    _record(roster.principal, text="the team lunch is done, thanks everyone")
-    provider.script = [[("close_open_loop", {"loop_id": loop_id,
-                                             "source_quote": "the team lunch is done"})]]
-    _review(db)
-    assert get_open_loop(loop_id) is not None
+def test_drafts_are_left_to_the_mailbox_check(roster: SimpleNamespace) -> None:
+    tools, handlers = cr._tools_for(roster.principal)
+    assert "mark_draft_sent" not in {t["name"] for t in tools} | set(handlers)
 
 
 def test_a_reply_is_shown_as_untrusted(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
@@ -389,3 +361,27 @@ def test_a_writing_habit_lands_in_the_voice_profile(db: Path, roster: SimpleName
     again, reason = voice.add_conversation_rule(roster.principal.id, "avoid",
                                                 "Exclamation marks in emails.", db_path=db)
     assert again is None and reason == "duplicate"
+
+
+def test_a_writing_line_respects_lock_full_and_edits(db: Path, roster: SimpleNamespace,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = roster.principal.id
+    voice.save_voice(pid, voice.VoiceProfile(avoid=["Exclamation marks in emails."]), locked=True,
+                     updated_by="person:1", db_path=db)
+    assert voice.add_conversation_rule(pid, "habit", "Short emails with one ask.", db_path=db) == (None, "locked")
+    full = voice.VoiceProfile(habits=[f"Short emails, style {i}." for i in range(voice.MAX_HABITS)])
+    voice.save_voice(pid, full, locked=False, updated_by="person:1", db_path=db)
+    assert voice.add_conversation_rule(pid, "habit", "Short emails with one ask.", db_path=db) == (None, "full")
+    voice.save_voice(pid, voice.VoiceProfile(), locked=False, updated_by="person:1", db_path=db)
+    real_get = voice.get_voice
+
+    def stale(person_id: int, *, db_path: Path | None = None) -> voice.StoredVoice:
+        got = real_get(person_id, db_path=db_path)
+        monkeypatch.setattr(voice, "get_voice", real_get)
+        voice.save_voice(person_id, got.profile, locked=True, updated_by="person:1", db_path=db_path)
+        return got  # read before the lock landed
+
+    monkeypatch.setattr(voice, "get_voice", stale)
+    assert voice.add_conversation_rule(pid, "habit", "Short emails with one ask.", db_path=db) == (
+        None, "changed_meanwhile")
+    assert voice.get_voice(pid, db_path=db).locked

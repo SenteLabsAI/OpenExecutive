@@ -4951,8 +4951,8 @@ chat:
     recorded surface, so their checks hold; every change needs a source_quote
     of 4+ of the person's own words and its target named in their words,
     code-checked. It closes loops, keeps facts, cancels or moves follow-ups
-    the person scheduled (never by sharing a thread), marks a draft
-    sent, leaves an item out of the brief, learns a reply-style rule
+    the person scheduled (never by sharing a thread),
+    leaves an item out of the brief, learns a reply-style rule
     (attunement.style, basis conversation) or a writing habit (delegation.voice),
     and raises what it cannot fix in the next brief (briefing.brief_requests).
     Never sends, books, deletes or grants permission; says nothing in chat.
