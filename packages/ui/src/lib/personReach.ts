@@ -43,11 +43,13 @@ export function availableChannels(p: ReachFields): string[] {
  */
 export function reachLine(p: ReachFields, opts: { self?: boolean; contact?: boolean } = {}): string {
   const who = opts.self ? "you" : "them";
+  const have = availableChannels(p);
   let how: string;
-  if (p.preferred_channel && p.preferred_channel !== "any") {
+  // Delivery tries the preferred channel first among those with an address
+  // or id, so a preferred channel with nothing set reads like "any".
+  if (p.preferred_channel && p.preferred_channel !== "any" && have.includes(p.preferred_channel)) {
     how = `Reaches ${who} ${channelPhrase(p.preferred_channel)}`;
   } else {
-    const have = availableChannels(p);
     if (have.length === 0) return opts.self ? "No email or chat app set for you yet" : "No email or chat app set for them yet";
     // "by email or Telegram", "on Slack or Discord"
     const [first, ...rest] = have;

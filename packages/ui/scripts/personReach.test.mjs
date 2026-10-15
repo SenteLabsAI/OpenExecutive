@@ -24,6 +24,11 @@ test("any channel lists what they have, email first", () => {
   assert.equal(reachLine(three), "Reaches them by email, Slack or Telegram, replies within 24h");
 });
 
+test("a preferred channel with no id falls back to what they have", () => {
+  const p = { ...base, email: "ada@example.com", preferred_channel: "slack" };
+  assert.equal(reachLine(p), "Reaches them by email, replies within 24h");
+});
+
 test("a contact has no reply time", () => {
   const p = { ...base, email: "ada@example.com", preferred_channel: "email" };
   assert.equal(reachLine(p, { contact: true }), "Reaches them by email");
