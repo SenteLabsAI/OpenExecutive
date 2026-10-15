@@ -38,6 +38,20 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
+@pytest.fixture(autouse=True)
+def audit_rows(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict[str, Any]]]:
+    """The reply rows ``record_reply`` logs, kept off the shared audit DB."""
+    from openexecutive import audit
+
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+
+    def _log(event_type: str, summary: str, **kw: Any) -> None:
+        rows.append((event_type, summary, kw))
+
+    monkeypatch.setattr(audit, "log_event", _log)
+    return rows
+
+
 @pytest.fixture()
 def people(db: Path) -> SimpleNamespace:
     principal_id = people_store.upsert_person(
@@ -120,12 +134,26 @@ class TestTheCard:
 
 
 class TestAReply:
-    def test_a_reply_to_the_sender_files_nothing(self, people: SimpleNamespace) -> None:
+    def test_a_reply_to_the_sender_files_nothing_and_logs_the_reply(
+        self, people: SimpleNamespace, audit_rows: list[tuple[str, str, dict[str, Any]]],
+    ) -> None:
         session = Session()
         session.mail_sent_to.add("ann@example.com")
         _note(session, people.teammate)
 
         assert _cards() == []
+        # The brief's evidence that it was answered: private, keyed by thread.
+        [(event_type, summary, kw)] = audit_rows
+        assert event_type == "integration_outbound"
+        assert summary == unanswered_mail.REPLIED_SUMMARY + "ann@example.com"
+        assert kw["details"]["thread_key"] == "t1" and kw["private"] is True
+
+    def test_no_reply_logs_no_reply_row(
+        self, people: SimpleNamespace, audit_rows: list[tuple[str, str, dict[str, Any]]],
+    ) -> None:
+        _note(Session(), people.teammate)
+
+        assert audit_rows == []
 
     def test_a_later_reply_resolves_the_card(self, people: SimpleNamespace) -> None:
         _note(_proven(), people.teammate, message_id="m1")

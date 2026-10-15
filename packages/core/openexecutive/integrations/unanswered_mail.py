@@ -147,6 +147,30 @@ def open_thread_keys() -> set[str]:
     }
 
 
+REPLIED_SUMMARY = "Replied in the mailbox thread to "
+
+
+def record_reply(thread_key: str, sender: str, session_id: str | None) -> None:
+    """Log that a mailbox email got its reply: the positive evidence the
+    briefs read (``briefing.live_signals``) before saying "the Executive
+    replied". No card is no proof: a turn that timed out files none, and a
+    card read or dismissed is no longer open."""
+    from openexecutive.audit import log_event
+
+    try:
+        log_event(
+            "integration_outbound",
+            f"{REPLIED_SUMMARY}{_one_line(sender, 120)}",
+            actor="email",
+            session_id=session_id,
+            details={"channel": "email", "to": sender, "thread_key": thread_key.strip().lower()},
+            # Read only by the principal's own brief; names who was answered.
+            private=True,
+        )
+    except Exception:
+        logger.exception("unanswered_mail: could not log the reply in thread %s", thread_key)
+
+
 def close_card(thread_key: str) -> None:
     """Resolve the open card for a thread that has now had its reply."""
     from openexecutive.alerts import store

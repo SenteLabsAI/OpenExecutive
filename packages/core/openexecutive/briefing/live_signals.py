@@ -168,9 +168,10 @@ def _inbound(
 
     A message handled twice (logged twice under one message id) counts once.
     Mail from the principal is labelled as theirs, and, with
-    ``include_private``, an email from someone on the roster says whether it
-    got its reply (an open ``integrations.unanswered_mail`` card for its
-    thread means it did not)."""
+    ``include_private``, an email from someone on the roster says "the
+    Executive replied" only when a reply was logged in its thread after it
+    (``unanswered_mail.record_reply``), and "no reply went out" while its
+    card is open; neither when there is no evidence either way."""
     from openexecutive.integrations.unanswered_mail import open_thread_keys
 
     rows = _audit_rows("integration_inbound", since, include_private)
@@ -181,6 +182,7 @@ def _inbound(
     total = 0
     principal = _principal_addresses()
     unanswered: set[str] | None = None
+    replies: dict[str, str] | None = None
     for ev in rows:  # newest first
         summary = str(ev.summary or "")
         details = ev.details if isinstance(ev.details, dict) else {}
@@ -221,10 +223,15 @@ def _inbound(
             # The cards are private to the principal: their reading stays out
             # of a shared read.
             if include_private and address and _is_roster_sender(address):
-                if unanswered is None:
+                if unanswered is None or replies is None:
                     unanswered = open_thread_keys()
+                    replies = _replied_threads(since, include_private)
                 thread_key = str(details.get("thread_id") or address).strip().lower()
-                reply = "no reply went out" if thread_key in unanswered else "the Executive replied"
+                replied_at = parse_aware(replies.get(thread_key))
+                if thread_key in unanswered:
+                    reply = "no reply went out"
+                elif replied_at is not None and replied_at >= (parse_aware(ev.ts) or replied_at):
+                    reply = "the Executive replied"
         else:
             head, _, text = summary.partition(": ")
             sender = _one_line(_PAREN_REF_RE.sub("", head[len("Inbound "):]), 80)
@@ -262,6 +269,22 @@ def _inbound(
         key = f"{g['sender'].lower()}|{g['topic'].lower()[:60]}|{g['count']}"
         keys.append(f"{key}|{g['reply']}" if g["reply"] else key)
     return lines, total, shown, stuck, keys
+
+
+def _replied_threads(since: datetime, include_private: bool) -> dict[str, str]:
+    """Mailbox threads (lowercased key) with a reply logged since ``since``,
+    each with its latest reply's timestamp."""
+    from openexecutive.integrations.unanswered_mail import REPLIED_SUMMARY
+
+    out: dict[str, str] = {}
+    for ev in _audit_rows("integration_outbound", since, include_private):  # newest first
+        if not str(ev.summary or "").startswith(REPLIED_SUMMARY):
+            continue
+        details = ev.details if isinstance(ev.details, dict) else {}
+        key = str(details.get("thread_key") or "").strip().lower()
+        if key and key not in out:
+            out[key] = str(ev.ts)
+    return out
 
 
 def _outbound_blocked(

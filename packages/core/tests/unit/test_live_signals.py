@@ -350,8 +350,14 @@ def test_a_roster_email_says_whether_it_got_its_reply(
     _thread_email(audit, roster.teammate, "Re: LP question", message_id="m1", thread_id="t1")
     _thread_email(audit, roster.teammate, "Budget", message_id="m2", thread_id="t2")
     _thread_email(audit, "stranger@y.com", "Hello", message_id="m3", thread_id="t3")
+    # A turn that timed out files no card and logs no reply: no evidence.
+    _thread_email(audit, roster.teammate, "Timed out", message_id="m4", thread_id="t4")
     unanswered_mail.file_card(
         thread_key="t2", message_id="m2", sender_name="Dana Lee", from_principal=False,
+    )
+    audit.log(
+        "integration_outbound", unanswered_mail.REPLIED_SUMMARY + roster.teammate,
+        actor="email", details={"channel": "email", "thread_key": "t1"}, private=True,
     )
 
     signals = live_signals.gather_live_signals(_since(), include_private=True)
@@ -359,7 +365,8 @@ def test_a_roster_email_says_whether_it_got_its_reply(
     by_topic = {line.split(": ", 1)[1].split(" —")[0]: line for line in signals.inbound}
     assert "] email (the Executive replied) from dana@x.com" in by_topic["Re: LP question"]
     assert "] email (no reply went out) from dana@x.com" in by_topic["Budget"]
-    assert "replied" not in by_topic["Hello"] and "no reply" not in by_topic["Hello"]
+    for topic in ("Hello", "Timed out"):
+        assert "replied" not in by_topic[topic] and "no reply" not in by_topic[topic]
     # A reply landing later changes the brief's fingerprint.
     assert "dana@x.com|budget|1|no reply went out" in signals.keys["inbound"]
     # The cards are the principal's own: a shared read never carries them.

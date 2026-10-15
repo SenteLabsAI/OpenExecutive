@@ -1420,6 +1420,7 @@ def _note_reply_outcome(
         addresses = {sender, *(a.strip().lower() for a in [person.email, *person.email_aliases] if a)}
         if addresses & session.mail_sent_to or (message_id and message_id in session.mail_replied_ids):
             unanswered_mail.close_card(thread_key)
+            unanswered_mail.record_reply(thread_key, sender, getattr(session, "session_id", None))
             return
         # Only mail Gmail proved is the principal's carries its subject and
         # what the Executive wrote: a forged From must not put the model's
