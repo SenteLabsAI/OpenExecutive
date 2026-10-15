@@ -464,7 +464,8 @@ async def rewind_session(session_id: str, body: RewindRequest, request: Request)
     owner = _require_owner(request, session_id)
     if _is_channel_namespaced(session_id):
         raise HTTPException(status_code=409, detail="Only a chat started here can be redone.")
-    if chat_people(session_id) and last_turn_sender(session_id) != owner:
+    # A message saved without a sender (before sharing) is the owner's.
+    if chat_people(session_id) and last_turn_sender(session_id) not in (None, owner):
         # In a shared chat the last message may be someone else's words.
         raise HTTPException(status_code=409, detail="The last message is someone else's, so it can't be redone.")
     lock = await _acquire_session_turn(session_id, 0.5)
