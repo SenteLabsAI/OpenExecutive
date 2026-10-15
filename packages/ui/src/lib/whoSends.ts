@@ -173,7 +173,7 @@ export const SCENES: Scene[] = [
   },
   {
     key: "lead:on", tab: "lead", option: "On", writes: "inbox", sends: "off", lead: "on",
-    line: "It acts in its own name without waiting to be asked. Always asks first and your company's rules still hold.",
+    line: "It acts in its own name without waiting for your yes on Home. Your company's rules and the Always asks first list still hold it back.",
     frames: [
       { on: ["exec"], dim: ["inbox"], caps: { exec: "Notices something" }, execSees: late, to: "Sam" },
       { chip: mail("From the Executive", ask, "exec", true), on: ["exec"], dim: ["inbox", "you"], caps: { exec: "Writes in its own name" }, to: "Sam" },

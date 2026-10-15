@@ -304,7 +304,7 @@ export default function WhoSendsCard() {
         </div>
       </div>
 
-      <div className="mt-4 min-h-[4.5em]" aria-live="polite">
+      <div className="mt-4 min-h-[4.5em]" aria-live={tour ? "off" : "polite"}>
         <span className={`inline-block rounded-full px-2.5 py-0.5 font-display text-[15px] font-bold ${tone.text} ${tone.pill}`}>
           {TAB_NAMES[scene.tab]} · {scene.option}
         </span>
