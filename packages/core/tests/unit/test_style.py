@@ -293,7 +293,7 @@ async def test_typed_rules_are_kept_and_learning_fills_the_rest(
     calls: list[str] = []
     _fake_model(monkeypatch, {"rules": [_rule("Keep replies short.", [turns[0][0]])]}, calls)
     assert (await style.run_style_pass(team.sara))["changed"]
-    assert "RULE SLOTS AVAILABLE: 3" in calls[0] and "- (edited) Use bullet points." in calls[0]
+    assert f"RULE SLOTS AVAILABLE: {style.MAX_RULES - 1}" in calls[0] and "- (edited) Use bullet points." in calls[0]
     assert [r.text for r in style.get_profile(team.sara).rules] == [
         "Use bullet points.", "Keep replies short."]
 

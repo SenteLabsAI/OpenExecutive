@@ -98,7 +98,13 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "remember_fact",
     "forget_fact",
     "update_company_profile",
-    # The speaker's own bookkeeping.
+    # The speaker's own bookkeeping (correction_tools: their own follow-ups
+    # and drafts; a brief item kept out only in the principal's quoted words).
+    "cancel_followup",
+    "leave_out_of_brief",
+    "list_followups",
+    "mark_draft_sent",
+    "move_followup",
     "ack_alert",
     "assign_open_loop",
     "close_open_loop",

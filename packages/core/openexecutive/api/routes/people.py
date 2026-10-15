@@ -685,7 +685,7 @@ class WorkingStyleIn(BaseModel):
     """``rules`` omitted keeps the current rules (and their provenance) and
     only sets the lock."""
 
-    rules: list[str] | None = Field(default=None, max_length=4)
+    rules: list[str] | None = Field(default=None, max_length=8)  # style.MAX_RULES
     locked: bool = False
 
 

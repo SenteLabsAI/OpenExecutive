@@ -72,6 +72,10 @@ from openexecutive.orchestrator.content_trust import (
     principal_only_withheld,
     principal_only_withheld_error,
 )
+from openexecutive.orchestrator.correction_tools import (
+    CORRECTION_TOOL_HANDLERS,
+    CORRECTION_TOOLS,
+)
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.decision_tools import (
     DECISION_TOOL_HANDLERS,
@@ -730,6 +734,7 @@ _ALL_SKILL_TOOLS = [
     *CALENDAR_TOOLS,
     *PEOPLE_TOOLS,
     *OPEN_LOOP_TOOLS,
+    *CORRECTION_TOOLS,
     *DEPARTMENT_TOOLS,
     *DECISION_TOOLS,
     *FACT_TOOLS,
@@ -759,6 +764,7 @@ _ALL_SKILL_HANDLERS = {
     **CALENDAR_TOOL_HANDLERS,
     **PEOPLE_TOOL_HANDLERS,
     **OPEN_LOOP_TOOL_HANDLERS,
+    **CORRECTION_TOOL_HANDLERS,
     **DEPARTMENT_TOOL_HANDLERS,
     **DECISION_TOOL_HANDLERS,
     **FACT_TOOL_HANDLERS,
@@ -1354,6 +1360,7 @@ class Executive:
                 standing_facts=standing_facts,
             )
             consulted: list[str] = []
+            turn_calls: list[tuple[str, str]] = []
             async for item in self._stream_agent_loop(
                 system_blocks,
                 messages,
@@ -1362,6 +1369,7 @@ class Executive:
                 episodic_context=episodic_context,
                 debug_collector=debug_collector,
                 consulted_out=consulted,
+                calls_out=turn_calls,
                 turn_id=turn_id,
                 turn_sources=turn_sources,
                 workspace_mode=workspace_mode,
@@ -1482,6 +1490,15 @@ class Executive:
 
             if not touched_mail:
                 schedule_chat_notes(speaker_text, session=session, person_id=person_id)
+
+            # Kept for the conversation review once the chat goes quiet
+            # (memory.chat_review): a verified speaker's own words, the reply
+            # and the tools the turn ran.
+            from openexecutive.memory.chat_review import record_turn
+
+            if not touched_mail:
+                record_turn(speaker_text, full_response, session=session,
+                            person_id=person_id, calls=turn_calls)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -1691,6 +1708,7 @@ class Executive:
             standing_facts=standing_facts,
         )
 
+        turn_calls: list[tuple[str, str]] = []
         async for item in self._stream_agent_loop(
             system_blocks,
             messages,
@@ -1700,6 +1718,7 @@ class Executive:
             debug_collector=debug_collector,
             consulted_out=consulted,
             specialist_outputs_out=specialist_outputs,
+            calls_out=turn_calls,
             turn_id=turn_id,
             turn_sources=turn_sources,
             workspace_mode=workspace_mode,
@@ -1979,6 +1998,13 @@ class Executive:
             if not touched_mail:
                 schedule_chat_notes(speaker_text, session=session, person_id=person_id)
 
+            # Conversation review — see stream_chat.
+            from openexecutive.memory.chat_review import record_turn
+
+            if not touched_mail:
+                record_turn(speaker_text, final_response, session=session,
+                            person_id=person_id, calls=turn_calls)
+
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one
         # that touched the speaker's own mailbox — is not).
@@ -2021,6 +2047,7 @@ class Executive:
         workspace_mode: str | None = None,
         principal_role_tag: str | None = None,
         inbox: TurnInbox | None = None,
+        calls_out: list[tuple[str, str]] | None = None,
     ) -> AsyncIterator[str | dict[str, Any]]:
         """Tool-use loop that yields text deltas as they arrive.
 
@@ -2150,7 +2177,9 @@ class Executive:
         # Every tool call this turn with the start of its result, for the
         # end-of-turn check that the reply claims nothing it didn't do
         # (claim_check); checked once a turn.
-        turn_calls: list[tuple[str, str]] = []
+        # Every tool the turn ran with its result: for the claim check, and
+        # (``calls_out``) for the conversation review's record of the turn.
+        turn_calls: list[tuple[str, str]] = calls_out if calls_out is not None else []
         claim_checked = False
 
         for iteration in range(1, max_iterations + 1):

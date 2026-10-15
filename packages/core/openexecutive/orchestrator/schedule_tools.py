@@ -1819,6 +1819,11 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # and goes through workflows/step_script.py rather than this set.
     "run_script",
     "assign_open_loop",
+    # Corrections need the person who asked (orchestrator/correction_tools.py)
+    "cancel_followup",
+    "leave_out_of_brief",
+    "mark_draft_sent",
+    "move_followup",
     "create_goal",
     "forget_fact",
     "record_decision_outcome",

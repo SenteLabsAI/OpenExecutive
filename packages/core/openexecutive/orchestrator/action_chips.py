@@ -51,6 +51,12 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # assigning one starts it
     "close_open_loop",
     "assign_open_loop",
+    # Corrections (orchestrator/correction_tools.py): a brief item left out,
+    # a follow-up cancelled or moved, a chat draft marked sent
+    "leave_out_of_brief",
+    "cancel_followup",
+    "move_followup",
+    "mark_draft_sent",
     # Department goal mutations (Phase B — chat-driven progress updates)
     "update_department_goal",
     # A new goal (and, when its area did not exist, a new area)
@@ -295,6 +301,18 @@ def summarize_action(
         payload["target"] = full_name or None
         if isinstance(pid, int):
             payload["link"] = f"/people/{pid}"
+    elif tool_name == "leave_out_of_brief":
+        item = " ".join(str(tool_input.get("item", "") or "").split())[:60]
+        payload["summary"] = f"Left out of your brief: {item}" if item else "Left an item out of your brief"
+    elif tool_name == "cancel_followup":
+        payload["summary"] = "Cancelled a follow-up"
+    elif tool_name == "move_followup":
+        moved_to = (parsed or {}).get("run_at")
+        payload["summary"] = (
+            f"Moved a follow-up to {_humanize_iso(str(moved_to))}" if moved_to else "Moved a follow-up"
+        )
+    elif tool_name == "mark_draft_sent":
+        payload["summary"] = "Marked your draft sent"
     elif tool_name == "close_open_loop":
         loop_id = tool_input.get("loop_id")
         payload["summary"] = f"Closed open loop #{loop_id}" if loop_id else "Closed an open loop"

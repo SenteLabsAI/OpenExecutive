@@ -318,6 +318,8 @@ def test_non_json_result_still_surfaces() -> None:
 # of SIDE_EFFECTING_TOOLS, or it's a silent omission (the user fires the
 # tool and the chip never renders).
 _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
+    # correction_tools
+    "list_followups",
     # schedule_tools
     "lookup_person",
     "find_alerts",
@@ -356,6 +358,7 @@ def _all_registered_tool_names() -> set[str]:
     """
     from openexecutive.orchestrator.artifact_tools import DRAFT_ARTIFACT_TOOL_HANDLERS
     from openexecutive.orchestrator.broadcast_tools import BROADCAST_TOOL_HANDLERS
+    from openexecutive.orchestrator.correction_tools import CORRECTION_TOOL_HANDLERS
     from openexecutive.orchestrator.decision_tools import DECISION_TOOL_HANDLERS
     from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_HANDLERS
     from openexecutive.orchestrator.department_tools import DEPARTMENT_TOOL_HANDLERS
@@ -371,6 +374,7 @@ def _all_registered_tool_names() -> set[str]:
         set(SCHEDULE_TOOL_HANDLERS)
         | set(PEOPLE_TOOL_HANDLERS)
         | set(OPEN_LOOP_TOOL_HANDLERS)
+        | set(CORRECTION_TOOL_HANDLERS)
         | set(DEPARTMENT_TOOL_HANDLERS)
         | set(DECISION_TOOL_HANDLERS)
         | set(FACT_TOOL_HANDLERS)

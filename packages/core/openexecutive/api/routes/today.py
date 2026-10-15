@@ -1664,6 +1664,7 @@ def _narrative_context(
         live_window=window,
         now_label=now_label,
         getting_started=getting_started,
+        brief_requests=viewer_desc is None and scope == narrative_cache.DEFAULT_SCOPE,
     )
     return context, activity
 

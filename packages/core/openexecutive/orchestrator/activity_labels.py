@@ -78,6 +78,11 @@ _LABELS: dict[str, str] = {
     "list_open_loops": "Checking what people owe…",
     "close_open_loop": "Closing an open loop…",
     "assign_open_loop": "Assigning a task…",
+    "leave_out_of_brief": "Updating your brief…",
+    "list_followups": "Checking follow-ups…",
+    "cancel_followup": "Cancelling a follow-up…",
+    "move_followup": "Moving a follow-up…",
+    "mark_draft_sent": "Marking the draft sent…",
 
     # Departments
     "list_department_goals": "Reviewing department goals…",
@@ -183,6 +188,10 @@ _PRIORITY: tuple[frozenset[str], ...] = (
         "update_company_profile",
         "close_open_loop",
         "assign_open_loop",
+        "leave_out_of_brief",
+        "cancel_followup",
+        "move_followup",
+        "mark_draft_sent",
     }),
     frozenset({
         "create_alert",

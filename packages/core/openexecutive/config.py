@@ -1108,6 +1108,14 @@ class Settings(BaseSettings):
     # can't. One small ROUTING_MODEL call, only when the reply uses a word
     # that can claim a change.
     claim_check_enabled: bool = Field(True, alias="CLAIM_CHECK_ENABLED")
+    # Conversation review (memory.chat_review): once a chat has been quiet
+    # this long, one small tool loop reads the new part and fixes what the
+    # replies left undone, from the person's own quoted words. Empty model =
+    # ROUTING_MODEL.
+    chat_review_enabled: bool = Field(True, alias="CHAT_REVIEW_ENABLED")
+    chat_review_quiet_minutes: int = Field(30, ge=1, alias="CHAT_REVIEW_QUIET_MINUTES")
+    chat_review_max_per_day: int = Field(10, ge=0, alias="CHAT_REVIEW_MAX_PER_DAY")
+    chat_review_model: str = Field("", alias="CHAT_REVIEW_MODEL")
     attunement_enabled: bool = Field(True, alias="ATTUNEMENT_ENABLED")
     attunement_open_loops_enabled: bool = Field(True, alias="ATTUNEMENT_OPEN_LOOPS_ENABLED")
     # When no due date is stated, the loop is due this many days after it opens.

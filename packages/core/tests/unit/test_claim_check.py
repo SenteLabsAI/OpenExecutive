@@ -159,3 +159,30 @@ def test_tool_calls_this_turn_reach_the_check() -> None:
         _run(provider, "I sent it")
     assert len(calls) == 1
     assert "- list_open_loops:" in calls[0]
+
+
+def test_the_turns_calls_reach_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``calls_out`` hands the turn's calls to the conversation review's record."""
+    monkeypatch.setenv("CLAIM_CHECK_ENABLED", "false")
+    provider = ScriptedProvider([
+        FinalMsg([ToolUseBlock("t1", "list_open_loops", {})], "tool_use"),
+        FinalMsg([TextBlock("Nothing is open.")], "end_turn"),
+    ])
+
+    async def handler(_input: dict[str, Any]) -> str:
+        return '{"loops": []}'
+
+    calls: list[tuple[str, str]] = []
+
+    async def _go() -> None:
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            async for _ in Executive()._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "anything open?"}],
+                model="claude-test", calls_out=calls,
+            ):
+                pass
+
+    with patch.dict("openexecutive.orchestrator.executive._ALL_SKILL_HANDLERS",
+                    {"list_open_loops": handler}):
+        asyncio.run(_go())
+    assert calls == [("list_open_loops", '{"loops": []}')]

@@ -209,6 +209,13 @@ def _waiting(person_id: int, since: datetime, db_path: Path | None) -> list[tupl
     return [(int(r[0]), str(r[1] or "")) for r in rows]
 
 
+def latest_waiting(person_id: int, since: datetime, *, db_path: Path | None = None) -> int | None:
+    """The row id of ``person_id``'s newest chat draft since ``since`` still
+    counted as waiting, or None."""
+    waiting = _waiting(person_id, since, db_path)
+    return waiting[0][0] if waiting else None
+
+
 def mark_gone(row_id: int, now: datetime, *, db_path: Path | None = None) -> None:
     """A chat draft is no longer in the person's Drafts (sent or deleted)."""
     conn = _connect(db_path)
