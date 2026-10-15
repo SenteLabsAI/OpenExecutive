@@ -1,10 +1,12 @@
 "use client";
 
 import WhatItMayDoView from "@/components/delegate/WhatItMayDo";
+import WhoSendsCard from "@/components/delegate/WhoSendsCard";
 
 // Delegate → What it may do: everything that goes out without asking, who it
 // goes out as, and the setting that allows it. Read-only; each row links to
-// the tab where its setting lives.
+// the tab where its setting lives. Who writes and who sends, above the list,
+// plays what each option of the three tabs does.
 export default function WhatItMayDoPage() {
   return (
     <main className="flex-1 min-h-0 overflow-y-auto">
@@ -13,6 +15,7 @@ export default function WhatItMayDoPage() {
         <p className="mt-3 text-[15px] text-fg-muted leading-relaxed">
           Everything that goes out without asking you, and the setting that allows it.
         </p>
+        <WhoSendsCard />
         <div className="mt-6">
           <WhatItMayDoView />
         </div>
