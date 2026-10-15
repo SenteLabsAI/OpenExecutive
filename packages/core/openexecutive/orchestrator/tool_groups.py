@@ -37,6 +37,10 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         "add, change or archive people on the roster, department heads, roster requests",
         ("archive_person", "resolve_roster_request", "set_department_head", "upsert_person"),
     ),
+    "corrections": (
+        "leave something out of the brief, list, cancel or move a follow-up or reminder, mark a chat draft sent",
+        ("cancel_followup", "leave_out_of_brief", "list_followups", "mark_draft_sent", "move_followup"),
+    ),
     "goals": (
         "department goals, decision outcomes, open loops",
         (

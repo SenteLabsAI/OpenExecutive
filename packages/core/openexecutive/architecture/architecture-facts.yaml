@@ -3613,7 +3613,9 @@ attunement:
       Style profiles alone would not make the Executive more proactive, but a
       few pinned rules per person ("lead with the recommendation") stop it
       repeating what someone has already thumbed down. Kept deliberately
-      small: max 4 rules, evidence-cited, editable and lockable.
+      small: max 8 rules, evidence-cited, editable and lockable. A rule the
+      person asked for in a chat is added by the conversation review with
+      basis conversation and kept by the pass like a typed one.
     evidence: |
       Last 40 attributed user messages (chat_messages.sender_person_id), each
       paired with its own reply (the first assistant row before the next
@@ -4934,6 +4936,28 @@ chat:
     iteration, fails open. Why: replies said "Done" or "I'll treat it as
     closed" with no tool call, and the brief kept the item.
     CLAIM_CHECK_ENABLED (default true).
+  chat_review: |
+    Conversation review (memory/chat_review.py). The post-turn block keeps a
+    verified speaker's turn (principal on a people_tools-verified surface, or
+    a rostered teammate on their own web chat, Slack or Discord; never an
+    email, unattended run, private-to-principal turn, mailbox turn or an
+    attachment) in chat_review_turns: own words, reply, tools run. One
+    chat_review __internal__ action per conversation fires 30 minutes after
+    the last turn (pushed back while the chat goes on) and runs one small
+    tool loop per person (CHAT_REVIEW_MODEL, default ROUTING_MODEL; 5 rounds,
+    8 changes, CHAT_REVIEW_MAX_PER_DAY 10 per person) on the unreviewed turns
+    only. Replies are shown as untrusted content, tool results not at all.
+    Tools replay through the chat handlers in a session rebuilt from the
+    recorded surface, so their checks hold; every change needs a source_quote
+    of 4+ of the person's own words and its target named in their words,
+    code-checked. It closes loops, keeps facts, cancels or moves follow-ups
+    the person scheduled (never by sharing a thread), marks a draft
+    sent, leaves an item out of the brief, learns a reply-style rule
+    (attunement.style, basis conversation) or a writing habit (delegation.voice),
+    and raises what it cannot fix in the next brief (briefing.brief_requests).
+    Never sends, books, deletes or grants permission; says nothing in chat.
+    Why: the claim check only sees one turn; "I sent it" answered with
+    "noted" left the draft waiting, and stated style was lost.
   module: openexecutive.api.routes.chat
   endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works. POST /chat/background starts a new chat the server answers to the end with no reader (202 + session_id; the caller request is wrapped so is_disconnected is always false, the stream is drained by a task kept in _background_tasks; at most 3 per owner key in _background_counts, claimed before the first await so a burst cannot pass together, else 429).
   sse_event_types:

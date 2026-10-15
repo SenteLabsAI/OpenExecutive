@@ -63,8 +63,10 @@ def _no_ai_disclosure(monkeypatch: pytest.MonkeyPatch):
 def _no_claim_check(monkeypatch: pytest.MonkeyPatch):
     """Keep the end-of-turn claim check (orchestrator.claim_check) from making
     a provider call in tests that script a turn; test_claim_check.py turns it
-    back on."""
+    back on. The conversation review (memory.chat_review) likewise records
+    nothing and schedules no review; test_chat_review.py turns it on."""
     monkeypatch.setenv("CLAIM_CHECK_ENABLED", "false")
+    monkeypatch.setenv("CHAT_REVIEW_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)

@@ -116,8 +116,8 @@ function OutreachSection({ personId }: { personId: number }) {
 // How I work with them — learned working style (attunement)
 // ---------------------------------------------------------------------------
 
-const MAX_STYLE_RULES = 4;
-const STYLE_TEXTAREA_ROWS = 4;
+const MAX_STYLE_RULES = 8;
+const STYLE_TEXTAREA_ROWS = 6;
 
 function WorkingStyleSection({ personId }: { personId: number }) {
   const [style, setStyle] = useState<WorkingStyle | null>(null);
@@ -192,7 +192,7 @@ function WorkingStyleSection({ personId }: { personId: number }) {
         )}
       </div>
       <p className={INTRO_CLS}>
-        How replies are written for them, learned from their own 👍/👎 and requests.
+        How replies are written for them, learned from their own 👍/👎 and what they ask for in chats.
         {style.locked
           ? " Locked — kept as is."
           : " Updated as they use it; rules you type are always kept. Lock it to stop learning."}

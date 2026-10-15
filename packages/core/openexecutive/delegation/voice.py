@@ -227,6 +227,37 @@ def reset_voice(person_id: int, *, updated_by: str, db_path: Path | None = None)
     )
 
 
+UPDATED_BY_CONVERSATION = "conversation"
+
+
+def add_conversation_rule(
+    person_id: int, kind: str, text: str, *, db_path: Path | None = None
+) -> tuple[str | None, str | None]:
+    """Add one habit (``kind="habit"``) or avoid line the person stated in a
+    chat (``memory.chat_review`` checks the quote); ``(line, None)`` when
+    stored, ``(None, reason)`` when not. A locked profile is never changed;
+    when the list is full the oldest line makes room."""
+    if kind not in ("habit", "avoid"):
+        return None, "bad_kind"
+    clean = _normalize(text)
+    reason = rule_rejection(clean)
+    if reason:
+        return None, reason
+    stored = get_voice(person_id, db_path=db_path)
+    if stored.locked:
+        return None, "locked"
+    profile = stored.profile
+    key, cap = ("habits", MAX_HABITS) if kind == "habit" else ("avoid", MAX_AVOID)
+    lines: list[str] = list(getattr(profile, key))
+    if clean.casefold() in {line.casefold() for line in profile.habits + profile.avoid}:
+        return None, "duplicate"
+    lines = [*lines, clean][-cap:]
+    setattr(profile, key, lines)
+    save_voice(person_id, profile, locked=False, updated_by=UPDATED_BY_CONVERSATION,
+               db_path=db_path)
+    return clean, None
+
+
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #

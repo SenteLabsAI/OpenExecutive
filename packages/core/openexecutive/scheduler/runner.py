@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
 from openexecutive.audit.context import unscoped_audit_rows
+from openexecutive.memory.chat_review import CHAT_REVIEW_KIND as _CHAT_REVIEW_KIND
 from openexecutive.memory.episodic import (
     ScheduledAction,
     claim_due_actions,
@@ -1119,6 +1120,10 @@ async def _execute_action(
 
     if action.kind == TAKE_THE_LEAD_WAKE_KIND:
         await _run_take_the_lead_wake(action, now)
+        return
+
+    if action.kind == CHAT_REVIEW_KIND:
+        await _run_chat_review(action, now)
         return
 
     # ------------------------------------------------------------------
@@ -2539,6 +2544,21 @@ async def _run_take_the_lead_wake(action: ScheduledAction, now: datetime) -> Non
             logger.info("scheduler: Take the lead is off — skipping the wake")
     finally:
         mark_action_done(action.id)
+
+
+# A chat that went quiet (memory.chat_review): one-off, rescheduled by the
+# review itself while the chat is still going.
+CHAT_REVIEW_KIND = _CHAT_REVIEW_KIND
+
+
+async def _run_chat_review(action: ScheduledAction, now: datetime) -> None:
+    """Review the conversation named by ``channel_ref``. Marked done first, so
+    a review that is pushed back schedules a fresh row."""
+    from openexecutive.memory import chat_review
+
+    assert action.id is not None
+    mark_action_done(action.id)
+    await chat_review.run_scheduled(action.channel_ref, now)
 
 
 async def _reflect(now: datetime, *, kind: str) -> None:

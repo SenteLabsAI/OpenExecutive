@@ -406,6 +406,7 @@ def render_briefing_context(
     owner_notes: str = "",
     getting_started: str = "",
     principal_name: str = "",
+    brief_requests: bool = True,
 ) -> str:
     """Pack the structured /today + activity inputs into a single user-turn block.
 
@@ -448,6 +449,11 @@ def render_briefing_context(
     the first week) leaves the output as it was. ``principal_name`` (the
     standalone briefs) adds THE PRINCIPAL line under NOW, so the model knows
     the person the context names is its reader; empty leaves it out.
+
+    ``brief_requests`` adds what the principal asked of their brief in
+    conversation (``briefing.brief_requests``): the FROM YOUR CHATS lines
+    count against a quiet day, the leave-out list comes last. False (a
+    teammate's header) leaves both out: they are the principal's own words.
     """
     parts: list[str] = [f"PERIOD: {period_label}\n"]
     now = datetime.now(UTC)
@@ -642,6 +648,13 @@ def render_briefing_context(
         parts.extend(["", teammate_changes])
     if owner_notes:
         parts.extend(["", owner_notes])
+    leave_out_block = ""
+    if brief_requests:
+        from openexecutive.briefing.brief_requests import render_parts
+
+        raise_block, leave_out_block = render_parts()
+        if raise_block:
+            parts.extend(["", raise_block])
 
     if len(parts) == framing:
         # Only the PERIOD (and NOW) line — genuinely quiet day.
@@ -661,6 +674,8 @@ def render_briefing_context(
         standing_facts = render_facts_for_prompt()
     if standing_facts:
         parts.extend(["", standing_facts])
+    if leave_out_block:
+        parts.extend(["", leave_out_block])
 
     return "\n".join(parts)
 
@@ -733,6 +748,7 @@ async def synthesize_briefing_narrative(
         pending_watch_suggestions=pending_watch_suggestions,
         mode=mode, live=live, live_window=live_window, now_label=now_label,
         reflection_flags=reflection_flags, standing_facts=standing_facts,
+        brief_requests=not viewer,
     )
     model = get_fast_model()
     response = await get_provider(model).messages_create(

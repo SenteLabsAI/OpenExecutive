@@ -40,6 +40,12 @@ one, or right after the person leaves a 👎. It runs at most once every
 times a day per person, and draws on the shared ``ATTUNEMENT_MAX_CALLS_PER_DAY``
 budget. The claim is one conditional UPDATE, so concurrent triggers run it once.
 
+**From conversations.** The conversation review (``memory.chat_review``)
+adds a rule with basis ``conversation`` when the person asked for a way of
+replying in so many words; the rule carries their quote, passes the same
+checks, and the learning pass keeps it like a typed one. It is added quietly:
+no reply line, no chip; it shows on the person page.
+
 **People stay in charge.** ``GET/PUT/DELETE /people/{id}/attunement`` (the
 principal or that person) show, edit, lock and reset the rules. A locked
 profile is never rewritten by a pass, and a pass never overwrites an edit made
@@ -60,7 +66,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MAX_RULES = 4
+MAX_RULES = 8
 RULE_MIN_CHARS = 8
 RULE_MAX_CHARS = 160
 _QUOTE_MIN_CHARS = 8
@@ -70,9 +76,15 @@ _BLOCK_CLOSE = f"</{BLOCK_TAG}>"
 BASIS_FEEDBACK = "feedback"
 BASIS_STATED = "stated"
 BASIS_EDITED = "edited"
+BASIS_CONVERSATION = "conversation"
 _MODEL_BASES = frozenset({BASIS_FEEDBACK, BASIS_STATED})
+# Rules the learning pass keeps as they are and never rewrites: typed by the
+# person, or asked for in so many words in a chat the conversation review
+# read (``memory.chat_review``).
+_PINNED_BASES = frozenset({BASIS_EDITED, BASIS_CONVERSATION})
 
 UPDATED_BY_PASS = "pass"
+UPDATED_BY_CONVERSATION = "conversation"
 
 # How much of a person's recent history one pass reads.
 _EVIDENCE_TURNS = 40
@@ -336,6 +348,60 @@ def delete_profile(person_id: int, *, db_path: Path | None = None) -> None:
         conn.execute("DELETE FROM attunement_profile_history WHERE person_id = ?", (person_id,))
 
 
+def add_conversation_rule(
+    person_id: int,
+    text: str,
+    *,
+    quote: str,
+    message: str,
+    db_path: Path | None = None,
+) -> tuple[StyleRule | None, str | None]:
+    """Add one rule the person asked for in a chat; ``(rule, None)`` when it
+    was stored, ``(None, reason)`` when not.
+
+    ``quote`` must appear verbatim in ``message`` (their own words). A locked
+    profile is never changed. When every slot is taken, the oldest learned
+    (unpinned) rule makes room; when all are pinned, nothing is added."""
+    from openexecutive.memory.episodic import _get_conn
+
+    if not _quote_in(quote, message):
+        return None, "quote_not_verbatim"
+    clean = _normalize(text)
+    rejection = rule_rejection(clean, roster_names=_roster_names())
+    if rejection:
+        return None, rejection
+    profile = get_profile(person_id, db_path=db_path)
+    if profile.locked:
+        return None, "locked"
+    if clean.casefold() in {r.text.casefold() for r in profile.rules}:
+        return None, "duplicate"
+    rules = list(profile.rules)
+    if len(rules) >= MAX_RULES:
+        unpinned = [i for i, r in enumerate(rules) if r.basis not in _PINNED_BASES]
+        if not unpinned:
+            return None, "full"
+        rules.pop(unpinned[0])
+    rule = StyleRule(text=clean, basis=BASIS_CONVERSATION)
+    rules.append(rule)
+    now = _now().isoformat()
+    with _get_conn(_db(db_path)) as conn:
+        # A pass or an edit that landed after the read above wins.
+        cur = conn.execute(
+            "INSERT INTO attunement_profiles (person_id, rules, locked, updated_at, updated_by) "
+            "VALUES (?, ?, 0, ?, ?) ON CONFLICT(person_id) DO UPDATE SET "
+            "rules = excluded.rules, updated_at = excluded.updated_at, "
+            "updated_by = excluded.updated_by "
+            "WHERE attunement_profiles.locked = 0 AND attunement_profiles.updated_at IS ?",
+            (person_id, _rules_to_json(rules), now, UPDATED_BY_CONVERSATION, profile.updated_at),
+        )
+        if cur.rowcount == 0:
+            return None, "changed_meanwhile"
+        _write_history(conn, person_id, rules, False, UPDATED_BY_CONVERSATION, now)
+    _audit(f"working style for person {person_id}: rule added from a conversation",
+           {"op": "style_conversation", "person_id": person_id, "rules": len(rules)})
+    return rule, None
+
+
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
@@ -509,8 +575,8 @@ def _render_pass_input(
         cited = ", ".join(f"#{i}" for i in r.evidence)
         return f"- ({r.basis}{', evidence ' + cited if cited else ''}) {r.text}"
 
-    pinned = "\n".join(line(r) for r in profile.rules if r.basis == BASIS_EDITED) or "(none)"
-    learned = "\n".join(line(r) for r in profile.rules if r.basis != BASIS_EDITED) or "(none)"
+    pinned = "\n".join(line(r) for r in profile.rules if r.basis in _PINNED_BASES) or "(none)"
+    learned = "\n".join(line(r) for r in profile.rules if r.basis not in _PINNED_BASES) or "(none)"
     body = "\n\n".join(_render_evidence(ev) for ev in evidence)
     return (
         f"PERSON: {name}\n"
@@ -688,7 +754,7 @@ async def run_style_pass(
         if watermark is None:
             return result
         profile = get_profile(person_id, db_path=db_path)
-        pinned = [r for r in profile.rules if r.basis == BASIS_EDITED]
+        pinned = [r for r in profile.rules if r.basis in _PINNED_BASES]
         slots = MAX_RULES - len(pinned)
         if slots <= 0:
             return result  # everything was set by the person; nothing to learn
