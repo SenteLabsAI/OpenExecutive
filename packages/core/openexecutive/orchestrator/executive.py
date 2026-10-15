@@ -1296,7 +1296,8 @@ class Executive:
         t0 = time.monotonic()
         full_response = ""
         with set_turn(session_id=session.session_id, turn_id=turn_id):
-            # Per-person prefetch from Honcho. Runs once per turn (NOT inside
+            # Per-person prefetch from Honcho (Crony's alert instead with
+            # CRONY_ENABLED, memory/crony_alerts.py). Runs once per turn (NOT inside
             # the tool-call loop) so a long multi-tool turn doesn't accrue
             # multiple round trips. The wrapper enforces a hard timeout and
             # returns "" on any error, so a Honcho outage degrades silently.
@@ -1305,13 +1306,15 @@ class Executive:
             # context (see api/routes/chat.py) and pass the result through —
             # in that case we skip the await here entirely.
             if peer_memory_context is None:
-                from openexecutive.memory.honcho_client import prefetch as _honcho_prefetch
-                peer_memory_context = await _honcho_prefetch(
-                    user_message,
-                    person_id=person_id,
-                    session_id=session.session_id,
-                    reasoning_level=peer_memory_reasoning_level,
-                )
+                from openexecutive.memory.crony_alerts import peer_context as _peer_context
+                peer_memory_context = (
+                    await _peer_context(
+                        user_message,
+                        person_id=person_id,
+                        session_id=session.session_id,
+                        reasoning_level=peer_memory_reasoning_level,
+                    )
+                ).text
             from openexecutive.attunement.style import build_style_block
 
             working_style = build_style_block(person_id)
@@ -1629,16 +1632,18 @@ class Executive:
         # try/finally with clear_turn() or migrate to `with set_turn`.
         bind_turn(session_id=session.session_id, turn_id=turn_id)
 
-        # Per-person prefetch from Honcho (see stream_chat for rationale).
+        # Per-person prefetch from Honcho, or Crony (see stream_chat for rationale).
         # Skip when caller pre-resolved (e.g. parallel context fetch in route).
         if peer_memory_context is None:
-            from openexecutive.memory.honcho_client import prefetch as _honcho_prefetch
-            peer_memory_context = await _honcho_prefetch(
-                user_message,
-                person_id=person_id,
-                session_id=session.session_id,
-                reasoning_level=peer_memory_reasoning_level,
-            )
+            from openexecutive.memory.crony_alerts import peer_context as _peer_context
+            peer_memory_context = (
+                await _peer_context(
+                    user_message,
+                    person_id=person_id,
+                    session_id=session.session_id,
+                    reasoning_level=peer_memory_reasoning_level,
+                )
+            ).text
         from openexecutive.attunement.style import build_style_block
 
         working_style = build_style_block(person_id)

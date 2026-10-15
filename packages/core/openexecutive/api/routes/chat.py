@@ -1066,7 +1066,7 @@ async def _run_chat_turn(
     # The prefetch helper already swallows its own exceptions and returns ""
     # on timeout, so failure modes are unchanged.
     from openexecutive.audit import set_turn
-    from openexecutive.memory.honcho_client import prefetch as _honcho_prefetch
+    from openexecutive.memory import crony_alerts
     from openexecutive.orchestrator.schedule_tools import set_session
 
     async def _do_episodic() -> str:
@@ -1108,6 +1108,9 @@ async def _run_chat_turn(
                 digests.append(res)
         return "\n\n".join(digests)
 
+    # The Crony alert behind this turn's reply, when Crony is on.
+    crony_turn: dict[str, str | None] = {}
+
     async def _do_prefetch() -> str:
         # Bind the audit ContextVars for THIS task so the peer_memory row the
         # prefetch wrapper emits is correctly linked to session_id / turn_id.
@@ -1116,19 +1119,26 @@ async def _run_chat_turn(
         # to the route detached it from that context).
         with set_turn(session_id=session.session_id, turn_id=turn_id):
             try:
-                return await _honcho_prefetch(
+                peer = await crony_alerts.peer_context(
                     message,
                     person_id=caller_person_id,
                     session_id=session.session_id,
                     # Dialectic mode only; representation mode ignores it.
                     reasoning_level="medium" if committee_review else "low",
                 )
+                # Saved on the reply below, so what happens to it grades it.
+                crony_turn["alert_id"] = peer.alert_id
+                return peer.text
             except Exception:
                 # The wrapper itself catches and returns "" on timeout/error,
                 # so this is belt-and-suspenders — but if a future change to
                 # the helper raises, don't sink the whole gather() with it.
                 logger.exception("chat.honcho_prefetch_failed turn_id=%s", turn_id)
                 return ""
+
+    # The person has moved on: grade the chat's last reply for Crony from its
+    # thumbs or stop, neutral when it has neither. No-op when Crony is off.
+    await crony_alerts.grade_previous_turn(session.session_id)
 
     # Clear the trusted alert ids BEFORE the gather, unconditionally. Web
     # sessions are long-lived (`_sessions`), so if `render_and_trust` never
@@ -1359,7 +1369,10 @@ async def _run_chat_turn(
                     action_chips=json.dumps(action_chips) if action_chips else None,
                     stopped=stopped,
                     sources=json.dumps(answer_sources) if answer_sources else None,
+                    crony_alert_id=crony_turn.get("alert_id"),
                 )
+                if stopped:
+                    crony_alerts.grade_soon(crony_turn.get("alert_id"), {crony_alerts.Signal.STOPPED})
                 # The Executive's own post-turn block (executive.py, after its
                 # `async for`) is what normally mirrors the turn into the live
                 # in-memory Session. On every broken-out path it is skipped,

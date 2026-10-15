@@ -19,6 +19,7 @@ from openexecutive.api.routes.chat import (
 )
 from openexecutive.memory import chat_export
 from openexecutive.memory.session_store import (
+    crony_alert_for,
     delete_session,
     get_session_metadata,
     get_session_owner,
@@ -317,11 +318,16 @@ async def rewind_session(session_id: str, body: RewindRequest, request: Request)
     if lock is None:
         raise HTTPException(status_code=409, detail="The Executive is still answering in this chat.")
     try:
+        # Read before the rewind deletes the reply: Try again grades it.
+        crony_alert = crony_alert_for(session_id, body.last_message_id)
         asked = rewind_last_turn(session_id, body.last_message_id)
     finally:
         _release_session_turn(session_id, lock)
     if asked is None:
         raise HTTPException(status_code=409, detail="This chat has moved on. Reload it and try again.")
+    from openexecutive.memory import crony_alerts
+
+    crony_alerts.grade_soon(crony_alert, {crony_alerts.Signal.REGENERATED})
     from openexecutive.audit import log_event
 
     with _owner_rows(session_id, owner):
@@ -386,6 +392,17 @@ def post_message_feedback(
             "has_note": bool(body.note),
         },
     )
+    if body.feedback is not None:
+        # Crony learns from the speaker's own reaction only, like the style
+        # pass below.
+        from openexecutive.attunement.style import rated_reply_speaker
+        from openexecutive.memory import crony_alerts
+
+        if caller is not None and rated_reply_speaker(session_id, message_id) == caller:
+            crony_alerts.grade_soon(
+                crony_alert_for(session_id, message_id),
+                crony_alerts.signals_for(body.feedback, stopped=False),
+            )
     if body.feedback == "down":
         # A thumbs-down is the clearest style signal there is: re-learn the
         # speaker's working style now rather than after the next N messages

@@ -403,6 +403,25 @@ class Settings(BaseSettings):
         20, alias="HONCHO_PREFETCH_MAX_CONCLUSIONS", ge=1, le=100
     )
 
+    # ---- Crony (memory/crony_alerts.py) --------------------------------
+    # Replaces the per-turn <peer_memory> read with Crony's alert: only the
+    # few things known about the speaker that bear on this message, and
+    # nothing at all on most turns. Needs HONCHO_ENABLED (Honcho stays the
+    # memory store). Default OFF.
+    crony_enabled: bool = Field(False, alias="CRONY_ENABLED")
+    # ``model``: the utility-fast model picks and phrases the lines, one call
+    # on the turns where something is close enough. ``plain``: the closest
+    # memories as they are, no model call.
+    crony_writer: Literal["model", "plain"] = Field("model", alias="CRONY_WRITER")
+    # The trigger: Crony speaks only when a memory is at least this close to
+    # the message (cosine distance, 0 identical .. 1 unrelated).
+    crony_max_distance: float = Field(0.35, alias="CRONY_MAX_DISTANCE", ge=0, le=1)
+    # Past this, the turn goes ahead without Crony.
+    crony_timeout_s: float = Field(4.0, alias="CRONY_TIMEOUT_S", gt=0, le=15)
+    # Crony's notebook (what it said and how each turn went; no facts about
+    # people). Defaults to crony.db next to the episodic DB.
+    crony_db_path: str | None = Field(None, alias="CRONY_DB_PATH")
+
     @model_validator(mode="after")
     def _validate_honcho(self) -> "Settings":
         # Enabling without a key gets you 401s on every prefetch. Fail loud.

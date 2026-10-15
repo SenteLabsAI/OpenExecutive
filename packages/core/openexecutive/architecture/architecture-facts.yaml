@@ -2842,6 +2842,39 @@ peer_memory:
       original motivation; it now awaits on the app loop like every
       other adapter, but the cache still guards tests and the
       standalone entrypoints.)
+  crony: |
+    Optional (``CRONY_ENABLED``, off by default, needs Honcho): the
+    per-person ``<peer_memory>`` block comes from Crony
+    (https://github.com/SenteLabsAI/crony, the ``crony-ai`` package) instead
+    of ``prefetch``. ``memory/crony_alerts.peer_context`` is the one entry
+    point (web chat route and the Executive's own fallback); with Crony off
+    it returns ``prefetch``'s block unchanged.
+
+    Why: the representation read hands the model up to 20 conclusions on
+    every turn whether or not they matter. Crony stays silent unless a
+    conclusion is within ``CRONY_MAX_DISTANCE`` of the message, then writes
+    at most four lines, each citing a real conclusion, through a filter
+    that drops permission, instructions, links, amounts and contact
+    details. It learns which lines mislead and stops saying them.
+
+    Crony is not a store. ``HonchoConclusionStore`` reads the speaker's
+    self-conclusions (``peer.conclusions.query(query, top_k, distance)``,
+    identity lines dropped); ``record_turn`` is a no-op because
+    ``sync_turn`` already mirrors turns. ``CRONY_WRITER=model`` (default)
+    picks and phrases lines on the utility-fast model through OE's
+    providers (Crony's ``ModelWriter`` with a ``complete(system, user)``
+    function); ``plain`` passes the closest conclusions through.
+
+    Learning lives in Crony's own SQLite notebook (``CRONY_DB_PATH``,
+    default ``crony.db`` beside the episodic DB): what it said per turn and
+    each turn's verdict, no facts about people. ``chat_messages.crony_alert_id``
+    links a reply to its alert. Grades: the speaker's own 👍/👎 (sessions
+    feedback route), a stopped reply (chat route), Try again (rewind
+    route), else the chat's next message grades it from the stored
+    feedback or neutral. Once per turn; first grade wins. 10% held back
+    for comparison, five uses with misled > helped stops a line, quiet
+    spells per person, 90-day retention pruned at most once a day from the
+    turn path. One ``peer_memory`` audit row per call, ``op=crony``.
   surfaces:
     prefetch: |
       ``prefetch(query, *, person_id, session_id=None, reasoning_level="low")``

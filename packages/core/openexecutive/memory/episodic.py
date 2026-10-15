@@ -311,6 +311,10 @@ def initialize_db(db_path: Path | None = None) -> None:
             # what their working-style profile learns from; the principal
             # rating someone else's session is not that person's reaction.
             ("feedback_by_person_id", "INTEGER"),
+            # The Crony alert behind an assistant reply (memory/crony_alerts.py),
+            # so the reply's thumbs, stop or Try again can grade it. NULL when
+            # Crony was off or had no speaker to look up.
+            ("crony_alert_id", "TEXT"),
         ):
             if col not in _cm_existing:
                 try:

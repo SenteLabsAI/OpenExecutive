@@ -86,6 +86,7 @@ def save_message(
     stopped: bool = False,
     sender_person_id: int | None = None,
     sources: str | None = None,
+    crony_alert_id: str | None = None,
 ) -> int:
     """Persist one chat message and return its row id. ``action_chips`` is a
     JSON-encoded list of the assistant turn's action-chip dicts (or None), so
@@ -96,17 +97,19 @@ def save_message(
     sender, never the session owner's principal fallback, so per-person
     learning never reads an outsider's words as someone on the roster.
     ``sources`` is the JSON ``TurnSources.payload()`` of an assistant reply —
-    what it looked at and which areas it had to leave out — or None."""
+    what it looked at and which areas it had to leave out — or None.
+    ``crony_alert_id`` is the Crony alert behind an assistant reply, so what
+    happens to the reply can grade it (memory/crony_alerts.py)."""
     text = content if isinstance(content, str) else str(content)
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO chat_messages "
             "(session_id, role, content, created_at, action_chips, stopped, sender_person_id, "
-            "sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "sources, crony_alert_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id, role, text, now, action_chips, 1 if stopped else 0,
-                sender_person_id, sources,
+                sender_person_id, sources, crony_alert_id,
             ),
         )
         return int(cur.lastrowid or 0)
@@ -142,6 +145,45 @@ def set_message_feedback(
              by_person_id if feedback is not None else None, message_id, session_id),
         )
         return cur.rowcount > 0
+
+
+def crony_alert_for(session_id: str, message_id: int, db_path: Path = DB_PATH) -> str | None:
+    """The Crony alert behind one assistant reply, or None."""
+    if not db_path.exists():
+        return None
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT crony_alert_id FROM chat_messages "
+            "WHERE id = ? AND session_id = ? AND role = 'assistant'",
+            (message_id, session_id),
+        ).fetchone()
+    return row["crony_alert_id"] if row is not None else None
+
+
+def last_crony_turn(
+    session_id: str, db_path: Path = DB_PATH
+) -> tuple[str, str | None, bool] | None:
+    """The chat's newest assistant reply as ``(crony alert id, feedback,
+    stopped)``, or None when it has no Crony alert. ``feedback`` counts only
+    when the reply's own speaker left it: anyone else's rating is not that
+    person's reaction."""
+    if not db_path.exists():
+        return None
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT a.crony_alert_id, a.stopped, "
+            "CASE WHEN a.feedback_by_person_id = ("
+            "  SELECT u.sender_person_id FROM chat_messages u "
+            "  WHERE u.session_id = a.session_id AND u.role = 'user' AND u.id < a.id "
+            "  ORDER BY u.id DESC LIMIT 1"
+            ") THEN a.feedback END AS feedback "
+            "FROM chat_messages a "
+            "WHERE a.session_id = ? AND a.role = 'assistant' ORDER BY a.id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    if row is None or not row["crony_alert_id"]:
+        return None
+    return row["crony_alert_id"], row["feedback"], bool(row["stopped"])
 
 
 def load_messages(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:

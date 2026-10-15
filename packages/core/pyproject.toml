@@ -54,6 +54,9 @@ dependencies = [
     # in Monty worker processes: no files, network or environment, only the
     # step's own tools. Ships prebuilt wheels plus the `monty` worker binary.
     "pydantic-monty>=1.1,<2",
+    # Decides on each turn whether anything known about the speaker bears on
+    # the message (memory/crony_alerts.py). Off unless CRONY_ENABLED.
+    "crony-ai>=0.1,<0.2",
 ]
 
 [project.urls]
@@ -108,6 +111,8 @@ override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+# Not on PyPI yet: pinned to a commit of its public repo.
+crony-ai = { git = "https://github.com/SenteLabsAI/crony", rev = "063ec70f902969f8a17f02f2af757ce95e7223b1" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
