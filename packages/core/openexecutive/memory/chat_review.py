@@ -263,21 +263,23 @@ def _unreviewed(session_id: str, *, db_path: Path | None) -> list[sqlite3.Row]:
     try:
         rows = conn.execute(
             f"SELECT * FROM {TURNS_TABLE} WHERE session_id = ? AND reviewed_at IS NULL "  # noqa: S608
-            "ORDER BY id DESC LIMIT ?",
-            (session_id, TURNS_PER_REVIEW),
+            "ORDER BY id LIMIT ?",
+            (session_id, TURNS_PER_REVIEW + 1),
         ).fetchall()
     finally:
         conn.close()
-    return list(reversed(rows))
+    return list(rows)
 
 
-def _mark_reviewed(session_id: str, up_to_id: int, *, db_path: Path | None) -> None:
+def _mark_reviewed(session_id: str, ids: list[int], *, db_path: Path | None) -> None:
+    """Mark exactly the turns a review read."""
     conn = _connect(db_path)
     try:
+        marks = ",".join("?" * len(ids))
         conn.execute(
-            f"UPDATE {TURNS_TABLE} SET reviewed_at = ? "  # noqa: S608
-            "WHERE session_id = ? AND id <= ? AND reviewed_at IS NULL",
-            (_now().isoformat(), session_id, up_to_id),
+            f"UPDATE {TURNS_TABLE} SET reviewed_at = ? "  # noqa: S608 — placeholders only
+            f"WHERE session_id = ? AND id IN ({marks}) AND reviewed_at IS NULL",
+            (_now().isoformat(), session_id, *ids),
         )
         conn.commit()
     finally:
@@ -330,7 +332,12 @@ async def run_scheduled(session_id: str, now: datetime, *, db_path: Path | None 
             # The caller marks this action done first, so this one is new.
             result["rescheduled"] = _reschedule(session_id, due, db_path=db_path)
             return result
-        result["reviewed"] = await review_session(session_id, rows, now=now, db_path=db_path)
+        # The oldest turns first, a part at a time; the rest get a review of
+        # their own right after this one.
+        part, more = rows[:TURNS_PER_REVIEW], len(rows) > TURNS_PER_REVIEW
+        result["reviewed"] = await review_session(session_id, part, now=now, db_path=db_path)
+        if more:
+            result["rescheduled"] = _reschedule(session_id, now, db_path=db_path)
     except Exception:
         logger.exception("chat_review: run failed")
     return result
@@ -361,7 +368,7 @@ async def review_session(
             await asyncio.create_task(_review_person(session_id, person_id, turns))
             passes += 1
     finally:
-        _mark_reviewed(session_id, max(int(r["id"]) for r in rows), db_path=db_path)
+        _mark_reviewed(session_id, [int(r["id"]) for r in rows], db_path=db_path)
     return passes
 
 
@@ -459,7 +466,15 @@ _QUOTE_MIN_WORDS = 4
 _STOPWORDS = frozenset(
     ["the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "my", "me", "i", "it", "is", "was", "that", "this", "with", "from", "at", "by", "be", "please", "can", "you", "your", "we", "our", "they", "them", "he", "she", "his", "her", "its", "are", "were", "has", "have", "had", "will", "would", "should", "could", "just", "about", "out", "off", "up", "down", "into", "over"]
 )
-_DRAFT_SENT_RE = re.compile(r"\b(sent|send|deleted|delete|binned|trashed)\b", re.IGNORECASE)
+# "I sent it", "already deleted the draft", "sent that one" — a past-tense
+# claim, never a request ("send it") or a negation ("don't send it yet").
+_DRAFT_SENT_RE = re.compile(
+    r"\b(sent|deleted|binned|trashed)\b(?!\s+(to|for)\b)", re.IGNORECASE
+)
+_NEGATION_RE = re.compile(
+    r"\b(don'?t|do not|didn'?t|did not|haven'?t|have not|hasn'?t|not|never|yet|before|unless|if)\b",
+    re.IGNORECASE,
+)
 
 
 def _chat_tools() -> tuple[dict[str, dict[str, Any]], dict[str, Callable[[dict[str, Any]], Awaitable[str]]]]:
@@ -687,10 +702,15 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
     elif name == "raise_in_brief":
         target = str(tool_input.get("line") or "")
     elif name == "mark_draft_sent":
-        return None if _DRAFT_SENT_RE.search(quote) else "they didn't say it was sent or deleted"
+        if _DRAFT_SENT_RE.search(quote) and not _NEGATION_RE.search(quote):
+            return None
+        return "they didn't say they sent or deleted it"
     else:
         return None
-    if not target or not (_content_words(target) & _content_words(words)):
+    named = _content_words(target)
+    # Two shared words (or the target's only one): one common word like
+    # "team" or "report" doesn't name a thing.
+    if not named or len(named & _content_words(words)) < min(2, len(named)):
         return "what this changes isn't named in their own words"
     return None
 

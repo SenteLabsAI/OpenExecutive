@@ -170,6 +170,20 @@ def test_a_quiet_chat_is_reviewed_once(db: Path, roster: SimpleNamespace, provid
     assert len(provider.calls) == 1
 
 
+def test_a_long_chat_is_reviewed_in_parts(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    for i in range(cr.TURNS_PER_REVIEW + 5):
+        _record(roster.principal, text=f"{SENT} number {i}", at=NOW + timedelta(seconds=i))
+    with episodic._get_conn(db) as conn:
+        conn.execute("UPDATE scheduled_actions SET status = 'done' WHERE kind = ?", (cr.CHAT_REVIEW_KIND,))
+    first = _review(db)
+    assert first == {"reviewed": 1, "rescheduled": True}
+    assert "number 0" in provider.calls[0]["messages"][0]["content"]
+    assert "number 24" not in provider.calls[0]["messages"][0]["content"]
+    assert _review(db)["reviewed"] == 1
+    assert "number 24" in provider.calls[1]["messages"][0]["content"]
+    assert _review(db)["reviewed"] == 0
+
+
 def test_the_daily_limit_holds(db: Path, roster: SimpleNamespace, provider: _Provider,
                                monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHAT_REVIEW_MAX_PER_DAY", "1")
@@ -228,6 +242,38 @@ def test_a_filler_quote_or_an_unnamed_target_is_refused(db: Path, roster: Simple
     _review(db)
     assert get_open_loop(loop_id) is not None
     assert [r["status"] for r in _tool_results(provider)] == ["refused"] * 3
+
+
+@pytest.mark.parametrize(("said", "marked"), [
+    ("I sent the Halcyon draft already this morning", True),
+    ("Deleted that draft for the Halcyon quote", True),
+    ("Please don't send the draft to Halcyon yet, I want to rework it", False),
+    ("Can you send the Halcyon draft now please", False),
+    ("I have not sent the Halcyon draft yet", False),
+])
+def test_a_draft_is_marked_sent_only_on_a_past_tense_claim(
+    db: Path, roster: SimpleNamespace, provider: _Provider, said: str, marked: bool
+) -> None:
+    from openexecutive.delegation import drafts
+
+    drafts.record(roster.principal.id, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d1",
+                  message_id="m1", now=datetime.now(UTC) - timedelta(hours=1))
+    _record(roster.principal, text=said)
+    provider.script = [[("mark_draft_sent", {"source_quote": said})]]
+    _review(db)
+    waiting = drafts.count_waiting(roster.principal.id, datetime.now(UTC) - timedelta(days=1))
+    assert waiting == (0 if marked else 1)
+
+
+def test_one_common_word_does_not_name_a_loop(db: Path, roster: SimpleNamespace,
+                                              provider: _Provider) -> None:
+    loop_id = open_loop(owner_person_id=roster.principal.id, description="Send Q3 report to finance team",
+                        due_at=NOW + timedelta(days=1))
+    _record(roster.principal, text="the team lunch is done, thanks everyone")
+    provider.script = [[("close_open_loop", {"loop_id": loop_id,
+                                             "source_quote": "the team lunch is done"})]]
+    _review(db)
+    assert get_open_loop(loop_id) is not None
 
 
 def test_a_reply_is_shown_as_untrusted(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
