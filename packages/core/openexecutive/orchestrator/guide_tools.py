@@ -28,6 +28,15 @@ def answerable_sections() -> list[GuideSection]:
     return list(GUIDE_SECTIONS)
 
 
+def section_markdown(section_id: str) -> str | None:
+    """The text of one answerable guide section, or None."""
+    if section_id not in {s.id for s in answerable_sections()}:
+        return None
+    content = get_prebuilt(section_id)
+    markdown = (content or {}).get("markdown")
+    return markdown if isinstance(markdown, str) and markdown else None
+
+
 def _tool_definition() -> dict[str, Any]:
     sections = answerable_sections()
     index = "\n".join(f"- {s.id}: {s.title}" for s in sections)
@@ -68,15 +77,11 @@ async def handle_read_user_guide(tool_input: dict[str, Any]) -> str:
         return json.dumps(
             {"error": f"unknown section {section_id!r}", "sections": sorted(known)}
         )
-    content = get_prebuilt(section_id)
-    if not content or not content.get("markdown"):
+    markdown = section_markdown(section_id)
+    if markdown is None:
         return json.dumps({"error": f"section {section_id!r} has no content"})
     return json.dumps(
-        {
-            "section_id": section_id,
-            "title": known[section_id].title,
-            "markdown": content["markdown"],
-        }
+        {"section_id": section_id, "title": known[section_id].title, "markdown": markdown}
     )
 
 
@@ -92,4 +97,5 @@ __all__ = [
     "READ_USER_GUIDE_TOOL",
     "answerable_sections",
     "handle_read_user_guide",
+    "section_markdown",
 ]

@@ -712,10 +712,9 @@ def _build_page_context_block(page_context: PageContext | None) -> str:
         lines.append(page_context.summary)
 
     if page_context.guide_section_id:
-        from openexecutive.guide.prebuilt import get_prebuilt
+        from openexecutive.orchestrator.guide_tools import section_markdown
 
-        section = get_prebuilt(page_context.guide_section_id)
-        markdown = (section or {}).get("markdown", "")
+        markdown = section_markdown(page_context.guide_section_id)
         if markdown:
             lines.append("")
             lines.append(
