@@ -13,15 +13,26 @@ Metadata only: ids and times, never an address, a subject or any text.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from openexecutive.delegation.schema import DRAFTS_TABLE, ensure_schema
+
+logger = logging.getLogger(__name__)
 
 SOURCE_CHAT = "chat"
 SOURCE_INBOX = "inbox"
 _SOURCES = frozenset({SOURCE_CHAT, SOURCE_INBOX})
+
+# How far back ``settle_waiting`` looks for chat drafts still open. The
+# briefs only name drafts from their own window (today, or since the last
+# brief), so an older one never needs a Gmail read.
+SETTLE_WINDOW = timedelta(days=2)
+# At most this many Gmail reads per settle pass.
+_SETTLE_MAX = 20
 
 
 def _db(db_path: Path | None) -> Path:
@@ -162,3 +173,92 @@ def usage_since(person_id: int, since: datetime, *, db_path: Path | None = None)
     finally:
         conn.close()
     return int(row[0] or 0), int(row[1] or 0)
+
+
+def _waiting_sql(person_id: int, since: datetime) -> tuple[str, tuple[object, ...]]:
+    return (
+        f"FROM {DRAFTS_TABLE} WHERE person_id = ? AND source = ? AND created_at >= ? "  # noqa: S608
+        "AND sent_message_id IS NULL AND gone_at IS NULL",
+        (person_id, SOURCE_CHAT, since.isoformat()),
+    )
+
+
+def count_waiting(person_id: int, since: datetime, *, db_path: Path | None = None) -> int:
+    """Chat drafts saved as ``person_id`` at or after ``since`` that are not
+    known to be sent or gone: the ones still waiting in their Drafts as far as
+    the last ``settle_waiting`` saw."""
+    where, params = _waiting_sql(person_id, since)
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(f"SELECT COUNT(*) {where}", params).fetchone()  # noqa: S608
+    finally:
+        conn.close()
+    return int(row[0]) if row else 0
+
+
+def _waiting(person_id: int, since: datetime, db_path: Path | None) -> list[tuple[int, str]]:
+    where, params = _waiting_sql(person_id, since)
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT id, draft_id {where} ORDER BY id DESC LIMIT ?",  # noqa: S608
+            (*params, _SETTLE_MAX),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(int(r[0]), str(r[1] or "")) for r in rows]
+
+
+def mark_gone(row_id: int, now: datetime, *, db_path: Path | None = None) -> None:
+    """A chat draft is no longer in the person's Drafts (sent or deleted)."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET gone_at = ? WHERE id = ? AND gone_at IS NULL",  # noqa: S608
+            (now.isoformat(), row_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def settle_waiting(
+    person: Any, *, now: datetime, gmail: Any = None, db_path: Path | None = None
+) -> int:
+    """Look up ``person``'s recent chat drafts in their mailbox and mark the
+    ones no longer there (sent or deleted in Gmail or Outlook), so the briefs
+    stop calling them waiting. Nothing records a send made in the mailbox
+    itself, and the chat drafts have no card for the inbox watcher to settle.
+    Reads only; returns how many it marked. Never raises."""
+    person_id = getattr(person, "id", None)
+    email = str(getattr(person, "email", "") or "").strip().lower()
+    if person_id is None or not email:
+        return 0
+    try:
+        waiting = _waiting(int(person_id), now - SETTLE_WINDOW, db_path)
+    except Exception:
+        logger.warning("delegation.drafts: couldn't read the waiting drafts", exc_info=True)
+        return 0
+    if not waiting:
+        return 0  # no mailbox call on a day with no chat drafts
+    from openexecutive.delegation.gmail import GmailError, gmail_for, valid_id
+
+    client = gmail if gmail is not None else gmail_for(email)
+    gone = 0
+    for row_id, draft_id in waiting:
+        if not valid_id(draft_id):
+            continue  # nothing to look up
+        try:
+            if await client.get_draft(draft_id) is not None:
+                continue
+            mark_gone(row_id, now, db_path=db_path)
+            gone += 1
+        except GmailError as exc:
+            # Not connected, a sign-in problem, the service down: the draft
+            # counts as waiting until a later pass can tell.
+            logger.info("delegation.drafts: couldn't check a draft (%s)", type(exc).__name__)
+            break
+        except Exception:
+            logger.warning("delegation.drafts: checking a draft failed", exc_info=True)
+            break
+    return gone

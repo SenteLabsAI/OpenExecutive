@@ -76,7 +76,8 @@ _DDL: tuple[str, ...] = (
     "  updated_by TEXT NOT NULL"
     ")",
     # Every draft saved in someone's Gmail (delegation.drafts): ids and
-    # times only, never an address, a subject or text.
+    # times only, never an address, a subject or text. gone_at: a chat draft
+    # found missing from their Drafts (sent or deleted there).
     f"CREATE TABLE IF NOT EXISTS {DRAFTS_TABLE} ("
     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  person_id INTEGER NOT NULL,"
@@ -85,7 +86,8 @@ _DDL: tuple[str, ...] = (
     "  draft_id TEXT,"
     "  message_id TEXT,"
     "  sent_message_id TEXT,"
-    "  created_at TEXT NOT NULL"
+    "  created_at TEXT NOT NULL,"
+    "  gone_at TEXT"
     ")",
     f"CREATE INDEX IF NOT EXISTS idx_{DRAFTS_TABLE}_person_created "
     f"ON {DRAFTS_TABLE}(person_id, created_at)",
@@ -274,10 +276,19 @@ def _add_mailbox_drafts(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _add_draft_gone_at(conn: sqlite3.Connection) -> None:
+    """Give a drafts table made before ``gone_at`` existed the column."""
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({DRAFTS_TABLE})")}
+    if "gone_at" not in columns:
+        conn.execute(f"ALTER TABLE {DRAFTS_TABLE} ADD COLUMN gone_at TEXT")
+        conn.commit()
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the tables if missing. Idempotent."""
     for statement in _DDL:
         conn.execute(statement)
     _add_handle_it_mode(conn)
     _add_mailbox_drafts(conn)
+    _add_draft_gone_at(conn)
     _move_training_off_the_dial(conn)

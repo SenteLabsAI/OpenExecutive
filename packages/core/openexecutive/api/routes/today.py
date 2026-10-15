@@ -1865,12 +1865,12 @@ async def refresh_principal_narrative() -> bool:
     """Bring the principal's header up to date without anyone opening the page.
 
     Called from the scheduler's tick: refreshes the calendar read the header
-    quotes, then regenerates the principal's narrative only when its key
+    quotes and settles the chat drafts it counts, then regenerates the principal's narrative only when its key
     moved (new mail, something stuck, a proposal, the hour). True when a
     regeneration ran. Never raises.
     """
     from openexecutive.briefing import narrative_cache
-    from openexecutive.briefing.live_signals import refresh_calendar
+    from openexecutive.briefing.live_signals import refresh_calendar, settle_principal_drafts
     from openexecutive.memory.workspace_settings import get_workspace
     from openexecutive.people.store import find_principal_person
 
@@ -1879,6 +1879,7 @@ async def refresh_principal_narrative() -> bool:
         if principal is None or principal.id is None:
             return False
         await refresh_calendar()
+        await settle_principal_drafts()
         mode = get_workspace().mode
         snapshot = _build_today(include_private=True)
         scope, today_data, desc, viewer = _narrative_inputs(snapshot, principal.id)

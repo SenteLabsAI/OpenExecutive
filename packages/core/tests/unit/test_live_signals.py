@@ -98,10 +98,19 @@ def test_stuck_collects_blocked_replies_and_non_roster_senders(audit: AuditLogge
     assert signals.inbound_total == 0
 
 
-def test_private_rows_only_with_include_private(audit: AuditLogger) -> None:
+def test_private_rows_only_with_include_private(
+    audit: AuditLogger, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import drafts
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(
+        people_store, "find_principal_person",
+        lambda *a, **k: SimpleNamespace(id=1, email="owner@example.com", email_aliases=[]),
+    )
     _email(audit, "contact@x.com", "Private matter", private=True)
-    audit.log("delegation_drafted", "Drafted an email as person 1 in their Gmail",
-              details={"person_id": 1}, private=True)
+    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d1",
+                  message_id="m1", now=datetime.now(UTC))
 
     shared = live_signals.gather_live_signals(_since(), include_private=False)
     own = live_signals.gather_live_signals(_since(), include_private=True)
@@ -109,6 +118,33 @@ def test_private_rows_only_with_include_private(audit: AuditLogger) -> None:
     assert shared.inbound == () and shared.drafts == 0
     assert "Private matter" in "\n".join(own.inbound)
     assert own.drafts == 1
+
+
+async def test_a_draft_sent_in_gmail_leaves_stuck(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The principal said in chat they sent the draft: once the mailbox no
+    longer has it, the header and the brief stop calling it waiting."""
+    from openexecutive.delegation import drafts, gmail
+    from openexecutive.people import store as people_store
+
+    principal = SimpleNamespace(id=1, email="owner@example.com", email_aliases=[])
+    monkeypatch.setattr(people_store, "find_principal_person", lambda *a, **k: principal)
+    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d1",
+                  message_id="m1", now=datetime.now(UTC))
+    assert live_signals.gather_live_signals(_since(), include_private=True).drafts == 1
+
+    class Sent:
+        def __init__(self, email: str) -> None:
+            assert email == "owner@example.com"
+
+        async def get_draft(self, draft_id: str) -> None:
+            return None  # Gmail deletes a draft it sends
+
+    monkeypatch.setattr(gmail, "gmail_for", Sent)
+    assert await live_signals.settle_principal_drafts() == 1
+
+    signals = live_signals.gather_live_signals(_since(), include_private=True)
+    assert signals.drafts == 0
+    assert "draft" not in "\n".join(live_signals.render_live_blocks(signals, window="today so far"))
 
 
 def test_window_excludes_older_rows(audit: AuditLogger) -> None:

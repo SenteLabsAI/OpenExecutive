@@ -13,8 +13,9 @@ already hold them:
     and subject so a thread of replies reads as one line.
   • STUCK — replies the outbound gate held (``integration_outbound_blocked``
     to a recipient, and the inbound "reply blocked at outbound gate" rows),
-    Google Chat messages left unanswered or not delivered, and drafts saved
-    in the principal's own Gmail (``delegation_drafted``, private).
+    Google Chat messages left unanswered or not delivered, and chat drafts
+    saved in the principal's own Gmail and not yet sent or deleted there
+    (``delegation.drafts``, private).
   • CONVERSATIONS — the principal's web chat sessions active in the window.
   • CALENDAR — today's remaining events, from an in-process cache the
     scheduler and the morning brief refresh. The /today hot path never makes
@@ -311,9 +312,21 @@ def _outbound_blocked(
 
 
 def _drafts(since: datetime, include_private: bool) -> int:
+    """The principal's chat drafts from the window still in their Drafts, as
+    far as the last ``delegation.drafts.settle_waiting`` saw: one they sent
+    or deleted in Gmail stops counting once a settle pass finds it gone."""
     if not include_private:
         return 0  # every delegation row is private to the principal
-    return len(_audit_rows("delegation_drafted", since, True))
+    from openexecutive.delegation import drafts
+    from openexecutive.memory import episodic
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
+    if principal is None or principal.id is None:
+        return 0
+    if not episodic._resolve_db_path(None).exists():
+        return 0  # a read must not create the database
+    return drafts.count_waiting(principal.id, since)
 
 
 def _conversations(
@@ -347,6 +360,24 @@ def _conversations(
         if len(lines) >= _CONVERSATIONS_MAX:
             break
     return lines, keys
+
+
+async def settle_principal_drafts(now: datetime | None = None) -> int:
+    """Before a brief or header is written: mark the principal's chat drafts
+    they have since sent or deleted in their mailbox, so STUCK stops naming
+    them. One mailbox read per open draft from the last two days, none when
+    there is no such draft. Never raises."""
+    from openexecutive.delegation import drafts
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+        if principal is None:
+            return 0
+        return await drafts.settle_waiting(principal, now=now or datetime.now(UTC))
+    except Exception:
+        logger.exception("live_signals: settling drafts failed")
+        return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -571,4 +602,5 @@ __all__ = [
     "refresh_calendar",
     "render_live_blocks",
     "reset_calendar_cache",
+    "settle_principal_drafts",
 ]

@@ -192,7 +192,11 @@ class MorningBriefWorkflow(Workflow):
         from openexecutive.alerts.models import PRIVATE_ALERT_TAG
         from openexecutive.api.routes import today as today_route
         from openexecutive.briefing import brief_state
-        from openexecutive.briefing.live_signals import gather_live_signals, refresh_calendar
+        from openexecutive.briefing.live_signals import (
+            gather_live_signals,
+            refresh_calendar,
+            settle_principal_drafts,
+        )
         from openexecutive.memory.workspace_settings import effective_workspace_mode
         from openexecutive.orchestrator.schedule_tools import current_session
 
@@ -244,6 +248,9 @@ class MorningBriefWorkflow(Workflow):
         events = None
         if private_ok and not top_three_calendar:
             events = await refresh_calendar(now, max_age=0)
+        if private_ok:
+            # Drafts they sent or deleted in their mailbox since are not stuck.
+            await settle_principal_drafts(now)
         live = gather_live_signals(
             since, now=now, include_private=private_ok,
             calendar=events, use_cached_calendar=False,
