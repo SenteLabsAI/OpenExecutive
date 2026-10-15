@@ -45,4 +45,4 @@ def test_executive_offers_and_handles_it() -> None:
 def test_sharing_question_is_answerable_from_the_chat_section() -> None:
     # Ask OE once could not say what sharing a chat does: the guide must.
     markdown = _read("chat")["markdown"].lower()
-    assert "share" in markdown and "read-only" in markdown
+    assert "share" in markdown and "write in it with you" in markdown
