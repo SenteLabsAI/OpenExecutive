@@ -32,8 +32,8 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="ask_oe",
-        title="Ask OE",
-        sub="The page-aware assistant panel — explains any screen and fills forms for you to review.",
+        title="Help with this page",
+        sub="The sparkle button at the top right: explains any screen, answers how the app works, and fills forms for you to review.",
     ),
     GuideSection(
         id="today",
@@ -126,9 +126,14 @@ GUIDE_SECTIONS: list[GuideSection] = [
         sub="Reach the Executive where you already work — Slack, Discord, Telegram, email, Google Chat, MCP.",
     ),
     GuideSection(
+        id="delegate",
+        title="Delegate",
+        sub="What the Executive may do without asking you, writing email as you, and handling things on its own.",
+    ),
+    GuideSection(
         id="settings",
         title="Settings & Advanced",
-        sub="Your Executive, workspace, Act as me, and the Advanced tools outside the day-to-day nav — including this guide.",
+        sub="Your Executive, workspace, notifications, and the Advanced tools outside the day-to-day nav — including this guide.",
     ),
 ]
 

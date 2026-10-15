@@ -446,7 +446,7 @@ function CalendarSection({
           ? "Ask about your day or your week in chat and it reads your own calendar. It never changes it."
           : actAsMeOn
             ? "Off: it can't see your calendar. On, it reads it when you ask, and never changes it."
-            : "Move How far it goes as you up from Off first."
+            : "Set What it writes as you above Off first."
       }
       action={
         <Switch

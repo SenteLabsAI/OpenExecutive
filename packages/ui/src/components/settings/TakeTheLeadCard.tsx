@@ -106,7 +106,7 @@ export default function TakeTheLeadCard() {
         !lead.available
           ? "Needs signed sign-ins on this server before it can be turned on."
           : mode === "training"
-            ? "In training, everything it would do comes to you as a card on Today first. What you allow, it does on its own from then on."
+            ? "In training, everything it would do comes to you as a card on Home first. What you allow, it does on its own from then on."
             : mode === "on"
               ? "It acts on what it finds while it looks over your day: it messages people, books meetings and starts workflows. Anything below waits for a yes first."
               : "Off: when it looks over your day it tells you what it would do, and you do it."
@@ -205,7 +205,7 @@ export default function TakeTheLeadCard() {
         <div>
           <h3 className="text-[15px] font-semibold text-fg">Always asks first</h3>
           <p className="mt-1 text-sm text-fg-muted">
-            These wait for you, or for whoever approves that area (like spending or hiring), with a card on Today.
+            These wait for you, or for whoever approves that area (like spending or hiring), with a card on Home.
             {!lead.enabled && " While Take the lead is off, only the last one applies: the rest are kept for when it's on."}
           </p>
           <ul className="mt-3 flex flex-col divide-y divide-line rounded-xl border border-line">

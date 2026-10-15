@@ -362,7 +362,7 @@ caching:
     audit rows as a direct call. use_tool accepts only names in
     tool_groups.DEFERRED; anything else, or input that is not an object,
     gets an error tool result. The everyday tools (consult_specialist,
-    propose_form_values, people and memory lookups, follow-ups, the MCP
+    propose_form_values, read_user_guide, people and memory lookups, follow-ups, the MCP
     meta-tools) stay direct. This cut the direct list from about 19.5k to
     about 6-7k tokens, which every model call of a turn re-sends.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.

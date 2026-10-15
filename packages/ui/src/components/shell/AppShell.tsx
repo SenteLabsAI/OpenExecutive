@@ -279,15 +279,14 @@ function AskOEButton() {
     <button
       type="button"
       onClick={toggle}
-      title="Ask OE about this page (Ctrl/Cmd + .)"
+      title="Help with this page (Ctrl/Cmd + .)"
+      aria-label="Help with this page"
       aria-pressed={open}
-      className={`flex min-h-10 items-center gap-1.5 px-3 rounded-lg text-sm font-semibold text-accent transition-colors cursor-pointer ${
+      className={`flex min-h-10 min-w-10 items-center justify-center rounded-lg text-accent transition-colors cursor-pointer ${
         open ? "bg-accent/20" : "bg-accent/10 hover:bg-accent/15"
       }`}
     >
       <Icon name="sparkles" size="w-4 h-4" />
-      <span className="sm:hidden">Ask</span>
-      <span className="hidden sm:inline">Ask OE</span>
     </button>
   );
 }

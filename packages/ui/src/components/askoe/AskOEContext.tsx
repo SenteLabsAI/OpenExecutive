@@ -53,6 +53,9 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
   { prefix: "/audit/usage", guideId: "token_usage", title: "Token usage" },
   { prefix: "/audit", guideId: "audit", title: "Audit log" },
   { prefix: "/today", guideId: "today", title: "Today" },
+  { prefix: "/chats", guideId: "chat", title: "Chats" },
+  { prefix: "/delegate", guideId: "delegate", title: "Delegate" },
+  { prefix: "/skills", guideId: "skills", title: "How it's done" },
   { prefix: "/memories", guideId: "pulse", title: "Pulse" },
   { prefix: "/review", guideId: "review", title: "Review queue" },
   { prefix: "/jobs", guideId: "jobs", title: "Workflows" },
@@ -66,12 +69,16 @@ const ROUTE_GUIDE_MAP: Array<{ prefix: string; guideId: string; title: string }>
   { prefix: "/knowledge", guideId: "knowledge", title: "Knowledge" },
   { prefix: "/council", guideId: "council", title: "Agent Council" },
   { prefix: "/demo", guideId: "simulator", title: "Company Simulator" },
+  { prefix: "/clients", guideId: "clients", title: "Client Companies" },
+  { prefix: "/onboard", guideId: "company_profile", title: "Onboarding" },
+  { prefix: "/settings/tools", guideId: "custom_tools", title: "Tools" },
   { prefix: "/settings", guideId: "settings", title: "Settings" },
+  // Home: only "/" itself matches (no route starts with "//").
+  { prefix: "/", guideId: "chat", title: "Home" },
 ];
 
 // Routes with no guide section yet — still want a readable page title.
 const EXTRA_TITLES: Array<{ prefix: string; title: string }> = [
-  { prefix: "/clients", title: "Client Companies" },
   { prefix: "/architecture", title: "Architecture" },
   { prefix: "/guide", title: "User Guide" },
 ];
@@ -110,6 +117,8 @@ interface AskOEContextValue {
   markSuggested: (names: string[]) => void;
   clearSuggested: (name?: string) => void;
   buildPageContext: () => PageContext;
+  /** The current page's name, shown as the panel's title. */
+  pageTitle: string;
 }
 
 const AskOECtx = createContext<AskOEContextValue | null>(null);
@@ -190,6 +199,8 @@ export function AskOEProvider({ children }: { children: React.ReactNode }) {
     };
   }, [pathname]);
 
+  const pageTitle = resolveRouteMeta(pathname).title;
+
   const value = useMemo<AskOEContextValue>(
     () => ({
       open,
@@ -203,6 +214,7 @@ export function AskOEProvider({ children }: { children: React.ReactNode }) {
       markSuggested,
       clearSuggested,
       buildPageContext,
+      pageTitle,
     }),
     [
       open,
@@ -215,6 +227,7 @@ export function AskOEProvider({ children }: { children: React.ReactNode }) {
       markSuggested,
       clearSuggested,
       buildPageContext,
+      pageTitle,
     ]
   );
 

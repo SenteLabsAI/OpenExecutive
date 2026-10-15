@@ -813,16 +813,20 @@ def _build_page_context_block(page_context: PageContext | None) -> str:
         lines.append(page_context.summary)
 
     if page_context.guide_section_id:
-        from openexecutive.guide.prebuilt import get_prebuilt
+        from openexecutive.orchestrator.guide_tools import section_markdown
 
-        section = get_prebuilt(page_context.guide_section_id)
-        markdown = (section or {}).get("markdown", "")
+        markdown = section_markdown(page_context.guide_section_id)
         if markdown:
             lines.append("")
             lines.append(
                 f"USER GUIDE FOR THIS PAGE ({page_context.guide_section_id}):"
             )
             lines.append(markdown)
+    lines.append("")
+    lines.append(
+        "For any other part of the app, read its section with read_user_guide "
+        "before answering how it works."
+    )
 
     if page_context.form is not None:
         form = page_context.form
