@@ -94,7 +94,7 @@ class ExtraTool:
     read_only: bool | None = None
     # Still runs once the turn has read the owner's mail (see module doc).
     # Only for a tool that reads this install's own data and carries nothing
-    # the model wrote to anywhere outside it.
+    # the model wrote to anywhere outside it; it must also be read_only.
     after_mail_read: bool = False
 
     @property
@@ -143,6 +143,8 @@ def register_tool(tool: ExtraTool) -> None:
         raise ExtensionError(f"tool {name!r} needs an object input_schema")
     if tool.workflow and len(name) > _MAX_WORKFLOW_NAME:
         raise ExtensionError(f"workflow tool name {name!r} must be at most {_MAX_WORKFLOW_NAME} characters")
+    if tool.after_mail_read and tool.read_only is not True:
+        raise ExtensionError(f"tool {name!r} may run after a mail read only if it is read_only")
     if tool.group is not None:
         from openexecutive.orchestrator import tool_groups
 
