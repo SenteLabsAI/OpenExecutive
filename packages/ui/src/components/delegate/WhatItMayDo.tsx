@@ -6,7 +6,7 @@ import { useEffect, useId, useState } from "react";
 import SettingsCard from "@/components/settings/SettingsCard";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
 import { getWhatItMayDo, type MayDoOutcome, type MayDoRow, type MayDoSection, type WhatItMayDo } from "@/lib/api";
-import { REACH_HREF } from "@/lib/reach";
+import { SENDS_HREF, WRITES_HREF } from "@/lib/reach";
 
 // Delegate → What it may do: read-only. One row per thing that can go out
 // without asking, what happens to it, and the setting that decides it, with
@@ -29,8 +29,8 @@ const OUTCOME_DOT: Record<MayDoOutcome, string> = {
 };
 
 function settingHref(setting: string): { href: string; label: string } | null {
-  // Both are set by How far it goes as you, which lives on Act as me only.
-  if (setting === "act_as_me" || setting === "handle_it") return { href: REACH_HREF, label: "Act as me" };
+  if (setting === "act_as_me") return { href: WRITES_HREF, label: "Act as me" };
+  if (setting === "handle_it") return { href: SENDS_HREF, label: "Handle it for me" };
   if (setting === "take_the_lead") return { href: "/delegate/take-the-lead", label: "Take the lead" };
   if (setting === "pause") return { href: "/settings/executive", label: "Your Executive" };
   if (setting.startsWith("department:")) {

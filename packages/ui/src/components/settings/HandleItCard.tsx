@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { SendsCard } from "@/components/settings/ReachCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import {
   getDelegation,
@@ -11,15 +11,13 @@ import {
   type HandledReply,
   type HandleIt,
 } from "@/lib/api";
-import { REACH_HREF, reachSummary, sentTodayLine } from "@/lib/reach";
+import { sentTodayLine } from "@/lib/reach";
 import { formatAgo } from "@/lib/setupStatus";
 
 // Handle it for me, its own tab under Delegate: replies the inbox watcher
 // sends from your mailbox on its own. Plain code decides each one
-// (delegation/handle_it.py). Its levels are the sending steps of How far it
-// goes as you, which lives on Act as me only (ReachCard): this tab shows
-// where the dial is, with a link there, and what it sent in the last week
-// (GET /delegation/handled).
+// (delegation/handle_it.py). This tab holds What it sends on its own
+// (SendsCard) and what it sent in the last week (GET /delegation/handled).
 export type DelegationLoad = {
   settings: DelegationSettings | null;
   state: "loading" | "hidden" | "ready" | "error";
@@ -54,9 +52,9 @@ export function useDelegation(): DelegationLoad {
 }
 
 // On Delegate → Handle it for me: nothing for someone who can't have Act
-// as me; otherwise where the dial is and what it sent.
+// as me; otherwise What it sends on its own and what it sent.
 export default function HandleItCard({ load }: { load: DelegationLoad }) {
-  const { settings, state } = load;
+  const { settings, state, setSettings } = load;
   if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
   if (state === "error") {
     return (
@@ -68,39 +66,9 @@ export default function HandleItCard({ load }: { load: DelegationLoad }) {
   if (state === "hidden" || !settings?.handle_it || !settings.inbox) return null;
   return (
     <>
-      <ReachNow settings={settings} />
+      <SendsCard settings={settings} onSettings={setSettings} />
       {settings.handle_it.enabled && <HandleItSection handleIt={settings.handle_it} />}
     </>
-  );
-}
-
-// Where How far it goes as you is, read-only, with a link to change it on
-// Act as me.
-function ReachNow({ settings }: { settings: DelegationSettings }) {
-  const now = reachSummary(settings);
-  return (
-    <SettingsCard>
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-sm text-fg-muted">How far it goes as you</p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-base font-semibold text-fg">
-            {now.label}
-            {now.training && (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                In training
-              </span>
-            )}
-          </p>
-          <p className="mt-1 text-sm text-fg-muted leading-snug">{now.line}</p>
-        </div>
-        <Link
-          href={REACH_HREF}
-          className="inline-flex h-10 items-center rounded-lg border border-line bg-surface px-4 text-sm font-semibold text-accent hover:border-line-strong"
-        >
-          {now.sends ? "Change in Act as me" : "Turn it on in Act as me"}
-        </Link>
-      </div>
-    </SettingsCard>
   );
 }
 

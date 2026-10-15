@@ -10483,10 +10483,15 @@ delegation:
     signed sign-in. Up calls each switch's own route in order, so the
     mailbox, signed sign-ins, owner-only and not-in-training checks all
     still apply, and the first refusal stops at a whole step. Training is
-    never changed by the dial. The dial is shown on Delegate -> Act as me
-    only (with Your rules at everything, and how many went today); Handle
-    it for me shows the step read-only with a link to it, then What it
-    sent; What it may do links act_as_me and handle_it rows to it.
+    never changed by the dial. The UI shows it as two pickers
+    (ReachCard.tsx): What it writes as you (WritesCard: off / when_asked /
+    inbox, any sending step reads as inbox) on Delegate -> Act as me, and
+    What it sends on its own (SendsCard: off saved as inbox, then the
+    sending steps, with In training and Your rules at everything) on
+    Delegate -> Handle it for me, which opens only at inbox and says so
+    otherwise. Moving Act as me below inbox says Handle it for me stops
+    too. What it may do links act_as_me rows to the first and handle_it
+    rows to the second.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect
     command and Check again, the Write drafts as me switch, the Draft
@@ -10501,9 +10506,10 @@ delegation:
     redirects there): the pause. Take the lead (Delegate → Take the lead)
     lists Always asks first even while it is off, ending in Meetings asked
     for in chat (the meeting_scheduling class mode, moved from Workspace).
-    Handle it for me (Delegate → Handle it for me) is the How far it goes
-    as you dial, then What it sent (rules at Everything, sent today, the
-    week's list). Setup
+    Handle it for me (Delegate → Handle it for me) is What it sends on its
+    own (rules at Everything), then What it sent (sent today, the week's
+    list), Who it's allowed to handle (its learned items) and, under
+    Advanced, the AI line on replies it sends. Setup
     status light your_gmail (amber while the inbox watcher is erroring,
     rate-limited or has 25 cards waiting); the API protection light says
     Send needs signed callers. The chat chip "Drafted an email as you

@@ -10,7 +10,7 @@ type Switch = "handle_it" | "approved_sends";
 const SWITCHES: { key: Switch; label: string; help: string }[] = [
   {
     key: "handle_it",
-    label: "Sent on their own (Handle it for me)",
+    label: "Replies it sends on its own",
     help: "No one reads these before they go.",
   },
   {
@@ -20,17 +20,22 @@ const SWITCHES: { key: Switch; label: string; help: string }[] = [
   },
 ];
 
-// On Delegate → Act as me: your own switches for the AI line on replies sent
-// as you (PUT /delegation/disclosure, delegation/disclosure.py). The line is
+// Under Advanced on Delegate → Act as me (`only="approved_sends"`) and on
+// Handle it for me (`only="handle_it"`): your own switch for the AI line on
+// replies sent as you (PUT /delegation/disclosure, delegation/disclosure.py). The line is
 // written into each reply when it's drafted, so a change applies to the next
 // one. Turning off the Handle it line asks first. Nothing shows when the
 // install has AI disclosure off.
 export default function ReplyDisclosureCard({
   disclosure,
   onSettings,
+  only,
+  title,
 }: {
   disclosure: ReplyDisclosure;
   onSettings: (next: DelegationSettings) => void;
+  only: Switch;
+  title: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,11 +66,11 @@ export default function ReplyDisclosureCard({
 
   return (
     <SettingsCard
-      title="Replies sent from your mailbox"
-      description={`Choose which replies end with “${disclosure.line}”, so people can tell your AI assistant wrote them.`}
+      title={title}
+      description={`Choose whether these replies end with “${disclosure.line}”, so people can tell your AI assistant wrote them.`}
     >
       <div className="flex flex-col gap-4">
-        {SWITCHES.map((s) => (
+        {SWITCHES.filter((s) => s.key === only).map((s) => (
           <label key={s.key} className="flex cursor-pointer items-start gap-3">
             <input
               id={`reply-disclosure-${s.key}`}

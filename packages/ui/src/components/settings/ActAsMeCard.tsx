@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 
 import Icon from "@/components/Icon";
 import AdvancedFold from "@/components/settings/AdvancedFold";
-import ReachCard from "@/components/settings/ReachCard";
+import { WritesCard } from "@/components/settings/ReachCard";
 import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
@@ -31,20 +31,20 @@ import { formatAgo } from "@/lib/setupStatus";
 import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceStyle";
 
 // Delegate → Act as me: let the Executive draft email AS you, in your own
-// Gmail Drafts, when you ask it to — and, with How far it goes as you at
-// Drafts for my inbox or above, for mail that needs you, which it sends when you tap Send on Today (or on
-// its own, under Handle it for me).
-// Backed by GET /delegation, PUT /delegation/reach (ReachCard) and /delegation/voice.
+// Gmail Drafts, when you ask it to — and, with What it writes as you at
+// For my inbox too, for mail that needs you, which it sends when you tap Send
+// on Today (or on its own, under Handle it for me, which has its own tab).
+// Backed by GET /delegation, PUT /delegation/reach (WritesCard) and /delegation/voice.
 // Not offered to anyone who can't have it (the owner can, and team members
 // once the owner lets them: PUT /delegation/team) or on a backend without
 // it: the hub then shows no tile, and this page says so.
 //
-// The page body: the mailbox, How far it goes as you and, while the inbox
-// watcher is on, Your inbox up front; How I write and Let team members use
-// it under Advanced.
+// The page body: the mailbox and What it writes as you (with the inbox
+// watcher's status under For my inbox too) up front; How I write, the
+// page's `advanced` cards and Let team members use it under Advanced.
 
 export const ACT_AS_ME_INTRO =
-  "Let the Executive write email as you, in your own voice. When you ask it to reply to or write an email as you, it saves a draft in your own mailbox (Gmail or Outlook) for you to review and send. Nothing goes out as you unless you send it, from your mailbox or with Send on a reply waiting on Today. Everything else it writes stays in its own name.";
+  "Drafts written as you, in your own mailbox. You send them.";
 
 const LENGTHS = ["short", "medium", "long"] as const;
 const FORMALITIES = ["casual", "neutral", "formal"] as const;
@@ -77,14 +77,19 @@ function greetingFields(p: VoiceProfile): Record<string, string> {
 }
 
 // `onSettings` hears every change made here, so the page's other cards
-// (Handle it for me, What it's learned) keep up; `children` sit after Draft
-// replies to my inbox, before Advanced.
+// (What it's learned) keep up; `children` sit after Read my calendar, and
+// `advanced` (with its `advancedLabel` for the fold's summary) after How I
+// write, under Advanced.
 export default function ActAsMeCard({
   onSettings,
   children,
+  advanced,
+  advancedLabel,
 }: {
   onSettings?: (next: DelegationSettings) => void;
   children?: ReactNode;
+  advanced?: ReactNode;
+  advancedLabel?: string;
 } = {}) {
   const [settings, setSettingsState] = useState<DelegationSettings | null>(null);
   const setSettings = useCallback(
@@ -221,21 +226,25 @@ export default function ActAsMeCard({
       </SettingsCard>
 
       {connected || on ? (
-        <ReachCard settings={settings} onSettings={setSettings} />
-      ) : null}
-
-      {settings.inbox?.enabled && (
-        <InboxSection
-          inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
-          mailbox={settings.gmail?.provider === "microsoft" ? "Outlook" : "Gmail"}
+        <WritesCard
+          settings={settings}
           onSettings={setSettings}
-          onInbox={(inbox) => {
-            setStoppedWaiting(false);
-            polls.current = 0;
-            setSettings((prev) => (prev ? { ...prev, inbox } : prev));
-          }}
+          inbox={
+            settings.inbox?.enabled && (
+              <InboxSection
+                inbox={stoppedWaiting ? { ...settings.inbox, checking: false } : settings.inbox}
+                mailbox={mailbox}
+                onSettings={setSettings}
+                onInbox={(inbox) => {
+                  setStoppedWaiting(false);
+                  polls.current = 0;
+                  setSettings((prev) => (prev ? { ...prev, inbox } : prev));
+                }}
+              />
+            )
+          }
         />
-      )}
+      ) : null}
 
       {settings.calendar && (
         <CalendarSection calendar={settings.calendar} actAsMeOn={on} onSettings={setSettings} />
@@ -245,9 +254,12 @@ export default function ActAsMeCard({
 
       <AdvancedFold
         id="act-as-me-advanced"
-        summary={settings.team ? "How I write · Let team members use it" : "How I write"}
+        summary={["How I write", advanced ? advancedLabel : null, settings.team ? "Let team members use it" : null]
+          .filter(Boolean)
+          .join(" · ")}
       >
         <VoiceSection connected={connected} outlook={outlook} />
+        {advanced}
         {settings.team && <TeamSection team={settings.team} onSettings={setSettings} />}
       </AdvancedFold>
     </>
@@ -314,10 +326,9 @@ function TeamSection({
   );
 }
 
-// Your inbox, while the dial is at Drafts for my inbox or higher: how the
+// Inside What it writes as you, under For my inbox too: how the inbox
 // watcher is doing, Check now (POST /delegation/inbox/check) and where its
-// replies are kept (PUT /delegation/inbox {mailbox_drafts}). The switch
-// itself is a step of How far it goes as you.
+// replies are kept (PUT /delegation/inbox {mailbox_drafts}).
 function InboxSection({
   inbox,
   mailbox,
@@ -361,13 +372,9 @@ function InboxSection({
 
   const last = inbox.last_poll_at && !inbox.checking ? ` Last checked ${formatAgo(inbox.last_poll_at)}.` : "";
   return (
-    <SettingsCard
-      title="Your inbox"
-      titleId="act-as-me-inbox-label"
-      description="When mail comes in that needs you, it writes a first reply and puts it on Today, where you can edit it, send it or dismiss it."
-    >
+    <div aria-label="Your inbox">
       {on && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="ml-7 flex flex-wrap items-center gap-x-4 gap-y-2">
           <span className="text-sm text-fg-muted">
             {inbox.message}
             {last}
@@ -387,7 +394,7 @@ function InboxSection({
             className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
           />
           <span>
-            <span className="block text-[15px] font-semibold text-fg">Also save replies in my {mailbox} Drafts</span>
+            <span className="block text-[15px] font-semibold text-fg">Also save inbox replies in my {mailbox} Drafts</span>
             <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
               {inDrafts
                 ? `Each reply is in your ${mailbox} Drafts too, so you can open it there.`
@@ -397,7 +404,7 @@ function InboxSection({
         </label>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
-    </SettingsCard>
+    </div>
   );
 }
 

@@ -13,21 +13,22 @@ import {
   type TrainingSetting,
 } from "@/lib/api";
 
-// Training on Delegate → Act as me (delegation/training.py), the way Take the
-// lead has it: like someone new, each job can be In training, where it brings
-// you its work first and learns who and how from what you approve. Replies,
-// follow-ups and drafts are trained from How far it goes as you (ReachCard);
-// this file holds the note at the top, the Suggested actions card
-// (Always ask / In training, PUT /delegation/training) and, at the bottom, one
-// "What it's learned" list, each item named by its job, with Remove
+// Training on Delegate (delegation/training.py), the way Take the lead has
+// it: like someone new, each job can be In training, where it brings you its
+// work first and learns who and how from what you approve. Replies and
+// follow-ups are trained from What it sends on its own (SendsCard, Handle it
+// for me), drafts from What it writes as you (WritesCard, Act as me). This
+// file holds the Suggested actions card (Always ask / In training,
+// PUT /delegation/training) and the learned list, shown on each tab for its
+// own jobs, each item named by its job, with Remove
 // (DELETE /delegation/learned/{id}).
 
 // The job each learned item came from, as its card is titled.
 const JOB_NAMES: Record<TrainingSetting, string> = {
-  replies: "Handle it for me, replies",
-  follow_ups: "Handle it for me, follow-ups",
+  replies: "Replies",
+  follow_ups: "Follow-ups",
   actions: "Suggested actions",
-  drafts: "Write drafts as me",
+  drafts: "Drafts",
 };
 
 function useSave(onSettings: (next: DelegationSettings) => void) {
@@ -45,18 +46,6 @@ function useSave(onSettings: (next: DelegationSettings) => void) {
     }
   };
   return { busy, error, run };
-}
-
-export function TrainingNote() {
-  return (
-    <section className="rounded-2xl border border-accent/30 bg-accent/5 p-5 sm:p-6">
-      <h2 className="text-base sm:text-lg font-semibold text-fg">Start it in training</h2>
-      <p className="mt-1 text-sm text-fg leading-relaxed">
-        Like anyone you hire, it can start each job in training: it brings you its work first and learns from what you
-        approve. When you trust it with a job, move that job to On.
-      </p>
-    </section>
-  );
 }
 
 type ActionsMode = "ask" | "training";
@@ -109,29 +98,33 @@ function learnedLine(item: TrainingLearned): string {
   return parts.join(" · ");
 }
 
-// Shown while any job is in training or something is on the list.
+// What it learned for `jobs`, shown while one of them is in training or
+// something of theirs is on the list.
 export function LearnedCard({
   training,
   onSettings,
+  jobs,
+  title,
+  description,
 }: {
   training: Training;
   onSettings: (next: DelegationSettings) => void;
+  jobs: TrainingSetting[];
+  title: string;
+  description: string;
 }) {
   const { busy, error, run } = useSave(onSettings);
-  const learned = training.learned;
-  const anyOn = training.replies || training.follow_ups || training.actions || training.drafts;
+  const learned = training.learned.filter((item) => jobs.includes(item.setting));
+  const anyOn = jobs.some((job) => Boolean(training[job]));
   if (!anyOn && learned.length === 0) return null;
+  const titleId = `learned-${jobs.join("-")}-label`;
   return (
-    <SettingsCard
-      title="What it's learned"
-      titleId="act-as-me-learned-label"
-      description="From its training. Yours alone. Remove one and it asks you again."
-    >
+    <SettingsCard title={title} titleId={titleId} description={description}>
       {learned.length === 0 ? (
         <p className="text-sm text-fg-muted">Nothing yet.</p>
       ) : (
         <ul
-          aria-labelledby="act-as-me-learned-label"
+          aria-labelledby={titleId}
           className="flex flex-col divide-y divide-line rounded-xl border border-line"
         >
           {learned.map((item) => (

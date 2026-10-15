@@ -1,12 +1,20 @@
 import type { DelegationSettings, HandleItMode, ReachStep } from "@/lib/api";
 
-// How far it goes as you: the one dial for everything Act as me does from
-// your own mailbox (PUT /delegation/reach). It lives on Delegate → Act as me
-// only; Handle it for me and What it may do show where it is and link here.
+// What it writes and sends as you, from your own mailbox. One setting on the
+// server (PUT /delegation/reach), shown as two pickers: What it writes as
+// you on Delegate → Act as me (Off, When I ask, For my inbox too) and What it
+// sends on its own on Delegate → Handle it for me (Off, then the sending
+// steps). Handle it for me builds on the inbox replies Act as me writes, so
+// its picker opens once the first one is at For my inbox too.
 
-// Where the dial sits on Act as me, for links from the other tabs.
-export const REACH_HREF = "/delegate/act-as-me#how-far";
-export const REACH_ANCHOR = "how-far";
+// Where each picker sits, for links from the other tabs.
+export const WRITES_ANCHOR = "writes";
+export const SENDS_ANCHOR = "sends";
+export const WRITES_HREF = `/delegate/act-as-me#${WRITES_ANCHOR}`;
+export const SENDS_HREF = `/delegate/handle-it#${SENDS_ANCHOR}`;
+
+export type WriteStep = "off" | "when_asked" | "inbox";
+export type SendStep = "off" | HandleItMode | "everything";
 
 // The sending steps, which are Handle it for me.
 export const HANDLE_IT_MODES: { mode: HandleItMode; label: string; replies: string; followUps: string }[] = [
@@ -42,32 +50,21 @@ export function reachOf(settings: DelegationSettings): ReachStep {
   return h.mode;
 }
 
-export function stepLabel(step: ReachStep): string {
-  if (step === "off") return "Off";
-  if (step === "when_asked") return "Drafts when I ask";
-  if (step === "inbox") return "Drafts for my inbox";
-  if (step === "everything") return "Everything";
-  return HANDLE_IT_MODES.find((m) => m.mode === step)?.label ?? step;
+// Act as me's picker: a sending step writes for the inbox too.
+export function writeOf(settings: DelegationSettings): WriteStep {
+  const step = reachOf(settings);
+  return step === "off" || step === "when_asked" ? step : "inbox";
 }
 
-// Where the dial is, for the Handle it for me tab: the step, whether that
-// step sends, whether it's in training, and one line on what it means.
-export function reachSummary(settings: DelegationSettings): {
-  label: string;
-  sends: boolean;
-  training: boolean;
-  line: string;
-} {
+// Handle it for me's picker: off below the sending steps.
+export function sendOf(settings: DelegationSettings): SendStep {
   const step = reachOf(settings);
-  const mode = HANDLE_IT_MODES.find((m) => m.mode === step);
-  const sends = Boolean(mode) || step === "everything";
-  const training = sends && step !== "everything" && Boolean(settings.training?.replies || settings.training?.follow_ups);
-  const line = mode
-    ? mode.replies
-    : step === "everything"
-      ? LEAD_LINE
-      : "Handle it for me is off. Every reply waits for you to tap Send.";
-  return { label: stepLabel(step), sends, training, line };
+  return step === "off" || step === "when_asked" || step === "inbox" ? "off" : step;
+}
+
+// The reach step a pick on Handle it for me saves: Off keeps the inbox replies.
+export function reachForSend(step: SendStep): ReachStep {
+  return step === "off" ? "inbox" : step;
 }
 
 export function sentTodayLine(n: number): string {

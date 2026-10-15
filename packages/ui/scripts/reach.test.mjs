@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { REACH_HREF, reachOf, reachSummary, sentTodayLine, stepLabel } from "../src/lib/reach.ts";
+import { SENDS_HREF, WRITES_HREF, reachForSend, reachOf, sendOf, sentTodayLine, writeOf } from "../src/lib/reach.ts";
 
 const settings = (over = {}) => ({
   enabled: true,
@@ -18,40 +18,31 @@ test("reachOf reads the dial step from the settings", () => {
   assert.equal(reachOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "everything");
 });
 
-test("stepLabel names every step as the dial does", () => {
-  assert.equal(stepLabel("off"), "Off");
-  assert.equal(stepLabel("inbox"), "Drafts for my inbox");
-  assert.equal(stepLabel("careful"), "Easy ones");
-  assert.equal(stepLabel("balanced"), "People I know");
-  assert.equal(stepLabel("bold"), "Most mail");
-  assert.equal(stepLabel("everything"), "Everything");
+test("writeOf puts every sending step at For my inbox too", () => {
+  assert.equal(writeOf(settings({ enabled: false })), "off");
+  assert.equal(writeOf(settings({ inbox: { enabled: false } })), "when_asked");
+  assert.equal(writeOf(settings({ handle_it: { enabled: false, mode: "balanced" } })), "inbox");
+  assert.equal(writeOf(settings()), "inbox");
+  assert.equal(writeOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "inbox");
 });
 
-test("reachSummary says when Handle it for me is off", () => {
-  const s = reachSummary(settings({ handle_it: { enabled: false, mode: "balanced" } }));
-  assert.equal(s.label, "Drafts for my inbox");
-  assert.equal(s.sends, false);
-  assert.equal(s.training, false);
-  assert.match(s.line, /off/);
+test("sendOf is off below the sending steps", () => {
+  assert.equal(sendOf(settings({ enabled: false })), "off");
+  assert.equal(sendOf(settings({ inbox: { enabled: false } })), "off");
+  assert.equal(sendOf(settings({ handle_it: { enabled: false, mode: "balanced" } })), "off");
+  assert.equal(sendOf(settings()), "balanced");
+  assert.equal(sendOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "everything");
 });
 
-test("reachSummary marks a sending step in training", () => {
-  const s = reachSummary(settings({ training: { replies: true, follow_ups: true } }));
-  assert.equal(s.label, "People I know");
-  assert.equal(s.sends, true);
-  assert.equal(s.training, true);
+test("turning Handle it for me off keeps the inbox replies", () => {
+  assert.equal(reachForSend("off"), "inbox");
+  assert.equal(reachForSend("careful"), "careful");
+  assert.equal(reachForSend("everything"), "everything");
 });
 
-test("reachSummary never marks Everything in training", () => {
-  const s = reachSummary(
-    settings({ handle_it: { enabled: true, mode: "bold", lead: true }, training: { replies: true } }),
-  );
-  assert.equal(s.label, "Everything");
-  assert.equal(s.training, false);
-});
-
-test("the dial link points at Act as me", () => {
-  assert.equal(REACH_HREF, "/delegate/act-as-me#how-far");
+test("each picker has its own link", () => {
+  assert.equal(WRITES_HREF, "/delegate/act-as-me#writes");
+  assert.equal(SENDS_HREF, "/delegate/handle-it#sends");
   assert.equal(sentTodayLine(1), "Sent 1 reply on its own today.");
   assert.equal(sentTodayLine(3), "Sent 3 replies on its own today.");
 });

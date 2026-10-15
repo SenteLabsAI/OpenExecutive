@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
 import SettingsCard from "@/components/settings/SettingsCard";
+import Button from "@/components/ui/Button";
 import {
   addMyLeadRule,
   deleteMyLeadRule,
@@ -14,104 +15,39 @@ import {
   setTraining,
   type DelegationSettings,
   type LeadRule,
-  type ReachStep,
 } from "@/lib/api";
-import { HANDLE_IT_MODES, LEAD_LINE, REACH_ANCHOR, reachOf, sentTodayLine } from "@/lib/reach";
+import {
+  HANDLE_IT_MODES,
+  LEAD_LINE,
+  SENDS_ANCHOR,
+  WRITES_ANCHOR,
+  reachForSend,
+  sendOf,
+  writeOf,
+  type SendStep,
+  type WriteStep,
+} from "@/lib/reach";
 
-// How far it goes as you: the one dial for everything Act as me does from
-// your own mailbox (PUT /delegation/reach). It replaces three switches that
-// used to depend on each other out of sight: Write drafts as me, Draft
-// replies to my inbox and Handle it for me with its level. The first steps
-// write and never send; the rest are Handle it for me, which sends. Moving
-// down says what stops before it saves. In training (Replies and Follow-ups,
-// delegation/training.py) applies to the sending steps. It is shown on
-// Delegate → Act as me only; Handle it for me shows where it is and what it
-// sent, and links back here (REACH_HREF).
+// What it writes and sends as you, from your own mailbox: one setting on the
+// server (PUT /delegation/reach) shown as two pickers. WritesCard, on
+// Delegate → Act as me, is the steps that write and never send. SendsCard,
+// on Delegate → Handle it for me, is the steps that send on their own, with
+// In training (delegation/training.py) and Your rules. Handle it for me
+// builds on the inbox replies, so SendsCard opens only once WritesCard is at
+// For my inbox too, and moving WritesCard below that says Handle it for me
+// stops too. Moving either down says what stops before it saves.
 
-type Step = {
-  value: ReachStep;
-  label: string;
-  line: string;
-  sends: boolean;
-};
+type Step<T extends string> = { value: T; label: string; line: string; reason?: string | null };
 
-function stepsFor(settings: DelegationSettings, mailbox: string): Step[] {
-  const sending: Step[] = HANDLE_IT_MODES.map((m) => ({
-    value: m.mode,
-    label: m.label,
-    line: `${m.replies} Follow-ups: ${m.followUps}`,
-    sends: true,
-  }));
-  return [
-    { value: "off", label: "Off", line: "The Executive only ever writes as itself.", sends: false },
-    {
-      value: "when_asked",
-      label: "Drafts when I ask",
-      line: `Ask in chat, “reply to Dana as me: yes to the 5th”, and the draft waits in your ${mailbox} Drafts.`,
-      sends: false,
-    },
-    {
-      value: "inbox",
-      label: "Drafts for my inbox",
-      line: "It also writes a first reply to mail that needs you and puts it on Today. You tap Send.",
-      sends: false,
-    },
-    ...sending,
-    ...(settings.handle_it?.lead_available
-      ? [{ value: "everything" as ReachStep, label: "Everything", line: LEAD_LINE, sends: true }]
-      : []),
-  ];
-}
-
-// What moving from `from` down to `to` stops, in a sentence.
-function whatStops(steps: Step[], from: ReachStep, to: ReachStep): string {
-  const i = steps.findIndex((s) => s.value === from);
-  const j = steps.findIndex((s) => s.value === to);
-  if (j >= i) return "";
-  const target = steps[j];
-  if (from === "everything" && target.sends) return "It goes back to sending only what this level allows.";
-  if (steps[i].sends && target.sends) return "It sends less on its own: only what this level allows.";
-  if (steps[i].sends && to === "inbox") return "It stops sending replies and follow-ups on its own. Every reply waits for you.";
-  if (to === "when_asked") return "It stops writing replies to your inbox, and sends nothing on its own.";
-  return "It stops writing anything as you, and turns Read my calendar off too.";
-}
-
-export default function ReachCard({
-  settings,
-  onSettings,
-}: {
-  settings: DelegationSettings;
-  onSettings: (next: DelegationSettings) => void;
-}) {
+function useReachSave(onSettings: (next: DelegationSettings) => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<ReachStep | null>(null);
-
-  // Linked from Handle it for me or What it may do (REACH_HREF): the card
-  // appears after the settings load, so the browser's own jump to the
-  // anchor has already passed it.
-  useEffect(() => {
-    if (window.location.hash === `#${REACH_ANCHOR}`) {
-      document.getElementById(REACH_ANCHOR)?.scrollIntoView({ block: "start" });
-    }
-  }, []);
-
-  const mailbox = settings.gmail?.provider === "microsoft" ? "Outlook" : "Gmail";
-  const steps = stepsFor(settings, mailbox);
-  const current = reachOf(settings);
-  const currentStep = steps.find((s) => s.value === current);
-  const sending = Boolean(currentStep?.sends);
-  const training = Boolean(settings.training?.replies);
-  const followUpsTraining = Boolean(settings.training?.follow_ups);
-  const connected = settings.gmail?.status === "connected";
-  const canSend = Boolean(settings.handle_it?.available);
-
-  const save = async (work: () => Promise<DelegationSettings>) => {
+  const save = async (work: () => Promise<DelegationSettings>): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       onSettings(await work());
-      setConfirming(null);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save the setting.");
       // A refused move up can stop part way, at a lower step: show where it is.
@@ -121,190 +57,353 @@ export default function ReachCard({
       } catch {
         // Keep what's shown; the error above already says it didn't save.
       }
+      return false;
     } finally {
       setBusy(false);
     }
   };
+  return { busy, error, save };
+}
 
-  const pick = (to: ReachStep) => {
+// Linked from another tab (WRITES_HREF / SENDS_HREF): the card appears after
+// the settings load, so the browser's own jump to the anchor has passed it.
+function useJumpTo(anchor: string) {
+  useEffect(() => {
+    if (window.location.hash === `#${anchor}`) {
+      document.getElementById(anchor)?.scrollIntoView({ block: "start" });
+    }
+  }, [anchor]);
+}
+
+function StepList<T extends string>({
+  name,
+  labelledBy,
+  steps,
+  current,
+  busy,
+  onPick,
+}: {
+  name: string;
+  labelledBy: string;
+  steps: Step<T>[];
+  current: T;
+  busy: boolean;
+  onPick: (step: T) => void;
+}) {
+  return (
+    <div role="radiogroup" aria-labelledby={labelledBy} className="flex flex-col gap-2">
+      {steps.map((step) => {
+        const checked = step.value === current;
+        const reason = step.reason;
+        return (
+          <label
+            key={step.value}
+            className={`flex items-start gap-3 rounded-xl border p-3.5 transition-colors ${
+              checked ? "border-accent/60 bg-accent/10" : "border-line bg-surface-elevated hover:border-line-strong"
+            } ${reason && !checked ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
+          >
+            <input
+              type="radio"
+              name={name}
+              value={step.value}
+              checked={checked}
+              disabled={busy || (Boolean(reason) && !checked)}
+              onChange={() => onPick(step.value)}
+              className="mt-1 h-4 w-4 flex-shrink-0 accent-indigo-500"
+            />
+            <span className="min-w-0">
+              <span className="block text-[15px] font-medium text-fg">{step.label}</span>
+              <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
+                {reason && !checked ? reason : step.line}
+              </span>
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function ConfirmDown({
+  text,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  text: string;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+      <p className="text-sm text-fg leading-relaxed">{text}</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onConfirm}
+          className="h-9 rounded-lg bg-fg px-3 text-sm font-medium text-fg-inverse disabled:opacity-50"
+        >
+          {busy ? "Saving…" : "Move down"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onCancel}
+          className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-fg"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Check({
+  checked,
+  disabled,
+  onChange,
+  label,
+  help,
+  className = "",
+}: {
+  checked: boolean;
+  disabled: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  help: string;
+  className?: string;
+}) {
+  return (
+    <label className={`flex cursor-pointer items-start gap-3 ${className}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
+      />
+      <span>
+        <span className="block text-[15px] font-semibold text-fg">{label}</span>
+        <span className="mt-0.5 block text-sm text-fg-muted leading-snug">{help}</span>
+      </span>
+    </label>
+  );
+}
+
+const WRITE_ORDER: WriteStep[] = ["off", "when_asked", "inbox"];
+
+// Delegate → Act as me: what it writes as you. `inbox` (the inbox watcher's
+// status, Check now and Also save in Drafts) shows under For my inbox too.
+export function WritesCard({
+  settings,
+  onSettings,
+  inbox,
+}: {
+  settings: DelegationSettings;
+  onSettings: (next: DelegationSettings) => void;
+  inbox?: ReactNode;
+}) {
+  const { busy, error, save } = useReachSave(onSettings);
+  const [confirming, setConfirming] = useState<WriteStep | null>(null);
+  useJumpTo(WRITES_ANCHOR);
+
+  const mailbox = settings.gmail?.provider === "microsoft" ? "Outlook" : "Gmail";
+  const connected = settings.gmail?.status === "connected";
+  const current = writeOf(settings);
+  const sending = sendOf(settings) !== "off";
+  const needsMailbox = !connected && current === "off" ? "Connect your mailbox first." : null;
+  const steps: Step<WriteStep>[] = [
+    { value: "off", label: "Off", line: "The Executive only writes as itself." },
+    {
+      value: "when_asked",
+      label: "When I ask",
+      line: `Ask in chat, “reply to Dana as me: yes to the 5th”, and the draft waits in your ${mailbox} Drafts.`,
+      reason: needsMailbox,
+    },
+    {
+      value: "inbox",
+      label: "For my inbox too",
+      line: "It also writes a first reply to mail that needs you and puts it on Today.",
+      reason: needsMailbox,
+    },
+  ];
+
+  const pick = (to: WriteStep) => {
     if (to === current) return;
-    const i = steps.findIndex((s) => s.value === current);
-    const j = steps.findIndex((s) => s.value === to);
-    if (j < i) {
+    if (WRITE_ORDER.indexOf(to) < WRITE_ORDER.indexOf(current)) {
       setConfirming(to);
       return;
     }
     void save(() => setReach(to));
   };
 
-  const disabledReason = (step: Step): string | null => {
-    if (step.value === "off") return null;
-    if (!connected && current === "off") return "Connect your mailbox first.";
-    if (step.sends && !canSend) return "Needs signed sign-ins on this server.";
-    if (step.value === "everything" && (training || followUpsTraining)) return "Opens up once it's out of training.";
-    return null;
+  const stops = (to: WriteStep): string => {
+    const handleIt = sending ? " Handle it for me stops sending too." : "";
+    if (to === "when_asked") return `It stops writing replies to your inbox.${handleIt}`;
+    return `It stops writing anything as you, and turns Read my calendar off too.${handleIt}`;
   };
 
-  const groups: { title: string; steps: Step[] }[] = [
-    { title: "Writes as you, never sends", steps: steps.filter((s) => !s.sends) },
-    { title: "Handle it for me sends as you", steps: steps.filter((s) => s.sends) },
-  ];
-
   return (
-    <div id={REACH_ANCHOR} className="scroll-mt-24">
-    <SettingsCard
-      title="How far it goes as you"
-      titleId="reach-label"
-      description="One setting for everything it writes or sends from your own mailbox. Each step adds to the one above it."
-    >
-      <div role="radiogroup" aria-labelledby="reach-label" className="flex flex-col gap-5">
-        {groups.map((group) => (
-          <div key={group.title}>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-fg-subtle">{group.title}</h3>
-            <div className="flex flex-col gap-2">
-              {group.steps.map((step) => {
-                const checked = step.value === current;
-                const reason = disabledReason(step);
-                return (
-                  <label
-                    key={step.value}
-                    className={`flex items-start gap-3 rounded-xl border p-3.5 transition-colors ${
-                      checked ? "border-accent/60 bg-accent/10" : "border-line bg-surface-elevated hover:border-line-strong"
-                    } ${reason && !checked ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
-                  >
-                    <input
-                      type="radio"
-                      name="reach"
-                      value={step.value}
-                      checked={checked}
-                      disabled={busy || (Boolean(reason) && !checked)}
-                      onChange={() => pick(step.value)}
-                      className="mt-1 h-4 w-4 flex-shrink-0 accent-indigo-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-[15px] font-medium text-fg">{step.label}</span>
-                      <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
-                        {reason && !checked ? reason : step.line}
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {confirming && (
-        <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <p className="text-sm text-fg leading-relaxed">
-            Move to {steps.find((s) => s.value === confirming)?.label}? {whatStops(steps, current, confirming)}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void save(() => setReach(confirming))}
-              className="h-9 rounded-lg bg-fg px-3 text-sm font-medium text-fg-inverse disabled:opacity-50"
-            >
-              {busy ? "Saving…" : "Move down"}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setConfirming(null)}
-              className="h-9 rounded-lg border border-line px-3 text-sm font-medium text-fg"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Shown from Drafts for my inbox up, so it can be in training before
-          the first move to a step that sends: training stays across moves. */}
-      {(sending || current === "inbox") && (
-        <div className="mt-5 flex flex-col gap-3 border-t border-line pt-4">
-          <label className="flex cursor-pointer items-start gap-3">
-            <input
-              type="checkbox"
-              checked={training}
-              disabled={busy || current === "everything"}
-              onChange={(e) => {
-                const train = e.target.checked;
-                void save(() => setTraining({ replies: train, follow_ups: train }));
-              }}
-              className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
-            />
-            <span>
-              <span className="block text-[15px] font-semibold text-fg">In training</span>
-              <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
-                {current === "everything"
-                  ? "Move to Most mail or below to train it."
-                  : !sending
-                    ? "Tick this before moving to a step that sends, and every reply comes to you first until you allow that person."
-                    : "Every reply comes to you first. Tap Send + allow and it handles that person on its own from then on, within this step."}
-              </span>
-            </span>
-          </label>
-          {(training || followUpsTraining) && (
-            <label className="ml-8 flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={followUpsTraining}
-                disabled={busy}
-                onChange={(e) => {
-                  const train = e.target.checked;
-                  void save(() => setTraining({ follow_ups: train }));
-                }}
-                className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
-              />
-              <span>
-                <span className="block text-[15px] font-semibold text-fg">Train follow-ups too</span>
-                <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
-                  Untick to let follow-ups go out at this step while replies stay in training.
-                </span>
-              </span>
-            </label>
-          )}
-          <p className="text-sm text-fg-muted">
-            Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to anyone
-            the email didn&apos;t go to.
-          </p>
-        </div>
-      )}
-      {current !== "off" && (
-        <label className="mt-5 flex cursor-pointer items-start gap-3 border-t border-line pt-4">
-          <input
-            type="checkbox"
+    <div id={WRITES_ANCHOR} className="scroll-mt-24">
+      <SettingsCard title="What it writes as you" titleId="writes-label" description="Nothing goes out until you send it.">
+        <StepList name="writes" labelledBy="writes-label" steps={steps} current={current} busy={busy} onPick={pick} />
+        {confirming && (
+          <ConfirmDown
+            text={`Move to ${steps.find((s) => s.value === confirming)?.label}? ${stops(confirming)}`}
+            busy={busy}
+            onConfirm={() => void save(() => setReach(confirming)).then((ok) => ok && setConfirming(null))}
+            onCancel={() => setConfirming(null)}
+          />
+        )}
+        {current === "inbox" && inbox && <div className="mt-4">{inbox}</div>}
+        {current !== "off" && (
+          <Check
+            className="mt-5 border-t border-line pt-4"
             checked={Boolean(settings.training?.drafts)}
             disabled={busy}
-            onChange={(e) => {
-              const learn = e.target.checked;
-              void save(() => setTraining({ drafts: learn }));
-            }}
-            className="mt-0.5 h-5 w-5 flex-shrink-0 accent-indigo-500"
+            onChange={(learn) => void save(() => setTraining({ drafts: learn }))}
+            label="Learn from my edits"
+            help="When you change a draft before sending, tick Do it like this next time and it learns how you write to that person. Nothing more is sent."
           />
-          <span>
-            <span className="block text-[15px] font-semibold text-fg">Learn from my edits</span>
-            <span className="mt-0.5 block text-sm text-fg-muted leading-snug">
-              When you change a draft before sending, tick Do it like this next time and it learns how you write to
-              that person. Nothing more is sent.
-            </span>
-          </span>
-        </label>
-      )}
-      {current === "everything" && <YourRules />}
-      {sending && (
-        <p className="mt-5 border-t border-line pt-4 text-sm text-fg-muted">
-          {sentTodayLine(settings.handle_it?.sent_today ?? 0)}{" "}
-          <Link href="/delegate/handle-it" className="font-medium text-accent underline-offset-2 hover:underline">
-            What it sent
-          </Link>
-        </p>
-      )}
-      {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
-    </SettingsCard>
+        )}
+        {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
+      </SettingsCard>
+    </div>
+  );
+}
+
+// Delegate → Handle it for me: what it sends as you on its own.
+export function SendsCard({
+  settings,
+  onSettings,
+}: {
+  settings: DelegationSettings;
+  onSettings: (next: DelegationSettings) => void;
+}) {
+  const { busy, error, save } = useReachSave(onSettings);
+  const [confirming, setConfirming] = useState<SendStep | null>(null);
+  useJumpTo(SENDS_ANCHOR);
+
+  const connected = settings.gmail?.status === "connected";
+  const writesInbox = writeOf(settings) === "inbox";
+  const current = sendOf(settings);
+  const training = Boolean(settings.training?.replies);
+  const followUpsTraining = Boolean(settings.training?.follow_ups);
+  const canSend = Boolean(settings.handle_it?.available);
+  const noSigning = canSend ? null : "Needs signed sign-ins on this server.";
+
+  const steps: Step<SendStep>[] = [
+    { value: "off", label: "Off", line: "Every reply waits for you to send." },
+    ...HANDLE_IT_MODES.map((m) => ({
+      value: m.mode as SendStep,
+      label: m.label,
+      line: `${m.replies} Follow-ups: ${m.followUps}`,
+      reason: noSigning,
+    })),
+    ...(settings.handle_it?.lead_available
+      ? [
+          {
+            value: "everything" as SendStep,
+            label: "Everything",
+            line: LEAD_LINE,
+            reason: noSigning ?? (training || followUpsTraining ? "Opens up once it's out of training." : null),
+          },
+        ]
+      : []),
+  ];
+  const order = steps.map((s) => s.value);
+
+  const pick = (to: SendStep) => {
+    if (to === current) return;
+    if (order.indexOf(to) < order.indexOf(current)) {
+      setConfirming(to);
+      return;
+    }
+    void save(() => setReach(reachForSend(to)));
+  };
+
+  const stops = (to: SendStep): string => {
+    if (to === "off") return "It stops sending replies and follow-ups on its own. Every reply waits for you.";
+    if (current === "everything") return "It goes back to sending only what this level allows.";
+    return "It sends less on its own: only what this level allows.";
+  };
+
+  return (
+    <div id={SENDS_ANCHOR} className="scroll-mt-24">
+      <SettingsCard
+        title="What it sends on its own"
+        titleId="sends-label"
+        description="It answers from the replies Act as me writes for your inbox."
+      >
+        {!writesInbox ? (
+          <div className="flex flex-col items-start gap-3">
+            <p className="text-sm text-fg-muted leading-relaxed">
+              It needs Act as me to write replies for your inbox first.
+            </p>
+            {connected ? (
+              <Button variant="primary" disabled={busy} onClick={() => void save(() => setReach("inbox"))}>
+                {busy ? "Turning on…" : "Turn on For my inbox too"}
+              </Button>
+            ) : (
+              <Link
+                href="/delegate/act-as-me"
+                className="inline-flex h-10 items-center rounded-lg border border-line bg-surface px-4 text-sm font-semibold text-accent hover:border-line-strong"
+              >
+                Connect your mailbox in Act as me
+              </Link>
+            )}
+          </div>
+        ) : (
+          <>
+            <StepList name="sends" labelledBy="sends-label" steps={steps} current={current} busy={busy} onPick={pick} />
+            {confirming && (
+              <ConfirmDown
+                text={`Move to ${steps.find((s) => s.value === confirming)?.label}? ${stops(confirming)}`}
+                busy={busy}
+                onConfirm={() =>
+                  void save(() => setReach(reachForSend(confirming))).then((ok) => ok && setConfirming(null))
+                }
+                onCancel={() => setConfirming(null)}
+              />
+            )}
+            {/* Shown at Off too, so it can be in training before the first
+                move to a step that sends: training stays across moves. */}
+            <div className="mt-5 flex flex-col gap-3 border-t border-line pt-4">
+              <Check
+                checked={training}
+                disabled={busy || current === "everything"}
+                onChange={(train) => void save(() => setTraining({ replies: train, follow_ups: train }))}
+                label="In training"
+                help={
+                  current === "everything"
+                    ? "Move to Most mail or below to train it."
+                    : current === "off"
+                      ? "Tick this before moving up, and every reply comes to you first until you allow that person."
+                      : "Every reply comes to you first. Tap Send + allow and it handles that person on its own from then on, within this step."
+                }
+              />
+              {(training || followUpsTraining) && (
+                <Check
+                  className="ml-8"
+                  checked={followUpsTraining}
+                  disabled={busy}
+                  onChange={(train) => void save(() => setTraining({ follow_ups: train }))}
+                  label="Train follow-ups too"
+                  help="Untick to let follow-ups go out at this step while replies stay in training."
+                />
+              )}
+              <p className="text-sm text-fg-muted">
+                Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to
+                anyone the email didn&apos;t go to.
+              </p>
+            </div>
+            {current === "everything" && <YourRules />}
+          </>
+        )}
+        {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
+      </SettingsCard>
     </div>
   );
 }
