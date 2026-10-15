@@ -529,3 +529,52 @@ async def test_the_first_week_block_reaches_the_brief_its_fingerprint_and_privac
     assert result(delivered)["private_to_principal"] is True
     assert result(shared)["brief_fingerprint"] == result(plain)["brief_fingerprint"]
     assert result(delivered)["brief_fingerprint"] != result(shared)["brief_fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_the_brief_knows_now_and_who_reads_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a NOW line a subject's "call tomorrow" from yesterday read as
+    today's, and without THE PRINCIPAL the brief named its own reader."""
+    from openexecutive.people import store as people_store
+
+    db = tmp_path / "people.db"
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    people_store.upsert_person(full_name="Pat Owner", email="pat@x.com", is_principal=True)
+    calls = _capture(monkeypatch)
+    _stub_aggregators(monkeypatch)
+
+    [e async for e in MorningBriefWorkflow().run(MorningBriefInput(), MagicMock())]
+
+    rendered = str(calls[-1]["rendered_context"])
+    assert "\nNOW: " in rendered and " local time" in rendered
+    assert "THE PRINCIPAL (who reads this — write 'you', never the name): Pat Owner" in rendered
+
+
+@pytest.mark.asyncio
+async def test_the_eod_digest_knows_who_reads_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive import providers
+    from openexecutive.people import store as people_store
+    from openexecutive.workflows.end_of_day_digest import (
+        EndOfDayDigestInput,
+        EndOfDayDigestWorkflow,
+    )
+
+    db = tmp_path / "people.db"
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    people_store.upsert_person(full_name="Pat Owner", email="pat@x.com", is_principal=True)
+    _stub_lease_board(monkeypatch)
+    provider = _SeqProvider(["Quiet day — nothing carrying forward."])
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    [e async for e in EndOfDayDigestWorkflow().run(EndOfDayDigestInput(), MagicMock())]
+
+    content = provider.calls[0]["messages"][0]["content"]  # type: ignore[index]
+    assert content.startswith("THE PRINCIPAL (who reads this — write 'you', never the name): Pat Owner")
+    assert "never by their name" in str(provider.calls[0]["system"])

@@ -114,6 +114,26 @@ def _private_ok() -> bool:
 # both surfaces tell the same story in the same voice.
 
 
+def _now_and_reader(now: datetime) -> tuple[str, str]:
+    """The NOW line ("Thursday 15 October 2026, 08:00 local time") and the
+    principal's name for THE PRINCIPAL line ("" when there is none)."""
+    from openexecutive.memory.workspace_settings import get_user_timezone
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        local = now.astimezone(get_user_timezone())
+    except Exception:
+        logger.exception("morning_brief: timezone lookup failed — NOW is in UTC")
+        local = now.astimezone(UTC)
+    label = f"{local:%A} {local.day} {local:%B %Y}, {local:%H:%M} local time"
+    try:
+        principal = find_principal_person()
+    except Exception:
+        logger.exception("morning_brief: principal lookup failed")
+        principal = None
+    return label, (principal.full_name if principal is not None else "")
+
+
 class MorningBriefWorkflow(Workflow):
     name = "morning_brief"
     title = "Morning Brief"
@@ -371,7 +391,11 @@ class MorningBriefWorkflow(Workflow):
 
         try:
             # Rendered here (not inside the synthesizer) so the grounding pass
-            # checks the brief against exactly the text the model read.
+            # checks the brief against exactly the text the model read. NOW
+            # and THE PRINCIPAL anchor the dates in the context and who "you"
+            # is: without them yesterday's "call tomorrow" read as today's
+            # and the brief named its own reader.
+            now_label, principal_name = _now_and_reader(now)
             rendered = render_briefing_context(
                 period_label=period, today_data=today_data, activity=activity,
                 since=since, handled=handled,
@@ -379,6 +403,7 @@ class MorningBriefWorkflow(Workflow):
                 live=live, live_window="since the last brief",
                 reflection_flags=reflection_flags, teammate_changes=teammate_changes,
                 owner_notes=owner_notes.text, getting_started=first_week.text,
+                now_label=now_label, principal_name=principal_name,
             )
             # standalone=True → the enumerated DM brief (no cards beside it),
             # not the /today header synthesis.

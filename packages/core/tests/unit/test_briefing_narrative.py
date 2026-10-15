@@ -226,3 +226,29 @@ def test_quoted_text_can_never_start_a_block_header() -> None:
         assert not line.startswith("NEEDS YOU")
         assert not line.startswith("- wire")
     assert "  > - real flag" in out
+
+
+def test_the_principal_line_is_framing_and_the_rules_reach_the_standalone_briefs() -> None:
+    """THE PRINCIPAL names who "you" is; it never makes a quiet day busy. The
+    reader and date rules ride both standalone prompts, and only those (the
+    header and the viewer prompts have their own audiences)."""
+    from openexecutive.briefing.live_signals import LiveSignals
+    from openexecutive.briefing.narrative import (
+        BRIEFING_NARRATIVE_SYSTEM,
+        DATES_RULE,
+        READER_RULE,
+        STANDALONE_BRIEF_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SYSTEM,
+        render_briefing_context,
+    )
+
+    out = render_briefing_context(
+        period_label="p", today_data={}, activity=[], live=LiveSignals(),
+        now_label="now", principal_name="Pat Owner",
+    )
+    assert "THE PRINCIPAL (who reads this — write 'you', never the name): Pat Owner" in out
+    assert "(No org activity, proposals, or at-risk goals this period.)" in out
+    for prompt in (STANDALONE_BRIEF_SYSTEM, STANDALONE_BRIEF_SOLO_SYSTEM):
+        assert READER_RULE in prompt and DATES_RULE in prompt
+    assert READER_RULE not in BRIEFING_NARRATIVE_SYSTEM
+    assert "ONLY the people under PEOPLE YOU ARE WAITING ON" in STANDALONE_BRIEF_SYSTEM

@@ -597,7 +597,7 @@ def test_brief_context_in_solo_has_no_department_or_people_block() -> None:
             period_label="p", today_data=_today_data(), activity=[], since=since
         )
         assert "DEPARTMENTS WITH RISK:" in team
-        assert "PEOPLE WAITING ON YOU:" in team
+        assert "PEOPLE YOU ARE WAITING ON" in team
 
 
 def test_eod_context_in_solo_has_no_department_or_people_block() -> None:
@@ -612,7 +612,7 @@ def test_eod_context_in_solo_has_no_department_or_people_block() -> None:
     assert "PEOPLE STILL WAITING" not in solo
     team = _render_eod_context(period_label="p", today_data=_today_data(), activity=[], since=since)
     assert "DEPARTMENTS WITH RISK CARRIED FORWARD:" in team
-    assert "PEOPLE STILL WAITING ON YOU:" in team
+    assert "PEOPLE YOU ARE STILL WAITING ON" in team
 
 
 def test_solo_brief_prompts_drop_the_team_sections() -> None:

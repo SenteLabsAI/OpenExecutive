@@ -57,7 +57,7 @@ def test_inbound_groups_a_thread_and_counts_it(audit: AuditLogger) -> None:
     assert signals.inbound_shown == 4
     joined = "\n".join(signals.inbound)
     assert "sam@x.com: vendor renewal terms" in joined
-    assert "(x2)" in joined  # the Budget draft thread reads as one line
+    assert "(2 messages)" in joined  # the Budget draft thread reads as one line
     assert "space=" not in joined  # channel refs are stripped
     assert "Sam Rivera: emails were not deliverable" in joined
 
@@ -264,3 +264,104 @@ def test_the_calendar_is_placed_at_the_real_time() -> None:
         _since(), now=now, include_private=True, calendar=events,
     )
     assert signals.calendar == ("IN PROGRESS 10:30–11:00 Pricing review", "14:00–14:30 Call")
+
+
+# --------------------------------------------------------------------------- #
+# What the brief got wrong: dates, its own reader, repeats, replies
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def roster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """A principal and a teammate, with the alerts table the unanswered-mail
+    cards live in."""
+    from openexecutive.alerts import store as alert_store
+    from openexecutive.people import store as people_store
+
+    db_path = tmp_path / "people.db"
+    alert_store.initialize_db(db_path)
+    people_store.initialize_db(db_path)
+    monkeypatch.setattr(alert_store, "DB_PATH", db_path)
+    monkeypatch.setattr(people_store, "DB_PATH", db_path)
+    people_store.upsert_person(full_name="Pat Owner", email="pat@x.com", is_principal=True)
+    people_store.upsert_person(full_name="Dana Lee", email="dana@x.com")
+    return SimpleNamespace(principal="pat@x.com", teammate="dana@x.com")
+
+
+def _thread_email(
+    logger: AuditLogger, sender: str, subject: str, *, message_id: str, thread_id: str = "t1",
+) -> None:
+    logger.log(
+        "integration_inbound", f"Inbound email from {sender}: {subject}", actor="email",
+        details={
+            "channel": "email", "from": sender, "subject": subject, "preview": "hi there",
+            "message_id": message_id, "thread_id": thread_id,
+        },
+    )
+
+
+def test_a_time_on_another_day_carries_its_date() -> None:
+    """The brief's window reaches into yesterday: a bare time read as today,
+    so yesterday's 'call tomorrow' landed under Today."""
+    now = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+    assert live_signals._local_hhmm("2026-10-15T09:05:00+00:00", UTC, now) == "09:05"
+    assert live_signals._local_hhmm("2026-10-14T16:23:00+00:00", UTC, now) == "Wed 14 Oct 16:23"
+    assert live_signals._local_hhmm("2026-10-14T16:23:00+00:00", UTC) == "16:23"
+
+
+def test_inbound_from_yesterday_is_dated(audit: AuditLogger) -> None:
+    _email(audit, "sam@x.com", "Reminder: call tomorrow at 2:00 PM")
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
+
+    signals = live_signals.gather_live_signals(_since(), now=tomorrow, include_private=False)
+
+    today = datetime.now(UTC)
+    assert signals.inbound[0].startswith(f"[{today:%a} {today.day} {today:%b} ")
+
+
+def test_a_message_handled_twice_counts_once(audit: AuditLogger) -> None:
+    """One email logged twice (handled again) read as 'asked three times'."""
+    _thread_email(audit, "ann@x.com", "Re: LP question", message_id="m1")
+    _thread_email(audit, "ann@x.com", "Re: LP question", message_id="m2")
+    _thread_email(audit, "ann@x.com", "Re: LP question", message_id="m1")
+
+    signals = live_signals.gather_live_signals(_since(), include_private=False)
+
+    assert signals.inbound_total == 2
+    assert "(2 messages)" in signals.inbound[0]
+
+
+def test_the_principals_own_mail_is_labelled_as_theirs(
+    audit: AuditLogger, roster: SimpleNamespace,
+) -> None:
+    _thread_email(audit, roster.principal, "Fwd: accounts", message_id="m1")
+
+    line = live_signals.gather_live_signals(_since(), include_private=False).inbound[0]
+
+    assert "email from the principal: Fwd: accounts" in line
+    assert roster.principal not in line
+
+
+def test_a_roster_email_says_whether_it_got_its_reply(
+    audit: AuditLogger, roster: SimpleNamespace,
+) -> None:
+    from openexecutive.integrations import unanswered_mail
+
+    _thread_email(audit, roster.teammate, "Re: LP question", message_id="m1", thread_id="t1")
+    _thread_email(audit, roster.teammate, "Budget", message_id="m2", thread_id="t2")
+    _thread_email(audit, "stranger@y.com", "Hello", message_id="m3", thread_id="t3")
+    unanswered_mail.file_card(
+        thread_key="t2", message_id="m2", sender_name="Dana Lee", from_principal=False,
+    )
+
+    signals = live_signals.gather_live_signals(_since(), include_private=True)
+
+    by_topic = {line.split(": ", 1)[1].split(" —")[0]: line for line in signals.inbound}
+    assert "] email (the Executive replied) from dana@x.com" in by_topic["Re: LP question"]
+    assert "] email (no reply went out) from dana@x.com" in by_topic["Budget"]
+    assert "replied" not in by_topic["Hello"] and "no reply" not in by_topic["Hello"]
+    # A reply landing later changes the brief's fingerprint.
+    assert "dana@x.com|budget|1|no reply went out" in signals.keys["inbound"]
+    # The cards are the principal's own: a shared read never carries them.
+    shared = live_signals.gather_live_signals(_since(), include_private=False)
+    assert not any("replied" in line or "no reply" in line for line in shared.inbound)

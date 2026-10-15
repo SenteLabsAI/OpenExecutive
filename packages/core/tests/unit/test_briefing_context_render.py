@@ -53,7 +53,7 @@ def test_render_context_splits_new_vs_carried_and_lists_handled() -> None:
     assert "PROPOSALS AWAITING DECISION:" not in text
     # Sections that are unchanged by the window still render.
     assert "DEPARTMENTS WITH RISK:" in text
-    assert "PEOPLE WAITING ON YOU:" in text
+    assert "PEOPLE YOU ARE WAITING ON (a workflow is paused for their reply):" in text
 
 
 def test_render_context_with_since_and_nothing_new_still_reports_carried() -> None:

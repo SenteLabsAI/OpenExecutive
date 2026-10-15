@@ -26,7 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from openexecutive.briefing.narrative import GROUNDING_RULE
+from openexecutive.briefing.narrative import GROUNDING_RULE, READER_NAME_RULE, principal_line
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.workflows.base import (
     Workflow,
@@ -82,7 +82,7 @@ _EOD_DIGEST_SYSTEM = (
     "overnight or first-thing.\n"
     "  4. **Sleep on this** — at most ONE open question worth the "
     "principal mulling overnight. Skip if there isn't one.\n\n"
-    + _NOTES_SECTION + GROUNDING_RULE + " "
+    + _NOTES_SECTION + GROUNDING_RULE + " " + READER_NAME_RULE + " "
     "Skip headers for empty sections. If the day was genuinely quiet, "
     "output one line: 'Quiet day — nothing carrying forward.'"
 )
@@ -110,7 +110,7 @@ _EOD_DIGEST_SOLO_SYSTEM = (
     "might trip if nothing happens overnight or first thing.\n"
     "  4. **Sleep on this** — at most ONE open question worth the "
     "principal mulling overnight. Skip if there isn't one.\n\n"
-    + _NOTES_SECTION + GROUNDING_RULE + " "
+    + _NOTES_SECTION + GROUNDING_RULE + " " + READER_NAME_RULE + " "
     "This digest is for one person: name goals by their area, never a "
     "department, and add no sections about a team roster or people waiting "
     "on the principal. Skip headers for empty sections. If the day was "
@@ -216,7 +216,9 @@ def _render_eod_context(
     people = today_data.get("people", [])
     awaiting = [] if solo else [p for p in people if p.get("awaiting_count", 0)]
     if awaiting:
-        parts.append("PEOPLE STILL WAITING ON YOU:")
+        # `awaiting_count` counts workflow runs paused for this person's
+        # reply: the Executive waits on them, not the other way round.
+        parts.append("PEOPLE YOU ARE STILL WAITING ON (a workflow is paused for their reply):")
         for p in awaiting:
             parts.append(
                 f"- {p.get('full_name', '')}: "
@@ -235,6 +237,17 @@ def _render_eod_context(
         )
 
     return "\n".join(parts)
+
+
+def _principal_name() -> str:
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+    except Exception:
+        logger.exception("eod_digest: principal lookup failed")
+        return ""
+    return principal.full_name if principal is not None else ""
 
 
 class EndOfDayDigestWorkflow(Workflow):
@@ -388,6 +401,11 @@ class EndOfDayDigestWorkflow(Workflow):
             period_label=period, today_data=today_data, activity=activity,
             since=since, handled=handled, mode=mode, owner_notes=owner_notes.text,
         ))
+        # Who reads it: the activity names the principal like anyone else
+        # ("Sent a DM to <their name>"), and the digest repeated it.
+        principal_name = await asyncio.to_thread(_principal_name)
+        if principal_name:
+            user_content = principal_line(principal_name) + "\n" + user_content
 
         system = _EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM
         try:

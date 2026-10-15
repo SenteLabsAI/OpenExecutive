@@ -511,3 +511,45 @@ async def test_reflection_refuses_ungrounded_alert_and_drops_ungrounded_flag(
     assert match is not None
     assert "Tool calls" not in match.group(1)
     assert match.group(1).strip() == "- Nothing else pressing"
+
+
+@pytest.mark.asyncio
+async def test_the_standup_knows_its_principal_and_drops_stale_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The brief is written from this pass's flags. A team standup that did
+    not know which teammate was the principal flagged "a review with <their
+    name>", and the brief named its own reader; a flag copied from yesterday
+    kept a goal "off track" after it was back on track."""
+    db = tmp_path / "refl_principal.db"
+    _setup_isolated_db(db, monkeypatch)
+    from openexecutive import providers
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    principal_id = people_store.upsert_person(
+        full_name="Pat Owner", email="pat@x.com", is_principal=True,
+    )
+    people_store.upsert_person(full_name="Dana Lee", email="dana@x.com")
+
+    calls: list[dict[str, Any]] = []
+
+    class _Capture:
+        async def messages_create(self, **kwargs: Any) -> _FakeResponse:
+            calls.append(kwargs)
+            return _FakeResponse("**Quiet:** Nothing else.")
+
+    monkeypatch.setattr(providers, "get_provider", lambda _model: _Capture())
+
+    async for _event in ExecutiveReflectionWorkflow().run(
+        inputs=ExecutiveReflectionInput(), store=None,  # type: ignore[arg-type]
+    ):
+        pass
+
+    content = calls[0]["messages"][0]["content"]
+    assert f"YOUR PRINCIPAL: person_id={principal_id} — Pat Owner" in content
+    assert "Dana Lee" in content  # the team roster is still there
+    system = str(calls[0]["system"])
+    assert "never copy a flag from it unless today's input shows the same problem" in system
+    assert "'the principal', never by name" in system

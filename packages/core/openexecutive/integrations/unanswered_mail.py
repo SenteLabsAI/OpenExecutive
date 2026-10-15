@@ -24,6 +24,7 @@ Never raises: a card left unfiled costs the card, never the email.
 from __future__ import annotations
 
 import logging
+import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,31 @@ def file_card(
     except Exception:
         logger.exception("unanswered_mail: could not file the card for thread %s", thread_key)
         return None
+
+
+def open_thread_keys() -> set[str]:
+    """The threads (lowercased ``thread_key``) whose card is still open: mail
+    whose sender has had no reply yet. Empty on any failure."""
+    from openexecutive.alerts import store
+
+    prefix = _dedup_key("")
+    if not store._resolve_db_path(None).exists():
+        return set()  # connecting would create an empty database
+    try:
+        with store._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT dedup_key FROM alerts WHERE source = ? AND status = 'unread'",
+                (SOURCE,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return set()  # no alerts table yet: no cards
+    except Exception:
+        logger.exception("unanswered_mail: could not read the open cards")
+        return set()
+    return {
+        str(row[0])[len(prefix):] for row in rows
+        if str(row[0] or "").startswith(prefix)
+    }
 
 
 def close_card(thread_key: str) -> None:

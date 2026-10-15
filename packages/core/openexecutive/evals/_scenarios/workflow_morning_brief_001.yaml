@@ -24,6 +24,9 @@ expected_artifact_sections:
   - "Needs you"
   - "At risk"
 quality_criteria:
+  addresses_the_principal_as_you_never_by_name: true
+  mail_from_the_principal_is_reported_as_handled_never_as_their_todo: true
+  never_dates_a_meeting_from_the_words_of_a_subject_line: true
   top_call_is_one_decision_with_a_move: true
   today_section_only_from_calendar_or_stuck_items_never_invented: true
   what_changed_names_who_wrote_before_internal_bookkeeping: true

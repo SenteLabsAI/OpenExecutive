@@ -78,9 +78,45 @@ def _one_line(value: Any, limit: int = _TEXT_MAX) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def _local_hhmm(iso: str | None, tz: tzinfo) -> str:
+def _local_hhmm(iso: str | None, tz: tzinfo, now: datetime | None = None) -> str:
+    """"14:05", or "Wed 14 Oct 14:05" when ``now`` is given and the moment
+    falls on another local day: the brief's window reaches into yesterday,
+    and a bare time read as today put yesterday's mail on today."""
     dt = parse_aware(iso)
-    return f"{dt.astimezone(tz):%H:%M}" if dt is not None else "--:--"
+    if dt is None:
+        return "--:--"
+    local = dt.astimezone(tz)
+    if now is not None and local.date() != now.astimezone(tz).date():
+        return f"{local:%a} {local.day} {local:%b %H:%M}"
+    return f"{local:%H:%M}"
+
+
+def _principal_addresses() -> set[str]:
+    """The principal's own email addresses, lowercased. Empty on failure."""
+    from openexecutive.people.store import find_principal_person
+
+    try:
+        principal = find_principal_person()
+    except Exception:
+        logger.exception("live_signals: principal lookup failed")
+        return set()
+    if principal is None:
+        return set()
+    return {
+        a.strip().lower()
+        for a in [principal.email or "", *principal.email_aliases]
+        if a and a.strip()
+    }
+
+
+def _is_roster_sender(address: str) -> bool:
+    from openexecutive.people.store import find_person_by_email
+
+    try:
+        return find_person_by_email(address) is not None
+    except Exception:
+        logger.exception("live_signals: roster lookup failed")
+        return False
 
 
 @dataclass(frozen=True)
@@ -125,15 +161,26 @@ def _audit_rows(event_type: str, since: datetime, include_private: bool) -> list
 
 
 def _inbound(
-    since: datetime, tz: tzinfo, include_private: bool
+    since: datetime, tz: tzinfo, include_private: bool, now: datetime | None = None,
 ) -> tuple[list[str], int, int, list[str], list[str]]:
     """``(lines, total, shown, stuck_lines, keys)`` from ``integration_inbound``
-    rows. ``shown`` is how many messages the grouped lines cover."""
+    rows. ``shown`` is how many messages the grouped lines cover.
+
+    A message handled twice (logged twice under one message id) counts once.
+    Mail from the principal is labelled as theirs, and, with
+    ``include_private``, an email from someone on the roster says whether it
+    got its reply (an open ``integrations.unanswered_mail`` card for its
+    thread means it did not)."""
+    from openexecutive.integrations.unanswered_mail import open_thread_keys
+
     rows = _audit_rows("integration_inbound", since, include_private)
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     stuck: list[str] = []
     stuck_seen: set[str] = set()
+    seen_ids: set[str] = set()
     total = 0
+    principal = _principal_addresses()
+    unanswered: set[str] | None = None
     for ev in rows:  # newest first
         summary = str(ev.summary or "")
         details = ev.details if isinstance(ev.details, dict) else {}
@@ -143,7 +190,7 @@ def _inbound(
             if sender and key not in stuck_seen:
                 stuck_seen.add(key)
                 stuck.append(
-                    f"[{_local_hhmm(ev.ts, tz)}] {sender} is not on the roster, so the "
+                    f"[{_local_hhmm(ev.ts, tz, now)}] {sender} is not on the roster, so the "
                     "Executive could not reply to their email — they may be waiting"
                 )
             continue
@@ -151,17 +198,33 @@ def _inbound(
             key = f"chat:{summary[:60].lower()}"
             if key not in stuck_seen:
                 stuck_seen.add(key)
-                stuck.append(f"[{_local_hhmm(ev.ts, tz)}] {_one_line(summary)}")
+                stuck.append(f"[{_local_hhmm(ev.ts, tz, now)}] {_one_line(summary)}")
             continue
         if not summary.startswith("Inbound "):
             # Rejected unknown senders, response-gate skips, handler errors:
             # bookkeeping, not something that happened in the principal's day.
             continue
+        message_id = str(details.get("message_id") or "")
+        if message_id:
+            if message_id in seen_ids:
+                continue
+            seen_ids.add(message_id)
         total += 1
         channel = str(details.get("channel") or "")
+        reply = ""
         if channel == "email":
+            address = str(details.get("from") or "").strip().lower()
             sender = _one_line(details.get("from"), 80)
+            if address and address in principal:
+                sender = "the principal"
             topic = _one_line(details.get("subject"), 100)
+            # The cards are private to the principal: their reading stays out
+            # of a shared read.
+            if include_private and address and _is_roster_sender(address):
+                if unanswered is None:
+                    unanswered = open_thread_keys()
+                thread_key = str(details.get("thread_id") or address).strip().lower()
+                reply = "no reply went out" if thread_key in unanswered else "the Executive replied"
         else:
             head, _, text = summary.partition(": ")
             sender = _one_line(_PAREN_REF_RE.sub("", head[len("Inbound "):]), 80)
@@ -172,7 +235,7 @@ def _inbound(
             groups[group_key] = {
                 "at": ev.ts, "channel": channel, "sender": sender, "topic": topic,
                 "preview": _one_line(details.get("preview"), 100) if channel == "email" else "",
-                "count": 1,
+                "count": 1, "reply": reply,
             }
         else:
             group["count"] += 1
@@ -182,7 +245,11 @@ def _inbound(
     shown = 0
     for g in list(groups.values())[:_INBOUND_MAX]:
         shown += g["count"]
-        line = f"[{_local_hhmm(g['at'], tz)}] {g['channel'] or 'message'}"
+        line = f"[{_local_hhmm(g['at'], tz, now)}] {g['channel'] or 'message'}"
+        if g["reply"]:
+            # Ahead of the quoted subject and preview, so their text can't
+            # forge or contradict it.
+            line += f" ({g['reply']})"
         if g["channel"] == "email":
             line += f" from {g['sender']}: {g['topic'] or '(no subject)'}"
             if g["preview"]:
@@ -190,13 +257,16 @@ def _inbound(
         else:
             line += f" {g['sender']}: {g['topic']}"
         if g["count"] > 1:
-            line += f" (x{g['count']})"
+            line += f" ({g['count']} messages)"
         lines.append(line)
-        keys.append(f"{g['sender'].lower()}|{g['topic'].lower()[:60]}|{g['count']}")
+        key = f"{g['sender'].lower()}|{g['topic'].lower()[:60]}|{g['count']}"
+        keys.append(f"{key}|{g['reply']}" if g["reply"] else key)
     return lines, total, shown, stuck, keys
 
 
-def _outbound_blocked(since: datetime, tz: tzinfo, include_private: bool) -> list[str]:
+def _outbound_blocked(
+    since: datetime, tz: tzinfo, include_private: bool, now: datetime | None = None,
+) -> list[str]:
     """Replies the outbound gate refused because the recipient is not on the
     allow-list. Refusals of other kinds (a tool, another account) are guard
     bookkeeping and stay out."""
@@ -211,7 +281,7 @@ def _outbound_blocked(since: datetime, tz: tzinfo, include_private: bool) -> lis
             continue
         seen.add(address.lower())
         out.append(
-            f"[{_local_hhmm(ev.ts, tz)}] an email to {address} was held at the outbound "
+            f"[{_local_hhmm(ev.ts, tz, now)}] an email to {address} was held at the outbound "
             "gate (not on the allow-list) — it did not go out"
         )
     return out
@@ -223,7 +293,9 @@ def _drafts(since: datetime, include_private: bool) -> int:
     return len(_audit_rows("delegation_drafted", since, True))
 
 
-def _conversations(since: datetime, tz: tzinfo) -> tuple[list[str], list[str]]:
+def _conversations(
+    since: datetime, tz: tzinfo, now: datetime | None = None,
+) -> tuple[list[str], list[str]]:
     """The principal's web chat sessions active since ``since``, newest first."""
     from openexecutive.memory import episodic
     from openexecutive.people.store import find_principal_person
@@ -247,7 +319,7 @@ def _conversations(since: datetime, tz: tzinfo) -> tuple[list[str], list[str]]:
         title = _one_line(row["title"], 100)
         if title.lower() in _UNTITLED:
             continue
-        lines.append(f"[{_local_hhmm(row['updated_at'], tz)}] {title}")
+        lines.append(f"[{_local_hhmm(row['updated_at'], tz, now)}] {title}")
         keys.append(title.lower())
         if len(lines) >= _CONVERSATIONS_MAX:
             break
@@ -369,11 +441,11 @@ def gather_live_signals(
     stuck: list[str] = []
     total = shown = 0
     try:
-        inbound, total, shown, stuck, inbound_keys = _inbound(since, tz, include_private)
+        inbound, total, shown, stuck, inbound_keys = _inbound(since, tz, include_private, now)
     except Exception:
         logger.exception("live_signals: inbound read failed")
     try:
-        stuck = _outbound_blocked(since, tz, include_private) + stuck
+        stuck = _outbound_blocked(since, tz, include_private, now) + stuck
     except Exception:
         logger.exception("live_signals: outbound-blocked read failed")
     drafts = 0
@@ -385,7 +457,7 @@ def gather_live_signals(
     conversation_keys: list[str] = []
     if include_private:
         try:
-            conversations, conversation_keys = _conversations(since, tz)
+            conversations, conversation_keys = _conversations(since, tz, now)
         except Exception:
             logger.exception("live_signals: conversations read failed")
 

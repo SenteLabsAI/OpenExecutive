@@ -22,6 +22,9 @@ expected_artifact_sections:
   - "Top call"
   - "Goals at risk"
 quality_criteria:
+  addresses_the_principal_as_you_never_by_name: true
+  mail_from_the_principal_is_reported_as_handled_never_as_their_todo: true
+  never_dates_a_meeting_from_the_words_of_a_subject_line: true
   top_three_has_at_most_three_items_in_order: true
   what_changed_draws_on_inbound_and_stuck_before_bookkeeping: true
   goals_are_named_by_area_never_department: true
