@@ -764,6 +764,14 @@ def test_an_outlook_sign_in_without_the_calendar_says_so() -> None:
         asyncio.run(refused.list_events(*_DAY))
 
 
+def test_an_outlook_sign_in_says_whether_it_includes_the_calendar() -> None:
+    _seen, with_it = _calendar_graph(f"{_MAIL} https://graph.microsoft.com/Calendars.Read")
+    assert asyncio.run(with_it.calendar_granted()) is True
+    ol._TOKENS.clear()
+    _seen, without = _calendar_graph(_MAIL)
+    assert asyncio.run(without.calendar_granted()) is False
+
+
 def test_the_outlook_script_asks_for_the_calendar_only_with_the_flag() -> None:
     script = _script()
     assert "Calendars.Read" not in script.SCOPE

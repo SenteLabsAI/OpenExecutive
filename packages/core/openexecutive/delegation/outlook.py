@@ -638,6 +638,14 @@ class DelegateOutlook:
         a Gmail one) is matched by that sign-in address."""
         return normalize_email(str(me.get("mail") or me.get("userPrincipalName") or ""))
 
+    async def calendar_granted(self) -> bool | None:
+        """Whether their saved sign-in includes ``Calendars.Read``; None when
+        Microsoft didn't say which scopes it carries."""
+        async with self._client() as client:
+            await self._access_token(client)
+        granted = _GRANTED.get(_token_key(self._cred()), "")
+        return bool(CALENDAR_SCOPES & _granted(granted)) if granted else None
+
     async def list_events(self, start: datetime, end: datetime, *, max_results: int = MAX_EVENTS) -> list[CalendarEvent]:
         """The events on their calendar between ``start`` and ``end``,
         recurring ones expanded, in order (``calendarView``), times in UTC.

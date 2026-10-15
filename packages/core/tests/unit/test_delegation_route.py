@@ -424,9 +424,13 @@ def test_a_style_is_written_from_their_words_without_saving(
 
 
 class _Calendar:
-    def __init__(self, outcome: Exception | None = None) -> None:
+    def __init__(self, outcome: Exception | None = None, granted: bool | None = False) -> None:
         self.outcome = outcome
+        self.granted = granted
         self.asked = 0
+
+    async def calendar_granted(self) -> bool | None:
+        return self.granted
 
     async def list_events(self, start: Any, end: Any, *, max_results: int = 100) -> list[Any]:
         self.asked += 1
@@ -448,21 +452,24 @@ def test_read_my_calendar_turns_on_only_once_the_calendar_opens(
     box = _Calendar(CalendarNotGranted("no"))
     monkeypatch.setattr(route, "gmail_for", lambda email: box)
     body = client.get("/delegation", headers=OWNER).json()
+    # Not connected: whether the sign-in includes the calendar isn't known.
     assert body["calendar"] == {
-        "enabled": False, "connect_command": body["gmail"]["connect_command"] + " --calendar",
+        "enabled": False, "granted": None, "connect_command": body["gmail"]["connect_command"] + " --calendar",
     }
     resp = client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "act_as_me_off"
     gmail["status"] = "connected"
+    assert client.get("/delegation", headers=OWNER).json()["calendar"]["granted"] is False
     client.put("/delegation", json={"enabled": True}, headers=OWNER)
     resp = client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "calendar_not_granted"
     box.outcome = GmailError("down")
     assert client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER).status_code == 503
     assert calendar.enabled(ids["principal"]) is False
-    box.outcome = None
+    box.outcome, box.granted = None, True
     body = client.put("/delegation/calendar", json={"enabled": True}, headers=OWNER).json()
     assert body["calendar"]["enabled"] is True and calendar.enabled(ids["principal"]) is True
+    assert body["calendar"]["granted"] is True
     assert calendar.enabled(ids["teammate"]) is False
     # Act as me off takes it with it, and it is audited privately each way.
     client.put("/delegation", json={"enabled": False}, headers=OWNER)

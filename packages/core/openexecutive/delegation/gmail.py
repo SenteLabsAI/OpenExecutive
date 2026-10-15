@@ -1211,6 +1211,14 @@ class DelegateGmail:
         )
 
 
+    async def calendar_granted(self) -> bool | None:
+        """Whether their saved sign-in includes ``calendar.readonly``; None
+        when Google didn't say which scopes it carries."""
+        async with self._client() as client:
+            await self._access_token(client)
+        granted = _GRANTED.get(_token_key(self._cred()), "")
+        return SCOPE_CALENDAR in granted.split() if granted else None
+
     async def list_events(self, start: datetime, end: datetime, *, max_results: int = MAX_EVENTS) -> list[CalendarEvent]:
         """The events on their primary calendar between ``start`` and ``end``,
         recurring ones expanded, in order. Read-only (``calendar.readonly``)."""

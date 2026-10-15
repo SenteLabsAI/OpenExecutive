@@ -282,10 +282,13 @@ class DisclosureOut(BaseModel):
 
 
 class CalendarOut(BaseModel):
-    """Read my calendar (delegation.calendar): the caller's own switch, and
-    the command that connects their mailbox with calendar access."""
+    """Read my calendar (delegation.calendar): the caller's own switch,
+    whether their mailbox sign-in includes the calendar (None when their
+    mailbox isn't connected or the provider didn't say), and the command that
+    connects it with calendar access."""
 
     enabled: bool
+    granted: bool | None = None
     connect_command: str
 
 
@@ -535,13 +538,21 @@ def _outlook_connect_command(email: str | None) -> str:
     return f"uv run python scripts/connect-own-outlook.py --email {target}"
 
 
-def _calendar_out(person: Person) -> CalendarOut:
+async def _calendar_out(person: Person, status: str) -> CalendarOut:
     from openexecutive.delegation import calendar
 
     email = person.email or ""
     outlook = bool(email) and credential_provider(email) == "microsoft"
     command = _outlook_connect_command(email) if outlook else _connect_command(email)
-    return CalendarOut(enabled=calendar.enabled(person.id), connect_command=f"{command} --calendar")
+    granted: bool | None = None
+    if status == "connected":
+        # The status check just refreshed the sign-in, so this reads the
+        # scopes it came back with rather than asking again.
+        try:
+            granted = await gmail_for(email).calendar_granted()
+        except Exception:
+            logger.warning("delegation: couldn't tell whether the sign-in includes the calendar", exc_info=True)
+    return CalendarOut(enabled=calendar.enabled(person.id), granted=granted, connect_command=f"{command} --calendar")
 
 
 def _inbox_out(person_id: int) -> InboxOut:
@@ -608,7 +619,7 @@ async def _state(person: Person) -> DelegationOut:
         handle_it=_handle_it_out(_person_id(person)),
         training=_training_out(_person_id(person)),
         disclosure=_disclosure_out(_person_id(person)),
-        calendar=_calendar_out(person),
+        calendar=await _calendar_out(person, status),
         team=_team_out(person),
     )
 

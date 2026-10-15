@@ -1720,9 +1720,11 @@ export interface Training {
 
 // Read my calendar (delegation/calendar.py): your own calendar, read-only,
 // through the same sign-in as your mailbox when it was connected with
-// --calendar (connect_command).
+// --calendar (connect_command). `granted`: whether that sign-in includes the
+// calendar; null (or absent, on an older backend) when it isn't known.
 export interface ReadMyCalendar {
   enabled: boolean;
+  granted?: boolean | null;
   connect_command: string;
 }
 

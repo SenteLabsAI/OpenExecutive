@@ -346,7 +346,7 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
         # Checks an id's shape (Gmail's and Outlook's differ); no call.
         "valid_id",
         # Read my calendar (delegation.calendar): read-only.
-        "list_events",
+        "list_events", "calendar_granted",
     }
     # Gmail's send endpoints (/settings/sendAs is a read, and allowed): the
     # draft one, once, and never messages.send, which sends any text.
@@ -684,6 +684,17 @@ def test_a_sign_in_without_the_calendar_says_so_before_asking_google() -> None:
     with pytest.raises(gm.CalendarNotGranted):
         asyncio.run(client.list_events(*_DAY))
     assert all(r.url.host == "oauth2.googleapis.com" for r in seen)
+
+
+def test_the_sign_in_says_whether_it_includes_the_calendar() -> None:
+    _seen, with_it = _calendar_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]))
+    assert asyncio.run(with_it.calendar_granted()) is True
+    gm._TOKENS.clear()
+    _seen, without = _calendar_google(" ".join(gm.SCOPES))
+    assert asyncio.run(without.calendar_granted()) is False
+    gm._TOKENS.clear()
+    _seen, unsaid = _calendar_google("")
+    assert asyncio.run(unsaid.calendar_granted()) is None
 
 
 def test_a_refused_calendar_read_is_not_granted_not_a_reconnect() -> None:

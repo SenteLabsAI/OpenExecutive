@@ -403,7 +403,8 @@ function InboxSection({
 
 // Read my calendar (PUT /delegation/calendar): the Executive reads your own
 // calendar, read-only, when you ask about your day. Turning it on checks the
-// calendar opens; a sign-in made without it shows the command that adds it.
+// calendar opens; a sign-in made without it shows the command that adds it,
+// and one that already includes it shows nothing more.
 function CalendarSection({
   calendar,
   actAsMeOn,
@@ -449,10 +450,12 @@ function CalendarSection({
         />
       }
     >
-      {!on && actAsMeOn && (
+      {!on && actAsMeOn && calendar.granted !== true && (
         <div>
           <p className="text-sm text-fg-muted leading-relaxed">
-            If you connected your mailbox before, run this once to add your calendar to the sign-in:
+            {calendar.granted === false
+              ? "Your mailbox sign-in doesn't include your calendar yet. Run this once to add it:"
+              : "If you connected your mailbox before, run this once to add your calendar to the sign-in:"}
           </p>
           <pre className="mt-2 whitespace-pre-wrap break-all rounded-xl border border-line bg-surface px-3 py-2 text-xs text-fg font-mono">
             {calendar.connect_command}
