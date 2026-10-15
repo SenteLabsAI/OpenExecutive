@@ -29,7 +29,8 @@ const SECTIONS = [
   { id: 'simulator', label: 'Company Simulator', sub: 'Load a realistic test company to try the Executive before trusting it with real data.' },
   { id: 'clients', label: 'Client Companies', sub: 'Multi-client mode for fractional work — switch the live company between named client slots.' },
   { id: 'integrations', label: 'Integrations', sub: 'Reach the Executive where you already work — Slack, Discord, Telegram, email, Google Chat, MCP.' },
-  { id: 'settings', label: 'Settings & Advanced', sub: 'Your Executive, workspace, Act as me, and the Advanced tools outside the day-to-day nav — including this guide.' },
+  { id: 'delegate', label: 'Delegate', sub: 'What the Executive may do without asking you, writing email as you, and handling things on its own.' },
+  { id: 'settings', label: 'Settings & Advanced', sub: 'Your Executive, workspace, notifications, and the Advanced tools outside the day-to-day nav — including this guide.' },
 ];
 
 interface SectionMeta {

@@ -126,9 +126,14 @@ GUIDE_SECTIONS: list[GuideSection] = [
         sub="Reach the Executive where you already work — Slack, Discord, Telegram, email, Google Chat, MCP.",
     ),
     GuideSection(
+        id="delegate",
+        title="Delegate",
+        sub="What the Executive may do without asking you, writing email as you, and handling things on its own.",
+    ),
+    GuideSection(
         id="settings",
         title="Settings & Advanced",
-        sub="Your Executive, workspace, Act as me, and the Advanced tools outside the day-to-day nav — including this guide.",
+        sub="Your Executive, workspace, notifications, and the Advanced tools outside the day-to-day nav — including this guide.",
     ),
 ]
 

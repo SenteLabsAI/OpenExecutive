@@ -133,6 +133,7 @@ def test_page_context_block_reaches_stream_chat(
     block = captured["stream_chat"]["page_context_block"]
     assert 'PAGE: /jobs/new — "New workflow"' in block
     assert "USER GUIDE FOR THIS PAGE (jobs):" in block
+    assert "read_user_guide" in block
     assert "GUIDE-MARKDOWN-FOR-JOBS" in block
     assert "FORM ON SCREEN (form_id=workflow_builder)" in block
     assert '"name":"title"' in block.replace(" ", "")

@@ -722,6 +722,11 @@ def _build_page_context_block(page_context: PageContext | None) -> str:
                 f"USER GUIDE FOR THIS PAGE ({page_context.guide_section_id}):"
             )
             lines.append(markdown)
+    lines.append("")
+    lines.append(
+        "For any other part of the app, read its section with read_user_guide "
+        "before answering how it works."
+    )
 
     if page_context.form is not None:
         form = page_context.form

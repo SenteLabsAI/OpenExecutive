@@ -10,6 +10,8 @@ Checks (see CLAUDE.md -> "Architecture Docs" and "PR Requirements"):
 
 - arch-doc-drift  FAIL  a documented module changed but its
                         architecture/prebuilt/<section>.json did not
+- guide-drift     FAIL  a screen changed but its user-guide section
+                        (guide/prebuilt/<section>.json) did not
 - no-stubs        FAIL  added code lines carry TODO/FIXME/NotImplementedError
 - eval-scenarios  FAIL  a new agent or a domain-prompt change without an
                         evals/_scenarios/ change
@@ -25,6 +27,11 @@ A change that does not alter what a section describes can waive the drift
 check with a line in a commit message or the PR description:
 
     Arch-Docs: n/a - <reason>
+
+The user guide is what Ask OE answers product questions from, so a change to a
+screen updates its guide section too, or says why not:
+
+    Guide: n/a - <reason>
 
 Stdlib only, so it runs without the project's virtualenv.
 """
@@ -80,6 +87,68 @@ SECTIONS_FOR: dict[str, set[str]] = {
     "alerts": {"today"},
     "guide": {"user_guide"},
 }
+
+GUIDE_PREBUILT = PKG + "guide/prebuilt/"
+UI_SRC = "packages/ui/src/"
+
+# Screen (path under packages/ui/src/, longest prefix wins) -> the user-guide
+# sections describing it; editing any one satisfies the gate. Paths not listed
+# (the shell, shared ui bits, api routes) are not checked. Keep the ids in step
+# with guide/sections.py (a test checks).
+GUIDE_FOR: dict[str, set[str]] = {
+    "app/page.tsx": {"chat", "today"},
+    "components/Briefing.tsx": {"chat", "today"},
+    "components/briefing/": {"chat", "today"},
+    "components/ActionCards.tsx": {"chat", "today"},
+    "app/chats/": {"chat"},
+    "components/sessions/": {"chat"},
+    "components/Chat.tsx": {"chat"},
+    "components/Message.tsx": {"chat"},
+    "components/AnswerSourcesFooter.tsx": {"chat"},
+    "components/askoe/": {"ask_oe"},
+    "app/today/": {"today"},
+    "app/memories/": {"pulse"},
+    "components/memories/": {"pulse"},
+    "app/review/": {"review"},
+    "components/ReviewQueue.tsx": {"review"},
+    "app/jobs/": {"jobs"},
+    "components/jobs/": {"jobs"},
+    "components/WorkflowRunner.tsx": {"jobs"},
+    "app/skills/": {"skills"},
+    "app/artifacts/": {"artifacts"},
+    "components/ArtifactViewer.tsx": {"artifacts"},
+    "app/watchlist/": {"watchlist"},
+    "app/departments/": {"departments"},
+    "app/goals/": {"departments"},
+    "components/goals/": {"departments"},
+    "app/people/": {"people"},
+    "components/people/": {"people"},
+    "app/company-profile/": {"company_profile"},
+    "components/company-profile/": {"company_profile"},
+    "app/onboard/": {"company_profile"},
+    "components/onboard/": {"company_profile"},
+    "components/OnboardWizard.tsx": {"company_profile"},
+    "app/knowledge/": {"knowledge"},
+    "components/knowledge/": {"knowledge"},
+    "app/council/": {"council"},
+    "app/audit/usage/": {"token_usage"},
+    "app/audit/": {"audit"},
+    "app/demo/": {"simulator"},
+    "app/clients/": {"clients"},
+    "app/delegate/": {"delegate"},
+    "components/delegate/": {"delegate"},
+    "app/settings/act-as-me/": {"delegate"},
+    "app/settings/on-its-own/": {"delegate"},
+    "app/settings/tools/": {"custom_tools"},
+    "app/settings/": {"settings", "integrations"},
+    "components/settings/": {"settings", "integrations"},
+    "components/workspace/": {"settings"},
+    "components/executive/": {"settings"},
+}
+GUIDE_WAIVER_RE = re.compile(
+    r"^[ \t]*Guide:[ \t]*n/?a\b[ \t]*[-\u2013\u2014:][ \t]*\S.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Needs a reason after the n/a: "Arch-Docs: n/a - renamed a helper".
 WAIVER_RE = re.compile(
@@ -211,6 +280,44 @@ def check_arch_drift(c: Change) -> Result:
     )
 
 
+def _guide_sections_for(path: str) -> set[str] | None:
+    if not path.startswith(UI_SRC) or not path.endswith((".ts", ".tsx")):
+        return None
+    if ".test." in path:
+        return None
+    rel = path[len(UI_SRC) :]
+    best = max((p for p in GUIDE_FOR if rel == p or (p.endswith("/") and rel.startswith(p))), key=len, default=None)
+    return GUIDE_FOR[best] if best else None
+
+
+def check_guide_drift(c: Change) -> Result:
+    name = "guide-drift"
+    touched = {
+        p[len(GUIDE_PREBUILT) : -len(".json")]
+        for p in c.changed
+        if p.startswith(GUIDE_PREBUILT) and p.endswith(".json")
+    }
+    missing: dict[str, set[str]] = {}
+    for p in sorted(c.code_changed()):
+        expect = _guide_sections_for(p)
+        if expect and not expect & touched:
+            missing.setdefault(", ".join(sorted(expect)), set()).add(p[len(UI_SRC) :])
+    if not missing:
+        return Result(name, "PASS", f"guide sections={sorted(touched)}")
+    need = "; ".join(f"{', '.join(sorted(files))} (edit one of: {ids})" for ids, files in missing.items())
+    if waived := GUIDE_WAIVER_RE.search(c.waiver_text):
+        return Result(name, "PASS", f"waived ({waived.group(0).strip()}); would need: {need}")
+    return Result(
+        name,
+        "FAIL",
+        "user guide not updated for: "
+        + need
+        + f". Ask OE answers product questions from {GUIDE_PREBUILT}<section>.json: "
+        "update what the change alters there, or add 'Guide: n/a - <reason>' "
+        "to a commit message or the PR description.",
+    )
+
+
 def check_no_stubs(c: Change) -> Result:
     hits = [
         f"{path}: {line.strip()[:80]}"
@@ -293,7 +400,7 @@ def check_pinned_actions(c: Change) -> Result:
     return Result("pinned-actions", "PASS", "added workflow steps pin actions by SHA")
 
 
-CHECKS = (check_arch_drift, check_no_stubs, check_eval_scenarios, check_tests_present, check_pinned_actions)
+CHECKS = (check_arch_drift, check_guide_drift, check_no_stubs, check_eval_scenarios, check_tests_present, check_pinned_actions)
 
 
 def run_checks(c: Change) -> list[Result]:

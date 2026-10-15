@@ -225,7 +225,7 @@ export function WritesCard({
     {
       value: "inbox",
       label: "For my inbox too",
-      line: "It also writes a first reply to mail that needs you and puts it on Today.",
+      line: "It also writes a first reply to mail that needs you and puts it on Home.",
       reason: needsMailbox,
     },
   ];

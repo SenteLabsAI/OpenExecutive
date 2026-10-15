@@ -120,6 +120,8 @@ _LABELS: dict[str, str] = {
 
     # Ask OE panel form fill
     "propose_form_values": "Filling in the form…",
+    # How the app itself works (the user guide)
+    "read_user_guide": "Checking the user guide…",
 
     # Act as me: a draft in the speaker's own Gmail (never sent)
     "ghostwrite_email": "Drafting an email in your voice…",

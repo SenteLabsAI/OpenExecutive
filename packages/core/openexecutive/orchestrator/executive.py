@@ -105,6 +105,10 @@ from openexecutive.orchestrator.form_tools import (
     PROPOSE_FORM_VALUES,
     build_form_patch_event,
 )
+from openexecutive.orchestrator.guide_tools import (
+    GUIDE_TOOL_HANDLERS,
+    GUIDE_TOOLS,
+)
 from openexecutive.orchestrator.history_tools import (
     HISTORY_TOOL_HANDLERS,
     HISTORY_TOOL_NAMES,
@@ -745,6 +749,7 @@ _ALL_SKILL_TOOLS = [
     *WORKFLOW_AUTHORING_TOOLS,
     *WORKFLOW_RUN_TOOLS,
     *FORM_TOOLS,
+    *GUIDE_TOOLS,
     *PYTHON_JOB_TOOLS,
 ]
 
@@ -775,6 +780,7 @@ _ALL_SKILL_HANDLERS = {
     **WORKFLOW_AUTHORING_TOOL_HANDLERS,
     **WORKFLOW_RUN_TOOL_HANDLERS,
     **FORM_TOOL_HANDLERS,
+    **GUIDE_TOOL_HANDLERS,
     **PYTHON_JOB_TOOL_HANDLERS,
 }
 
