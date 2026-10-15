@@ -257,23 +257,37 @@ async def live_session(session_id: str, request: Request) -> StreamingResponse:
     now if any; the page then reads the saved chat. 429 when too many pages
     have it open."""
     caller, member = await asyncio.to_thread(_require_chat_access, request, session_id)
-    watcher = chat_live.subscribe(session_id, caller)
-    if watcher is None:
+    if not chat_live.admits(session_id, caller):
         raise HTTPException(status_code=429, detail="This chat is open in too many places.")
 
     async def stream() -> AsyncIterator[str]:
+        # Registered here, not before the response: a page gone before the
+        # body starts never runs this, and so leaves nothing registered.
+        watcher = chat_live.subscribe(session_id, caller)
+        if watcher is None:
+            yield f"data: {json.dumps({'type': 'resync', 'session_id': session_id})}\n\n"
+            return
+        # Access is checked again this often, idle or not, so someone
+        # archived mid-turn stops receiving it.
+        next_check = time.monotonic() + _LIVE_KEEPALIVE_S
         try:
             ready = {"type": "ready", "session_id": session_id, "turn": chat_live.snapshot(session_id)}
             yield f"data: {json.dumps(ready)}\n\n"
             while True:
                 try:
-                    event = await asyncio.wait_for(watcher.queue.get(), timeout=_LIVE_KEEPALIVE_S)
+                    event: dict[str, Any] | None = await asyncio.wait_for(
+                        watcher.queue.get(), timeout=_LIVE_KEEPALIVE_S
+                    )
                 except TimeoutError:
+                    event = None
+                if event is None or time.monotonic() >= next_check:
                     if await request.is_disconnected():
                         return
                     if not await asyncio.to_thread(_still_in, request, session_id, caller, member):
                         yield f"data: {json.dumps({'type': 'removed', 'session_id': session_id})}\n\n"
                         return
+                    next_check = time.monotonic() + _LIVE_KEEPALIVE_S
+                if event is None:
                     yield _SSE_KEEPALIVE
                     continue
                 yield f"data: {json.dumps(event)}\n\n"

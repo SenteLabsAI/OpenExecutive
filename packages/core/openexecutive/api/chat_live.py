@@ -66,13 +66,22 @@ _turns: dict[str, dict[str, Any]] = {}
 _typing_at: dict[tuple[str, int], float] = {}
 
 
-def subscribe(session_id: str, person_id: int | None) -> Watcher | None:
-    """A new page watching ``session_id``. None when the caps are reached:
-    per person first, so one person's pages can't use up everyone's."""
+def admits(session_id: str, person_id: int | None) -> bool:
+    """Whether one more page may watch ``session_id``: per person first, so
+    one person's pages can't use up everyone's. A caller with no Person (a
+    single-user install) has no per-person cap."""
     total = sum(len(w) for w in _watchers.values())
-    current = _watchers.get(session_id, set())
+    if total >= MAX_TOTAL or len(_watchers.get(session_id, ())) >= MAX_PER_CHAT:
+        return False
+    if person_id is None:
+        return True
     mine = sum(1 for ws in _watchers.values() for w in ws if w.person_id == person_id)
-    if total >= MAX_TOTAL or len(current) >= MAX_PER_CHAT or mine >= MAX_PER_PERSON:
+    return mine < MAX_PER_PERSON
+
+
+def subscribe(session_id: str, person_id: int | None) -> Watcher | None:
+    """A new page watching ``session_id``. None when the caps are reached."""
+    if not admits(session_id, person_id):
         return None
     watcher = Watcher(session_id=session_id, person_id=person_id)
     _watchers.setdefault(session_id, set()).add(watcher)

@@ -710,7 +710,9 @@ def _named_history(
 
 # A message that starts like a label ("[Alex]: …") would read as someone
 # else's words once its sender's own label goes in front of it.
-_LEADING_LABEL_RE = re.compile(r"^\s*(?:\[[^\]\n]{0,80}\]\s*:\s*)+")
+# Any line that starts so, not only the first: a later line is read as a
+# turn of its own just the same.
+_LEADING_LABEL_RE = re.compile(r"(?m)^[ \t]*(?:\[[^\]\n]{0,80}\][ \t]*:[ \t]*)+")
 
 
 def _unlabelled(text: str) -> str:
