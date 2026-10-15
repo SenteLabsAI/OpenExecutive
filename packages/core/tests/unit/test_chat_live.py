@@ -250,6 +250,18 @@ def test_a_teammate_reads_none_of_their_mail_in_a_shared_chat(
     assert teammate_mail._reader_id(shared) is None
 
 
+def test_the_principal_reads_no_mail_in_a_chat_they_shared(
+    people: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import content_trust, teammate_mail
+
+    monkeypatch.setattr(content_trust, "principal_speaking", lambda _s: True)
+    own = SimpleNamespace(caller_person_id=people["alex"], shared_chat=False)
+    shared = SimpleNamespace(caller_person_id=people["alex"], shared_chat=True)
+    assert teammate_mail._reader_id(own) == people["alex"]
+    assert teammate_mail._reader_id(shared) is None
+
+
 def test_history_in_a_shared_chat_names_each_speaker() -> None:
     rows = [
         {"role": "user", "content": "first", "sender_person_id": 1},

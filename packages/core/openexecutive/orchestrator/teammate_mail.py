@@ -223,6 +223,9 @@ def _reader_id(session: Any) -> int | None:
         principal = find_principal_person()
         return principal.id if principal is not None else None
     if principal_speaking(session):
+        # Not in a web chat they shared: everyone in it reads the reply.
+        if getattr(session, "shared_chat", False) is True:
+            return None
         if caller is not None:
             return int(caller)
         principal = find_principal_person()

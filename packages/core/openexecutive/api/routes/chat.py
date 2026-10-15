@@ -1260,6 +1260,11 @@ async def _run_chat_turn(
         # Without this the audit row lands with NULL session/turn (the prefetch
         # used to run inside stream_chat's `with set_turn(...)` block; moving it
         # to the route detached it from that context).
+        # What the Executive remembers about the speaker is theirs: not in a
+        # chat others read. (Episodic context is the company's decisions and
+        # initiatives, which everyone in the chat may see.)
+        if session.shared_chat:
+            return ""
         with set_turn(session_id=session.session_id, turn_id=turn_id):
             try:
                 return await _honcho_prefetch(

@@ -207,7 +207,14 @@ def test_a_shared_chat_is_one_both_write_in(
             yield "ok"
 
     monkeypatch.setattr(exec_mod, "Executive", _Capture)
+
+    async def _remembered(*_a: Any, **_k: Any) -> str:
+        return "Alex is negotiating a raise"
+
+    # What the Executive remembers about the speaker stays out of a shared chat.
+    monkeypatch.setattr("openexecutive.memory.honcho_client.prefetch", _remembered)
     client.post("/chat", json={"message": "hi", "session_id": sid}, headers=ALEX).read()
+    assert not seen[-1].get("peer_memory_context")
     rows = session_store.load_messages(sid, with_senders=True)
     assert [(m["role"], m["content"], m.get("sender_person_id")) for m in rows[-2:]] == [
         ("user", "hi", people["alex"]), ("assistant", "ok", None),
