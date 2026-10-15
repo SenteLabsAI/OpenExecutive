@@ -2111,16 +2111,26 @@ async def _fast_json_call(
         log_model_usage(response, model=model, actor=log_tag)
         text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
         raw = text_blocks[0].text.strip() if text_blocks else ""
-        if raw.startswith("```"):
-            # Strip ```json fences if the model added them anyway. Use
-            # removeprefix (not lstrip) — lstrip("json") would also strip
-            # legitimate leading j/s/o/n characters from the JSON body.
-            parts = raw.split("```")
-            if len(parts) >= 2:
-                raw = parts[1].removeprefix("json").strip()
-        data = json.loads(raw)
     except Exception:
         logger.exception("%s: LLM call failed", log_tag)
+        return None
+    data = _json_object(raw)
+    if data is None:
+        # The model's formatting slip, not a fault: the caller falls back.
+        logger.warning("%s: no JSON object in the answer (%d chars)", log_tag, len(raw))
+    return data
+
+
+def _json_object(raw: str) -> dict[str, Any] | None:
+    """The JSON object in a model's answer, or None. Tolerates what the
+    model adds around it despite the prompt: ```json fences, a sentence
+    before or after."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        data = json.loads(raw[start : end + 1])
+    except ValueError:
         return None
     return data if isinstance(data, dict) else None
 

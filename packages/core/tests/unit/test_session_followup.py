@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -203,7 +204,38 @@ async def test_generator_parses_fenced_json(monkeypatch: pytest.MonkeyPatch) -> 
 @pytest.mark.parametrize(
     "raw",
     [
+        'Here is the next message:\n{"suggestion": "Draft the Pro pricing email."}',
+        '{"suggestion": "Draft the Pro pricing email."}\nThat builds on the last reply.',
+    ],
+    ids=["sentence before", "sentence after"],
+)
+async def test_generator_finds_the_object_around_prose(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    _patch_provider(monkeypatch, raw)
+    assert await chat_route._generate_followup_via_llm("t") == "Draft the Pro pricing email."
+
+
+@pytest.mark.asyncio
+async def test_a_formatting_slip_is_a_warning_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A recording logger, not caplog: other modules change the
+    # "openexecutive" logger's propagation in a full run.
+    calls: list[str] = []
+    fake = SimpleNamespace(
+        warning=lambda *a, **k: calls.append("warning"),
+        exception=lambda *a, **k: calls.append("exception"),
+    )
+    monkeypatch.setattr(chat_route, "logger", fake)
+    _patch_provider(monkeypatch, "Sure, happy to help.")
+    assert await chat_route._generate_followup_via_llm("t") is None
+    assert calls == ["warning"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
         "not json",
+        "{not json}",
         '["a list"]',
         '{"suggestion": ""}',
         '{"suggestion": 42}',
