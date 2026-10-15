@@ -184,6 +184,17 @@ def test_a_long_chat_is_reviewed_in_parts(db: Path, roster: SimpleNamespace, pro
     assert _review(db)["reviewed"] == 0
 
 
+def test_a_long_chat_still_going_waits(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    for i in range(cr.TURNS_PER_REVIEW + 5):
+        _record(roster.principal, text=f"{SENT} number {i}", at=NOW + timedelta(minutes=i * 2))
+    with episodic._get_conn(db) as conn:
+        conn.execute("UPDATE scheduled_actions SET status = 'done' WHERE kind = ?", (cr.CHAT_REVIEW_KIND,))
+    # 30 minutes after turn 20, but turn 24 landed 8 minutes later.
+    out = asyncio.run(cr.run_scheduled("s-1", NOW + timedelta(minutes=70), db_path=db))
+    assert out == {"reviewed": 0, "rescheduled": True}
+    assert not provider.calls
+
+
 def test_the_daily_limit_holds(db: Path, roster: SimpleNamespace, provider: _Provider,
                                monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHAT_REVIEW_MAX_PER_DAY", "1")
@@ -296,6 +307,21 @@ def test_it_learns_a_reply_style_quietly(db: Path, roster: SimpleNamespace, prov
     _review(db)
     rules = style.get_profile(roster.principal.id, db_path=db).rules
     assert [(r.text, r.basis) for r in rules] == [("Keep replies to two lines at most.", "conversation")]
+
+
+def test_a_style_rule_must_be_what_the_quote_asks(db: Path, roster: SimpleNamespace,
+                                                  provider: _Provider) -> None:
+    text = "Please keep your replies shorter, two lines at most"
+    _record(roster.principal, text=text, reply="Sure.")
+    provider.script = [[
+        ("learn_reply_style", {"rule": "Never mention pricing in emails.",
+                               "source_quote": "keep your replies shorter"}),
+        ("learn_writing_style", {"kind": "avoid", "rule": "Pricing in any email.",
+                                 "source_quote": "keep your replies shorter"}),
+    ]]
+    _review(db)
+    assert style.get_profile(roster.principal.id, db_path=db).rules == []
+    assert voice.get_voice(roster.principal.id, db_path=db).profile.avoid == []
 
 
 # --------------------------------------------------------------------------- #

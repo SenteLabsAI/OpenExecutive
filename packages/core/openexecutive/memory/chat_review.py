@@ -272,6 +272,20 @@ def _unreviewed(session_id: str, *, db_path: Path | None) -> list[sqlite3.Row]:
     return list(rows)
 
 
+def _latest_turn_at(session_id: str, *, db_path: Path | None) -> datetime | None:
+    """When the chat's newest unreviewed turn landed, across all of them, not
+    only the part a review reads."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT MAX(created_at) FROM {TURNS_TABLE} WHERE session_id = ? AND reviewed_at IS NULL",  # noqa: S608
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+
 def _mark_reviewed(session_id: str, ids: list[int], *, db_path: Path | None) -> None:
     """Mark exactly the turns a review read."""
     conn = _connect(db_path)
@@ -327,7 +341,9 @@ async def run_scheduled(session_id: str, now: datetime, *, db_path: Path | None 
         rows = _unreviewed(session_id, db_path=db_path)
         if not rows:
             return result
-        latest = max(datetime.fromisoformat(r["created_at"]) for r in rows)
+        latest = _latest_turn_at(session_id, db_path=db_path) or max(
+            datetime.fromisoformat(r["created_at"]) for r in rows
+        )
         due = latest + _quiet()
         if due > now:
             # The caller marks this action done first, so this one is new.
@@ -666,7 +682,8 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
     The quote gate shows they said something; this ties it to the target:
     a long enough quote, and the thing changed named in their own words (a
     loop's or follow-up's text, the fact, the item left out of the brief,
-    nothing else). Style lines carry their own quote check."""
+    nothing else). A style line must be what the quote itself asks for, so
+    a real quote can't carry a different rule in with it."""
     quote = str(tool_input.get("source_quote") or "")
     if len(quote.split()) < _QUOTE_MIN_WORDS:
         return f"source_quote needs at least {_QUOTE_MIN_WORDS} of their words"
@@ -693,6 +710,8 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
         target = str(tool_input.get("item") or "")
     elif name == "raise_in_brief":
         target = str(tool_input.get("line") or "")
+    elif name in ("learn_reply_style", "learn_writing_style"):
+        target, words = str(tool_input.get("rule") or ""), quote
     else:
         return None
     named = _content_words(target)
