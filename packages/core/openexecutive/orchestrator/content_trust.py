@@ -220,8 +220,14 @@ def principal_only_withheld(session: Any) -> frozenset[str]:
     """``PRINCIPAL_ONLY_TOOLS`` unless the principal is speaking on an
     interactive surface (not email), else nothing. The chat loop drops these
     from the offered list before the sort, so each answer has a stable tool
-    prefix of its own, and refuses a call the model emits anyway."""
-    if principal_speaking(session) and str(getattr(session, "origin_channel", "") or "") != "email":
+    prefix of its own, and refuses a call the model emits anyway. Withheld in
+    a shared web chat too, whoever speaks: the others in it write into the
+    conversation the principal's turn reads."""
+    if (
+        principal_speaking(session)
+        and str(getattr(session, "origin_channel", "") or "") != "email"
+        and getattr(session, "shared_chat", False) is not True
+    ):
         return frozenset()
     return PRINCIPAL_ONLY_TOOLS
 

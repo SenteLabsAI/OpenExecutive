@@ -644,13 +644,18 @@ def _shared_member(session_id: str, caller_person_id: int | None) -> bool:
     if caller_person_id is None or _is_channel_namespaced(session_id):
         return False
     from openexecutive.memory.session_store import is_shared_with
+    from openexecutive.people.store import get_person
 
     try:
         shared = is_shared_with(session_id, caller_person_id)
+        # Someone archived since (offboarded) is out of every chat at once.
+        person = get_person(caller_person_id) if shared else None
     except Exception:
         logger.exception("chat: couldn't read who session %s is shared with", session_id)
         return False
-    return shared and not _mail_private(session_id)
+    if person is None or person.archived or person.kind != "team":
+        return False
+    return not _mail_private(session_id)
 
 
 def chat_people(session_id: str) -> list[tuple[int, str, bool]]:
@@ -672,8 +677,11 @@ def chat_people(session_id: str) -> list[tuple[int, str, bool]]:
         out: list[tuple[int, str, bool]] = []
         for pid in ids:
             person = get_person(int(pid))
-            if person is not None:
-                out.append((int(pid), person.full_name, pid == owner))
+            if person is None:
+                continue
+            if pid != owner and (person.archived or person.kind != "team"):
+                continue
+            out.append((int(pid), person.full_name, pid == owner))
         return out
     except Exception:
         logger.exception("chat: couldn't read who is in session %s", session_id)
@@ -695,9 +703,18 @@ def _named_history(
         if sender is None:
             sender = owner_id
         if row.get("role") == "user" and isinstance(msg.get("content"), str) and sender in names:
-            msg["content"] = f"[{names[sender]}]: {msg['content']}"
+            msg["content"] = f"[{names[sender]}]: {_unlabelled(msg['content'])}"
         out.append(msg)
     return out
+
+
+# A message that starts like a label ("[Alex]: …") would read as someone
+# else's words once its sender's own label goes in front of it.
+_LEADING_LABEL_RE = re.compile(r"^\s*(?:\[[^\]\n]{0,80}\]\s*:\s*)+")
+
+
+def _unlabelled(text: str) -> str:
+    return _LEADING_LABEL_RE.sub("", text)
 
 
 def _shared_chat_block(names: list[str]) -> str:
@@ -1096,7 +1113,8 @@ async def _run_chat_turn(
     # Executive is told who is in it and who said what, and the pages it is
     # open on follow the turn live (``chat_live``). A chat of one is as before.
     people = chat_people(session.session_id) if access == "allowed" else []
-    session.shared_chat = bool(people)
+    # A member's turn is in a shared chat even when the list couldn't be read.
+    session.shared_chat = bool(people) or member
     exec_message = message
     turn_memory_text = memory_text
     shared_block = ""
@@ -1115,7 +1133,7 @@ async def _run_chat_turn(
             logger.exception("chat.shared_history_failed session_id=%s", session.session_id)
         speaker_name = names.get(caller_person_id, "") if caller_person_id is not None else ""
         if speaker_name:
-            exec_message = f"[{speaker_name}]: {message}"
+            exec_message = f"[{speaker_name}]: {_unlabelled(message)}"
             # Peer memory and the learning passes keep the person's own words.
             if turn_memory_text is None:
                 turn_memory_text = message

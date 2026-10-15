@@ -306,7 +306,12 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
         from openexecutive.orchestrator.artifact_records import viewer_for_person
         from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
-        verified = is_principal_on_verified_surface(session)
+        # Not in a shared web chat: everyone in it reads the reply, and the
+        # private cards (their mail, a teammate's private asks, roster
+        # requests) are the principal's alone, as in a chat app's channel.
+        verified = is_principal_on_verified_surface(session) and (
+            getattr(session, "shared_chat", False) is not True
+        )
         block = format_open_alerts_for_prompt(
             db_path=db_path, trusted_ids=trusted,
             # Alerts private to the principal only on their own verified turn.

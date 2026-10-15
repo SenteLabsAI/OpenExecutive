@@ -39,6 +39,7 @@ _QUEUE_MAX = 1024
 # Open pages per chat and per process. Each is an idle connection, but
 # without a cap one caller could open any number.
 MAX_PER_CHAT = 40
+MAX_PER_PERSON = 12
 MAX_TOTAL = 2000
 # One `typing` event per person per chat at most this often.
 TYPING_EVERY_S = 2.0
@@ -66,10 +67,12 @@ _typing_at: dict[tuple[str, int], float] = {}
 
 
 def subscribe(session_id: str, person_id: int | None) -> Watcher | None:
-    """A new page watching ``session_id``. None when the caps are reached."""
+    """A new page watching ``session_id``. None when the caps are reached:
+    per person first, so one person's pages can't use up everyone's."""
     total = sum(len(w) for w in _watchers.values())
     current = _watchers.get(session_id, set())
-    if total >= MAX_TOTAL or len(current) >= MAX_PER_CHAT:
+    mine = sum(1 for ws in _watchers.values() for w in ws if w.person_id == person_id)
+    if total >= MAX_TOTAL or len(current) >= MAX_PER_CHAT or mine >= MAX_PER_PERSON:
         return None
     watcher = Watcher(session_id=session_id, person_id=person_id)
     _watchers.setdefault(session_id, set()).add(watcher)
