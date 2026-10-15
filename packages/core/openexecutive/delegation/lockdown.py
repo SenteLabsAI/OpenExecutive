@@ -27,7 +27,8 @@ tap does it, which text in a mail can't give.
 
 Every tool the Executive can be offered is classified here, in exactly one of
 ``MAIL_TOUCHED_ALLOWED_TOOLS`` or ``MAIL_TOUCHED_WITHHELD_TOOLS`` (a test fails
-until a new tool is), and anything unclassified is withheld.
+until a new tool is), and anything unclassified is withheld, except an
+extension tool registered with ``after_mail_read`` (``orchestrator.extensions``).
 
 The dispatch guard in ``orchestrator.executive`` refuses a withheld call
 without changing the offered tool list (the cached prefix stays the same all
@@ -147,7 +148,9 @@ REFUSAL = (
     "or outside address, runs a script or workflow, posts to everyone, sets "
     "a follow-up, goal or decision outcome, or changes who is on the roster or "
     "holds authority. "
-    "Tell the user it will work if they ask again in their next message. "
+    "Tell the user it will work if they ask again in their next message, and "
+    "put what it needs in your reply: the next turn sees your reply, not the "
+    "mail, and does it without reading their mail first. "
     "Do not retry it in this turn."
 )
 
@@ -284,7 +287,12 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
         return not private_turn_allows_mcp_call(tool_input)
     if tool_name == "upsert_person":
         return not speaker_named_contact(tool_input)
-    return tool_name not in MAIL_TOUCHED_ALLOWED_TOOLS
+    if tool_name in MAIL_TOUCHED_ALLOWED_TOOLS:
+        return False
+    from openexecutive.orchestrator.extensions import allowed_after_mail_read
+
+    # An install's own tool that only reads its own data (extensions doc).
+    return not allowed_after_mail_read(tool_name)
 
 
 def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:

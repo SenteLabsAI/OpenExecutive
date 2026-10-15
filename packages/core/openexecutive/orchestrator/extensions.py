@@ -14,7 +14,10 @@ An extension tool is offered only on a turn someone is in:
 - never to a speaker who isn't on the People list (mail from a stranger, an
   unknown chat user), so text from outside the team can't reach these tools;
 - like every tool Act as me's lockdown has not classified, it is refused once
-  the turn has read the owner's mail (``delegation.lockdown`` fails closed);
+  the turn has read the owner's mail (``delegation.lockdown`` fails closed),
+  unless it is registered with ``after_mail_read=True``: a tool that only
+  reads the install's own data and sends nothing the model wrote anywhere
+  outside, so text in the mail can't use it as a way out;
 - and only where the tool's own ``offered(session)`` says so, which should
   depend only on the kind of turn (surface, workspace mode), never on what was
   said, so each kind of turn keeps one cached tool list.
@@ -89,6 +92,10 @@ class ExtraTool:
     # only reads there (None: may change something).
     workflow: bool = False
     read_only: bool | None = None
+    # Still runs once the turn has read the owner's mail (see module doc).
+    # Only for a tool that reads this install's own data and carries nothing
+    # the model wrote to anywhere outside it.
+    after_mail_read: bool = False
 
     @property
     def name(self) -> str:
@@ -227,6 +234,15 @@ def offered_tools(session: Any) -> list[ExtraTool]:
                 continue
         offered.append(tool)
     return offered
+
+
+def allowed_after_mail_read(tool_name: str) -> bool:
+    """Whether extension tool ``tool_name`` was registered to run on a turn
+    that has read the owner's mail (``after_mail_read``). False for anything
+    else, built-in tools included (``delegation.lockdown`` classifies those)."""
+    load()
+    tool = _tools.get(tool_name)
+    return tool is not None and tool.after_mail_read
 
 
 def workflow_tools() -> list[ExtraTool]:

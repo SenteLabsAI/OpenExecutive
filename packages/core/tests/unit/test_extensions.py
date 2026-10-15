@@ -324,6 +324,18 @@ def test_the_mail_lockdown_refuses_it_like_any_unclassified_tool() -> None:
     assert mail_touched_withholds("make_widget", {}) is True
 
 
+def test_a_tool_registered_to_run_after_a_mail_read_still_runs() -> None:
+    from openexecutive.delegation.lockdown import mail_touched_withholds
+
+    extensions.register_tool(_tool("list_widgets", after_mail_read=True))
+    extensions.register_tool(_tool("make_widget"))
+    assert mail_touched_withholds("list_widgets", {}) is False
+    assert mail_touched_withholds("make_widget", {}) is True
+    # A name nobody registered, or a built-in the lockdown withholds, stays refused.
+    assert mail_touched_withholds("list_gadgets", {}) is True
+    assert mail_touched_withholds("run_script", {}) is True
+
+
 # --------------------------------------------------------------------- #
 # Chips
 # --------------------------------------------------------------------- #

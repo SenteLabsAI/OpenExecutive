@@ -1,4 +1,4 @@
-"""ghostwrite_email's forward: the latest message of a thread, as a draft in
+"""ghostwrite_email's forward: the latest message of a thread (or one it names), as a draft in
 the speaker's own mailbox, to people they know (orchestrator/delegation_tools.py,
 delegation/gmail.py, delegation/outlook.py)."""
 from __future__ import annotations
@@ -90,6 +90,29 @@ def test_a_forward_to_someone_new_is_a_draft_they_check(roster: SimpleNamespace)
 def test_a_forward_needs_a_real_thread_id(roster: SimpleNamespace) -> None:
     result = _ghostwrite(_session(FakeMailbox(), "forward it"), {"intent": "FYI", "forward": "../x", "to": [TEAM]})
     assert "thread_id" in result["error"]
+
+
+def test_a_forward_can_name_an_earlier_message_of_the_thread(roster: SimpleNamespace) -> None:
+    # The files came on the first message and their own reply came after it:
+    # the latest would forward the reply without them.
+    mailbox = FakeMailbox()
+    mailbox.threads["t1"].messages.append(_msg(2, OWNER, "Thanks Dana, see the screenshot."))
+    result = _ghostwrite(_session(mailbox, "forward Dana's email to Ben"), {
+        "intent": "FYI", "forward": "t1", "forward_message_id": "m1", "to": [TEAM],
+    })
+    assert result["status"] == "drafted"
+    assert mailbox.drafts[0].forward is not None and mailbox.drafts[0].forward.message_id == "m1"
+    _ghostwrite(_session(mailbox, "forward it"), {"intent": "FYI", "forward": "t1", "to": [TEAM]})
+    assert mailbox.drafts[1].forward is not None and mailbox.drafts[1].forward.message_id == "m2"
+
+
+def test_a_forward_refuses_a_message_from_another_thread(roster: SimpleNamespace) -> None:
+    mailbox = FakeMailbox()
+    result = _ghostwrite(_session(mailbox, "forward it"), {
+        "intent": "FYI", "forward": "t1", "forward_message_id": "m7", "to": [TEAM],
+    })
+    assert "forward_message_id" in result["error"]
+    assert mailbox.drafts == []
 
 
 def test_a_forward_already_marked_keeps_its_subject(roster: SimpleNamespace) -> None:

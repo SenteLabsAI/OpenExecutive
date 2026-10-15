@@ -315,7 +315,9 @@ caching:
     tool's offered(session) says. That
     predicate must depend only on the kind of turn, so each kind keeps one
     cached tool list. Act as me's lockdown refuses them after a mail read
-    (unclassified, fails closed). A tool may sit in a tool group, new or
+    (unclassified, fails closed), except one registered with
+    after_mail_read=True: it only reads the install's own data and carries
+    nothing the model wrote anywhere outside. A tool may sit in a tool group, new or
     existing (tool_groups.add_to_group, done at load, so the groups are
     fixed per process). Its chip goes through summarize_action's usual
     no-chip rules, and a chip link must be a path inside the app. A

@@ -67,7 +67,8 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
         "match you get `candidates` — ask them which one and call again with its "
         "thread_id. To start a new email instead, pass `to` (any address; it is "
         "only a draft). To forward an email, pass `forward` (its "
-        "thread_id: its latest message is forwarded, with its files) and `to`; "
+        "thread_id: its latest message is forwarded, with its files, unless "
+        "`forward_message_id` names an earlier one) and `to`; "
         "`intent` is the note above it. Afterwards tell them the draft is waiting in "
         "their Drafts, show the preview, and pass on any open questions — "
         "never say it was sent."
@@ -112,6 +113,14 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "description": (
                     "The thread_id of an email to FORWARD (its latest message, with "
                     "its files), with `to`. `intent` is the note above it."
+                ),
+            },
+            "forward_message_id": {
+                "type": "string",
+                "description": (
+                    "With `forward`: the message of that thread to forward instead "
+                    "of its latest, e.g. the one with the files (a message_id "
+                    "read_my_email listed). Leave it out for the latest."
                 ),
             },
         },
@@ -384,7 +393,8 @@ def _forward_header(message: Any) -> str:
 
 
 async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tuple[str, bool]:
-    """Forward the latest message of thread ``forward`` to ``to`` (any
+    """Forward the latest message of thread ``forward`` (or the one of it
+    ``forward_message_id`` names) to ``to`` (any
     address, ``_new_recipients``), with a note in their voice above it, as a draft:
     ``(result, saved)``. Errors propagate to the handler."""
     from openexecutive.config import get_settings
@@ -406,6 +416,12 @@ async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> 
     if not shown:
         return _error("That thread has no message to forward."), False
     original = shown[-1]
+    wanted = str(tool_input.get("forward_message_id") or "").strip()
+    if wanted:
+        named = [m for m in shown if m.id == wanted]
+        if not named:
+            return _error("`forward_message_id` isn't a message of that thread: use a message_id read_my_email listed for it."), False
+        original = named[0]
     subject = one_line(original.subject, 200)
     subject = subject if subject.lower().startswith(("fwd:", "fw:")) else f"Fwd: {subject}"
     stored = get_voice(writer.person.id)
