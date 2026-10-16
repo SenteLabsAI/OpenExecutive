@@ -3083,9 +3083,10 @@ class MCPGateway:
             current_session,
             mcp_client_withheld_error,
             mcp_client_withholds,
+            read_only_turn,
         )
 
-        if getattr(current_session.get(), "from_mcp_client", False) is True and mcp_client_withholds(
+        if read_only_turn(current_session.get()) and mcp_client_withholds(
             "call_tool", tool_input
         ):
             return mcp_client_withheld_error(str(tool_input.get("name") or "call_tool")[:200])

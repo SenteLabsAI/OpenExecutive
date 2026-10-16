@@ -1312,11 +1312,13 @@ async def _run_teammate_followup(
     Such a row's intent is the teammate's own text, so the run must not do
     more than their own turn could. It is cancelled unless its creator is
     still an active teammate and its address is one of their own. The
-    Executive only writes the message, with ``Session.run_for_person_id``
-    naming the teammate and no address it may send or schedule to; the
-    runner sends what it wrote to the teammate's own address on the row's
-    channel. Its context is the decisions and advice of the conversation
-    that queued it, never the company-wide list.
+    Executive only writes the message: ``Session.run_for_person_id`` names
+    the teammate, which makes it a read-only turn
+    (``schedule_tools.read_only_turn``: nothing that sends, posts, schedules
+    or writes is offered or run), and the runner sends what it wrote to the
+    teammate's own address on the row's channel. Its decisions and advice
+    are those of the conversation that queued it, never the company-wide
+    list; its knowledge search is the one any teammate's turn gets.
     """
     from openexecutive.audit import log_event as audit_log
     from openexecutive.memory.episodic import mark_action_cancelled
