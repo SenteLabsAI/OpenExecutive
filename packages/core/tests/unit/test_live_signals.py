@@ -374,7 +374,7 @@ def test_the_principals_own_mail_is_labelled_as_theirs(
 
     line = live_signals.gather_live_signals(_since(), include_private=False).inbound[0]
 
-    assert "email from the principal: Fwd: accounts" in line
+    assert "email from the reader: Fwd: accounts" in line
     assert roster.principal not in line
 
 
@@ -419,9 +419,9 @@ def test_the_principals_own_chat_is_labelled_as_theirs(
 
     joined = "\n".join(live_signals.gather_live_signals(_since(), include_private=False).inbound)
 
-    assert "telegram from the principal: where is the deck" in joined
-    assert "google_chat from the principal: the St. Albans offer" in joined
-    assert "google_chat from the principal: any word on access?" in joined
+    assert "telegram from the reader: where is the deck" in joined
+    assert "google_chat from the reader: the St. Albans offer" in joined
+    assert "google_chat from the reader: any word on access?" in joined
     assert "google_chat from Dana Lee: budget is in" in joined
     assert "Pat Owner" not in joined and "Patty" not in joined
     assert "google_chat google_chat" not in joined

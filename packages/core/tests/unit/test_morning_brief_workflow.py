@@ -536,7 +536,7 @@ async def test_the_brief_knows_now_and_who_reads_it(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without a NOW line a subject's "call tomorrow" from yesterday read as
-    today's, and without THE PRINCIPAL the brief named its own reader."""
+    today's, and without THE READER the brief named its own reader."""
     from openexecutive.people import store as people_store
 
     db = tmp_path / "people.db"
@@ -550,7 +550,9 @@ async def test_the_brief_knows_now_and_who_reads_it(
 
     rendered = str(calls[-1]["rendered_context"])
     assert "\nNOW: " in rendered and " local time" in rendered
-    assert "THE PRINCIPAL (who reads this — write 'you', never the name): Pat Owner" in rendered
+    assert "THE READER (the person this is written for" in rendered
+    assert "Pat Owner (pat@x.com)" in rendered
+    assert getattr(calls[-1]["reader"], "name", None) == "Pat Owner"
 
 
 @pytest.mark.asyncio
@@ -576,5 +578,7 @@ async def test_the_eod_digest_knows_who_reads_it(
     [e async for e in EndOfDayDigestWorkflow().run(EndOfDayDigestInput(), MagicMock())]
 
     content = provider.calls[0]["messages"][0]["content"]  # type: ignore[index]
-    assert content.startswith("THE PRINCIPAL (who reads this — write 'you', never the name): Pat Owner")
-    assert "never by their name" in str(provider.calls[0]["system"])
+    assert content.startswith("THE READER (the person this is written for")
+    assert "Pat Owner (pat@x.com)" in content.splitlines()[0]
+    assert "pat@x.com" not in "\n".join(content.splitlines()[1:])
+    assert "Never write their name" in str(provider.calls[0]["system"])

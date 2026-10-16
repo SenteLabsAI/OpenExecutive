@@ -13,6 +13,7 @@ from openexecutive.briefing.narrative import (
     STANDALONE_BRIEF_SYSTEM,
     _viewer_system_prompt,
 )
+from openexecutive.briefing.reader import Reader
 
 
 def test_today_header_prompt_is_synthesis_not_a_needs_you_list() -> None:
@@ -228,27 +229,34 @@ def test_quoted_text_can_never_start_a_block_header() -> None:
     assert "  > - real flag" in out
 
 
-def test_the_principal_line_is_framing_and_the_rules_reach_the_standalone_briefs() -> None:
-    """THE PRINCIPAL names who "you" is; it never makes a quiet day busy. The
-    reader and date rules ride both standalone prompts, and only those (the
-    header and the viewer prompts have their own audiences)."""
+def test_the_reader_line_is_framing_and_the_rules_reach_every_brief() -> None:
+    """THE READER names who "you" is; it never makes a quiet day busy. The
+    reader rule rides every brief prompt (the /today header named its own
+    reader for want of it); the date rule only the standalone briefs."""
     from openexecutive.briefing.live_signals import LiveSignals
     from openexecutive.briefing.narrative import (
+        BRIEFING_NARRATIVE_SOLO_SYSTEM,
         BRIEFING_NARRATIVE_SYSTEM,
         DATES_RULE,
+        READER_NAME_RULE,
         READER_RULE,
         STANDALONE_BRIEF_SOLO_SYSTEM,
         STANDALONE_BRIEF_SYSTEM,
+        _viewer_system_prompt,
         render_briefing_context,
     )
 
     out = render_briefing_context(
         period_label="p", today_data={}, activity=[], live=LiveSignals(),
-        now_label="now", principal_name="Pat Owner",
+        now_label="now", reader=Reader("Pat Owner", ("pat@x.com",)),
     )
-    assert "THE PRINCIPAL (who reads this — write 'you', never the name): Pat Owner" in out
+    assert "THE READER (the person this is written for" in out
+    assert "Pat Owner (pat@x.com)" in out
     assert "(No org activity, proposals, or at-risk goals this period.)" in out
     for prompt in (STANDALONE_BRIEF_SYSTEM, STANDALONE_BRIEF_SOLO_SYSTEM):
         assert READER_RULE in prompt and DATES_RULE in prompt
-    assert READER_RULE not in BRIEFING_NARRATIVE_SYSTEM
+    for prompt in (BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM):
+        assert READER_RULE in prompt and "the principal" not in prompt.replace(
+            "'the principal'", "")
+    assert READER_NAME_RULE in _viewer_system_prompt("Dana Lee", "Ops")
     assert "ONLY the people under PEOPLE YOU ARE WAITING ON" in STANDALONE_BRIEF_SYSTEM

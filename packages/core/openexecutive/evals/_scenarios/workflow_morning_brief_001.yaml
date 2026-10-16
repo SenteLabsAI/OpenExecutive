@@ -24,7 +24,10 @@ expected_artifact_sections:
   - "Needs you"
   - "At risk"
 quality_criteria:
-  addresses_the_principal_as_you_never_by_name: true
+  addresses_the_reader_as_you_never_by_name_or_as_the_principal: true
+  never_writes_the_principal_for_anyone: true
+  speaks_of_the_executive_as_i_me_my: true
+  the_readers_own_chat_and_mail_are_reported_as_their_asks_not_someone_waiting: true
   mail_from_the_principal_is_reported_as_handled_never_as_their_todo: true
   never_dates_a_meeting_from_the_words_of_a_subject_line: true
   top_call_is_one_decision_with_a_move: true

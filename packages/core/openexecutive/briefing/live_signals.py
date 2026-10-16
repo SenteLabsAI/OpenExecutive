@@ -1,4 +1,4 @@
-"""What is happening in the principal's world right now, for the briefing surfaces.
+"""What is happening in the reader's world right now, for the briefing surfaces.
 
 The /today "What's going on" header and the morning brief used to reason over
 the alert board, goal health and the Executive's own bookkeeping only. Mail
@@ -93,7 +93,7 @@ def _local_hhmm(iso: str | None, tz: tzinfo, now: datetime | None = None) -> str
 
 
 def _principal() -> Any:
-    """The principal's People row, or None (also on failure)."""
+    """The reader's People row, or None (also on failure)."""
     from openexecutive.people.store import find_principal_person
 
     try:
@@ -104,7 +104,7 @@ def _principal() -> Any:
 
 
 def _principal_addresses(principal: Any) -> set[str]:
-    """The principal's own email addresses, lowercased."""
+    """The reader's own email addresses, lowercased."""
     if principal is None:
         return set()
     return {
@@ -124,7 +124,7 @@ _CHAT_IDS = (
 
 
 def _is_principal_chat(details: dict[str, Any], sender: str, principal: Any) -> bool:
-    """Whether a chat-app inbound row is the principal writing to the Executive.
+    """Whether a chat-app inbound row is the reader writing to the Executive.
 
     Matched by People id where the adapter logs one, then by the chat app's
     own id for them, then by name: the account-mode adapters log the People
@@ -153,7 +153,7 @@ def _is_roster_sender(address: str) -> bool:
 
 @dataclass(frozen=True)
 class LiveSignals:
-    """The principal's live world over one window. Empty when nothing moved."""
+    """The reader's live world over one window. Empty when nothing moved."""
 
     inbound: tuple[str, ...] = ()
     inbound_total: int = 0
@@ -251,7 +251,7 @@ def _inbound(
             address = str(details.get("from") or "").strip().lower()
             sender = _one_line(details.get("from"), 80)
             if address and address in principal:
-                sender = "the principal"
+                sender = "the reader"
             topic = _one_line(details.get("subject"), 100)
             # The cards are private to the principal: their reading stays out
             # of a shared read.
@@ -272,7 +272,7 @@ def _inbound(
             if channel and sender.startswith(f"{channel} from "):
                 sender = sender[len(f"{channel} from "):]
             if _is_principal_chat(details, sender, principal_person):
-                sender = "the principal"
+                sender = "the reader"
             topic = _one_line(text, 100)
         group_key = (sender.lower(), re.sub(r"^(re|fwd?):\s*", "", topic.lower()))
         group = groups.get(group_key)
@@ -349,7 +349,7 @@ def _outbound_blocked(
 
 
 def _drafts(since: datetime, include_private: bool) -> int:
-    """The principal's chat drafts from the window still in their Drafts, as
+    """The reader's chat drafts from the window still in their Drafts, as
     far as the last ``delegation.drafts.settle_waiting`` saw: one they sent
     or deleted in Gmail stops counting once a settle pass finds it gone."""
     if not include_private:
@@ -369,7 +369,7 @@ def _drafts(since: datetime, include_private: bool) -> int:
 def _conversations(
     since: datetime, tz: tzinfo, now: datetime | None = None,
 ) -> tuple[list[str], list[str]]:
-    """The principal's web chat sessions active since ``since``, newest first."""
+    """The reader's web chat sessions active since ``since``, newest first."""
     from openexecutive.memory import episodic
     from openexecutive.people.store import find_principal_person
 
@@ -400,7 +400,7 @@ def _conversations(
 
 
 async def settle_principal_drafts(now: datetime | None = None) -> int:
-    """Before a brief or header is written: mark the principal's chat drafts
+    """Before a brief or header is written: mark the reader's chat drafts
     they have since sent or deleted in their mailbox, so STUCK stops naming
     them. One mailbox read per open draft from the last two days, none when
     there is no such draft. Never raises."""
@@ -505,7 +505,7 @@ def gather_live_signals(
     calendar: list[Any] | None = None,
     use_cached_calendar: bool = True,
 ) -> LiveSignals:
-    """The principal's world since ``since``. Never raises.
+    """The reader's world since ``since``. Never raises.
 
     ``now`` places the calendar ("what's left of today", which meeting is
     IN PROGRESS) and must be the real time: the rendered lines then change
@@ -614,7 +614,7 @@ def render_live_blocks(signals: LiveSignals, *, window: str) -> list[str]:
         if signals.drafts:
             n = signals.drafts
             parts.append(
-                f"- {n} email draft{'s' if n != 1 else ''} saved in the principal's own "
+                f"- {n} email draft{'s' if n != 1 else ''} saved in the reader's own "
                 "Gmail (Act as me), waiting for them to review and send"
             )
         parts.append("")

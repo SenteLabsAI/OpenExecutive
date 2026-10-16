@@ -53,7 +53,7 @@ _DENY = (
 )
 
 LEAVE_OUT_HEADER = (
-    "THE PRINCIPAL ASKED TO LEAVE THESE OUT OF THE BRIEF (don't mention them, "
+    "THE READER ASKED TO LEAVE THESE OUT OF THE BRIEF (don't mention them, "
     "even if the context above shows them):"
 )
 RAISE_HEADER = (

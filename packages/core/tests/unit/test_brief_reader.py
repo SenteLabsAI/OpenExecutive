@@ -1,0 +1,197 @@
+"""briefing.reader: every brief knows who reads it and keeps them "you".
+
+The /today header was told nothing about its reader, and its inputs named
+them like anyone else (their own chat, the Executive's replies to their
+address, a chat titled with their name), so it wrote "John Johnson has been
+messaging you nonstop" to John Johnson.
+"""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from openexecutive.briefing.live_signals import LiveSignals
+from openexecutive.briefing.narrative import render_briefing_context
+from openexecutive.briefing.reader import Reader, fix_slips, mask, slips
+
+PAT = Reader("Pat Owner", ("pat@x.com", "Pat.Owner@alias.com"))
+
+
+def test_mask_hides_the_readers_name_and_addresses_everywhere() -> None:
+    text = (
+        "Inbound google_chat from Pat Owner: any word?\n"
+        "Replied by email to pat@x.com; also pat.owner@alias.com\n"
+        "Chat: Google Chat Pat Owner\n"
+        "Pat Owner's access, and Pat Ownership stays"
+    )
+
+    out = mask(text, PAT)
+
+    assert "Pat Owner" not in out.replace("Pat Ownership", "")
+    assert "pat@x.com" not in out and "alias.com" not in out
+    assert "Inbound google_chat from the reader: any word?" in out
+    assert "Google Chat the reader" in out
+    assert "the reader's access" in out
+    assert "Pat Ownership" in out  # whole words only
+
+
+def test_a_bare_first_name_is_left_alone() -> None:
+    """A first name names a teammate just as often; only the full name masks."""
+    assert mask("Pat from finance wrote", PAT) == "Pat from finance wrote"
+    assert Reader("Cher").terms() == []
+
+
+def test_the_brief_that_named_its_reader_reads_as_you() -> None:
+    draft = (
+        "**Bottom line: Pat Owner has been messaging you nonstop since noon.**\n"
+        "- **Pat Owner's access** — the principal is waiting on the reader's offer.\n"
+        "**Move today:** Reply to pat@x.com with the figure."
+    )
+
+    assert slips(draft, PAT) == ["pat owner", "pat@x.com", "the principal", "the reader"]
+    assert slips("the Executive replied", PAT) == ["the executive"]
+    fixed = fix_slips(draft, PAT)
+
+    assert slips(fixed, PAT) == []
+    assert "**Bottom line: You have been messaging you" in fixed
+    assert "- **Your access** — you are waiting on your offer." in fixed
+    assert "Reply to you with the figure." in fixed
+
+
+def test_no_reader_changes_nothing() -> None:
+    assert mask("Pat Owner", None) == "Pat Owner"
+    assert slips("the principal", None) == []
+    assert fix_slips("the principal", None) == "the principal"
+
+
+def test_the_context_names_its_reader_once_and_only_on_the_reader_line() -> None:
+    live = LiveSignals(
+        inbound=("[12:14] google_chat from Pat Owner: the St. Albans offer (3 messages)",),
+        inbound_total=3, inbound_shown=3,
+        conversations=("[12:18] Google Chat Pat Owner",),
+    )
+    activity = [{"at": "2026-10-16T15:43", "kind": "email", "summary": "Replied by email to pat@x.com"}]
+
+    out = render_briefing_context(
+        period_label="p", today_data={}, activity=activity, live=live,
+        now_label="now", reader=PAT, standing_facts="",
+    )
+
+    lines = out.splitlines()
+    assert lines[0] == "PERIOD: p" and lines[2] == "NOW: now"
+    reader_lines = [ln for ln in lines if "Pat Owner" in ln or "pat@x.com" in ln]
+    assert len(reader_lines) == 1 and reader_lines[0].startswith("THE READER")
+    assert "google_chat from the reader: the St. Albans offer" in out
+    assert "Google Chat the reader" in out
+    assert "Replied by email to the reader" in out
+
+
+class _Provider:
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = list(texts)
+        self.calls: list[dict[str, Any]] = []
+
+    async def messages_create(self, **kw: Any) -> object:
+        self.calls.append(kw)
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=self.texts.pop(0))])
+
+
+async def _synth(monkeypatch: pytest.MonkeyPatch, texts: list[str]) -> tuple[str, _Provider]:
+    from openexecutive import providers
+    from openexecutive.briefing.narrative import synthesize_briefing_narrative
+
+    provider = _Provider(texts)
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+    monkeypatch.setattr("openexecutive.audit.usage.log_model_usage", lambda *a, **k: None)
+    text = await synthesize_briefing_narrative(
+        today_data={}, activity=[], period_label="p", rendered_context="ctx", reader=PAT,
+    )
+    return text, provider
+
+
+@pytest.mark.asyncio
+async def test_a_draft_that_names_its_reader_is_rewritten_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, provider = await _synth(monkeypatch, [
+        "**Pat Owner is waiting on the offer.**",
+        "**You're waiting on the offer.**",
+    ])
+
+    assert text == "**You're waiting on the offer.**"
+    assert len(provider.calls) == 2
+    retry = provider.calls[1]["messages"]
+    assert retry[1] == {"role": "assistant", "content": "**Pat Owner is waiting on the offer.**"}
+    assert "'pat owner'" in retry[2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_a_rewrite_that_still_names_them_is_fixed_in_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, provider = await _synth(monkeypatch, [
+        "**The principal is waiting on the Executive.**",
+        "**The principal is still waiting on the Executive.**",
+    ])
+
+    assert text == "**You are still waiting on me.**"
+    assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_clean_draft_costs_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    text, provider = await _synth(monkeypatch, ["**You're clear today.**"])
+
+    assert text == "**You're clear today.**" and len(provider.calls) == 1
+
+
+def test_the_today_header_is_written_for_its_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.api.routes import today
+    from openexecutive.briefing import narrative_cache, reader
+
+    monkeypatch.setattr(reader, "principal_reader", lambda: PAT)
+    dana = Reader("Dana Lee")
+    monkeypatch.setattr(reader, "person_reader", lambda pid: dana if pid == 7 else None)
+    viewer: Any = SimpleNamespace(id=7)
+
+    assert today._narrative_reader(narrative_cache.DEFAULT_SCOPE, None) is PAT
+    assert today._narrative_reader("person:7", viewer) is dana
+    assert today._narrative_reader(narrative_cache.COMPANY_SCOPE, None) is None
+
+
+def test_the_executive_is_i_me_and_my() -> None:
+    draft = (
+        "You emailed the Executive this morning and the Executive replied.\n"
+        "- **Offer** — the Executive's last reply didn't land; the Executive has the figure.\n"
+        "The Executive Director role stays open."
+    )
+
+    fixed = fix_slips(draft, PAT)
+
+    assert "You emailed me this morning and I replied." in fixed
+    assert "- **Offer** — my last reply didn't land; I have the figure." in fixed
+    assert "The Executive Director role stays open." in fixed  # a title, left alone
+    assert slips(fixed, PAT) == []
+
+
+def test_a_teammates_brief_names_the_owner_and_never_the_principal() -> None:
+    dana = Reader("Dana Lee", ("dana@x.com",), owner="Pat Owner")
+
+    fixed = fix_slips("The principal's call is due; Dana Lee has to send the principal a draft.", dana)
+
+    assert fixed == "Pat Owner's call is due; you have to send Pat Owner a draft."
+    assert slips("the principal", dana) == ["the principal"]
+
+
+def test_person_reader_carries_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.briefing import reader
+    from openexecutive.people import store
+
+    monkeypatch.setattr(store, "get_person", lambda pid: SimpleNamespace(
+        full_name="Dana Lee", email="dana@x.com", email_aliases=[]))
+    monkeypatch.setattr(reader, "principal_reader", lambda: PAT)
+
+    assert reader.person_reader(7) == Reader("Dana Lee", ("dana@x.com",), owner="Pat Owner")

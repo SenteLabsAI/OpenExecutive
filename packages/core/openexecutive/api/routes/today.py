@@ -38,6 +38,7 @@ from openexecutive.clients.cockpit import ClientCockpitCard, format_practice_for
 
 if TYPE_CHECKING:
     from openexecutive.alerts.models import Alert
+    from openexecutive.briefing.reader import Reader
     from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
@@ -1665,8 +1666,22 @@ def _narrative_context(
         now_label=now_label,
         getting_started=getting_started,
         brief_requests=viewer_desc is None and scope == narrative_cache.DEFAULT_SCOPE,
+        reader=_narrative_reader(scope, viewer),
     )
     return context, activity
+
+
+def _narrative_reader(scope: str | None, viewer: PersonBriefItem | None) -> Reader | None:
+    """Who a scope's header is written for: the principal, the teammate, or
+    nobody in particular (the whole-company scope)."""
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.briefing.reader import person_reader, principal_reader
+
+    if scope == narrative_cache.DEFAULT_SCOPE:
+        return principal_reader()
+    if viewer is not None and scope is not None and scope.startswith("person:"):
+        return person_reader(viewer.id)
+    return None
 
 
 # One regeneration per scope at a time. Every stale view schedules one, and
@@ -1838,6 +1853,7 @@ async def _regen_briefing_narrative_locked(
                     # Hand the model the very string that was hashed.
                     rendered_context=context,
                     mode=mode,
+                    reader=_narrative_reader(scope, viewer),
                 ),
                 timeout=25.0,
             )
