@@ -128,6 +128,18 @@ def test_a_teammates_own_chat_stays_theirs(client: TestClient, ids: dict[str, in
     assert client.delete(f"/memories/reflection/misses/{hidden}", headers=TEAMMATE).status_code == 204
 
 
+def test_hidden_rows_never_crowd_out_the_principals_page(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(route, "_CHUNK", 2)
+    session_store.create_session("web-ben", "Pay", NOW.isoformat(), ids["teammate"])
+    for i in range(5):
+        _miss(ids["teammate"], "web-ben", f"private ask {i}")
+    mine = _miss(ids["principal"], "s-1", "set up an alert for the invoice")
+    everyone: dict[str, Any] = client.get("/memories/reflection", headers=OWNER).json()
+    assert [m["id"] for m in everyone["misses"]] == [mine]
+
+
 def test_forgetting_follows_the_same_rule(client: TestClient, ids: dict[str, int]) -> None:
     mine = _miss(ids["principal"], "s-1", "set up an alert for the invoice")
     theirs = _miss(ids["teammate"], "s-2", "send Dana the price list")

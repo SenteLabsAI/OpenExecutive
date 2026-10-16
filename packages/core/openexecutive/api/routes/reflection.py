@@ -119,10 +119,25 @@ class _Readable:
 
 
 _PAGE = 200
+_CHUNK = 200
+
+
+def _visible_misses(person_id: int | None, readable: _Readable) -> list[dict[str, Any]]:
+    """The principal's page: read in chunks, newest first, until the page
+    is full or the record runs out, so hidden rows never crowd it out."""
+    out: list[dict[str, Any]] = []
+    offset = 0
+    while len(out) < _PAGE:
+        chunk = chat_review.list_misses(person_id=person_id, limit=_CHUNK, offset=offset)
+        out.extend(m for m in chunk if readable(m))
+        if len(chunk) < _CHUNK:
+            break
+        offset += _CHUNK
+    return out[:_PAGE]
 
 
 @router.get("/memories/reflection", response_model=ReflectionOut)
-async def get_reflection(
+def get_reflection(
     request: Request, person_id: int | None = Query(default=None)
 ) -> ReflectionOut:
     """The caller's misses (the principal's: from every chat they may open,
@@ -137,10 +152,7 @@ async def get_reflection(
             raise _refuse(403, "not_yours", "You can see your own chats only.")
         scope = person.id
     if person.is_principal:
-        # Read deeper than the page, since the rows hidden from the
-        # principal are dropped after the query.
-        readable = _Readable(request, person.id)
-        misses = [m for m in chat_review.list_misses(person_id=scope, limit=1000) if readable(m)][:_PAGE]
+        misses = _visible_misses(scope, _Readable(request, person.id))
     else:
         misses = chat_review.list_misses(person_id=scope, limit=_PAGE)
     weeks = chat_review.weekly_rates(person_id=scope)
@@ -152,7 +164,7 @@ async def get_reflection(
 
 
 @router.delete("/memories/reflection/misses/{miss_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def forget_miss(miss_id: int, request: Request) -> Response:
+def forget_miss(miss_id: int, request: Request) -> Response:
     """Drop one miss from the record: its own person or the principal."""
     person = _caller(request)
     assert person.id is not None

@@ -552,6 +552,28 @@ def test_replies_that_open_alike_keep_their_own_reactions(db: Path, roster: Simp
     assert rows[0]["message_id"] == one and rows[1]["message_id"] == two
 
 
+def test_a_deleted_chat_takes_its_turns_with_it(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    from openexecutive.memory.session_store import create_session, delete_session
+
+    create_session("s-1", "Alerts", NOW.isoformat(), roster.principal.id, db_path=db)
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
+    provider.grades = [{"turn": 1, "verdict": "miss", "kind": "product", "wanted": "The alert created.",
+                        "quote": "set up an alert for the"}]
+    _review(db)
+    assert [r["verdict"] for r in _turns(db)] == ["miss"]
+    assert delete_session("s-1", db_path=db) is True
+    assert _turns(db) == []
+
+
+def test_a_chat_that_read_its_owners_mail_is_not_kept(db: Path, roster: SimpleNamespace) -> None:
+    from openexecutive.memory.session_store import create_session, mark_mail_private
+
+    create_session("s-1", "Mail", NOW.isoformat(), roster.principal.id, db_path=db)
+    mark_mail_private("s-1", roster.principal.id, db_path=db)
+    assert _record(roster.principal, text=ASK, reply="Your inbox has two from Dana.") is None
+    assert _turns(db) == []
+
+
 def test_a_miss_outlives_the_week_and_a_fine_turn_does_not(db: Path, roster: SimpleNamespace,
                                                           provider: _Provider) -> None:
     _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)

@@ -389,6 +389,9 @@ def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
         cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         deleted = cur.rowcount > 0
     delete_session_drive_memory(session_id, db_path)
+    from openexecutive.memory.chat_review import forget_session
+
+    forget_session(session_id, db_path=db_path)
     return deleted
 
 

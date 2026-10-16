@@ -253,6 +253,10 @@ def record_turn(
         person = _verified_person(session, person_id)
         if person is None or person.id is None:
             return None
+        if _mail_private(session.session_id, db_path):
+            # A conversation that read its owner's own mail stays theirs
+            # alone: nothing from it is kept for the review.
+            return None
         current = now or _now()
         surface = {f: getattr(session, f, None) for f in _SURFACE_FIELDS}
         from openexecutive.audit.context import get_active_turn_id
@@ -301,6 +305,38 @@ def _pending_review(session_id: str, *, db_path: Path | None) -> bool:
             (CHAT_REVIEW_KIND, session_id),
         ).fetchone()
     return row is not None
+
+
+def _mail_private(session_id: str, db_path: Path | None) -> bool:
+    from openexecutive.memory.episodic import _resolve_db_path
+    from openexecutive.memory.session_store import session_mail_private
+
+    try:
+        return session_mail_private(str(session_id), db_path=_resolve_db_path(db_path))
+    except Exception:
+        logger.warning("chat_review: couldn't tell whether the chat is mail-private", exc_info=True)
+        return True
+
+
+def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
+    """Drop everything kept from one chat (``session_store.delete_session``
+    calls this): the turns, their grades and the misses. The weekly counts
+    stay, since they carry no words. A DB without the table is a no-op."""
+    from openexecutive.memory.episodic import _resolve_db_path
+
+    if not _resolve_db_path(db_path).exists():
+        return
+    try:
+        conn = _connect(db_path)
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(f"DELETE FROM {TURNS_TABLE} WHERE session_id = ?", (str(session_id),))  # noqa: S608
+        conn.commit()
+    except sqlite3.OperationalError:
+        return
+    finally:
+        conn.close()
 
 
 def _schedule(session_id: str, run_at: datetime, *, db_path: Path | None) -> int | None:
@@ -974,12 +1010,12 @@ async def _grade_turns(
 
 
 def list_misses(
-    *, person_id: int | None, limit: int = 200, db_path: Path | None = None
+    *, person_id: int | None, limit: int = 200, offset: int = 0, db_path: Path | None = None
 ) -> list[dict[str, Any]]:
     """The turns graded a miss, newest first: one person's, or everyone's
-    when ``person_id`` is None (the principal's view). Each carries the
-    person's name, their words, the reply, the tools run, what they wanted,
-    the kind and the signals."""
+    when ``person_id`` is None (the principal's view), ``offset`` rows in.
+    Each carries the person's name, their words, the reply, the tools run,
+    what they wanted, the kind and the signals."""
     from openexecutive.people.store import get_person
 
     conn = _connect(db_path)
@@ -989,8 +1025,9 @@ def list_misses(
             where += " AND person_id = ?"
             params.append(int(person_id))
         rows = conn.execute(
-            f"SELECT * FROM {TURNS_TABLE} WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",  # noqa: S608
-            (*params, max(1, min(int(limit), 1000))),
+            f"SELECT * FROM {TURNS_TABLE} WHERE {where} ORDER BY created_at DESC, id DESC "  # noqa: S608
+            "LIMIT ? OFFSET ?",
+            (*params, max(1, min(int(limit), 1000)), max(0, int(offset))),
         ).fetchall()
     finally:
         conn.close()
