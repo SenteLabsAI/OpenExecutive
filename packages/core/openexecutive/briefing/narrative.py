@@ -792,7 +792,12 @@ async def synthesize_briefing_narrative(
                 return fix_slips(text, reader)
         log_model_usage(response, model=model, actor="briefing_narrative")
         text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
-        text = text_blocks[0].text.strip() if text_blocks else ""
+        draft = text_blocks[0].text.strip() if text_blocks else ""
+        if attempt == 1 and not draft:
+            # An empty rewrite keeps the first draft, fixed in code.
+            logger.warning("briefing_narrative: rewrite came back empty; fixed in code")
+            return fix_slips(text, reader)
+        text = draft
         named = slips(text, reader)
         if not named:
             return text

@@ -33,7 +33,13 @@ READER = "the reader"
 _READER_LABELS = ("the reader",)
 _OWNER_LABEL = "the principal"
 # The Executive writes every brief, so it is "I" / "me" / "my" in it.
-_EXECUTIVE = re.compile(r"\b[Tt]he Executive(['’]s)?\b(?! [A-Z])")
+# Not a title ("the Executive Director") or a noun phrase ("the Executive
+# team"), where "I" would not read.
+_EXECUTIVE = re.compile(
+    r"\b[Tt]he Executive(['’]s)?\b(?! [A-Z])(?! (?:team|teams|office|offices|committee|"
+    r"board|role|roles|suite|level|summary|summaries|session|sessions|assistant|"
+    r"function|branch|order|orders|member|members|leadership|staff)\b)"
+)
 # Words after which the Executive is the object: "emailed the Executive" → "me".
 _OBJECT_BEFORE = re.compile(
     r"(?:\b(?:to|from|with|for|by|of|on|at|about|than|asked|told|emailed|"

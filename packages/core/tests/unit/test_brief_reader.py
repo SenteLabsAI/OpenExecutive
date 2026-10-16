@@ -237,3 +237,19 @@ async def test_a_slow_rewrite_keeps_the_first_draft_fixed_in_code(
     )
 
     assert text == "**You are waiting on the offer.**"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_rewrite_keeps_the_first_draft_fixed_in_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, provider = await _synth(monkeypatch, ["**Pat Owner is waiting on the offer.**", "  "])
+
+    assert text == "**You are waiting on the offer.**"
+    assert len(provider.calls) == 2
+
+
+def test_the_executive_as_a_noun_phrase_is_left_alone() -> None:
+    text = "The Executive team met; the Executive office closed and the Executive replied."
+
+    assert fix_slips(text, PAT) == "The Executive team met; the Executive office closed and I replied."
