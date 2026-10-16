@@ -258,6 +258,8 @@ def _requeue_scheduled_action(alert: Alert, approval: approvals.AlertApproval, a
         originating_session_id=action.originating_session_id,
         kind=action.kind,
         assigned_to_person_id=action.assigned_to_person_id,
+        # A teammate's row stays theirs: it runs as them (scheduler.runner).
+        created_by_person_id=action.created_by_person_id,
     )
     return _finished(
         alert, approval, approvals.STATUS_DONE,

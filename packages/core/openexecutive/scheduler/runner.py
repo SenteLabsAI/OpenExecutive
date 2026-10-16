@@ -1289,17 +1289,17 @@ async def _execute_action(
 
 def _own_ref(person: Person, channel: str, channel_ref: str) -> bool:
     """Whether ``channel_ref`` on ``channel`` is ``person``'s own address
-    (an email ref may carry ``|thread_id``)."""
-    own = {
-        "email": (person.email or "").strip().lower(),
+    (an email ref may carry ``|thread_id``, and be one of their aliases)."""
+    ref = channel_ref.split("|", 1)[0].strip()
+    if channel == "email":
+        own = {a.strip().lower() for a in [person.email or "", *person.email_aliases] if a}
+        return ref.lower() in own
+    single = {
         "slack_dm": str(person.slack_user_id or ""),
         "discord_dm": str(person.discord_user_id or ""),
         "telegram": str(person.telegram_chat_id or ""),
     }.get(channel, "")
-    ref = channel_ref.split("|", 1)[0].strip()
-    if channel == "email":
-        ref = ref.lower()
-    return bool(own) and ref == own
+    return bool(single) and ref == single
 
 
 async def _run_teammate_followup(

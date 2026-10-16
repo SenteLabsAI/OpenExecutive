@@ -187,3 +187,41 @@ def test_the_principals_row_keeps_the_ordinary_dispatch(
     assert chat["session"].run_for_person_id is None
     assert chat["session"].seen_channel_refs == {("telegram", "1")}
     assert calls["sent"] == []
+
+
+def test_an_alias_of_the_teammate_counts_as_their_own(
+    db: Path, calls: dict[str, list[Any]]
+) -> None:
+    from openexecutive.people.models import Person
+    from openexecutive.scheduler.runner import _own_ref
+
+    sam = Person(full_name="Sam", email="sam@co.example", email_aliases=["S.Lee@co.example"])
+    assert _own_ref(sam, "email", "s.lee@co.example|thread-9")
+    assert _own_ref(sam, "email", "SAM@co.example")
+    assert not _own_ref(sam, "email", "owner@co.example")
+    assert not _own_ref(sam, "telegram", "77")
+
+
+def test_an_approved_copy_of_a_teammates_row_stays_theirs(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A department-gated row is re-queued on approval; the copy must still
+    run as the teammate, not take the ordinary dispatch."""
+    from types import SimpleNamespace
+
+    from openexecutive.api.routes import alerts as alerts_route
+    from openexecutive.departments.authority import PROPOSAL_ALERT_SOURCE
+    from openexecutive.memory.episodic import list_scheduled_actions, mark_action_done
+
+    sam = people_store.upsert_person(full_name="Sam", telegram_chat_id="77")
+    held = _due("77", sam)
+    mark_action_done(held)
+    monkeypatch.setattr(alerts_route, "_finished", lambda *a, **k: "finished")
+
+    out = alerts_route._requeue_scheduled_action(
+        SimpleNamespace(source=PROPOSAL_ALERT_SOURCE), SimpleNamespace(), held  # type: ignore[arg-type]
+    )
+
+    assert out == "finished"
+    copy = [a for a in list_scheduled_actions() if a.id != held]
+    assert [a.created_by_person_id for a in copy] == [sam]
