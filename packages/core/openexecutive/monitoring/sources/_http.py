@@ -220,7 +220,10 @@ async def fetch_bounded(
                     raise
         if location is None:
             return body
-        current = str(target.join(location))
+        try:
+            current = str(target.join(location))
+        except httpx.InvalidURL as exc:
+            raise BlockedTargetError(f"bad redirect from {strip_url_query(current)}: {exc}") from exc
     raise httpx.TooManyRedirects(f"more than {MAX_REDIRECTS} redirects from {strip_url_query(url)}")
 
 

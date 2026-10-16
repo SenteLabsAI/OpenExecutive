@@ -92,6 +92,15 @@ async def test_blocked_redirect_is_an_httpx_error(server) -> None:
         await fetch_bounded("https://feed.example.com/rss", 10_000)
 
 
+@pytest.mark.parametrize("location", ["http://[::1", "http://exa mple.com:99999/"])
+async def test_malformed_redirect_is_an_httpx_error(server, location: str) -> None:
+    # Adapters log and skip httpx.HTTPError; a bad Location must land there.
+    srv = server({"feed.example.com/rss": _redirect(location)})
+    with pytest.raises(httpx.HTTPError):
+        await fetch_bounded("https://feed.example.com/rss", 10_000)
+    assert len(srv.requests) == 1
+
+
 async def test_first_hop_is_checked_too(server) -> None:
     srv = server({})
     with pytest.raises(BlockedTargetError):
