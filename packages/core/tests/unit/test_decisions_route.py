@@ -177,7 +177,7 @@ def test_approve_with_edit_sets_approved_with_edit(client: TestClient, db: Path)
         {"title": ""},
         {"title": "x" * 201},
         {"start": "not a time"},
-        {"start": "2030-01-01T10:00:00"},
+        {"start": "2025-06-15T12:00:00"},
         {"start": "2030-01-01T12:00:00+00:00", "end": "2030-01-01T11:00:00+00:00"},
     ],
 )
@@ -193,6 +193,38 @@ def test_an_edit_the_tool_would_refuse_is_refused(
 
     assert res.status_code == 422
     fake_gw.call_tool.assert_not_awaited()
+
+
+def test_a_title_edit_keeps_the_proposals_naive_times(client: TestClient, db: Path) -> None:
+    """The tool reads naive times as UTC, so editing only the title of such a
+    proposal still books."""
+    iid = create_decision_instance(
+        decision_class="meeting_scheduling",
+        department="operations",
+        originating_session_id=None,
+        proposed_payload={
+            "title": "Sync", "start": "2025-06-15T10:00:00",
+            "end": "2025-06-15T11:00:00", "attendee_emails": [], "description": "",
+        },
+        idempotency_key="naive",
+        gate_mode="propose",
+        approver_person_id=None,
+        confidence=0.8,
+        db_path=db,
+    )
+    fake_gw = type("GW", (), {})()
+
+    async def _call_tool(args: dict) -> str:
+        if args.get("name") == "google_workspace__query_freebusy":
+            return json.dumps({})
+        return json.dumps({"id": "evt-naive"})
+    fake_gw.call_tool = AsyncMock(side_effect=_call_tool)
+
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw):
+        res = client.post(f"/decisions/{iid}/approve", json={"edits": {"title": "Renamed"}})
+
+    assert res.status_code == 200
+    assert res.json()["status"] == "approved_with_edit"
 
 
 def test_approve_already_approved_409(client: TestClient, db: Path) -> None:
