@@ -273,7 +273,7 @@ class GoogleMail:
 def _extract_meet_link(event: dict[str, Any]) -> str | None:
     """Pull the Google Meet video URL out of a created-event response.
 
-    The workspace-mcp ``manage_event`` returns the Calendar event object; the
+    For a Calendar event object (as JSON), the
     Meet link lives under ``conferenceData.entryPoints[].uri`` for the ``video``
     entry point. Some servers also surface ``hangoutLink`` directly. Tolerant of
     both snake_case and camelCase key spellings.
@@ -291,6 +291,81 @@ def _extract_meet_link(event: dict[str, Any]) -> str | None:
                 if isinstance(uri, str) and uri:
                     return uri
     return None
+
+
+# workspace-mcp answers ``manage_event`` in plain text ("Successfully created
+# event 'X' for a@b.com. Link: https://www.google.com/calendar/event?eid=...
+# Google Meet: https://meet.google.com/..."), and a failure as the error's
+# text. Only the gateway's own refusals are JSON.
+_CREATED_PREFIX = "successfully created event"
+_DELETED_PREFIX = "successfully deleted event"
+_EVENT_LINK_RE = re.compile(r"Link:\s*(\S+)")
+_MEET_LINK_RE = re.compile(r"(?:Google Meet|Conference):\s*(https://\S+)")
+
+
+def _json_object(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _event_id_from_link(link: str) -> str | None:
+    """The event id inside a Calendar ``htmlLink``: its ``eid`` parameter is
+    base64url of ``"<event id> <calendar id>"``."""
+    import base64
+    from urllib.parse import parse_qs, urlparse
+
+    eid = (parse_qs(urlparse(link).query).get("eid") or [""])[0]
+    if not eid:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(eid + "=" * (-len(eid) % 4)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    event_id = decoded.split(" ", 1)[0].strip()
+    return event_id or None
+
+
+def _parse_created_event(raw: Any) -> dict[str, Any]:
+    """``{"event_id", "raw"[, "meet_link"]}`` for a created event, else
+    ``{"error"}``. A confirmed create is a success even when no id can be read
+    from it: reporting it failed would invite a second, duplicate booking."""
+    result = _json_object(raw)
+    if result is not None:
+        if "error" in result:
+            return {"error": result["error"]}
+        event_id = result.get("id") or result.get("event_id") or result.get("eventId")
+        out: dict[str, Any] = {"event_id": event_id, "raw": result}
+        meet_link = _extract_meet_link(result)
+        if meet_link:
+            out["meet_link"] = meet_link
+        return out
+    text = raw if isinstance(raw, str) else str(raw)
+    if not text.strip().lower().startswith(_CREATED_PREFIX):
+        return {"error": f"unexpected manage_event response: {text.strip()[:200]}"}
+    link = _EVENT_LINK_RE.search(text)
+    event_id = _event_id_from_link(link.group(1)) if link else None
+    if event_id is None:
+        logger.warning("calendar: created an event but read no id from its link")
+    out = {"event_id": event_id, "raw": {"text": text}}
+    meet = _MEET_LINK_RE.search(text)
+    if meet:
+        out["meet_link"] = meet.group(1)
+    return out
+
+
+def _parse_deleted_event(raw: Any) -> dict[str, Any]:
+    result = _json_object(raw)
+    if result is not None:
+        return result
+    text = raw if isinstance(raw, str) else str(raw)
+    if text.strip().lower().startswith(_DELETED_PREFIX):
+        return {"ok": True}
+    return {"error": f"unexpected manage_event response: {text.strip()[:200]}"}
 
 
 class GoogleCalendar:
@@ -323,19 +398,7 @@ class GoogleCalendar:
                 "name": "google_workspace__manage_event",
                 "arguments": arguments,
             })
-            result = json.loads(raw) if isinstance(raw, str) else raw
-            # If the MCP returned an error dict, surface it directly.
-            if isinstance(result, dict) and "error" in result:
-                return {"error": result["error"]}
-            if not isinstance(result, dict):
-                return {"error": f"unexpected manage_event response: {str(result)[:200]}"}
-            # The MCP returns the event object; extract the id field.
-            event_id = result.get("id") or result.get("event_id") or result.get("eventId")
-            meet_link = _extract_meet_link(result)
-            out: dict[str, Any] = {"event_id": event_id, "raw": result}
-            if meet_link:
-                out["meet_link"] = meet_link
-            return out
+            return _parse_created_event(raw)
         except Exception as exc:
             logger.exception("calendar: manage_event create failed")
             return {"error": str(exc)}
@@ -355,8 +418,7 @@ class GoogleCalendar:
                         "send_updates": "all",
                     },
                 })
-            result = json.loads(raw) if isinstance(raw, str) else raw
-            return result if isinstance(result, dict) else {"ok": True}
+            return _parse_deleted_event(raw)
         except Exception as exc:
             logger.exception("calendar: manage_event delete failed")
             return {"error": str(exc)}

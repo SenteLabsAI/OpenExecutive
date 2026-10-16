@@ -264,3 +264,46 @@ def test_fetch_never_logs_the_body(caplog: Any) -> None:
         module_logger.removeHandler(caplog.handler)
     assert "123456" not in caplog.text and "Offer" not in caplog.text
     assert f"{len(raw)} chars" in caplog.text
+
+
+def _eid(event_id: str, calendar: str = "exec@example.com") -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(f"{event_id} {calendar}".encode()).decode().rstrip("=")
+
+
+def test_create_event_reads_workspace_mcp_plain_text_reply() -> None:
+    # What workspace-mcp's manage_event actually answers: text, not JSON.
+    text = (
+        f"Successfully created event 'Sync' for exec@example.com. "
+        f"Link: https://www.google.com/calendar/event?eid={_eid('abc123xyz')}\n"
+        "Saved start: 2030-01-01T10:00:00+00:00\nSaved end: 2030-01-01T10:30:00+00:00 "
+        "Google Meet: https://meet.google.com/aaa-bbbb-ccc"
+    )
+    with patch("openexecutive.config.get_settings", return_value=_settings()):
+        result = asyncio.run(GoogleCalendar().create_event(_gateway(text), _payload()))
+    assert "error" not in result
+    assert result["event_id"] == "abc123xyz"
+    assert result["meet_link"] == "https://meet.google.com/aaa-bbbb-ccc"
+
+
+def test_create_event_confirmed_without_a_readable_id_is_still_a_success() -> None:
+    text = "Successfully created event 'Sync' for exec@example.com. Link: No link available"
+    with patch("openexecutive.config.get_settings", return_value=_settings()):
+        result = asyncio.run(GoogleCalendar().create_event(_gateway(text), _payload()))
+    assert "error" not in result
+    assert result["event_id"] is None
+
+
+def test_create_event_text_failure_is_an_error() -> None:
+    text = "Error calling tool 'manage_event': API error 403: insufficient permissions"
+    with patch("openexecutive.config.get_settings", return_value=_settings()):
+        result = asyncio.run(GoogleCalendar().create_event(_gateway(text), _payload()))
+    assert "403" in result["error"]
+
+
+def test_delete_event_reads_plain_text_reply() -> None:
+    ok = "Successfully deleted event (ID: evt-1) from calendar 'primary' for exec@example.com."
+    assert asyncio.run(GoogleCalendar().delete_event(_gateway(ok), "evt-1")) == {"ok": True}
+    failed = asyncio.run(GoogleCalendar().delete_event(_gateway("Event not found"), "evt-1"))
+    assert "error" in failed
