@@ -1290,15 +1290,6 @@ class Executive:
         # Act as me, pinned with the mode so the tool list, the handler and
         # the turn's audit privacy agree even if the setting flips mid-turn.
         delegation_pin = pin_turn_delegation(session, _speaker_text(memory_text, user_message))
-        # What this turn reads from outside the team, starting with the
-        # message's own attachments and any synced excerpt retrieved for it
-        # (orchestrator.outside_content). Closed when the loop ends.
-        outside_turn = outside_content.begin_turn(
-            session,
-            user_message=user_message,
-            attachment_blocks=attachment_blocks,
-            retrieved_context=retrieved_context,
-        )
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -1379,6 +1370,16 @@ class Executive:
                 committee=False,
                 working_style=working_style,
                 standing_facts=standing_facts,
+            )
+            # What this turn reads from outside the team, starting with the
+            # message's own attachments and any synced excerpt retrieved for it
+            # (orchestrator.outside_content). Closed when the loop ends; nothing
+            # between the two can leave it open.
+            outside_turn = outside_content.begin_turn(
+                session,
+                user_message=user_message,
+                attachment_blocks=attachment_blocks,
+                retrieved_context=retrieved_context,
             )
             consulted: list[str] = []
             turn_calls: list[tuple[str, str]] = []
@@ -1633,15 +1634,6 @@ class Executive:
         workspace_mode = pin_turn_workspace_mode(session)
         principal_role = pin_turn_principal_role(session, workspace_mode)
         delegation_pin = pin_turn_delegation(session, _speaker_text(memory_text, user_message))
-        # What this turn reads from outside the team, starting with the
-        # message's own attachments and any synced excerpt retrieved for it
-        # (orchestrator.outside_content). Closed when the loop ends.
-        outside_turn = outside_content.begin_turn(
-            session,
-            user_message=user_message,
-            attachment_blocks=attachment_blocks,
-            retrieved_context=retrieved_context,
-        )
         system_blocks = build_system_blocks(
             session.company_profile,
             mcp_enabled=self._mcp_gateway is not None,
@@ -1741,6 +1733,16 @@ class Executive:
             standing_facts=standing_facts,
         )
 
+        # What this turn reads from outside the team, starting with the
+        # message's own attachments and any synced excerpt retrieved for it
+        # (orchestrator.outside_content). Closed when the loop ends; nothing
+        # between the two can leave it open.
+        outside_turn = outside_content.begin_turn(
+            session,
+            user_message=user_message,
+            attachment_blocks=attachment_blocks,
+            retrieved_context=retrieved_context,
+        )
         turn_calls: list[tuple[str, str]] = []
         try:
             async for item in self._stream_agent_loop(

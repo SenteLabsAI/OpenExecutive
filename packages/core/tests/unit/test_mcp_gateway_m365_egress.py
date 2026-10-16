@@ -451,6 +451,17 @@ def test_delete_is_refused_when_the_event_cannot_be_read(lookup_result: str) -> 
     assert session_call.await_count == 1
 
 
+@pytest.mark.parametrize("args", [{"event_id": "AAMkEvt="}, {"eventId": "AAMkEvt=", "event_id": "AAMkOther="}])
+def test_a_delete_needs_exactly_one_event_id(args: dict[str, Any]) -> None:
+    gateway, session_call = _make_gateway_with_event(_graph_event(EXEC_ADDR, [ROSTER]))
+    out = _call(gateway, args, [ROSTER], tool_name=DELETE)
+    if len(args) == 1:
+        # A respelling is read like the real key.
+        assert out == '{"ok": true}'
+    else:
+        assert _blocked(out) and session_call.await_count == 0
+
+
 def test_the_typed_cancel_deletes_its_own_event_unchecked() -> None:
     gateway, session_call = _make_gateway_with_event(_graph_event(EXEC_ADDR, [STRANGER]))
     with gw_module.calendar_cancel_grant("AAMkEvt="):

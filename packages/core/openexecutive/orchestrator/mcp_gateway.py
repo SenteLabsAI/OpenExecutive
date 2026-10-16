@@ -2253,14 +2253,17 @@ async def _check_m365_event_delete(
     guest list the arguments never name. The typed cancel of that one event
     (`calendar_cancel_grant`) passes; any other delete runs only when the
     event has no attendees or all of them are on the roster. Fail-closed."""
-    event_id = arguments.get("eventId")
-    if isinstance(event_id, str) and event_id and _calendar_cancel.get() == event_id:
-        return None
+    # Every spelling, and exactly one: two could check one event and delete
+    # another.
+    values = _arg_values(arguments, "eventId")
+    event_id = values[0] if len(values) == 1 else None
     if not isinstance(event_id, str) or not event_id.strip():
         return _block(
             "eventId", "<missing>", tool,
-            reason=f"{tool} needs an eventId so its attendees can be roster-checked — refusing.",
+            reason=f"{tool} needs one eventId so its attendees can be roster-checked — refusing.",
         )
+    if _calendar_cancel.get() == event_id:
+        return None
     event = await _fetch_m365_json(
         session, _M365_EVENT_LOOKUP_TOOL,
         {"eventId": event_id, "select": _M365_EVENT_LOOKUP_SELECT}, discover,
