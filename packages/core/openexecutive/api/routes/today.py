@@ -1680,16 +1680,15 @@ def _narrative_context(
 
 
 def _narrative_reader(scope: str | None, viewer: PersonBriefItem | None) -> Reader | None:
-    """Who a scope's header is written for: the principal, the teammate, or
-    nobody in particular (the whole-company scope)."""
-    from openexecutive.briefing import narrative_cache
+    """Who a scope's header is written for: the teammate on their own scope,
+    else the principal. The whole-company scope (no signed-in caller) uses
+    the same prompt as the principal's, which narrates the principal's day,
+    so it is written to them too, from the shared rows only."""
     from openexecutive.briefing.reader import person_reader, principal_reader
 
-    if scope == narrative_cache.DEFAULT_SCOPE:
-        return principal_reader()
     if viewer is not None and scope is not None and scope.startswith("person:"):
         return person_reader(viewer.id)
-    return None
+    return principal_reader()
 
 
 # One regeneration per scope at a time. Every stale view schedules one, and

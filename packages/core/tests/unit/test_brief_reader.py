@@ -159,7 +159,7 @@ def test_the_today_header_is_written_for_its_scope(monkeypatch: pytest.MonkeyPat
 
     assert today._narrative_reader(narrative_cache.DEFAULT_SCOPE, None) is PAT
     assert today._narrative_reader("person:7", viewer) is dana
-    assert today._narrative_reader(narrative_cache.COMPANY_SCOPE, None) is None
+    assert today._narrative_reader(narrative_cache.COMPANY_SCOPE, None) is PAT
 
 
 def test_the_executive_is_i_me_and_my() -> None:
