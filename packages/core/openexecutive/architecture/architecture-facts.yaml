@@ -9762,6 +9762,58 @@ delegation:
     a link), Telegram sendMessage sets link_preview_options.is_disabled,
     Slack's reply say passes unfurl_links/unfurl_media False, and every
     Discord reply send passes suppress_embeds=True.
+  save_file: |
+    save_my_email_attachment(message_id, index) (orchestrator.mail_read_tools,
+    orchestrator.mail_file_save) copies one attached file of the speaker's
+    own mail into the storage the Executive has connected and shares it with
+    them alone, returning {status saved | saved_not_shared, name, where,
+    link}. Only when they asked in their own words this turn: own_words of
+    speaker_text must hold one of _SAVE_WORDS (save, saved, keep, store,
+    upload, copy, link(s), drive, onedrive, folder), checked before the slot
+    (TurnDelegation.files_saved, SAVES_PER_TURN 10) and before the mailbox is
+    opened; else status not_asked. Bytes via mailbox.attachment_bytes, never
+    the model; any type, MAX_ATTACHMENT_BYTES (20 MB) checked on the listing
+    and on the bytes; clean_name strips path/reserved/control characters and
+    keeps the extension. Storage (storage_for): EMAIL_PROVIDER's server when
+    the gateway has it and it doesn't need a reconnect, else the other;
+    neither, or an eval mailbox (ScenarioMailbox.saves_to_storage False):
+    status no_storage, the model offers to forward instead. Google:
+    search_drive_files for a root folder "From your email" owned by the
+    Executive, else create_drive_folder; remembered in
+    delegation_saved_folder; create_drive_file (base64_content,
+    content_mime_type, base64_sha256; never fileUrl), retried once into a
+    fresh folder; manage_drive_access grant, share_type user, role reader,
+    share_with the speaker's address. Microsoft: list-drives (personal or
+    business drive), list-folder-files / create-onedrive-folder,
+    upload-file-content to "<folder>:/<free name>:" (an upload overwrites,
+    so a taken name, listed or recorded for anyone in saved_files.names,
+    becomes "name (2).ext"), share-drive-item with one email
+    recipient, roles [read], requireSignIn true. One save at a time per event
+    loop (folder made once, no overwrite race). Lockdown: in
+    MAIL_TOUCHED_ALLOWED_TOOLS; its calls pass the mail-read refusal in
+    MCPGateway.call_tool only as the exact objects held in
+    code_built_call (identity, one of _CODE_BUILT_TOOLS), so a model call on
+    that turn is still refused; every other gate (acting account, URL fetch,
+    sheet formulas, _check_drive_share / _check_m365_drive_share roster
+    check, _check_m365_drive_write own drives) still runs. Not in
+    PRIVATE_TURN_WITHHELD_TOOLS: it is never offered on a private-to-principal
+    turn (Act as me isn't), and a later turn of a mail-private conversation
+    may use it. Privacy (delegation.saved_files, table
+    delegation_saved_files: person_id, provider, file_id, name, saved_at;
+    recorded before the share; first owner kept): on every Google Workspace /
+    Microsoft 365 call the gateway reads hidden_file_ids(viewer_person_id())
+    (viewer = the pinned speaker when Act as me was offered, else None = all
+    hidden; the DB opened read-only, a missing DB or table = none), refuses a
+    call whose arguments name a hidden id, and _hide_saved_files drops JSON
+    list entries, then lines, naming one and masks any left. A lookup
+    failure refuses tools matching _FILE_TOOL_RE (drive, folder, file,
+    download_bytes) and leaves mail and calendar unfiltered. Limits: ids are
+    matched as text (a title without its id still shows), a copy is a new
+    file, and anyone signed in to the Executive's account outside the app
+    sees everything. Rows are not deleted when Act as me is turned off.
+    Persona: the DELEGATION_ADDENDUM tells the model to use it once per file
+    when asked to save, keep, upload or link a file and to give them the
+    link. Eval: delegation_014.
   calendar: |
     Read my calendar (delegation.calendar, table delegation_calendar, one
     row per person, absent/unreadable = off). Read-only, on the Act as me
@@ -10055,7 +10107,8 @@ delegation:
   lockdown: |
     Once a turn has read the principal's own mail — from the round that
     calls ghostwrite_email or a mailbox read (search_my_email,
-    read_my_email, read_my_email_attachment, my_email_awaiting_reply) or
+    read_my_email, read_my_email_attachment, my_email_awaiting_reply,
+    save_my_email_attachment, which stays allowed: see save_file) or
     recall_history, since a round's tools run together — only a door to the
     open internet or to everyone stays shut until the turn ends
     (delegation.lockdown, MAIL_TOUCHED_WITHHELD_TOOLS): outside fetches
@@ -10634,7 +10687,8 @@ delegation:
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,
     delegation_handle_it, delegation_handled, delegation_reminders,
-    delegation_mail_read and delegation_training (delegation.schema.TABLES) in the episodic DB (created by
+    delegation_mail_read, delegation_training, delegation_saved_files and
+    delegation_saved_folder (delegation.schema.TABLES) in the episodic DB (created by
     memory.episodic.initialize_db via delegation.schema.ensure_schema); per
     company — in clients.slots._BLANK_WIPE_TABLES and
     cli.fixture_loader.reset_all_state. A reply card is a decision_instances

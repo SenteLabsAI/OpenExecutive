@@ -21,6 +21,11 @@ from openexecutive.delegation.gmail import (
 
 
 class ScenarioMailbox:
+    # No Drive or OneDrive stands behind an eval's mailbox: a file the turn
+    # asks to save reports there is nowhere to save it, and nothing reaches a
+    # real store (``mail_read_tools.handle_save_my_email_attachment``).
+    saves_to_storage = False
+
     def __init__(
         self, email: str, threads: list[MailThread], files: dict[tuple[str, int], bytes] | None = None
     ) -> None:

@@ -109,6 +109,9 @@ class TurnDelegation:
     searches: int = 0
     threads_read: int = 0
     attachments_read: int = 0
+    # Files copied from their mail to the Executive's Drive or OneDrive
+    # (``save_my_email_attachment``).
+    files_saved: int = 0
     # Reminders set this turn (orchestrator.reminder_tools).
     reminders: int = 0
     # Approval cards left this turn (orchestrator.action_card_tools).

@@ -1049,6 +1049,146 @@ def _roster_ack_admits(tool: str, arguments: dict[str, Any]) -> bool:
     return True
 
 
+# Act as me's ``save_my_email_attachment`` (``orchestrator.mail_file_save``)
+# copies a file from the speaker's own mail into the Executive's Drive or
+# OneDrive, usually on the very turn that read the mail, where the lockdown
+# (``delegation.lockdown``) refuses every gateway call outside
+# ``PRIVATE_TURN_MCP_TOOLS``. Its calls are built in code, never by the model:
+# the folder is fixed, the file name is cleaned, the bytes come from the
+# mailbox client, and the one grantee is the speaker's own address. So the
+# lockdown admits exactly those calls: the very ``tool_input`` object the
+# handler holds (``code_built_call``), for one of these tools only. A model's
+# call is always a different object, so it can never pass as one. Every
+# other gate (acting account, URL fetch, sheet formulas, the Drive / OneDrive
+# share gates, own-drive writes) still runs on them as on any call.
+_CODE_BUILT_TOOLS = frozenset({
+    "google_workspace__search_drive_files",
+    "google_workspace__create_drive_folder",
+    "google_workspace__create_drive_file",
+    "google_workspace__manage_drive_access",
+    "microsoft_365__list-drives",
+    "microsoft_365__list-folder-files",
+    "microsoft_365__create-onedrive-folder",
+    "microsoft_365__upload-file-content",
+    "microsoft_365__share-drive-item",
+})
+_code_built: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "code_built_call", default=None
+)
+
+
+@contextlib.contextmanager
+def code_built_call(tool_input: dict[str, Any]) -> Iterator[None]:
+    """Let ``call_tool`` run this exact ``tool_input`` on a turn that read the
+    owner's mail (see ``_CODE_BUILT_TOOLS``). For code that built every
+    argument itself; never around a model's input."""
+    token = _code_built.set(tool_input)
+    try:
+        yield
+    finally:
+        _code_built.reset(token)
+
+
+def _code_built_admits(tool_input: Any) -> bool:
+    granted = _code_built.get()
+    return (
+        granted is not None
+        and granted is tool_input
+        and isinstance(tool_input, dict)
+        and tool_input.get("name") in _CODE_BUILT_TOOLS
+    )
+
+
+# Files ``save_my_email_attachment`` copied from someone's own mail are theirs
+# alone (``delegation.saved_files``), but they sit in the Executive's own Drive
+# or OneDrive, which every turn's Drive and OneDrive tools can reach. So on any
+# turn whose speaker is not a file's owner (``saved_files.viewer_person_id``):
+# a call whose arguments name a recorded file id is refused before it runs
+# (an open, a download, a share, a copy, a move), and a result that names one
+# loses that entry (a JSON list item) or line (workspace-mcp's one line per
+# file) — and any id still left is masked. Limits, honestly: it matches the
+# ids as text, so it hides a file only where its id appears (a listing, a
+# link); a result that names the file without its id (an activity feed, a
+# notification email quoting its title) still shows the name. A copy someone
+# makes of it is a new file and isn't covered. Someone signed in to the
+# Executive's account outside the app sees everything. The lookup fails
+# closed for the file tools (``_FILE_TOOL_RE``): when the table can't be read
+# they are refused, while mail and calendar tools run unfiltered.
+_FILE_TOOL_RE = re.compile(r"drive|folder|file|download_bytes")
+_SAVED_FILE_REFUSAL = (
+    "{tool} was not run: that file is private to the person it was saved for "
+    "and isn't available in this conversation. Do not retry."
+)
+
+
+def _saved_files_hidden(normalized: str) -> frozenset[str] | str:
+    """The saved-file ids this turn may not see, or the refusal when they
+    can't be read for a file tool. Only Google Workspace and Microsoft 365
+    tools are filtered."""
+    if not normalized.startswith((_GW_PREFIX, _M365_PREFIX)):
+        return frozenset()
+    from openexecutive.delegation import saved_files
+
+    try:
+        return saved_files.hidden_file_ids(saved_files.viewer_person_id())
+    except Exception:
+        logger.warning("saved files: couldn't read which files are private", exc_info=True)
+        if _FILE_TOOL_RE.search(normalized.partition("__")[2]):
+            return json.dumps({
+                "error": (
+                    "Couldn't check which files are private just now, so "
+                    f"{normalized[:200]} was not run. Try again in a moment."
+                ),
+            })
+        return frozenset()
+
+
+def _names_saved_file(arguments: Any, hidden: frozenset[str]) -> bool:
+    if not hidden:
+        return False
+    try:
+        text = json.dumps(arguments, default=str)
+    except (TypeError, ValueError, RecursionError):
+        text = str(arguments)
+    return any(file_id in text for file_id in hidden)
+
+
+def _prune_saved(value: Any, present: list[str], depth: int = 0) -> Any:
+    """``value`` without the list entries that name one of ``present``."""
+    if depth > _WALK_DEPTH_MAX:
+        return value
+    if isinstance(value, list):
+        kept = []
+        for item in value:
+            try:
+                text = json.dumps(item, default=str)
+            except (TypeError, ValueError, RecursionError):
+                text = str(item)
+            if not any(file_id in text for file_id in present):
+                kept.append(_prune_saved(item, present, depth + 1))
+        return kept
+    if isinstance(value, dict):
+        return {k: _prune_saved(v, present, depth + 1) for k, v in value.items()}
+    return value
+
+
+def _hide_saved_files(text: str, hidden: frozenset[str]) -> str:
+    """``text`` with every entry naming one of ``hidden`` dropped: a JSON
+    result's list items, then any line still naming one, then any id still
+    left masked. Unchanged when it names none."""
+    present = [file_id for file_id in hidden if file_id in text]
+    if not present:
+        return text
+    parsed = _parsed_json(text)
+    if parsed is not None:
+        text = json.dumps(_prune_saved(parsed, present))
+    lines = [line for line in text.splitlines() if not any(file_id in line for file_id in present)]
+    text = "\n".join(lines)
+    for file_id in present:
+        text = text.replace(file_id, "[hidden]")
+    return text or "No files found."
+
+
 # Artifact attachments on one email. Gmail caps a message at 25 MB and base64
 # inflates the payload by a third, so the rendered artifacts together stay
 # well under it; the count cap bounds how much one tool call can make the
@@ -3074,7 +3214,7 @@ class MCPGateway:
         refused = outside_reach_refusal(
             str(tool_input.get("name") or "call_tool")[:200], tool_input, tool_name="call_tool"
         )
-        if refused is not None:
+        if refused is not None and not _code_built_admits(tool_input):
             return refused
         session = self._require_session()
         arguments = tool_input.get("arguments", {})
@@ -3086,6 +3226,13 @@ class MCPGateway:
                 arguments = {}
         tool_name = tool_input.get("name", "")
         normalized = _normalize_tool_name(tool_name)
+        # Files saved from someone's own mail are theirs alone (see
+        # `_saved_files_hidden`).
+        hidden = _saved_files_hidden(normalized)
+        if isinstance(hidden, str):
+            return hidden
+        if _names_saved_file(arguments, hidden):
+            return json.dumps({"error": _SAVED_FILE_REFUSAL.format(tool=str(tool_name)[:200])})
         attached_artifacts: list[str] = []
         # Every Google Workspace call acts as the Executive's own account.
         if _is_apps_script_tool(tool_name):
@@ -3254,6 +3401,9 @@ class MCPGateway:
             and not _reveal_tokens.get()
         ):
             result_text = hide_roster_tokens(result_text)
+        if hidden:
+            # Before anything below keeps or reads the result.
+            result_text = _hide_saved_files(result_text, hidden)
         self._note_grant_health(tool_name, result_text)
         if tool_name in drive_reads.DRIVE_READ_TOOLS:
             result_text = _remember_drive_read(tool_name, arguments, result_text)

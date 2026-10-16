@@ -78,6 +78,13 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "read_my_email",
     "read_my_email_attachment",
     "search_my_email",
+    # A copy of one attached file into the Executive's own Drive or OneDrive,
+    # shared with the speaker alone: only when they asked in their own words
+    # this turn, and every argument that reaches the storage (fixed folder,
+    # cleaned name, the mailbox's own bytes, their own address) is built in
+    # code, never by the model (mail_read_tools, mail_file_save). Nothing it
+    # does opens a link or reaches anyone else, which is all this turn fences.
+    "save_my_email_attachment",
     # Messages and invites: only people on the roster (_guard_outbound,
     # the roster) and attendees by person id (calendar_tools).
     "message_person",

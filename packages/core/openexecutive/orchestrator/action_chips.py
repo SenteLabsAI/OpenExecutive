@@ -79,6 +79,9 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "load_mcp_server",
     # Act as me: a draft saved in the speaker's own Gmail (nothing sent)
     "ghostwrite_email",
+    # Act as me: a file from their mail copied to the Executive's storage,
+    # shared with them alone
+    "save_my_email_attachment",
     # Act as me: a reminder to the speaker alone
     "remind_me",
     # Act as me: a card of actions left for the speaker to approve
@@ -241,6 +244,17 @@ def summarize_action(
         # Built server-side from a fixed prefix (delegation.gmail.mailbox_link).
         if isinstance(link, str) and link.startswith(MAILBOX_LINK_PREFIXES):
             payload["link"] = link
+    elif tool_name == "save_my_email_attachment":
+        # Only a saved copy earns a chip. No link or name: the link opens
+        # outside the app, and the name is whatever the sender called it.
+        status = (parsed or {}).get("status")
+        if status not in ("saved", "saved_not_shared"):
+            return None
+        where = str((parsed or {}).get("where") or "")
+        payload["summary"] = "Saved a file from your email to OneDrive" if "OneDrive" in where else (
+            "Saved a file from your email to Google Drive"
+        )
+        payload["target"] = None
     elif tool_name == "remind_me":
         # Only a stored reminder earns a chip.
         if (parsed or {}).get("status") != "set":
