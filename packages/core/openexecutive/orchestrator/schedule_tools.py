@@ -2124,11 +2124,15 @@ def mcp_client_withheld_error(tool_name: str) -> str:
 # chat lifts this. Of the gateway tools, the mail writes whose recipients the
 # gateway checks (`mcp_gateway._GATED_GMAIL_TOOLS`, `_GATED_M365_MAIL_TOOLS`)
 # are refused too: a recipient on the roster is still a send nobody asked
-# for. A fixed set, so the variant keeps a stable tool prefix of its own.
+# for. Workflows go too: a run, a saved one or a suggested schedule acts
+# later with the full tool set, past this turn's check. A fixed set, so the
+# variant keeps a stable tool prefix of its own.
 SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "archive_person",
     "message_person",
     "resolve_roster_request",
+    "run_workflow",
+    "save_workflow",
     "schedule_followup",
     "send_company_broadcast",
     "send_department_message",
@@ -2136,6 +2140,7 @@ SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "send_slack_dm",
     "send_telegram_message",
     "set_department_head",
+    "suggest_workflow",
     "upsert_person",
 })
 
