@@ -168,7 +168,7 @@ const GROUP: Record<Tab, "writes" | "sends" | "lead"> = { act: "writes", handle:
 export const sceneKey = (tab: Tab, value: string) => `${GROUP[tab]}:${value}`;
 
 export function sceneFor(key: string): Scene {
-  return SCENES.find((s) => s.key === key) ?? SCENES[1];
+  return SCENES.find((s) => s.key === key) ?? SCENES.find((s) => s.key === sceneKey("act", FIRST.act))!;
 }
 
 // How many beats a scene plays: one per step, or one per email.
