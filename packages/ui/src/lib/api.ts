@@ -2049,6 +2049,57 @@ export async function forgetHistoryConversation(id: number): Promise<number> {
   return body.forgotten ?? 0;
 }
 
+// --- Reflection: what it got wrong (memory/chat_review grading) ----------
+
+export interface ReflectionMiss {
+  id: number;
+  session_id: string;
+  /** The saved reply's message id, when it is still in the chat. */
+  message_id: number | null;
+  person_id: number;
+  person_name: string;
+  created_at: string;
+  /** The person's own words that turn. */
+  message: string;
+  reply: string;
+  tools: string[];
+  /** What they wanted instead, in the Executive's words, backed by theirs. */
+  wanted: string;
+  /** `company`: something only this workspace knows would have fixed it;
+   * `product`: it couldn't have done it with what it has. */
+  kind: "company" | "product";
+  signals: string[];
+}
+
+export interface ReflectionWeek {
+  /** ISO week, e.g. "2026-W42". */
+  week: string;
+  graded: number;
+  misses: number;
+}
+
+export interface ReflectionState {
+  misses: ReflectionMiss[];
+  /** Newest week first. */
+  weeks: ReflectionWeek[];
+  /** The principal also sees shared chats' misses; a teammate their own only. */
+  sees_everyone: boolean;
+}
+
+/** The caller's misses and weekly counts; null when there is nothing for
+ * them here (not signed in, not on the roster). */
+export async function getReflection(signal?: AbortSignal): Promise<ReflectionState | null> {
+  const res = await fetch(`${API_BASE}/memories/reflection`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load what it got wrong.");
+  return res.json();
+}
+
+export async function forgetReflectionMiss(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/reflection/misses/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
+}
+
 export async function setDelegationEnabled(enabled: boolean): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation`, {
     method: "PUT",

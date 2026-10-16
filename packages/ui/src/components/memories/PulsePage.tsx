@@ -56,6 +56,11 @@ const SCREENS: Record<Exclude<PulseView, "overview">, { title: string; descripti
     title: "Your notes",
     description: "What you said, in chat and in replies you approved. Only you see these.",
   },
+  reflection: {
+    title: "What it got wrong",
+    description:
+      "Turns in your chats that fell short, graded by the Executive itself after each chat, with what you wanted instead.",
+  },
 };
 
 export default function PulsePage() {

@@ -44,6 +44,7 @@ from openexecutive.api.routes import (
     people,
     personas,
     python_jobs,
+    reflection,
     review,
     saved_tools,
     scheduled,
@@ -988,6 +989,7 @@ def create_app() -> FastAPI:
     app.include_router(take_the_lead.router, tags=["take-the-lead"])
     app.include_router(may_do.router, tags=["delegation"])
     app.include_router(history.router, tags=["memories"])
+    app.include_router(reflection.router, tags=["memories"])
     app.include_router(audit.router, tags=["audit"])
     app.include_router(departments.router, tags=["departments"])
     app.include_router(people.router, tags=["people"])

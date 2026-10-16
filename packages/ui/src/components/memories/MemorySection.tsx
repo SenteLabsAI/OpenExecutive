@@ -19,6 +19,7 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import CorrectionsTab from "./CorrectionsTab";
 import HistoryTab from "./HistoryTab";
+import ReflectionTab from "./ReflectionTab";
 import type { MemoryView } from "@/lib/pulseView";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
@@ -43,6 +44,7 @@ export default function MemoryList({ view }: { view: MemoryView }) {
       {view === "initiatives" && <InitiativesTab onCount={ignoreCount} />}
       {view === "advice" && <AdviceTab onCount={ignoreCount} />}
       {view === "corrections" && <CorrectionsTab onCount={ignoreCount} />}
+      {view === "reflection" && <ReflectionTab />}
       {view === "history" &&
         (historyAvailable ? (
           <HistoryTab onCount={ignoreCount} onAvailable={onHistoryAvailable} />

@@ -13,6 +13,10 @@ const ALWAYS_DOES: { title: string; text: string }[] = [
   { title: "Morning brief and evening digest", text: "Sums up your day and what's waiting for you." },
   { title: "Nudges", text: "Reminds people about things they owe you." },
   { title: "Looks over your day", text: "Spots what's stuck or coming up and tells you." },
+  {
+    title: "Looks back at its chats",
+    text: "After a chat goes quiet, it fixes what it left undone and grades its own answers. What it got wrong is under Pulse.",
+  },
   { title: "Research and monitoring", text: "Follows the topics and sources you asked it to watch." },
 ];
 

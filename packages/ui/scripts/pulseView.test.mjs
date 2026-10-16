@@ -19,11 +19,13 @@ test("pulseViewFor keeps the old tab links working", () => {
   assert.equal(pulseViewFor("month"), "value");
   assert.equal(pulseViewFor("corrections"), "corrections");
   assert.equal(pulseViewFor("history"), "history");
+  assert.equal(pulseViewFor("reflection"), "reflection");
 });
 
 test("isMemoryView picks out the memory lists", () => {
   assert.equal(isMemoryView("decisions"), true);
   assert.equal(isMemoryView("history"), true);
+  assert.equal(isMemoryView("reflection"), true);
   assert.equal(isMemoryView("schedule"), false);
   assert.equal(isMemoryView("overview"), false);
 });

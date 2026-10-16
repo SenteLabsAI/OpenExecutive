@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { getActivity, getHistory, listStandingFacts, type ActivityItem } from "@/lib/api";
+import { getActivity, getHistory, getReflection, listStandingFacts, type ActivityItem } from "@/lib/api";
 import Icon from "@/components/Icon";
 import { upcomingLabel, whenLabel, type MemoryView } from "@/lib/pulseView";
 import { SUMMARY_KINDS, activityLine } from "./CadenceSection";
@@ -250,6 +250,8 @@ export function MemoryTiles({ pulse }: { pulse: PulseData }) {
   const [facts, setFacts] = useState<{ active: number; toApprove: number } | null>(null);
   // undefined while loading; null when this viewer has no notes (the tile goes).
   const [notes, setNotes] = useState<number | null | undefined>(undefined);
+  // Likewise for what it got wrong (the conversation review's grades).
+  const [misses, setMisses] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -270,6 +272,13 @@ export function MemoryTiles({ pulse }: { pulse: PulseData }) {
       })
       .catch(() => {
         if (!cancelled) setNotes(null);
+      });
+    getReflection()
+      .then((state) => {
+        if (!cancelled) setMisses(state ? state.misses.length : null);
+      })
+      .catch(() => {
+        if (!cancelled) setMisses(null);
       });
     return () => {
       cancelled = true;
@@ -315,13 +324,21 @@ export function MemoryTiles({ pulse }: { pulse: PulseData }) {
       detail: "Only you see these",
     });
   }
+  if (misses !== null) {
+    tiles.push({
+      view: "reflection",
+      label: "What it got wrong",
+      count: misses ?? null,
+      detail: "Graded after each chat",
+    });
+  }
 
   return (
     <section aria-labelledby="pulse-memory-heading">
       <h2 id="pulse-memory-heading" className="text-lg font-semibold text-fg mb-3">
         What it remembers
       </h2>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {tiles.map((t, i) => (
           // An odd last tile spans the phone's two columns.
           <Tile key={t.view} spec={t} wide={tiles.length % 2 === 1 && i === tiles.length - 1} />

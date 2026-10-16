@@ -4959,8 +4959,27 @@ chat:
     (attunement.style, basis conversation) or a writing habit (delegation.voice),
     and raises what it cannot fix in the next brief (briefing.brief_requests).
     Never sends, books, deletes or grants permission; says nothing in chat.
+    Before the fixes, the same review grades every unreviewed turn with one
+    forced grade_turns call (actor chat_review_grade): fine, miss (kind
+    company = a fact or preference it lacked, product = something it could
+    not do) or unclear, with what the person wanted instead and a 4+ word
+    quote that must appear in that or a later turn, else the grade is unclear.
+    The grader reads the signals the product recorded about each turn:
+    thumbs up/down and the note (chat_messages.feedback, joined by the saved
+    reply's first 120 characters), stopped replies, a rewind
+    (session_rewound audit row after the turn), a claim-check nudge
+    (claim_check audit row by turn_id) and failed tool calls. Grades land on
+    chat_review_turns (verdict, kind, wanted, signals, graded_at, message_id)
+    and per-person weekly counts in chat_review_weeks; misses are kept 90
+    days, other rows 7. A failed grade never stops the fixes. GET/DELETE
+    /memories/reflection (api/routes/reflection.py) serves them to the Pulse
+    "What it got wrong" screen: each person their own, the principal also those
+    from chats _session_access lets them open (never a teammate's own web
+    chat or DM, nor a mail-private conversation).
     Why: the claim check only sees one turn; "I sent it" answered with
-    "noted" left the draft waiting, and stated style was lost.
+    "noted" left the draft waiting, and stated style was lost. Grading turns
+    the same read into a record of where it fell short, so the gaps can be
+    learned from and replayed later.
   module: openexecutive.api.routes.chat
   endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works. POST /chat/background starts a new chat the server answers to the end with no reader (202 + session_id; the caller request is wrapped so is_disconnected is always false, the stream is drained by a task kept in _background_tasks; at most 3 per owner key in _background_counts, claimed before the first await so a burst cannot pass together, else 429).
   sse_event_types:

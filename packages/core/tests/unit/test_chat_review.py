@@ -71,13 +71,24 @@ def _pending_reviews(db: Path) -> list[Any]:
 
 
 class _Provider:
-    """Answers each call with the next scripted list of tool uses."""
+    """Answers each fix-loop call with the next scripted list of tool uses.
+    The grading call (forced ``grade_turns``) is kept apart in
+    ``grade_calls`` and answered with ``grades``, so the fix-loop script
+    reads as before."""
 
-    def __init__(self, script: list[list[tuple[str, dict[str, Any]]]]) -> None:
+    def __init__(self, script: list[list[tuple[str, dict[str, Any]]]],
+                 grades: list[dict[str, Any]] | None = None) -> None:
         self.script = list(script)
         self.calls: list[dict[str, Any]] = []
+        self.grade_calls: list[dict[str, Any]] = []
+        self.grades: list[dict[str, Any]] = list(grades or [])
 
     async def messages_create(self, **kw: Any) -> Any:
+        if (kw.get("tool_choice") or {}).get("name") == cr.GRADE_TOOL["name"]:
+            self.grade_calls.append(kw)
+            return SimpleNamespace(content=[SimpleNamespace(
+                type="tool_use", id="g0", name=cr.GRADE_TOOL["name"], input={"grades": self.grades},
+            )])
         self.calls.append(kw)
         uses = self.script.pop(0) if self.script else []
         content = [
@@ -411,3 +422,159 @@ def test_a_writing_line_respects_lock_full_and_edits(db: Path, roster: SimpleNam
     assert voice.add_conversation_rule(pid, "habit", "Short emails with one ask.", db_path=db) == (
         None, "changed_meanwhile")
     assert voice.get_voice(pid, db_path=db).locked
+
+
+# --------------------------------------------------------------------------- #
+# Grading: how did each turn go?
+# --------------------------------------------------------------------------- #
+
+ASK = "set up an alert for the Maple House invoice when it goes late"
+AGAIN = "did you set up that alert for the Maple House invoice? I don't see it"
+
+
+def _turns(db: Path) -> list[Any]:
+    conn = cr._connect(db)
+    try:
+        return conn.execute(f"SELECT * FROM {cr.TURNS_TABLE} ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+def _grade_content(provider: _Provider) -> str:
+    return provider.grade_calls[0]["messages"][0]["content"]
+
+
+def test_it_grades_each_turn_and_keeps_what_they_wanted(db: Path, roster: SimpleNamespace,
+                                                        provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
+    _record(roster.principal, text=AGAIN, reply="Sorry, creating it now.", at=NOW + timedelta(minutes=2))
+    provider.grades = [
+        {"turn": 1, "verdict": "miss", "kind": "company",
+         "wanted": "The alert created in the turn, not a promise to watch.",
+         "quote": "did you set up that alert"},
+        {"turn": 2, "verdict": "fine"},
+    ]
+    assert _review(db)["reviewed"] == 1
+    assert len(provider.grade_calls) == 1
+    assert provider.grade_calls[0]["tool_choice"] == {"type": "tool", "name": "grade_turns"}
+    assert "[1] SIGNALS: none" in _grade_content(provider)
+    first, second = _turns(db)
+    assert first["verdict"] == "miss" and first["kind"] == "company"
+    assert first["wanted"] == "The alert created in the turn, not a promise to watch."
+    assert first["graded_at"] is not None and json.loads(first["signals"]) == []
+    assert second["verdict"] == "fine" and second["wanted"] is None
+    assert cr.weekly_rates(person_id=roster.principal.id, db_path=db) == [
+        {"week": "2026-W42", "graded": 2, "misses": 1}
+    ]
+    events = audit_logger.get_audit_logger().query(event_type="chat_review", all_owners=True)
+    assert any("1 miss(es) in 2 graded turn(s)" in e.summary for e in events)
+
+
+def test_a_miss_without_their_words_is_unclear(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.")
+    provider.grades = [
+        {"turn": 1, "verdict": "miss", "wanted": "A shorter answer.", "quote": "make it much shorter please"},
+    ]
+    _review(db)
+    [row] = _turns(db)
+    assert row["verdict"] == "unclear" and row["wanted"] is None and row["kind"] is None
+    assert cr.weekly_rates(person_id=None, db_path=db) == [{"week": "2026-W42", "graded": 1, "misses": 0}]
+
+
+def test_a_skipped_or_odd_grade_is_unclear(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="Done.")
+    _record(roster.principal, text=AGAIN, reply="Done.", at=NOW + timedelta(minutes=1))
+    provider.grades = [{"turn": 1, "verdict": "great"}, {"turn": 9, "verdict": "miss"}]
+    _review(db)
+    assert [r["verdict"] for r in _turns(db)] == ["unclear", "unclear"]
+
+
+def test_the_signals_the_product_recorded_reach_the_grader(db: Path, roster: SimpleNamespace,
+                                                           provider: _Provider) -> None:
+    from openexecutive.audit import log_event
+    from openexecutive.audit.context import set_turn
+    from openexecutive.memory.session_store import (
+        create_session,
+        save_message,
+        set_message_feedback,
+    )
+
+    create_session("s-1", "Alerts", NOW.isoformat(), db_path=db)
+    reply = "I've set that up for you."
+    with set_turn(session_id="s-1", turn_id="turn-1"):
+        cr.record_turn(ASK, reply, session=_web(roster.principal.id), person_id=roster.principal.id,
+                       calls=[("create_alert", '{"error": "alerts are off"}'), ("list_people", "ok")], now=NOW)
+    log_event("claim_check", "Reply claimed a change no tool made", session_id="s-1", turn_id="turn-1",
+              actor="executive")
+    mid = save_message("s-1", "assistant", reply, db_path=db, stopped=True)
+    set_message_feedback("s-1", mid, "down", "it never made the alert", db_path=db,
+                         by_person_id=roster.principal.id)
+    # A second turn the person took back: its reply is gone from the chat.
+    cr.record_turn(AGAIN, "Let me look.", session=_web(roster.principal.id), person_id=roster.principal.id,
+                   calls=[], now=NOW + timedelta(minutes=2))
+    log_event("session_rewound", "Last turn taken back", session_id="s-1", actor="user")
+    provider.grades = [{"turn": 1, "verdict": "fine"}, {"turn": 2, "verdict": "fine"}]
+    _review(db)
+    content = _grade_content(provider)
+    assert ("[1] SIGNALS: thumbs down: it never made the alert; stopped the reply; "
+            "the reply claimed a change no tool made; tool create_alert failed") in content
+    assert "[2] SIGNALS: took the turn back to ask again" in content
+    first, second = _turns(db)
+    assert first["message_id"] == mid and second["message_id"] is None
+    assert json.loads(first["signals"])[0] == "thumbs down: it never made the alert"
+
+
+def test_a_miss_outlives_the_week_and_a_fine_turn_does_not(db: Path, roster: SimpleNamespace,
+                                                          provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
+    _record(roster.principal, text=AGAIN, reply="Creating it now.", at=NOW + timedelta(minutes=1))
+    provider.grades = [{"turn": 1, "verdict": "miss", "kind": "product", "wanted": "The alert created.",
+                        "quote": "did you set up that alert"}, {"turn": 2, "verdict": "fine"}]
+    _review(db)
+    _record(roster.principal, text="anything new today for the Maple House invoice?", at=NOW + timedelta(days=10))
+    kept = [(r["message"], r["verdict"]) for r in _turns(db)]
+    assert kept[0] == (ASK, "miss") and len(kept) == 2 and kept[1][1] is None
+    _record(roster.principal, text="anything new for the Maple House invoice this quarter?",
+            at=NOW + timedelta(days=cr.MISS_KEEP_DAYS + 1))
+    assert all(r["verdict"] is None for r in _turns(db))
+
+
+def test_a_failed_grade_still_runs_the_fixes(db: Path, roster: SimpleNamespace,
+                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Broken(_Provider):
+        async def messages_create(self, **kw: Any) -> Any:
+            if (kw.get("tool_choice") or {}).get("name") == cr.GRADE_TOOL["name"]:
+                raise RuntimeError("model down")
+            return await super().messages_create(**kw)
+
+    fake = _Broken([])
+    monkeypatch.setattr(providers, "get_provider", lambda _model: fake)
+    _record(roster.principal)
+    assert _review(db)["reviewed"] == 1
+    assert len(fake.calls) == 1
+    [row] = _turns(db)
+    assert row["verdict"] is None and row["reviewed_at"] is not None
+
+
+def test_misses_are_listed_per_person_and_forgotten_by_their_owner(db: Path, roster: SimpleNamespace,
+                                                                   provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
+    _record(roster.principal, text=AGAIN, reply="Creating it now.", at=NOW + timedelta(minutes=1))
+    provider.grades = [{"turn": 1, "verdict": "miss", "wanted": "The alert created.",
+                        "quote": "did you set up that alert"}, {"turn": 2, "verdict": "fine"}]
+    _review(db)
+    teammate = Session(session_id="s-2", origin_channel="slack", origin_channel_ref="C1",
+                       caller_person_id=roster.teammate.id, speaker_verified=True)
+    monkeypatch_verified = roster.teammate
+    cr.record_turn("send Dana the price list by Friday please", "Noted.", session=teammate,
+                   person_id=monkeypatch_verified.id, calls=[], now=NOW)
+    everyone = cr.list_misses(person_id=None, db_path=db)
+    assert [m["person_name"] for m in everyone] == ["Olivia Owner"]
+    miss = everyone[0]
+    assert miss["message"] == ASK and miss["wanted"] == "The alert created." and miss["kind"] == "company"
+    assert miss["session_id"] == "s-1" and miss["tools"] == [] and miss["signals"] == []
+    assert cr.list_misses(person_id=roster.teammate.id, db_path=db) == []
+    assert not cr.forget_miss(miss["id"], caller_person_id=roster.teammate.id, db_path=db)
+    assert not cr.forget_miss(miss["id"] + 50, caller_person_id=roster.principal.id, db_path=db)
+    assert cr.forget_miss(miss["id"], caller_person_id=roster.principal.id, db_path=db)
+    assert cr.list_misses(person_id=None, db_path=db) == []
