@@ -109,6 +109,11 @@ class FakeStorage:
             )
         if name == "google_workspace__manage_drive_access":
             return f"Successfully shared '{args['file_id']}'"
+        if name == "google_workspace__get_drive_file_permissions":
+            # The gateway checks a write's folder is the Executive's own.
+            if args["file_id"] not in self.folders:
+                return "Error getting file permissions: 404"
+            return f"File: x\nOwners: Executive ({get_settings().exec_email_address.lower()})"
         if name == "google_workspace__get_drive_file_content":
             return f"File: {self.files[args['file_id']]['name']}"
         if name == "microsoft_365__list-drives":
