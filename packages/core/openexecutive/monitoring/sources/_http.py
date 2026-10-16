@@ -50,7 +50,9 @@ def _resolve_public(url: str) -> tuple[list[str], str]:
     Returns ``(ips, "")`` on success or ``([], reason)`` when the URL is
     refused: a scheme outside :data:`ALLOWED_SCHEMES`, no host, a DNS
     failure, or any address that is loopback / link-local / private /
-    reserved / multicast / unspecified.
+    reserved / multicast / unspecified, or otherwise not globally
+    routable (e.g. the 100.64.0.0/10 shared range some clouds use for
+    metadata).
     """
     try:
         parsed = urlparse(url)
@@ -59,7 +61,15 @@ def _resolve_public(url: str) -> tuple[list[str], str]:
     scheme = (parsed.scheme or "").lower()
     if scheme not in ALLOWED_SCHEMES:
         return [], f"scheme {scheme!r} not in {sorted(ALLOWED_SCHEMES)}"
-    host = parsed.hostname or ""
+    if not parsed.hostname:
+        return [], "URL has no host"
+    # Resolve the name httpx will put in Host and the TLS server name
+    # (IDNA 2008), not the str form, which getaddrinfo would encode with
+    # IDNA 2003 and could turn into a different name.
+    try:
+        host = httpx.URL(url).raw_host.decode("ascii")
+    except httpx.InvalidURL as exc:
+        return [], f"unparseable URL: {exc}"
     if not host:
         return [], "URL has no host"
     try:
@@ -79,6 +89,7 @@ def _resolve_public(url: str) -> tuple[list[str], str]:
             or ip.is_reserved
             or ip.is_multicast
             or ip.is_unspecified
+            or not ip.is_global
         ):
             return [], f"host {host!r} resolves to non-public IP {ip}"
         if str(ip) not in ips:
@@ -125,6 +136,43 @@ def _transport() -> httpx.AsyncBaseTransport:
     return httpx.AsyncHTTPTransport(retries=0)
 
 
+async def _get_pinned(
+    target: httpx.URL, ip: str, max_bytes: int, user_agent: str
+) -> tuple[str | None, bytes]:
+    """One GET of ``target`` sent to ``ip``: ``(location, b"")`` for a
+    redirect, else ``(None, body)``."""
+    extensions = (
+        {"sni_hostname": target.raw_host.decode("ascii")}
+        if target.scheme == "https"
+        else {}
+    )
+    # A fresh client per hop: a pooled TLS connection to the same IP
+    # would otherwise carry the previous hop's server name.
+    async with (
+        httpx.AsyncClient(
+            timeout=HTTP_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            transport=_transport(),
+            headers={"User-Agent": user_agent},
+        ) as client,
+        client.stream(
+            "GET",
+            target.copy_with(host=ip),
+            headers={"Host": target.netloc.decode("ascii")},
+            extensions=extensions,
+        ) as resp,
+    ):
+        if resp.has_redirect_location:
+            return resp.headers["Location"], b""
+        resp.raise_for_status()
+        buf = bytearray()
+        async for chunk in resp.aiter_bytes():
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise FetchOverflowError()
+        return None, bytes(buf)
+
+
 async def fetch_bounded(
     url: str, max_bytes: int, *, user_agent: str | None = None
 ) -> bytes:
@@ -158,34 +206,21 @@ async def fetch_bounded(
             target = httpx.URL(current)
         except httpx.InvalidURL as exc:
             raise BlockedTargetError(f"refused {strip_url_query(current)}: {exc}") from exc
-        pinned = target.copy_with(host=ips[0])
-        extensions = {"sni_hostname": target.host} if target.scheme == "https" else {}
-        # A fresh client per hop: a pooled TLS connection to the same IP
-        # would otherwise carry the previous hop's server name.
-        async with (
-            httpx.AsyncClient(
-                timeout=HTTP_TIMEOUT_SECONDS,
-                follow_redirects=False,
-                transport=_transport(),
-                headers={"User-Agent": user_agent or USER_AGENT},
-            ) as client,
-            client.stream(
-                "GET",
-                pinned,
-                headers={"Host": target.netloc.decode("ascii")},
-                extensions=extensions,
-            ) as resp,
-        ):
-            if resp.has_redirect_location:
-                current = str(target.join(resp.headers["Location"]))
-                continue
-            resp.raise_for_status()
-            buf = bytearray()
-            async for chunk in resp.aiter_bytes():
-                buf.extend(chunk)
-                if len(buf) > max_bytes:
-                    raise FetchOverflowError()
-            return bytes(buf)
+        # Every address passed the check, so trying the next one when a
+        # connect fails (e.g. an IPv6 answer with no IPv6 route) keeps the
+        # guard intact.
+        for i, ip in enumerate(ips):
+            try:
+                location, body = await _get_pinned(
+                    target, ip, max_bytes, user_agent or USER_AGENT
+                )
+                break
+            except httpx.ConnectError:
+                if i == len(ips) - 1:
+                    raise
+        if location is None:
+            return body
+        current = str(target.join(location))
     raise httpx.TooManyRedirects(f"more than {MAX_REDIRECTS} redirects from {strip_url_query(url)}")
 
 

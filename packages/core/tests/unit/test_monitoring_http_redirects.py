@@ -19,14 +19,19 @@ DNS = {
     "feed.example.com": "93.184.215.14",
     "cdn.example.net": "151.101.1.69",
     "rebind.example.org": "10.0.0.7",
+    "dual.example.com": ["2606:4700::6810:84e5", "104.16.132.229"],
+    "xn--fa-hia.example": "93.184.215.14",
 }
 
 
 def _fake_getaddrinfo(host: str, port: object, *args: object, **kwargs: object) -> list:
-    addr = DNS.get(host, host)
-    family = socket.AF_INET6 if ":" in addr else socket.AF_INET
-    sockaddr = (addr, 0, 0, 0) if family == socket.AF_INET6 else (addr, 0)
-    return [(family, socket.SOCK_STREAM, 6, "", sockaddr)]
+    found = DNS.get(host, host)
+    infos = []
+    for addr in [found] if isinstance(found, str) else found:
+        family = socket.AF_INET6 if ":" in addr else socket.AF_INET
+        sockaddr = (addr, 0, 0, 0) if family == socket.AF_INET6 else (addr, 0)
+        infos.append((family, socket.SOCK_STREAM, 6, "", sockaddr))
+    return infos
 
 
 class _Server:
@@ -64,6 +69,7 @@ def _redirect(location: str) -> httpx.Response:
         "http://127.0.0.1/admin",
         "http://169.254.169.254/latest/meta-data/",
         "http://[fdaa::3]:8080/internal",
+        "http://100.100.100.200/latest/meta-data/",
         "http://rebind.example.org/",
         "file:///etc/passwd",
     ],
@@ -127,6 +133,34 @@ async def test_plain_http_sends_no_server_name(server) -> None:
     srv = server({"feed.example.com/": httpx.Response(200, content=b"ok")})
     await fetch_bounded("http://feed.example.com/", 100)
     assert "sni_hostname" not in srv.requests[0].extensions
+
+
+async def test_next_vetted_address_is_tried_when_connect_fails(server) -> None:
+    srv = server({"dual.example.com/": httpx.Response(200, content=b"ok")})
+    inner = srv.__call__
+
+    def no_ipv6_route(request: httpx.Request) -> httpx.Response:
+        if ":" in request.url.host:
+            srv.requests.append(request)
+            raise httpx.ConnectError("unreachable", request=request)
+        return inner(request)
+
+    srv.__call__ = no_ipv6_route  # type: ignore[method-assign]
+    _http_transport = httpx.MockTransport(no_ipv6_route)
+    server_patch = pytest.MonkeyPatch()
+    server_patch.setattr(_http, "_transport", lambda: _http_transport)
+    try:
+        assert await fetch_bounded("https://dual.example.com/", 100) == b"ok"
+    finally:
+        server_patch.undo()
+    assert [r.url.host for r in srv.requests] == ["2606:4700::6810:84e5", "104.16.132.229"]
+
+
+async def test_idn_host_uses_the_encoded_name(server) -> None:
+    srv = server({"xn--fa-hia.example/": httpx.Response(200, content=b"ok")})
+    await fetch_bounded("https://faß.example/", 100)
+    assert srv.requests[0].headers["host"] == "xn--fa-hia.example"
+    assert srv.requests[0].extensions["sni_hostname"] == "xn--fa-hia.example"
 
 
 async def test_redirect_cap(server) -> None:
