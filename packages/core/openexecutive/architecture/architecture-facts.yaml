@@ -880,7 +880,7 @@ routing:
     side-effecting tool so a chip surfaces in the live stream
     ("Approved proposal #N" / "Dismissed proposal #N"). The button-driven
     Approve / Dismiss path on the briefing page still acks via the HTTP
-    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — additive only, so an address dropped from the roster stays scheduleable for the life of the in-memory session. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave origin_channel empty while legitimately recording linkage (the email poller, which records it too, tags its turns origin_channel="email"). scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set. FIND_ALERTS widens the set in one place only: `find_alerts(query, limit)` (schedule_tools) searches headline and body of alerts of any status in SQL (`alerts.store.search_alerts`: every word must match, LIKE-escaped, newest first) so the principal can clear an item that has left the live board — observed: asked to retire three duplicates they had already opened, the Executive named the right ids and was refused because the rows were `read`. It answers at all only when `render_and_trust` set Session.principal_board_shown this turn (the verified principal, and on a channel only in their DM — attach_briefing_context's gate) and the session is neither unattended nor email-started. Two gates that looked sufficient were not: "widen if trusted_alert_ids is not None" (every Session starts with an EMPTY set, which is how Google Chat, other people's DMs, email and unattended turns refuse every ack, so any of them could find-then-ack anything), and `is_principal_on_verified_surface` alone (it also passes the principal's turn in a shared Slack/Discord thread, where others read the reply — the board is company-wide — and can write into the thread the model reasons over). It trusts only ids its own query returned, only open rows (`unread`, `read`; closed rows come back can_ack false), never `roster_request` cards, at most 25 rows per call and 25 ids per TURN across calls (Session.found_alert_ids, reset by render_and_trust and by the chat route with the trusted set), and refuses a query with no word of 3+ characters — a per-call cap alone bounds nothing when a steered model can call once per letter. What it widens is the attack surface already admitted above: the query is the model's choice and the model reads attacker-controlled alert bodies, so an argued-into search can put up to 25 open, off-board alerts in reach per turn; the tool description forbids searching for text taken from an alert or inbound message, which is a prompt rule, not a control.
+    TRUST: the server-side check runs on EVERY session, not only those with an origin_channel. It previously skipped web sessions, so the browser — the surface the principal actually uses — had no check and the model could ack any id, including one an inbound email wrote into an alert body that the Discuss handoff quoted into the turn. `briefing.context.render_and_trust` is the single place that renders the digest AND records the live board onto session.trusted_alert_ids (the whole live set, not only the printed rows, so a card past the 30-row render cap stays ackable). The control bounds the model to server-derived live ids — it refuses invented, closed, snoozed and expired ones — but does NOT prevent the model being argued into acking the wrong live card; do not document it as immunity to cross-alert injection; the web chat route and the channel adapters both go through it, so the block shown and the set accepted cannot drift. An empty trusted set refuses everything, which is the safe default for a turn that was shown no board (non-DM / non-principal channel turns, or a digest that failed to build). The tool reads that set off `current_session`, so the BINDING is load-bearing: the chat route binds the session for the whole SSE body via `schedule_tools.set_session`, beside `set_turn`. `Executive.stream_chat` also binds it with a bare `set()` at its top, and that suffices only for callers driving the generator with a plain `async for` (the adapters' .chat() wrapper, CLI, tests). The SSE route drives it under `asyncio.wait_for(stream.__anext__())`, which copies the context per step, so a binding made inside the generator dies with step one and every later step — including the entire tool-call loop — reads None. That shipped in the same change that extended the check to web, and the two combined refused every ack the principal made on live cards. Both managers save/restore rather than Token.reset, because __exit__ runs in a different Context than __enter__ on this path. Anything else reading current_session mid-turn inherits the same requirement, and two needed more than the binding. schedule_followup's seen-channel_ref anti-spam gate is a no-op without a session (so web could schedule to ANY address) and refuses everything with an empty one (so it refused the principal's own), until the route seeds the caller's own addresses onto the session — replaced every turn, so in a shared chat each speaker may schedule only to their own addresses (a teammate speaking after the principal can't queue a message to the principal) and an address dropped from the roster stops being one. Reply linkage (_record_outbound_context, read back by inbound_hydration) is deliberately NOT switched on for web by that binding; it is keyed on the explicit Session.from_web_chat flag, never on an empty origin_channel, because alert review, the CLI, the MCP server, the scheduler and the unattended workflows all leave origin_channel empty while legitimately recording linkage (the email poller, which records it too, tags its turns origin_channel="email"). scheduled_actions rows also lose their session_id without the binding. The digest additionally names recently closed alerts in an 'Already handled' tail so the Executive can say an item is already cleared instead of sending the principal to dismiss it again; those ids are NOT added to the trusted set. FIND_ALERTS widens the set in one place only: `find_alerts(query, limit)` (schedule_tools) searches headline and body of alerts of any status in SQL (`alerts.store.search_alerts`: every word must match, LIKE-escaped, newest first) so the principal can clear an item that has left the live board — observed: asked to retire three duplicates they had already opened, the Executive named the right ids and was refused because the rows were `read`. It answers at all only when `render_and_trust` set Session.principal_board_shown this turn (the verified principal, and on a channel only in their DM — attach_briefing_context's gate) and the session is neither unattended nor email-started. Two gates that looked sufficient were not: "widen if trusted_alert_ids is not None" (every Session starts with an EMPTY set, which is how Google Chat, other people's DMs, email and unattended turns refuse every ack, so any of them could find-then-ack anything), and `is_principal_on_verified_surface` alone (it also passes the principal's turn in a shared Slack/Discord thread, where others read the reply — the board is company-wide — and can write into the thread the model reasons over). It trusts only ids its own query returned, only open rows (`unread`, `read`; closed rows come back can_ack false), never `roster_request` cards, at most 25 rows per call and 25 ids per TURN across calls (Session.found_alert_ids, reset by render_and_trust and by the chat route with the trusted set), and refuses a query with no word of 3+ characters — a per-call cap alone bounds nothing when a steered model can call once per letter. What it widens is the attack surface already admitted above: the query is the model's choice and the model reads attacker-controlled alert bodies, so an argued-into search can put up to 25 open, off-board alerts in reach per turn; the tool description forbids searching for text taken from an alert or inbound message, which is a prompt rule, not a control.
     route — the tool exists for the chat-driven path that the model
     self-detects from natural-language approval. The same feedback loop as
     the HTTP ack applies: a `dismissed` on a watch-sourced alert lowers
@@ -9843,6 +9843,74 @@ delegation:
     a link), Telegram sendMessage sets link_preview_options.is_disabled,
     Slack's reply say passes unfurl_links/unfurl_media False, and every
     Discord reply send passes suppress_embeds=True.
+  save_file: |
+    save_my_email_attachment(message_id, index) (orchestrator.mail_read_tools,
+    orchestrator.mail_file_save) copies one attached file of the speaker's
+    own mail into the storage the Executive has connected and shares it with
+    them alone, returning {status saved | saved_not_shared | failed |
+    no_storage | too_large, name, where, link}. Only when they asked in their
+    own words this turn: own_words of speaker_text must hold one of
+    _SAVE_WORDS (save, saved, store, upload, drive, onedrive), checked before
+    the slot (TurnDelegation.files_saved, SAVES_PER_TURN 10) and before the
+    mailbox is opened; else status not_asked. Bytes via
+    mailbox.attachment_bytes, never the model; any type, MAX_ATTACHMENT_BYTES
+    (20 MB) checked on the listing and on the bytes; clean_name strips
+    path/reserved/control characters and keeps the extension. Storage
+    (storage_for): EMAIL_PROVIDER's server when the gateway has it and it
+    doesn't need a reconnect, else the other; neither, or an eval mailbox
+    (ScenarioMailbox.saves_to_storage False): status no_storage, the model
+    offers to forward instead. Folder: always made by the save
+    (create_drive_folder / create-onedrive-folder "From your email"), never
+    found by search or listing (a folder anyone made with that name could
+    already be shared with them), its id kept in delegation_saved_folder
+    (provider, account, folder_id, drive_id, created_at, current). When the
+    remembered folder is gone or refuses the file, forget_folder marks it not
+    current (the row stays, still protected) and a new one is made. Google:
+    create_drive_file (base64_content, content_mime_type, base64_sha256; never
+    fileUrl); manage_drive_access grant, share_type user, role reader,
+    send_notification false, share_with the speaker's address. Microsoft:
+    list-drives (personal or business drive), upload-file-content to
+    "<folder>:/<free name>:" (an upload overwrites, so a name any recorded
+    copy has, saved_files.names, becomes "name (2).ext"; the folder is never
+    listed), share-drive-item with one email recipient, roles [read],
+    requireSignIn true, sendInvitation false. One save at a time per event
+    loop. Lockdown: in MAIL_TOUCHED_ALLOWED_TOOLS; its calls pass the
+    mail-read refusal in MCPGateway.call_tool only as the exact objects held
+    in code_built_call (identity, one of the seven _CODE_BUILT_TOOLS:
+    create_drive_folder, create_drive_file, manage_drive_access, list-drives,
+    create-onedrive-folder, upload-file-content, share-drive-item), so a model
+    call on that turn is still refused; every other gate (acting account, URL
+    fetch, sheet formulas, _check_drive_share / _check_m365_drive_share roster
+    check, _check_m365_drive_write own drives) still runs. Not in
+    PRIVATE_TURN_WITHHELD_TOOLS: it is never offered on a private-to-principal
+    turn (Act as me isn't), and a later turn of a mail-private conversation
+    may use it. Privacy (delegation.saved_files, table
+    delegation_saved_files: person_id, provider, file_id, name, saved_at;
+    recorded before the share; first owner kept): on every Google Workspace /
+    Microsoft 365 call the gateway reads protected(viewer_person_id())
+    (viewer = the pinned speaker when Act as me was offered, else None = all
+    files hidden; the DB opened read-only, a missing DB or table = none). It
+    refuses a call whose arguments name a file not the viewer's, and
+    _hide_saved_files drops JSON list entries, then lines, naming one and
+    masks any left. Folders, on every turn and for every speaker including
+    the owner: a model call whose arguments name any recorded folder id, or
+    (Microsoft) an item path through the folder name ("root:/From your
+    email/x.pdf:", matched case- and space-insensitively after URL
+    decoding; "<folder id>:/x.pdf:" is caught by the id), is refused, and
+    _hide_saved_folders drops entries and lines naming a folder id and masks
+    any left; only code-built calls skip both. Record failure after the
+    upload: saved_files.quarantine hides the copy's id from every turn for
+    the life of the process, nothing is shared, status failed, logged at
+    error. A lookup failure refuses tools matching _FILE_TOOL_RE (drive,
+    folder, file, download_bytes, doc, sheet, slide, presentation) and leaves
+    mail and calendar unfiltered. Limits: ids are matched as text (a title
+    without its id still shows), a copy someone makes is a new file, the
+    quarantine does not survive a restart, sharing a whole drive root is not
+    covered, and anyone signed in to the Executive's account outside the app
+    sees everything. Rows are not deleted when Act as me is turned off.
+    Persona: the DELEGATION_ADDENDUM tells the model to use it once per file
+    when asked to save, store or upload a file and to give them the link.
+    Eval: delegation_014.
   calendar: |
     Read my calendar (delegation.calendar, table delegation_calendar, one
     row per person, absent/unreadable = off). Read-only, on the Act as me
@@ -10136,7 +10204,8 @@ delegation:
   lockdown: |
     Once a turn has read the principal's own mail — from the round that
     calls ghostwrite_email or a mailbox read (search_my_email,
-    read_my_email, read_my_email_attachment, my_email_awaiting_reply) or
+    read_my_email, read_my_email_attachment, my_email_awaiting_reply,
+    save_my_email_attachment, which stays allowed: see save_file) or
     recall_history, since a round's tools run together — only a door to the
     open internet or to everyone stays shut until the turn ends
     (delegation.lockdown, MAIL_TOUCHED_WITHHELD_TOOLS): outside fetches
@@ -10715,7 +10784,8 @@ delegation:
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,
     delegation_handle_it, delegation_handled, delegation_reminders,
-    delegation_mail_read and delegation_training (delegation.schema.TABLES) in the episodic DB (created by
+    delegation_mail_read, delegation_training, delegation_saved_files and
+    delegation_saved_folder (delegation.schema.TABLES) in the episodic DB (created by
     memory.episodic.initialize_db via delegation.schema.ensure_schema); per
     company — in clients.slots._BLANK_WIPE_TABLES and
     cli.fixture_loader.reset_all_state. A reply card is a decision_instances

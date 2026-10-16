@@ -218,8 +218,13 @@ def _reader_id(session: Any) -> int | None:
 
     caller = getattr(session, "caller_person_id", None)
     if getattr(session, "unattended", False) is True:
-        # A background run (a follow-up, the reflection) works for the
-        # principal and reports to them: it reads as them.
+        # A follow-up a teammate queued reads as them: what it writes is
+        # sent to them (`Session.run_for_person_id`).
+        run_for = getattr(session, "run_for_person_id", None)
+        if isinstance(run_for, int) and not isinstance(run_for, bool):
+            return run_for
+        # Any other background run (a follow-up, the reflection) works for
+        # the principal and reports to them: it reads as them.
         principal = find_principal_person()
         return principal.id if principal is not None else None
     if principal_speaking(session):

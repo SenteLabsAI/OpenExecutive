@@ -374,6 +374,12 @@ def test_a_background_run_reads_as_the_principal(roster: SimpleNamespace) -> Non
     assert tm._reader_id(session) == roster.owner
 
 
+def test_a_teammates_scheduled_run_reads_as_that_teammate(roster: SimpleNamespace) -> None:
+    """What it writes is sent to them, so the owner's mail stays out."""
+    session = SimpleNamespace(unattended=True, caller_person_id=None, run_for_person_id=roster.ben)
+    assert tm._reader_id(session) == roster.ben
+
+
 def test_a_step_outside_any_session_sees_no_teammates_mail(roster: SimpleNamespace) -> None:
     current_session.set(None)
     text = _message(TEAMMATE, EXEC)

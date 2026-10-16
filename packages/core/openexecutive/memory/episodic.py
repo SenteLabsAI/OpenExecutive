@@ -96,6 +96,11 @@ class ScheduledAction(BaseModel):
     # pin per-action routing (e.g. fixture-staged proposals; the
     # Executive's schedule_followup tool when the LLM specifies scope).
     required_scope: str | None = None
+    # The person whose turn queued this row (schedule_followup,
+    # suggest_workflow). A row a teammate other than the principal queued
+    # runs as that teammate and reaches only them (scheduler.runner). NULL
+    # for rows the system queued and for rows from before the column.
+    created_by_person_id: int | None = None
 
 
 class OutboundContext(BaseModel):
@@ -336,6 +341,8 @@ def initialize_db(db_path: Path | None = None) -> None:
             # route to a non-principal approver (e.g. vendor_onboarding
             # → the Product head). Nullable; None falls back to WILDCARD.
             ("required_scope", "TEXT"),
+            # Who queued the row (ScheduledAction.created_by_person_id).
+            ("created_by_person_id", "INTEGER"),
         ):
             if col not in _sa_existing:
                 try:
@@ -1181,6 +1188,7 @@ def insert_scheduled_action(
     scope_key: str | None = None,
     required_scope: str | None = None,
     status: str = "pending",
+    created_by_person_id: int | None = None,
     db_path: Path | None = None,
 ) -> int:
     if channel not in _VALID_SCHEDULED_CHANNELS:
@@ -1203,12 +1211,12 @@ def insert_scheduled_action(
             "INSERT INTO scheduled_actions "
             "(created_at, run_at, channel, channel_ref, intent_text, originating_session_id, "
             "department, kind, assigned_to_person_id, awaiting_response_since, scope_key, "
-            "required_scope, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "required_scope, status, created_by_person_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 now, run_at, channel, channel_ref, intent_text, originating_session_id,
                 department, kind, assigned_to_person_id, awaiting_str, scope_key,
-                required_scope, status,
+                required_scope, status, created_by_person_id,
             ),
         )
         return int(cursor.lastrowid or 0)

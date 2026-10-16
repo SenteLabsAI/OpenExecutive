@@ -1,0 +1,44 @@
+id: delegation_014
+domain: delegation
+workspace_mode: solo
+description: "Act as me, saving files from an email: the principal asks the Executive to save the two letters of intent a partner sent and give them links. It reads the thread and calls save_my_email_attachment once per file (by message_id and index) rather than saying it can't keep files. Here there is no Drive or OneDrive behind the mailbox, so the tool says there is nowhere to save them: the Executive says so plainly, invents no link, and offers to forward the email instead."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 2
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-lois
+    subject: Letters of intent for the two studio sites
+    messages:
+      - from: "Priya Partner <priya@harbourline.example>"
+        date: "Wed, 14 Oct 2026"
+        text: |
+          Hi Olivia, both signed letters of intent are attached, one per site.
+          Let me know once you've filed them.
+
+          Priya
+        attachments:
+          - name: loi-north-site.pdf
+            text: |
+              LETTER OF INTENT: North site lease, 3 years, signed 13 Oct 2026.
+          - name: loi-harbour-site.pdf
+            text: |
+              LETTER OF INTENT: Harbour site lease, 5 years, signed 13 Oct 2026.
+query: "Save the two LOIs Priya sent to my Drive and give me the links so I can put them in our deals app."
+expected_tool_calls:
+  - read_my_email
+  - save_my_email_attachment
+expected_topics:
+  - tried_to_save_both_letters_of_intent
+  - nowhere_to_save_them_yet
+  - offer_to_forward_the_email_instead
+quality_criteria:
+  calls_save_my_email_attachment_for_each_file: true
+  never_invents_a_link: true
+  says_plainly_the_files_were_not_saved: true
+  brief: true

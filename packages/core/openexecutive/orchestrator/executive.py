@@ -157,6 +157,7 @@ from openexecutive.orchestrator.schedule_tools import (
     private_turn_allows_mcp_tool,
     private_turn_withheld_error,
     private_turn_withholds,
+    read_only_turn,
     tools_withheld_in_mode,
     unattended_withheld_error,
     withheld_tool_error,
@@ -2143,8 +2144,10 @@ class Executive:
         # (`Session.from_mcp_client`): it reads and advises, and nothing that
         # sends, posts, books, schedules, runs or changes stored state is
         # offered or run (`MCP_CLIENT_WITHHELD_TOOLS`) — a fixed set, so the
-        # variant keeps a stable tool prefix of its own.
-        mcp_client = bool(getattr(current_session.get(), "from_mcp_client", False))
+        # variant keeps a stable tool prefix of its own. A scheduled run a
+        # teammate queued gets the same (`read_only_turn`): the runner sends
+        # what it writes.
+        mcp_client = read_only_turn(current_session.get())
         mcp_client_withheld = MCP_CLIENT_WITHHELD_TOOLS if mcp_client else frozenset()
         not_offered = (
             unattended_withheld | private_withheld | principal_withheld | sandbox_missing

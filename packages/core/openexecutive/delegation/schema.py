@@ -23,6 +23,8 @@ MAIL_READ_TABLE = "delegation_mail_read"
 TRAINING_TABLE = "delegation_training"
 DISCLOSURE_TABLE = "delegation_disclosure"
 CALENDAR_TABLE = "delegation_calendar"
+SAVED_FILES_TABLE = "delegation_saved_files"
+SAVED_FOLDER_TABLE = "delegation_saved_folder"
 
 TABLES: tuple[str, ...] = (
     SETTINGS_TABLE,
@@ -39,6 +41,8 @@ TABLES: tuple[str, ...] = (
     TRAINING_TABLE,
     DISCLOSURE_TABLE,
     CALENDAR_TABLE,
+    SAVED_FILES_TABLE,
+    SAVED_FOLDER_TABLE,
 )
 
 _DDL: tuple[str, ...] = (
@@ -215,6 +219,32 @@ _DDL: tuple[str, ...] = (
     "  enabled INTEGER NOT NULL DEFAULT 0,"
     "  updated_at TEXT,"
     "  updated_by TEXT"
+    ")",
+    # The files save_my_email_attachment copied from someone's own mail into
+    # the Executive's Drive or OneDrive (delegation.saved_files): whose each
+    # one is, so the gateway hides it from everyone else's turns. The file's
+    # id and name, never its content or the mail it came from.
+    f"CREATE TABLE IF NOT EXISTS {SAVED_FILES_TABLE} ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  person_id INTEGER NOT NULL,"
+    "  provider TEXT NOT NULL,"
+    "  file_id TEXT NOT NULL,"
+    "  name TEXT NOT NULL DEFAULT '',"
+    "  saved_at TEXT NOT NULL,"
+    "  UNIQUE(provider, file_id)"
+    ")",
+    # Every "From your email" folder those files went in, made by the save
+    # itself (never one found by name): current marks the one in use per
+    # storage and Executive account; a retired one stays listed, since the
+    # gateway keeps every one of them out of reach of the model.
+    f"CREATE TABLE IF NOT EXISTS {SAVED_FOLDER_TABLE} ("
+    "  provider TEXT NOT NULL,"
+    "  account TEXT NOT NULL,"
+    "  folder_id TEXT NOT NULL,"
+    "  drive_id TEXT NOT NULL DEFAULT '',"
+    "  created_at TEXT NOT NULL,"
+    "  current INTEGER NOT NULL DEFAULT 1,"
+    "  PRIMARY KEY (provider, folder_id)"
     ")",
 )
 

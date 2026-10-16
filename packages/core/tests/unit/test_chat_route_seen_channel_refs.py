@@ -292,3 +292,36 @@ def test_a_scheduled_action_from_web_carries_the_session_id(
     rows = list_scheduled_actions(db_path=Path("./episodic_memory.db").resolve())
     assert len(rows) == 1
     assert rows[0].originating_session_id == session.session_id
+
+
+def test_the_row_keeps_who_scheduled_it(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _schedule_from_stream_step(_CALLER_EMAIL, monkeypatch)
+
+    import json
+
+    row = episodic.get_scheduled_action(json.loads(result)["id"])
+    owner = people_store.find_person_by_email(_CALLER_EMAIL)
+    assert row is not None and owner is not None
+    assert row.created_by_person_id == owner.id
+
+
+def test_each_speaker_gets_only_their_own_addresses(env: Path) -> None:
+    """A shared chat keeps one session for everyone in it. A teammate who
+    speaks after the principal must not inherit the principal's addresses,
+    or they could schedule a message to the principal worded by them."""
+    from openexecutive.orchestrator.session import Session
+
+    teammate = people_store.upsert_person(full_name="Sam", email="sam@example.com")
+    owner = people_store.find_person_by_email(_CALLER_EMAIL)
+    assert owner is not None and owner.id is not None
+    session = Session()
+
+    chat_route._seed_seen_channel_refs(session, owner.id)
+    chat_route._seed_seen_channel_refs(session, teammate)
+
+    assert session.seen_channel_refs == {("email", "sam@example.com")}
+
+    chat_route._seed_seen_channel_refs(session, None)
+    assert session.seen_channel_refs == set()
