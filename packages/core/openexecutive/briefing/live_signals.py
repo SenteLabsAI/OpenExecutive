@@ -137,8 +137,18 @@ def _is_principal_chat(details: dict[str, Any], sender: str, principal: Any) -> 
         own = getattr(principal, person_field, None)
         if own and str(details.get(detail_key) or "") == str(own):
             return True
-    name = " ".join(str(principal.full_name or "").split()).lower()
+    name = " ".join(str(getattr(principal, "full_name", "") or "").split()).lower()
     return bool(name) and sender.lower() == name
+
+
+_IMPOSTOR = "an unverified sender using the reader's name"
+
+
+def _uses_principal_name(sender: str, principal: Any) -> bool:
+    if principal is None:
+        return False
+    name = " ".join(str(getattr(principal, "full_name", "") or "").split()).lower()
+    return len(name.split()) > 1 and name in " ".join(sender.split()).lower()
 
 
 def _is_roster_sender(address: str) -> bool:
@@ -274,6 +284,10 @@ def _inbound(
             if _is_principal_chat(details, sender, principal_person):
                 sender = "the reader"
             topic = _one_line(text, 100)
+        if sender != "the reader" and _uses_principal_name(sender, principal_person):
+            # Someone else whose display name holds the reader's name: the
+            # brief masks that name, so say plainly it isn't them.
+            sender = _IMPOSTOR
         group_key = (sender.lower(), re.sub(r"^(re|fwd?):\s*", "", topic.lower()))
         group = groups.get(group_key)
         if group is None:

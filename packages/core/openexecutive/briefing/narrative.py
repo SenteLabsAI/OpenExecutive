@@ -778,7 +778,7 @@ async def synthesize_briefing_narrative(
         if not named:
             return text
         if attempt == 0:
-            logger.info("briefing_narrative: draft named its reader (%s); rewriting", named)
+            logger.info("briefing_narrative: draft named its reader (%d slips); rewriting", len(named))
             messages = [
                 *messages,
                 {"role": "assistant", "content": text},

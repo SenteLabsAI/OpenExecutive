@@ -1607,14 +1607,22 @@ def _header_live(include_private: bool, now: datetime | None = None) -> tuple[An
     return signals, window, now_label
 
 
+# `_narrative_context(reader=…)` left out: look the reader up there.
+_LOOKUP = object()
+
+
 def _narrative_context(
     today_data: dict[str, Any],
     viewer: PersonBriefItem | None,
     viewer_desc: dict[str, str] | None,
     mode: str = "team",
     scope: str | None = None,
+    reader: Reader | None | object = _LOOKUP,
 ) -> tuple[str, list[dict[str, Any]] | None]:
     """``(context, activity)`` — the exact user turn the model would receive.
+
+    ``reader`` is who the header is written for (``_narrative_reader``); the
+    regeneration resolves it once and hands the same one to the post-check.
 
     The single source both the cache key and the model call come from, so the
     key can never be computed over something the model did not see.
@@ -1666,7 +1674,7 @@ def _narrative_context(
         now_label=now_label,
         getting_started=getting_started,
         brief_requests=viewer_desc is None and scope == narrative_cache.DEFAULT_SCOPE,
-        reader=_narrative_reader(scope, viewer),
+        reader=_narrative_reader(scope, viewer) if reader is _LOOKUP else reader,  # type: ignore[arg-type]
     )
     return context, activity
 
@@ -1834,7 +1842,10 @@ async def _regen_briefing_narrative_locked(
                 "regen; skipping write", expected_scope, scope,
             )
             return True
-        context, activity = _narrative_context(today_data, viewer, viewer_desc, mode, scope)
+        reader = _narrative_reader(scope, viewer)
+        context, activity = _narrative_context(
+            today_data, viewer, viewer_desc, mode, scope, reader=reader,
+        )
         input_hash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
         cached = narrative_cache.get(scope)
         if cached is not None and cached.input_hash == input_hash:
@@ -1853,7 +1864,7 @@ async def _regen_briefing_narrative_locked(
                     # Hand the model the very string that was hashed.
                     rendered_context=context,
                     mode=mode,
-                    reader=_narrative_reader(scope, viewer),
+                    reader=reader,
                 ),
                 timeout=25.0,
             )
