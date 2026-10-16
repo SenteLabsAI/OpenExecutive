@@ -78,6 +78,20 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     # audit rows — which name the sender and quote the body — are the
     # principal's alone to read.
     private = getattr(current_session.get(), "private_to_principal", False) is True
+    # A turn answering mail from someone not in People: the alert is for the
+    # principal alone, routed to no one else, and names the mail's real
+    # sender rather than whatever the mail asked it to say
+    # (orchestrator.outside_content.SENDER).
+    from openexecutive.orchestrator.outside_content import answers_off_team_mail
+
+    if answers_off_team_mail():
+        private = True
+        sender = getattr(current_session.get(), "email_from", "") or ""
+        tool_input = {
+            **{k: v for k, v in tool_input.items() if k not in ("department", "assigned_to_person_id")},
+            "source": "email",
+            "from_address": sender,
+        }
     try:
         event = AlertEvent(
             source=tool_input.get("source", "unknown"),
