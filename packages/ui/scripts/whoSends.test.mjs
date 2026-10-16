@@ -1,25 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HANDLE_IT_MODES } from "../src/lib/reach.ts";
-import {
-  LEAD_OPTIONS,
-  SCENES,
-  SEND_OPTIONS,
-  TOUR,
-  WRITE_OPTIONS,
-  nextInTour,
-  sceneFor,
-  sceneKey,
-} from "../src/lib/whoSends.ts";
+import { FIRST, MAILS, OPTIONS, SCENES, SEND_OPTIONS, beats, sceneFor, sceneKey } from "../src/lib/whoSends.ts";
 
-test("every option has its own scene", () => {
-  const keys = [
-    ...WRITE_OPTIONS.map((o) => sceneKey("writes", o.value)),
-    ...SEND_OPTIONS.map((o) => sceneKey("sends", o.value)),
-    ...LEAD_OPTIONS.map((o) => sceneKey("lead", o.value)),
-  ];
-  assert.deepEqual([...keys].sort(), SCENES.map((s) => s.key).sort());
-  for (const s of SCENES) assert.ok(s.frames.length >= 2, `${s.key} has frames`);
+test("every option has its own scene, named as its button", () => {
+  const keys = [];
+  for (const [tab, options] of Object.entries(OPTIONS)) {
+    for (const o of options) {
+      const s = sceneFor(sceneKey(tab, o.value));
+      assert.equal(s.key, sceneKey(tab, o.value));
+      assert.equal(s.tab, tab);
+      assert.equal(s.option, o.label);
+      keys.push(s.key);
+    }
+  }
+  assert.deepEqual(keys.sort(), SCENES.map((s) => s.key).sort());
 });
 
 test("the sending levels use the names Handle it for me shows", () => {
@@ -27,20 +22,22 @@ test("the sending levels use the names Handle it for me shows", () => {
   assert.deepEqual(levels, HANDLE_IT_MODES.map((m) => ({ value: m.mode, label: m.label })));
 });
 
-test("a scene lights the option it plays", () => {
+test("each sending level sends more on its own, and contracts always wait", () => {
+  const counts = SEND_OPTIONS.map((o) => sceneFor(sceneKey("handle", o.value)).sends);
+  assert.equal(counts[0], 0);
+  for (let i = 1; i < counts.length; i++) assert.ok(counts[i] > counts[i - 1], `level ${i}`);
+  assert.ok(counts.at(-1) < MAILS.length);
+  assert.match(MAILS.at(-1).why, /always wait/);
+});
+
+test("story scenes have steps, and every scene plays at least two beats", () => {
   for (const s of SCENES) {
-    const [group, value] = s.key.split(":");
-    const lit = { writes: s.writes, sends: s.sends, lead: s.lead }[group];
-    assert.equal(lit, value, s.key);
+    assert.equal(Boolean(s.steps), s.tab !== "handle", s.key);
+    assert.ok(beats(s) >= 2, s.key);
   }
 });
 
-test("anything it sends on its own rides on For my inbox too", () => {
-  for (const s of SCENES.filter((x) => x.sends !== "off")) assert.equal(s.writes, "inbox", s.key);
-});
-
-test("the tour plays one scene per tab and loops", () => {
-  assert.deepEqual(TOUR.map((k) => sceneFor(k).tab), ["act", "handle", "lead"]);
-  assert.equal(nextInTour(TOUR[2]), TOUR[0]);
-  assert.equal(sceneFor("nope").key, SCENES[0].key);
+test("each tab opens on one of its own options", () => {
+  for (const [tab, value] of Object.entries(FIRST)) assert.equal(sceneFor(sceneKey(tab, value)).tab, tab);
+  assert.equal(sceneFor("nope").key, "writes:when_asked");
 });

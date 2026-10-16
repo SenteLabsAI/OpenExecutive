@@ -1,59 +1,52 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
-import {
-  LEAD_OPTIONS,
-  SEND_OPTIONS,
-  TAB_NAMES,
-  TOUR,
-  WRITE_OPTIONS,
-  nextInTour,
-  sceneFor,
-  sceneKey,
-  type Frame,
-  type Spot,
-  type Tab,
-} from "@/lib/whoSends";
+import { FIRST, MAILS, OPTIONS, TAB_NAMES, beats, sceneFor, sceneKey, type Step, type Tab } from "@/lib/whoSends";
 
-// Delegate → What it may do: "Who writes and who sends", a short animation of
-// mail moving between your inbox, the Executive, you and the person it goes
-// to. It plays one scene per tab in turn; tapping an option plays that
-// option's scene (lib/whoSends.ts). It changes no setting. Hide is
-// remembered in this browser.
+// Delegate → What it may do: "Who writes and who sends". Pick a tab and an
+// option and its scene plays as numbered steps that stay on screen (or, for
+// Handle it for me, the same five emails marked sent or waiting), under
+// three answers: who writes it, whose name is on it, who presses Send
+// (lib/whoSends.ts). It changes no setting. Hide is remembered in this
+// browser.
 
 const HIDDEN_KEY = "oe.whoSends.hidden";
-const STEP_MS = 1500;
-const HOLD_MS = 1900;
+const STEP_MS = 1700;
+const MAIL_MS = 900;
 
 // The feature colours, as on FeatureName.
-const TONE: Record<Tab, { text: string; pill: string; ring: string; chip: string; lit: string }> = {
+const TONE: Record<Tab, { line: string; lit: string; ring: string; dot: string }> = {
   act: {
-    text: "text-indigo-700 dark:text-indigo-300",
-    pill: "bg-indigo-100 dark:bg-indigo-500/15",
-    ring: "border-indigo-400 ring-4 ring-indigo-500/15",
-    chip: "bg-indigo-200 dark:bg-indigo-300",
+    line: "border-indigo-500 text-fg dark:border-indigo-300",
     lit: "bg-indigo-600 border-indigo-600 text-white dark:bg-indigo-300 dark:border-indigo-300 dark:text-indigo-950",
+    ring: "border-indigo-400 ring-4 ring-indigo-500/15",
+    dot: "bg-indigo-600 text-white dark:bg-indigo-300 dark:text-indigo-950",
   },
   handle: {
-    text: "text-emerald-700 dark:text-emerald-300",
-    pill: "bg-emerald-100 dark:bg-emerald-500/15",
-    ring: "border-emerald-400 ring-4 ring-emerald-500/15",
-    chip: "bg-emerald-200 dark:bg-emerald-300",
+    line: "border-emerald-500 text-fg dark:border-emerald-300",
     lit: "bg-emerald-600 border-emerald-600 text-white dark:bg-emerald-300 dark:border-emerald-300 dark:text-emerald-950",
+    ring: "border-emerald-400 ring-4 ring-emerald-500/15",
+    dot: "bg-emerald-600 text-white dark:bg-emerald-300 dark:text-emerald-950",
   },
   lead: {
-    text: "text-orange-700 dark:text-orange-300",
-    pill: "bg-orange-100 dark:bg-orange-500/15",
-    ring: "border-orange-400 ring-4 ring-orange-500/15",
-    chip: "bg-orange-200 dark:bg-orange-300",
+    line: "border-orange-500 text-fg dark:border-orange-300",
     lit: "bg-orange-600 border-orange-600 text-white dark:bg-orange-300 dark:border-orange-300 dark:text-orange-950",
+    ring: "border-orange-400 ring-4 ring-orange-500/15",
+    dot: "bg-orange-600 text-white dark:bg-orange-300 dark:text-orange-950",
   },
 };
 
-// Where each node sits, and where mail lands next to it, in % of the stage.
-const NODE_AT: Record<Spot, [number, number]> = { inbox: [15, 30], exec: [50, 30], you: [50, 76], to: [85, 30] };
-const CHIP_AT: Record<Spot, [number, number]> = { inbox: [15, 11], exec: [50, 8], you: [77, 76], to: [74, 11] };
+const ACTOR: Record<Step["who"], string> = {
+  you: "text-fg",
+  exec: "text-indigo-700 dark:text-indigo-300",
+  them: "text-fg-muted",
+};
+
+const MAIL_AS = {
+  you: "border-indigo-300 bg-indigo-50 dark:border-indigo-400/40 dark:bg-indigo-500/15",
+  exec: "border-orange-300 bg-orange-50 dark:border-orange-400/40 dark:bg-orange-500/15",
+};
 
 // Hide, kept in this browser. Read through useSyncExternalStore so the
 // server render (shown) and the first client render agree.
@@ -104,115 +97,129 @@ function useReducedMotion(): boolean {
   );
 }
 
-function Node({ spot, label, frame, tone, round }: { spot: Spot; label: string; frame: Frame; tone: Tab; round?: boolean }) {
-  const [x, y] = NODE_AT[spot];
-  const on = frame.on?.includes(spot);
-  const dim = frame.dim?.includes(spot);
+function Steps({ steps, shown, tab }: { steps: Step[]; shown: number; tab: Tab }) {
   return (
-    <div
-      className={`absolute -translate-x-1/2 -translate-y-1/2 grid justify-items-center gap-[.35em] text-center transition-opacity duration-500 ${dim ? "opacity-35" : ""}`}
-      style={{ left: `${x}%`, top: `${y}%` }}
+    <ol
+      className="grid gap-5 @min-[640px]:gap-6"
+      style={{ gridTemplateColumns: `repeat(var(--cols), minmax(0, 1fr))` }}
     >
-      <div
-        className={`grid place-items-center border bg-surface-overlay font-semibold text-fg transition-all duration-500 ${
-          round ? "h-[6.6em] w-[6.6em] rounded-full font-display" : "h-[4.4em] w-[7.5em] rounded-[.8em]"
-        } ${on ? TONE[tone].ring : "border-line"}`}
-      >
-        {label}
-      </div>
-      <div className="min-h-[1.3em] whitespace-nowrap text-[.85em] text-fg-muted">{frame.caps?.[spot] ?? ""}</div>
-    </div>
+      {steps.map((s, i) => {
+        const seen = i < shown;
+        const now = i === shown - 1;
+        return (
+          <li
+            key={i}
+            className={`relative rounded-xl border p-3 transition-all duration-500 ${
+              seen ? "opacity-100" : "translate-y-1.5 opacity-15"
+            } ${now ? TONE[tab].ring : "border-line"}`}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-bold ${
+                  now ? TONE[tab].dot : "bg-surface-hover text-fg"
+                }`}
+              >
+                {i + 1}
+              </span>
+              <span className={`text-xs font-bold uppercase tracking-wide ${ACTOR[s.who]}`}>{s.name}</span>
+            </div>
+            <p className="mt-1.5 text-sm leading-snug text-fg">{s.does}</p>
+            {i < steps.length - 1 && (
+              <span
+                aria-hidden
+                className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-fg-subtle @min-[640px]:-right-5 @min-[640px]:bottom-auto @min-[640px]:left-auto @min-[640px]:top-1/2 @min-[640px]:-translate-y-1/2 @min-[640px]:translate-x-0"
+              >
+                <span className="@min-[640px]:hidden">↓</span>
+                <span className="hidden @min-[640px]:inline">→</span>
+              </span>
+            )}
+            {s.mail && (
+              <div className={`mt-2 rounded-lg border px-2.5 py-1.5 text-[13px] text-fg ${s.mail.as ? MAIL_AS[s.mail.as] : "border-line bg-surface-overlay"}`}>
+                <span className="block text-[11px] text-fg-muted">{s.mail.from}</span>
+                {s.mail.text}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
-function Options<T extends string>({
-  title,
-  group,
-  options,
-  current,
-  tone,
-  onPick,
-}: {
-  title: string;
-  group: "writes" | "sends" | "lead";
-  options: { value: T; label: string }[];
-  current: T;
-  tone: Tab;
-  onPick: (key: string) => void;
-}) {
+function Sorted({ sends, shown }: { sends: number; shown: number }) {
   return (
-    <div>
-      <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-fg-subtle">{title}</h3>
-      <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
-        {options.map((o) => {
-          const lit = o.value === current;
+    <>
+      <ul className="grid gap-2">
+        {MAILS.map((m, i) => {
+          const seen = i < shown;
+          const sent = i < sends;
           return (
-            <button
-              key={o.value}
-              type="button"
-              aria-pressed={lit}
-              onClick={() => onPick(sceneKey(group, o.value))}
-              className={`min-w-0 rounded-lg border px-1 py-2 text-center text-xs leading-tight transition-colors sm:text-[13px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg ${
-                lit ? `${TONE[tone].lit} font-semibold` : "border-line text-fg-muted hover:border-line-strong hover:text-fg"
+            <li
+              key={m.from}
+              className={`flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2 transition-opacity duration-500 ${
+                seen ? "opacity-100" : "opacity-15"
               }`}
             >
-              {o.label}
-            </button>
+              <div className="min-w-0">
+                <span className="block text-xs text-fg-muted">{m.from}</span>
+                <span className="text-sm text-fg">{m.text}</span>
+              </div>
+              <span
+                className={`shrink-0 rounded-full px-2.5 py-1 text-right text-[13px] font-semibold transition-all delay-300 duration-300 ${
+                  seen ? "opacity-100" : "translate-x-2 opacity-0"
+                } ${
+                  sent
+                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
+                    : "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+                }`}
+              >
+                {sent ? "Sent as you" : "Waits for you"}
+                <span className="block text-[11px] font-normal">{m.why}</span>
+              </span>
+            </li>
           );
         })}
-      </div>
-    </div>
+      </ul>
+      <p className={`mt-3 flex gap-4 text-sm text-fg-muted transition-opacity duration-500 ${shown >= MAILS.length ? "opacity-100" : "opacity-0"}`}>
+        <span>
+          Sent on its own: <b className="text-fg">{sends}</b>
+        </span>
+        <span>
+          Waits on Home: <b className="text-fg">{MAILS.length - sends}</b>
+        </span>
+      </p>
+    </>
   );
 }
 
 export default function WhoSendsCard() {
   const hidden = useHidden();
-  const [key, setKey] = useState(TOUR[0]);
-  const [index, setIndex] = useState(0);
-  const [tour, setTour] = useState(true);
-  const [playing, setPlaying] = useState(true);
-  // Mail jumps (no glide) when a scene starts over.
-  const [jump, setJump] = useState(true);
   const reduced = useReducedMotion();
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [tab, setTab] = useState<Tab>("act");
+  const [option, setOption] = useState(FIRST.act);
+  const [shown, setShown] = useState(1);
 
-  const scene = sceneFor(key);
-  const last = scene.frames.length - 1;
-  const frame = scene.frames[reduced ? last : Math.min(index, last)];
-
-  const start = useCallback((next: string, asTour: boolean) => {
-    setKey(next);
-    setIndex(0);
-    setTour(asTour);
-    setJump(true);
-    setPlaying(true);
-  }, []);
+  const scene = sceneFor(sceneKey(tab, option));
+  const total = beats(scene);
+  const visible = reduced ? total : shown;
 
   useEffect(() => {
-    if (!jump) return;
-    const id = requestAnimationFrame(() => setJump(false));
-    return () => cancelAnimationFrame(id);
-  }, [jump]);
+    if (hidden || reduced || shown >= total) return;
+    const id = setTimeout(() => setShown(shown + 1), scene.steps ? STEP_MS : MAIL_MS);
+    return () => clearTimeout(id);
+  }, [hidden, reduced, shown, total, scene.steps]);
 
-  useEffect(() => {
-    if (hidden || reduced || !playing) return;
-    const wait = index === last ? HOLD_MS : STEP_MS;
-    timer.current = setTimeout(() => {
-      if (index < last) setIndex(index + 1);
-      else start(tour ? nextInTour(key) : key, tour);
-    }, wait);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [hidden, reduced, playing, index, last, key, tour, start]);
-
-  const toggleHidden = (next: boolean) => writeHidden(next);
+  const play = (nextTab: Tab, nextOption: string) => {
+    setTab(nextTab);
+    setOption(nextOption);
+    setShown(1);
+  };
 
   if (hidden) {
     return (
       <button
         type="button"
-        onClick={() => toggleHidden(false)}
+        onClick={() => writeHidden(false)}
         className="mt-6 text-sm font-medium text-accent underline-offset-2 hover:underline"
       >
         Show who writes and who sends
@@ -220,124 +227,100 @@ export default function WhoSendsCard() {
     );
   }
 
-  const tone = TONE[scene.tab];
-  const chip = frame.chip;
-  const [cx, cy] = chip ? CHIP_AT[chip.at] : CHIP_AT.inbox;
+  const answers = [
+    ["Who writes it", scene.answers.writes],
+    ["Whose name is on it", scene.answers.name],
+    ["Who presses Send", scene.answers.sends],
+  ];
 
   return (
-    <section aria-labelledby="who-sends-title" className="mt-6 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
+    <section aria-labelledby="who-sends-title" className="@container mt-6 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 id="who-sends-title" className="text-base font-semibold text-fg">
             Who writes and who sends
           </h2>
-          <p className="mt-1 text-sm leading-relaxed text-fg-muted">
-            Act as me writes as you, and you send. Handle it for me sends as you on its own. Take the lead sends in
-            the Executive&apos;s name.
-          </p>
+          <p className="mt-1 text-sm leading-relaxed text-fg-muted">Pick a tab and an option to see what happens to your mail.</p>
         </div>
         <button
           type="button"
-          onClick={() => toggleHidden(true)}
+          onClick={() => writeHidden(true)}
           className="whitespace-nowrap text-sm font-medium text-fg-muted hover:text-fg"
         >
           Hide
         </button>
       </div>
 
-      <div className="@container mt-4">
-        <div
-          role="img"
-          aria-label={`${TAB_NAMES[scene.tab]}, ${scene.option}: ${scene.line}`}
-          className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-surface-base text-[3.1cqw] @min-[520px]:aspect-[5/2] @min-[520px]:text-[1.9cqw]"
-        >
-          <svg aria-hidden viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-            <g className="stroke-line-strong" strokeWidth="1.5" strokeDasharray="5 5">
-              <line x1="15" y1="30" x2="85" y2="30" vectorEffect="non-scaling-stroke" />
-              <line x1="50" y1="30" x2="50" y2="76" vectorEffect="non-scaling-stroke" />
-              <line x1="50" y1="76" x2="85" y2="30" vectorEffect="non-scaling-stroke" />
-            </g>
-          </svg>
-          <Node spot="inbox" label="Inbox" frame={{ ...frame, caps: { ...frame.caps, inbox: "Your mailbox" } }} tone={scene.tab} />
-          <Node spot="exec" label="Executive" frame={frame} tone={scene.tab} round />
-          <Node spot="you" label="You" frame={frame} tone={scene.tab} />
-          <Node spot="to" label={frame.to ?? "Dana"} frame={frame} tone={scene.tab} />
-
-          <div
-            aria-hidden
-            className={`absolute z-10 w-max max-w-[16em] -translate-x-1/2 -translate-y-1/2 rounded-[.6em] px-[.7em] py-[.45em] text-left text-[.9em] font-semibold leading-tight text-neutral-900 shadow-lg ${
-              chip?.tint ? tone.chip : "bg-white dark:bg-neutral-100"
-            } ${chip ? "opacity-100" : "opacity-0"} ${
-              jump ? "" : "transition-[left,top,opacity] duration-1000 ease-[cubic-bezier(.6,0,.3,1)]"
+      <div className="mt-3 flex gap-1 overflow-x-auto border-b border-line">
+        {(Object.keys(TAB_NAMES) as Tab[]).map((t) => (
+          <button
+            key={t}
+            type="button"
+            aria-pressed={t === tab}
+            onClick={() => play(t, FIRST[t])}
+            className={`-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm font-semibold transition-colors ${
+              t === tab ? TONE[t].line : "border-transparent text-fg-muted hover:text-fg"
             }`}
-            style={{ left: `${cx}%`, top: `${cy}%` }}
           >
-            <span className="block text-[.82em] font-medium text-neutral-600">{chip?.from}</span>
-            {chip?.text}
-          </div>
+            {TAB_NAMES[t]}
+          </button>
+        ))}
+      </div>
 
-          {[
-            ["exec", frame.execSees, 56],
-            ["you", frame.youSays, 93],
-          ].map(([id, text, top]) => (
-            <div
-              key={id as string}
-              aria-hidden
-              className={`absolute z-20 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-full border px-[.7em] py-[.35em] text-[.85em] font-semibold transition-opacity duration-500 ${tone.text} ${tone.pill} ${
-                text ? "opacity-100" : "opacity-0"
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {OPTIONS[tab].map((o) => {
+          const lit = o.value === option;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              aria-pressed={lit}
+              onClick={() => play(tab, o.value)}
+              className={`min-w-[5.5rem] flex-1 basis-[30%] rounded-lg border px-2 py-2 text-center text-[13px] leading-tight transition-colors @min-[640px]:basis-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg ${
+                lit ? `${TONE[tab].lit} font-semibold` : "border-line text-fg-muted hover:border-line-strong hover:text-fg"
               }`}
-              style={{ left: "50%", top: `${top}%`, borderColor: "currentColor" }}
             >
-              {text}
-            </div>
-          ))}
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-xs text-fg-subtle">This is a demo. Tapping here doesn&apos;t change your settings.</p>
 
-          <div
-            aria-hidden
-            className={`absolute bottom-[6%] right-[3%] w-[30%] rounded-[.7em] border border-line bg-surface-overlay px-[.7em] py-[.55em] text-[.82em] transition-opacity duration-500 ${
-              frame.sent ? "opacity-100" : "opacity-0"
-            }`}
-          >
-            <b className={`mb-[.2em] block font-display ${TONE.handle.text}`}>What it sent</b>
-            <span className="block text-fg">{frame.sent}</span>
+      <dl className="mt-3 grid grid-cols-3 gap-2">
+        {answers.map(([label, value]) => (
+          <div key={label} className="rounded-xl border border-line bg-surface-base px-2.5 py-2 @min-[640px]:px-3">
+            <dt className="text-[10px] uppercase tracking-wider text-fg-subtle @min-[640px]:text-[11px]">{label}</dt>
+            <dd className="mt-0.5 text-sm font-semibold leading-snug text-fg @min-[640px]:text-[15px]">{value}</dd>
           </div>
+        ))}
+      </dl>
+
+      <div className="mt-3 rounded-xl border border-line bg-surface-base p-3 sm:p-4">
+        <p className="mb-3 text-[15px] leading-relaxed text-fg" aria-live="polite">
+          {scene.line}
+        </p>
+        <div
+          className="[--cols:1] @min-[640px]:[--cols:var(--n)]"
+          style={{ ["--n" as string]: String(scene.steps?.length ?? 1) }}
+        >
+          {scene.steps ? (
+            <Steps steps={scene.steps} shown={visible} tab={tab} />
+          ) : (
+            <Sorted sends={scene.sends ?? 0} shown={visible} />
+          )}
         </div>
       </div>
 
-      <div className="mt-4 min-h-[4.5em]" aria-live={tour ? "off" : "polite"}>
-        <span className={`inline-block rounded-full px-2.5 py-0.5 font-display text-[15px] font-bold ${tone.text} ${tone.pill}`}>
-          {TAB_NAMES[scene.tab]} · {scene.option}
-        </span>
-        <p className="mt-1.5 text-[15px] leading-relaxed text-fg">{scene.line}</p>
-      </div>
-
-      <div className="mt-3 space-y-3">
-        <Options title="What it writes as you (Act as me)" group="writes" options={WRITE_OPTIONS} current={scene.writes} tone="act" onPick={(k) => start(k, false)} />
-        <Options title="What it sends on its own (Handle it for me)" group="sends" options={SEND_OPTIONS} current={scene.sends} tone="handle" onPick={(k) => start(k, false)} />
-        <Options title="Take the lead (as the Executive)" group="lead" options={LEAD_OPTIONS} current={scene.lead} tone="lead" onPick={(k) => start(k, false)} />
-      </div>
-
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        {!reduced && (
-          <button
-            type="button"
-            onClick={() => setPlaying(!playing)}
-            className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-fg hover:bg-surface-hover"
-          >
-            {playing ? "Pause" : "Play"}
-          </button>
-        )}
-        {!tour && (
-          <button
-            type="button"
-            onClick={() => start(TOUR[0], true)}
-            className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-fg hover:bg-surface-hover"
-          >
-            Play all
-          </button>
-        )}
-        <span className="text-[13px] text-fg-muted">Tap an option to see what it does.</span>
-      </div>
+      {!reduced && (
+        <button
+          type="button"
+          onClick={() => setShown(1)}
+          className="mt-3 rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-fg hover:bg-surface-hover"
+        >
+          Play again
+        </button>
+      )}
     </section>
   );
 }

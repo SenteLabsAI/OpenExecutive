@@ -32,7 +32,7 @@ import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceSt
 
 // Delegate → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with What it writes as you at
-// For my inbox too, for mail that needs you, which it sends when you tap Send
+// Draft replies automatically, for mail that needs you, which it sends when you tap Send
 // on Today (or on its own, under Handle it for me, which has its own tab).
 // Backed by GET /delegation, PUT /delegation/reach (WritesCard) and /delegation/voice.
 // Not offered to anyone who can't have it (the owner can, and team members
@@ -40,7 +40,7 @@ import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceSt
 // it: the hub then shows no tile, and this page says so.
 //
 // The page body: the mailbox and What it writes as you (with the inbox
-// watcher's status under For my inbox too) up front; How I write, the
+// watcher's status under Draft replies automatically) up front; How I write, the
 // page's `advanced` cards and Let team members use it under Advanced.
 
 export const ACT_AS_ME_INTRO =
@@ -326,7 +326,7 @@ function TeamSection({
   );
 }
 
-// Inside What it writes as you, under For my inbox too: how the inbox
+// Inside What it writes as you, under Draft replies automatically: how the inbox
 // watcher is doing, Check now (POST /delegation/inbox/check) and where its
 // replies are kept (PUT /delegation/inbox {mailbox_drafts}).
 function InboxSection({

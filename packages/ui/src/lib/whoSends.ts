@@ -8,38 +8,36 @@ import type { SendStep, WriteStep } from "@/lib/reach";
 
 export type Tab = "act" | "handle" | "lead";
 export type LeadStep = "off" | "training" | "on";
-export type Spot = "inbox" | "exec" | "you" | "to";
+export type Who = "you" | "exec" | "them";
 
-export type Chip = { at: Spot; from: string; text: string; tint?: boolean };
-
-// One frame is the whole picture at that moment, so any frame can be shown
-// on its own (reduced motion shows the last one).
-export type Frame = {
-  chip?: Chip;
-  on?: Spot[];
-  dim?: Spot[];
-  caps?: Partial<Record<Spot, string>>;
-  youSays?: string;
-  execSees?: string;
-  to?: string;
-  sent?: string;
+// One numbered step of a scene. Steps appear in turn and stay on screen.
+export type Step = {
+  who: Who;
+  name: string;
+  does: string;
+  mail?: { from: string; text: string; as?: "you" | "exec" };
 };
+
+// The three answers above every scene.
+export type Answers = { writes: string; name: string; sends: string };
 
 export type Scene = {
   key: string;
   tab: Tab;
   option: string;
   line: string;
-  writes: WriteStep;
-  sends: SendStep;
-  lead: LeadStep;
-  frames: Frame[];
+  answers: Answers;
+  // Act as me and Take the lead tell a story in steps. Handle it for me
+  // sorts the same emails (MAILS) every time: the first `sends` of them go
+  // out on their own, the rest wait.
+  steps?: Step[];
+  sends?: number;
 };
 
 export const WRITE_OPTIONS: { value: WriteStep; label: string }[] = [
   { value: "off", label: "Off" },
   { value: "when_asked", label: "When I ask" },
-  { value: "inbox", label: "For my inbox too" },
+  { value: "inbox", label: "Draft replies automatically" },
 ];
 
 export const SEND_OPTIONS: { value: SendStep; label: string }[] = [
@@ -62,136 +60,118 @@ export const TAB_NAMES: Record<Tab, string> = {
   lead: "Take the lead",
 };
 
-const mail = (from: string, text: string, at: Spot = "inbox", tint = false): Chip => ({ from, text, at, tint });
+export const OPTIONS: Record<Tab, { value: string; label: string }[]> = {
+  act: WRITE_OPTIONS,
+  handle: SEND_OPTIONS,
+  lead: LEAD_OPTIONS,
+};
 
-// Mail it sends on its own: in, written, out, then listed in What it sent.
-function goes(who: string, asked: string, reply: string, to: string): Frame[] {
-  return [
-    { chip: mail(`From ${who}`, asked), on: ["inbox"], to },
-    { chip: mail("Reply as you", reply, "exec", true), on: ["exec"], dim: ["you"], caps: { exec: "Sends it on its own" }, to },
-    { chip: mail("From you", reply, "to", true), on: ["to"], dim: ["you"], caps: { to: "Gets it" }, to },
-    { on: ["you"], sent: `Replied to ${to} as you`, to },
-  ];
-}
+// The option a tab opens on.
+export const FIRST: Record<Tab, string> = { act: "when_asked", handle: "balanced", lead: "training" };
 
-// Mail that waits: in, drafted, then on Home for you to send.
-function waits(who: string, asked: string, reply: string, why: string, to: string): Frame[] {
-  return [
-    { chip: mail(`From ${who}`, asked), on: ["inbox"], to },
-    { chip: mail("Draft as you", reply, "exec", true), on: ["exec"], caps: { exec: why }, to },
-    { chip: mail("Draft as you", reply, "you", true), on: ["you"], caps: { you: "On Home" }, youSays: "Waits for you", to },
-  ];
-}
+// Handle it for me: the same five emails at every level, so the levels
+// compare. Ordered from the easiest to send to the one that always waits.
+export const MAILS: { from: string; text: string; why: string }[] = [
+  { from: "Dana, a contact", text: "See you Tuesday?", why: "Short reply" },
+  { from: "Lee, a contact", text: "Can you send a summary of where the project stands?", why: "Longer reply" },
+  { from: "Alex, someone new", text: "Are you the right person for partnerships?", why: "New sender" },
+  { from: "Kim, a contact", text: "What would 20 seats cost?", why: "Has an amount" },
+  { from: "Sam, a contact", text: "Can you sign the updated contract?", why: "Contracts always wait" },
+];
 
-const late = "Sam's Q3 numbers are 3 days late";
-const ask = "Hi Sam, can you send the Q3 numbers?";
+const dana: Step = { who: "them", name: "Dana", does: "Emails you", mail: { from: "From Dana", text: "Can we move to the 5th?" } };
+const yes = "Yes, the 5th works.";
+const notices: Step = { who: "exec", name: "The Executive", does: "Notices Sam's Q3 numbers are 3 days late" };
+const writesToSam: Step = {
+  who: "exec",
+  name: "The Executive",
+  does: "Writes to Sam in its own name",
+  mail: { from: "From the Executive", text: "Hi Sam, can you send the Q3 numbers?", as: "exec" },
+};
+const yours = (writes: string): Answers => ({ writes, name: "Yours", sends: "You" });
 
 export const SCENES: Scene[] = [
   {
-    key: "writes:off", tab: "act", option: "Off", writes: "off", sends: "off", lead: "off",
-    line: "The Executive only writes as itself. You answer your own mail.",
-    frames: [
-      { chip: mail("From Dana", "Can we move to the 5th?"), on: ["inbox"] },
-      { chip: mail("From Dana", "Can we move to the 5th?", "you"), on: ["you"], dim: ["exec"], youSays: "You write the reply" },
-      { chip: mail("From you", "Yes, the 5th works.", "to"), on: ["to"], dim: ["exec"], caps: { to: "Gets it" } },
+    key: "writes:off", tab: "act", option: "Off", answers: yours("You"),
+    line: "The Executive doesn't write as you. You answer your own mail.",
+    steps: [
+      dana,
+      { who: "you", name: "You", does: "Write the reply yourself" },
+      { who: "you", name: "You", does: "Tap Send", mail: { from: "From you", text: yes, as: "you" } },
     ],
   },
   {
-    key: "writes:when_asked", tab: "act", option: "When I ask", writes: "when_asked", sends: "off", lead: "off",
-    line: "Ask in chat, “reply to Dana as me: yes to the 5th”, and the draft waits in your Drafts.",
-    frames: [
-      { on: ["you"], dim: ["inbox"], youSays: "“Reply to Dana as me: yes to the 5th”" },
-      { chip: mail("Draft as you", "Yes, the 5th works.", "exec", true), on: ["exec"], dim: ["inbox"], caps: { exec: "Writes it in your voice" } },
-      { chip: mail("Draft as you", "Yes, the 5th works.", "you", true), on: ["you"], dim: ["inbox"], caps: { you: "In your Drafts" }, youSays: "You tap Send" },
-      { chip: mail("From you", "Yes, the 5th works.", "to", true), on: ["to"], dim: ["inbox"], caps: { to: "Gets it" } },
+    key: "writes:when_asked", tab: "act", option: "When I ask", answers: yours("The Executive"),
+    line: "It writes as you only when you ask in chat.",
+    steps: [
+      dana,
+      { who: "you", name: "You", does: "Ask in chat", mail: { from: "You, in chat", text: "Reply to Dana as me: yes to the 5th" } },
+      { who: "exec", name: "The Executive", does: "Writes the reply in your voice and puts it in your Drafts", mail: { from: "Draft, from you", text: yes, as: "you" } },
+      { who: "you", name: "You", does: "Check it and tap Send. Dana gets it from you." },
     ],
   },
   {
-    key: "writes:inbox", tab: "act", option: "For my inbox too", writes: "inbox", sends: "off", lead: "off",
-    line: "It also writes a first reply to mail that needs you and puts it on Home. You tap Send.",
-    frames: [
-      { chip: mail("From Dana", "Can we move to the 5th?"), on: ["inbox"] },
-      { chip: mail("Draft as you", "Yes, the 5th works.", "exec", true), on: ["exec"], caps: { exec: "Writes a draft" } },
-      { chip: mail("Draft as you", "Yes, the 5th works.", "you", true), on: ["you"], caps: { you: "On Home" }, youSays: "You tap Send" },
-      { chip: mail("From you", "Yes, the 5th works.", "to", true), on: ["to"], caps: { to: "Gets it" } },
+    key: "writes:inbox", tab: "act", option: "Draft replies automatically", answers: yours("The Executive"),
+    line: "It also drafts replies to mail that needs you, without being asked.",
+    steps: [
+      dana,
+      { who: "exec", name: "The Executive", does: "Writes a reply in your voice", mail: { from: "Draft, from you", text: yes, as: "you" } },
+      { who: "you", name: "You", does: "See the draft on Home" },
+      { who: "you", name: "You", does: "Tap Send. Dana gets it from you." },
     ],
   },
   {
-    key: "sends:off", tab: "handle", option: "Off", writes: "inbox", sends: "off", lead: "off",
-    line: "Every reply waits for you to send.",
-    frames: waits("Dana", "Thanks. See you Tuesday?", "Yes, see you Tuesday.", "Writes a draft", "Dana"),
+    key: "sends:off", tab: "handle", option: "Off", answers: yours("The Executive"), sends: 0,
+    line: "Every reply waits on Home for you to send.",
   },
   {
-    key: "sends:careful", tab: "handle", option: "Easy ones", writes: "inbox", sends: "careful", lead: "off",
+    key: "sends:careful", tab: "handle", option: "Easy ones", sends: 1,
+    answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
     line: "Only short replies to people you know, when it's very sure.",
-    frames: [
-      ...goes("Dana, a contact", "Thanks. See you Tuesday?", "Yes, see you Tuesday.", "Dana"),
-      ...waits("Lee, a contact", "Can you send the deck and next year's price?", "Here's the deck. The price is…", "Longer reply: waits", "Lee"),
-    ],
   },
   {
-    key: "sends:balanced", tab: "handle", option: "People I know", writes: "inbox", sends: "balanced", lead: "off",
-    line: "Replies to people you know. Strangers, links and amounts wait for you.",
-    frames: [
-      ...goes("Lee, a contact", "Can we push the review to Friday?", "Friday works. I'll move the invite.", "Lee"),
-      ...waits("someone new", "Hi, are you the right person for partnerships?", "Yes, happy to talk.", "New sender: waits", "Alex"),
-    ],
+    key: "sends:balanced", tab: "handle", option: "People I know", sends: 2,
+    answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
+    line: "Replies to people you know. Strangers and amounts wait for you.",
   },
   {
-    key: "sends:bold", tab: "handle", option: "Most mail", writes: "inbox", sends: "bold", lead: "off",
-    line: "Also strangers and longer replies, and links or amounts when it's very sure.",
-    frames: [
-      ...goes("someone new", "Hi, are you the right person for partnerships?", "Yes, happy to talk. Does Thursday suit?", "Alex"),
-      ...waits("Lee, a contact", "Can you sign the updated contract?", "I'll review it and get back to you.", "Contracts always wait", "Lee"),
-    ],
+    key: "sends:bold", tab: "handle", option: "Most mail", sends: 3,
+    answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
+    line: "Also strangers and longer replies.",
   },
   {
-    key: "sends:everything", tab: "handle", option: "Everything", writes: "inbox", sends: "everything", lead: "off",
-    line: "It decides what to send as you. Replies with a link, the topics that always wait and your rules still hold it back.",
-    frames: [
-      ...goes("someone new", "Could you share your Q3 plan?", "Here's a summary of the plan.", "Alex"),
-      ...waits("Lee, a contact", "Where can I download the files?", "Here's the link: …", "Links always wait", "Lee"),
-    ],
+    key: "sends:everything", tab: "handle", option: "Everything", sends: 4,
+    answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
+    line: "It decides what to send as you. The topics that always wait and your rules still hold it back.",
   },
   {
-    key: "lead:off", tab: "lead", option: "Off", writes: "inbox", sends: "off", lead: "off",
-    line: "It doesn't act in its own name unless you ask.",
-    frames: [
-      { on: ["exec"], dim: ["inbox"], caps: { exec: "Notices something" }, execSees: late, to: "Sam" },
-      { on: ["you"], dim: ["inbox", "to"], caps: { you: "You decide what to do" }, to: "Sam" },
-    ],
+    key: "lead:off", tab: "lead", option: "Off", answers: { writes: "You", name: "Yours", sends: "You" },
+    line: "It doesn't act in its own name. It tells you and you decide.",
+    steps: [notices, { who: "exec", name: "The Executive", does: "Tells you on Home" }, { who: "you", name: "You", does: "Decide what to do" }],
   },
   {
-    key: "lead:training", tab: "lead", option: "In training", writes: "inbox", sends: "off", lead: "training",
-    line: "It acts in its own name, and people can see it's the Executive. In training, each action waits for your yes on Home.",
-    frames: [
-      { on: ["exec"], dim: ["inbox"], caps: { exec: "Notices something" }, execSees: late, to: "Sam" },
-      { chip: mail("From the Executive", ask, "exec", true), on: ["exec"], dim: ["inbox"], caps: { exec: "Writes in its own name" }, to: "Sam" },
-      { chip: mail("From the Executive", ask, "you", true), on: ["you"], dim: ["inbox"], caps: { you: "On Home" }, youSays: "Waits for your yes", to: "Sam" },
-      { chip: mail("From the Executive", ask, "to", true), on: ["to"], dim: ["inbox"], caps: { to: "Gets it" }, to: "Sam" },
-    ],
+    key: "lead:training", tab: "lead", option: "In training",
+    answers: { writes: "The Executive", name: "The Executive's", sends: "You, with a yes on Home" },
+    line: "It writes in its own name, and each message waits for your yes.",
+    steps: [notices, writesToSam, { who: "you", name: "You", does: "Tap Yes on Home" }, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
   },
   {
-    key: "lead:on", tab: "lead", option: "On", writes: "inbox", sends: "off", lead: "on",
+    key: "lead:on", tab: "lead", option: "On",
+    answers: { writes: "The Executive", name: "The Executive's", sends: "The Executive" },
     line: "It acts in its own name without waiting for your yes on Home. Your company's rules and the Always asks first list still hold it back.",
-    frames: [
-      { on: ["exec"], dim: ["inbox"], caps: { exec: "Notices something" }, execSees: late, to: "Sam" },
-      { chip: mail("From the Executive", ask, "exec", true), on: ["exec"], dim: ["inbox", "you"], caps: { exec: "Writes in its own name" }, to: "Sam" },
-      { chip: mail("From the Executive", ask, "to", true), on: ["to"], dim: ["inbox", "you"], caps: { to: "Gets it" }, to: "Sam" },
-    ],
+    steps: [notices, writesToSam, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
   },
 ];
 
-export const sceneKey = (group: "writes" | "sends" | "lead", value: string) => `${group}:${value}`;
+const GROUP: Record<Tab, "writes" | "sends" | "lead"> = { act: "writes", handle: "sends", lead: "lead" };
+
+export const sceneKey = (tab: Tab, value: string) => `${GROUP[tab]}:${value}`;
 
 export function sceneFor(key: string): Scene {
-  return SCENES.find((s) => s.key === key) ?? SCENES[0];
+  return SCENES.find((s) => s.key === key) ?? SCENES[1];
 }
 
-// Played in turn when nothing has been tapped: one scene per tab.
-export const TOUR = ["writes:inbox", "sends:balanced", "lead:training"];
-
-export function nextInTour(key: string): string {
-  const i = TOUR.indexOf(key);
-  return TOUR[(i + 1) % TOUR.length];
+// How many beats a scene plays: one per step, or one per email.
+export function beats(scene: Scene): number {
+  return scene.steps ? scene.steps.length : MAILS.length;
 }

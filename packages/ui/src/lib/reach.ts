@@ -2,10 +2,10 @@ import type { DelegationSettings, HandleItMode, ReachStep } from "@/lib/api";
 
 // What it writes and sends as you, from your own mailbox. One setting on the
 // server (PUT /delegation/reach), shown as two pickers: What it writes as
-// you on Delegate → Act as me (Off, When I ask, For my inbox too) and What it
+// you on Delegate → Act as me (Off, When I ask, Draft replies automatically) and What it
 // sends on its own on Delegate → Handle it for me (Off, then the sending
 // steps). Handle it for me builds on the inbox replies Act as me writes, so
-// its picker opens once the first one is at For my inbox too.
+// its picker opens once the first one is at Draft replies automatically.
 
 // Where each picker sits, for links from the other tabs.
 export const WRITES_ANCHOR = "writes";

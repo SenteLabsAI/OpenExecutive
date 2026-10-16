@@ -18,7 +18,7 @@ test("reachOf reads the dial step from the settings", () => {
   assert.equal(reachOf(settings({ handle_it: { enabled: true, mode: "bold", lead: true } })), "everything");
 });
 
-test("writeOf puts every sending step at For my inbox too", () => {
+test("writeOf puts every sending step at Draft replies automatically", () => {
   assert.equal(writeOf(settings({ enabled: false })), "off");
   assert.equal(writeOf(settings({ inbox: { enabled: false } })), "when_asked");
   assert.equal(writeOf(settings({ handle_it: { enabled: false, mode: "balanced" } })), "inbox");

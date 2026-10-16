@@ -34,7 +34,7 @@ import {
 // on Delegate → Handle it for me, is the steps that send on their own, with
 // In training (delegation/training.py) and Your rules. Handle it for me
 // builds on the inbox replies, so SendsCard opens only once WritesCard is at
-// For my inbox too, and moving WritesCard below that says Handle it for me
+// Draft replies automatically, and moving WritesCard below that says Handle it for me
 // stops too. Moving either down says what stops before it saves.
 
 type Step<T extends string> = { value: T; label: string; line: string; reason?: string | null };
@@ -195,7 +195,7 @@ function Check({
 const WRITE_ORDER: WriteStep[] = ["off", "when_asked", "inbox"];
 
 // Delegate → Act as me: what it writes as you. `inbox` (the inbox watcher's
-// status, Check now and Also save in Drafts) shows under For my inbox too.
+// status, Check now and Also save in Drafts) shows under Draft replies automatically.
 export function WritesCard({
   settings,
   onSettings,
@@ -224,7 +224,7 @@ export function WritesCard({
     },
     {
       value: "inbox",
-      label: "For my inbox too",
+      label: "Draft replies automatically",
       line: "It also writes a first reply to mail that needs you and puts it on Home.",
       reason: needsMailbox,
     },
@@ -344,7 +344,7 @@ export function SendsCard({
             </p>
             {connected ? (
               <Button variant="primary" disabled={busy} onClick={() => void save(() => setReach("inbox"))}>
-                {busy ? "Turning on…" : "Turn on For my inbox too"}
+                {busy ? "Turning on…" : "Turn on Draft replies automatically"}
               </Button>
             ) : (
               <Link
