@@ -183,8 +183,12 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
     ``done`` activity row is written, so a suppressed attempt never counts itself
     toward the rate cap.
     """
+    from openexecutive.orchestrator import outside_content
     from openexecutive.orchestrator.outbound_guard import check_outbound_allowed
 
+    if outside_content.added_ref(channel_ref):
+        # On the roster only since this turn (outside_content).
+        return outside_content.added_person_error(f"{channel_ref!r}")
     reason = check_outbound_allowed(channel, channel_ref, text)
     if reason is None:
         return _hold_outbound(tool=tool, channel=channel, channel_ref=channel_ref, text=text)
@@ -1484,6 +1488,10 @@ async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = T
 
     if turn_is_private_to_principal() and not person.is_principal:
         return json.dumps({"error": PRIVATE_TURN_REFUSAL})
+    from openexecutive.orchestrator import outside_content
+
+    if outside_content.added_this_turn(person.id):
+        return outside_content.added_person_error(f"person_id {person_id}")
     is_contact = person.kind != "team"
     if is_contact and not contacts_reachable_now():
         # Contacts are private to the principal: off the principal's own

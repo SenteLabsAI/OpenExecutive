@@ -380,11 +380,14 @@ class MicrosoftCalendar:
             return None
 
     async def delete_event(self, gateway: Any, external_event_id: str) -> dict[str, Any]:
+        from openexecutive.orchestrator.mcp_gateway import calendar_cancel_grant
+
         try:
-            raw = await gateway.call_tool({
-                "name": _PREFIX + "delete-calendar-event",
-                "arguments": {"eventId": external_event_id},
-            })
+            with calendar_cancel_grant(external_event_id):
+                raw = await gateway.call_tool({
+                    "name": _PREFIX + "delete-calendar-event",
+                    "arguments": {"eventId": external_event_id},
+                })
             parsed = _parse_json(raw)
             err = _error_of(parsed)
             if err is not None:

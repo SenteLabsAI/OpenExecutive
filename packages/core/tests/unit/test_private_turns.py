@@ -1648,6 +1648,17 @@ def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], 
     import openexecutive.orchestrator.mcp_gateway as gw_module
 
     gateway, reached = _real_gateway()
+    # The outside-content hold and the Google owner check are
+    # test_outside_content's and test_mcp_gateway_google_owner's; this round
+    # is about the private turn's withholding, so they stand aside here.
+    from openexecutive.orchestrator import outside_content
+
+    stand_aside = [
+        patch.object(outside_content, "source_of", return_value=None),
+        patch.object(gw_module, "_check_google_file_write", AsyncMock(return_value=None)),
+    ]
+    for p in stand_aside:
+        p.start()
     # The round reads message m1 as if a search had shown it: the chat reaches
     # mail only by an id it was shown (orchestrator.teammate_mail).
     from openexecutive.orchestrator.teammate_mail import allow_mail_ids
@@ -1656,7 +1667,11 @@ def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], 
     with patch.object(
         gw_module, "get_settings", return_value=SimpleNamespace(exec_email_address=EXEC)
     ):
-        provider = _run_loop(session, _mcp_round(), gateway=gateway)
+        try:
+            provider = _run_loop(session, _mcp_round(), gateway=gateway)
+        finally:
+            for p in stand_aside:
+                p.stop()
     results = {r["tool_use_id"]: r["content"] for r in provider.calls[1]["messages"][-1]["content"]}
     return provider, results, reached
 

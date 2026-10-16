@@ -43,6 +43,7 @@ from openexecutive.orchestrator import (
     claim_check,
     department_gate,
     extensions,
+    outside_content,
     take_the_lead,
     tool_groups,
 )
@@ -1384,26 +1385,39 @@ class Executive:
                 working_style=working_style,
                 standing_facts=standing_facts,
             )
+            # What this turn reads from outside the team, starting with the
+            # message's own attachments and any synced excerpt retrieved for it
+            # (orchestrator.outside_content). Closed when the loop ends; nothing
+            # between the two can leave it open.
+            outside_turn = outside_content.begin_turn(
+                session,
+                user_message=user_message,
+                attachment_blocks=attachment_blocks,
+                retrieved_context=retrieved_context,
+            )
             consulted: list[str] = []
             turn_calls: list[tuple[str, str]] = []
-            async for item in self._stream_agent_loop(
-                system_blocks,
-                messages,
-                model=effective_model,
-                max_iterations=max_iterations,
-                episodic_context=episodic_context,
-                debug_collector=debug_collector,
-                consulted_out=consulted,
-                calls_out=turn_calls,
-                turn_id=turn_id,
-                turn_sources=turn_sources,
-                workspace_mode=workspace_mode,
-                principal_role_tag=principal_role_context(principal_role),
-                inbox=inbox,
-            ):
-                if isinstance(item, str) and item != self._THINKING:
-                    full_response += item
-                yield item
+            try:
+                async for item in self._stream_agent_loop(
+                    system_blocks,
+                    messages,
+                    model=effective_model,
+                    max_iterations=max_iterations,
+                    episodic_context=episodic_context,
+                    debug_collector=debug_collector,
+                    consulted_out=consulted,
+                    calls_out=turn_calls,
+                    turn_id=turn_id,
+                    turn_sources=turn_sources,
+                    workspace_mode=workspace_mode,
+                    principal_role_tag=principal_role_context(principal_role),
+                    inbox=inbox,
+                ):
+                    if isinstance(item, str) and item != self._THINKING:
+                        full_response += item
+                    yield item
+            finally:
+                outside_content.end_turn(outside_turn)
 
         if debug_collector:
             evt = debug_collector.emit("synthesis_done", {
@@ -1736,31 +1750,44 @@ class Executive:
             standing_facts=standing_facts,
         )
 
+        # What this turn reads from outside the team, starting with the
+        # message's own attachments and any synced excerpt retrieved for it
+        # (orchestrator.outside_content). Closed when the loop ends; nothing
+        # between the two can leave it open.
+        outside_turn = outside_content.begin_turn(
+            session,
+            user_message=user_message,
+            attachment_blocks=attachment_blocks,
+            retrieved_context=retrieved_context,
+        )
         turn_calls: list[tuple[str, str]] = []
-        async for item in self._stream_agent_loop(
-            system_blocks,
-            messages,
-            model=effective_model,
-            max_iterations=max_iterations,
-            episodic_context=episodic_context,
-            debug_collector=debug_collector,
-            consulted_out=consulted,
-            specialist_outputs_out=specialist_outputs,
-            calls_out=turn_calls,
-            turn_id=turn_id,
-            turn_sources=turn_sources,
-            workspace_mode=workspace_mode,
-            principal_role_tag=principal_role_context(principal_role),
-            inbox=inbox,
-        ):
-            # Swallow draft text and the THINKING sentinel — the user sees
-            # only the revised stream. Pass debug-event dicts through so the
-            # UI still gets specialist routing visibility.
-            if isinstance(item, str):
-                if item != self._THINKING:
-                    draft += item
-            else:
-                yield item
+        try:
+            async for item in self._stream_agent_loop(
+                system_blocks,
+                messages,
+                model=effective_model,
+                max_iterations=max_iterations,
+                episodic_context=episodic_context,
+                debug_collector=debug_collector,
+                consulted_out=consulted,
+                specialist_outputs_out=specialist_outputs,
+                calls_out=turn_calls,
+                turn_id=turn_id,
+                turn_sources=turn_sources,
+                workspace_mode=workspace_mode,
+                principal_role_tag=principal_role_context(principal_role),
+                inbox=inbox,
+            ):
+                # Swallow draft text and the THINKING sentinel — the user sees
+                # only the revised stream. Pass debug-event dicts through so the
+                # UI still gets specialist routing visibility.
+                if isinstance(item, str):
+                    if item != self._THINKING:
+                        draft += item
+                else:
+                    yield item
+        finally:
+            outside_content.end_turn(outside_turn)
 
         draft_ms = round((time.monotonic() - t0) * 1000)
         logger.info(
@@ -2332,6 +2359,9 @@ class Executive:
                             web_search_queries.append(query)
                 elif block.type == "web_search_tool_result":
                     response_content.append(block.model_dump(exclude_none=True))
+                    # Results the model read before writing this round's
+                    # tool calls (outside_content).
+                    outside_content.mark(outside_content.WEB)
                 elif (replay := reasoning_replay_block(block)) is not None:
                     # OpenRouter reasoning continuity across tool iterations
                     # (replayed as ``reasoning_details`` by the translator).
@@ -2501,6 +2531,31 @@ class Executive:
                 skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
                 script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
+            # Outside content: once the turn has read anything from outside
+            # the team (an earlier round, or a web search in this response),
+            # what the Act as me lockdown withholds, contact writes and every
+            # gateway write stay shut for the rest of the turn
+            # (orchestrator.outside_content). A read in this round shuts the
+            # round's other such calls too, since a round's tools run
+            # together; the reads themselves run, and mark the turn once the
+            # round is done. The offered list stays as it is, as above.
+            read_before_round = outside_content.read_outside()
+            round_sources = [
+                (tu, source) for tu in dispatch_uses
+                if (source := outside_content.source_of(tu["name"], tu["input"])) is not None
+            ]
+            round_source_ids = {tu["id"] for tu, _ in round_sources}
+            outside_uses: list[dict[str, Any]] = []
+            if read_before_round or round_sources:
+                outside_uses = [
+                    tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
+                    if (read_before_round or tu["id"] not in round_source_ids)
+                    and outside_content.outside_withholds(tu["name"], tu["input"])
+                ]
+            if outside_uses:
+                skill_tool_uses = [tu for tu in skill_tool_uses if tu not in outside_uses]
+                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in outside_uses]
+                script_tool_uses = [tu for tu in script_tool_uses if tu not in outside_uses]
 
             specialist_calls = [
                 {
@@ -2613,6 +2668,35 @@ class Executive:
                     private=True,
                 )
                 results_by_id[tu["id"]] = mail_touched_withheld_error(label)
+            for tu in outside_uses:
+                kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                label = tu["name"]
+                if label == "call_tool" and isinstance(tu["input"], dict):
+                    named = tu["input"].get("name")
+                    label = named[:200] if isinstance(named, str) and named else label
+                logger.warning(
+                    "%s:%s refused — the turn read outside content",
+                    kind, _loggable_tool(label),
+                )
+                audit_log(
+                    "tool_invocation",
+                    f"{kind}:{label} refused: the turn read content from outside the team",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    actor="executive",
+                    details={
+                        "tool": label,
+                        "kind": kind,
+                        "iteration": iteration,
+                        "ok": False,
+                        "refused": "outside_content",
+                        "sources": sorted(getattr(outside_content.current(), "sources", ())),
+                    },
+                    private=private_turn or bool(
+                        pinned_delegation is not None and pinned_delegation.touched_mail
+                    ),
+                )
+                results_by_id[tu["id"]] = outside_content.outside_withheld_error(label)
             for tu in withheld_uses:
                 if mcp_client and mcp_client_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace. A call_tool
@@ -3102,6 +3186,17 @@ class Executive:
                         return text, True
                     _counts[""] = _counts.get("", 0) + 1
                     _counts[tool] = _counts.get(tool, 0) + 1
+                    # A script's calls run one after another: once one has
+                    # read outside content, the rest are held as a direct
+                    # call would be (orchestrator.outside_content).
+                    probe_name, probe_input = (
+                        (tool, arguments) if own else ("call_tool", {"name": tool, "arguments": arguments})
+                    )
+                    if outside_content.read_outside() and outside_content.outside_withholds(
+                        probe_name, probe_input
+                    ):
+                        return outside_content.outside_withheld_error(tool[:200]), True
+                    source = outside_content.source_of(probe_name, probe_input)
                     try:
                         if own:
                             text = str(await _handlers[tool](arguments))
@@ -3132,7 +3227,11 @@ class Executive:
                         )
                         text = _tool_error_result(tool, exc)
                         _made.append((call_input, text, exc))
+                        if source is not None:
+                            outside_content.mark(source)
                         return text, True
+                    if source is not None:
+                        outside_content.mark(source)
                     _made.append((call_input, text, None))
                     return text, looks_like_error(text)
 
@@ -3330,6 +3429,12 @@ class Executive:
             if debug_collector:
                 for evt in debug_collector._events[event_cursor:]:
                     yield debug_collector.to_sse_dict(evt)
+
+            # What this round read from outside reaches the model with its
+            # results: from the next round on the turn is held.
+            for tu, source in round_sources:
+                if tu not in outside_uses and tu not in mail_touched_uses and tu not in withheld_uses:
+                    outside_content.mark(source)
 
             current_messages.append({"role": "assistant", "content": response_content})
             # Cap here, at the single point every result reaches the model,

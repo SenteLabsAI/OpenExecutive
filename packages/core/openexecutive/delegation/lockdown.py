@@ -312,18 +312,28 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
 
 def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:
     """For a handler that can reach an outside address: the refusal when this
-    turn read the owner's mail, else None. ``tool_name`` and ``tool_input``
+    turn read the owner's mail, or read anything from outside the team and
+    ``outside_content.outside_withholds`` the call, else None. ``tool_name`` and ``tool_input``
     (for ``call_tool``) narrow it to what ``mail_touched_withholds`` refuses;
     by default ``label`` is the tool. Never raises; fails closed."""
     from openexecutive.delegation.settings import turn_read_delegate_mail
 
     name = tool_name or label
     try:
-        if turn_read_delegate_mail():
-            return mail_touched_withheld_error(label) if mail_touched_withholds(name, tool_input) else None
-        return None
+        if turn_read_delegate_mail() and mail_touched_withholds(name, tool_input):
+            return mail_touched_withheld_error(label)
     except Exception:
         return mail_touched_withheld_error(label)
+    # The same holds, with contact writes and gateway writes added, once the
+    # turn has read anything from outside the team (outside_content).
+    from openexecutive.orchestrator import outside_content
+
+    try:
+        if outside_content.read_outside() and outside_content.outside_withholds(name, tool_input):
+            return outside_content.outside_withheld_error(label)
+        return None
+    except Exception:
+        return outside_content.outside_withheld_error(label)
 
 
 def mail_touched_withheld_error(label: str) -> str:

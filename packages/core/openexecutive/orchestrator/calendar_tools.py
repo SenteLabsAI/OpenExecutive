@@ -257,6 +257,7 @@ def _resolve_attendees(
     the gateway's calendar gate applies when the event is created. On any
     other turn a contact's id reads as "not found", like an unknown one.
     """
+    from openexecutive.orchestrator import outside_content
     from openexecutive.orchestrator.people_tools import (
         PRIVATE_TURN_REFUSAL,
         contacts_reachable_now,
@@ -290,6 +291,8 @@ def _resolve_attendees(
             return {"error": f"person {person.full_name!r} (id={person_id}) is archived"}
         if turn_is_private_to_principal() and not person.is_principal:
             return {"error": PRIVATE_TURN_REFUSAL}
+        if outside_content.added_this_turn(person_id):
+            return json.loads(outside_content.added_person_error(f"person_id {person_id}"))
         if getattr(person, "is_principal", False) and not include_principal:
             return {"error": (
                 f"{person.full_name!r} is the principal. Set include_principal=true "

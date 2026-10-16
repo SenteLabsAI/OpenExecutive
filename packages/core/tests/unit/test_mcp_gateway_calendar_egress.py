@@ -304,11 +304,31 @@ def test_update_with_roster_attendees_keeps_send_updates() -> None:
     assert _forwarded(session_call)["send_updates"] == "all"
 
 
-def test_delete_keeps_send_updates() -> None:
-    """A cancellation carries no new text."""
+def test_delete_mails_no_cancellation() -> None:
+    """A delete's guest list is one the gate never saw: nobody is mailed."""
     gateway, session_call = _make_gateway()
     _call(gateway, {"action": "delete", "event_id": "e1", "send_updates": "all"}, [])
+    assert _forwarded(session_call)["send_updates"] == "none"
+
+
+def test_delete_respelled_notifications_are_pinned_too() -> None:
+    gateway, session_call = _make_gateway()
+    _call(gateway, {"action": "Delete", "event_id": "e1", "sendUpdates": "all"}, [])
+    fwd = _forwarded(session_call)
+    assert fwd["send_updates"] == "none" and "sendUpdates" not in fwd
+
+
+def test_the_typed_cancel_keeps_its_notice_for_its_own_event_only() -> None:
+    from openexecutive.orchestrator.mcp_gateway import calendar_cancel_grant
+
+    gateway, session_call = _make_gateway()
+    with calendar_cancel_grant("e1"):
+        _call(gateway, {"action": "delete", "event_id": "e1", "send_updates": "all"}, [])
     assert _forwarded(session_call)["send_updates"] == "all"
+    gateway, session_call = _make_gateway()
+    with calendar_cancel_grant("e1"):
+        _call(gateway, {"action": "delete", "event_id": "e2", "send_updates": "all"}, [])
+    assert _forwarded(session_call)["send_updates"] == "none"
 
 
 def test_pin_does_not_touch_other_arguments() -> None:
