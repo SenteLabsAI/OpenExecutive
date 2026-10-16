@@ -208,7 +208,9 @@ _M365_MESSAGE_LOOKUP_SELECT = "id,from,replyTo,toRecipients,ccRecipients,bccReci
 # ATTENDEE. Like the reply family, the gate reads the event first
 # (`_check_m365_referenced_event` → get-calendar-event) and roster-checks the
 # implied recipients; fail-closed. `delete-calendar-event` carries no free
-# text and stays ungated (it is the typed cancel_calendar_event path).
+# text, but Exchange still mails every attendee the cancellation: outside the
+# typed cancel_calendar_event path (`calendar_cancel_grant`), its attendees
+# are roster-checked the same way (`_check_m365_event_delete`).
 _M365_EVENT_RESPONSE_TOOLS = frozenset({
     "microsoft_365__accept_calendar_event",
     "microsoft_365__decline_calendar_event",
@@ -216,6 +218,7 @@ _M365_EVENT_RESPONSE_TOOLS = frozenset({
 })
 _M365_EVENT_CANCEL_TOOL = "microsoft_365__cancel_calendar_event"
 _M365_EVENT_BY_ID_TOOLS = _M365_EVENT_RESPONSE_TOOLS | {_M365_EVENT_CANCEL_TOOL}
+_M365_EVENT_DELETE_TOOL = "microsoft_365__delete_calendar_event"
 _M365_EVENT_LOOKUP_TOOL = "microsoft_365__get-calendar-event"
 _M365_EVENT_LOOKUP_SELECT = "id,organizer,attendees"
 
@@ -1998,6 +2001,38 @@ async def _check_m365_referenced_event(
     return None
 
 
+async def _check_m365_event_delete(
+    session: Any, tool: str, arguments: dict[str, Any], discover: _Discover | None = None,
+) -> str | None:
+    """Exchange mails a deleted meeting's cancellation to every attendee, a
+    guest list the arguments never name. The typed cancel of that one event
+    (`calendar_cancel_grant`) passes; any other delete runs only when the
+    event has no attendees or all of them are on the roster. Fail-closed."""
+    event_id = arguments.get("eventId")
+    if isinstance(event_id, str) and event_id and _calendar_cancel.get() == event_id:
+        return None
+    if not isinstance(event_id, str) or not event_id.strip():
+        return _block(
+            "eventId", "<missing>", tool,
+            reason=f"{tool} needs an eventId so its attendees can be roster-checked — refusing.",
+        )
+    event = await _fetch_m365_json(
+        session, _M365_EVENT_LOOKUP_TOOL,
+        {"eventId": event_id, "select": _M365_EVENT_LOOKUP_SELECT}, discover,
+    )
+    if event is None:
+        return _block(
+            "eventId", event_id, tool,
+            reason=f"could not read event {event_id!r} to roster-check who {tool} would notify — refusing.",
+        )
+    allow = _roster_allow_set()
+    for addr in _m365_recipient_addresses(_ci_get(event, "attendees")):
+        blocked = _block_unless_rostered(addr, tool, allow)
+        if blocked is not None:
+            return blocked
+    return None
+
+
 def _unsafe_id_segment(segment: str) -> bool:
     decoded = unquote(segment)
     return decoded.strip(".") == "" or any(c in decoded for c in "/\\?#")
@@ -2394,15 +2429,28 @@ async def _google_file_owner(session: Any, file_id: str, discover: _Discover | N
     return match.group(1).strip().lower() if match else None
 
 
+# Google tools whose name starts with one of these, and names no write verb
+# after it, only read; every other name is checked as a write (fail closed:
+# a new write verb is covered).
+_GOOGLE_READ_VERBS = frozenset({
+    "check", "debug", "get", "inspect", "list", "query", "read", "search",
+})
+
+
+def _google_reads_only(tool: str) -> bool:
+    from openexecutive.orchestrator.outside_content import _WRITE_VERBS
+
+    words = tool.split("__")[-1].lower().replace("-", "_").split("_")
+    return words[0] in _GOOGLE_READ_VERBS and not any(w in _WRITE_VERBS for w in words[1:])
+
+
 async def _check_google_file_write(
     session: Any, tool: str, arguments: dict[str, Any], discover: _Discover | None = None,
 ) -> str | None:
     """Keep Google writes in files and folders the Executive's own account
     owns (see `_GOOGLE_WRITTEN_FILE_KEYS`). Fail closed when an owner can't
     be read."""
-    from openexecutive.orchestrator.outside_content import gateway_call_reads
-
-    if gateway_call_reads(tool) or tool in _GATED_DRIVE_TOOLS:
+    if _google_reads_only(tool) or tool in _GATED_DRIVE_TOOLS:
         return None
     files = [] if tool in _GOOGLE_SOURCE_ONLY_TOOLS else _google_ids(arguments, _GOOGLE_WRITTEN_FILE_KEYS)
     folders = _google_ids(arguments, _GOOGLE_DESTINATION_KEYS)
@@ -3353,6 +3401,10 @@ class MCPGateway:
             blocked = await _check_m365_referenced_event(
                 session, tool_name, normalized, arguments, self._discover
             )
+            if blocked is not None:
+                return blocked
+        if normalized == _M365_EVENT_DELETE_TOOL:
+            blocked = await _check_m365_event_delete(session, tool_name, arguments, self._discover)
             if blocked is not None:
                 return blocked
         if normalized == _M365_DOWNLOAD_TOOL:

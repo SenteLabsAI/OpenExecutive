@@ -34,6 +34,7 @@ turn bound (the email poller, a brief, a test) nothing is marked or held.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import re
@@ -67,10 +68,12 @@ _FETCH_TOOLS: dict[str, str] = {
 # ``_ATTACHMENT_MARK``): an inlined document's label or a note naming a file.
 _ATTACHMENT_MARK = re.compile(r"\[Attached: |\((?:Attached|Skipped|Could not)\b")
 
-# A gateway tool whose own name (after the server prefix) starts with one of
-# these writes rather than reads, so its result is no outside text: sending
-# three emails or writing a doc it just created stays one turn's work. Any
-# other name counts as a read (fail closed).
+# A Google or Microsoft 365 tool whose own name (after the server prefix)
+# starts with one of these writes rather than reads, so its result is no
+# outside text: sending three emails or writing a doc it just created stays
+# one turn's work. Any other name, and any tool of another server, counts as
+# a read (fail closed).
+_KNOWN_SERVERS = ("google_workspace__", "microsoft_365__")
 _WRITE_VERBS = frozenset({
     "accept", "add", "append", "archive", "batch", "cancel", "clear", "copy",
     "create", "decline", "delete", "draft", "export", "format", "forward",
@@ -97,6 +100,8 @@ class TurnOutside:
     # The record this one replaced (an enclosing turn's, or None), put back
     # when this turn ends (``end_turn``).
     previous: TurnOutside | None = None
+    # Set by ``end_turn``: a closed turn holds nothing.
+    ended: bool = False
 
     @property
     def read(self) -> bool:
@@ -126,32 +131,51 @@ def begin_turn(
     if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS):
         state.sources.add(SYNCED)
     _TURN.set(state)
+    # Also on the session: the web chat route resumes the executive's
+    # generator in a fresh task per step, each with a copy of the route's
+    # context, so a context variable set here is gone by the next step.
+    # ``current`` finds the record through ``current_session``, which the
+    # route binds for the whole turn.
+    if session is not None:
+        with contextlib.suppress(AttributeError):
+            session.turn_outside = state
     return state
 
 
 def end_turn(state: TurnOutside) -> None:
-    """Close ``state``'s turn: put back the record it replaced, so what runs
-    after the turn in the same task (the email poller sending the reply) is
-    not held by what the turn read."""
+    """Close ``state``'s turn, so what runs after it (the email poller
+    sending the reply) is not held by what the turn read: put back the record
+    it replaced in this task, and take it off the session."""
+    state.ended = True
     if _TURN.get() is state:
         _TURN.set(state.previous)
 
 
 def current() -> TurnOutside | None:
-    return _TURN.get()
+    """The record of the turn in progress: this task's own, else the one on
+    the bound session (``begin_turn``). None once that turn has ended."""
+    state = _TURN.get()
+    if state is not None and not state.ended:
+        return state
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    stored = getattr(current_session.get(), "turn_outside", None)
+    if isinstance(stored, TurnOutside) and not stored.ended:
+        return stored
+    return None
 
 
 def mark(source: str) -> None:
     """Record that the turn in progress read outside content. No turn bound:
     nothing to mark."""
-    state = _TURN.get()
+    state = current()
     if state is not None:
         state.sources.add(source)
 
 
 def read_outside() -> bool:
     """Whether the turn in progress has read outside content."""
-    state = _TURN.get()
+    state = current()
     return state is not None and state.read
 
 
@@ -159,7 +183,7 @@ def note_added_person(person_id: int, person: Any = None) -> None:
     """Hold ``person_id`` until the next turn: they were added to the roster
     or given a new way to reach them in this one. ``person`` (the stored row)
     adds their addresses and chat ids, so a refusal can name the reason."""
-    state = _TURN.get()
+    state = current()
     if state is None:
         return
     state.added_people.add(int(person_id))
@@ -179,7 +203,7 @@ def note_added_person(person_id: int, person: Any = None) -> None:
 def added_ref(ref: Any) -> bool:
     """Whether ``ref`` (an address or chat id) belongs to someone added this
     turn. Never raises."""
-    state = _TURN.get()
+    state = current()
     if state is None or not state.added_refs or not isinstance(ref, (str, int)):
         return False
     return str(ref).strip().lower() in state.added_refs
@@ -188,7 +212,7 @@ def added_ref(ref: Any) -> bool:
 def added_this_turn(person_id: Any) -> bool:
     """Whether ``person_id`` was added (or given a new address or chat
     account) in the turn in progress. Never raises."""
-    state = _TURN.get()
+    state = current()
     if state is None or not state.added_people:
         return False
     try:
@@ -198,11 +222,15 @@ def added_this_turn(person_id: Any) -> bool:
 
 
 def gateway_call_reads(tool_name: object) -> bool:
-    """Whether a gateway tool's result is outside text: anything but a name
-    that starts with a write verb (``_WRITE_VERBS``)."""
+    """Whether a gateway tool's result is outside text: anything but a
+    Google or Microsoft 365 tool whose name starts with a write verb
+    (``_WRITE_VERBS``)."""
     if not isinstance(tool_name, str) or not tool_name:
         return True
-    own = re.split(r"__|\.", tool_name.strip().lower())[-1].replace("-", "_")
+    name = tool_name.strip().lower()
+    if not name.startswith(_KNOWN_SERVERS):
+        return True
+    own = re.split(r"__|\.", name)[-1].replace("-", "_")
     if own.startswith(_WRITE_PREFIXES):
         return False
     first = _FIRST_WORD.match(own)

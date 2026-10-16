@@ -988,6 +988,7 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         kwargs["person_id"] = person_id
 
     action = "updated" if person_id is not None else "created"
+    new_id: int | None = None
     try:
         new_id = people_store.upsert_person(**kwargs)
         if authority_scopes is not None:
@@ -999,6 +1000,16 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         # Always invalidate — a partial write (e.g. row inserted but scopes
         # failed) must not leave the registry serving stale data.
         people_registry.invalidate()
+        if new_id is not None:
+            # The row (and maybe a new address) is written: hold it like a
+            # full write.
+            from openexecutive.orchestrator import outside_content
+
+            try:
+                written = people_store.get_person(new_id)
+            except Exception:
+                written = None
+            outside_content.note_added_person(new_id, written)
         # No name or kind in the audit row (readable by everyone): a contact
         # is private to the principal, and a team row must look the same.
         _audit(

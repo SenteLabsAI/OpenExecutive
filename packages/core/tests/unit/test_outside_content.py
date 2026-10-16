@@ -171,6 +171,8 @@ def test_a_turn_ends_with_its_record_and_nothing_is_marked_outside_one() -> None
     ("notion__notion-fetch", True),
     ("slack__conversations_history", True),
     (None, True),
+    # Another server's result is outside text whatever its tool is called.
+    ("someserver__create_note", True),
     ("google_workspace__send_gmail_message", False),
     ("google_workspace__modify_doc_text", False),
     ("google_workspace__find_and_replace_doc", False),
@@ -226,6 +228,49 @@ def test_a_write_after_a_read_is_refused_for_the_rest_of_the_turn(audit: list[di
     rows = [r for r in audit if r["details"].get("refused") == "outside_content"]
     assert len(rows) == 1 and rows[0]["details"]["tool"] == WRITE_DOC["name"]
     assert rows[0]["details"]["sources"] == [oc.GATEWAY]
+
+
+def test_the_hold_survives_a_task_per_step(audit: list[dict[str, Any]]) -> None:
+    """The web chat route resumes the executive's generator in a fresh task
+    per step (``_sse_body``), each with a copy of the route's context: the
+    record has to outlive the step that began the turn."""
+    gateway = _Gateway()
+    provider = ScriptedProvider([
+        FinalMsg([ToolUseBlock("tu1", "call_tool", READ_DOC)], "tool_use"),
+        FinalMsg([ToolUseBlock("tu2", "call_tool", WRITE_DOC)], "tool_use"),
+        FinalMsg([TextBlock("Done.")], "end_turn"),
+    ])
+    exec_ = ex.Executive(mcp_gateway=gateway)  # type: ignore[arg-type]
+    session = Session()
+
+    async def turn() -> Any:
+        state = oc.begin_turn(session, user_message="do it")
+        try:
+            async for event in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "do it"}], model="claude-test",
+            ):
+                yield event
+        finally:
+            oc.end_turn(state)
+
+    async def route() -> None:
+        token = current_session.set(session)
+        try:
+            stream = turn()
+            with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+                while True:
+                    try:
+                        await asyncio.ensure_future(stream.__anext__())
+                    except StopAsyncIteration:
+                        break
+            # Closed: nothing after the turn is held.
+            assert not oc.read_outside()
+        finally:
+            current_session.reset(token)
+
+    asyncio.run(route())
+    assert gateway.calls == [READ_DOC]
+    assert "outside the team" in json.loads(_result(provider, "tu2"))["error"]
 
 
 def test_a_read_holds_the_writes_beside_it_but_runs_itself() -> None:

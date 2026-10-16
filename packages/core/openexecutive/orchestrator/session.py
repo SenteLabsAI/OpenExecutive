@@ -180,6 +180,10 @@ class Session:
     # touched their mailbox (every audit row it writes after that is private).
     # Re-resolved every turn; never an override.
     turn_delegation: Any = None
+    # What the turn in progress read from outside and who it added
+    # (``orchestrator.outside_content.TurnOutside``), set by its
+    # ``begin_turn``; a closed turn's record holds nothing.
+    turn_outside: Any = None
     # True when this web request carried a signed-in caller (``x-caller-email``,
     # stamped by the UI proxy from the sign-in), set per turn by the chat
     # route. A header-less request resolves to the principal but is no

@@ -6,8 +6,8 @@ sit in Graph's nested shapes (`body.Message.toRecipients[].emailAddress.address`
 `body.attendees[].emailAddress.address`), so the gate walks the whole argument
 tree rather than a fixed field list: every email-shaped string outside the
 free-text fields must be on the People roster (or be the exec's own mailbox),
-and any C0 control character is refused. Reads and the delete tools carry no
-recipient and pass straight through.
+and any C0 control character is refused. Reads carry no recipient and pass
+straight through; a calendar delete mails its attendees, so they are checked.
 """
 from __future__ import annotations
 
@@ -429,10 +429,34 @@ def test_rsvp_is_refused_when_the_event_cannot_be_read(lookup_result: str) -> No
     assert session_call.await_count == 0
 
 
-def test_delete_calendar_event_stays_ungated() -> None:
-    gateway, session_call = _make_gateway()
-    assert _call(gateway, {"eventId": "AAMkEvt="}, [], tool_name="microsoft_365__delete-calendar-event") == '{"ok": true}'
+DELETE = "microsoft_365__delete-calendar-event"
+
+
+def test_delete_calendar_event_checks_who_the_cancellation_reaches() -> None:
+    # Exchange mails every attendee of a deleted meeting.
+    gateway, session_call = _make_gateway_with_event(_graph_event(EXEC_ADDR, [ROSTER, STRANGER]))
+    assert _blocked(_call(gateway, {"eventId": "AAMkEvt="}, [ROSTER], tool_name=DELETE))
+    assert session_call.await_count == 1  # lookup only
+    gateway, session_call = _make_gateway_with_event(_graph_event(EXEC_ADDR, [ROSTER]))
+    assert _call(gateway, {"eventId": "AAMkEvt="}, [ROSTER], tool_name=DELETE) == '{"ok": true}'
+    # No attendees: nobody is mailed.
+    gateway, session_call = _make_gateway_with_event({"id": "AAMkEvt="})
+    assert _call(gateway, {"eventId": "AAMkEvt="}, [], tool_name=DELETE) == '{"ok": true}'
+
+
+@pytest.mark.parametrize("lookup_result", ['{"error": "x"}', ""])
+def test_delete_is_refused_when_the_event_cannot_be_read(lookup_result: str) -> None:
+    gateway, session_call = _make_gateway_with_event(lookup_result)
+    assert _blocked(_call(gateway, {"eventId": "AAMkEvt="}, [ROSTER], tool_name=DELETE))
     assert session_call.await_count == 1
+
+
+def test_the_typed_cancel_deletes_its_own_event_unchecked() -> None:
+    gateway, session_call = _make_gateway_with_event(_graph_event(EXEC_ADDR, [STRANGER]))
+    with gw_module.calendar_cancel_grant("AAMkEvt="):
+        assert _call(gateway, {"eventId": "AAMkEvt="}, [], tool_name=DELETE) == '{"ok": true}'
+        assert session_call.await_count == 1  # no lookup
+        assert _blocked(_call(gateway, {"eventId": "AAMkOther="}, [], tool_name=DELETE))
 
 
 # --- download-bytes: attachment bytes only ------------------------------------
@@ -566,7 +590,6 @@ def test_roster_attendees_pass() -> None:
 @pytest.mark.parametrize(
     ("tool_name", "args"),
     [
-        ("microsoft_365__delete-calendar-event", {"eventId": "AAMkAGI="}),
         ("microsoft_365__list-mail-messages", {"filter": "isRead eq false", "top": 10}),
         ("microsoft_365__get-mail-message", {"messageId": "AAMkAGI="}),
         (
@@ -577,7 +600,7 @@ def test_roster_attendees_pass() -> None:
                                               "endDateTime": "2030-01-02T00:00:00Z"}),
     ],
 )
-def test_reads_and_delete_pass_through_ungated(tool_name: str, args: dict[str, Any]) -> None:
+def test_reads_pass_through_ungated(tool_name: str, args: dict[str, Any]) -> None:
     gateway, session_call = _make_gateway()
     result = _call(gateway, args, [], tool_name=tool_name)
     assert session_call.await_count == 1

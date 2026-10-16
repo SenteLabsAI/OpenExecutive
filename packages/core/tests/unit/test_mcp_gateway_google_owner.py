@@ -82,6 +82,9 @@ def test_a_write_to_its_own_file_runs() -> None:
     ("create_drive_file", {"file_name": "t", "content": "Q3", "folder_id": "d1"}),
     ("copy_drive_file", {"file_id": "own", "parent_folder_id": "d1"}),
     ("update_drive_file", {"file_id": "own", "add_parents": "own,d1"}),
+    # A name the read list doesn't know is checked as a write.
+    ("replace_doc_text", {"document_id": "d1", "text": "Q3"}),
+    ("get_and_clear_values", {"spreadsheet_id": "d1"}),
 ])
 def test_a_write_into_someone_elses_file_or_folder_is_refused(tool: str, args: dict[str, Any]) -> None:
     gateway, session_call = _gateway({"d1": THEIRS, "own": OWN})
