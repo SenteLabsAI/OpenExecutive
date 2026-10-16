@@ -174,6 +174,7 @@ def test_the_executive_is_i_me_and_my() -> None:
     assert "You emailed me this morning and I replied." in fixed
     assert "- **Offer** — my last reply didn't land; I have the figure." in fixed
     assert "The Executive Director role stays open." in fixed  # a title, left alone
+    assert fix_slips("This morning, the Executive replied to Dana.", PAT) == "This morning, I replied to Dana."
     assert slips(fixed, PAT) == []
 
 

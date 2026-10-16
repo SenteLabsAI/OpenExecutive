@@ -43,7 +43,7 @@ _EXECUTIVE = re.compile(
 # Words after which the Executive is the object: "emailed the Executive" → "me".
 _OBJECT_BEFORE = re.compile(
     r"(?:\b(?:to|from|with|for|by|of|on|at|about|than|asked|told|emailed|"
-    r"messaged|pinged|sent|gave|asking|telling|messaging|emailing|pinging)|,)\s*$",
+    r"messaged|pinged|sent|gave|asking|telling|messaging|emailing|pinging))\s*$",
     re.IGNORECASE,
 )
 
