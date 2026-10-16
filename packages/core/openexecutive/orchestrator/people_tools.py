@@ -329,14 +329,26 @@ def _audit(tool: str, kind: str, ok: bool, summary: str, details: dict[str, Any]
 _VERIFIED_SPEAKER_CHANNELS = frozenset({"slack", "discord"})
 
 
+def _adapter_verified_turn(session: Any) -> bool:
+    """The rest of what an adapter's ``speaker_verified`` needs to count, as
+    ``history_chat.verified_speaker`` asks of it: a resolved caller, a turn
+    someone is in that no email started, not private to the principal and
+    not run on their behalf (an eval's ``delegation_override``)."""
+    from openexecutive.delegation.settings import DelegationOverride
+
+    return (
+        getattr(session, "caller_person_id", None) is not None
+        and not getattr(session, "email_from", "")
+        and getattr(session, "unattended", False) is not True
+        and getattr(session, "private_to_principal", False) is not True
+        and not isinstance(getattr(session, "delegation_override", None), DelegationOverride)
+    )
+
+
 def _is_verified_speaker_surface(session: Any) -> bool:
     if bool(getattr(session, "from_web_chat", False)):
         return True
-    if (
-        getattr(session, "speaker_verified", False) is True
-        and getattr(session, "caller_person_id", None) is not None
-        and not getattr(session, "email_from", "")
-    ):
+    if getattr(session, "speaker_verified", False) is True and _adapter_verified_turn(session):
         return True
     channel = str(getattr(session, "origin_channel", "") or "")
     if channel in _VERIFIED_SPEAKER_CHANNELS:

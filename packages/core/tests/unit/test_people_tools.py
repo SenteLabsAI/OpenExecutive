@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from openexecutive.agents import overrides as agent_overrides
+from openexecutive.delegation.settings import DelegationOverride
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic as episodic_module
@@ -386,7 +387,10 @@ def test_owner_on_a_channel_its_adapter_verified_can_change_the_roster(owner_id:
     # flag vouches for neither.
     {"origin_channel": "otherchat", "speaker_verified": True, "caller_person_id": None},
     {"origin_channel": "otherchat", "speaker_verified": True, "email_from": "owner@co.example"},
-], ids=["no_caller", "email"])
+    {"origin_channel": "otherchat", "speaker_verified": True, "unattended": True},
+    {"origin_channel": "otherchat", "speaker_verified": True, "private_to_principal": True},
+    {"origin_channel": "otherchat", "speaker_verified": True, "delegation_override": DelegationOverride(enabled=True)},
+], ids=["no_caller", "email", "unattended", "private_to_principal", "eval_override"])
 def test_an_adapter_flag_alone_is_not_a_verified_surface(
     owner_id: int, surface: dict[str, Any]
 ) -> None:
