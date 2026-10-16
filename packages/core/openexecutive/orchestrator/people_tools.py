@@ -834,6 +834,20 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
     return json.dumps({"people": out, "count": len(out)})
 
 
+def _hold_until_next_turn(person_id: int) -> None:
+    """Hold a person just written to the roster for the rest of the turn
+    (``outside_content.note_added_person``). The id is held even when the
+    row can't be read back; only the refusal's address text is lost."""
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.people import store as people_store
+
+    try:
+        written = people_store.get_person(person_id)
+    except Exception:
+        written = None
+    outside_content.note_added_person(person_id, written)
+
+
 def _new_way_to_reach(existing: Any, tool_input: dict[str, Any], aliases: list[str] | None) -> bool:
     """Whether an update gives ``existing`` an address or chat account they
     did not have: a new email, alias, Slack, Telegram or Discord id."""
@@ -1003,13 +1017,7 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         if new_id is not None:
             # The row (and maybe a new address) is written: hold it like a
             # full write.
-            from openexecutive.orchestrator import outside_content
-
-            try:
-                written = people_store.get_person(new_id)
-            except Exception:
-                written = None
-            outside_content.note_added_person(new_id, written)
+            _hold_until_next_turn(new_id)
         # No name or kind in the audit row (readable by everyone): a contact
         # is private to the principal, and a team row must look the same.
         _audit(
@@ -1022,9 +1030,7 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
     if existing is None or _new_way_to_reach(existing, tool_input, aliases):
         # Nothing reaches someone added (or given a new address or chat
         # account) until the next turn: every send check trusts the roster.
-        from openexecutive.orchestrator import outside_content
-
-        outside_content.note_added_person(new_id, people_store.get_person(new_id))
+        _hold_until_next_turn(new_id)
     # Someone waiting on a roster request may match now.
     from openexecutive.integrations.roster_intake import after_roster_write
 
