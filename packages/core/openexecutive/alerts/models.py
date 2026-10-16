@@ -110,6 +110,18 @@ class AlertEvent(BaseModel):
     # routes it to the principal, keeps it out of every broadcast and live
     # push, and never coalesces it into a card someone else can see.
     private: bool = False
+    # Set only by the create_alert tool on a team member's chat turn: who
+    # raised it, for its "Raised by <name>" label. Such an alert keeps a
+    # source and id the server picked (``TEAM_RAISED_SOURCE``), whatever the
+    # turn asked, and never goes out as a company-wide broadcast — a person
+    # or department only (alerts/pipeline.py).
+    raised_by: str = ""
+
+
+# The source of every alert a team member raises from chat (see
+# ``AlertEvent.raised_by``): never "email" or a watch, so it can't pose as
+# one, coalesce into one, or claim the id a real one will arrive with.
+TEAM_RAISED_SOURCE = "team_member"
 
 
 class TriageDecision(BaseModel):

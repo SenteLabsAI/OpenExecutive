@@ -2765,6 +2765,23 @@ async def handle_ack_alert(tool_input: dict[str, Any]) -> str:
     # Someone else's drafted document answers as if it did not exist.
     if existing is None or not visible_alert(existing, current_viewer()):
         return json.dumps({"error": f"alert {alert_id} not found"})
+    # A team member clears only what is assigned to them; the rest of the
+    # board is the owner's to clear, and a dismiss also lowers a watch's trust.
+    from openexecutive.orchestrator.alert_tools import team_member_speaker
+
+    teammate = team_member_speaker(_session)
+    if teammate is not None and (
+        teammate.id is None or existing.routed_to_person_id != teammate.id
+    ):
+        logger.warning(
+            "ack_alert: refused alert_id=%s for team member %s — not assigned to them",
+            alert_id, teammate.id,
+        )
+        return json.dumps({"error": (
+            f"alert {alert_id} is not assigned to this person, so they can't "
+            "clear it. Only the principal can clear items assigned to someone else "
+            "or to nobody. Say so; do not retry."
+        )})
     prior_status = existing.status
     if prior_status == status:
         return json.dumps(

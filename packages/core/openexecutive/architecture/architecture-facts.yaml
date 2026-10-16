@@ -887,6 +887,16 @@ routing:
     the HTTP ack applies: a `dismissed` on a watch-sourced alert lowers
     that watch's `trust_score` (`monitoring.store.record_dismissal`); an
     `ack` recovers it a little.
+    TEAM MEMBERS: on a team member's turn (`department_gate.speaker`, via
+    `alert_tools.team_member_speaker`) `ack_alert` refuses any alert not
+    routed to them (`routed_to_person_id`); the principal clears anything.
+    `create_alert` there ignores the given `source`, `external_id` and
+    `from_address`: source `team_member` (`alerts.models.TEAM_RAISED_SOURCE`),
+    a fresh uuid id, from = their email, `AlertEvent.raised_by` = their name.
+    Otherwise a teammate could raise "urgent from ceo@..." or pre-claim a
+    real (source, external_id) so the real alert is dropped as a duplicate.
+    The pipeline leads the body with "Raised by <name>." and drops
+    `company_broadcast` after `resolve_channels` (person / department only).
   alert_lifecycle: |
     `openexecutive.alerts.lifecycle` gives every alert a lifetime and one
     shared read view. TTL per category — `ALERT_TTL_DAYS_ACTION` (14) for

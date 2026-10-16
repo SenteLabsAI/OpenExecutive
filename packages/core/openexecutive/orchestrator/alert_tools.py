@@ -3,7 +3,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from typing import Any
+import uuid
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,32 @@ def _routable_person(person_id: int) -> bool:
     return person is None or person.kind == "team"
 
 
+def team_member_speaker(session: Any) -> Person | None:
+    """The team member (not the owner) whose turn this is, or None. Their
+    alerts are labelled as theirs and never broadcast company-wide, and they
+    may dismiss only the alerts assigned to them (``schedule_tools``)."""
+    from openexecutive.orchestrator import department_gate
+
+    return department_gate.speaker(session)
+
+
+def _origin_for(speaker: Person | None, tool_input: dict[str, Any]) -> tuple[str, str, str, str]:
+    """(source, external_id, from, raised_by) for the alert. A team member's
+    own words decide none of the first three: an alert they raise names them
+    and claims no source or message id a real alert could arrive with."""
+    if speaker is None:
+        return (
+            str(tool_input.get("source") or "unknown"),
+            str(tool_input.get("external_id") or ""),
+            str(tool_input.get("from_address") or ""),
+            "",
+        )
+    from openexecutive.alerts.models import TEAM_RAISED_SOURCE
+
+    name = (speaker.full_name or "").strip() or "a team member"
+    return TEAM_RAISED_SOURCE, uuid.uuid4().hex, speaker.email or name, name
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
@@ -78,14 +108,24 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     # audit rows — which name the sender and quote the body — are the
     # principal's alone to read.
     private = getattr(current_session.get(), "private_to_principal", False) is True
+    source, external_id, from_address = (
+        str(tool_input.get("source") or "unknown"),
+        str(tool_input.get("external_id") or ""),
+        str(tool_input.get("from_address") or ""),
+    )
     try:
-        event = AlertEvent(
-            source=tool_input.get("source", "unknown"),
-            external_id=tool_input.get("external_id", ""),
-            subject=tool_input["subject"],
-            body=tool_input["body"],
-            **{"from": tool_input.get("from_address", "")},
+        source, external_id, from_address, raised_by = _origin_for(
+            team_member_speaker(current_session.get()), tool_input,
         )
+        event = AlertEvent.model_validate({
+            "source": source,
+            "external_id": external_id,
+            "subject": tool_input["subject"],
+            "body": tool_input["body"],
+            "from": from_address,
+            "raised_by": raised_by,
+            "user": raised_by or None,
+        })
         # Carry department and person routing hints via the channel field
         # (AlertEvent.channel is a free-text tag used by the pipeline).
         dept = str(tool_input.get("department") or "").strip()
@@ -107,9 +147,10 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             f"Alert: {str(tool_input['subject'])[:200]}",
             actor="executive",
             details={
-                "source": tool_input.get("source", "unknown"),
-                "external_id": tool_input.get("external_id", ""),
-                "from": tool_input.get("from_address", ""),
+                "source": source,
+                "external_id": external_id,
+                "from": from_address,
+                "raised_by": raised_by,
                 "body_preview": str(tool_input.get("body", ""))[:300],
             },
             private=event.private,
@@ -122,8 +163,8 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             f"Alert FAILED: {str(tool_input.get('subject', ''))[:160]} — {exc}",
             actor="executive",
             details={
-                "source": tool_input.get("source", "unknown"),
-                "external_id": tool_input.get("external_id", ""),
+                "source": source,
+                "external_id": external_id,
                 "error": str(exc)[:300],
                 "ok": False,
             },

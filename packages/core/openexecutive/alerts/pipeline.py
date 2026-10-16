@@ -136,6 +136,16 @@ def _ground_decision(
     )
 
 
+def _label_team_raised(decision: TriageDecision, name: str) -> TriageDecision:
+    """``decision`` with its body led by who raised it, so a card a team
+    member raised from chat never reads as news from anywhere else."""
+    label = f"Raised by {name}."
+    body = decision.body.strip()
+    if body.startswith(label):
+        return decision
+    return decision.model_copy(update={"body": f"{label} {body}".strip()})
+
+
 async def evaluate_and_dispatch(
     event: AlertEvent,
     db_path: Path | None = None,
@@ -213,10 +223,18 @@ async def evaluate_and_dispatch(
     # dispatch: keep only what the event itself (or the profile, or the
     # initiatives triage was shown) supports.
     decision = _ground_decision(decision, event, initiatives)
+    if event.raised_by:
+        decision = _label_team_raised(decision, event.raised_by)
 
     effective_channels = preferences.resolve_channels(
         decision.channels, decision.severity, prefs
     )
+    if event.raised_by:
+        # People and departments only: a company-wide post stays with the
+        # owner, whatever triage made of what the team member wrote.
+        effective_channels = [
+            c for c in effective_channels if c != AlertChannel.COMPANY_BROADCAST
+        ]
 
     # A producer that knows the stable identity of the situation (a watch
     # slug) wins over the model's free-text key.
