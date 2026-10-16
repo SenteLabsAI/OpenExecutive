@@ -3529,7 +3529,11 @@ class MCPGateway:
             # is hidden too.
             after = _saved_files_hidden(normalized)
             if isinstance(after, str):
-                return after
+                return json.dumps({"error": (
+                    "Couldn't check which files are private just now, so the "
+                    f"result of {normalized[:200]} was withheld. It did run: "
+                    "check its effect before calling it again."
+                )})
             hidden = _SavedView(hidden.files | after.files, hidden.folders | after.folders)
         if hidden:
             # Before anything below keeps or reads the result.
