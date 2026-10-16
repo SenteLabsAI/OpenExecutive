@@ -171,6 +171,30 @@ def test_approve_with_edit_sets_approved_with_edit(client: TestClient, db: Path)
     assert res.json()["status"] == "approved_with_edit"
 
 
+@pytest.mark.parametrize(
+    "edits",
+    [
+        {"title": ""},
+        {"title": "x" * 201},
+        {"start": "not a time"},
+        {"start": "2030-01-01T10:00:00"},
+        {"start": "2030-01-01T12:00:00+00:00", "end": "2030-01-01T11:00:00+00:00"},
+    ],
+)
+def test_an_edit_the_tool_would_refuse_is_refused(
+    client: TestClient, db: Path, edits: dict[str, str]
+) -> None:
+    iid = _seed(db)
+    fake_gw = type("GW", (), {})()
+    fake_gw.call_tool = AsyncMock(return_value=json.dumps({"id": "evt"}))
+
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw):
+        res = client.post(f"/decisions/{iid}/approve", json={"edits": edits})
+
+    assert res.status_code == 422
+    fake_gw.call_tool.assert_not_awaited()
+
+
 def test_approve_already_approved_409(client: TestClient, db: Path) -> None:
     iid = _seed(db)
     mark_resolved(iid, "approved_unchanged", db_path=db)

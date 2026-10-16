@@ -350,6 +350,24 @@ def get_decision(instance_id: int, request: Request) -> DecisionInstance:
     return _visible_instance(instance_id, request)
 
 
+def _check_booking_edits(payload: dict[str, Any]) -> None:
+    """An edited booking keeps the shape the tool would have accepted: a title
+    of at most 200 characters, and a start and end with a time zone, end after
+    start. 422 otherwise."""
+    from datetime import datetime
+
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip() or len(title) > 200:
+        raise HTTPException(status_code=422, detail="Give the meeting a title of up to 200 characters.")
+    try:
+        start = datetime.fromisoformat(str(payload.get("start")))
+        end = datetime.fromisoformat(str(payload.get("end")))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Start and end must be dates and times.") from None
+    if start.tzinfo is None or end.tzinfo is None or end <= start:
+        raise HTTPException(status_code=422, detail="The end has to be after the start.")
+
+
 async def _approve_booking(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
@@ -363,6 +381,7 @@ async def _approve_booking(
         for key in ("title", "start", "end", "description"):
             if key in body.edits:
                 final_payload[key] = body.edits[key]
+        _check_booking_edits(final_payload)
         if "attendee_emails" in body.edits:
             final_payload["attendee_emails"] = body.edits["attendee_emails"]
 
