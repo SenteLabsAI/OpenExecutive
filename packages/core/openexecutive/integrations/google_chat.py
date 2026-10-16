@@ -253,22 +253,6 @@ async def _process_and_reply(
     # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
     # with the integration_inbound row.
     session_id = f"google_chat:{space_name}:{thread_name}"
-    from openexecutive.audit import log_event as audit_log
-    audit_log(
-        "integration_inbound",
-        f"Inbound google_chat from {sender_name} (space={space_name}): {message_text[:160]}",
-        actor="google_chat",
-        session_id=session_id,
-        details={
-            "channel": "google_chat",
-            "space_name": space_name,
-            "thread_name": thread_name,
-            "message_name": message_name,
-            "sender": sender_name,
-            "text_len": len(message_text),
-        },
-    )
-
     # The sender's People row, by the Google account email on the event (the
     # JWT proves the event is Google's, so the email is Google's word). None
     # for someone who isn't on People; the department gate then holds their
@@ -281,6 +265,25 @@ async def _process_and_reply(
             sender_person = find_person_by_email(sender_email)
         except Exception:
             logger.exception("Google Chat: failed to look up the sender on People")
+
+    from openexecutive.audit import log_event as audit_log
+    audit_log(
+        "integration_inbound",
+        f"Inbound google_chat from {sender_name} (space={space_name}): {message_text[:160]}",
+        actor="google_chat",
+        session_id=session_id,
+        details={
+            "channel": "google_chat",
+            "space_name": space_name,
+            "thread_name": thread_name,
+            "message_name": message_name,
+            "sender": sender_name,
+            # Who it is by People, not by display name: the brief tells the
+            # owner's own chat from a namesake's by this (briefing.live_signals).
+            "sender_person_id": sender_person.id if sender_person is not None else None,
+            "text_len": len(message_text),
+        },
+    )
 
     # Fork into alert triage pipeline (fire-and-forget, same pattern as Slack/email).
     try:

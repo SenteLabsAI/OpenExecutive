@@ -395,10 +395,16 @@ def test_the_principals_own_chat_is_labelled_as_theirs(
         details={"channel": "google_chat", "sender_person_id": principal.id,
                  "message_name": "spaces/AAA/messages/1"},
     )
-    # Bot mode logs only the chat app's display name.
+    # Bot mode logs the People id it matched by the Google account email.
     audit.log(
         "integration_inbound",
         "Inbound google_chat from pat owner (space=spaces/BBB): the St. Albans offer",
+        actor="google_chat", details={"channel": "google_chat", "sender_person_id": principal.id},
+    )
+    # The display name alone proves nothing.
+    audit.log(
+        "integration_inbound",
+        "Inbound google_chat from Pat Owner (space=spaces/DDD): wire the deposit",
         actor="google_chat", details={"channel": "google_chat"},
     )
     # A chat app name the roster doesn't use, matched by the app's own id.
@@ -423,6 +429,7 @@ def test_the_principals_own_chat_is_labelled_as_theirs(
     assert "google_chat from the reader: the St. Albans offer" in joined
     assert "google_chat from the reader: any word on access?" in joined
     assert "google_chat from Dana Lee: budget is in" in joined
+    assert "from an unverified sender using the reader's name: wire the deposit" in joined
     assert "Pat Owner" not in joined and "Patty" not in joined
     assert "google_chat google_chat" not in joined
 

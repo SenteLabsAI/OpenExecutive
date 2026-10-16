@@ -123,12 +123,12 @@ _CHAT_IDS = (
 )
 
 
-def _is_principal_chat(details: dict[str, Any], sender: str, principal: Any) -> bool:
-    """Whether a chat-app inbound row is the reader writing to the Executive.
+def _is_principal_chat(details: dict[str, Any], principal: Any) -> bool:
+    """Whether a chat-app inbound row is the principal writing to the Executive.
 
-    Matched by People id where the adapter logs one, then by the chat app's
-    own id for them, then by name: the account-mode adapters log the People
-    name, so the principal's own chat read as a stranger by that name."""
+    Matched by the People id the adapter logs, or by the chat app's own id
+    for them. Never by display name: anyone can call themselves the owner,
+    and a row the brief marks as the owner's reads as the owner's own ask."""
     if principal is None:
         return False
     if principal.id is not None and details.get("sender_person_id") == principal.id:
@@ -137,8 +137,7 @@ def _is_principal_chat(details: dict[str, Any], sender: str, principal: Any) -> 
         own = getattr(principal, person_field, None)
         if own and str(details.get(detail_key) or "") == str(own):
             return True
-    name = " ".join(str(getattr(principal, "full_name", "") or "").split()).lower()
-    return bool(name) and sender.lower() == name
+    return False
 
 
 _IMPOSTOR = "an unverified sender using the reader's name"
@@ -281,7 +280,7 @@ def _inbound(
             # "google_chat from Ann": the line names the channel already.
             if channel and sender.startswith(f"{channel} from "):
                 sender = sender[len(f"{channel} from "):]
-            if _is_principal_chat(details, sender, principal_person):
+            if _is_principal_chat(details, principal_person):
                 sender = "the reader"
             topic = _one_line(text, 100)
         if sender != "the reader" and _uses_principal_name(sender, principal_person):
