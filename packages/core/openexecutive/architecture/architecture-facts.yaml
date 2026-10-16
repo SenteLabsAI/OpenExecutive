@@ -5000,6 +5000,36 @@ chat:
     Forget retires by hand (forgotten). Listed on the Reflection screen with the misses,
     retired ones as "stopped saying it". Never a cached block, never an
     authorization: the acting gates run on every call whatever it says.
+    Replay (memory/replay.py): the nightly chat_replay action (CHAT_REPLAY_TIME
+    03:30 user zone, seeded and chained like the reflection) runs the misses
+    of the last 30 days again, today: a miss the night a lesson is written
+    for it, when a lesson learned since the last night reaches it, else
+    weekly; at most CHAT_REPLAY_MAX_CASES 30 within CHAT_REPLAY_MINUTES 20.
+    Thumbs-up fine turns are kept (chat_review_turns.kept, 300 max, as long
+    as a miss) as protected cases; 20 of them plus closed misses run only on
+    a night a new lesson landed. Each case runs Executive.chat on a session
+    rebuilt from the recorded surface with the saved conversation before the
+    turn, Session.replay=True: reads run through every gate, the tools a
+    read-only turn is denied (MCP_CLIENT_WITHHELD_TOOLS, gateway calls outside
+    MCP_CLIENT_MCP_TOOLS) answer "done" and land in Session.replay_calls,
+    scripts/jobs/load_mcp_server/Act as me/recall_history/extension tools are
+    not offered, no post-turn pass runs and no lesson showing is counted.
+    Judge (CHAT_REPLAY_JUDGE_MODEL, else EVAL_JUDGE_MODEL, else Sonnet)
+    reads scrubbed content (content_trust._scrub, own tag names renamed)
+    and scores intent and action, not figures: {passed, time_bound, notes}.
+    Gate: pass closes the miss (replay_state closed, closed_at); time_bound
+    marks it evidence; a lesson whose own miss fails 2 judged replays after
+    it was learned retires (replay); a protected case that fails reopens a
+    closed miss and strikes each new lesson of the same person that reached
+    it (never the principal's shared ones from a teammate's turn), retiring
+    it at 2 strikes; a case that didn't run (error, timeout) is recorded
+    (ran=0) and settles nothing. chat_review_replays holds each replay
+    (pruned with its turn), chat_review_replay_runs each night, written
+    before the first case (the "since last night" marker). MAX_KEPT 300
+    pass cases per person. The runner passes its MCP gateway for the reads. GET /memories/reflection carries
+    replay_state/replayed_at/closed_at/replay_notes per miss and replay
+    {misses, would_pass, evidence, last_run_at}: "of the N things that went
+    wrong in the last 30 days, M would go right today".
     Why: the claim check only sees one turn; "I sent it" answered with
     "noted" left the draft waiting, and stated style was lost. Grading turns
     the same read into a record of where it fell short, and a lesson is how

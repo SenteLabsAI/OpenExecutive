@@ -2069,6 +2069,20 @@ export interface ReflectionMiss {
    * `product`: it couldn't have done it with what it has. */
   kind: "company" | "product";
   signals: string[];
+  /** How its nightly replays went: "open" until one passes, "closed" (it
+   * would go right today), "evidence" (depends on what that day held). */
+  replay_state: "open" | "closed" | "evidence";
+  replayed_at: string | null;
+  closed_at: string | null;
+  replay_notes: string;
+}
+
+/** "Of the N things that went wrong in the last 30 days, M would go right today." */
+export interface ReflectionReplay {
+  misses: number;
+  would_pass: number;
+  evidence: number;
+  last_run_at: string | null;
 }
 
 export interface ReflectionWeek {
@@ -2091,8 +2105,9 @@ export interface ReflectionLesson {
   shared: boolean;
   created_at: string;
   retired_at: string | null;
-  /** "unhelpful" (the turns it reached went worse), "forgotten", or "room". */
-  retired_reason: "unhelpful" | "forgotten" | "room" | null;
+  /** "unhelpful" (the turns it reached went worse), "forgotten", "room", or
+   * "replay" (its miss still failed when replayed, or it broke a turn that was fine). */
+  retired_reason: "unhelpful" | "forgotten" | "room" | "replay" | null;
   /** How many turns it reached, and how those were then graded. */
   shown: number;
   fine_after: number;
@@ -2105,6 +2120,7 @@ export interface ReflectionState {
   lessons: ReflectionLesson[];
   /** Newest week first. */
   weeks: ReflectionWeek[];
+  replay: ReflectionReplay;
   /** The principal also sees shared chats' misses; a teammate their own only. */
   sees_everyone: boolean;
 }

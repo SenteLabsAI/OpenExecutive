@@ -71,7 +71,8 @@ MAX_ACTIVE = 40
 MAX_PER_TURN = 6
 MAX_NEW_WORDS = 2
 RETIRE_AFTER_SHOWN = 5
-# Two shared content words: one common word ("report") matches too much.
+# Two shared content words, always: one common word ("report") matches too
+# much, so a lesson with a single content word reaches nothing.
 _MATCH_WORDS = 2
 
 # Beyond the style rules' deny-list (which has the acting verbs and the
@@ -91,6 +92,9 @@ _LESSON_DENY = re.compile(
 REASON_UNHELPFUL = "unhelpful"
 REASON_FORGOTTEN = "forgotten"
 REASON_ROOM = "room"
+# The replay (memory.replay) found it didn't flip its miss, or broke a turn
+# that was fine.
+REASON_REPLAY = "replay"
 
 
 def _now() -> datetime:
@@ -256,9 +260,12 @@ def get_lesson(lesson_id: int, *, db_path: Path | None = None) -> dict[str, Any]
     return _out(row) if row is not None else None
 
 
-def list_lessons(*, person_id: int | None, db_path: Path | None = None) -> list[dict[str, Any]]:
+def list_lessons(
+    *, person_id: int | None, limit: int = 200, offset: int = 0, db_path: Path | None = None
+) -> list[dict[str, Any]]:
     """Live lessons first, newest first, then the retired ones: one
-    person's, or everyone's when ``person_id`` is None."""
+    person's, or everyone's when ``person_id`` is None, ``offset`` rows in
+    (the principal's page is read in parts, like the misses)."""
     conn = _connect(db_path)
     try:
         where, params = "1 = 1", []
@@ -266,8 +273,8 @@ def list_lessons(*, person_id: int | None, db_path: Path | None = None) -> list[
             where, params = "person_id = ?", [int(person_id)]
         rows = conn.execute(
             f"SELECT * FROM {TABLE} WHERE {where} "  # noqa: S608
-            "ORDER BY (retired_at IS NOT NULL), created_at DESC, id DESC LIMIT 200",
-            params,
+            "ORDER BY (retired_at IS NOT NULL), created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (*params, max(1, min(int(limit), 1000)), max(0, int(offset))),
         ).fetchall()
     finally:
         conn.close()
@@ -297,6 +304,49 @@ def forget_lesson(lesson_id: int, *, caller_person_id: int | None, db_path: Path
         return True
     finally:
         conn.close()
+
+
+def retire_lesson(lesson_id: int, reason: str, *, db_path: Path | None = None) -> bool:
+    """Retire one live lesson for ``reason`` (the replay's gate, memory.replay).
+    False when there is no such live lesson. Never raises."""
+    try:
+        conn = _connect(db_path)
+        try:
+            conn.execute(
+                f"UPDATE {TABLE} SET retired_at = ?, retired_reason = ? "  # noqa: S608
+                "WHERE id = ? AND retired_at IS NULL",
+                (_now().isoformat(), reason, int(lesson_id)),
+            )
+            changed = bool(conn.execute("SELECT changes()").fetchone()[0])
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug("lessons: couldn't retire %s", lesson_id, exc_info=True)
+        return False
+    if changed:
+        _audit(f"lesson {lesson_id} retired: {reason}",
+               {"op": "retire_lesson", "lesson_id": int(lesson_id), "reason": reason})
+    return changed
+
+
+def lessons_since(since: str | None, *, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """The live lessons learned after ``since`` (an ISO time; None = all of
+    them), oldest first. Never raises."""
+    try:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM {TABLE} WHERE retired_at IS NULL AND created_at > ? "  # noqa: S608
+                "ORDER BY created_at, id",
+                (since or "",),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [_out(r) for r in rows]
+    except Exception:
+        logger.debug("lessons: lookup failed", exc_info=True)
+        return []
 
 
 def _out(row: sqlite3.Row) -> dict[str, Any]:
@@ -338,7 +388,7 @@ def _content_words(text: str) -> set[str]:
 
 def _matches(lesson: dict[str, Any], message_words: set[str]) -> bool:
     own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
-    return len(own & message_words) >= min(_MATCH_WORDS, len(own)) and bool(own)
+    return len(own & message_words) >= _MATCH_WORDS
 
 
 def lessons_for(
@@ -435,17 +485,21 @@ _HEADER = (
 )
 
 
-def build_lessons_block(person_id: int | None, message: str, *, db_path: Path | None = None) -> str:
+def build_lessons_block(
+    person_id: int | None, message: str, *, count: bool = True, db_path: Path | None = None
+) -> str:
     """Body of the ``<lessons>`` block for this speaker's turn, or "". Lives
     in the user turn (never a cached system block). Counts the lessons it
-    shows against the active turn. Never raises."""
+    shows against the active turn, unless ``count`` is False (a replay,
+    memory.replay: no real turn to grade). Never raises."""
     try:
         if not _enabled():
             return ""
         lines, shown = _lines(lessons_for(person_id, message, db_path=db_path))
         if not lines:
             return ""
-        note_shown(shown, person_id=person_id, db_path=db_path)
+        if count:
+            note_shown(shown, person_id=person_id, db_path=db_path)
         return _HEADER + "\n" + "\n".join(f"- {line}" for line in lines)
     except Exception:
         logger.debug("lessons: block build failed", exc_info=True)

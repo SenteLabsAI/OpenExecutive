@@ -31,6 +31,7 @@ from openexecutive.delegation.settings import (
     pin_turn_delegation,
     turn_delegation,
 )
+from openexecutive.memory import replay as chat_replay
 from openexecutive.memory.facts import render_facts_for_prompt
 from openexecutive.memory.honcho_client import ReasoningLevel as HonchoReasoningLevel
 from openexecutive.memory.workspace_settings import (
@@ -1351,7 +1352,9 @@ class Executive:
             working_style = build_style_block(person_id)
             # What this workspace asked for differently before (memory.lessons):
             # a SQLite read, off the event loop like the facts.
-            lessons = await asyncio.to_thread(build_lessons_block, person_id, user_message)
+            lessons = await asyncio.to_thread(
+                build_lessons_block, person_id, user_message, count=not chat_replay.is_replay(session)
+            )
             if standing_facts is None:
                 # A SQLite read: off the event loop, like the other context.
                 standing_facts = await asyncio.to_thread(render_facts_for_prompt)
@@ -1479,6 +1482,10 @@ class Executive:
         # people's mail, so should_extract refuses the empty text and every
         # other pass below is skipped outright.
         speaker_text = "" if touched_mail else with_added(_speaker_text(memory_text, user_message), inbox)
+        # A replay of a graded turn (memory.replay) is kept nowhere: no open
+        # loops, style, review or mirror of it (should_extract and
+        # schedule_chat_notes refuse a replay session themselves).
+        kept = not touched_mail and not chat_replay.is_replay(session)
 
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
@@ -1505,7 +1512,7 @@ class Executive:
             # unrostered sender (None) records nothing.
             from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
-            if not touched_mail:
+            if kept:
                 schedule_open_loop_pass(
                     speaker_text, full_response, person_id=person_id,
                     session_id=session.session_id,
@@ -1519,7 +1526,7 @@ class Executive:
             # messages have arrived (paced and budgeted inside).
             from openexecutive.attunement.style import schedule_style_pass
 
-            if not touched_mail:
+            if kept:
                 schedule_style_pass(person_id, session_id=session.session_id)
 
             # Always in the loop: private notes of what the speaker said, when
@@ -1535,7 +1542,7 @@ class Executive:
             # and the tools the turn ran.
             from openexecutive.memory.chat_review import record_turn
 
-            if not touched_mail:
+            if kept:
                 record_turn(speaker_text, full_response, session=session,
                             person_id=person_id, calls=turn_calls)
 
@@ -1546,7 +1553,7 @@ class Executive:
             # their contacts, mail they forwarded): the reply summarises that
             # mail, and peer and department memory are read on other people's
             # turns. Nor for a turn that touched the speaker's own mailbox.
-            if not _private_to_principal(session) and not touched_mail:
+            if not _private_to_principal(session) and kept:
                 from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
                 _honcho_sync(
                     speaker_text,
@@ -1705,7 +1712,9 @@ class Executive:
         from openexecutive.memory.lessons import build_lessons_block
 
         working_style = build_style_block(person_id)
-        lessons = await asyncio.to_thread(build_lessons_block, person_id, user_message)
+        lessons = await asyncio.to_thread(
+            build_lessons_block, person_id, user_message, count=not chat_replay.is_replay(session)
+        )
         if standing_facts is None:
             standing_facts = await asyncio.to_thread(render_facts_for_prompt)
         messages = self._build_messages(
@@ -2027,6 +2036,8 @@ class Executive:
         # stream_chat.
         speaker_text = "" if touched_mail else with_added(_speaker_text(memory_text, user_message), inbox)
         # private_rows: see stream_chat — the scheduled passes copy it.
+        # A replay (memory.replay) is kept nowhere — see stream_chat.
+        kept = not touched_mail and not chat_replay.is_replay(session)
         with private_rows(touched_mail):
             if should_extract(speaker_text, session=session):
                 schedule_extraction(
@@ -2036,7 +2047,7 @@ class Executive:
             # Open loops — see stream_chat.
             from openexecutive.attunement.open_loops import schedule_open_loop_pass
 
-            if not touched_mail:
+            if kept:
                 schedule_open_loop_pass(
                     speaker_text, final_response, person_id=person_id,
                     session_id=session.session_id, workspace_mode=workspace_mode,
@@ -2044,7 +2055,7 @@ class Executive:
                 )
             from openexecutive.attunement.style import schedule_style_pass
 
-            if not touched_mail:
+            if kept:
                 schedule_style_pass(person_id, session_id=session.session_id)
 
             # Always in the loop — see stream_chat.
@@ -2056,14 +2067,14 @@ class Executive:
             # Conversation review — see stream_chat.
             from openexecutive.memory.chat_review import record_turn
 
-            if not touched_mail:
+            if kept:
                 record_turn(speaker_text, final_response, session=session,
                             person_id=person_id, calls=turn_calls)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one
         # that touched the speaker's own mailbox — is not).
-        if not _private_to_principal(session) and not touched_mail:
+        if not _private_to_principal(session) and kept:
             from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
             _honcho_sync(
                 speaker_text,
@@ -2177,9 +2188,14 @@ class Executive:
             and getattr(current_session.get(), "others_spoke_last", False) is True
         )
         shared_withheld = SHARED_CHAT_WITHHELD_TOOLS if others_spoke else frozenset()
+        # A replay of a graded turn (memory.replay): nothing that runs a
+        # script or a job, or changes the install; its acting tools are
+        # faked below, after the gates.
+        replaying = chat_replay.is_replay(current_session.get())
+        replay_withheld = chat_replay.WITHHELD_TOOLS if replaying else frozenset()
         not_offered = (
             unattended_withheld | private_withheld | principal_withheld | sandbox_missing
-            | mcp_client_withheld | shared_withheld
+            | mcp_client_withheld | shared_withheld | replay_withheld
         )
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         # Act as me: ghostwrite_email joins the toolkit only on a turn
@@ -2188,8 +2204,11 @@ class Executive:
         # any other turn a call to it is an unknown tool, not a refusal to argue
         # with.
         pinned_delegation = turn_delegation(current_session.get())
+        # Nor on a replay (memory.replay): Act as me's tools save drafts,
+        # reminders and files for real, and its reads mark a chat mail-private.
         ghostwrite_offered = (
-            not mcp_client and pinned_delegation is not None and pinned_delegation.offered
+            not mcp_client and not replaying
+            and pinned_delegation is not None and pinned_delegation.offered
         )
         delegation_tools = DELEGATION_TOOLS if ghostwrite_offered else []
         turn_handlers = (
@@ -2199,14 +2218,16 @@ class Executive:
         )
         # Always in the loop: recall_history joins the same way, only on a
         # turn whose speaker may read their own notes here (history_tools).
-        history_offered = not mcp_client and recall_person(current_session.get()) is not None
+        history_offered = (
+            not mcp_client and not replaying and recall_person(current_session.get()) is not None
+        )
         if history_offered:
             delegation_tools = [*delegation_tools, *HISTORY_TOOLS]
             turn_handlers = {**turn_handlers, **HISTORY_TOOL_HANDLERS}
         # Tools an installed extension adds (orchestrator/extensions.py): only
         # on a turn someone is in, never an unattended run or a turn private
         # to the principal, and only where each tool says it is offered.
-        if not unattended_withheld and not private_turn and not mcp_client:
+        if not unattended_withheld and not private_turn and not mcp_client and not replaying:
             extra_tools = extensions.offered_tools(current_session.get())
             if extra_tools:
                 delegation_tools = [*delegation_tools, *(t.definition for t in extra_tools)]
@@ -2223,10 +2244,16 @@ class Executive:
         seat_session_id = getattr(current_session.get(), "session_id", None)
         if seat is not None:
             turn_handlers = department_gate.gated_handlers(turn_handlers, seat, session_id=seat_session_id)
+        # A replay (memory.replay): outermost, so a tool that would send,
+        # post, book, schedule, run or change stored state is recorded on the
+        # session and answered "done" before any gate or handler sees it;
+        # reads still go through every gate above.
+        if replaying:
+            turn_handlers = chat_replay.faked_handlers(turn_handlers, current_session.get())
         # Something new came in on a channel (mail, Slack, Telegram, …): with
         # Take the lead on, the reflection looks at it soon, batched.
         origin = str(getattr(current_session.get(), "origin_channel", "") or "")
-        if origin and not unattended_withheld:
+        if origin and not unattended_withheld and not replaying:
             take_the_lead.wake(f"a message on {origin}")
         current_messages = list(messages)
         if self._settings.enable_caching:
@@ -3013,16 +3040,22 @@ class Executive:
             if mcp_tool_uses and self._mcp_gateway is not None:
                 # A teammate's mail with the Executive stays theirs: every
                 # mailbox read the model makes is filtered (teammate_mail).
+                guarded_call_tool = guard_call_tool(
+                    take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
+                    if leading
+                    else department_gate.gated_call_tool(
+                        self._mcp_gateway.call_tool, seat, session_id=seat_session_id,
+                    )
+                    if seat is not None
+                    else self._mcp_gateway.call_tool
+                )
                 _mcp_dispatch = {
                     "search_tools": self._mcp_gateway.search_tools,
-                    "call_tool": guard_call_tool(
-                        take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
-                        if leading
-                        else department_gate.gated_call_tool(
-                            self._mcp_gateway.call_tool, seat, session_id=seat_session_id,
-                        )
-                        if seat is not None
-                        else self._mcp_gateway.call_tool
+                    # A replay (memory.replay) makes the reads and records the rest.
+                    "call_tool": (
+                        chat_replay.faked_call_tool(guarded_call_tool, current_session.get())
+                        if replaying
+                        else guarded_call_tool
                     ),
                     "load_mcp_server": self._mcp_gateway.load_mcp_server,
                 }

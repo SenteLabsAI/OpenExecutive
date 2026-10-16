@@ -10,6 +10,7 @@ import {
   getReflection,
   type ReflectionLesson,
   type ReflectionMiss,
+  type ReflectionReplay,
   type ReflectionState,
   type ReflectionWeek,
 } from "@/lib/api";
@@ -25,6 +26,9 @@ import { EmptyState, formatDate } from "./shared";
 // Below the misses, what it learned from them: one-line lessons in the
 // person's own words that reach later turns, with how those turns went.
 // A lesson that doesn't help retires on its own; Forget retires it by hand.
+// At night the Executive replays the misses with today's lessons, in a dry
+// run nobody receives, and a judge says whether each would now go right:
+// that is the number at the top, and the pill on each miss.
 // Nothing here notifies anyone: it is a record, opened on purpose.
 
 const EMPTY =
@@ -99,7 +103,7 @@ export default function ReflectionTab() {
     );
   }
 
-  const { misses, lessons, weeks, sees_everyone: seesEveryone } = state;
+  const { misses, lessons, weeks, replay, sees_everyone: seesEveryone } = state;
   const company = misses.filter((m) => m.kind === "company");
   const product = misses.filter((m) => m.kind === "product");
   const live = lessons.filter((l) => l.retired_at === null);
@@ -108,6 +112,7 @@ export default function ReflectionTab() {
   return (
     <div className="space-y-4 py-3">
       <Trend weeks={weeks} />
+      <WouldGoRight replay={replay} />
       {misses.length === 0 ? (
         <EmptyState message={EMPTY} />
       ) : (
@@ -169,7 +174,47 @@ const RETIRED_LABEL: Record<NonNullable<ReflectionLesson["retired_reason"]>, str
   unhelpful: "stopped: the chats it reached went worse, not better",
   forgotten: "stopped: forgotten",
   room: "stopped: made room for newer ones",
+  replay: "stopped: replaying the chats showed it didn't help",
 };
+
+/** "Of the N things that went wrong in the last 30 days, M would go right today." */
+function WouldGoRight({ replay }: { replay: ReflectionReplay }) {
+  if (replay.misses === 0) return null;
+  const ran = replay.last_run_at !== null;
+  return (
+    <section className="rounded-xl border border-line bg-surface-panel px-4 py-3">
+      <div className="text-lg font-semibold text-fg">
+        {replay.would_pass} <span className="text-base font-semibold text-fg-muted">of {replay.misses}</span>
+      </div>
+      <div className="text-sm text-fg-muted">
+        {ran
+          ? "of the things that went wrong in the last 30 days would go right today."
+          : "of the things that went wrong in the last 30 days have been replayed so far; the first replay runs tonight."}
+        {replay.evidence > 0 &&
+          ` ${replay.evidence} ${replay.evidence === 1 ? "depends" : "depend"} on what that day's calendar or inbox held, so ${replay.evidence === 1 ? "it is" : "they are"} kept as evidence only.`}
+      </div>
+      <div className="text-xs text-fg-muted mt-1">
+        Each night it replays the misses with everything it has learned since, in a dry run nobody receives, and
+        a judge says whether each would now go right.
+        {ran && ` Last replayed ${formatDate(replay.last_run_at as string)}.`}
+      </div>
+    </section>
+  );
+}
+
+const REPLAY_PILL: Record<ReflectionMiss["replay_state"], string> = {
+  open: "bg-surface-input/60 text-fg-muted",
+  closed: "bg-emerald-500/15 text-emerald-500",
+  evidence: "bg-surface-input/60 text-fg-muted",
+};
+
+/** The miss's last replay: still wrong, would go right now, or evidence only. */
+function replayLabel(miss: ReflectionMiss): string | null {
+  if (miss.replay_state === "closed" && miss.closed_at) return `Would go right today (since ${formatDate(miss.closed_at)})`;
+  if (miss.replay_state === "evidence") return "Can't be replayed: depends on that day";
+  if (miss.replayed_at) return `Still goes wrong (replayed ${formatDate(miss.replayed_at)})`;
+  return null;
+}
 
 function LessonRow({
   lesson,
@@ -304,6 +349,14 @@ function MissRow({
               {s}
             </span>
           ))}
+          {replayLabel(miss) && (
+            <span
+              className={`rounded-full px-2 py-0.5 ${REPLAY_PILL[miss.replay_state]}`}
+              title={miss.replay_notes || undefined}
+            >
+              {replayLabel(miss)}
+            </span>
+          )}
         </div>
         <div className="text-[15px] text-fg">
           <span className="text-fg-muted">They asked: </span>

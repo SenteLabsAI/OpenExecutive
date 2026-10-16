@@ -24,15 +24,18 @@ def judge_model() -> str:
     return get_settings().eval_judge_model or _JUDGE_MODEL
 
 
-async def judge_message(prompt: str, *, max_tokens: int = _JUDGE_MAX_TOKENS) -> str:
-    """Send one judge prompt to the judge model and return the reply's text."""
-    model = judge_model()
+async def judge_message(
+    prompt: str, *, max_tokens: int = _JUDGE_MAX_TOKENS, model: str | None = None, actor: str = "eval_judge"
+) -> str:
+    """Send one judge prompt to the judge model (or ``model``) and return the
+    reply's text, logged under ``actor``."""
+    model = model or judge_model()
     message = await get_provider(model).messages_create(
         model=model,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    log_model_usage(message, model=model, actor="eval_judge")
+    log_model_usage(message, model=model, actor=actor)
     return _response_text(message)
 
 

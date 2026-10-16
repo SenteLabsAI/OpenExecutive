@@ -214,6 +214,14 @@ class Session:
     # Evals and tests only (``delegation.settings.DelegationOverride``): run
     # as if the speaker had Act as me, against a fake mailbox.
     delegation_override: Any = None
+    # A replay of a graded turn (``memory.replay``): the chat loop runs as it
+    # would for the recorded surface and speaker, reads for real, and every
+    # tool that sends, posts, books, schedules, runs or changes stored state
+    # returns "done" and lands in ``replay_calls`` instead of running. The
+    # post-turn passes (memory, open loops, style, notes, the review itself)
+    # are skipped: nothing a replay does reaches anyone or is kept.
+    replay: bool = False
+    replay_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})

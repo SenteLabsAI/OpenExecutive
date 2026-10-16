@@ -228,6 +228,9 @@ def schedule_chat_notes(speaker_text: str, *, session: Any, person_id: int | Non
     try:
         if person_id is None or session is None:
             return
+        # A replay of a graded turn (memory.replay) leaves no notes.
+        if getattr(session, "replay", False) is True:
+            return
         from openexecutive.delegation.settings import own_words
 
         words = own_words(speaker_text or "")

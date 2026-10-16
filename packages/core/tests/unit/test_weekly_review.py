@@ -403,7 +403,7 @@ def _local(run_at: str, zone: str) -> datetime:
 
 
 def test_seeded_only_in_solo() -> None:
-    assert runner.seed_principal_briefs() == 3
+    assert runner.seed_principal_briefs() == 4
     assert _pending() == []
     _solo()
     assert runner.seed_principal_briefs() == 1  # only the weekly review was missing

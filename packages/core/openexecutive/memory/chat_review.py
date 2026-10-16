@@ -83,6 +83,10 @@ KEEP_DAYS = 7
 MISS_KEEP_DAYS = 90
 WEEKS_TABLE = "chat_review_weeks"
 VERDICTS = ("fine", "miss", "unclear")
+# The signal line a thumbs up leaves (turn_signals); such a fine turn is kept
+# as a pass case for the replay (memory.replay), at most MAX_KEPT of them.
+THUMBS_UP = "thumbs up"
+MAX_KEPT = 300  # per person
 KINDS = ("company", "product")
 WANTED_MAX = 300
 _MATCH_CHARS = 120
@@ -154,6 +158,14 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         ("wanted", "TEXT"),
         ("signals", "TEXT"),
         ("graded_at", "TEXT"),
+        # Replay (memory.replay): a thumbs-up turn is kept as a pass case,
+        # and a miss carries how its replays went.
+        ("kept", "INTEGER NOT NULL DEFAULT 0"),
+        ("replay_state", "TEXT"),
+        ("replayed_at", "TEXT"),
+        ("closed_at", "TEXT"),
+        ("replay_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("replay_notes", "TEXT"),
     ):
         if col not in present:
             try:
@@ -271,16 +283,19 @@ def record_turn(
                  _calls_json(calls or []), current.isoformat(), get_active_turn_id()),
             )
             # A miss is kept longer than a turn that went fine, so the
-            # Reflection screen can show what went wrong this quarter.
+            # Reflection screen can show what went wrong this quarter; so is
+            # a turn the person gave a thumbs up (``kept``), as a pass case
+            # the replay protects (memory.replay).
             conn.execute(
                 f"DELETE FROM {TURNS_TABLE} WHERE created_at < ? "  # noqa: S608
-                "AND (verdict IS NULL OR verdict != 'miss')",
+                "AND (verdict IS NULL OR verdict != 'miss') AND kept = 0",
                 ((current - timedelta(days=KEEP_DAYS)).isoformat(),),
             )
             conn.execute(
                 f"DELETE FROM {TURNS_TABLE} WHERE created_at < ?",  # noqa: S608
                 ((current - timedelta(days=MISS_KEEP_DAYS)).isoformat(),),
             )
+            _prune_replays(conn)
             conn.commit()
             row_id = int(cur.lastrowid or 0)
         finally:
@@ -290,6 +305,21 @@ def record_turn(
     except Exception:
         logger.warning("chat_review: couldn't record the turn", exc_info=True)
         return None
+
+
+def _prune_replays(conn: sqlite3.Connection) -> None:
+    """Drop the replays (memory.replay) of turns that are gone, so a forgotten
+    miss or chat leaves no transcript behind. Nothing to do before the
+    replay has ever run."""
+    from openexecutive.memory.replay import REPLAYS_TABLE
+
+    present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (REPLAYS_TABLE,)
+    ).fetchone()
+    if present is not None:
+        conn.execute(
+            f"DELETE FROM {REPLAYS_TABLE} WHERE turn_row_id NOT IN (SELECT id FROM {TURNS_TABLE})"  # noqa: S608
+        )
 
 
 def _pending_review(session_id: str, *, db_path: Path | None) -> bool:
@@ -332,6 +362,7 @@ def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
         return
     try:
         conn.execute(f"DELETE FROM {TURNS_TABLE} WHERE session_id = ?", (str(session_id),))  # noqa: S608
+        _prune_replays(conn)
         conn.commit()
     except sqlite3.OperationalError:
         return
@@ -894,7 +925,7 @@ def turn_signals(
                 note = " ".join(str(saved["feedback_note"] or "").split())[:200]
                 lines.append("thumbs down" + (f": {note}" if note else ""))
             elif saved["feedback"] == "up":
-                lines.append("thumbs up")
+                lines.append(THUMBS_UP)
             if saved["stopped"]:
                 lines.append("stopped the reply")
         elif _rewound_after(starts[i], starts[i + 1] if i + 1 < len(starts) else None, rewound):
@@ -975,11 +1006,15 @@ def _store_grades(
         for row in turns:
             rid = int(row["id"])
             verdict, kind, wanted = grades.get(rid, ("unclear", "", ""))
+            lines = signals.get(rid) or []
+            # A turn that went fine and got a thumbs up is a pass case the
+            # replay protects (memory.replay): kept as long as a miss.
+            kept = 1 if verdict == "fine" and THUMBS_UP in lines else 0
             conn.execute(
                 f"UPDATE {TURNS_TABLE} SET verdict = ?, kind = ?, wanted = ?, signals = ?, "  # noqa: S608
-                "graded_at = ?, message_id = ? WHERE id = ? AND graded_at IS NULL",
-                (verdict, kind or None, wanted or None, json.dumps(signals.get(rid) or []),
-                 now, message_ids.get(rid), rid),
+                "graded_at = ?, message_id = ?, kept = ? WHERE id = ? AND graded_at IS NULL",
+                (verdict, kind or None, wanted or None, json.dumps(lines),
+                 now, message_ids.get(rid), kept, rid),
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 conn.execute(
@@ -989,6 +1024,15 @@ def _store_grades(
                     (_week(str(row["created_at"])), int(row["person_id"]), 1 if verdict == "miss" else 0),
                 )
                 counted.append((str(row["turn_id"]) if row["turn_id"] else None, verdict))
+        # At most MAX_KEPT pass cases per person: their oldest go first.
+        for pid in {int(row["person_id"]) for row in turns}:
+            conn.execute(
+                f"DELETE FROM {TURNS_TABLE} WHERE kept = 1 AND verdict = 'fine' AND person_id = ? "  # noqa: S608
+                f"AND id NOT IN (SELECT id FROM {TURNS_TABLE} WHERE kept = 1 AND verdict = 'fine' "
+                "AND person_id = ? ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (pid, pid, MAX_KEPT),
+            )
+        _prune_replays(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1092,6 +1136,11 @@ def list_misses(
             "wanted": str(row["wanted"] or ""),
             "kind": str(row["kind"] or "company"),
             "signals": [str(x) for x in signals] if isinstance(signals, list) else [],
+            # How its replays went (memory.replay): open until one passes.
+            "replay_state": str(row["replay_state"] or "open"),
+            "replayed_at": str(row["replayed_at"]) if row["replayed_at"] else None,
+            "closed_at": str(row["closed_at"]) if row["closed_at"] else None,
+            "replay_notes": str(row["replay_notes"] or ""),
         })
     return out
 
@@ -1145,6 +1194,7 @@ def forget_miss(row_id: int, *, caller_person_id: int | None, db_path: Path | No
         if row is None or not is_principal_or_self(caller_person_id, int(row["person_id"])):
             return False
         conn.execute(f"DELETE FROM {TURNS_TABLE} WHERE id = ?", (int(row_id),))  # noqa: S608
+        _prune_replays(conn)
         conn.commit()
         return True
     finally:
