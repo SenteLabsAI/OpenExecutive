@@ -1322,6 +1322,7 @@ async def _run_teammate_followup(
     from openexecutive.memory.episodic import mark_action_cancelled
     from openexecutive.people.store import get_person
 
+    assert action.id is not None
     creator = get_person(int(action.created_by_person_id or 0))
     if creator is not None and creator.is_principal and not creator.archived:
         return False
@@ -1347,7 +1348,8 @@ async def _run_teammate_followup(
         reason = "a teammate's follow-up may only reach that teammate"
     else:
         reason = ""
-    if reason:
+    if creator is None or reason:
+        reason = reason or "the person who scheduled it is no longer on the team"
         mark_action_cancelled(action.id, reason)
         logger.info("scheduler: action %d cancelled: %s", action.id, reason)
         _audit("cancelled", f"cancelled: {reason}")
