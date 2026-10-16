@@ -709,6 +709,13 @@ _FOLLOWUP_CHANNEL_FIELD: dict[str, str] = {
 }
 
 
+def _turn_speaker_id(session: Any) -> int | None:
+    """The person whose turn this is (``Session.caller_person_id``), kept on
+    a row the turn queues so the scheduler can run it as them."""
+    speaker = getattr(session, "caller_person_id", None) if session is not None else None
+    return speaker if isinstance(speaker, int) and not isinstance(speaker, bool) else None
+
+
 def _is_principal_recipient(
     channel: str, channel_ref: str, assigned_to_person_id: int | None
 ) -> bool:
@@ -848,6 +855,7 @@ async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
             department=department,
             assigned_to_person_id=assigned_to_person_id,
             required_scope=required_scope,
+            created_by_person_id=_turn_speaker_id(session),
         )
     except Exception as exc:
         logger.exception("schedule_followup: insert failed")
@@ -2417,6 +2425,7 @@ async def handle_suggest_workflow(tool_input: dict[str, Any]) -> str:
             channel_ref=channel_ref,
             intent_text=intent,
             originating_session_id=session_id,
+            created_by_person_id=_turn_speaker_id(session),
         )
     except Exception as exc:
         logger.exception("suggest_workflow: insert failed")
