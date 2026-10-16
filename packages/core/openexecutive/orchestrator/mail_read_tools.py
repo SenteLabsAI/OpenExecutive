@@ -242,7 +242,7 @@ SAVE_MY_EMAIL_ATTACHMENT_TOOL: dict[str, Any] = {
         "folder in your own Google Drive or OneDrive (whichever is connected) "
         "and is shared with them alone, as a viewer. Any file type, up to "
         f"{MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB. Use it only when they ask "
-        "you to save, store or upload a file from their email; call it "
+        "you to save or upload a file from their email; call it "
         "once per file. Returns the link to give them."
     ),
     "input_schema": {
@@ -695,11 +695,14 @@ async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
 # them", "put it in my Drive". Without one in what they typed this turn,
 # nothing is copied: a mail's text can't ask for it. Kept narrow on purpose
 # ("keep", "link", "copy" and "folder" turn up in everyday asks).
-_SAVE_WORDS = frozenset({"drive", "onedrive", "save", "saved", "store", "upload"})
+_SAVE_WORDS = frozenset({"onedrive", "save", "saved", "upload"})
+# "Drive" counts only as the place ("to my Drive", "in Drive", "Google
+# Drive"), not "our drive to hire".
+_DRIVE_AFTER = frozenset({"google", "in", "into", "my", "on", "to", "your"})
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 _NOT_ASKED = (
     "Save a file only when they ask you to, in their own words: they haven't "
-    "asked to save, store or upload a file in this message. Ask them "
+    "asked to save or upload a file in this message. Ask them "
     "whether they want it saved to your Drive or OneDrive. Do not retry until "
     "they say so."
 )
@@ -711,10 +714,12 @@ def _asked_to_save(writer: Any) -> str | None:
     file's text) must ask for it. Plain code, fails closed."""
     from openexecutive.delegation.settings import own_words
 
-    words = own_words(getattr(writer.pinned, "speaker_text", "") or "")
-    if not words or not {w.lower() for w in _WORD_RE.findall(words)} & _SAVE_WORDS:
-        return _error(_NOT_ASKED, status="not_asked")
-    return None
+    typed = own_words(getattr(writer.pinned, "speaker_text", "") or "")
+    words = [w.lower() for w in _WORD_RE.findall(typed)] if typed else []
+    asked = bool(set(words) & _SAVE_WORDS) or any(
+        word == "drive" and i > 0 and words[i - 1] in _DRIVE_AFTER for i, word in enumerate(words)
+    )
+    return None if asked else _error(_NOT_ASKED, status="not_asked")
 
 
 async def handle_save_my_email_attachment(tool_input: dict[str, Any]) -> str:

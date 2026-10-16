@@ -9850,7 +9850,7 @@ delegation:
     them alone, returning {status saved | saved_not_shared | failed |
     no_storage | too_large, name, where, link}. Only when they asked in their
     own words this turn: own_words of speaker_text must hold one of
-    _SAVE_WORDS (save, saved, store, upload, drive, onedrive), checked before
+    _SAVE_WORDS (save, saved, upload, onedrive, or drive after to/in/into/on/my/your/google), checked before
     the slot (TurnDelegation.files_saved, SAVES_PER_TURN 10) and before the
     mailbox is opened; else status not_asked. Bytes via
     mailbox.attachment_bytes, never the model; any type, MAX_ATTACHMENT_BYTES
@@ -9909,7 +9909,7 @@ delegation:
     covered, and anyone signed in to the Executive's account outside the app
     sees everything. Rows are not deleted when Act as me is turned off.
     Persona: the DELEGATION_ADDENDUM tells the model to use it once per file
-    when asked to save, store or upload a file and to give them the link.
+    when asked to save or upload a file and to give them the link.
     Eval: delegation_014.
   calendar: |
     Read my calendar (delegation.calendar, table delegation_calendar, one
