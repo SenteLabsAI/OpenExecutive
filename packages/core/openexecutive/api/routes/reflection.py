@@ -92,18 +92,33 @@ def _caller(request: Request) -> Person:
     return person
 
 
-def _may_read(request: Request, miss: dict[str, Any], caller_person_id: int) -> bool:
-    """A miss is the caller's own, or from a chat the chat routes would open
-    for them. Fails closed when the check itself can't be made."""
-    from openexecutive.api.routes.chat import _session_access
+class _Readable:
+    """Which misses the caller may see: their own, or from a chat the chat
+    routes would open for them (`chat._session_access`, checked once per
+    chat). Fails closed when the check itself can't be made."""
 
-    if int(miss["person_id"]) == caller_person_id:
-        return True
-    try:
-        return _session_access(request, str(miss["session_id"]), caller_person_id) == "allowed"
-    except Exception:
-        logger.exception("reflection: couldn't check who may read a chat")
-        return False
+    def __init__(self, request: Request, caller_person_id: int) -> None:
+        self._request = request
+        self._caller = caller_person_id
+        self._by_session: dict[str, bool] = {}
+
+    def __call__(self, miss: dict[str, Any]) -> bool:
+        if int(miss["person_id"]) == self._caller:
+            return True
+        session_id = str(miss["session_id"])
+        if session_id not in self._by_session:
+            from openexecutive.api.routes.chat import _session_access
+
+            try:
+                allowed = _session_access(self._request, session_id, self._caller) == "allowed"
+            except Exception:
+                logger.exception("reflection: couldn't check who may read a chat")
+                allowed = False
+            self._by_session[session_id] = allowed
+        return self._by_session[session_id]
+
+
+_PAGE = 200
 
 
 @router.get("/memories/reflection", response_model=ReflectionOut)
@@ -121,9 +136,13 @@ async def get_reflection(
         if person_id is not None and int(person_id) != person.id:
             raise _refuse(403, "not_yours", "You can see your own chats only.")
         scope = person.id
-    misses: list[dict[str, Any]] = chat_review.list_misses(person_id=scope)
     if person.is_principal:
-        misses = [m for m in misses if _may_read(request, m, person.id)]
+        # Read deeper than the page, since the rows hidden from the
+        # principal are dropped after the query.
+        readable = _Readable(request, person.id)
+        misses = [m for m in chat_review.list_misses(person_id=scope, limit=1000) if readable(m)][:_PAGE]
+    else:
+        misses = chat_review.list_misses(person_id=scope, limit=_PAGE)
     weeks = chat_review.weekly_rates(person_id=scope)
     return ReflectionOut(
         misses=[MissOut(**m) for m in misses],
@@ -136,6 +155,12 @@ async def get_reflection(
 async def forget_miss(miss_id: int, request: Request) -> Response:
     """Drop one miss from the record: its own person or the principal."""
     person = _caller(request)
+    assert person.id is not None
+    miss = chat_review.get_miss(miss_id)
+    # The same visibility rule as the list: a miss the caller can't see
+    # doesn't exist for them, so the answer gives nothing away.
+    if miss is None or not _Readable(request, person.id)(miss):
+        raise _refuse(404, "not_found", "No such miss, or it isn't yours to forget.")
     if not chat_review.forget_miss(miss_id, caller_person_id=person.id):
         raise _refuse(404, "not_found", "No such miss, or it isn't yours to forget.")
     from openexecutive.audit import log_event

@@ -524,6 +524,34 @@ def test_the_signals_the_product_recorded_reach_the_grader(db: Path, roster: Sim
     assert json.loads(first["signals"])[0] == "thumbs down: it never made the alert"
 
 
+def test_replies_that_open_alike_keep_their_own_reactions(db: Path, roster: SimpleNamespace,
+                                                          provider: _Provider) -> None:
+    from openexecutive.memory.session_store import (
+        create_session,
+        save_message,
+        set_message_feedback,
+    )
+
+    create_session("s-1", "Alerts", NOW.isoformat(), db_path=db)
+    opening = "Done. I've set that up and will keep watching the Maple House invoice " * 2
+    first, second = opening + "for the alert.", opening + "for the reminder too."
+    assert cr._match_key(first) == cr._match_key(second)
+    cr.record_turn(ASK, first, session=_web(roster.principal.id), person_id=roster.principal.id,
+                   calls=[("check_alert", '{"error": null, "status": "ok"}')], now=NOW)
+    cr.record_turn(AGAIN, second, session=_web(roster.principal.id), person_id=roster.principal.id,
+                   calls=[], now=NOW + timedelta(minutes=1))
+    one = save_message("s-1", "assistant", first, db_path=db)
+    two = save_message("s-1", "assistant", second, db_path=db)
+    set_message_feedback("s-1", two, "down", "not the reminder", db_path=db, by_person_id=roster.principal.id)
+    provider.grades = [{"turn": 1, "verdict": "fine"}, {"turn": 2, "verdict": "fine"}]
+    _review(db)
+    content = _grade_content(provider)
+    assert "[1] SIGNALS: none" in content, content  # a null error is not a failed tool
+    assert "[2] SIGNALS: thumbs down: not the reminder" in content
+    rows = _turns(db)
+    assert rows[0]["message_id"] == one and rows[1]["message_id"] == two
+
+
 def test_a_miss_outlives_the_week_and_a_fine_turn_does_not(db: Path, roster: SimpleNamespace,
                                                           provider: _Provider) -> None:
     _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)

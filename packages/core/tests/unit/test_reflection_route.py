@@ -121,6 +121,11 @@ def test_a_teammates_own_chat_stays_theirs(client: TestClient, ids: dict[str, in
     assert one["misses"] == []
     own = client.get("/memories/reflection", headers=TEAMMATE).json()
     assert [m["session_id"] for m in own["misses"]] == ["web-ben"]
+    # Nor can the principal forget it, or learn that it exists.
+    hidden = own["misses"][0]["id"]
+    assert client.delete(f"/memories/reflection/misses/{hidden}", headers=OWNER).status_code == 404
+    assert client.delete(f"/memories/reflection/misses/{hidden + 50}", headers=OWNER).status_code == 404
+    assert client.delete(f"/memories/reflection/misses/{hidden}", headers=TEAMMATE).status_code == 204
 
 
 def test_forgetting_follows_the_same_rule(client: TestClient, ids: dict[str, int]) -> None:

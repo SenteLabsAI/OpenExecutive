@@ -727,7 +727,10 @@ GRADE_TOOL: dict[str, Any] = {
     },
 }
 
-_FAILED_RE = re.compile(r'^\s*(\{\s*"error"|error\b)|"error"\s*:|"status"\s*:\s*"(failed|refused)"', re.IGNORECASE)
+_FAILED_RE = re.compile(
+    r'^\s*error\b|"error"\s*:(?!\s*(null|""|\[\]|\{\}))|"status"\s*:\s*"(failed|refused)"',
+    re.IGNORECASE,
+)
 
 
 def _match_key(text: str) -> str:
@@ -780,24 +783,49 @@ def _failed_calls(row: sqlite3.Row) -> list[str]:
     ]
 
 
+def _when(text: Any) -> datetime | None:
+    """A stored timestamp (the turns' ``isoformat`` or the audit log's
+    ``...Z``) as an aware datetime; None when it won't parse."""
+    try:
+        when = datetime.fromisoformat(str(text))
+    except (TypeError, ValueError):
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
+def _rewound_after(
+    start: datetime | None, next_start: datetime | None, rewound: list[datetime | None]
+) -> bool:
+    if start is None:
+        return False
+    return any(
+        ts is not None and ts > start and (next_start is None or ts < next_start)
+        for ts in rewound
+    )
+
+
 def turn_signals(
     session_id: str, turns: list[sqlite3.Row], *, db_path: Path | None = None
 ) -> tuple[dict[int, list[str]], dict[int, int]]:
     """What the product recorded about each turn, by row id: the signal
     lines the grader reads, and the saved reply's ``chat_messages`` id where
     one matches the recorded reply (the Reflection screen's link)."""
-    by_key: dict[str, sqlite3.Row] = {}
+    # Saved replies by their opening words, oldest first; each is matched to
+    # one turn only, so two replies that open alike keep their own reactions.
+    by_key: dict[str, list[sqlite3.Row]] = {}
     for msg in _assistant_messages(session_id, db_path=db_path):
         content = msg["content"]
         if isinstance(content, str):
-            by_key.setdefault(_match_key(content), msg)
-    rewound = [str(e.ts) for e in _audit_events(session_id, "session_rewound")]
+            by_key.setdefault(_match_key(content), []).append(msg)
+    rewound = [_when(e.ts) for e in _audit_events(session_id, "session_rewound")]
     nudged = {str(e.turn_id) for e in _audit_events(session_id, "claim_check") if e.turn_id}
+    starts = [_when(row["created_at"]) for row in turns]
     signals: dict[int, list[str]] = {}
     message_ids: dict[int, int] = {}
-    for row in turns:
+    for i, row in enumerate(turns):
         lines: list[str] = []
-        saved = by_key.get(_match_key(str(row["reply"])))
+        queue = by_key.get(_match_key(str(row["reply"])))
+        saved = queue.pop(0) if queue else None
         if saved is not None:
             message_ids[int(row["id"])] = int(saved["id"])
             if saved["feedback"] == "down":
@@ -807,7 +835,9 @@ def turn_signals(
                 lines.append("thumbs up")
             if saved["stopped"]:
                 lines.append("stopped the reply")
-        elif any(ts > str(row["created_at"]) for ts in rewound):
+        elif _rewound_after(starts[i], starts[i + 1] if i + 1 < len(starts) else None, rewound):
+            # Its reply is gone from the chat and a rewind landed before the
+            # next turn: this is the turn they took back.
             lines.append("took the turn back to ask again")
         if row["turn_id"] and str(row["turn_id"]) in nudged:
             lines.append("the reply claimed a change no tool made")
@@ -1014,6 +1044,21 @@ def weekly_rates(
     finally:
         conn.close()
     return [{"week": str(r["week"]), "graded": int(r["graded"]), "misses": int(r["misses"])} for r in rows]
+
+
+def get_miss(row_id: int, *, db_path: Path | None = None) -> dict[str, Any] | None:
+    """Whose one miss is, and from which chat; None when there is no such miss."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT id, session_id, person_id FROM {TURNS_TABLE} WHERE id = ? AND verdict = 'miss'",  # noqa: S608
+            (int(row_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {"id": int(row["id"]), "session_id": str(row["session_id"]), "person_id": int(row["person_id"])}
 
 
 def forget_miss(row_id: int, *, caller_person_id: int | None, db_path: Path | None = None) -> bool:
