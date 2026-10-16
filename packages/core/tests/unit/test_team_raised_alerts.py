@@ -222,3 +222,68 @@ def test_principal_can_dismiss_anything(routed_to: int | None) -> None:
     out, set_status = _ack(routed_to, None)
     assert out["status"] == "dismissed"
     set_status.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
+# Saved workflows and per-person cards
+
+
+def _raise_in_workflow(owner: int | None, person: Person | None) -> AlertEvent:
+    from openexecutive.orchestrator.alert_tools import raised_for_workflow_owner
+
+    current_session.set(None)
+    scheduled: list[AlertEvent] = []
+    with (
+        raised_for_workflow_owner(owner),
+        patch("openexecutive.people.store.get_person", return_value=person),
+        patch("openexecutive.alerts.pipeline.schedule_evaluation", scheduled.append),
+        patch("openexecutive.audit.log_event"),
+    ):
+        asyncio.run(handle_create_alert(dict(_POSING)))
+    return scheduled[0]
+
+
+def test_a_team_members_workflow_raises_alerts_as_them() -> None:
+    event = _raise_in_workflow(7, _teammate(7))
+    assert event.source == TEAM_RAISED_SOURCE
+    assert event.raised_by == "Dana Reyes"
+
+
+def test_the_principals_workflow_keeps_the_given_origin() -> None:
+    event = _raise_in_workflow(1, Person(id=1, full_name="Olivia", kind="team", is_principal=True))
+    assert event.source == "email"
+    assert event.external_id == "msg-123"
+
+
+def test_a_built_in_workflow_keeps_the_given_origin() -> None:
+    assert _raise_in_workflow(None, None).source == "email"
+
+
+def test_action_step_binds_the_workflows_creator(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import alert_tools
+    from openexecutive.workflows import action_step, tool_catalog
+
+    seen: list[int | None] = []
+
+    async def handler(_: dict[str, Any]) -> str:
+        seen.append(alert_tools._workflow_owner.get())
+        return "{}"
+
+    monkeypatch.setattr(tool_catalog, "builtin_handler", lambda name: handler)
+    monkeypatch.setattr("openexecutive.workflows.dynamic_store.get_owner", lambda name: 7)
+    info = MagicMock(source="builtin")
+    asyncio.run(action_step._dispatch("oe__create_alert", {}, info, "wf"))
+    assert seen == [7]
+    assert alert_tools._workflow_owner.get() is None
+
+
+def test_one_team_members_alert_never_folds_into_anothers(monkeypatch, db: Path) -> None:
+    def event(who: str, ext: str) -> AlertEvent:
+        return AlertEvent(
+            source=TEAM_RAISED_SOURCE, external_id=ext, subject="s", body="b",
+            raised_by=who, **{"from": f"{who.lower()}@example.com"},
+        )
+
+    _, first = _run_pipeline(monkeypatch, db, event("Dana", "x1"))
+    _, second = _run_pipeline(monkeypatch, db, event("Sam", "x2"))
+    assert first is not None and second is not None and first != second

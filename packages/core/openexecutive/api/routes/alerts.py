@@ -50,6 +50,28 @@ def _caller_is_principal(request: Request) -> bool:
     return caller_is_principal(request)
 
 
+def _caller_clears_anything(request: Request) -> bool:
+    """The principal (or anyone on an install with no principal yet, so a
+    first run is never locked out) may clear any card."""
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    return _caller_is_principal_or_unclaimed(request)
+
+
+def _caller_may_clear(alert: Alert, request: Request) -> bool:
+    """Whether the caller may approve or dismiss ``alert``: the principal
+    anything, a team member only what is routed to them."""
+    if _caller_clears_anything(request):
+        return True
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    caller = _resolve_caller_person_id(request)
+    return caller is not None and alert.routed_to_person_id == caller
+
+
+_NOT_YOURS = "Only items assigned to you can be cleared. Ask the owner to clear this one."
+
+
 class AckBody(BaseModel):
     status: str = Field(..., pattern="^(read|ack|dismissed)$")
     # Optional on a dismiss: a topic pattern to mute (see alerts/preferences
@@ -68,6 +90,8 @@ def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
             status_code=409,
             detail="Answer this one from its card: add them, say who they are, or ignore them.",
         )
+    if body.status != "read" and not _caller_may_clear(existing, request):
+        raise HTTPException(status_code=403, detail=_NOT_YOURS)
     if not store.set_status(alert_id, body.status):
         raise HTTPException(status_code=404, detail="Alert not found")
     # Feedback loop: a dismiss on a watch-sourced alert lowers that watch's
@@ -75,7 +99,8 @@ def ack_alert(alert_id: int, body: AckBody, request: Request) -> Alert:
     # on a real transition — re-posting the same status teaches nothing.
     if existing.status != body.status:
         lifecycle.record_ack_feedback(existing, body.status)
-        if body.status == "dismissed":
+        # A mute silences the topic for everyone: the principal's call.
+        if body.status == "dismissed" and _caller_clears_anything(request):
             lifecycle.apply_mute_request(existing, body.mute_topic)
     updated = store.get_alert(alert_id)
     if updated is None:
@@ -405,9 +430,24 @@ def bulk_ack_alerts(body: BulkAckBody, request: Request) -> BulkAckResponse:
         for a in (store.get_alert(i) for i in (body.alert_ids or [])[:500])
         if a is not None
     }
+    alert_ids = body.alert_ids
+    if not _caller_clears_anything(request):
+        # A team member clears only their own items, by id: never an age or
+        # category sweep of the company's queue.
+        if body.older_than_days is not None:
+            raise HTTPException(status_code=403, detail=_NOT_YOURS)
+        from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+        caller = _resolve_caller_person_id(request)
+        alert_ids = [
+            i for i, a in targets.items()
+            if i is not None and caller is not None and a.routed_to_person_id == caller
+        ]
+        if not alert_ids:
+            return BulkAckResponse(count=0)
     updated_ids = store.bulk_set_status(
         body.status,
-        alert_ids=body.alert_ids,
+        alert_ids=alert_ids,
         before=before,
         category=body.category,
         exclude_sources=tuple(lifecycle.TTL_EXEMPT_SOURCES),

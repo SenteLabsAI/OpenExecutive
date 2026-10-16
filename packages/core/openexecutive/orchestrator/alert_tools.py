@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import Any
 
-if TYPE_CHECKING:
-    from openexecutive.people.models import Person
+from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,24 @@ def _routable_person(person_id: int) -> bool:
     return person is None or person.kind == "team"
 
 
+# Who created the saved workflow whose step is raising an alert now
+# (``workflows.action_step``). A workflow runs with no chat turn — from the
+# Jobs page or on its cadence — so its creator stands in for the speaker.
+_workflow_owner: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "create_alert_workflow_owner", default=None
+)
+
+
+@contextlib.contextmanager
+def raised_for_workflow_owner(person_id: int | None) -> Iterator[None]:
+    """Run the block as a step of a workflow ``person_id`` created."""
+    token = _workflow_owner.set(person_id)
+    try:
+        yield
+    finally:
+        _workflow_owner.reset(token)
+
+
 def team_member_speaker(session: Any) -> Person | None:
     """The team member (not the owner) whose turn this is, or None. Their
     alerts are labelled as theirs and never broadcast company-wide, and they
@@ -78,6 +97,28 @@ def team_member_speaker(session: Any) -> Person | None:
     from openexecutive.orchestrator import department_gate
 
     return department_gate.speaker(session)
+
+
+def _team_member_raising(session: Any) -> Person | None:
+    """The team member an alert raised now comes from: the speaker, else the
+    creator of the workflow raising it, unless that is the principal. A
+    creator the roster can't place still counts as a team member."""
+    speaker = team_member_speaker(session)
+    if speaker is not None:
+        return speaker
+    owner_id = _workflow_owner.get()
+    if owner_id is None:
+        return None
+    try:
+        from openexecutive.people.store import get_person
+
+        owner = get_person(owner_id)
+    except Exception:
+        logger.warning("create_alert: couldn't read the workflow's creator", exc_info=True)
+        owner = None
+    if owner is None:
+        return Person(id=owner_id, full_name="", kind="team")
+    return None if owner.is_principal else owner
 
 
 def _origin_for(speaker: Person | None, tool_input: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -115,7 +156,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     )
     try:
         source, external_id, from_address, raised_by = _origin_for(
-            team_member_speaker(current_session.get()), tool_input,
+            _team_member_raising(current_session.get()), tool_input,
         )
         event = AlertEvent.model_validate({
             "source": source,

@@ -397,11 +397,21 @@ def _audit(
     )
 
 
-async def _dispatch(name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo) -> str:
+async def _dispatch(
+    name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo, workflow_name: str,
+) -> str:
     if info.source == "builtin":
         handler = tool_catalog.builtin_handler(name)
         if handler is None:  # resolve() only returns names with handlers
             return json.dumps({"error": "tool is not available"})
+        if name == "oe__create_alert":
+            # An alert a team member's saved workflow raises is theirs, as
+            # it would be from their chat (orchestrator.alert_tools).
+            from openexecutive.orchestrator.alert_tools import raised_for_workflow_owner
+            from openexecutive.workflows.dynamic_store import get_owner
+
+            with raised_for_workflow_owner(get_owner(workflow_name)):
+                return await handler(arguments)
         return await handler(arguments)
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 
@@ -418,12 +428,12 @@ async def _dispatch(name: str, arguments: dict[str, Any], info: tool_catalog.Too
 
 
 async def _call_tool(
-    name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo
+    name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo, workflow_name: str,
 ) -> tuple[str, bool]:
     """Run one approved tool call. Returns (result text, is_error); never raises."""
     try:
         content = await asyncio.wait_for(
-            _dispatch(name, arguments, info), timeout=_TOOL_CALL_TIMEOUT_S
+            _dispatch(name, arguments, info, workflow_name), timeout=_TOOL_CALL_TIMEOUT_S
         )
     except TimeoutError:
         return json.dumps({"error": "the tool timed out"}), True
@@ -516,7 +526,7 @@ class _StepCalls:
                 budget.used += 1
                 self._events.append(("progress", f"Using {name}…"))
                 try:
-                    content, is_error = await _call_tool(name, arguments, info)
+                    content, is_error = await _call_tool(name, arguments, info, self._workflow_name)
                 except asyncio.CancelledError:
                     # Stopped mid-call (a script's clock, or the run): it may
                     # have taken effect, so it still gets its audit row.
@@ -847,7 +857,9 @@ async def run_held_calls(
             outcome = "skipped (the tool is no longer available to this step)"
         else:
             remember(workflow_name, call.targets, run_id=run_id)
-            content, is_error = await _call_tool(call.tool, call.arguments, resolved[call.tool])
+            content, is_error = await _call_tool(
+                call.tool, call.arguments, resolved[call.tool], workflow_name,
+            )
             outcome = "error" if is_error else "done"
             if policy is not None:
                 policy.approve(call.targets)

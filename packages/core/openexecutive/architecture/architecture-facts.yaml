@@ -896,7 +896,13 @@ routing:
     Otherwise a teammate could raise "urgent from ceo@..." or pre-claim a
     real (source, external_id) so the real alert is dropped as a duplicate.
     The pipeline leads the body with "Raised by <name>." and drops
-    `company_broadcast` after `resolve_channels` (person / department only).
+    `company_broadcast` after `resolve_channels` (person / department only),
+    and prefixes the dedup key with who raised it so teammates' cards never
+    coalesce. A teammate's saved workflow raises as its creator
+    (`alert_tools.raised_for_workflow_owner`, bound in `action_step._dispatch`).
+    HTTP matches: `/alerts/{id}/ack` (ack/dismissed) and `/alerts/bulk-ack`
+    let a team member clear only alerts routed to them (403 otherwise, no age
+    sweep), and only the principal's dismiss applies `mute_topic`.
   alert_lifecycle: |
     `openexecutive.alerts.lifecycle` gives every alert a lifetime and one
     shared read view. TTL per category — `ALERT_TTL_DAYS_ACTION` (14) for

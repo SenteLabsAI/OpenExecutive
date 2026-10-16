@@ -1227,13 +1227,14 @@ def _alerts_db(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     alert_store.initialize_db(db)
 
 
-def _insert(headline: str, *, private: bool) -> int:
+def _insert(headline: str, *, private: bool, routed_to: int | None = None) -> int:
     from openexecutive.alerts import store as alert_store
     from openexecutive.alerts.models import PRIVATE_ALERT_TAG
 
     alert_id = alert_store.insert_alert(
         source="email", external_id=headline, severity="high", headline=headline,
         body=f"{headline} body", topic_tags=[PRIVATE_ALERT_TAG] if private else ["customer"],
+        routed_to_person_id=routed_to,
     )
     assert alert_id is not None
     return alert_id
@@ -1362,8 +1363,8 @@ def test_alert_routes_keep_private_alerts_to_the_principal(
     from openexecutive.api.routes import alerts as alerts_route
 
     _alerts_db(db, monkeypatch)
-    private_id = _insert("Board seat for Jordan", private=True)
-    public_id = _insert("Server down", private=False)
+    private_id = _insert("Board seat for Jordan", private=True, routed_to=roster.teammate)
+    public_id = _insert("Server down", private=False, routed_to=roster.teammate)
     app = FastAPI()
     app.include_router(alerts_route.router)
     client = TestClient(app)
@@ -1383,6 +1384,52 @@ def test_alert_routes_keep_private_alerts_to_the_principal(
 
     assert client.post(
         f"/alerts/{private_id}/ack", json={"status": "ack"}, headers=_as(OWNER_EMAIL)
+    ).status_code == 200
+
+
+def test_a_team_member_clears_only_alerts_assigned_to_them(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.alerts import store as alert_store
+    from openexecutive.api.routes import alerts as alerts_route
+
+    _alerts_db(db, monkeypatch)
+    theirs = _insert("Renewal call", private=False, routed_to=roster.teammate)
+    unassigned = _insert("Server down", private=False)
+    owners = _insert("Board prep", private=False, routed_to=roster.principal)
+    app = FastAPI()
+    app.include_router(alerts_route.router)
+    client = TestClient(app)
+    teammate = _as(TEAM_EMAIL)
+
+    for other in (unassigned, owners):
+        refused = client.post(f"/alerts/{other}/ack", json={"status": "dismissed"}, headers=teammate)
+        assert refused.status_code == 403
+        row = alert_store.get_alert(other)
+        assert row is not None and row.status == "unread"
+    # Marking one read is not clearing it.
+    assert client.post(
+        f"/alerts/{unassigned}/ack", json={"status": "read"}, headers=teammate
+    ).status_code == 200
+
+    swept = client.post(
+        "/alerts/bulk-ack", json={"status": "dismissed", "alert_ids": [owners]}, headers=teammate,
+    )
+    assert swept.json() == {"count": 0}
+    assert client.post(
+        "/alerts/bulk-ack", json={"status": "dismissed", "older_than_days": 1}, headers=teammate,
+    ).status_code == 403
+
+    # Their own: cleared, but a mute (which silences the topic for everyone)
+    # is the owner's call.
+    done = client.post(
+        f"/alerts/{theirs}/ack", json={"status": "dismissed", "mute_topic": True}, headers=teammate,
+    )
+    assert done.status_code == 200
+    assert alert_store.list_mutes() == []
+
+    assert client.post(
+        f"/alerts/{owners}/ack", json={"status": "dismissed"}, headers=_as(OWNER_EMAIL)
     ).status_code == 200
 
 

@@ -239,6 +239,9 @@ async def evaluate_and_dispatch(
     # A producer that knows the stable identity of the situation (a watch
     # slug) wins over the model's free-text key.
     dedup_key = event.dedup_hint or decision.dedup_key
+    if event.raised_by:
+        # One team member's alert never folds into another's card.
+        dedup_key = f"raised_by:{(event.from_ or event.raised_by).lower()}:{dedup_key}"
     topic_tags = _with_department_tag(
         decision.topic_tags, event.department or event.channel,
     )
