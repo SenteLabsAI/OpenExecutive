@@ -143,12 +143,16 @@ from openexecutive.orchestrator.router import (
     route_parallel,
 )
 from openexecutive.orchestrator.schedule_tools import (
+    MCP_CLIENT_WITHHELD_TOOLS,
     PRIVATE_TURN_WITHHELD_TOOLS,
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
     UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
+    mcp_client_allows_mcp_tool,
+    mcp_client_withheld_error,
+    mcp_client_withholds,
     private_turn_allows_mcp_tool,
     private_turn_withheld_error,
     private_turn_withholds,
@@ -2110,7 +2114,17 @@ class Executive:
         # Python jobs need the sandbox the API image installs: without it the
         # tool is not offered (fixed per process, so the prefix stays stable).
         sandbox_missing = frozenset() if python_job.available() else frozenset({python_job.TOOL_NAME})
-        not_offered = unattended_withheld | private_withheld | principal_withheld | sandbox_missing
+        # Another AI app asking over Open Executive's MCP server
+        # (`Session.from_mcp_client`): it reads and advises, and nothing that
+        # sends, posts, books, schedules, runs or changes stored state is
+        # offered or run (`MCP_CLIENT_WITHHELD_TOOLS`) — a fixed set, so the
+        # variant keeps a stable tool prefix of its own.
+        mcp_client = bool(getattr(current_session.get(), "from_mcp_client", False))
+        mcp_client_withheld = MCP_CLIENT_WITHHELD_TOOLS if mcp_client else frozenset()
+        not_offered = (
+            unattended_withheld | private_withheld | principal_withheld | sandbox_missing
+            | mcp_client_withheld
+        )
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         # Act as me: ghostwrite_email joins the toolkit only on a turn
         # pin_turn_delegation offered it to. Its own registry, never
@@ -2118,7 +2132,9 @@ class Executive:
         # any other turn a call to it is an unknown tool, not a refusal to argue
         # with.
         pinned_delegation = turn_delegation(current_session.get())
-        ghostwrite_offered = pinned_delegation is not None and pinned_delegation.offered
+        ghostwrite_offered = (
+            not mcp_client and pinned_delegation is not None and pinned_delegation.offered
+        )
         delegation_tools = DELEGATION_TOOLS if ghostwrite_offered else []
         turn_handlers = (
             {**_ALL_SKILL_HANDLERS, **DELEGATION_TOOL_HANDLERS}
@@ -2127,14 +2143,14 @@ class Executive:
         )
         # Always in the loop: recall_history joins the same way, only on a
         # turn whose speaker may read their own notes here (history_tools).
-        history_offered = recall_person(current_session.get()) is not None
+        history_offered = not mcp_client and recall_person(current_session.get()) is not None
         if history_offered:
             delegation_tools = [*delegation_tools, *HISTORY_TOOLS]
             turn_handlers = {**turn_handlers, **HISTORY_TOOL_HANDLERS}
         # Tools an installed extension adds (orchestrator/extensions.py): only
         # on a turn someone is in, never an unattended run or a turn private
         # to the principal, and only where each tool says it is offered.
-        if not unattended_withheld and not private_turn:
+        if not unattended_withheld and not private_turn and not mcp_client:
             extra_tools = extensions.offered_tools(current_session.get())
             if extra_tools:
                 delegation_tools = [*delegation_tools, *(t.definition for t in extra_tools)]
@@ -2394,7 +2410,7 @@ class Executive:
             ]
             # A turn private to the principal is not offered run_script
             # (PRIVATE_TURN_WITHHELD_TOOLS); the same guard refuses it.
-            if private_turn and script_tool_uses:
+            if (private_turn or mcp_client) and script_tool_uses:
                 withheld_uses = [*withheld_uses, *script_tool_uses]
                 script_tool_uses = []
             # list_saved_tools is principal-only (PRINCIPAL_ONLY_TOOLS).
@@ -2414,6 +2430,14 @@ class Executive:
             withheld_mcp_uses += [
                 tu for tu in mcp_tool_uses
                 if tu["name"] in principal_withheld and tu not in withheld_mcp_uses
+            ]
+            # A turn from another AI app: gateway reads only
+            # (MCP_CLIENT_MCP_TOOLS), never load_mcp_server.
+            withheld_mcp_uses += [
+                tu for tu in mcp_tool_uses
+                if mcp_client
+                and mcp_client_withholds(tu["name"], tu["input"])
+                and tu not in withheld_mcp_uses
             ]
             if withheld_mcp_uses:
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
@@ -2553,6 +2577,35 @@ class Executive:
                 )
                 results_by_id[tu["id"]] = mail_touched_withheld_error(label)
             for tu in withheld_uses:
+                if mcp_client and mcp_client_withholds(tu["name"], tu["input"]):
+                    # Fail closed: never run, and leave a trace. A call_tool
+                    # is named by the tool it asked for.
+                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                    label = tu["name"]
+                    if label == "call_tool" and isinstance(tu["input"], dict):
+                        named = tu["input"].get("name")
+                        label = named[:200] if isinstance(named, str) and named else label
+                    logger.warning(
+                        "%s:%s refused — the turn comes from an MCP client",
+                        kind, _loggable_tool(label),
+                    )
+                    audit_log(
+                        "tool_invocation",
+                        f"{kind}:{label} refused: the turn comes from another AI app",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor="executive",
+                        details={
+                            "tool": label,
+                            "kind": kind,
+                            "iteration": iteration,
+                            "ok": False,
+                            "refused": "mcp_client",
+                        },
+                        private=private_turn,
+                    )
+                    results_by_id[tu["id"]] = mcp_client_withheld_error(label)
+                    continue
                 if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to
                     # the principal like every row this turn writes. A
@@ -2893,6 +2946,9 @@ class Executive:
                     if private_turn and tu["name"] == "search_tools":
                         # Offer a private turn PRIVATE_TURN_MCP_TOOLS only.
                         result = filter_search_results(result, private_turn_allows_mcp_tool)
+                    if mcp_client and tu["name"] == "search_tools":
+                        # And a turn from another AI app MCP_CLIENT_MCP_TOOLS.
+                        result = filter_search_results(result, mcp_client_allows_mcp_tool)
                     logger.info("← %s  result=%s", tool_label, _log_value(tool_label, result))
                     results_by_id[tu["id"]] = result
                     # MCP chip emission. search_tools is read-only (gets

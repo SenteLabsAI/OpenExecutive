@@ -301,12 +301,24 @@ claude mcp add --transport http open-executive http://localhost:8000/mcp \
 
 Connected clients get eight read-only resources (company profile, today's
 briefing and activity, people roster, department state, and episodic memory for
-decisions, initiatives and advice) and four tools, of which `consult_specialist`
-is the primary one: domain analysis from any of the ten specialists, each
-grounded in your company's knowledge base. The full inventory is on the **MCP
-Server** section of the `/architecture` page. With
-[signed callers](docs/auth.md#signed-callers) on, an MCP client holds only the
-shared secret, so it is never the owner: `ask_executive` asks as no one.
+decisions, initiatives and advice) and four tools: `consult_specialist` (domain
+analysis from any of the ten specialists, each grounded in your company's
+knowledge base), `search_knowledge`, `list_workflows` and `ask_executive`. The
+full inventory is on the **MCP Server** section of the `/architecture` page.
+
+`/mcp` answers as the caller the API verified, by the web app's rules. With no
+`x-caller-email` (open mode) the client is the owner, as the CLI is. A request
+that carries a signed-in person (a deployment that puts its own sign-in in
+front of `/mcp` and stamps the caller as the web UI's proxy does; see
+[signed callers](docs/auth.md#signed-callers)) gets that person's answers: the
+owner's episodic memory and recent activity go to the owner alone, the briefing
+and roster to someone on the roster (the briefing narrowed as the web app
+narrows it), and the company profile, departments, specialists, knowledge and
+workflow catalog to anyone. With signed callers on, a client holding only the
+shared secret is a service: never the owner, and `ask_executive` asks as no
+one. `ask_executive` only reads and advises: on its turn the Executive is not
+offered anything that sends, posts, books, schedules, runs or changes stored
+data, and of the connected MCP servers' tools only the reads.
 
 This is the inverse of the `MCP_ENABLED` and `MCP_SERVERS_CONFIG_PATH` settings
 under [Configuration](#configuration), which configure the MCP *gateway*: Open

@@ -2034,6 +2034,87 @@ def private_turn_withheld_error(tool_name: str) -> str:
     })
 
 
+# What a turn asked from another AI app over Open Executive's own MCP server
+# (`Session.from_mcp_client`, set by `mcp_server.ask_executive`) is never
+# offered. Such a turn reads and advises; it never sends, posts, books,
+# schedules, runs or changes anything, because nobody is in Open Executive to
+# see it happen and the other app's text is whatever that app put there. It
+# starts from everything a turn private to the principal and an unattended
+# run are denied, and adds every other tool that reaches someone or writes:
+# - message_person, send_slack_dm, send_discord_dm, send_telegram_message:
+#   direct messages.
+# - ack_alert, create_alert, leave_out_of_brief: change the briefing.
+# - close_open_loop: stops a loop being chased.
+# - upsert_person, archive_person, set_department_head: roster writes.
+# - remove_watchlist_entry, tune_watchlist_entry: monitoring writes.
+# - draft_workflow: drafts a definition only save_workflow (withheld) keeps.
+# - propose_form_values: fills a form on a screen this turn has none of.
+# The Act as me tools (`propose_actions`, `ghostwrite_email`, the mailbox
+# reads), recall_history and extension tools are not offered either: the chat
+# loop leaves those registries out of such a turn. Of the gateway tools, only
+# the reads in `MCP_CLIENT_MCP_TOOLS`. The loop drops this set before the
+# sort, so the variant has a stable tool prefix of its own, and refuses a call
+# the model emits anyway (`mcp_client_withholds`, `mcp_client_withheld_error`).
+MCP_CLIENT_WITHHELD_TOOLS: frozenset[str] = PRIVATE_TURN_WITHHELD_TOOLS | UNATTENDED_WITHHELD_TOOLS | frozenset({
+    "ack_alert",
+    "archive_person",
+    "close_open_loop",
+    "create_alert",
+    "draft_workflow",
+    "leave_out_of_brief",
+    "message_person",
+    "propose_form_values",
+    "remove_watchlist_entry",
+    "send_discord_dm",
+    "send_slack_dm",
+    "send_telegram_message",
+    "set_department_head",
+    "tune_watchlist_entry",
+    "upsert_person",
+})
+
+# The gateway tools such a turn may call: the private-turn reads, without the
+# mail tools that send or leave a draft in a mailbox.
+MCP_CLIENT_MCP_TOOLS: frozenset[str] = PRIVATE_TURN_MCP_TOOLS - frozenset({
+    "google_workspace__draft_gmail_message",
+    "google_workspace__send_gmail_message",
+    "microsoft_365__create-draft-email",
+    "microsoft_365__send-mail",
+})
+
+MCP_CLIENT_REFUSAL = (
+    "This conversation comes from another AI app, so here you can read and "
+    "advise but can't send, post, book or change anything. Tell the person to "
+    "ask for it in Open Executive itself."
+)
+
+
+def mcp_client_allows_mcp_tool(tool_name: object) -> bool:
+    """Whether a turn from another AI app may call the gateway tool
+    ``tool_name``: one of ``MCP_CLIENT_MCP_TOOLS``, and nothing else."""
+    return isinstance(tool_name, str) and tool_name in MCP_CLIENT_MCP_TOOLS
+
+
+def mcp_client_withholds(tool_name: str, tool_input: Any) -> bool:
+    """Whether a turn from another AI app may not run this tool use: a tool
+    in ``MCP_CLIENT_WITHHELD_TOOLS``, or a gateway ``call_tool`` naming
+    anything but ``MCP_CLIENT_MCP_TOOLS`` or a OneDrive file read."""
+    if tool_name in MCP_CLIENT_WITHHELD_TOOLS:
+        return True
+    if tool_name != "call_tool":
+        return False
+    named = tool_input.get("name") if isinstance(tool_input, dict) else None
+    return not (mcp_client_allows_mcp_tool(named) or is_onedrive_file_read(tool_input))
+
+
+def mcp_client_withheld_error(tool_name: str) -> str:
+    """The JSON error tool_result for a call a turn from another AI app may
+    not make."""
+    return json.dumps({
+        "error": f"{tool_name} is not available on this turn. {MCP_CLIENT_REFUSAL} Do not retry."
+    })
+
+
 def handlers_for_offered_tools(
     tools: list[dict[str, Any]], handlers: dict[str, Any]
 ) -> dict[str, Any]:

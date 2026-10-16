@@ -7395,8 +7395,11 @@ auth:
     500 to every call. Neither falls back to the header.
 
     Other consequences:
-      - MCP ask_executive ignores caller_email and asks as no one
-        (person_id None).
+      - An MCP client holding only the shared secret is a service: /mcp
+        refuses it the owner's records, the briefing and the roster, and
+        ask_executive asks as no one (person_id None). A sign-in in front
+        of /mcp that sends a signed assertion gets that person's answers
+        (see mcp_server).
       - Setup's api_secret check warns when a shared secret is set
         without the keys.
       - scripts/make-caller-keys.py makes a pair, and
@@ -8847,6 +8850,65 @@ integrations:
     a browser rebinding attack cannot supply the key, and traffic arrives behind
     the deployment's TLS terminator. The shared secret is the real access control.
 
+    WHO IS ASKING: every handler answers as the caller the API verified. The
+    mounted app shares the outer request's scope state, so what caller_gate
+    put on request.state reaches the handler: mcp_server._request() reads the
+    Starlette request from FastMCP's request context (mcp.get_context(); a
+    handler signature takes no Context, so the resource list is unchanged),
+    and api_caller.caller(request) answers. The person comes from
+    api.caller.person_id_for, the one rule chat._resolve_caller_person_id
+    now delegates to: a signed-in email is that person (None off the
+    roster); open mode with no x-caller-email, or an operator, is the
+    principal; a service is no one. With no request (a direct in-process
+    call) it is Caller("open"), or Caller("service") once signed callers are
+    on. Rules per caller, mirroring the web app:
+      - oe://memory/{decisions,initiatives,advice}, oe://today/activity: the
+        principal alone (resolves to the principal, or defaults_to_principal);
+        anyone else gets "Only the owner can read this." (CallerRefused,
+        returned by FastMCP as the JSON-RPC error message).
+      - oe://today/briefing: someone on the roster (or the principal by
+        default), built as GET /today builds it: include_private for the
+        principal only, viewer = viewer_for_person(caller), so a drafted
+        artifact's card only for its owner. oe://people/roster: someone on
+        the roster, the team only (never contacts), as GET /people gives it.
+        A service or an unrostered caller gets "Only someone on the team can
+        read this."
+      - oe://company/profile, oe://departments/state, consult_specialist,
+        search_knowledge, list_workflows (GET /workflows is public too):
+        anyone who reached /mcp.
+    A deployment that fronts /mcp with its own sign-in and stamps the signed
+    caller (x-caller-assertion for POST /mcp/), as the UI proxy does, so gets
+    per-person answers with the same rules as the web app.
+
+    ASK_EXECUTIVE NEVER ACTS: it takes only `message` (the caller comes from
+    the request, never an argument) and builds a Session with
+    from_mcp_client=True and caller_person_id = the resolved person (NOBODY
+    as documents_viewer when that is no one). On such a turn the chat loop
+    (_stream_agent_loop) neither offers nor runs
+    schedule_tools.MCP_CLIENT_WITHHELD_TOOLS = PRIVATE_TURN_WITHHELD_TOOLS |
+    UNATTENDED_WITHHELD_TOOLS | the DMs (message_person, send_slack_dm,
+    send_discord_dm, send_telegram_message), ack_alert, create_alert,
+    leave_out_of_brief, close_open_loop, upsert_person, archive_person,
+    set_department_head, remove_/tune_watchlist_entry, draft_workflow,
+    propose_form_values — a fixed set dropped before the sort, so the variant
+    keeps a stable cached tool prefix. What stays: the specialists and the
+    list/lookup/read tools (a test pins the list). No Act as me
+    (delegation.settings._offered answers False, and the loop adds no
+    delegation tools), no recall_history, no extension tools. Gateway: only
+    schedule_tools.MCP_CLIENT_MCP_TOOLS (PRIVATE_TURN_MCP_TOOLS without the
+    Gmail/Outlook send and draft tools) — search_tools results are filtered
+    to it, call_tool naming anything else and load_mcp_server are refused in
+    the loop, and MCPGateway.call_tool refuses again on any path that reads
+    current_session. A refused call returns a JSON error
+    (mcp_client_withheld_error: the conversation comes from another AI app,
+    so it can read and advise but can't send, post, book or change
+    anything; tell the person to ask in Open Executive itself) and an audit
+    row refused="mcp_client". The conversation itself is still recorded in
+    memory, so ask_executive is annotated readOnlyHint=False,
+    destructiveHint=False; the other three tools readOnlyHint=True. Every
+    tool has an MCP title and annotations, and descriptions state what a
+    tool does without steering a client between tools.
+
     Surface — what's valuable beyond chat (OE already has six chat channels, so
     a chat-only server adds nothing): company-grounded context as READ-ONLY
     resources, and the specialist council as tools.
@@ -8856,14 +8918,15 @@ integrations:
         (load_or_create_profile, today._build_today/_build_activity,
         people.list_people, departments.list_departments, episodic list_*); no
         LLM calls. The warm ChromaDB store is handed to handlers via
-        mcp_server.set_store() from the lifespan (handlers have no Request).
+        mcp_server.set_store() from the lifespan (handlers take no Request
+        argument; only the caller read goes through the request context).
       Tools: consult_specialist (flagship — orchestrator.router.route_to_specialist,
         stateless, the specialist enum is a Literal pinned to SPECIALIST_REGISTRY
         by a unit test), search_knowledge (knowledge.retriever.retrieve),
         list_workflows (workflows.list_workflows → Workflow.meta), and ask_executive
-        (Executive.chat fallback — non-streaming, resolves caller to principal or
-        by caller_email). All reads — no tool here mutates company state, the same
-        read-only posture as the resources.
+        (Executive.chat, non-streaming, as the verified caller, never acting —
+        see ASK_EXECUTIVE NEVER ACTS). No tool here sends or mutates company
+        state; ask_executive's conversation is recorded in memory.
 
     DEFERRED by design: workflow EXECUTION is not exposed — workflows are
     long-running async generators (minutes) that would exceed a single MCP

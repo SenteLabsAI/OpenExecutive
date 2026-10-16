@@ -109,6 +109,37 @@ def caller(request: Any) -> Caller:
     return Caller("open", raw.strip().lower())
 
 
+def person_id_for(who: Caller) -> int | None:
+    """The People entry ``who`` asks as, by the rule every route shares
+    (``api.routes.chat._resolve_caller_person_id``):
+
+    - a signed-in email → that person, or None when no entry has it (a
+      signed-in but unrostered user must not be fused with the principal);
+    - a caller that ``defaults_to_principal`` → the principal (None when the
+      roster has none yet);
+    - a service names no one and is never the principal → None.
+
+    A roster that can't be read answers None (fails closed)."""
+    import sqlite3
+
+    try:
+        from openexecutive.people.store import (
+            find_person_by_email,
+            find_principal_person,
+        )
+
+        if who.email:
+            person = find_person_by_email(who.email)
+            return person.id if person is not None else None
+        if not who.defaults_to_principal:
+            return None
+        principal = find_principal_person()
+        return principal.id if principal is not None else None
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("caller_lookup_failed err=%s", exc)
+        return None
+
+
 def caller_email(request: Any) -> str:
     """The signed-in caller's email, lowercased; "" when there is none."""
     return caller(request).email

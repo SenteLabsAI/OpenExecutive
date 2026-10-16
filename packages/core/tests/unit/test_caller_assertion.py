@@ -408,11 +408,11 @@ async def test_mcp_asks_as_no_one_once_callers_are_signed(monkeypatch: pytest.Mo
         patch("openexecutive.orchestrator.executive.Executive.chat", new=chat),
     ):
         monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
-        await mcp_server.ask_executive("hi", caller_email=OWNER)
+        await mcp_server.ask_executive("hi")
         assert chat.await_args.kwargs["person_id"] == 42
+        # A call with no request names no one once callers are signed; over
+        # HTTP the gate's verdict decides (tests/integration/test_mcp_server_caller.py).
         monkeypatch.setenv("CALLER_ASSERTION_PUBLIC_KEYS", VECTORS["public_keys"])
-        await mcp_server.ask_executive("hi", caller_email=OWNER)
-        assert chat.await_args.kwargs["person_id"] is None
         await mcp_server.ask_executive("hi")
         assert chat.await_args.kwargs["person_id"] is None
 
