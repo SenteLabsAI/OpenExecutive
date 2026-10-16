@@ -751,10 +751,12 @@ def _others_spoke_last(
     history: list[dict[str, Any]], owner_id: int | None, speaker_id: int | None
 ) -> bool:
     """Whether someone other than the chat's owner has written since the
-    owner's last message: the speaker of this turn, or an earlier line in
-    ``history`` (``load_messages(with_senders=True)`` rows). A line saved
-    without a sender is the owner's, as in ``_named_history``. No owner
-    known reads as yes."""
+    owner's previous message: the speaker of this turn, or a line in
+    ``history``, the turns before this one (``load_messages(with_senders=True)``
+    rows; this turn's message is saved after it). So the owner's own turn
+    right after a teammate's line counts: "sounds good" must not carry out a
+    send the teammate asked for. A line saved without a sender is the
+    owner's, as in ``_named_history``. No owner known reads as yes."""
     if owner_id is None or speaker_id != owner_id:
         return True
     for row in reversed(history):

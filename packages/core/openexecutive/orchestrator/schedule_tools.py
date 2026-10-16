@@ -2120,8 +2120,10 @@ def mcp_client_withheld_error(tool_name: str) -> str:
 # turn reads lines the owner never wrote, so nothing on it sends mail,
 # messages or posts to people, or changes who is on the roster, whoever
 # speaks. Owner-only tools are already withheld in every shared chat
-# (`content_trust.principal_only_withheld`). The owner's next message in the
-# chat lifts this. Of the gateway tools, the mail writes whose recipients the
+# (`content_trust.principal_only_withheld`). That includes the owner's own
+# turn right after someone else's line: a request carried over from that line
+# ("sounds good") must not send. The owner's next message with nobody else's
+# in between lifts it, so asking again works. Of the gateway tools, the mail writes whose recipients the
 # gateway checks (`mcp_gateway._GATED_GMAIL_TOOLS`, `_GATED_M365_MAIL_TOOLS`)
 # are refused too: a recipient on the roster is still a send nobody asked
 # for. Workflows go too: a run, a saved one or a suggested schedule acts
@@ -2147,7 +2149,7 @@ SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
 SHARED_CHAT_REFUSAL = (
     "Someone else has written in this shared chat since its owner last did, "
     "so nothing here is sent to people or changes contacts. Tell the person "
-    "the owner can ask for it with a message of their own."
+    "the owner can ask for it again in their next message."
 )
 
 
