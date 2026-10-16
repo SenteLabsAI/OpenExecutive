@@ -146,8 +146,11 @@ _IMPOSTOR = "an unverified sender using the reader's name"
 def _uses_principal_name(sender: str, principal: Any) -> bool:
     if principal is None:
         return False
-    name = " ".join(str(getattr(principal, "full_name", "") or "").split()).lower()
-    return len(name.split()) > 1 and name in " ".join(sender.split()).lower()
+    name = " ".join(str(getattr(principal, "full_name", "") or "").split())
+    if len(name.split()) < 2:
+        return False
+    # Whole words: "Joann Lee" does not use "Ann Lee".
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", " ".join(sender.split()), re.IGNORECASE) is not None
 
 
 def _is_roster_sender(address: str) -> bool:

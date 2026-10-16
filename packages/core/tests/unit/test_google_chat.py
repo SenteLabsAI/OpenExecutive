@@ -572,3 +572,46 @@ def test_the_sender_is_named_to_the_department_gate_only(
     session = captured["session"]
     assert session.gate_sender_person_id == (3 if rostered else None)
     assert session.caller_person_id is None
+
+
+@pytest.mark.parametrize(("person", "expected"), [(SimpleNamespace(id=42), 42), (None, None)])
+def test_the_inbound_row_carries_the_senders_people_id(
+    monkeypatch: pytest.MonkeyPatch, person: Any, expected: int | None,
+) -> None:
+    """The brief tells the owner's own Google Chat messages from a namesake's
+    by this id (briefing.live_signals), never by the display name."""
+    rows: list[tuple[str, dict[str, Any]]] = []
+    looked_up: list[str] = []
+
+    def _find(email: str) -> Any:
+        looked_up.append(email)
+        return person
+
+    def _log(kind: str, _summary: str, **kw: Any) -> None:
+        rows.append((kind, kw.get("details") or {}))
+
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", _find)
+    monkeypatch.setattr("openexecutive.audit.log_event", _log)
+    monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _e: None)
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+
+    with patch("openexecutive.integrations.google_chat.send_reply", new=lambda *a, **k: None):
+        asyncio.run(
+            _process_and_reply(
+                message_text="Any word on the offer?",
+                sender_name="Pat Owner",
+                space_name="spaces/AAA",
+                thread_name="spaces/AAA/threads/T1",
+                message_name="spaces/AAA/messages/M1",
+                service_account_file="/fake/key.json",
+                service_account_email=None,
+                sender_email="pat@x.com",
+            )
+        )
+
+    assert looked_up == ["pat@x.com"]
+    [inbound] = [d for kind, d in rows if kind == "integration_inbound"]
+    assert inbound["sender_person_id"] == expected

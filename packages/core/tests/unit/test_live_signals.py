@@ -480,3 +480,12 @@ def test_a_roster_email_says_whether_it_got_its_reply(
     # The cards are the principal's own: a shared read never carries them.
     shared = live_signals.gather_live_signals(_since(), include_private=False)
     assert not any("replied" in line or "no reply" in line for line in shared.inbound)
+
+
+def test_a_name_inside_a_longer_name_is_not_an_impostor() -> None:
+    from openexecutive.briefing.live_signals import _uses_principal_name
+
+    ann = SimpleNamespace(full_name="Ann Lee")
+    assert _uses_principal_name("Ann Lee (CEO)", ann)
+    assert not _uses_principal_name("Joann Lee", ann)
+    assert not _uses_principal_name("Ann Leeds", ann)

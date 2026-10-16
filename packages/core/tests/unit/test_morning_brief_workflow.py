@@ -582,3 +582,54 @@ async def test_the_eod_digest_knows_who_reads_it(
     assert "Pat Owner (pat@x.com)" in content.splitlines()[0]
     assert "pat@x.com" not in "\n".join(content.splitlines()[1:])
     assert "Never write their name" in str(provider.calls[0]["system"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_principal", [True, False])
+async def test_eod_digest_is_written_to_its_reader(
+    monkeypatch: pytest.MonkeyPatch, has_principal: bool,
+) -> None:
+    from openexecutive import providers
+    from openexecutive.api.routes.today import ProposalItem
+    from openexecutive.briefing.reader import Reader
+    from openexecutive.workflows import end_of_day_digest
+    from openexecutive.workflows.end_of_day_digest import (
+        EndOfDayDigestInput,
+        EndOfDayDigestWorkflow,
+    )
+
+    _ground_in_isolation(monkeypatch)
+    monkeypatch.setattr(
+        today_route, "_build_today",
+        lambda **_kw: TodayResponse(departments=[], people=[], proposals=[
+            ProposalItem(
+                alert_id=1, headline="Pat Owner (pat@x.com) asked to renew the Acme lease",
+                body="b", routed_to_person_id=None, suggested_action="",
+                created_at="2099-01-01T00:00:00+00:00", topic_tags=[],
+            ),
+        ]),
+    )
+    monkeypatch.setattr(
+        today_route, "_build_activity", lambda limit, since=None, **_kw: ActivityResponse(items=[])
+    )
+    pat = Reader("Pat Owner", ("pat@x.com",)) if has_principal else None
+    monkeypatch.setattr(end_of_day_digest, "principal_reader", lambda: pat)
+    draft = "**Still pending**\n- Pat Owner emailed the Executive about the Acme lease."
+    provider = _SeqProvider([draft, draft])
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    events = [e async for e in EndOfDayDigestWorkflow().run(EndOfDayDigestInput(), MagicMock())]
+    artifact = next(e for e in events if e.type == "artifact").content
+    sent = str(provider.calls[0]["messages"][0]["content"])  # type: ignore[index]
+
+    if has_principal:
+        assert sent.startswith("THE READER")
+        body = sent.split("\n", 1)[1]
+        assert "Pat Owner" not in body and "pat@x.com" not in body
+        assert "the reader (the reader) asked to renew the Acme lease" in body
+        assert "- You emailed me about the Acme lease." in artifact
+    else:
+        assert not sent.startswith("THE READER")
+        assert "Pat Owner (pat@x.com) asked to renew" in sent
+        assert "- Pat Owner emailed the Executive about the Acme lease." in artifact
