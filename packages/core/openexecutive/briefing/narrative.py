@@ -48,7 +48,8 @@ GROUNDING_RULE = (
 
 
 # Shared by the standalone briefs: who "you" is. The context names the
-# principal (THE PRINCIPAL line, "from the principal" on their own mail), and
+# principal (THE PRINCIPAL line, "from the principal" on their own mail and
+# chat), and
 # without this the brief called its own reader by name and handed back, as
 # their to-dos, the asks they had mailed the Executive.
 READER_NAME_RULE = (
@@ -57,7 +58,7 @@ READER_NAME_RULE = (
     "line, the reflection's notes, the activity)."
 )
 READER_RULE = READER_NAME_RULE + (
-    " Mail from the principal is an ask of you, "
+    " Mail or a chat message from the principal is an ask of you, "
     "the Executive: say what you did with it, and never list it as something "
     "they must do or reply to. An email marked (the Executive replied) has "
     "had its answer, so its sender is not waiting on anyone."

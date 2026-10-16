@@ -92,15 +92,19 @@ def _local_hhmm(iso: str | None, tz: tzinfo, now: datetime | None = None) -> str
     return f"{local:%H:%M}"
 
 
-def _principal_addresses() -> set[str]:
-    """The principal's own email addresses, lowercased. Empty on failure."""
+def _principal() -> Any:
+    """The principal's People row, or None (also on failure)."""
     from openexecutive.people.store import find_principal_person
 
     try:
-        principal = find_principal_person()
+        return find_principal_person()
     except Exception:
         logger.exception("live_signals: principal lookup failed")
-        return set()
+        return None
+
+
+def _principal_addresses(principal: Any) -> set[str]:
+    """The principal's own email addresses, lowercased."""
     if principal is None:
         return set()
     return {
@@ -108,6 +112,33 @@ def _principal_addresses() -> set[str]:
         for a in [principal.email or "", *principal.email_aliases]
         if a and a.strip()
     }
+
+
+# The chat-app ids an inbound row's details can carry, against the People
+# field that holds the same id.
+_CHAT_IDS = (
+    ("slack_user", "slack_user_id"),
+    ("discord_user", "discord_user_id"),
+    ("chat_id", "telegram_chat_id"),
+)
+
+
+def _is_principal_chat(details: dict[str, Any], sender: str, principal: Any) -> bool:
+    """Whether a chat-app inbound row is the principal writing to the Executive.
+
+    Matched by People id where the adapter logs one, then by the chat app's
+    own id for them, then by name: the account-mode adapters log the People
+    name, so the principal's own chat read as a stranger by that name."""
+    if principal is None:
+        return False
+    if principal.id is not None and details.get("sender_person_id") == principal.id:
+        return True
+    for detail_key, person_field in _CHAT_IDS:
+        own = getattr(principal, person_field, None)
+        if own and str(details.get(detail_key) or "") == str(own):
+            return True
+    name = " ".join(str(principal.full_name or "").split()).lower()
+    return bool(name) and sender.lower() == name
 
 
 def _is_roster_sender(address: str) -> bool:
@@ -181,7 +212,8 @@ def _inbound(
     stuck_seen: set[str] = set()
     seen_ids: set[str] = set()
     total = 0
-    principal = _principal_addresses()
+    principal_person = _principal()
+    principal = _principal_addresses(principal_person)
     unanswered: set[str] | None = None
     replies: dict[str, str] | None = None
     for ev in rows:  # newest first
@@ -236,6 +268,11 @@ def _inbound(
         else:
             head, _, text = summary.partition(": ")
             sender = _one_line(_PAREN_REF_RE.sub("", head[len("Inbound "):]), 80)
+            # "google_chat from Ann": the line names the channel already.
+            if channel and sender.startswith(f"{channel} from "):
+                sender = sender[len(f"{channel} from "):]
+            if _is_principal_chat(details, sender, principal_person):
+                sender = "the principal"
             topic = _one_line(text, 100)
         group_key = (sender.lower(), re.sub(r"^(re|fwd?):\s*", "", topic.lower()))
         group = groups.get(group_key)
@@ -263,7 +300,7 @@ def _inbound(
             if g["preview"]:
                 line += f" — \"{g['preview']}\""
         else:
-            line += f" {g['sender']}: {g['topic']}"
+            line += f" from {g['sender']}: {g['topic']}"
         if g["count"] > 1:
             line += f" ({g['count']} messages)"
         lines.append(line)

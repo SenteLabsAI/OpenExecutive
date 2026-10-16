@@ -378,6 +378,55 @@ def test_the_principals_own_mail_is_labelled_as_theirs(
     assert roster.principal not in line
 
 
+def test_the_principals_own_chat_is_labelled_as_theirs(
+    audit: AuditLogger, roster: SimpleNamespace,
+) -> None:
+    """The principal's Google Chat messages to the Executive read to the brief
+    as a stranger by their name, 'messaging you nonstop since noon'."""
+    from openexecutive.people import store as people_store
+
+    principal = people_store.find_principal_person()
+    assert principal is not None
+    # Account mode logs the People row's id and name.
+    audit.log(
+        "integration_inbound",
+        "Inbound google_chat from Pat Owner (space=spaces/AAA): any word on access?",
+        actor="google_chat",
+        details={"channel": "google_chat", "sender_person_id": principal.id,
+                 "message_name": "spaces/AAA/messages/1"},
+    )
+    # Bot mode logs only the chat app's display name.
+    audit.log(
+        "integration_inbound",
+        "Inbound google_chat from pat owner (space=spaces/BBB): the St. Albans offer",
+        actor="google_chat", details={"channel": "google_chat"},
+    )
+    # A chat app name the roster doesn't use, matched by the app's own id.
+    people_store.upsert_person(
+        full_name="Pat Owner", email="pat@x.com", is_principal=True, telegram_chat_id="42",
+        person_id=principal.id,
+    )
+    audit.log(
+        "integration_inbound",
+        "Inbound telegram from Patty (chat_id=42): where is the deck",
+        actor="telegram", details={"channel": "telegram", "chat_id": 42, "sender": "Patty"},
+    )
+    audit.log(
+        "integration_inbound",
+        "Inbound google_chat from Dana Lee (space=spaces/CCC): budget is in",
+        actor="google_chat", details={"channel": "google_chat", "sender_person_id": 999},
+    )
+
+    joined = "\n".join(live_signals.gather_live_signals(_since(), include_private=False).inbound)
+
+    assert "telegram from the principal: where is the deck" in joined
+    assert "google_chat from the principal: the St. Albans offer" in joined
+    assert "google_chat from the principal: any word on access?" in joined
+    assert "google_chat from Dana Lee: budget is in" in joined
+    assert "Pat Owner" not in joined and "Patty" not in joined
+    assert "google_chat google_chat" not in joined
+
+
 def test_a_roster_email_says_whether_it_got_its_reply(
     audit: AuditLogger, roster: SimpleNamespace,
 ) -> None:
