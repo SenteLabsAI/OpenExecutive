@@ -132,17 +132,17 @@ export const SCENES: Scene[] = [
   {
     key: "sends:balanced", tab: "handle", option: "People I know", sends: 2,
     answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "Replies to people you know. Strangers and amounts wait for you.",
+    line: "Replies to people you know, short or long. Strangers and amounts wait for you.",
   },
   {
     key: "sends:bold", tab: "handle", option: "Most mail", sends: 3,
     answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "Also strangers and longer replies.",
+    line: "Also people you don't know. Amounts and links only when it's very sure.",
   },
   {
     key: "sends:everything", tab: "handle", option: "Everything", sends: 4,
     answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "It decides what to send as you. The topics that always wait and your rules still hold it back.",
+    line: "It decides what to send as you. Links, the topics that always wait and your rules still hold it back.",
   },
   {
     key: "lead:off", tab: "lead", option: "Off", answers: { writes: "You", name: "Yours", sends: "You" },
