@@ -905,9 +905,12 @@ def _seed_seen_channel_refs(session: Any, person_id: int | None) -> None:
     what makes the gate mean on web what it means everywhere else: you may
     schedule to yourself, and to whatever this conversation actually used.
 
-    Adds only. An address removed from the roster stays in the set for the
-    life of the in-memory session.
+    Replaces the set each turn, so it holds this turn's speaker's addresses
+    alone: in a shared chat, a teammate who speaks after the principal can't
+    schedule a message to the principal, and an address removed from the
+    roster stops being one.
     """
+    session.seen_channel_refs = set()
     if person_id is None:
         return
     try:
@@ -1212,10 +1215,10 @@ async def _run_chat_turn(
             full={"message": message, "memory_text": memory_text},
         )
 
-    # Let the caller schedule to their own addresses. Runs per turn rather than
-    # only on session creation so a newly-added address works without a fresh
-    # session; note it only ever ADDS, so an address removed from the roster
-    # stays scheduleable for the life of this in-memory session.
+    # Let the caller schedule to their own addresses, and only theirs. Runs per
+    # turn rather than only on session creation: a newly-added address works
+    # without a fresh session, and in a shared chat each speaker gets their
+    # own set.
     _seed_seen_channel_refs(session, caller_person_id)
 
     # Persist the session row immediately (idempotent INSERT OR IGNORE) so a

@@ -367,3 +367,55 @@ def test_the_gateway_itself_refuses_a_send_on_an_mcp_client_turn(roster: SimpleN
     out = asyncio.run(_go())
     assert MCP_CLIENT_REFUSAL in json.loads(out)["error"]
     assert reached == []
+
+
+# --- a scheduled run a teammate queued (Session.run_for_person_id) ----------
+
+
+def _teammate_run(person_id: int) -> Session:
+    return Session(unattended=True, run_for_person_id=person_id)
+
+
+def test_a_teammates_scheduled_run_is_read_only(roster: SimpleNamespace) -> None:
+    """The runner sends what such a run writes; the run itself sends,
+    schedules and writes nothing (`schedule_tools.read_only_turn`)."""
+    from openexecutive.orchestrator.schedule_tools import read_only_turn
+
+    assert read_only_turn(_teammate_run(roster.teammate))
+    assert not read_only_turn(Session(unattended=True))
+    offered = set(_run_loop(_teammate_run(roster.teammate), [], _gateway()).offered[0])
+    assert not MCP_CLIENT_WITHHELD_TOOLS & offered
+    assert not {"message_person", "send_slack_dm", "schedule_followup", "suggest_workflow"} & offered
+
+
+def test_a_teammates_scheduled_run_refuses_a_send_the_model_emits(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.orchestrator import executive as executive_module
+
+    handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name="message_person", input={"text": "Q3 numbers"}
+    )
+    with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"message_person": handler}):
+        provider = _run_loop(_teammate_run(roster.teammate), [tool_use])
+    handler.assert_not_awaited()
+    assert "message_person" in json.loads(_results(provider)["tu-1"])["error"]
+
+
+def test_the_gateway_refuses_a_send_on_a_teammates_scheduled_run(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.orchestrator.schedule_tools import set_session
+
+    gateway, reached = _real_gateway()
+
+    async def _go() -> str:
+        with set_session(_teammate_run(roster.teammate)):
+            return str(await gateway.call_tool({
+                "name": "google_workspace__send_gmail_message",
+                "arguments": {"to": OWNER_EMAIL, "subject": "s", "body": "b"},
+            }))
+
+    assert "error" in json.loads(asyncio.run(_go()))
+    assert reached == []

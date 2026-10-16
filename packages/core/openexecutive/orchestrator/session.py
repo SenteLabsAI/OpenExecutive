@@ -155,6 +155,11 @@ class Session:
     # `schedule_tools.UNATTENDED_WITHHELD_TOOLS` — things only the principal
     # decides, such as starting to track a goal.
     unattended: bool = False
+    # On an unattended run, the teammate (not the principal) whose own turn
+    # queued it (``ScheduledAction.created_by_person_id``): the run is theirs
+    # and a fork may give it no more than that teammate's own turns get.
+    # None for the principal's rows and the system's.
+    run_for_person_id: int | None = None
     # True for a turn about something private to the principal (mail from one
     # of their contacts, mail they forwarded): an alert raised on it is
     # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it
