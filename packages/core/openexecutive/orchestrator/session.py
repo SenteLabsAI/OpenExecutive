@@ -199,6 +199,12 @@ class Session:
     # conversation (``delegation.settings.private_conversation``). Set per
     # turn by the chat route.
     shared_chat: bool = False
+    # True on a shared chat's turn when someone other than its owner has
+    # written since the owner's last message (the speaker included): the turn
+    # is not offered sends to people or contact writes
+    # (``schedule_tools.SHARED_CHAT_WITHHELD_TOOLS``). Set per turn by the
+    # chat route; it fails closed (True) when the history can't be read.
+    others_spoke_last: bool = False
     # Whose documents this session reads and publishes, when that is not its
     # own speaker (``artifact_records.current_viewer``): a session a workflow
     # mints inside someone's turn (``executive_research``'s synthesis) is
