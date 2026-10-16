@@ -19,18 +19,22 @@ replies, never what a tool returned, so their next message is them asking
 again having read the reply.
 
 A tool call made in the same round as a read was written before that read's
-result came back, but a round's tools run together and a script's calls go
-one after another, so the loop treats a round that calls a source as
-already read (``source_of``), and the gateway marks each read it runs.
+result came back, but a round's tools run together, so the loop holds the
+other calls of a round that calls a source (``source_of``). Reads are marked
+where the model's calls are dispatched: the chat loop after the round, and
+``run_script`` after each call. A typed tool's own gateway reads (a
+free/busy check) put no outside text in front of the model, so they don't
+mark the turn.
 
 Separately, a person added to the roster (or given a new address or chat
 account) in this turn can't be emailed, messaged, invited or shared with
 until the next turn (``added_this_turn``): every send and share check trusts
 the roster, so a contact planted and used in one turn would pass them.
 
-Plain code, no model. State lives in a context variable set at the start of
-each turn (``begin_turn``) and cleared when it ends (``end_turn``); with no
-turn bound (the email poller, a brief, a test) nothing is marked or held.
+Plain code, no model. State lives in a context variable and on the session,
+set at the start of each turn (``begin_turn``) and closed when it ends
+(``end_turn``); with no turn open (the email poller, a brief, a test)
+nothing is marked or held.
 """
 from __future__ import annotations
 
