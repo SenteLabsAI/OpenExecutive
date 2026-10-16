@@ -179,6 +179,11 @@ class Session:
     # principal's) inbound email: only then does the turn read the mailbox as
     # that teammate (orchestrator.teammate_mail).
     email_sender_authenticated: bool = False
+    # True when the inbound email this turn answers is from someone not in
+    # People (a contact or a stranger): the whole turn counts as having read
+    # outside content (``orchestrator.outside_content.SENDER``). Set by the
+    # email poller only.
+    sender_off_team: bool = False
     # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
     # pinned at its start by ``pin_turn_delegation``: whether the speaker has
     # it on, whether ``ghostwrite_email`` is offered, and whether the turn has

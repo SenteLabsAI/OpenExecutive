@@ -392,6 +392,55 @@ def test_an_unacknowledged_senders_notice_does_not_say_they_were_told(principal:
     assert "principal has been asked who they are" in message
 
 
+def test_mail_from_outside_people_holds_the_whole_turn(principal: int) -> None:
+    """Mail from someone not in People (a contact or a stranger) is outside
+    text from its first word: its turn starts held (outside_content.SENDER),
+    and its notice offers only an alert."""
+    people_store.upsert_person(full_name="Carla Client", email="carla@client.example", kind="contact")
+    teammate = people_store.upsert_person(full_name="Ben Team", email="ben@example.com")
+    assert teammate
+    for addr, off_team in (
+        ("new@example.com", True),
+        ("carla@client.example", True),
+        ("ben@example.com", False),
+        ("olivia@example.com", False),
+    ):
+        kwargs = _capture_chat_kwargs(addr)
+        assert kwargs["session"].sender_off_team is off_team, addr
+    message = _capture_user_message_from_run_executive_held("new@example.com")
+    assert "schedule an internal follow-up" not in message
+    assert "alert the principal" in message
+    contact = str(_capture_chat_kwargs("carla@client.example")["user_message"])
+    assert "raise an alert for the principal" in contact and "an email to them" not in contact
+
+
+def _capture_chat_kwargs(from_addr: str) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    class _Exec:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        async def chat(self, **kwargs: Any) -> str:
+            captured.update(kwargs)
+            return "ok"
+
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", new=_Exec),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile",
+              return_value=SimpleNamespace(is_empty=lambda: True)),
+        patch("openexecutive.knowledge.retriever.retrieve", new=lambda **_k: ""),
+        patch("openexecutive.memory.episodic.format_for_prompt", new=lambda: ""),
+        patch.object(poller, "get_settings", return_value=_settings()),
+        patch.object(poller, "_note_reply_outcome"),
+    ):
+        asyncio.run(poller._run_executive(
+            gateway=AsyncMock(), raw_email=_raw_email(from_addr), message_id="m1",
+            thread_id="t1", from_addr=from_addr, prove_sender=AsyncMock(return_value=False),
+        ))
+    return captured
+
+
 def _capture_user_message_from_run_executive_held(from_addr: str, *, acknowledged: bool = True) -> str:
     captured: dict[str, Any] = {}
 

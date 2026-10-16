@@ -950,8 +950,8 @@ def _contact_notice(from_addr: str, contact: Any) -> str:
         f"not reply to {from_addr} unless the principal asks you to; the email gateway only "
         "lets you email a contact when the principal asks directly. Summarise it "
         "for the principal instead — what they want, anything to decide or "
-        "answer, any date or commitment — and send that to the principal (an "
-        "email to them, or an alert, which only they will see). Contacts are "
+        "answer, any date or commitment — and raise an alert for the principal, "
+        "which only they will see. Contacts are "
         "private to the principal: do not message anyone else about this "
         "sender or this email.\n\n"
         "---\n\n"
@@ -1183,6 +1183,10 @@ async def _run_executive(
         person_id = person.id if person else None
         if person is None:
             contact = resolve_email_sender(from_addr, include_contacts=True)
+    # Mail from someone not in People (a contact or a stranger) is outside
+    # text from its first word: the whole turn is held as one that read
+    # outside content (orchestrator.outside_content.SENDER).
+    session.sender_off_team = person is None
 
     # Multi-peer co-presence: parse To+Cc headers and resolve each
     # recipient to a Person via find_person_by_email. Skip the From
@@ -1253,8 +1257,8 @@ async def _run_executive(
             )
             + "and the principal has been asked who they are (a card on "
             "their Today page) — do not raise another alert or proposal just to "
-            "add them. You can classify it, log a decision, schedule an internal "
-            "follow-up, or alert the principal about what the email itself needs. "
+            "add them. You can summarise it and alert the principal about what "
+            "the email itself needs. "
             f"You cannot send an outbound reply to {from_addr} — the email gateway "
             "will block it. Once the principal says who they are, this email comes "
             "back to you and you can answer it then.\n\n"
@@ -1264,9 +1268,9 @@ async def _run_executive(
         policy_notice = (
             # Keep this opening sentence identical to _contact_notice's.
             f"[POLICY] This inbound is from {from_addr}, who is NOT on your team's "
-            "People roster. You can classify it, log a decision, schedule an internal "
-            "follow-up, alert the principal, or surface a proposal to add the sender "
-            "to the roster. You cannot send an outbound reply directly to "
+            "People roster. You can summarise it and alert the principal, saying "
+            "whether to add the sender to the roster. You cannot send an outbound "
+            "reply directly to "
             f"{from_addr} — the email gateway will block it. To actually reply, the "
             "principal must add the sender to the People roster first.\n\n"
             "---\n\n"
