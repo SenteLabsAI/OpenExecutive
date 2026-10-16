@@ -545,6 +545,27 @@ def test_cancel_event_marks_reversed() -> None:
     gw.call_tool.assert_awaited_once()
 
 
+def test_cancel_refuses_a_booking_whose_event_id_was_never_read() -> None:
+    from openexecutive.memory.decision_ledger import get_decision_instance, mark_resolved
+    from openexecutive.memory.episodic import DB_PATH
+
+    pid = _add_person("Alice", "alice@example.com")
+    r = _call({
+        "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+        "attendee_person_ids": [pid], "confidence": 0.9,
+    })
+    iid = r["decision_instance_id"]
+    mark_resolved(iid, "approved_unchanged", external_event_id=None, db_path=DB_PATH)
+
+    gw = _fake_gateway()
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=gw):
+        result = json.loads(asyncio.run(handle_cancel_calendar_event({"decision_instance_id": iid})))
+    assert "can't be cancelled from here" in result["error"]
+    gw.call_tool.assert_not_awaited()
+    instance = get_decision_instance(iid)
+    assert instance is not None and instance.status == "approved_unchanged"
+
+
 def test_cancel_nonexistent_returns_error() -> None:
     with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway",
                return_value=_fake_gateway()):

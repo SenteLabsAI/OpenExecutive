@@ -440,7 +440,13 @@ async def _approve_booking(
 async def _cancel_booking(instance: DecisionInstance) -> None:
     """Meeting booking: delete the event an approval created, if any."""
     if not instance.external_event_id:
-        return
+        if instance.status == STATUS_PROPOSED:
+            return
+        # Booked, but the event id was never read: refuse rather than report
+        # a cancel that leaves the meeting on everyone's calendar.
+        from openexecutive.orchestrator.calendar_tools import _NO_EVENT_ID
+
+        raise HTTPException(status_code=409, detail=_NO_EVENT_ID)
     from openexecutive.orchestrator.calendar_tools import _do_delete_event
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 

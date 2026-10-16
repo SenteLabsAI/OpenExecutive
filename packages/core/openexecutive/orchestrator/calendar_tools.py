@@ -976,6 +976,12 @@ async def _do_delete_event(
     return await get_calendar_provider().delete_event(gateway, external_event_id)
 
 
+_NO_EVENT_ID = (
+    "This meeting was booked, but its calendar event id wasn't recorded, so it "
+    "can't be cancelled from here. Delete it in the calendar itself."
+)
+
+
 async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
     """Cancel a booked event by its decision_instance_id."""
     from openexecutive.memory.decision_ledger import (
@@ -1012,6 +1018,11 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         return json.dumps({
             "error": f"cannot cancel a decision_instance with status={instance.status!r}",
         })
+
+    # A booked meeting whose event id was never read can't be deleted here:
+    # saying it was cancelled would leave it on everyone's calendar.
+    if instance.status != "proposed" and not instance.external_event_id:
+        return json.dumps({"error": _NO_EVENT_ID})
 
     # If there's an actual calendar event, delete it via the MCP.
     if instance.external_event_id:

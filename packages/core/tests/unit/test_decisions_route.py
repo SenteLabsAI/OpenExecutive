@@ -258,6 +258,20 @@ def test_cancel_approved_event(client: TestClient, db: Path) -> None:
     fake_gw.call_tool.assert_awaited_once()
 
 
+def test_cancel_refuses_a_booking_with_no_event_id(client: TestClient, db: Path) -> None:
+    iid = _seed(db)
+    mark_resolved(iid, "approved_unchanged", db_path=db)
+    fake_gw = type("GW", (), {})()
+    fake_gw.call_tool = AsyncMock()
+
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw):
+        res = client.post(f"/decisions/{iid}/cancel")
+
+    assert res.status_code == 409
+    assert "Delete it in the calendar itself" in res.json()["detail"]
+    fake_gw.call_tool.assert_not_awaited()
+
+
 def test_cancel_unknown_404(client: TestClient) -> None:
     res = client.post("/decisions/99999/cancel")
     assert res.status_code == 404
