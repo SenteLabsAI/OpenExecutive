@@ -136,6 +136,29 @@ def slips(text: str, reader: Reader | None) -> list[str]:
     return sorted(found)
 
 
+def rewrite_request(named: list[str], reader: Reader | None) -> str:
+    """The note that sends a slipping draft back: each kind of slip gets its
+    own replacement ("you" for the reader, the owner's name for "the
+    principal" on a teammate's brief, "I" / "me" / "my" for the Executive)."""
+    executive = "the executive" in named
+    owner = reader.owner if reader is not None and _OWNER_LABEL in named else None
+    as_you = [n for n in named if n != "the executive" and not (owner and n == _OWNER_LABEL)]
+    asks: list[str] = []
+    if as_you:
+        asks.append(
+            "write " + ", ".join(f"'{n}'" for n in as_you)
+            + " as 'you' or 'your' (that is the person reading it)"
+        )
+    if owner:
+        asks.append(f"write 'the principal' as {owner}")
+    if executive:
+        asks.append("write 'the Executive' as 'I', 'me' or 'my' (that is you)")
+    return (
+        "Rewrite that: " + "; ".join(asks)
+        + ". Change nothing else, and output only the rewrite."
+    )
+
+
 def _cased(word: str, start: int, source: str) -> str:
     before = source[:start].rstrip("*_ -")
     return word[0].upper() + word[1:] if not before or before[-1] in ".!?:\n" else word
@@ -190,5 +213,6 @@ __all__ = [
     "person_reader",
     "principal_reader",
     "reader_line",
+    "rewrite_request",
     "slips",
 ]

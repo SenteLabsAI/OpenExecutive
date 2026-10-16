@@ -125,7 +125,7 @@ async def test_a_draft_that_names_its_reader_is_rewritten_once(
     assert len(provider.calls) == 2
     retry = provider.calls[1]["messages"]
     assert retry[1] == {"role": "assistant", "content": "**Pat Owner is waiting on the offer.**"}
-    assert "'pat owner'" in retry[2]["content"]
+    assert "write 'pat owner' as 'you' or 'your'" in retry[2]["content"]
 
 
 @pytest.mark.asyncio
@@ -195,3 +195,18 @@ def test_person_reader_carries_the_owner(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(reader, "principal_reader", lambda: PAT)
 
     assert reader.person_reader(7) == Reader("Dana Lee", ("dana@x.com",), owner="Pat Owner")
+
+
+def test_the_rewrite_note_gives_each_slip_its_own_replacement() -> None:
+    from openexecutive.briefing.reader import rewrite_request
+
+    note = rewrite_request(["pat owner", "the executive"], PAT)
+    assert "write 'pat owner' as 'you' or 'your'" in note
+    assert "write 'the Executive' as 'I', 'me' or 'my'" in note
+    assert "'the executive' as 'you'" not in note
+
+    only_exec = rewrite_request(["the executive"], PAT)
+    assert "'you'" not in only_exec.split("(that is you)")[0].replace("as 'I'", "")
+
+    dana = Reader("Dana Lee", owner="Pat Owner")
+    assert "write 'the principal' as Pat Owner" in rewrite_request(["the principal"], dana)

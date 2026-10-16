@@ -20,7 +20,14 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.alerts.lifecycle import parse_aware
-from openexecutive.briefing.reader import Reader, fix_slips, mask, reader_line, slips
+from openexecutive.briefing.reader import (
+    Reader,
+    fix_slips,
+    mask,
+    reader_line,
+    rewrite_request,
+    slips,
+)
 
 if TYPE_CHECKING:
     from openexecutive.briefing.live_signals import LiveSignals
@@ -782,12 +789,7 @@ async def synthesize_briefing_narrative(
             messages = [
                 *messages,
                 {"role": "assistant", "content": text},
-                {"role": "user", "content": (
-                    "That names the person reading it ("
-                    + ", ".join(f"'{n}'" for n in named)
-                    + "). Rewrite it with every one of those as 'you' or "
-                    "'your', changing nothing else. Output only the rewrite."
-                )},
+                {"role": "user", "content": rewrite_request(named, reader)},
             ]
     logger.warning("briefing_narrative: rewrite still named its reader; fixed in code")
     return fix_slips(text, reader)
