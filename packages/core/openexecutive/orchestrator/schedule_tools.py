@@ -2115,6 +2115,68 @@ def mcp_client_withheld_error(tool_name: str) -> str:
     })
 
 
+# A shared web chat (`Session.shared_chat`) where someone other than its owner
+# has written since the owner last did (`Session.others_spoke_last`): the
+# turn reads lines the owner never wrote, so nothing on it sends mail,
+# messages or posts to people, or changes who is on the roster, whoever
+# speaks. Owner-only tools are already withheld in every shared chat
+# (`content_trust.principal_only_withheld`). The owner's next message in the
+# chat lifts this. Of the gateway tools, the mail writes whose recipients the
+# gateway checks (`mcp_gateway._GATED_GMAIL_TOOLS`, `_GATED_M365_MAIL_TOOLS`)
+# are refused too: a recipient on the roster is still a send nobody asked
+# for. A fixed set, so the variant keeps a stable tool prefix of its own.
+SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "archive_person",
+    "message_person",
+    "resolve_roster_request",
+    "schedule_followup",
+    "send_company_broadcast",
+    "send_department_message",
+    "send_discord_dm",
+    "send_slack_dm",
+    "send_telegram_message",
+    "set_department_head",
+    "upsert_person",
+})
+
+SHARED_CHAT_REFUSAL = (
+    "Someone else has written in this shared chat since its owner last did, "
+    "so nothing here is sent to people or changes contacts. Tell the person "
+    "the owner can ask for it with a message of their own."
+)
+
+
+def shared_chat_withholds(tool_name: str, tool_input: Any) -> bool:
+    """Whether a shared-chat turn others have written into may not run this
+    tool use: a tool in ``SHARED_CHAT_WITHHELD_TOOLS``, or a gateway
+    ``call_tool`` naming a mail send, reply, forward or draft."""
+    if tool_name in SHARED_CHAT_WITHHELD_TOOLS:
+        return True
+    if tool_name != "call_tool":
+        return False
+    from openexecutive.orchestrator.mcp_gateway import (
+        _GATED_GMAIL_TOOLS,
+        _GATED_M365_MAIL_TOOLS,
+        _normalize_tool_name,
+    )
+
+    named = tool_input.get("name") if isinstance(tool_input, dict) else None
+    if not isinstance(named, str):
+        return False
+    normalized = _normalize_tool_name(named)
+    return normalized in _GATED_M365_MAIL_TOOLS or normalized in {
+        _normalize_tool_name(n) for n in _GATED_GMAIL_TOOLS
+    }
+
+
+def shared_chat_withheld_error(tool_name: str) -> str:
+    """The JSON error tool_result for a call a shared-chat turn others have
+    written into may not make."""
+    return json.dumps({
+        "error": f"{tool_name} is not available on this turn. {SHARED_CHAT_REFUSAL} Do not retry."
+    })
+
+
 def handlers_for_offered_tools(
     tools: list[dict[str, Any]], handlers: dict[str, Any]
 ) -> dict[str, Any]:

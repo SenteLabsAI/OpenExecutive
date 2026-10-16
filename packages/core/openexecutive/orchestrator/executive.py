@@ -147,6 +147,7 @@ from openexecutive.orchestrator.schedule_tools import (
     PRIVATE_TURN_WITHHELD_TOOLS,
     SCHEDULE_TOOL_HANDLERS,
     SCHEDULE_TOOLS,
+    SHARED_CHAT_WITHHELD_TOOLS,
     UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
@@ -156,6 +157,8 @@ from openexecutive.orchestrator.schedule_tools import (
     private_turn_allows_mcp_tool,
     private_turn_withheld_error,
     private_turn_withholds,
+    shared_chat_withheld_error,
+    shared_chat_withholds,
     tools_withheld_in_mode,
     unattended_withheld_error,
     withheld_tool_error,
@@ -2121,9 +2124,18 @@ class Executive:
         # variant keeps a stable tool prefix of its own.
         mcp_client = bool(getattr(current_session.get(), "from_mcp_client", False))
         mcp_client_withheld = MCP_CLIENT_WITHHELD_TOOLS if mcp_client else frozenset()
+        # A shared web chat someone other than its owner has written into
+        # since the owner last did (`Session.others_spoke_last`): nothing
+        # that sends to people or changes contacts (`SHARED_CHAT_WITHHELD_TOOLS`,
+        # and the gateway's mail writes through `shared_chat_withholds`).
+        others_spoke = (
+            getattr(current_session.get(), "shared_chat", False) is True
+            and getattr(current_session.get(), "others_spoke_last", False) is True
+        )
+        shared_withheld = SHARED_CHAT_WITHHELD_TOOLS if others_spoke else frozenset()
         not_offered = (
             unattended_withheld | private_withheld | principal_withheld | sandbox_missing
-            | mcp_client_withheld
+            | mcp_client_withheld | shared_withheld
         )
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
         # Act as me: ghostwrite_email joins the toolkit only on a turn
@@ -2439,6 +2451,14 @@ class Executive:
                 and mcp_client_withholds(tu["name"], tu["input"])
                 and tu not in withheld_mcp_uses
             ]
+            # A shared chat others have written into: no mail send, reply,
+            # forward or draft through the gateway.
+            withheld_mcp_uses += [
+                tu for tu in mcp_tool_uses
+                if others_spoke
+                and shared_chat_withholds(tu["name"], tu["input"])
+                and tu not in withheld_mcp_uses
+            ]
             if withheld_mcp_uses:
                 mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
                 withheld_uses = [*withheld_uses, *withheld_mcp_uses]
@@ -2635,6 +2655,33 @@ class Executive:
                         private=True,
                     )
                     results_by_id[tu["id"]] = private_turn_withheld_error(label)
+                    continue
+                if others_spoke and shared_chat_withholds(tu["name"], tu["input"]):
+                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
+                    label = tu["name"]
+                    if label == "call_tool" and isinstance(tu["input"], dict):
+                        named = tu["input"].get("name")
+                        label = named[:200] if isinstance(named, str) and named else label
+                    logger.warning(
+                        "%s:%s refused — others wrote in this shared chat since its owner",
+                        kind, _loggable_tool(label),
+                    )
+                    audit_log(
+                        "tool_invocation",
+                        f"{kind}:{label} refused: others wrote in this shared chat since its owner",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor="executive",
+                        details={
+                            "tool": label,
+                            "kind": kind,
+                            "iteration": iteration,
+                            "ok": False,
+                            "refused": "shared_chat",
+                        },
+                        private=private_turn,
+                    )
+                    results_by_id[tu["id"]] = shared_chat_withheld_error(label)
                     continue
                 if tu["name"] in unattended_withheld:
                     logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
