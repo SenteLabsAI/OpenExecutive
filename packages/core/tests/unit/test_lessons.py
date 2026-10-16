@@ -119,6 +119,9 @@ def test_a_lesson_reaches_the_turns_it_matches(roster: SimpleNamespace) -> None:
     assert "finance specialist" not in block
     assert lessons.build_lessons_block(roster.principal.id, "book lunch with the team") == ""
     assert lessons.build_lessons_block(None, "the board deck") == ""
+    # One shared content word is never enough, even for a one-word lesson.
+    _add(roster.principal.id, "Pipeline means open deals.", quote="pipeline")
+    assert "Pipeline" not in lessons.build_lessons_block(roster.principal.id, "how is the pipeline looking")
 
 
 def test_a_lesson_from_someones_own_chat_stays_with_them(roster: SimpleNamespace) -> None:

@@ -2302,6 +2302,9 @@ def should_extract(user_message: str, *, session: Any) -> bool:
 
     if not strip_untrusted(user_message).strip():
         return False
+    # A replay of a graded turn (memory.replay) is kept nowhere.
+    if getattr(session, "replay", False) is True:
+        return False
     return principal_speaking(session)
 
 

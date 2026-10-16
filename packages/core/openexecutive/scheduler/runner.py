@@ -24,6 +24,7 @@ from openexecutive.memory.episodic import (
     requeue_orphaned_running,
     reschedule_action,
 )
+from openexecutive.memory.replay import CHAT_REPLAY_KIND
 from openexecutive.orchestrator.mcp_gateway import MCPGateway
 from openexecutive.scheduler.pause import is_paused
 from openexecutive.workflows.gate import ensure_workflow_event
@@ -1122,6 +1123,10 @@ async def _execute_action(
         await _run_take_the_lead_wake(action, now)
         return
 
+    if action.kind == CHAT_REPLAY_KIND:
+        await _run_chat_replay(action, now, gateway)
+        return
+
     if action.kind == CHAT_REVIEW_KIND:
         await _run_chat_review(action, now)
         return
@@ -1532,6 +1537,7 @@ _DEFAULT_EOD_TIME = "18:00"
 # Executive reflection runs ~30 minutes before the morning brief so OE
 # has acted on whatever it could before the principal opens the brief.
 _DEFAULT_REFLECTION_TIME = "07:30"
+_DEFAULT_REPLAY_TIME = "03:30"
 # Solo mode's weekly review: Friday afternoon in the user's zone. Its env
 # var takes a whole weekly spec (`weekly@DOW@HH:MM`), read as UTC like the
 # other pinned times.
@@ -1614,6 +1620,9 @@ _RECURRING_KIND_ENV: dict[str, tuple[str, str]] = {
     # Reflection runs alongside the briefs — same seed-once-per-DB pattern
     # and chain-next mechanism, just on its own time of day.
     "executive_reflection": ("PRINCIPAL_REFLECTION_TIME", _DEFAULT_REFLECTION_TIME),
+    # Replay of the misses (memory.replay): nightly, in the user's zone, the
+    # same seed-once and chain-next mechanism.
+    CHAT_REPLAY_KIND: ("CHAT_REPLAY_TIME", _DEFAULT_REPLAY_TIME),
     # Solo only (see _SOLO_ONLY_KINDS): seeded in solo, cancelled on a switch
     # to team, retired without running if one fires in team anyway.
     WEEKLY_REVIEW_KIND: ("PRINCIPAL_WEEKLY_REVIEW_TIME", _DEFAULT_WEEKLY_REVIEW_SPEC),
@@ -2690,6 +2699,25 @@ async def _run_take_the_lead_wake(action: ScheduledAction, now: datetime) -> Non
 # A chat that went quiet (memory.chat_review): one-off, rescheduled by the
 # review itself while the chat is still going.
 CHAT_REVIEW_KIND = _CHAT_REVIEW_KIND
+
+
+async def _run_chat_replay(
+    action: ScheduledAction, now: datetime, gateway: MCPGateway | None = None
+) -> None:
+    """Replay the misses with today's lessons (memory.replay) with the
+    scheduler's gateway for the reads, then chain tomorrow's, like the
+    reflection: a failed night never breaks the rhythm."""
+    from openexecutive.memory import replay
+
+    assert action.id is not None
+    try:
+        with unscoped_audit_rows():
+            result = await replay.run_nightly(now, mcp_gateway=gateway)
+        logger.info("scheduler: chat_replay ran %s case(s), %s passed", result.get("cases"), result.get("passed"))
+    except Exception:
+        logger.exception("scheduler: chat_replay failed")
+    mark_action_done(action.id)
+    _enqueue_next_principal_brief(CHAT_REPLAY_KIND, after=_chain_after(action))
 
 
 async def _run_chat_review(action: ScheduledAction, now: datetime) -> None:

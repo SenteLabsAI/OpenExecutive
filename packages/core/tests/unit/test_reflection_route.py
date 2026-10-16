@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -30,6 +31,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setattr(people_store, "DB_PATH", path)
     episodic.initialize_db(path)
     people_store.initialize_db(path)
+    # The chat routes read sessions through session_store, which binds its
+    # DB path at import: make sure that file has its tables (idempotent).
+    episodic.initialize_db(session_store.DB_PATH)
     for var in ("OE_LOCAL_LOGIN", "OE_PUBLIC_DEPLOYMENT"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
@@ -136,8 +140,12 @@ def test_hidden_rows_never_crowd_out_the_principals_page(
     for i in range(5):
         _miss(ids["teammate"], "web-ben", f"private ask {i}")
     mine = _miss(ids["principal"], "s-1", "set up an alert for the invoice")
+    for i in range(5):
+        _lesson(ids["teammate"], "web-ben", f"The private price list means the partner list {i}.")
+    learned = _lesson(ids["principal"], "s-1", "The board deck means the Q4 board workflow.")
     everyone: dict[str, Any] = client.get("/memories/reflection", headers=OWNER).json()
     assert [m["id"] for m in everyone["misses"]] == [mine]
+    assert [x["id"] for x in everyone["lessons"]] == [learned]
 
 
 def _lesson(person_id: int, session_id: str, text: str) -> int:
@@ -162,6 +170,31 @@ def test_lessons_are_listed_and_forgotten_like_misses(client: TestClient, ids: d
     assert client.delete(f"/memories/reflection/lessons/{mine}", headers=OWNER).status_code == 404
     gone = client.get("/memories/reflection", headers=OWNER).json()["lessons"][0]
     assert gone["id"] == mine and gone["retired_reason"] == "forgotten"
+
+
+def test_each_miss_carries_its_replay_and_the_number_counts_the_callers_own(
+    client: TestClient, ids: dict[str, int],
+) -> None:
+    from openexecutive.memory import replay
+
+    closed = _miss(ids["principal"], "s-1", "pull the board deck together")
+    _miss(ids["principal"], "s-1", "set up an alert for the invoice")
+    _miss(ids["teammate"], "s-2", "send Dana the price list")
+    conn = replay._connect(None)
+    conn.execute(f"UPDATE {cr.TURNS_TABLE} SET replay_state = 'closed', replayed_at = ?, closed_at = ?, "  # noqa: S608
+                 "replay_notes = 'it drafted the deck' WHERE id = ?", (NOW.isoformat(), NOW.isoformat(), closed))
+    conn.execute(f"INSERT INTO {replay.RUNS_TABLE} (ran_at) VALUES (?)", (NOW.isoformat(),))  # noqa: S608
+    conn.commit()
+    conn.close()
+    with patch.object(replay, "_now", lambda: NOW):
+        owner: dict[str, Any] = client.get("/memories/reflection", headers=OWNER).json()
+        teammate: dict[str, Any] = client.get("/memories/reflection", headers=TEAMMATE).json()
+    assert owner["replay"] == {"misses": 2, "would_pass": 1, "evidence": 0, "last_run_at": NOW.isoformat()}
+    by_id = {m["id"]: m for m in owner["misses"]}
+    assert by_id[closed]["replay_state"] == "closed" and by_id[closed]["closed_at"] == NOW.isoformat()
+    assert by_id[closed]["replay_notes"] == "it drafted the deck"
+    assert all(m["replay_state"] == "open" and m["replayed_at"] is None for i, m in by_id.items() if i != closed)
+    assert teammate["replay"]["misses"] == 1 and teammate["replay"]["would_pass"] == 0
 
 
 def test_forgetting_follows_the_same_rule(client: TestClient, ids: dict[str, int]) -> None:

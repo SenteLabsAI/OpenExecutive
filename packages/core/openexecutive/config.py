@@ -1116,6 +1116,14 @@ class Settings(BaseSettings):
     chat_review_quiet_minutes: int = Field(30, ge=1, alias="CHAT_REVIEW_QUIET_MINUTES")
     chat_review_max_per_day: int = Field(10, ge=0, alias="CHAT_REVIEW_MAX_PER_DAY")
     chat_review_model: str = Field("", alias="CHAT_REVIEW_MODEL")
+    # Replay of the misses (memory.replay): nightly, the turns the review
+    # graded a miss run again with today's lessons and facts, in a dry run,
+    # and a judge says whether they would now go right. At most MAX_CASES a
+    # night within MINUTES; empty judge model = EVAL_JUDGE_MODEL, else Sonnet.
+    chat_replay_enabled: bool = Field(True, alias="CHAT_REPLAY_ENABLED")
+    chat_replay_max_cases: int = Field(30, ge=0, alias="CHAT_REPLAY_MAX_CASES")
+    chat_replay_minutes: int = Field(20, ge=1, alias="CHAT_REPLAY_MINUTES")
+    chat_replay_judge_model: str = Field("", alias="CHAT_REPLAY_JUDGE_MODEL")
     attunement_enabled: bool = Field(True, alias="ATTUNEMENT_ENABLED")
     attunement_open_loops_enabled: bool = Field(True, alias="ATTUNEMENT_OPEN_LOOPS_ENABLED")
     # When no due date is stated, the loop is due this many days after it opens.

@@ -101,11 +101,11 @@ def test_seed_principal_briefs_inserts_all_recurring_rows_on_fresh_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Shift 5 added `executive_reflection` to the seed loop alongside
-    the morning and EoD brief. Fresh DB → 3 rows."""
+    the morning and EoD brief, and the chat replay joined them. Fresh DB → 4 rows."""
     _setup_isolated_db(tmp_path / "briefs.db", monkeypatch)
 
     inserted = runner.seed_principal_briefs()
-    assert inserted == 3
+    assert inserted == 4
 
     actions = episodic.list_scheduled_actions(status="pending", limit=10)
     kinds = {a.kind for a in actions}

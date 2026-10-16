@@ -71,13 +71,14 @@ def test_seed_principal_briefs_includes_reflection(
     _setup_isolated_db(tmp_path / "refl.db", monkeypatch)
 
     inserted = runner.seed_principal_briefs()
-    assert inserted == 3  # morning + eod + reflection
+    assert inserted == 4  # morning + eod + reflection + chat_replay
 
     actions = episodic.list_scheduled_actions(status="pending", limit=10)
     kinds = {a.kind for a in actions}
     assert "executive_reflection" in kinds
     assert "principal_brief_morning" in kinds
     assert "principal_brief_eod" in kinds
+    assert "chat_replay" in kinds
 
 
 def test_reflection_seed_idempotent(

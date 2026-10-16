@@ -262,7 +262,9 @@ def _counts(audit: sqlite3.Connection | None, db: sqlite3.Connection | None,
             audit, bounds,
             "event_type = 'tool_invocation' AND json_extract(details_json,'$.kind') = 'skill' "
             f"AND json_extract(details_json,'$.tool') IN {_in(_MEETING_TOOLS)} "
-            "AND COALESCE(json_extract(details_json,'$.ok'),1) != 0",
+            "AND COALESCE(json_extract(details_json,'$.ok'),1) != 0 "
+            # A replay of a graded turn (memory.replay) books nothing.
+            "AND COALESCE(session_id, '') NOT LIKE 'replay-%'",
             _MEETING_TOOLS,
         ),
         "briefs_delivered": _audit_count(

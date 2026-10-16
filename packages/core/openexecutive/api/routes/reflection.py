@@ -21,20 +21,21 @@ listed the same way and forgotten the same way; a forgotten lesson is
 retired, not erased, so the screen can show it stopped.
 
 Routes:
-  GET    /memories/reflection               — ``{misses, lessons, weeks, sees_everyone}``
+  GET    /memories/reflection               — ``{misses, lessons, weeks, replay, sees_everyone}``
   DELETE /memories/reflection/misses/{id}   — forget one miss (204)
   DELETE /memories/reflection/lessons/{id}  — forget one lesson (204)
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict
 
 from openexecutive.api import caller as api_caller
-from openexecutive.memory import chat_review, lessons
+from openexecutive.memory import chat_review, lessons, replay
 from openexecutive.people.models import Person
 
 router = APIRouter()
@@ -56,6 +57,22 @@ class MissOut(BaseModel):
     wanted: str
     kind: str
     signals: list[str]
+    # How its replays went (memory.replay): "open" until one passes,
+    # "closed" (it would go right today), "evidence" (can't be judged today).
+    replay_state: str = "open"
+    replayed_at: str | None = None
+    closed_at: str | None = None
+    replay_notes: str = ""
+
+
+class ReplayOut(BaseModel):
+    """"Of the N things that went wrong in the last 30 days, M would go
+    right today" (memory.replay), over the misses this caller sees."""
+
+    misses: int
+    would_pass: int
+    evidence: int
+    last_run_at: str | None
 
 
 class LessonOut(BaseModel):
@@ -85,6 +102,7 @@ class ReflectionOut(BaseModel):
     misses: list[MissOut]
     lessons: list[LessonOut]
     weeks: list[WeekOut]
+    replay: ReplayOut
     sees_everyone: bool
 
 
@@ -145,13 +163,16 @@ _PAGE = 200
 _CHUNK = 200
 
 
-def _visible_misses(person_id: int | None, readable: _Readable) -> list[dict[str, Any]]:
-    """The principal's page: read in chunks, newest first, until the page
-    is full or the record runs out, so hidden rows never crowd it out."""
+def _visible(
+    read: Callable[..., list[dict[str, Any]]], person_id: int | None, readable: _Readable
+) -> list[dict[str, Any]]:
+    """The principal's page of misses or lessons: read in chunks, newest
+    first, until the page is full or the record runs out, so hidden rows
+    never crowd it out."""
     out: list[dict[str, Any]] = []
     offset = 0
     while len(out) < _PAGE:
-        chunk = chat_review.list_misses(person_id=person_id, limit=_CHUNK, offset=offset)
+        chunk = read(person_id=person_id, limit=_CHUNK, offset=offset)
         out.extend(m for m in chunk if readable(m))
         if len(chunk) < _CHUNK:
             break
@@ -174,17 +195,18 @@ def get_reflection(
         if person_id is not None and int(person_id) != person.id:
             raise _refuse(403, "not_yours", "You can see your own chats only.")
         scope = person.id
-    learned = lessons.list_lessons(person_id=scope)
     if person.is_principal:
         readable = _Readable(request, person.id)
-        misses = _visible_misses(scope, readable)
-        learned = [lesson for lesson in learned if readable(lesson)]
+        misses = _visible(chat_review.list_misses, scope, readable)
+        learned = _visible(lessons.list_lessons, scope, readable)
     else:
         misses = chat_review.list_misses(person_id=scope, limit=_PAGE)
+        learned = lessons.list_lessons(person_id=scope, limit=_PAGE)
     weeks = chat_review.weekly_rates(person_id=scope)
     return ReflectionOut(
         misses=[MissOut(**m) for m in misses],
         lessons=[LessonOut(**lesson, person_name=_name(lesson["person_id"])) for lesson in learned],
+        replay=ReplayOut(**replay.summary_for(misses)),
         weeks=[WeekOut(**w) for w in weeks],
         sees_everyone=bool(person.is_principal),
     )
