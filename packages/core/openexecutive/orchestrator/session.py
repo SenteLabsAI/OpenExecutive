@@ -82,13 +82,10 @@ class Session:
     # Set by a channel adapter that verified for itself that `caller_person_id`
     # is who sent this turn's message, on a channel the checks in
     # `people_tools` don't know. That channel then counts as a verified
-    # surface (`people_tools._is_verified_speaker_surface`), as Slack and
-    # Discord do. `private_chat` adds that nobody but that person (and the
-    # Executive) can read the conversation
-    # (`delegation.settings.private_conversation`), so Act as me and their
-    # notes may be offered there.
-    # An adapter sets either only when it resolved `caller_person_id` from the
-    # sender identity it verified itself, never from anything the message says.
+    # surface (`people_tools._is_verified_speaker_surface`) for every gate
+    # that asks, as Slack and Discord do: an adapter sets it only when it
+    # resolved `caller_person_id` from a sender identity the platform
+    # authenticated, never from anything the message says, and per turn.
     speaker_verified: bool = False
     # The sender's People entry on a channel that names its sender but isn't
     # one `people_tools` verifies (Google Chat, by the Google account email on
@@ -97,6 +94,10 @@ class Session:
     # teammate gets their own department's authority. Never a grant for
     # anything else, and never set alongside `caller_person_id`.
     gate_sender_person_id: int | None = None
+    # Set by a channel adapter when nobody but the speaker (and the
+    # Executive) can read the conversation, e.g. a direct message
+    # (`delegation.settings.private_conversation`). On its own it grants
+    # nothing: Act as me and recalled notes also need a verified speaker.
     private_chat: bool = False
     # The live alert board as the server derived it this turn, recorded by
     # `briefing.context.render_and_trust`. `ack_alert` refuses anything else on
