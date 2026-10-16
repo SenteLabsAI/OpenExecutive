@@ -1210,7 +1210,9 @@ def _names_saved_folder(normalized: str, arguments: Any, folders: frozenset[str]
     its arguments, or (OneDrive) by a path through a folder of that name."""
     if folders and _names_any(arguments, folders):
         return True
-    if not normalized.startswith(_M365_PREFIX):
+    if not normalized.startswith(_M365_PREFIX) or not _FILE_TOOL_RE.search(normalized.partition("__")[2]):
+        # Only a file tool takes a path: a mail subject or event title that
+        # happens to read "Re: From your email: …" isn't one.
         return False
     from openexecutive.delegation.saved_files import FOLDER_NAME
 

@@ -731,3 +731,36 @@ def test_a_file_saved_while_a_listing_ran_is_hidden_from_that_listing(roster: Si
     storage.answer = save_lands_during_the_search  # type: ignore[method-assign]
     found = _model_call(other, gateway, "google_workspace__search_drive_files", {"query": "loi"})
     assert landed not in found and "KEEP" in found
+
+
+def test_a_mail_subject_that_reads_like_the_folder_is_not_refused(roster: SimpleNamespace) -> None:
+    storage = FakeStorage()
+    gateway = _gateway(storage, ("microsoft_365",))
+    assert _save(_owner_session())["status"] == "saved"
+    before = len(storage.calls)
+    out = _model_call(None, gateway, "microsoft_365__list-calendar-events",
+                      {"filter": "subject eq 'Re: From your email: contract'"})
+    assert "folder of files saved" not in out
+    assert [n for n, _ in storage.calls[before:]] == ["microsoft_365__list-calendar-events"]
+
+
+@pytest.mark.parametrize("servers", [("google_workspace",), ("microsoft_365",)])
+def test_a_failure_that_isnt_a_missing_folder_makes_no_new_folder(
+    roster: SimpleNamespace, servers: tuple[str, ...]
+) -> None:
+    storage = FakeStorage()
+    _gateway(storage, servers)
+    session = _owner_session((_pdf("a.pdf"), PDF), (_pdf("b.pdf", 2), PDF))
+    assert _save(session, {"message_id": "m1", "index": 1})["status"] == "saved"
+    answer = storage.answer
+
+    def quota_full(name: str, args: dict[str, Any]) -> str:
+        if name == "google_workspace__create_drive_file":
+            return "Error: The user's Drive storage quota has been exceeded."
+        if name == "microsoft_365__upload-file-content":
+            return json.dumps({"error": "quotaLimitReached"})
+        return answer(name, args)
+
+    storage.answer = quota_full  # type: ignore[method-assign]
+    assert _save(session, {"message_id": "m1", "index": 2})["status"] != "saved"
+    assert len(storage.folders) == 1

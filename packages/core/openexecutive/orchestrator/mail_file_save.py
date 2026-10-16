@@ -166,6 +166,16 @@ def _failed(text: str) -> bool:
     return head.lower().startswith(("error", "tool error"))
 
 
+_MISSING_RE = re.compile(r"\b404\b|not ?found|does not exist|no longer exists|trashed", re.IGNORECASE)
+
+
+def _folder_missing(text: str) -> bool:
+    """Whether a failed upload says its folder is gone: only then is a new
+    folder made. A quota, server or file-type error returns at once, so a
+    failing save doesn't leave a new empty folder each time."""
+    return _failed(text) and bool(_MISSING_RE.search(text))
+
+
 def _why(text: str) -> str:
     """The error a failed call gave, short, for the model."""
     try:
@@ -252,7 +262,7 @@ async def _google(gateway: Any, data: bytes, name: str, mime: str, owner_id: int
         arguments["folder_id"], fresh = await _google_folder(gateway, account)
         made = await _call(gateway, "google_workspace__create_drive_file", arguments)
         created = None if _failed(made) else _CREATED_RE.search(made)
-        if created is not None or fresh:
+        if created is not None or fresh or not _folder_missing(made):
             break
         # The remembered folder may be gone: make a new one, once.
         saved_files.forget_folder(GOOGLE, account)
@@ -354,7 +364,7 @@ async def _microsoft(gateway: Any, data: bytes, name: str, owner_id: int, owner_
             "body": base64.b64encode(data).decode("ascii"),
         })
         parsed = _json(made)
-        if (not _failed(made) and isinstance(parsed, dict)) or fresh:
+        if (not _failed(made) and isinstance(parsed, dict)) or fresh or not _folder_missing(made):
             break
         # The remembered folder may be gone: make a new one, once.
         saved_files.forget_folder(MICROSOFT, account)
