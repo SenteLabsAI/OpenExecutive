@@ -6,8 +6,9 @@ Every call here is built in code. The model chooses only which attachment
 (message id and index); everything that leaves the box is fixed here:
 
 - **Where:** a folder named ``FOLDER_NAME`` in the Executive's own Google
-  Drive (workspace-mcp) or OneDrive (ms-365-mcp-server), found or made once
-  and remembered (``delegation.saved_files``).
+  Drive (workspace-mcp) or OneDrive (ms-365-mcp-server), made by the first
+  save and remembered by id (``delegation.saved_files``). Never one found by
+  its name: anyone could have made a folder of that name and shared it.
 - **What:** the attachment's bytes, read by the mailbox client (never through
   the model), under a cleaned file name.
 - **Who:** the speaker's own address, as a reader (Google: one ``user``
@@ -18,8 +19,11 @@ The calls go through the gateway like any other, so its gates still run (the
 acting account, URL fetches, sheet formulas, the share gates' roster check,
 writes kept to the Executive's own drives). Only the mail-read lockdown lets
 them through, and only as these exact objects (``mcp_gateway.code_built_call``).
-Each saved file is recorded before it is shared, so from the moment it exists
-other people's turns can't see it (``mcp_gateway._saved_files_hidden``).
+Each saved file is recorded before it is shared, so from then on other
+people's turns can't see it, and no model call can name the folder
+(``mcp_gateway._saved_files_hidden``). A copy whose row can't be written is
+hidden from every turn for the life of the process, not shared, and reported
+as failed (``saved_files.quarantine``).
 
 Which storage: the one the Executive's own mailbox runs on
 (``EMAIL_PROVIDER``), when the gateway has that server; else the other one if
@@ -38,15 +42,15 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any
 
+from openexecutive.delegation.saved_files import FOLDER_NAME
+
 logger = logging.getLogger(__name__)
 
 GOOGLE = "google"
 MICROSOFT = "microsoft"
-FOLDER_NAME = "From your email"
 _SERVERS = {GOOGLE: "google_workspace", MICROSOFT: "microsoft_365"}
 WHERE = {GOOGLE: f"the {FOLDER_NAME} folder in Google Drive", MICROSOFT: f"the {FOLDER_NAME} folder in OneDrive"}
 
-_FOLDER_MIME = "application/vnd.google-apps.folder"
 _NAME_MAX = 120
 # What a file name may not hold in Drive or OneDrive (and nothing that reads
 # as a path), plus control characters.
@@ -188,14 +192,18 @@ async def save(
 
 
 def _record(owner_id: int, provider: str, file_id: str, name: str) -> None:
+    """Record the copy as ``owner_id``'s before it is shared. When the row
+    can't be written, hide the copy from every turn for the life of the
+    process and fail: it is not shared and the model is told it wasn't
+    saved."""
     from openexecutive.delegation import saved_files
 
-    saved_files.record(owner_id, provider, file_id, name=name)
-
-
-# --------------------------------------------------------------------------- #
-# Google Drive (workspace-mcp, as the Executive's own account)
-# --------------------------------------------------------------------------- #
+    try:
+        saved_files.record(owner_id, provider, file_id, name=name)
+    except Exception as exc:
+        saved_files.quarantine(file_id)
+        logger.error("save_my_email_attachment: couldn't record a saved copy as private; hidden until restart", exc_info=True)
+        raise SaveFailed("It couldn't be kept private, so it was not shared. Try again in a moment.") from exc
 
 
 def _exec_account() -> str:
@@ -204,34 +212,27 @@ def _exec_account() -> str:
     return get_settings().exec_email_address.strip().lower()
 
 
-async def _google_folder(gateway: Any, account: str) -> str:
+# --------------------------------------------------------------------------- #
+# Google Drive (workspace-mcp, as the Executive's own account)
+# --------------------------------------------------------------------------- #
+
+
+async def _google_folder(gateway: Any, account: str) -> tuple[str, bool]:
+    """The folder copies go in, and whether it was made just now. Made here,
+    never found by name."""
     from openexecutive.delegation import saved_files
 
     remembered = saved_files.remembered_folder(GOOGLE, account)
     if remembered is not None:
-        return remembered[0]
-    query = (
-        f"name = '{FOLDER_NAME}' and mimeType = '{_FOLDER_MIME}' and 'root' in parents "
-        "and 'me' in owners and trashed = false"
-    )
-    found = await _call(gateway, "google_workspace__search_drive_files", {
-        "user_google_email": account, "query": query, "page_size": 5,
+        return remembered[0], False
+    made = await _call(gateway, "google_workspace__create_drive_folder", {
+        "user_google_email": account, "folder_name": FOLDER_NAME, "parent_folder_id": "root",
     })
-    match = re.search(
-        rf'- Name: "{re.escape(FOLDER_NAME)}" \(ID: ([A-Za-z0-9_-]+), Type: {re.escape(_FOLDER_MIME)}', found
-    )
-    if match is not None and not _failed(found):
-        folder_id = match.group(1)
-    else:
-        made = await _call(gateway, "google_workspace__create_drive_folder", {
-            "user_google_email": account, "folder_name": FOLDER_NAME, "parent_folder_id": "root",
-        })
-        created = _CREATED_RE.search(made)
-        if _failed(made) or created is None:
-            raise SaveFailed(f"Couldn't make the {FOLDER_NAME} folder in Google Drive: {_why(made)}")
-        folder_id = created.group("id")
-    saved_files.remember_folder(GOOGLE, account, folder_id)
-    return folder_id
+    created = _CREATED_RE.search(made)
+    if _failed(made) or created is None or not _GOOGLE_ID_RE.fullmatch(created.group("id")):
+        raise SaveFailed(f"Couldn't make the {FOLDER_NAME} folder in Google Drive: {_why(made)}")
+    saved_files.remember_folder(GOOGLE, account, created.group("id"))
+    return created.group("id"), True
 
 
 async def _google(gateway: Any, data: bytes, name: str, mime: str, owner_id: int, owner_email: str) -> Saved:
@@ -247,13 +248,13 @@ async def _google(gateway: Any, data: bytes, name: str, mime: str, owner_id: int
     }
     created = None
     made = ""
-    for attempt in range(2):
-        arguments["folder_id"] = await _google_folder(gateway, account)
+    while True:
+        arguments["folder_id"], fresh = await _google_folder(gateway, account)
         made = await _call(gateway, "google_workspace__create_drive_file", arguments)
         created = None if _failed(made) else _CREATED_RE.search(made)
-        if created is not None or attempt:
+        if created is not None or fresh:
             break
-        # The remembered folder may be gone: find or make it again, once.
+        # The remembered folder may be gone: make a new one, once.
         saved_files.forget_folder(GOOGLE, account)
     if created is None:
         raise SaveFailed(f"Google Drive didn't take the file: {_why(made)}")
@@ -270,7 +271,9 @@ async def _google(gateway: Any, data: bytes, name: str, mime: str, owner_id: int
         "share_with": owner_email,
         "role": "reader",
         "share_type": "user",
-        "send_notification": True,
+        # No email from Drive carrying the sender's file name: the tool
+        # returns the link.
+        "send_notification": False,
     })
     ok = not _failed(shared)
     if not ok:
@@ -305,51 +308,32 @@ async def _onedrive_drive(gateway: Any) -> str:
     return str((own or drives)[0]["id"])
 
 
-async def _onedrive_children(gateway: Any, drive_id: str, item_id: str) -> tuple[list[dict[str, Any]], bool]:
-    """The items in a folder, and whether that was all of them."""
-    text = await _call(gateway, "microsoft_365__list-folder-files", {"drive-id": drive_id, "driveItem-id": item_id})
-    parsed = _json(text)
-    if _failed(text) or not isinstance(parsed, dict):
-        raise SaveFailed(f"Couldn't read the {FOLDER_NAME} folder in OneDrive: {_why(text)}")
-    return _items(parsed), "@odata.nextLink" not in parsed
-
-
-async def _onedrive_folder(gateway: Any, account: str) -> tuple[str, str]:
+async def _onedrive_folder(gateway: Any, account: str, drive_id: str) -> tuple[str, bool]:
+    """The folder copies go in, and whether it was made just now. Made here,
+    never found by name (Graph renames ours if the name is taken)."""
     from openexecutive.delegation import saved_files
 
-    drive_id = await _onedrive_drive(gateway)
     remembered = saved_files.remembered_folder(MICROSOFT, account)
     if remembered is not None and remembered[1] == drive_id:
-        return remembered[0], drive_id
-    children, _ = await _onedrive_children(gateway, drive_id, "root")
-    found = next(
-        (c for c in children if c.get("name") == FOLDER_NAME and isinstance(c.get("folder"), dict)), None
-    )
-    if found is not None and isinstance(found.get("id"), str):
-        folder_id = found["id"]
-    else:
-        made = await _call(gateway, "microsoft_365__create-onedrive-folder", {
-            "drive-id": drive_id, "driveItem-id": "root", "body": {"name": FOLDER_NAME, "folder": {}},
-        })
-        parsed = _json(made)
-        if _failed(made) or not isinstance(parsed, dict) or not isinstance(parsed.get("id"), str):
-            raise SaveFailed(f"Couldn't make the {FOLDER_NAME} folder in OneDrive: {_why(made)}")
-        folder_id = parsed["id"]
-    saved_files.remember_folder(MICROSOFT, account, folder_id, drive_id)
-    return folder_id, drive_id
+        return remembered[0], False
+    made = await _call(gateway, "microsoft_365__create-onedrive-folder", {
+        "drive-id": drive_id, "driveItem-id": "root", "body": {"name": FOLDER_NAME, "folder": {}},
+    })
+    parsed = _json(made)
+    if _failed(made) or not isinstance(parsed, dict) or not isinstance(parsed.get("id"), str) or not parsed["id"]:
+        raise SaveFailed(f"Couldn't make the {FOLDER_NAME} folder in OneDrive: {_why(made)}")
+    saved_files.remember_folder(MICROSOFT, account, parsed["id"], drive_id)
+    return parsed["id"], True
 
 
-def _free_name(name: str, taken: set[str], complete: bool) -> str:
+def _free_name(name: str, taken: set[str]) -> str:
     """``name``, or ``name (2)`` and on: OneDrive's upload overwrites a file of
-    the same name. When the listing was cut short, a stamp makes it unique."""
-    path = PurePath(name)
-    stem, suffix = (path.stem, path.suffix) if path.suffix else (name, "")
-    if not complete:
-        from datetime import UTC, datetime
-
-        return f"{stem} {datetime.now(UTC).strftime('%Y%m%d-%H%M%S-%f')}{suffix}"
+    the same name. ``taken`` is every name a save has used, since only saves
+    write to the folder (no model call can name it)."""
     if name.lower() not in taken:
         return name
+    path = PurePath(name)
+    stem, suffix = (path.stem, path.suffix) if path.suffix else (name, "")
     n = 2
     while f"{stem} ({n}){suffix}".lower() in taken:
         n += 1
@@ -360,28 +344,20 @@ async def _microsoft(gateway: Any, data: bytes, name: str, owner_id: int, owner_
     from openexecutive.delegation import saved_files
 
     account = _exec_account()
-    parsed: Any = None
-    made = ""
-    for attempt in range(2):
-        folder_id, drive_id = await _onedrive_folder(gateway, account)
-        try:
-            children, complete = await _onedrive_children(gateway, drive_id, folder_id)
-        except SaveFailed:
-            if attempt:
-                raise
-            saved_files.forget_folder(MICROSOFT, account)
-            continue
-        # The listing leaves out other people's saved files (hidden on this
-        # turn), so their recorded names count as taken too.
-        taken = {str(c.get("name", "")).lower() for c in children} | saved_files.names(MICROSOFT)
-        name = _free_name(name, taken, complete)
+    drive_id = await _onedrive_drive(gateway)
+    name = _free_name(name, saved_files.names(MICROSOFT))
+    while True:
+        folder_id, fresh = await _onedrive_folder(gateway, account, drive_id)
         made = await _call(gateway, "microsoft_365__upload-file-content", {
             "drive-id": drive_id,
             "driveItem-id": f"{folder_id}:/{name}:",
             "body": base64.b64encode(data).decode("ascii"),
         })
         parsed = _json(made)
-        break
+        if (not _failed(made) and isinstance(parsed, dict)) or fresh:
+            break
+        # The remembered folder may be gone: make a new one, once.
+        saved_files.forget_folder(MICROSOFT, account)
     if _failed(made) or not isinstance(parsed, dict) or not isinstance(parsed.get("id"), str):
         raise SaveFailed(f"OneDrive didn't take the file: {_why(made)}")
     file_id = parsed["id"]
@@ -396,7 +372,9 @@ async def _microsoft(gateway: Any, data: bytes, name: str, owner_id: int, owner_
             "recipients": [{"email": owner_email}],
             "roles": ["read"],
             "requireSignIn": True,
-            "sendInvitation": True,
+            # No invitation email carrying the sender's file name: the tool
+            # returns the link.
+            "sendInvitation": False,
         },
     })
     ok = not _failed(shared)

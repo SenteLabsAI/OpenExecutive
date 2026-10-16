@@ -242,7 +242,7 @@ SAVE_MY_EMAIL_ATTACHMENT_TOOL: dict[str, Any] = {
         "folder in your own Google Drive or OneDrive (whichever is connected) "
         "and is shared with them alone, as a viewer. Any file type, up to "
         f"{MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB. Use it only when they ask "
-        "you to save, keep, upload or link a file from their email; call it "
+        "you to save, store or upload a file from their email; call it "
         "once per file. Returns the link to give them."
     ),
     "input_schema": {
@@ -691,17 +691,15 @@ async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
     )
 
 
-# Words that ask for a file to be kept somewhere: "save the LOIs", "put it
-# in my Drive", "upload them", "link them from the app". Without one in what
-# they typed this turn, nothing is copied: a mail's text can't ask for it.
-_SAVE_WORDS = frozenset({
-    "copy", "drive", "folder", "keep", "link", "links", "onedrive", "save",
-    "saved", "store", "upload",
-})
+# Words that ask for a file to be saved somewhere: "save the LOIs", "upload
+# them", "put it in my Drive". Without one in what they typed this turn,
+# nothing is copied: a mail's text can't ask for it. Kept narrow on purpose
+# ("keep", "link", "copy" and "folder" turn up in everyday asks).
+_SAVE_WORDS = frozenset({"drive", "onedrive", "save", "saved", "store", "upload"})
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 _NOT_ASKED = (
     "Save a file only when they ask you to, in their own words: they haven't "
-    "asked to save, keep, upload or link a file in this message. Ask them "
+    "asked to save, store or upload a file in this message. Ask them "
     "whether they want it saved to your Drive or OneDrive. Do not retry until "
     "they say so."
 )

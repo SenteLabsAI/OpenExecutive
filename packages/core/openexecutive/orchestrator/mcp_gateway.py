@@ -1062,12 +1062,10 @@ def _roster_ack_admits(tool: str, arguments: dict[str, Any]) -> bool:
 # other gate (acting account, URL fetch, sheet formulas, the Drive / OneDrive
 # share gates, own-drive writes) still runs on them as on any call.
 _CODE_BUILT_TOOLS = frozenset({
-    "google_workspace__search_drive_files",
     "google_workspace__create_drive_folder",
     "google_workspace__create_drive_file",
     "google_workspace__manage_drive_access",
     "microsoft_365__list-drives",
-    "microsoft_365__list-folder-files",
     "microsoft_365__create-onedrive-folder",
     "microsoft_365__upload-file-content",
     "microsoft_365__share-drive-item",
@@ -1101,36 +1099,64 @@ def _code_built_admits(tool_input: Any) -> bool:
 
 # Files ``save_my_email_attachment`` copied from someone's own mail are theirs
 # alone (``delegation.saved_files``), but they sit in the Executive's own Drive
-# or OneDrive, which every turn's Drive and OneDrive tools can reach. So on any
-# turn whose speaker is not a file's owner (``saved_files.viewer_person_id``):
-# a call whose arguments name a recorded file id is refused before it runs
-# (an open, a download, a share, a copy, a move), and a result that names one
-# loses that entry (a JSON list item) or line (workspace-mcp's one line per
-# file) — and any id still left is masked. Limits, honestly: it matches the
-# ids as text, so it hides a file only where its id appears (a listing, a
-# link); a result that names the file without its id (an activity feed, a
-# notification email quoting its title) still shows the name. A copy someone
-# makes of it is a new file and isn't covered. Someone signed in to the
-# Executive's account outside the app sees everything. The lookup fails
-# closed for the file tools (``_FILE_TOOL_RE``): when the table can't be read
-# they are refused, while mail and calendar tools run unfiltered.
-_FILE_TOOL_RE = re.compile(r"drive|folder|file|download_bytes")
+# or OneDrive, which every turn's Drive and OneDrive tools can reach. So:
+#
+# - **Files.** On any turn whose speaker is not a file's owner
+#   (``saved_files.viewer_person_id``), a call whose arguments name a recorded
+#   file id is refused before it runs (an open, a download, a share, a copy, a
+#   move), and a result that names one loses that entry (a JSON list item) or
+#   line (workspace-mcp's one line per file), and any id still left is masked.
+# - **The folder.** Sharing, moving or listing the folder would reach every
+#   file in it, so on every turn, the owner's included, a model call naming a
+#   folder a save made is refused, and so is a OneDrive call addressing a path
+#   through a folder of that name ("root:/From your email/…", percent-encoded
+#   or not). The folder's own entry is dropped from results and its id masked
+#   elsewhere. Only the save's own code-built calls (``code_built_call``) touch
+#   it, and those skip this filter: they name nothing the model chose.
+#
+# Limits, honestly: it matches ids as text, so it hides a file only where its
+# id appears (a listing, a link); a result that names the file without its id
+# (an activity feed, a notification quoting its title) still shows the name. A
+# copy someone makes of it is a new file and isn't covered. Someone signed in
+# to the Executive's account outside the app sees everything. The lookup
+# fails closed for the file tools (``_FILE_TOOL_RE``: Drive, OneDrive, Docs,
+# Sheets, Slides): when the tables can't be read they are refused, while mail
+# and calendar tools run unfiltered.
+_FILE_TOOL_RE = re.compile(r"drive|folder|file|download_bytes|doc|sheet|slide|presentation")
 _SAVED_FILE_REFUSAL = (
     "{tool} was not run: that file is private to the person it was saved for "
     "and isn't available in this conversation. Do not retry."
 )
+_SAVED_FOLDER_REFUSAL = (
+    "{tool} was not run: the folder of files saved from people's own email "
+    "can't be opened, shared, moved or listed from chat; each file there is "
+    "shared with its owner alone. Do not retry."
+)
 
 
-def _saved_files_hidden(normalized: str) -> frozenset[str] | str:
-    """The saved-file ids this turn may not see, or the refusal when they
-    can't be read for a file tool. Only Google Workspace and Microsoft 365
-    tools are filtered."""
+@dataclass(frozen=True)
+class _SavedView:
+    """What this turn may not see or name: other people's saved files, and
+    every folder the saves made."""
+
+    files: frozenset[str] = frozenset()
+    folders: frozenset[str] = frozenset()
+
+    def __bool__(self) -> bool:
+        return bool(self.files or self.folders)
+
+
+def _saved_files_hidden(normalized: str) -> _SavedView | str:
+    """What this turn may not see, or the refusal when that can't be read
+    for a file tool. Only Google Workspace and Microsoft 365 tools are
+    filtered."""
     if not normalized.startswith((_GW_PREFIX, _M365_PREFIX)):
-        return frozenset()
+        return _SavedView()
     from openexecutive.delegation import saved_files
 
     try:
-        return saved_files.hidden_file_ids(saved_files.viewer_person_id())
+        files, folders = saved_files.protected(saved_files.viewer_person_id())
+        return _SavedView(files, folders)
     except Exception:
         logger.warning("saved files: couldn't read which files are private", exc_info=True)
         if _FILE_TOOL_RE.search(normalized.partition("__")[2]):
@@ -1140,17 +1166,42 @@ def _saved_files_hidden(normalized: str) -> frozenset[str] | str:
                     f"{normalized[:200]} was not run. Try again in a moment."
                 ),
             })
-        return frozenset()
+        return _SavedView()
+
+
+def _arguments_text(arguments: Any) -> str:
+    try:
+        return json.dumps(arguments, default=str)
+    except (TypeError, ValueError, RecursionError):
+        return str(arguments)
 
 
 def _names_saved_file(arguments: Any, hidden: frozenset[str]) -> bool:
     if not hidden:
         return False
-    try:
-        text = json.dumps(arguments, default=str)
-    except (TypeError, ValueError, RecursionError):
-        text = str(arguments)
+    text = _arguments_text(arguments)
     return any(file_id in text for file_id in hidden)
+
+
+def _names_saved_folder(normalized: str, arguments: Any, folders: frozenset[str]) -> bool:
+    """Whether a model call names a folder the saves made, by id anywhere in
+    its arguments, or (OneDrive) by a path through a folder of that name."""
+    if folders:
+        text = _arguments_text(arguments)
+        if any(folder_id in text for folder_id in folders):
+            return True
+    if not normalized.startswith(_M365_PREFIX):
+        return False
+    from openexecutive.delegation.saved_files import FOLDER_NAME
+
+    wanted = " ".join(FOLDER_NAME.casefold().split())
+    for value in _iter_arg_strings(arguments):
+        if value is _TOO_DEEP:
+            return True
+        plain = " ".join(unquote(value).casefold().split())
+        if ":" in plain and wanted in plain:
+            return True
+    return False
 
 
 def _prune_saved(value: Any, present: list[str], depth: int = 0) -> Any:
@@ -1186,6 +1237,40 @@ def _hide_saved_files(text: str, hidden: frozenset[str]) -> str:
     text = "\n".join(lines)
     for file_id in present:
         text = text.replace(file_id, "[hidden]")
+    return text or "No files found."
+
+
+def _drop_folder_entries(value: Any, folders: frozenset[str], depth: int = 0) -> Any:
+    """``value`` without the list entries that are one of ``folders`` (a dict
+    whose ``id`` is one)."""
+    if depth > _WALK_DEPTH_MAX:
+        return value
+    if isinstance(value, list):
+        return [
+            _drop_folder_entries(v, folders, depth + 1) for v in value
+            if not (isinstance(v, dict) and any(
+                isinstance(k, str) and k.lower() == "id" and x in folders for k, x in v.items()
+            ))
+        ]
+    if isinstance(value, dict):
+        return {k: _drop_folder_entries(v, folders, depth + 1) for k, v in value.items()}
+    return value
+
+
+def _hide_saved_folders(text: str, folders: frozenset[str]) -> str:
+    """``text`` without the saves' folders: their own entries dropped (a JSON
+    list item whose id is one, a workspace-mcp line "(ID: <id>"), and the id
+    masked anywhere else (a file's parent), so the file itself still shows."""
+    present = [folder_id for folder_id in folders if folder_id in text]
+    if not present:
+        return text
+    parsed = _parsed_json(text)
+    if parsed is not None:
+        text = json.dumps(_drop_folder_entries(parsed, frozenset(present)))
+    lines = [line for line in text.splitlines() if not any(f"ID: {f}" in line for f in present)]
+    text = "\n".join(lines)
+    for folder_id in present:
+        text = text.replace(folder_id, "[hidden]")
     return text or "No files found."
 
 
@@ -3214,7 +3299,8 @@ class MCPGateway:
         refused = outside_reach_refusal(
             str(tool_input.get("name") or "call_tool")[:200], tool_input, tool_name="call_tool"
         )
-        if refused is not None and not _code_built_admits(tool_input):
+        code_built = _code_built_admits(tool_input)
+        if refused is not None and not code_built:
             return refused
         session = self._require_session()
         arguments = tool_input.get("arguments", {})
@@ -3226,13 +3312,16 @@ class MCPGateway:
                 arguments = {}
         tool_name = tool_input.get("name", "")
         normalized = _normalize_tool_name(tool_name)
-        # Files saved from someone's own mail are theirs alone (see
-        # `_saved_files_hidden`).
-        hidden = _saved_files_hidden(normalized)
+        # Files saved from someone's own mail are theirs alone, and their
+        # folder is no model's to name (see `_saved_files_hidden`). The save's
+        # own code-built calls are the one exception.
+        hidden = _SavedView() if code_built else _saved_files_hidden(normalized)
         if isinstance(hidden, str):
             return hidden
-        if _names_saved_file(arguments, hidden):
+        if _names_saved_file(arguments, hidden.files):
             return json.dumps({"error": _SAVED_FILE_REFUSAL.format(tool=str(tool_name)[:200])})
+        if not code_built and _names_saved_folder(normalized, arguments, hidden.folders):
+            return json.dumps({"error": _SAVED_FOLDER_REFUSAL.format(tool=str(tool_name)[:200])})
         attached_artifacts: list[str] = []
         # Every Google Workspace call acts as the Executive's own account.
         if _is_apps_script_tool(tool_name):
@@ -3403,7 +3492,8 @@ class MCPGateway:
             result_text = hide_roster_tokens(result_text)
         if hidden:
             # Before anything below keeps or reads the result.
-            result_text = _hide_saved_files(result_text, hidden)
+            result_text = _hide_saved_files(result_text, hidden.files)
+            result_text = _hide_saved_folders(result_text, hidden.folders)
         self._note_grant_health(tool_name, result_text)
         if tool_name in drive_reads.DRIVE_READ_TOOLS:
             result_text = _remember_drive_read(tool_name, arguments, result_text)

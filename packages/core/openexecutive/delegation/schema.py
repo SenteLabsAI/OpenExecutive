@@ -233,15 +233,18 @@ _DDL: tuple[str, ...] = (
     "  saved_at TEXT NOT NULL,"
     "  UNIQUE(provider, file_id)"
     ")",
-    # The "From your email" folder those files go in, one per storage and
-    # Executive account, so it is found or made once.
+    # Every "From your email" folder those files went in, made by the save
+    # itself (never one found by name): current marks the one in use per
+    # storage and Executive account; a retired one stays listed, since the
+    # gateway keeps every one of them out of reach of the model.
     f"CREATE TABLE IF NOT EXISTS {SAVED_FOLDER_TABLE} ("
     "  provider TEXT NOT NULL,"
     "  account TEXT NOT NULL,"
     "  folder_id TEXT NOT NULL,"
     "  drive_id TEXT NOT NULL DEFAULT '',"
     "  created_at TEXT NOT NULL,"
-    "  PRIMARY KEY (provider, account)"
+    "  current INTEGER NOT NULL DEFAULT 1,"
+    "  PRIMARY KEY (provider, folder_id)"
     ")",
 )
 

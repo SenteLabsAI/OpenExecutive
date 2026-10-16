@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -70,23 +69,23 @@ class FakeStorage:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.files: dict[str, dict[str, Any]] = {}
         self.folders: dict[str, str] = {}
+        # Folders deleted behind the Executive's back.
+        self.gone: set[str] = set()
 
     def _new_id(self, prefix: str) -> str:
         return f"{prefix}{len(self.files) + len(self.folders) + 1:06d}abcdefghij"
 
     def answer(self, name: str, args: dict[str, Any]) -> str:
         self.calls.append((name, args))
-        if name == "google_workspace__search_drive_files":
-            if "From your email" in args["query"]:
-                found = [
-                    f'- Name: "From your email" (ID: {fid}, Type: application/vnd.google-apps.folder)'
-                    for fid in self.folders
-                ]
-            else:
-                found = [
-                    f'- Name: "{f["name"]}" (ID: {fid}, Type: application/pdf) Link: https://drive.google.com/file/d/{fid}/view'
-                    for fid, f in self.files.items()
-                ]
+        if name in ("google_workspace__search_drive_files", "google_workspace__list_drive_items"):
+            parent = args.get("folder_id")
+            found = [
+                f'- Name: "{n}" (ID: {fid}, Type: application/vnd.google-apps.folder)'
+                for fid, n in self.folders.items() if parent in (None, "root")
+            ] + [
+                f'- Name: "{f["name"]}" (ID: {fid}, Type: application/pdf) Link: https://drive.google.com/file/d/{fid}/view'
+                for fid, f in self.files.items() if parent in (None, f["folder"])
+            ]
             return "\n".join(["Found files:", *found]) if found else "No files found."
         if name == "google_workspace__create_drive_folder":
             fid = self._new_id("FOLDERG")
@@ -96,6 +95,8 @@ class FakeStorage:
                 f"for {args['user_google_email']}. Link: https://drive.google.com/drive/folders/{fid}"
             )
         if name == "google_workspace__create_drive_file":
+            if args["folder_id"] in self.gone:
+                return "Error: File not found: " + args["folder_id"]
             fid = self._new_id("FILEG")
             self.files[fid] = {
                 "name": args["file_name"], "folder": args["folder_id"],
@@ -125,13 +126,18 @@ class FakeStorage:
             return json.dumps({"id": fid, "name": args["body"]["name"], "folder": {}})
         if name == "microsoft_365__upload-file-content":
             folder, _, rest = args["driveItem-id"].partition(":/")
+            if folder in self.gone:
+                return json.dumps({"error": "itemNotFound"})
             fid = self._new_id("01FILEM")
             self.files[fid] = {"name": rest.rstrip(":"), "folder": folder, "data": base64.b64decode(args["body"])}
             return json.dumps({"id": fid, "name": rest.rstrip(":"), "webUrl": f"https://example.sharepoint.com/f/{fid}"})
         if name == "microsoft_365__share-drive-item":
             return json.dumps({"value": [{"id": "perm1", "roles": ["read"]}]})
         if name == "microsoft_365__search-onedrive-files":
-            return json.dumps({"value": [{"id": fid, "name": f["name"]} for fid, f in self.files.items()]})
+            return json.dumps({"value": [
+                *({"id": fid, "name": n, "folder": {}} for fid, n in self.folders.items()),
+                *({"id": fid, "name": f["name"], "parentReference": {"id": f["folder"]}} for fid, f in self.files.items()),
+            ]})
         return json.dumps({"error": f"unexpected tool {name}"})
 
     def named(self, name: str) -> list[dict[str, Any]]:
@@ -205,7 +211,7 @@ def test_google_copies_the_bytes_into_the_fixed_folder_and_shares_with_the_speak
     assert shares == [{
         "user_google_email": get_settings().exec_email_address.lower(),
         "file_id": file_id, "action": "grant", "share_with": OWNER,
-        "role": "reader", "share_type": "user", "send_notification": True,
+        "role": "reader", "share_type": "user", "send_notification": False,
     }]
     assert saved_files.owner_of(mfs.GOOGLE, file_id) == roster.principal
 
@@ -218,16 +224,39 @@ def test_the_folder_is_made_once_and_remembered(roster: SimpleNamespace) -> None
     assert _save(session, {"message_id": "m1", "index": 2})["status"] == "saved"
     assert len(storage.folders) == 1 and len(storage.files) == 2
     assert len(storage.named("google_workspace__create_drive_folder")) == 1
-    assert len(storage.named("google_workspace__search_drive_files")) == 1
+    # Made, never looked up by name.
+    assert storage.named("google_workspace__search_drive_files") == []
 
 
-def test_an_existing_folder_is_found_not_made_again(roster: SimpleNamespace) -> None:
+@pytest.mark.parametrize("servers", [("google_workspace",), ("microsoft_365",)])
+def test_a_folder_someone_else_named_alike_is_never_adopted(
+    roster: SimpleNamespace, servers: tuple[str, ...]
+) -> None:
     storage = FakeStorage()
-    storage.folders["FOLDERGexisting1234"] = mfs.FOLDER_NAME
-    _gateway(storage)
+    # A teammate made a folder of that name and shared it with themselves.
+    storage.folders["FOLDERXplanted12345"] = mfs.FOLDER_NAME
+    _gateway(storage, servers)
     assert _save(_owner_session())["status"] == "saved"
-    assert storage.named("google_workspace__create_drive_folder") == []
-    assert next(iter(storage.files.values()))["folder"] == "FOLDERGexisting1234"
+    (saved,) = storage.files.values()
+    assert saved["folder"] != "FOLDERXplanted12345"
+    assert saved["folder"] in storage.folders
+
+
+@pytest.mark.parametrize("servers", [("google_workspace",), ("microsoft_365",)])
+def test_a_folder_gone_is_replaced_and_the_old_one_stays_protected(
+    roster: SimpleNamespace, servers: tuple[str, ...]
+) -> None:
+    storage = FakeStorage()
+    _gateway(storage, servers)
+    session = _owner_session((_pdf("a.pdf"), PDF), (_pdf("b.pdf", 2), PDF))
+    assert _save(session, {"message_id": "m1", "index": 1})["status"] == "saved"
+    (old,) = storage.folders
+    storage.gone.add(old)
+    assert _save(session, {"message_id": "m1", "index": 2})["status"] == "saved"
+    assert len(storage.folders) == 2
+    new = next(f for f in storage.folders if f != old)
+    assert [f["folder"] for f in storage.files.values()] == [old, new]
+    assert saved_files.protected(None)[1] == {old, new}
 
 
 def test_saves_in_one_round_run_one_at_a_time(roster: SimpleNamespace) -> None:
@@ -265,7 +294,7 @@ def test_onedrive_copies_into_the_fixed_folder_and_invites_the_speaker_alone(ros
     assert upload["drive-id"] == "b!Own-1" and upload["driveItem-id"] == f"{folder_id}:/loi-north.pdf:"
     assert storage.named("microsoft_365__share-drive-item") == [{
         "drive-id": "b!Own-1", "driveItem-id": file_id,
-        "body": {"recipients": [{"email": OWNER}], "roles": ["read"], "requireSignIn": True, "sendInvitation": True},
+        "body": {"recipients": [{"email": OWNER}], "roles": ["read"], "requireSignIn": True, "sendInvitation": False},
     }]
     assert saved_files.owner_of(mfs.MICROSOFT, file_id) == roster.principal
 
@@ -339,6 +368,9 @@ def test_a_bad_index_or_message_id_is_refused(roster: SimpleNamespace) -> None:
 @pytest.mark.parametrize("said", [
     "What did Priya send me?",
     "Summarise the files Priya sent",
+    # Everyday words that aren't a request to save a file.
+    "Keep me posted and send me a link to the thread",
+    "Copy Ben on the reply and put it in the board folder",
     # Their message carries an attached file: its words aren't theirs alone.
     "Save it [Attached: notes.txt] save to drive",
 ])
@@ -531,9 +563,14 @@ def test_an_unreadable_record_fails_closed_for_file_tools_only(
     def broken(*_a: Any, **_k: Any) -> frozenset[str]:
         raise RuntimeError("db gone")
 
-    monkeypatch.setattr(saved_files, "hidden_file_ids", broken)
-    refused = _model_call(None, gateway, "google_workspace__search_drive_files", {"query": "x"})
-    assert "Couldn't check which files are private" in json.loads(refused)["error"]
+    monkeypatch.setattr(saved_files, "protected", broken)
+    for tool in (
+        "google_workspace__search_drive_files", "google_workspace__get_doc_content",
+        "google_workspace__read_sheet_values", "google_workspace__get_spreadsheet_info",
+        "google_workspace__get_presentation", "microsoft_365__download-bytes",
+    ):
+        refused = _model_call(None, gateway, tool, {"query": "x"})
+        assert "Couldn't check which files are private" in json.loads(refused)["error"], tool
     assert storage.calls == []
     _model_call(None, gateway, "google_workspace__list_calendars", {})
     assert [n for n, _ in storage.calls] == ["google_workspace__list_calendars"]
@@ -567,4 +604,101 @@ def test_file_names_are_cleaned_and_keep_their_extension() -> None:
     assert len(long) <= 120 and long.endswith(".pdf")
     assert mfs.clean_mime("application/pdf") == "application/pdf"
     assert mfs.clean_mime("text/html; x=<script>") == "application/octet-stream"
-    assert re.fullmatch(r"loi \d{8}-\d{6}-\d+\.pdf", mfs._free_name("loi.pdf", set(), False))
+    assert mfs._free_name("loi.pdf", set()) == "loi.pdf"
+    assert mfs._free_name("LOI.pdf", {"loi.pdf", "loi (2).pdf"}) == "LOI (3).pdf"
+
+
+# --------------------------------------------------------------------------- #
+# The folder: no model call may name it, on any turn
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _no_quarantine() -> Any:
+    saved_files._UNRECORDED.clear()
+    yield
+    saved_files._UNRECORDED.clear()
+
+
+def test_google_no_turn_can_share_list_or_find_the_folder(roster: SimpleNamespace) -> None:
+    storage = FakeStorage()
+    gateway = _gateway(storage)
+    assert _save(_owner_session())["status"] == "saved"
+    (folder_id,) = storage.folders
+    account = get_settings().exec_email_address
+    for who in (_teammate_session(roster), _owner_session(asked="share the folder"), None):
+        before = len(storage.calls)
+        share = _model_call(who, gateway, "google_workspace__manage_drive_access", {
+            "user_google_email": account, "file_id": folder_id, "action": "grant",
+            "share_with": TEAM, "role": "reader", "share_type": "user",
+        })
+        assert "folder of files saved" in json.loads(share)["error"]
+        listing = _model_call(who, gateway, "google_workspace__list_drive_items",
+                              {"user_google_email": account, "folder_id": folder_id})
+        assert "folder of files saved" in json.loads(listing)["error"]
+        assert len(storage.calls) == before
+        # A search shows neither the folder nor its id.
+        found = _model_call(who, gateway, "google_workspace__search_drive_files",
+                            {"user_google_email": account, "query": "name contains 'email'"})
+        assert folder_id not in found and "From your email" not in found
+
+
+@pytest.mark.parametrize("item", [
+    "root:/From your email:",
+    "root:/From%20your%20email/loi-north.pdf:",
+    "root:/from your  EMAIL/loi-north.pdf:",
+    "{folder}:/loi-north.pdf:",
+    "{folder}",
+])
+@pytest.mark.parametrize("tool", ["microsoft_365__share-drive-item", "microsoft_365__copy-drive-item"])
+def test_onedrive_no_turn_can_reach_the_folder_or_a_file_in_it_by_path(
+    roster: SimpleNamespace, item: str, tool: str
+) -> None:
+    storage = FakeStorage()
+    gateway = _gateway(storage, ("microsoft_365",))
+    assert _save(_owner_session())["status"] == "saved"
+    (folder_id,) = storage.folders
+    args: dict[str, Any] = {"drive-id": "b!Own-1", "driveItem-id": item.format(folder=folder_id)}
+    if tool.endswith("share-drive-item"):
+        args["body"] = {"recipients": [{"email": TEAM}], "roles": ["read"], "requireSignIn": True}
+    else:
+        args["body"] = {"parentReference": {"driveId": "b!Own-1", "id": "root"}}
+    for who in (_teammate_session(roster), _owner_session(asked="share it with Ben")):
+        before = len(storage.calls)
+        refused = json.loads(_model_call(who, gateway, tool, args))
+        assert "folder of files saved" in refused["error"]
+        assert len(storage.calls) == before
+
+
+def test_onedrive_the_owner_still_sees_their_own_file_with_its_folder_masked(roster: SimpleNamespace) -> None:
+    storage = FakeStorage()
+    gateway = _gateway(storage, ("microsoft_365",))
+    assert _save(_owner_session())["status"] == "saved"
+    (folder_id,) = storage.folders
+    (file_id,) = storage.files
+    found = json.loads(_model_call(_owner_session(), gateway, "microsoft_365__search-onedrive-files",
+                                   {"drive-id": "b!Own-1", "q": "loi"}))
+    assert found == {"value": [{"id": file_id, "name": "loi-north.pdf", "parentReference": {"id": "[hidden]"}}]}
+    assert folder_id not in json.dumps(found)
+
+
+def test_a_copy_that_cant_be_recorded_is_not_shared_and_hidden_from_everyone(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = FakeStorage()
+    gateway = _gateway(storage)
+
+    def broken(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("disk full")
+
+    original = saved_files.record
+    monkeypatch.setattr(saved_files, "record", broken)
+    result = _save(_owner_session())
+    assert result["status"] == "failed"
+    assert "not shared" in result["detail"]
+    assert storage.named("google_workspace__manage_drive_access") == []
+    (file_id,) = storage.files
+    monkeypatch.setattr(saved_files, "record", original)
+    search = {"user_google_email": get_settings().exec_email_address, "query": "name contains 'loi'"}
+    for who in (_owner_session(), _teammate_session(roster), None):
+        assert file_id not in _model_call(who, gateway, "google_workspace__search_drive_files", search)

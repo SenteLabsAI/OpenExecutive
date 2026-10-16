@@ -13,8 +13,12 @@ file from every turn whose speaker is not its owner: ``hidden_file_ids``).
   when Act as me is turned off: the copy stays in the Executive's storage
   (only its owner or an operator deletes it there), and the row is what keeps
   it out of other people's turns.
-- **The folder is found or made once** per storage and Executive account
-  (``remembered_folder`` / ``remember_folder``).
+- **The folder is made by the save itself**, never adopted by its name (a
+  folder anyone made and called "From your email" could already be shared
+  with them), and its id is kept (``remember_folder``). Every folder ever
+  made stays listed (``folder_ids``): the gateway refuses any model call that
+  names one and hides it from every result, so nobody can share, move or
+  list it and so reach the files inside.
 """
 from __future__ import annotations
 
@@ -29,6 +33,11 @@ from openexecutive.delegation.schema import SAVED_FILES_TABLE, SAVED_FOLDER_TABL
 logger = logging.getLogger(__name__)
 
 _NAME_CHARS = 200
+# The folder the copies go in, in both stores.
+FOLDER_NAME = "From your email"
+# Copies whose row couldn't be written (``quarantine``): hidden from every
+# turn, the owner's included, for the life of the process.
+_UNRECORDED: set[str] = set()
 
 
 def _db(db_path: Path | None) -> Path:
@@ -105,29 +114,47 @@ def names(provider: str, *, db_path: Path | None = None) -> set[str]:
     return {str(r[0]).lower() for r in rows if r[0]}
 
 
-def hidden_file_ids(viewer: int | None, *, db_path: Path | None = None) -> frozenset[str]:
-    """The ids of every recorded file that is not ``viewer``'s (all of them
-    when ``viewer`` is None). Read-only: a database that doesn't exist yet,
-    or has no such table, has no saved files, and nothing is created here
-    (the gateway asks on every Drive or OneDrive call). Any other failure
-    raises, so the caller can fail closed."""
+def quarantine(file_id: str) -> None:
+    """Hide ``file_id`` from every turn until the process ends: a copy made
+    whose row couldn't be written (``record`` failed)."""
+    _UNRECORDED.add(file_id)
+
+
+def protected(viewer: int | None, *, db_path: Path | None = None) -> tuple[frozenset[str], frozenset[str]]:
+    """``(file ids not viewer's, every folder id)``: the recorded files that
+    are not ``viewer``'s (all of them when ``viewer`` is None, plus any
+    quarantined copy), and every folder the saves made. Read-only: a database
+    that doesn't exist yet, or lacks the tables, has none, and nothing is
+    created here (the gateway asks on every Workspace call). Any other
+    failure raises, so the caller can fail closed."""
     path = _db(db_path)
     if not path.exists():
-        return frozenset()
+        return frozenset(_UNRECORDED), frozenset()
     conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
-    try:
+
+    def rows(sql: str, args: tuple[Any, ...] = ()) -> list[Any]:
         try:
-            rows = conn.execute(
-                f"SELECT file_id FROM {SAVED_FILES_TABLE} WHERE ? IS NULL OR person_id != ?",  # noqa: S608
-                (viewer, viewer),
-            ).fetchall()
+            return conn.execute(sql, args).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc):
-                return frozenset()
+                return []
             raise
+
+    try:
+        files = rows(
+            f"SELECT file_id FROM {SAVED_FILES_TABLE} WHERE ? IS NULL OR person_id != ?",  # noqa: S608
+            (viewer, viewer),
+        )
+        folders = rows(f"SELECT folder_id FROM {SAVED_FOLDER_TABLE}")  # noqa: S608
     finally:
         conn.close()
-    return frozenset(str(r[0]) for r in rows if r[0])
+    hidden = {str(r[0]) for r in files if r[0]} | _UNRECORDED
+    return frozenset(hidden), frozenset(str(r[0]) for r in folders if r[0])
+
+
+def hidden_file_ids(viewer: int | None, *, db_path: Path | None = None) -> frozenset[str]:
+    """The file ids ``viewer`` may not see (``protected``)."""
+    return protected(viewer, db_path=db_path)[0]
 
 
 def viewer_person_id(session: Any = None) -> int | None:
@@ -150,11 +177,12 @@ def viewer_person_id(session: Any = None) -> int | None:
 def remembered_folder(
     provider: str, account: str, *, db_path: Path | None = None
 ) -> tuple[str, str] | None:
-    """``(folder_id, drive_id)`` of the folder saved files go in, or None."""
+    """``(folder_id, drive_id)`` of the folder saved files go in now, or None."""
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            f"SELECT folder_id, drive_id FROM {SAVED_FOLDER_TABLE} WHERE provider = ? AND account = ?",  # noqa: S608
+            f"SELECT folder_id, drive_id FROM {SAVED_FOLDER_TABLE} "  # noqa: S608
+            "WHERE provider = ? AND account = ? AND current = 1 ORDER BY created_at DESC LIMIT 1",
             (provider, account.strip().lower()),
         ).fetchone()
     finally:
@@ -165,12 +193,16 @@ def remembered_folder(
 def remember_folder(
     provider: str, account: str, folder_id: str, drive_id: str = "", *, db_path: Path | None = None
 ) -> None:
+    """Keep the folder a save just made as the one in use (and protected)."""
     conn = _connect(db_path)
     try:
         conn.execute(
-            f"INSERT INTO {SAVED_FOLDER_TABLE} (provider, account, folder_id, drive_id, created_at) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(provider, account) DO UPDATE SET "
-            "folder_id = excluded.folder_id, drive_id = excluded.drive_id, created_at = excluded.created_at",
+            f"UPDATE {SAVED_FOLDER_TABLE} SET current = 0 WHERE provider = ? AND account = ?",  # noqa: S608
+            (provider, account.strip().lower()),
+        )
+        conn.execute(
+            f"INSERT INTO {SAVED_FOLDER_TABLE} (provider, account, folder_id, drive_id, created_at, current) "  # noqa: S608
+            "VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(provider, folder_id) DO UPDATE SET current = 1",
             (provider, account.strip().lower(), folder_id, drive_id, datetime.now(UTC).isoformat()),
         )
         conn.commit()
@@ -179,12 +211,12 @@ def remember_folder(
 
 
 def forget_folder(provider: str, account: str, *, db_path: Path | None = None) -> None:
-    """Drop the remembered folder (it was deleted or can't be written to), so
-    the next save finds or makes it again."""
+    """Stop using the current folder (it was deleted or can't be written to),
+    so the next save makes a new one. Its row stays: still protected."""
     conn = _connect(db_path)
     try:
         conn.execute(
-            f"DELETE FROM {SAVED_FOLDER_TABLE} WHERE provider = ? AND account = ?",  # noqa: S608
+            f"UPDATE {SAVED_FOLDER_TABLE} SET current = 0 WHERE provider = ? AND account = ?",  # noqa: S608
             (provider, account.strip().lower()),
         )
         conn.commit()

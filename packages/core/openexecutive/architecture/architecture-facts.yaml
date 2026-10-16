@@ -9766,54 +9766,70 @@ delegation:
     save_my_email_attachment(message_id, index) (orchestrator.mail_read_tools,
     orchestrator.mail_file_save) copies one attached file of the speaker's
     own mail into the storage the Executive has connected and shares it with
-    them alone, returning {status saved | saved_not_shared, name, where,
-    link}. Only when they asked in their own words this turn: own_words of
-    speaker_text must hold one of _SAVE_WORDS (save, saved, keep, store,
-    upload, copy, link(s), drive, onedrive, folder), checked before the slot
-    (TurnDelegation.files_saved, SAVES_PER_TURN 10) and before the mailbox is
-    opened; else status not_asked. Bytes via mailbox.attachment_bytes, never
-    the model; any type, MAX_ATTACHMENT_BYTES (20 MB) checked on the listing
-    and on the bytes; clean_name strips path/reserved/control characters and
-    keeps the extension. Storage (storage_for): EMAIL_PROVIDER's server when
-    the gateway has it and it doesn't need a reconnect, else the other;
-    neither, or an eval mailbox (ScenarioMailbox.saves_to_storage False):
-    status no_storage, the model offers to forward instead. Google:
-    search_drive_files for a root folder "From your email" owned by the
-    Executive, else create_drive_folder; remembered in
-    delegation_saved_folder; create_drive_file (base64_content,
-    content_mime_type, base64_sha256; never fileUrl), retried once into a
-    fresh folder; manage_drive_access grant, share_type user, role reader,
-    share_with the speaker's address. Microsoft: list-drives (personal or
-    business drive), list-folder-files / create-onedrive-folder,
-    upload-file-content to "<folder>:/<free name>:" (an upload overwrites,
-    so a taken name, listed or recorded for anyone in saved_files.names,
-    becomes "name (2).ext"), share-drive-item with one email
-    recipient, roles [read], requireSignIn true. One save at a time per event
-    loop (folder made once, no overwrite race). Lockdown: in
-    MAIL_TOUCHED_ALLOWED_TOOLS; its calls pass the mail-read refusal in
-    MCPGateway.call_tool only as the exact objects held in
-    code_built_call (identity, one of _CODE_BUILT_TOOLS), so a model call on
-    that turn is still refused; every other gate (acting account, URL fetch,
-    sheet formulas, _check_drive_share / _check_m365_drive_share roster
+    them alone, returning {status saved | saved_not_shared | failed |
+    no_storage | too_large, name, where, link}. Only when they asked in their
+    own words this turn: own_words of speaker_text must hold one of
+    _SAVE_WORDS (save, saved, store, upload, drive, onedrive), checked before
+    the slot (TurnDelegation.files_saved, SAVES_PER_TURN 10) and before the
+    mailbox is opened; else status not_asked. Bytes via
+    mailbox.attachment_bytes, never the model; any type, MAX_ATTACHMENT_BYTES
+    (20 MB) checked on the listing and on the bytes; clean_name strips
+    path/reserved/control characters and keeps the extension. Storage
+    (storage_for): EMAIL_PROVIDER's server when the gateway has it and it
+    doesn't need a reconnect, else the other; neither, or an eval mailbox
+    (ScenarioMailbox.saves_to_storage False): status no_storage, the model
+    offers to forward instead. Folder: always made by the save
+    (create_drive_folder / create-onedrive-folder "From your email"), never
+    found by search or listing (a folder anyone made with that name could
+    already be shared with them), its id kept in delegation_saved_folder
+    (provider, account, folder_id, drive_id, created_at, current). When the
+    remembered folder is gone or refuses the file, forget_folder marks it not
+    current (the row stays, still protected) and a new one is made. Google:
+    create_drive_file (base64_content, content_mime_type, base64_sha256; never
+    fileUrl); manage_drive_access grant, share_type user, role reader,
+    send_notification false, share_with the speaker's address. Microsoft:
+    list-drives (personal or business drive), upload-file-content to
+    "<folder>:/<free name>:" (an upload overwrites, so a name any recorded
+    copy has, saved_files.names, becomes "name (2).ext"; the folder is never
+    listed), share-drive-item with one email recipient, roles [read],
+    requireSignIn true, sendInvitation false. One save at a time per event
+    loop. Lockdown: in MAIL_TOUCHED_ALLOWED_TOOLS; its calls pass the
+    mail-read refusal in MCPGateway.call_tool only as the exact objects held
+    in code_built_call (identity, one of the seven _CODE_BUILT_TOOLS:
+    create_drive_folder, create_drive_file, manage_drive_access, list-drives,
+    create-onedrive-folder, upload-file-content, share-drive-item), so a model
+    call on that turn is still refused; every other gate (acting account, URL
+    fetch, sheet formulas, _check_drive_share / _check_m365_drive_share roster
     check, _check_m365_drive_write own drives) still runs. Not in
     PRIVATE_TURN_WITHHELD_TOOLS: it is never offered on a private-to-principal
     turn (Act as me isn't), and a later turn of a mail-private conversation
     may use it. Privacy (delegation.saved_files, table
     delegation_saved_files: person_id, provider, file_id, name, saved_at;
     recorded before the share; first owner kept): on every Google Workspace /
-    Microsoft 365 call the gateway reads hidden_file_ids(viewer_person_id())
+    Microsoft 365 call the gateway reads protected(viewer_person_id())
     (viewer = the pinned speaker when Act as me was offered, else None = all
-    hidden; the DB opened read-only, a missing DB or table = none), refuses a
-    call whose arguments name a hidden id, and _hide_saved_files drops JSON
-    list entries, then lines, naming one and masks any left. A lookup
-    failure refuses tools matching _FILE_TOOL_RE (drive, folder, file,
-    download_bytes) and leaves mail and calendar unfiltered. Limits: ids are
-    matched as text (a title without its id still shows), a copy is a new
-    file, and anyone signed in to the Executive's account outside the app
+    files hidden; the DB opened read-only, a missing DB or table = none). It
+    refuses a call whose arguments name a file not the viewer's, and
+    _hide_saved_files drops JSON list entries, then lines, naming one and
+    masks any left. Folders, on every turn and for every speaker including
+    the owner: a model call whose arguments name any recorded folder id, or
+    (Microsoft) an item path through the folder name ("root:/From your
+    email/x.pdf:", matched case- and space-insensitively after URL
+    decoding; "<folder id>:/x.pdf:" is caught by the id), is refused, and
+    _hide_saved_folders drops entries and lines naming a folder id and masks
+    any left; only code-built calls skip both. Record failure after the
+    upload: saved_files.quarantine hides the copy's id from every turn for
+    the life of the process, nothing is shared, status failed, logged at
+    error. A lookup failure refuses tools matching _FILE_TOOL_RE (drive,
+    folder, file, download_bytes, doc, sheet, slide, presentation) and leaves
+    mail and calendar unfiltered. Limits: ids are matched as text (a title
+    without its id still shows), a copy someone makes is a new file, the
+    quarantine does not survive a restart, sharing a whole drive root is not
+    covered, and anyone signed in to the Executive's account outside the app
     sees everything. Rows are not deleted when Act as me is turned off.
     Persona: the DELEGATION_ADDENDUM tells the model to use it once per file
-    when asked to save, keep, upload or link a file and to give them the
-    link. Eval: delegation_014.
+    when asked to save, store or upload a file and to give them the link.
+    Eval: delegation_014.
   calendar: |
     Read my calendar (delegation.calendar, table delegation_calendar, one
     row per person, absent/unreadable = off). Read-only, on the Act as me
