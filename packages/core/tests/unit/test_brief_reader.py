@@ -210,3 +210,30 @@ def test_the_rewrite_note_gives_each_slip_its_own_replacement() -> None:
 
     dana = Reader("Dana Lee", owner="Pat Owner")
     assert "write 'the principal' as Pat Owner" in rewrite_request(["the principal"], dana)
+
+
+@pytest.mark.asyncio
+async def test_a_slow_rewrite_keeps_the_first_draft_fixed_in_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from openexecutive.briefing import narrative
+
+    class _Slow(_Provider):
+        async def messages_create(self, **kw: Any) -> object:
+            if self.calls:
+                await asyncio.sleep(1)
+            return await super().messages_create(**kw)
+
+    provider = _Slow(["**Pat Owner is waiting on the offer.**", "never used"])
+    monkeypatch.setattr(narrative, "REWRITE_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("openexecutive.providers.get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+    monkeypatch.setattr("openexecutive.audit.usage.log_model_usage", lambda *a, **k: None)
+
+    text = await narrative.synthesize_briefing_narrative(
+        today_data={}, activity=[], period_label="p", rendered_context="ctx", reader=PAT,
+    )
+
+    assert text == "**You are waiting on the offer.**"

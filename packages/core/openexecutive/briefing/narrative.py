@@ -15,6 +15,7 @@ Executive's voice while letting each use the right structure.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
@@ -61,6 +62,9 @@ GROUNDING_RULE = (
 # says who that is. Without this the briefs called their own reader by name,
 # or "the principal", and handed back as their to-dos the asks they had sent
 # the Executive.
+# Seconds the one rewrite of a draft that named its reader may take.
+REWRITE_TIMEOUT_S = 8.0
+
 READER_NAME_RULE = (
     "The context calls the person reading this 'the reader' (THE READER line "
     "says who that is). Write to them as 'you' and 'your'. Never write their "
@@ -751,8 +755,6 @@ async def synthesize_briefing_narrative(
     # the render below (which would otherwise read them itself) stays sync.
     standing_facts: str | None = None
     if rendered_context is None:
-        import asyncio
-
         from openexecutive.memory.facts import render_facts_for_prompt
 
         standing_facts = await asyncio.to_thread(render_facts_for_prompt)
@@ -772,12 +774,22 @@ async def synthesize_briefing_narrative(
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
     text = ""
     for attempt in range(2):
-        response = await get_provider(model).messages_create(
+        call = get_provider(model).messages_create(
             model=model,
             max_tokens=600,
             system=system,
             messages=messages,
         )
+        if attempt == 0:
+            response = await call
+        else:
+            # The rewrite has its own short budget: a slow one keeps the
+            # first draft, fixed in code, instead of losing the whole header.
+            try:
+                response = await asyncio.wait_for(call, timeout=REWRITE_TIMEOUT_S)
+            except TimeoutError:
+                logger.warning("briefing_narrative: rewrite timed out; fixed in code")
+                return fix_slips(text, reader)
         log_model_usage(response, model=model, actor="briefing_narrative")
         text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
         text = text_blocks[0].text.strip() if text_blocks else ""

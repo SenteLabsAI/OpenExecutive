@@ -1825,6 +1825,7 @@ async def _regen_briefing_narrative_locked(
     from openexecutive.briefing.narrative import (
         QUIET_PRINCIPAL,
         QUIET_VIEWER,
+        REWRITE_TIMEOUT_S,
         synthesize_briefing_narrative,
     )
     from openexecutive.memory.workspace_settings import get_workspace
@@ -1866,7 +1867,8 @@ async def _regen_briefing_narrative_locked(
                     mode=mode,
                     reader=reader,
                 ),
-                timeout=25.0,
+                # 25 s for the draft, plus the rewrite's own budget.
+                timeout=25.0 + REWRITE_TIMEOUT_S,
             )
     except Exception:
         logger.exception("today: briefing narrative regen failed (scope=%s)", expected_scope)
