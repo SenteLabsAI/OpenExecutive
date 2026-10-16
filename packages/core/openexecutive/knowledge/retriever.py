@@ -482,6 +482,13 @@ def retrieve(
     ):
         return ""
 
+    if notion_results or drive_results or onedrive_results or confluence_results:
+        # A synced folder is multi-writer: a turn that reads one counts as
+        # having read outside content (orchestrator.outside_content).
+        from openexecutive.orchestrator import outside_content
+
+        outside_content.mark(outside_content.SYNCED)
+
     if record_source is not None:
         _record_sources(
             record_source,

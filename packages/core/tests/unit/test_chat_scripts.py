@@ -320,10 +320,12 @@ def test_a_later_turn_of_a_mail_conversation_is_not_locked_once_the_mail_is_out_
     provider = _ScriptedProvider([
         _FinalMsg([
             _ToolUseBlock("tu-s", "run_script", {"script": SCRIPT}),
-            _ToolUseBlock("tu-f", "call_tool", fetch),
             _ToolUseBlock("tu-g", "call_tool", send),
             _ToolUseBlock("tu-d", "send_slack_dm", {"slack_user_id": "U1", "text": "hi"}),
         ], "tool_use"),
+        # A read in a round of its own: one beside the sends would hold them
+        # (orchestrator.outside_content).
+        _FinalMsg([_ToolUseBlock("tu-f", "call_tool", fetch)], "tool_use"),
         _FinalMsg([_TextBlock("Done.")], "end_turn"),
     ])
     _run(provider, gateway)

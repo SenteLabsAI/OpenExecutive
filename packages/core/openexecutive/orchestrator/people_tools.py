@@ -834,6 +834,22 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
     return json.dumps({"people": out, "count": len(out)})
 
 
+def _new_way_to_reach(existing: Any, tool_input: dict[str, Any], aliases: list[str] | None) -> bool:
+    """Whether an update gives ``existing`` an address or chat account they
+    did not have: a new email, alias, Slack, Telegram or Discord id."""
+    def norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    for key in ("email", "slack_user_id", "telegram_chat_id", "discord_user_id"):
+        if key in tool_input and norm(tool_input.get(key)) and norm(tool_input.get(key)) != norm(getattr(existing, key, None)):
+            return True
+    if aliases:
+        known = {norm(a) for a in (getattr(existing, "email_aliases", None) or [])}
+        known.add(norm(getattr(existing, "email", None)))
+        return any(norm(a) not in known for a in aliases)
+    return False
+
+
 async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
     from openexecutive.people import registry as people_registry
     from openexecutive.people import store as people_store
@@ -844,6 +860,14 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         return json.dumps({"error": err})
 
     refused = _refuse_unless_owner("upsert_person")
+    if refused is not None:
+        return refused
+    # No roster change on a turn that read outside content, nor one Act as
+    # me's lockdown refuses (the chat loop refuses both first; this holds
+    # for any other path).
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
+    refused = outside_reach_refusal("upsert_person", tool_input)
     if refused is not None:
         return refused
 
@@ -984,6 +1008,12 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         )
         return json.dumps({"error": str(exc)})
     people_registry.invalidate()
+    if existing is None or _new_way_to_reach(existing, tool_input, aliases):
+        # Nothing reaches someone added (or given a new address or chat
+        # account) until the next turn: every send check trusts the roster.
+        from openexecutive.orchestrator import outside_content
+
+        outside_content.note_added_person(new_id, people_store.get_person(new_id))
     # Someone waiting on a roster request may match now.
     from openexecutive.integrations.roster_intake import after_roster_write
 

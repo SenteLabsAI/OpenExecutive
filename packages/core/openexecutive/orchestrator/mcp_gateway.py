@@ -596,6 +596,11 @@ _GMAIL_ALLOWED_ARG_KEYS = frozenset({
 
 def _block(field: str, addr: str, tool: str, *, reason: str | None = None) -> str:
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.orchestrator import outside_content
+
+    if outside_content.added_ref(addr):
+        # On the roster, but only since this turn (outside_content).
+        reason = f"{addr!r} {outside_content.ADDED_REFUSAL}"
 
     logger.warning(
         "blocked outbound gmail send: tool=%s field=%s addr=%s not in allow-list",
@@ -962,6 +967,7 @@ def _roster_allow_set() -> RosterAllow:
     contact's address is refused exactly like a stranger's, so the refusal
     cannot reveal that the address belongs to a contact.
     """
+    from openexecutive.orchestrator import outside_content
     from openexecutive.orchestrator.people_tools import (
         contacts_reachable_now,
         turn_is_private_to_principal,
@@ -973,6 +979,9 @@ def _roster_allow_set() -> RosterAllow:
     if turn_is_private_to_principal():
         # A turn about the principal's private mail reaches the principal only.
         everyone = [p for p in everyone if p.is_principal]
+    # Nobody added (or given a new address) this turn until the next one: a
+    # contact planted and used in one turn would pass every check below.
+    everyone = [p for p in everyone if not outside_content.added_this_turn(p.id)]
     # Primary addresses and aliases exactly; for a teammate, also their
     # local part on the company's own domains (people.identity) — the same
     # rule inbound mail is matched by.
@@ -1655,23 +1664,61 @@ def _pin_calendar_notifications(arguments: dict[str, Any]) -> dict[str, Any]:
     description or time unless ``send_updates`` is "none". So such a call is
     forced to "none": the change lands on the calendar and nobody is emailed
     text the gate never saw. A call that passes attendees had them checked
-    and keeps its own ``send_updates``; delete and rsvp carry no new text; a
+    and keeps its own ``send_updates``; an rsvp carries no new text; a
     create without attendees has nobody to mail, so the pin is moot there.
+
+    A delete is pinned too: Google mails every guest the cancellation, and
+    the guest list is one the gate never saw. Only the typed
+    ``cancel_calendar_event`` path, which cancels a meeting the Executive
+    booked with rostered attendees, keeps its notice
+    (``calendar_cancel_grant``).
     """
     action = str(_arg(arguments, "action") or "").strip().lower()
-    if action in ("delete", "rsvp"):
+    if action == "rsvp":
         return arguments
+    if action == "delete":
+        granted = _calendar_cancel.get()
+        event_ids = [v for v in _arg_values(arguments, "event_id") if v is not None]
+        if granted is not None and event_ids == [granted]:
+            return arguments
+        return _without_notifications(arguments)
     supplied = [v for v in _arg_values(arguments, "attendees") if v is not None]
     if any(not (isinstance(v, list) and not v) for v in supplied):
         return arguments
     if _arg_values(arguments, "send_updates") == ["none"]:
         return arguments
     logger.info("manage_event without attendees: send_updates pinned to none")
-    # Every spelling goes, so no `sendUpdates: "all"` survives beside the pin.
+    return _without_notifications(arguments)
+
+
+def _without_notifications(arguments: dict[str, Any]) -> dict[str, Any]:
+    """``arguments`` with ``send_updates`` pinned to "none". Every spelling
+    goes, so no `sendUpdates: "all"` survives beside the pin."""
+    if _arg_values(arguments, "send_updates") == ["none"]:
+        return arguments
     pinned = {k: v for k, v in arguments.items()
               if not (isinstance(k, str) and _norm_key(k) == "sendupdates")}
     pinned["send_updates"] = "none"
     return pinned
+
+
+# The one manage_event delete that may mail its guests: the typed
+# cancel_calendar_event of a meeting the Executive booked (its attendees were
+# roster-checked when it was booked). Set only around that call, to the event
+# id, by ``calendar_cancel_grant``.
+_calendar_cancel: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "calendar_cancel_grant", default=None
+)
+
+
+@contextlib.contextmanager
+def calendar_cancel_grant(event_id: str) -> Iterator[None]:
+    """Let a manage_event delete of ``event_id`` keep its cancellation notice."""
+    token = _calendar_cancel.set(event_id)
+    try:
+        yield
+    finally:
+        _calendar_cancel.reset(token)
 
 
 def _parsed_json(text: str) -> dict[str, Any] | list[Any] | None:
@@ -2267,6 +2314,124 @@ async def _check_m365_drive_write(
                     "OneDrive and share it with the People who need it."
                 ),
             )
+    return None
+
+
+# Google Docs, Sheets, Slides, Forms and Drive writes land only in files and
+# folders the Executive's own account owns: the twin of
+# `_M365_DRIVE_WRITE_TOOLS`. A stranger can share a doc, sheet or folder with
+# the Executive's account, and planted text could then have it append company
+# data there ("add the Q3 numbers to this sheet"), with nothing shared and no
+# roster check. Every Google write that names a file (`_GOOGLE_WRITTEN_FILE_KEYS`)
+# or a destination folder (`_GOOGLE_DESTINATION_KEYS`) is checked; a write is
+# any tool whose name starts with a write verb (`outside_content.gateway_call_reads`).
+# Sharing has its own gate (`_GATED_DRIVE_TOOLS`), and mail and calendar name
+# no file. Reading what others shared stays open.
+_GOOGLE_WRITTEN_FILE_KEYS = frozenset({"documentid", "spreadsheetid", "presentationid", "formid", "fileid"})
+_GOOGLE_DESTINATION_KEYS = frozenset({"folderid", "parentfolderid", "addparents"})
+# Writes whose file argument is only read: the copy or PDF goes to the
+# destination folder, which is checked (and a copy with none stays beside its
+# source, owned by whoever owns that).
+_GOOGLE_SOURCE_ONLY_TOOLS = frozenset({
+    "google_workspace__copy_drive_file",
+    "google_workspace__export_doc_to_pdf",
+})
+_GOOGLE_OWNER_LOOKUP_TOOL = "google_workspace__get_drive_file_permissions"
+# The one "Owners:" line of the lookup's answer; the address in the last
+# parentheses is the owner's (a display name comes before it, so it can't
+# stand in for the address).
+_GOOGLE_OWNERS_LINE_RE = re.compile(r"Owners: .* \(([^()\s]+@[^()\s]+)\)")
+
+
+def _google_ids(arguments: dict[str, Any], keys: frozenset[str]) -> list[Any] | None:
+    """Every id under one of ``keys`` (any spelling); a comma-separated
+    string (``add_parents``) or a list gives each id. None when one isn't a
+    string."""
+    ids: list[Any] = []
+    for k, v in arguments.items():
+        if not isinstance(k, str) or _norm_key(k) not in keys or v is None:
+            continue
+        values = v if isinstance(v, list) else str(v).split(",") if isinstance(v, str) else [v]
+        for item in values:
+            if not isinstance(item, str):
+                return None
+            if item.strip():
+                ids.append(item.strip())
+    return ids
+
+
+async def _google_file_owner(session: Any, file_id: str, discover: _Discover | None) -> str | None:
+    """The owner address of Drive item ``file_id``, lowercased, or None when
+    it can't be read or doesn't name exactly one owner line (a shared drive
+    item has none)."""
+    arguments = {"file_id": file_id}
+    try:
+        result = await _session_call(
+            session, "call_tool", {"tool_name": _GOOGLE_OWNER_LOOKUP_TOOL, "arguments": arguments},
+        )
+        text = result.content[0].text if result.content else ""
+        if (
+            discover is not None
+            and isinstance(text, str)
+            and _UNDISCOVERED_MARKER in text
+            and await discover(_GOOGLE_OWNER_LOOKUP_TOOL)
+        ):
+            result = await _session_call(
+                session, "call_tool", {"tool_name": _GOOGLE_OWNER_LOOKUP_TOOL, "arguments": arguments},
+            )
+            text = result.content[0].text if result.content else ""
+    except Exception:
+        logger.warning("google gate: owner lookup failed", exc_info=True)
+        return None
+    if not isinstance(text, str) or _is_error_payload(text):
+        return None
+    # A file's name is the line above and can hold a line break: more than one
+    # owners line is refused, never guessed between.
+    lines = [line for line in text.splitlines() if line.startswith("Owners: ")]
+    if len(lines) != 1:
+        return None
+    match = _GOOGLE_OWNERS_LINE_RE.fullmatch(lines[0].rstrip())
+    return match.group(1).strip().lower() if match else None
+
+
+async def _check_google_file_write(
+    session: Any, tool: str, arguments: dict[str, Any], discover: _Discover | None = None,
+) -> str | None:
+    """Keep Google writes in files and folders the Executive's own account
+    owns (see `_GOOGLE_WRITTEN_FILE_KEYS`). Fail closed when an owner can't
+    be read."""
+    from openexecutive.orchestrator.outside_content import gateway_call_reads
+
+    if gateway_call_reads(tool) or tool in _GATED_DRIVE_TOOLS:
+        return None
+    files = [] if tool in _GOOGLE_SOURCE_ONLY_TOOLS else _google_ids(arguments, _GOOGLE_WRITTEN_FILE_KEYS)
+    folders = _google_ids(arguments, _GOOGLE_DESTINATION_KEYS)
+    if files is None or folders is None:
+        return _refuse(tool, "file_id", "<unreadable>", reason=f"{tool} ids must be strings — refusing.")
+    # "root" is the Executive's own My Drive (the server's default folder).
+    targets = list(dict.fromkeys(t for t in [*files, *folders] if t.lower() != "root"))
+    if not targets:
+        return None
+    exec_address = get_settings().exec_email_address.strip().lower()
+    for target in targets[:10]:
+        owner = await _google_file_owner(session, target, discover)
+        if owner is None:
+            return _refuse(
+                tool, "file_id", target[:60],
+                reason=f"could not read who owns {target[:60]!r} to check {tool} — refusing.",
+            )
+        if owner != exec_address:
+            return _refuse(
+                tool, "file_id", target[:60],
+                reason=(
+                    f"{tool} may only write to files and folders the Executive's own "
+                    "Google account owns, not one someone shared with it — refusing. "
+                    "Save it to a new file in the Executive's Drive and share that "
+                    "with the People who need it."
+                ),
+            )
+    if len(targets) > 10:
+        return _refuse(tool, "file_id", "<too-many>", reason=f"{tool} names too many files — refusing.")
     return None
 
 
@@ -3137,6 +3302,9 @@ class MCPGateway:
             if blocked is not None:
                 return blocked
             blocked = _check_sheet_formulas(tool_name, arguments)
+            if blocked is not None:
+                return blocked
+            blocked = await _check_google_file_write(session, tool_name, arguments, self._discover)
             if blocked is not None:
                 return blocked
         if tool_name in _GATED_GMAIL_TOOLS:

@@ -341,15 +341,20 @@ class GoogleCalendar:
             return {"error": str(exc)}
 
     async def delete_event(self, gateway: Any, external_event_id: str) -> dict[str, Any]:
+        from openexecutive.orchestrator.mcp_gateway import calendar_cancel_grant
+
         try:
-            raw = await gateway.call_tool({
-                "name": "google_workspace__manage_event",
-                "arguments": {
-                    "action": "delete",
-                    "event_id": external_event_id,
-                    "send_updates": "all",
-                },
-            })
+            # A meeting the Executive booked, attendees roster-checked when
+            # booked: the gateway lets this delete mail its cancellation.
+            with calendar_cancel_grant(external_event_id):
+                raw = await gateway.call_tool({
+                    "name": "google_workspace__manage_event",
+                    "arguments": {
+                        "action": "delete",
+                        "event_id": external_event_id,
+                        "send_updates": "all",
+                    },
+                })
             result = json.loads(raw) if isinstance(raw, str) else raw
             return result if isinstance(result, dict) else {"ok": True}
         except Exception as exc:

@@ -17,7 +17,11 @@ An extension tool is offered only on a turn someone is in:
   the turn has read the owner's mail (``delegation.lockdown`` fails closed),
   unless it is registered with ``after_mail_read=True``: a tool that only
   reads the install's own data and sends nothing the model wrote anywhere
-  outside, so text in the mail can't use it as a way out;
+  outside, so text in the mail can't use it as a way out (the same holds once
+  the turn has read anything from outside the team, ``outside_content``);
+- a tool registered with ``reads_outside=True`` returns text from outside the
+  team (a vendor app's records): a turn that calls it counts as having read
+  outside content, which shuts writes and roster changes for the rest of it;
 - and only where the tool's own ``offered(session)`` says so, which should
   depend only on the kind of turn (surface, workspace mode), never on what was
   said, so each kind of turn keeps one cached tool list.
@@ -96,6 +100,9 @@ class ExtraTool:
     # Only for a tool that reads this install's own data and carries nothing
     # the model wrote to anywhere outside it; it must also be read_only.
     after_mail_read: bool = False
+    # Returns text from outside the team, e.g. a vendor app's records (see
+    # module doc and ``orchestrator.outside_content``).
+    reads_outside: bool = False
 
     @property
     def name(self) -> str:
@@ -245,6 +252,14 @@ def allowed_after_mail_read(tool_name: str) -> bool:
     load()
     tool = _tools.get(tool_name)
     return tool is not None and tool.after_mail_read
+
+
+def reads_outside(tool_name: str) -> bool:
+    """Whether extension tool ``tool_name`` was registered as returning text
+    from outside the team (``reads_outside``). False for anything else."""
+    load()
+    tool = _tools.get(tool_name)
+    return tool is not None and tool.reads_outside
 
 
 def workflow_tools() -> list[ExtraTool]:
