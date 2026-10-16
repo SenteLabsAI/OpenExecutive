@@ -5261,6 +5261,13 @@ export async function getAlertApproval(approvalId: number): Promise<AlertApprova
   return res.json();
 }
 
+// One decision, as its approver (or the owner) may see it; 404 otherwise.
+export async function getDecision(id: number, signal?: AbortSignal): Promise<DecisionInstance> {
+  const res = await fetch(`${API_BASE}/decisions/${id}`, { signal });
+  if (!res.ok) throw new Error(`Couldn't load decision ${id}: ${res.statusText}`);
+  return res.json();
+}
+
 export async function approveDecision(
   id: number,
   edits?: Record<string, unknown>,

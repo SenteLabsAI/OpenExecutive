@@ -300,7 +300,9 @@ def _extract_meet_link(event: dict[str, Any]) -> str | None:
 _CREATED_PREFIX = "successfully created event"
 _DELETED_PREFIX = "successfully deleted event"
 _EVENT_LINK_RE = re.compile(r"Link:\s*(\S+)")
-_MEET_LINK_RE = re.compile(r"(?:Google Meet|Conference):\s*(https://\S+)")
+_MEET_LINK_RE = re.compile(r"Google Meet:\s*(https://\S+)")
+_EVENT_LINK_HOSTS = frozenset({"www.google.com", "calendar.google.com"})
+_MEET_HOST = "meet.google.com"
 
 
 def _json_object(raw: Any) -> dict[str, Any] | None:
@@ -313,27 +315,57 @@ def _json_object(raw: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _event_id_from_link(link: str) -> str | None:
+def _event_id_from_link(link: str, calendar_owner: str | None) -> str | None:
     """The event id inside a Calendar ``htmlLink``: its ``eid`` parameter is
-    base64url of ``"<event id> <calendar id>"``."""
+    base64url of ``"<event id> <calendar id>"``. Only a Google Calendar link,
+    and only an event on ``calendar_owner``'s calendar when that is known."""
     import base64
     from urllib.parse import parse_qs, urlparse
 
-    eid = (parse_qs(urlparse(link).query).get("eid") or [""])[0]
+    parsed = urlparse(link)
+    if parsed.scheme != "https" or parsed.netloc.lower() not in _EVENT_LINK_HOSTS:
+        return None
+    eid = (parse_qs(parsed.query).get("eid") or [""])[0]
     if not eid:
         return None
     try:
         decoded = base64.urlsafe_b64decode(eid + "=" * (-len(eid) % 4)).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return None
-    event_id = decoded.split(" ", 1)[0].strip()
+    event_id, _, calendar_id = decoded.partition(" ")
+    event_id = event_id.strip()
+    if calendar_owner and calendar_id.strip().lower() != calendar_owner.strip().lower():
+        return None
     return event_id or None
 
 
-def _parse_created_event(raw: Any) -> dict[str, Any]:
+def _after_echoed_title(text: str, title: str | None) -> str:
+    """The reply with the event's own title cut off. workspace-mcp echoes the
+    title before the link, and the title is the model's text: a title that
+    spells out its own "Link: …" must not be read as the event's."""
+    for spelling in dict.fromkeys((title, (title or "").strip())):
+        if spelling:
+            marker = f"'{spelling}' for "
+            at = text.find(marker)
+            if at != -1:
+                return text[at + len(marker):]
+    # Unknown or reworded title: the real link and Meet link come last.
+    return text
+
+
+def _last(pattern: re.Pattern[str], text: str) -> str | None:
+    found = pattern.findall(text)
+    return found[-1] if found else None
+
+
+def _parse_created_event(
+    raw: Any, *, title: str | None = None, calendar_owner: str | None = None,
+) -> dict[str, Any]:
     """``{"event_id", "raw"[, "meet_link"]}`` for a created event, else
     ``{"error"}``. A confirmed create is a success even when no id can be read
     from it: reporting it failed would invite a second, duplicate booking."""
+    from urllib.parse import urlparse
+
     result = _json_object(raw)
     if result is not None:
         if "error" in result:
@@ -347,14 +379,15 @@ def _parse_created_event(raw: Any) -> dict[str, Any]:
     text = raw if isinstance(raw, str) else str(raw)
     if not text.strip().lower().startswith(_CREATED_PREFIX):
         return {"error": f"unexpected manage_event response: {text.strip()[:200]}"}
-    link = _EVENT_LINK_RE.search(text)
-    event_id = _event_id_from_link(link.group(1)) if link else None
+    rest = _after_echoed_title(text, title)
+    link = _last(_EVENT_LINK_RE, rest)
+    event_id = _event_id_from_link(link, calendar_owner) if link else None
     if event_id is None:
         logger.warning("calendar: created an event but read no id from its link")
     out = {"event_id": event_id, "raw": {"text": text}}
-    meet = _MEET_LINK_RE.search(text)
-    if meet:
-        out["meet_link"] = meet.group(1)
+    meet = _last(_MEET_LINK_RE, rest)
+    if meet and urlparse(meet).netloc.lower() == _MEET_HOST:
+        out["meet_link"] = meet
     return out
 
 
@@ -398,7 +431,11 @@ class GoogleCalendar:
                 "name": "google_workspace__manage_event",
                 "arguments": arguments,
             })
-            return _parse_created_event(raw)
+            return _parse_created_event(
+                raw,
+                title=payload["title"],
+                calendar_owner=getattr(settings, "exec_email_address", None),
+            )
         except Exception as exc:
             logger.exception("calendar: manage_event create failed")
             return {"error": str(exc)}

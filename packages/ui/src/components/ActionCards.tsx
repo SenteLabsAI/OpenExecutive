@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import ChatMeetingCard from "@/components/ChatMeetingCard";
 import FeatureName from "@/components/FeatureName";
 import {
   approveActionCard,
@@ -27,7 +28,7 @@ export function useActionCards() {
     const controller = new AbortController();
     getActionCards(controller.signal)
       .then(setCards)
-      .catch(() => { /* no card is better than a broken one */ });
+      .catch(() => setCards([])); // no card is better than a broken one
     return () => controller.abort();
   }, []);
 
@@ -35,7 +36,7 @@ export function useActionCards() {
     setCards((prev) => (prev ?? []).filter((c) => c.decision_id !== decisionId));
   }, []);
 
-  return { cards: cards ?? [], gone };
+  return { cards: cards ?? [], loaded: cards !== null, gone };
 }
 
 // What the action cards are, for the Needs you header's tip.
@@ -206,13 +207,19 @@ export function ActionCardItem({
 // ids), shown under it while they wait. A card already approved, dismissed
 // or expired shows nothing here; its chip still links to Today.
 export function ChatActionCards({ ids }: { ids: number[] }) {
-  const { cards, gone } = useActionCards();
+  const { cards, loaded, gone } = useActionCards();
   const shown = cards.filter((c) => ids.includes(c.decision_id));
-  if (shown.length === 0) return null;
+  // Any other id is an approval of another kind (a meeting), shown by its own
+  // card once the action cards are known not to hold it.
+  const others = loaded ? ids.filter((id) => !cards.some((c) => c.decision_id === id)) : [];
+  if (shown.length === 0 && others.length === 0) return null;
   return (
     <div className="mt-3 space-y-3">
       {shown.map((card) => (
         <ActionCardItem key={card.decision_id} card={card} onGone={gone} />
+      ))}
+      {others.map((id) => (
+        <ChatMeetingCard key={id} id={id} />
       ))}
     </div>
   );

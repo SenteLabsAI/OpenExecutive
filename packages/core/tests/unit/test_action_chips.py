@@ -358,6 +358,7 @@ def _all_registered_tool_names() -> set[str]:
     """
     from openexecutive.orchestrator.artifact_tools import DRAFT_ARTIFACT_TOOL_HANDLERS
     from openexecutive.orchestrator.broadcast_tools import BROADCAST_TOOL_HANDLERS
+    from openexecutive.orchestrator.calendar_tools import CALENDAR_TOOL_HANDLERS
     from openexecutive.orchestrator.correction_tools import CORRECTION_TOOL_HANDLERS
     from openexecutive.orchestrator.decision_tools import DECISION_TOOL_HANDLERS
     from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_HANDLERS
@@ -380,6 +381,7 @@ def _all_registered_tool_names() -> set[str]:
         | set(FACT_TOOL_HANDLERS)
         | set(SKILL_TOOL_HANDLERS)
         | set(BROADCAST_TOOL_HANDLERS)
+        | set(CALENDAR_TOOL_HANDLERS)
         | set(DRAFT_ARTIFACT_TOOL_HANDLERS)
         | set(MCP_TOOL_NAMES)
         | set(WORKFLOW_RUN_TOOL_HANDLERS)
@@ -416,3 +418,58 @@ def test_no_silent_omission_from_side_effecting_tools() -> None:
         f"(to emit a chip) or _KNOWN_READ_ONLY_TOOLS (to deliberately skip): "
         f"{sorted(unclassified)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Meetings: booked, or waiting on an approval card
+# ---------------------------------------------------------------------------
+
+def test_a_proposed_meeting_chip_carries_its_card_for_its_approver() -> None:
+    chip = summarize_action(
+        tool_name="create_calendar_event",
+        tool_input={"title": "Block for John"},
+        tool_result=json.dumps({"status": "proposed", "decision_instance_id": 17, "approve_here": True}),
+    )
+    assert chip is not None
+    assert chip["summary"] == "Waiting for your approval: Block for John"
+    assert chip["decision_id"] == 17
+
+
+def test_a_proposed_meeting_for_someone_else_has_no_card() -> None:
+    chip = summarize_action(
+        tool_name="create_calendar_event",
+        tool_input={"title": "Sync"},
+        tool_result=json.dumps({"status": "already_proposed", "decision_instance_id": 4, "approve_here": False}),
+    )
+    assert chip is not None
+    assert chip["summary"] == "Sent for approval: Sync"
+    assert "decision_id" not in chip
+
+
+def test_a_booked_meeting_says_booked() -> None:
+    chip = summarize_action(
+        tool_name="create_instant_meeting",
+        tool_input={"title": "Quick call"},
+        tool_result=json.dumps({"status": "created", "decision_instance_id": 5, "event_id": "e"}),
+    )
+    assert chip is not None and chip["summary"] == "Booked: Quick call"
+    assert "decision_id" not in chip
+
+
+def test_a_held_send_is_not_a_done_chip() -> None:
+    chip = summarize_action(
+        tool_name="send_slack_dm",
+        tool_input={"channel_ref": "U1", "text": "hi"},
+        tool_result=json.dumps({"status": "waiting_for_approval", "decision_instance_id": 9}),
+    )
+    assert chip is not None and chip["summary"] == "Waiting for approval"
+    assert "decision_id" not in chip
+
+
+def test_a_cancelled_meeting_says_so() -> None:
+    chip = summarize_action(
+        tool_name="cancel_calendar_event",
+        tool_input={"decision_instance_id": 3},
+        tool_result=json.dumps({"status": "cancelled", "decision_instance_id": 3}),
+    )
+    assert chip is not None and chip["summary"] == "Cancelled the meeting"

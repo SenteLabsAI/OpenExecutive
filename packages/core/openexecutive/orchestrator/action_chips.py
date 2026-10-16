@@ -86,6 +86,10 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "remind_me",
     # Act as me: a card of actions left for the speaker to approve
     "propose_actions",
+    # Meetings: booked, or proposed on an approval card
+    "create_calendar_event",
+    "create_instant_meeting",
+    "cancel_calendar_event",
 })
 
 
@@ -207,6 +211,15 @@ def summarize_action(
     }
     if iteration is not None:
         payload["iteration"] = iteration
+    if (
+        parsed is not None
+        and parsed.get("status") == "waiting_for_approval"
+        and tool_name != "propose_actions"
+    ):
+        # Held for someone's approval (a team member's send or change, the
+        # department gate): nothing happened yet, so no "done" chip.
+        payload["summary"] = "Waiting for approval"
+        return payload
     if extension:
         # An installed extension's tool (orchestrator/extensions.py) words
         # its own chip; a link stays inside the app.
@@ -287,6 +300,27 @@ def summarize_action(
         # The chat shows the card itself under its message, by this id.
         decision_id = (parsed or {}).get("decision_id")
         if isinstance(decision_id, int) and not isinstance(decision_id, bool):
+            payload["decision_id"] = decision_id
+    elif tool_name == "cancel_calendar_event":
+        if (parsed or {}).get("status") != "cancelled":
+            return None
+        payload["summary"] = "Cancelled the meeting"
+    elif tool_name in ("create_calendar_event", "create_instant_meeting"):
+        title = str(tool_input.get("title") or "").strip()[:80]
+        status = (parsed or {}).get("status")
+        if status == "created":
+            payload["summary"] = f"Booked: {title}" if title else "Booked the meeting"
+            return payload
+        if status not in ("proposed", "already_proposed"):
+            return None
+        here = (parsed or {}).get("approve_here") is True
+        lead = "Waiting for your approval" if here else "Sent for approval"
+        payload["summary"] = f"{lead}: {title}" if title else lead
+        payload["link"] = "/today"
+        # The chat shows the approval card itself under its message, by this
+        # id, when the person chatting is the one who approves it.
+        decision_id = (parsed or {}).get("decision_instance_id")
+        if here and isinstance(decision_id, int) and not isinstance(decision_id, bool):
             payload["decision_id"] = decision_id
     elif tool_name == "message_person":
         pid = tool_input.get("person_id")

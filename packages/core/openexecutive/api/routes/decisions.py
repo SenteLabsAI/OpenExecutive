@@ -350,6 +350,26 @@ def get_decision(instance_id: int, request: Request) -> DecisionInstance:
     return _visible_instance(instance_id, request)
 
 
+def _check_booking_edits(payload: dict[str, Any], edits: dict[str, Any]) -> None:
+    """An edited booking keeps the shape the tool would have accepted: an
+    edited title of 1-200 characters, and a start and end it can read (naive
+    times count as UTC, as in ``calendar_tools._parse_iso``), end after start.
+    422 otherwise."""
+    from openexecutive.orchestrator.calendar_tools import _parse_iso
+
+    if "title" in edits:
+        title = edits["title"]
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            raise HTTPException(status_code=422, detail="Give the meeting a title of up to 200 characters.")
+    raw_start, raw_end = payload.get("start"), payload.get("end")
+    start = _parse_iso(raw_start) if isinstance(raw_start, str) else None
+    end = _parse_iso(raw_end) if isinstance(raw_end, str) else None
+    if start is None or end is None:
+        raise HTTPException(status_code=422, detail="Start and end must be dates and times.")
+    if end <= start:
+        raise HTTPException(status_code=422, detail="The end has to be after the start.")
+
+
 async def _approve_booking(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
@@ -363,6 +383,7 @@ async def _approve_booking(
         for key in ("title", "start", "end", "description"):
             if key in body.edits:
                 final_payload[key] = body.edits[key]
+        _check_booking_edits(final_payload, body.edits)
         if "attendee_emails" in body.edits:
             final_payload["attendee_emails"] = body.edits["attendee_emails"]
 
