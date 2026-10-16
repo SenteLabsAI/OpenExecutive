@@ -213,9 +213,9 @@ def _quiet() -> timedelta:
 
 def _verified_person(session: Any, person_id: int | None) -> Any:
     """The speaker's People row when this turn is one the review may act on:
-    the principal on a surface ``people_tools`` verifies, or a rostered
-    teammate on one. An adapter's own ``speaker_verified`` is not enough
-    (it grants Always in the loop's notes, nothing else). None otherwise."""
+    the principal on a surface ``people_tools`` verifies (an adapter's own
+    ``speaker_verified`` included), or a rostered teammate on one. None
+    otherwise."""
     from openexecutive.memory.history_chat import verified_speaker
     from openexecutive.orchestrator.people_tools import (
         is_principal_on_verified_surface,

@@ -141,10 +141,12 @@ def test_an_unverified_turn_is_not_kept(roster: SimpleNamespace, extra: dict[str
     assert _record(roster.principal, session=session) is None
 
 
-def test_an_adapters_own_verification_is_not_enough(roster: SimpleNamespace) -> None:
-    session = Session(session_id="s-1", origin_channel="google_chat", caller_person_id=roster.teammate.id,
+def test_an_adapters_own_verification_counts(roster: SimpleNamespace) -> None:
+    session = Session(session_id="s-1", origin_channel="otherchat", caller_person_id=roster.teammate.id,
                       speaker_verified=True)
-    assert _record(roster.teammate, session=session) is None
+    assert _record(roster.teammate, session=session) is not None
+    unverified = Session(session_id="s-2", origin_channel="otherchat", caller_person_id=roster.teammate.id)
+    assert _record(roster.teammate, session=unverified) is None
 
 
 def test_a_message_with_an_attachment_is_not_kept(roster: SimpleNamespace) -> None:

@@ -323,12 +323,20 @@ def _audit(tool: str, kind: str, ok: bool, summary: str, details: dict[str, Any]
 # own user id, over an authenticated connection). Email (an unauthenticated
 # From header), Google Chat (its sender is matched by email for the department gate only), the CLI, the MCP server and
 # unattended runs (scheduler, workflows, alert review) don't. Telegram only
-# sometimes — see `_is_verified_speaker_surface`.
+# sometimes — see `_is_verified_speaker_surface`. A channel adapter this module
+# doesn't know counts when it verified the sender itself
+# (`Session.speaker_verified`, with the `caller_person_id` it resolved).
 _VERIFIED_SPEAKER_CHANNELS = frozenset({"slack", "discord"})
 
 
 def _is_verified_speaker_surface(session: Any) -> bool:
     if bool(getattr(session, "from_web_chat", False)):
+        return True
+    if (
+        getattr(session, "speaker_verified", False) is True
+        and getattr(session, "caller_person_id", None) is not None
+        and not getattr(session, "email_from", "")
+    ):
         return True
     channel = str(getattr(session, "origin_channel", "") or "")
     if channel in _VERIFIED_SPEAKER_CHANNELS:

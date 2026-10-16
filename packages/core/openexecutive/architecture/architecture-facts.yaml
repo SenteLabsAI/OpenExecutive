@@ -2754,9 +2754,13 @@ memory:
       email turn or an eval override, on the web chat signed in (or local
       login), their own Slack or Discord, a private Telegram chat with a
       valid webhook secret, or a channel whose adapter set
-      Session.speaker_verified. Session.speaker_verified and
-      Session.private_chat are read only by Always in the loop, never as a
-      grant for anything else. Never another person's words, never the reply,
+      Session.speaker_verified. An adapter's Session.speaker_verified (with
+      the caller_person_id it resolved from the sender identity it verified
+      itself) makes its channel a verified surface everywhere
+      (people_tools._is_verified_speaker_surface), as Slack and Discord are;
+      Session.private_chat makes the conversation private
+      (delegation.settings.private_conversation), so Act as me and
+      recall_history may be offered there. Never another person's words, never the reply,
       never a turn that touched the speaker's mailbox.
     - Paced: messages under MIN_CHARS (40) are skipped and each person gets at
       most MAX_PASSES_PER_DAY (40) passes a day, counted in the company DB

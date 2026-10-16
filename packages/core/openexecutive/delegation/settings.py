@@ -341,14 +341,17 @@ _DM_SESSION_PREFIXES = {"slack": "slack:dm:", "discord": "discord:dm:"}
 
 def private_conversation(session: Any) -> bool:
     """Whether only the speaker (and the Executive) can read this
-    conversation: the web chat, a Slack or Discord DM, or a Telegram chat
-    (``is_principal_on_verified_surface`` already accepts only a private one).
+    conversation: the web chat, a Slack or Discord DM, a Telegram chat
+    (``is_principal_on_verified_surface`` already accepts only a private one),
+    or one a channel adapter marked so (``Session.private_chat``).
     Also the morning brief's rule for reading what is private to the
     principal from a chat turn (``workflows.morning_brief``). A web chat
     shared with teammates (``Session.shared_chat``) is read by all of them,
     so it isn't."""
     if getattr(session, "from_web_chat", False) is True:
         return getattr(session, "shared_chat", False) is not True
+    if getattr(session, "private_chat", False) is True:
+        return True
     channel = str(getattr(session, "origin_channel", "") or "")
     if channel == "telegram":
         return True

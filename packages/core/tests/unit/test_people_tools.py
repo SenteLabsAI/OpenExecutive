@@ -375,6 +375,28 @@ def test_unverified_surfaces_cannot_change_the_roster(
     assert "Mallory" not in _names()
 
 
+def test_owner_on_a_channel_its_adapter_verified_can_change_the_roster(owner_id: int) -> None:
+    with _turn(Session(origin_channel="otherchat", caller_person_id=owner_id, speaker_verified=True)):
+        result = _call(handle_upsert_person, {"full_name": "Cindy Lee"})
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize("surface", [
+    # No People entry resolved, or a turn an email started: the adapter's
+    # flag vouches for neither.
+    {"origin_channel": "otherchat", "speaker_verified": True, "caller_person_id": None},
+    {"origin_channel": "otherchat", "speaker_verified": True, "email_from": "owner@co.example"},
+], ids=["no_caller", "email"])
+def test_an_adapter_flag_alone_is_not_a_verified_surface(
+    owner_id: int, surface: dict[str, Any]
+) -> None:
+    kwargs = {"caller_person_id": owner_id, **surface}
+    with _turn(Session(**kwargs)):
+        result = _call(handle_upsert_person, {"full_name": "Mallory"})
+    assert result["status"] == "refused"
+    assert "Mallory" not in _names()
+
+
 def test_owner_in_a_private_telegram_chat_can_change_the_roster(
     owner_id: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:

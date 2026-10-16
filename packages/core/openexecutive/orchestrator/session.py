@@ -81,10 +81,12 @@ class Session:
     caller_person_id: int | None = None
     # Set by a channel adapter that verified for itself that `caller_person_id`
     # is who sent this turn's message, on a channel the checks in
-    # `people_tools` don't know. Read only by Always in the loop
-    # (`memory.history_chat`, `orchestrator.history_tools`), never as a grant
-    # for anything else. `private_chat` adds that nobody but that person (and
-    # the Executive) can read the conversation, so their notes may be recalled.
+    # `people_tools` don't know. That channel then counts as a verified
+    # surface (`people_tools._is_verified_speaker_surface`), as Slack and
+    # Discord do. `private_chat` adds that nobody but that person (and the
+    # Executive) can read the conversation
+    # (`delegation.settings.private_conversation`), so Act as me and their
+    # notes may be offered there.
     # An adapter sets either only when it resolved `caller_person_id` from the
     # sender identity it verified itself, never from anything the message says.
     speaker_verified: bool = False
