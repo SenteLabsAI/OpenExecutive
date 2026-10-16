@@ -5,8 +5,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
+  forgetReflectionLesson,
   forgetReflectionMiss,
   getReflection,
+  type ReflectionLesson,
   type ReflectionMiss,
   type ReflectionState,
   type ReflectionWeek,
@@ -20,6 +22,9 @@ import { EmptyState, formatDate } from "./shared";
 // person wanted instead, so the owner can see where the Executive falls
 // short in this workspace. Each person sees their own; the owner also the ones
 // from channels and group chats (never a teammate's own chat).
+// Below the misses, what it learned from them: one-line lessons in the
+// person's own words that reach later turns, with how those turns went.
+// A lesson that doesn't help retires on its own; Forget retires it by hand.
 // Nothing here notifies anyone: it is a record, opened on purpose.
 
 const EMPTY =
@@ -72,6 +77,20 @@ export default function ReflectionTab() {
     [refresh],
   );
 
+  const handleForgetLesson = useCallback(
+    async (lesson: ReflectionLesson) => {
+      if (!window.confirm(`Stop saying this?\n\n${lesson.text}`)) return;
+      try {
+        await forgetReflectionLesson(lesson.id);
+      } catch {
+        window.alert("Failed to forget.");
+        return;
+      }
+      void refresh();
+    },
+    [refresh],
+  );
+
   if (failed) return <EmptyState message="This is unavailable right now." />;
   if (state === undefined) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (state === null) {
@@ -80,9 +99,11 @@ export default function ReflectionTab() {
     );
   }
 
-  const { misses, weeks, sees_everyone: seesEveryone } = state;
+  const { misses, lessons, weeks, sees_everyone: seesEveryone } = state;
   const company = misses.filter((m) => m.kind === "company");
   const product = misses.filter((m) => m.kind === "product");
+  const live = lessons.filter((l) => l.retired_at === null);
+  const retired = lessons.filter((l) => l.retired_at !== null);
 
   return (
     <div className="space-y-4 py-3">
@@ -112,6 +133,79 @@ export default function ReflectionTab() {
           seesEveryone={seesEveryone}
           onForget={handleForget}
         />
+      )}
+      {lessons.length > 0 && (
+        <section>
+          <div className="text-base font-semibold text-fg">What it learned</div>
+          <p className="text-sm text-fg-muted mb-1">
+            One line each, in your own words, from the misses above. It reads them on your later chats about
+            the same thing, and keeps count of how those went. One that doesn&apos;t help stops on its own.
+            {seesEveryone && " A lesson you taught it in a channel or group chat reaches everyone's chats."}
+          </p>
+          <div className="divide-y divide-line">
+            {live.map((l) => (
+              <LessonRow key={l.id} lesson={l} seesEveryone={seesEveryone} onForget={() => handleForgetLesson(l)} />
+            ))}
+          </div>
+          {retired.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-sm text-fg-muted min-h-[40px] flex items-center">
+                Stopped saying it ({retired.length})
+              </summary>
+              <div className="divide-y divide-line">
+                {retired.map((l) => (
+                  <LessonRow key={l.id} lesson={l} seesEveryone={seesEveryone} />
+                ))}
+              </div>
+            </details>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+const RETIRED_LABEL: Record<NonNullable<ReflectionLesson["retired_reason"]>, string> = {
+  unhelpful: "stopped: the chats it reached went worse, not better",
+  forgotten: "stopped: forgotten",
+  room: "stopped: made room for newer ones",
+};
+
+function LessonRow({
+  lesson,
+  seesEveryone,
+  onForget,
+}: {
+  lesson: ReflectionLesson;
+  seesEveryone: boolean;
+  onForget?: () => void;
+}) {
+  const reached = lesson.shown;
+  const went =
+    reached === 0
+      ? "Not reached a chat yet"
+      : `Reached ${reached} ${reached === 1 ? "chat" : "chats"}: ${lesson.fine_after} went fine, ${lesson.miss_after} fell short`;
+  return (
+    <div className="py-3 flex gap-3">
+      <div className="flex-1 min-w-0 space-y-1">
+        <div className="text-[15px] text-fg">{lesson.text}</div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+          <span>{formatDate(lesson.created_at)}</span>
+          {seesEveryone && lesson.person_name && <span>· {lesson.person_name}</span>}
+          <span>· {went}</span>
+          {seesEveryone && lesson.shared && (
+            <span className="rounded-full bg-surface-input/60 px-2 py-0.5">reaches everyone</span>
+          )}
+          {lesson.retired_reason && (
+            <span className="rounded-full bg-surface-input/60 px-2 py-0.5">{RETIRED_LABEL[lesson.retired_reason]}</span>
+          )}
+        </div>
+        <div className="text-sm text-fg-muted" title={lesson.quote}>
+          <span className="font-medium">From: </span>&ldquo;{lesson.quote}&rdquo;
+        </div>
+      </div>
+      {onForget && (
+        <OverflowMenu label="Options for this lesson" items={[{ label: "Forget", onSelect: onForget, danger: true }]} />
       )}
     </div>
   );

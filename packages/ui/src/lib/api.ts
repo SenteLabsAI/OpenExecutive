@@ -2078,8 +2078,31 @@ export interface ReflectionWeek {
   misses: number;
 }
 
+/** One thing the workspace asked for differently, learned from a miss. */
+export interface ReflectionLesson {
+  id: number;
+  person_id: number;
+  person_name: string;
+  text: string;
+  /** The person's words it came from. */
+  quote: string;
+  session_id: string;
+  /** Learned in a channel or group chat: the owner's shared lessons reach everyone's chats. */
+  shared: boolean;
+  created_at: string;
+  retired_at: string | null;
+  /** "unhelpful" (the turns it reached went worse), "forgotten", or "room". */
+  retired_reason: "unhelpful" | "forgotten" | "room" | null;
+  /** How many turns it reached, and how those were then graded. */
+  shown: number;
+  fine_after: number;
+  miss_after: number;
+}
+
 export interface ReflectionState {
   misses: ReflectionMiss[];
+  /** Live lessons first, newest first, then the retired ones. */
+  lessons: ReflectionLesson[];
   /** Newest week first. */
   weeks: ReflectionWeek[];
   /** The principal also sees shared chats' misses; a teammate their own only. */
@@ -2097,6 +2120,11 @@ export async function getReflection(signal?: AbortSignal): Promise<ReflectionSta
 
 export async function forgetReflectionMiss(id: number): Promise<void> {
   const res = await fetch(`${API_BASE}/memories/reflection/misses/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
+}
+
+export async function forgetReflectionLesson(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/reflection/lessons/${id}`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
 }
 

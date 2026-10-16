@@ -16,9 +16,14 @@ The caller is resolved as for Always in the loop (``api.routes.history``):
 a signed-in person on the roster, or the principal under local login;
 anyone else gets 403. Forgetting a miss follows ``is_principal_or_self``.
 
+Lessons (``memory.lessons``), what the review learned from the misses, are
+listed the same way and forgotten the same way; a forgotten lesson is
+retired, not erased, so the screen can show it stopped.
+
 Routes:
-  GET    /memories/reflection              — ``{misses, weeks, sees_everyone}``
-  DELETE /memories/reflection/misses/{id}  — forget one miss (204)
+  GET    /memories/reflection               — ``{misses, lessons, weeks, sees_everyone}``
+  DELETE /memories/reflection/misses/{id}   — forget one miss (204)
+  DELETE /memories/reflection/lessons/{id}  — forget one lesson (204)
 """
 from __future__ import annotations
 
@@ -29,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict
 
 from openexecutive.api import caller as api_caller
-from openexecutive.memory import chat_review
+from openexecutive.memory import chat_review, lessons
 from openexecutive.people.models import Person
 
 router = APIRouter()
@@ -53,6 +58,23 @@ class MissOut(BaseModel):
     signals: list[str]
 
 
+class LessonOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    person_id: int
+    person_name: str
+    text: str
+    quote: str
+    session_id: str
+    created_at: str
+    retired_at: str | None
+    retired_reason: str | None
+    shown: int
+    fine_after: int
+    miss_after: int
+
+
 class WeekOut(BaseModel):
     week: str
     graded: int
@@ -61,6 +83,7 @@ class WeekOut(BaseModel):
 
 class ReflectionOut(BaseModel):
     misses: list[MissOut]
+    lessons: list[LessonOut]
     weeks: list[WeekOut]
     sees_everyone: bool
 
@@ -151,16 +174,51 @@ def get_reflection(
         if person_id is not None and int(person_id) != person.id:
             raise _refuse(403, "not_yours", "You can see your own chats only.")
         scope = person.id
+    learned = lessons.list_lessons(person_id=scope)
     if person.is_principal:
-        misses = _visible_misses(scope, _Readable(request, person.id))
+        readable = _Readable(request, person.id)
+        misses = _visible_misses(scope, readable)
+        learned = [lesson for lesson in learned if readable(lesson)]
     else:
         misses = chat_review.list_misses(person_id=scope, limit=_PAGE)
     weeks = chat_review.weekly_rates(person_id=scope)
     return ReflectionOut(
         misses=[MissOut(**m) for m in misses],
+        lessons=[LessonOut(**lesson, person_name=_name(lesson["person_id"])) for lesson in learned],
         weeks=[WeekOut(**w) for w in weeks],
         sees_everyone=bool(person.is_principal),
     )
+
+
+def _name(person_id: int) -> str:
+    from openexecutive.people.store import get_person
+
+    try:
+        person = get_person(int(person_id))
+    except Exception:
+        return ""
+    return person.full_name if person is not None else ""
+
+
+@router.delete("/memories/reflection/lessons/{lesson_id}", status_code=status.HTTP_204_NO_CONTENT)
+def forget_lesson(lesson_id: int, request: Request) -> Response:
+    """Retire one lesson: its own person or the principal, as for a miss."""
+    person = _caller(request)
+    assert person.id is not None
+    lesson = lessons.get_lesson(lesson_id)
+    if lesson is None or not _Readable(request, person.id)(lesson):
+        raise _refuse(404, "not_found", "No such lesson, or it isn't yours to forget.")
+    if not lessons.forget_lesson(lesson_id, caller_person_id=person.id):
+        raise _refuse(404, "not_found", "No such lesson, or it isn't yours to forget.")
+    from openexecutive.audit import log_event
+
+    log_event(
+        "chat_review",
+        f"Forgot lesson {lesson_id} from the Reflection record",
+        actor="user",
+        details={"op": "forget_lesson", "lesson_id": lesson_id, "person_id": person.id},
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete("/memories/reflection/misses/{miss_id}", status_code=status.HTTP_204_NO_CONTENT)

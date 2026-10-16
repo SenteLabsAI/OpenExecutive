@@ -1053,6 +1053,7 @@ class Executive:
         page_context_block: str = "",
         working_style: str = "",
         standing_facts: str = "",
+        lessons: str = "",
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         history = session.get_recent_history()
@@ -1095,6 +1096,11 @@ class Executive:
             user_content_parts.append(
                 {"type": "text", "text": f"<working_style>\n{working_style}\n</working_style>"}
             )
+        # What this workspace asked for differently before (memory.lessons):
+        # learned from turns the conversation review graded a miss, in the
+        # person's own words. Preferences only, in the user turn.
+        if lessons:
+            user_content_parts.append({"type": "text", "text": f"<lessons>\n{lessons}\n</lessons>"})
 
         # Facts and corrections the principal asked to keep (memory/facts.py).
         # The same block every unattended prompt reads, so a correction made
@@ -1339,8 +1345,12 @@ class Executive:
                     reasoning_level=peer_memory_reasoning_level,
                 )
             from openexecutive.attunement.style import build_style_block
+            from openexecutive.memory.lessons import build_lessons_block
 
             working_style = build_style_block(person_id)
+            # What this workspace asked for differently before (memory.lessons):
+            # a SQLite read, off the event loop like the facts.
+            lessons = await asyncio.to_thread(build_lessons_block, person_id, user_message)
             if standing_facts is None:
                 # A SQLite read: off the event loop, like the other context.
                 standing_facts = await asyncio.to_thread(render_facts_for_prompt)
@@ -1357,6 +1367,7 @@ class Executive:
                 page_context_block=page_context_block,
                 working_style=working_style,
                 standing_facts=standing_facts,
+                lessons=lessons,
             )
 
             _emit_memory_snapshot(
@@ -1677,8 +1688,10 @@ class Executive:
                 reasoning_level=peer_memory_reasoning_level,
             )
         from openexecutive.attunement.style import build_style_block
+        from openexecutive.memory.lessons import build_lessons_block
 
         working_style = build_style_block(person_id)
+        lessons = await asyncio.to_thread(build_lessons_block, person_id, user_message)
         if standing_facts is None:
             standing_facts = await asyncio.to_thread(render_facts_for_prompt)
         messages = self._build_messages(
@@ -1694,6 +1707,7 @@ class Executive:
             page_context_block=page_context_block,
             working_style=working_style,
             standing_facts=standing_facts,
+            lessons=lessons,
         )
 
         # ----- Phase 1: drafting -----------------------------------------

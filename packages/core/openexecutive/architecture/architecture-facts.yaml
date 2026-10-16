@@ -4977,10 +4977,34 @@ chat:
     "What it got wrong" screen: each person their own, the principal also those
     from chats _session_access lets them open (never a teammate's own web
     chat or DM, nor a mail-private conversation).
+    Lessons (memory/lessons.py): for a turn graded a miss the fix loop is
+    offered learn_lesson (the turn is marked MISS in what it reads): one
+    sentence this workspace wants done differently, quoted from the
+    person's words (from that turn or later; the lesson must be what the
+    quote says, and at most two content words beyond it), through the
+    working-style deny-list plus the lessons' own (information-moving
+    verbs, everyone/everything words) without the about-the-writing
+    requirement, re-checked on every render. Stored in chat_review_lessons
+    (shared = learned in a channel or group thread); chat_review_lesson_uses
+    records which turn id, and whose, saw which lesson. Reaches a turn by keyword match (two shared content words
+    between lesson+quote and the message; no vector index): the Executive's
+    turn as a <lessons> user-turn block (build_lessons_block, counted as
+    shown against the active turn id), each specialist call under its
+    <failure_cases> block (router._lessons_for_call). A lesson reaches its
+    own person's turns; the principal's reach everyone's only when shared.
+    When the review grades a turn that saw a lesson, note_outcome bumps
+    fine_after or miss_after for the lesson's own person's turns only;
+    shown 5+ times with more misses than fine it retires itself
+    (unhelpful). 40 live lessons per person (their oldest retires: room);
+    Forget retires by hand (forgotten). Listed on the Reflection screen with the misses,
+    retired ones as "stopped saying it". Never a cached block, never an
+    authorization: the acting gates run on every call whatever it says.
     Why: the claim check only sees one turn; "I sent it" answered with
     "noted" left the draft waiting, and stated style was lost. Grading turns
-    the same read into a record of where it fell short, so the gaps can be
-    learned from and replayed later.
+    the same read into a record of where it fell short, and a lesson is how
+    the Executive changes what it does next time in this workspace without a
+    prompt change or a person approving it; the counters are the check that
+    it helped.
   module: openexecutive.api.routes.chat
   endpoint: POST /chat — server-sent events stream of the live turn. POST /chat/stop halts one mid-flight. POST /chat/add hands it a message the person typed while it works. POST /chat/background starts a new chat the server answers to the end with no reader (202 + session_id; the caller request is wrapped so is_disconnected is always false, the stream is drained by a task kept in _background_tasks; at most 3 per owner key in _background_counts, claimed before the first await so a burst cannot pass together, else 429).
   sse_event_types:

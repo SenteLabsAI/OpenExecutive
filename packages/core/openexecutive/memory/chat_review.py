@@ -505,7 +505,11 @@ still in their brief);
 - a reply that said it made a change no tool made;
 - a way the person asked you to reply to them ("shorter please", "lead with \
 the number"), or a way they write their own email ("I never use exclamation \
-marks"), said in so many words.
+marks"), said in so many words;
+- for a turn marked MISS, one thing this workspace wants done differently next \
+time that the person themselves said: a word they use and what it means, a \
+preference about the content, a thing to do rather than promise, which \
+specialist to ask (learn_lesson, when offered).
 
 Fix each with the tools, after reading what is there with the list tools. \
 Every change needs source_quote: the person's exact words from their messages \
@@ -553,6 +557,25 @@ LEARN_WRITING_STYLE_TOOL: dict[str, Any] = {
             **_QUOTE_PROP,
         },
         "required": ["kind", "rule", "source_quote"],
+    },
+}
+
+LEARN_LESSON_TOOL: dict[str, Any] = {
+    "name": "learn_lesson",
+    "description": (
+        "Keep one thing this workspace wants done differently next time, learned "
+        "from a turn marked MISS: a word they use, a preference, a thing to do "
+        "rather than promise, a specialist to consult. One short sentence in plain "
+        "words. Never a task, a person, a link, an amount, or permission to act."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "turn": {"type": "integer", "description": "The MISS turn it comes from."},
+            "lesson": {"type": "string"},
+            **_QUOTE_PROP,
+        },
+        "required": ["turn", "lesson", "source_quote"],
     },
 }
 
@@ -632,7 +655,7 @@ def _rebuild_session(session_id: str, person: Any, surface: dict[str, Any]) -> A
     return session
 
 
-def _render_turns(turns: list[sqlite3.Row]) -> str:
+def _render_turns(turns: list[sqlite3.Row], misses: set[int] | None = None) -> str:
     from openexecutive.orchestrator.content_trust import wrap_untrusted
 
     parts: list[str] = []
@@ -643,9 +666,10 @@ def _render_turns(turns: list[sqlite3.Row]) -> str:
             calls = []
         ran = ", ".join(str(c.get("tool")) for c in calls if isinstance(c, dict))
         reply = wrap_untrusted(str(row["reply"]), source="assistant_reply")
+        mark = " (MISS)" if misses and i in misses else ""
         parts.append(
             f"[{i}] THEM: {row['message']}\n"
-            f"[{i}] YOU:\n{reply}\n"
+            f"[{i}] YOU:{mark}\n{reply}\n"
             f"[{i}] TOOLS RUN: {ran or 'none'}"
         )
     return "\n\n".join(parts)
@@ -688,8 +712,10 @@ async def _review_person(
                            {"op": "chat_review", "person_id": person_id, "skipped": "unverified"})
                     return
                 graded = await _grade_turns(session_id, person, turns, db_path=db_path)
+                missed = {i for i, row in enumerate(turns, 1) if graded.get(int(row["id"])) == "miss"}
                 done = await asyncio.wait_for(
-                    _run_loop(session, person, turns, words), timeout=_TIMEOUT_S
+                    _run_loop(session, person, turns, words, misses=missed, db_path=db_path),
+                    timeout=_TIMEOUT_S,
                 )
         misses = sum(1 for v in graded.values() if v == "miss")
         _audit(session_id,
@@ -943,6 +969,7 @@ def _store_grades(
     db_path: Path | None,
 ) -> None:
     now = _now().isoformat()
+    counted: list[tuple[str | None, str]] = []
     conn = _connect(db_path)
     try:
         for row in turns:
@@ -961,9 +988,15 @@ def _store_grades(
                     "misses = misses + excluded.misses",
                     (_week(str(row["created_at"])), int(row["person_id"]), 1 if verdict == "miss" else 0),
                 )
+                counted.append((str(row["turn_id"]) if row["turn_id"] else None, verdict))
         conn.commit()
     finally:
         conn.close()
+    # The lessons that reached a graded turn learn how it went (memory.lessons).
+    from openexecutive.memory import lessons
+
+    for turn_id, verdict in counted:
+        lessons.note_outcome(turn_id, verdict, db_path=db_path)
 
 
 async def _grade_turns(
@@ -1118,7 +1151,9 @@ def forget_miss(row_id: int, *, caller_person_id: int | None, db_path: Path | No
         conn.close()
 
 
-def _tools_for(person: Any) -> tuple[list[dict[str, Any]], dict[str, Callable[[dict[str, Any]], Awaitable[str]]]]:
+def _tools_for(
+    person: Any, *, misses: bool = False
+) -> tuple[list[dict[str, Any]], dict[str, Callable[[dict[str, Any]], Awaitable[str]]]]:
     from openexecutive.delegation.settings import can_delegate
 
     by_name, chat_handlers = _chat_tools()
@@ -1128,6 +1163,8 @@ def _tools_for(person: Any) -> tuple[list[dict[str, Any]], dict[str, Callable[[d
     tools = [by_name[n] if n in _READ_TOOLS else _with_quote(by_name[n]) for n in names]
     handlers = {n: chat_handlers[n] for n in names}
     tools.append(LEARN_REPLY_STYLE_TOOL)
+    if misses:
+        tools.append(LEARN_LESSON_TOOL)
     if can_delegate(person):
         tools.append(LEARN_WRITING_STYLE_TOOL)
     if person.is_principal:
@@ -1135,15 +1172,26 @@ def _tools_for(person: Any) -> tuple[list[dict[str, Any]], dict[str, Callable[[d
     return sorted(tools, key=lambda t: t["name"]), handlers
 
 
-async def _run_loop(session: Any, person: Any, turns: list[sqlite3.Row], words: str) -> list[str]:
-    """The tool loop; the names of the changes that went through."""
+async def _run_loop(
+    session: Any,
+    person: Any,
+    turns: list[sqlite3.Row],
+    words: str,
+    *,
+    misses: set[int] | None = None,
+    db_path: Path | None = None,
+) -> list[str]:
+    """The tool loop; the names of the changes that went through. ``misses``
+    are the numbers of the turns graded a miss: learn_lesson is offered for
+    them, and only them."""
     from openexecutive.audit.usage import log_model_usage
     from openexecutive.orchestrator.fact_tools import _quote_error
     from openexecutive.providers import get_provider
 
     settings = _settings()
     model = settings.chat_review_model or settings.routing_model
-    tools, handlers = _tools_for(person)
+    misses = misses or set()
+    tools, handlers = _tools_for(person, misses=bool(misses))
     offered = {t["name"] for t in tools}
     facts = _standing_facts() if person.is_principal else ""
     intro = (
@@ -1151,7 +1199,7 @@ async def _run_loop(session: Any, person: Any, turns: list[sqlite3.Row], words: 
         f"{' (the principal)' if person.is_principal else ' (a teammate)'}. "
         f"Today is {_now().date().isoformat()}.\n\n"
     )
-    content = intro + (f"{facts}\n\n" if facts else "") + "THE CHAT:\n\n" + _render_turns(turns)
+    content = intro + (f"{facts}\n\n" if facts else "") + "THE CHAT:\n\n" + _render_turns(turns, misses)
     messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
     done: list[str] = []
     changes = 0
@@ -1177,11 +1225,14 @@ async def _run_loop(session: Any, person: Any, turns: list[sqlite3.Row], words: 
                 refusal = _quote_error(str(tool_input.get("source_quote") or ""), session) or (
                     _target_refusal(name, tool_input, words)
                 )
+                if name == "learn_lesson" and not refusal:
+                    refusal = _lesson_turn_refusal(tool_input, turns, misses)
                 if refusal:
                     out = json.dumps({"status": "refused", "detail": refusal})
                 else:
                     changes += 1
-                    out = await _apply(name, tool_input, person, session, words, handlers)
+                    out = await _apply(name, tool_input, person, session, words, handlers,
+                                       turns=turns, db_path=db_path)
                     if _went_through(out):
                         done.append(name)
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:2000]})
@@ -1231,6 +1282,9 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
         target = str(tool_input.get("line") or "")
     elif name in ("learn_reply_style", "learn_writing_style"):
         target, words = str(tool_input.get("rule") or ""), quote
+    elif name == "learn_lesson":
+        # The lesson must be what the quote itself says, as a style line must.
+        target, words = str(tool_input.get("lesson") or ""), quote
     else:
         return None
     named = _content_words(target)
@@ -1251,6 +1305,29 @@ def _went_through(out: str) -> bool:
     return str(data.get("status", "ok")) not in ("refused", "not_found", "not_open", "rejected", "noop")
 
 
+def _lesson_turn_refusal(
+    tool_input: dict[str, Any], turns: list[sqlite3.Row], misses: set[int]
+) -> str | None:
+    """A lesson comes from a turn graded a miss, and its quote from that
+    turn or a later one."""
+    from openexecutive.memory.episodic import _normalize_for_quote_match
+
+    try:
+        number = int(tool_input.get("turn") or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number not in misses:
+        return "a lesson comes from a turn marked MISS"
+    raw_quote = str(tool_input.get("source_quote") or "")
+    quote = _normalize_for_quote_match(raw_quote)
+    later = _normalize_for_quote_match(" ".join(str(r["message"]) for r in turns[number - 1:]))
+    if quote not in later:
+        return "source_quote must come from that turn or a later one"
+    from openexecutive.memory.lessons import lesson_overreach
+
+    return lesson_overreach(str(tool_input.get("lesson") or ""), raw_quote)
+
+
 async def _apply(
     name: str,
     tool_input: dict[str, Any],
@@ -1258,8 +1335,21 @@ async def _apply(
     session: Any,
     words: str,
     handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]],
+    *,
+    turns: list[sqlite3.Row] | None = None,
+    db_path: Path | None = None,
 ) -> str:
     quote = str(tool_input.get("source_quote") or "")
+    if name == "learn_lesson":
+        from openexecutive.memory import lessons
+
+        number = int(tool_input.get("turn") or 0)
+        row_id = int(turns[number - 1]["id"]) if turns and 0 < number <= len(turns) else None
+        lesson, reason = await asyncio.to_thread(
+            lessons.add_lesson, int(person.id), str(tool_input.get("lesson") or ""),
+            quote=quote, session_id=str(session.session_id), turn_row_id=row_id, db_path=db_path,
+        )
+        return json.dumps({"status": "kept", "lesson": lesson["text"]} if lesson else {"status": "refused", "detail": reason})
     if name == "learn_reply_style":
         from openexecutive.attunement.style import add_conversation_rule
 

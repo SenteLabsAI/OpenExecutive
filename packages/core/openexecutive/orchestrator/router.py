@@ -172,6 +172,17 @@ def load_principal_role() -> str:
         return ""
 
 
+def _lessons_for_call(query: str) -> str:
+    """The speaker's lessons that match this call, as a section of the
+    failure-cases block; "" when there is no resolved speaker."""
+    from openexecutive.memory.lessons import lessons_for_query
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    person_id = getattr(session, "caller_person_id", None) if session is not None else None
+    return lessons_for_query(person_id, query)
+
+
 async def route_to_specialist(
     specialist_name: str,
     query: str,
@@ -311,14 +322,17 @@ async def _retrieve_for_call(
 
 
 async def _retrieve_failures_for_call(call: dict[str, str]) -> str:
-    """Domain-filtered failure case retrieval for one specialist call. Degrades
+    """Domain-filtered failure case retrieval for one specialist call, with
+    what this workspace asked for before (memory.lessons) under it. Degrades
     to no failure cases on error, for the same reason as `_retrieve_for_call`."""
     from openexecutive.knowledge.retriever import retrieve_failures
 
     try:
-        return await asyncio.to_thread(
+        shipped = await asyncio.to_thread(
             retrieve_failures, query=call["query"], specialist_name=call["specialist"]
         )
+        own = await asyncio.to_thread(_lessons_for_call, call["query"])
+        return "\n\n".join(part for part in (shipped, own) if part)
     except Exception:
         logger.warning(
             "failure-case retrieval for %s failed; answering without it",

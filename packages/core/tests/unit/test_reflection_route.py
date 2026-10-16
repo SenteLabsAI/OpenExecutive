@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import reflection as route
 from openexecutive.memory import chat_review as cr
-from openexecutive.memory import episodic, session_store
+from openexecutive.memory import episodic, lessons, session_store
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 
@@ -138,6 +138,30 @@ def test_hidden_rows_never_crowd_out_the_principals_page(
     mine = _miss(ids["principal"], "s-1", "set up an alert for the invoice")
     everyone: dict[str, Any] = client.get("/memories/reflection", headers=OWNER).json()
     assert [m["id"] for m in everyone["misses"]] == [mine]
+
+
+def _lesson(person_id: int, session_id: str, text: str) -> int:
+    lesson, reason = lessons.add_lesson(person_id, text, quote="the board deck is the Q4 board workflow",
+                                        session_id=session_id, turn_row_id=None)
+    assert lesson is not None, reason
+    return int(lesson["id"])
+
+
+def test_lessons_are_listed_and_forgotten_like_misses(client: TestClient, ids: dict[str, int]) -> None:
+    mine = _lesson(ids["principal"], "s-1", "The board deck means the Q4 board workflow.")
+    session_store.create_session("web-ben", "Pay", NOW.isoformat(), ids["teammate"])
+    theirs = _lesson(ids["teammate"], "web-ben", "The price list means the partner price list.")
+    everyone: dict[str, Any] = client.get("/memories/reflection", headers=OWNER).json()
+    assert [(x["id"], x["person_name"]) for x in everyone["lessons"]] == [(mine, "Olivia Owner")]
+    assert everyone["lessons"][0]["shown"] == 0 and everyone["lessons"][0]["retired_at"] is None
+    own = client.get("/memories/reflection", headers=TEAMMATE).json()
+    assert [x["id"] for x in own["lessons"]] == [theirs]
+    assert client.delete(f"/memories/reflection/lessons/{theirs}", headers=OWNER).status_code == 404
+    assert client.delete(f"/memories/reflection/lessons/{mine}", headers=TEAMMATE).status_code == 404
+    assert client.delete(f"/memories/reflection/lessons/{mine}", headers=OWNER).status_code == 204
+    assert client.delete(f"/memories/reflection/lessons/{mine}", headers=OWNER).status_code == 404
+    gone = client.get("/memories/reflection", headers=OWNER).json()["lessons"][0]
+    assert gone["id"] == mine and gone["retired_reason"] == "forgotten"
 
 
 def test_forgetting_follows_the_same_rule(client: TestClient, ids: dict[str, int]) -> None:
