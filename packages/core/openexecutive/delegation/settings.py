@@ -343,7 +343,8 @@ def private_conversation(session: Any) -> bool:
     """Whether only the speaker (and the Executive) can read this
     conversation: the web chat, a Slack or Discord DM, a Telegram chat
     (``is_principal_on_verified_surface`` already accepts only a private one),
-    or one a channel adapter marked so (``Session.private_chat``).
+    or one a channel adapter marked so (``Session.private_chat``) for a
+    sender it verified (``Session.speaker_verified``).
     Also the morning brief's rule for reading what is private to the
     principal from a chat turn (``workflows.morning_brief``). A web chat
     shared with teammates (``Session.shared_chat``) is read by all of them,
@@ -351,7 +352,9 @@ def private_conversation(session: Any) -> bool:
     if getattr(session, "from_web_chat", False) is True:
         return getattr(session, "shared_chat", False) is not True
     if getattr(session, "private_chat", False) is True:
-        return True
+        # Whose conversation it is matters to callers that ask nothing else
+        # (``correction_tools._scheduled_by``).
+        return getattr(session, "speaker_verified", False) is True
     channel = str(getattr(session, "origin_channel", "") or "")
     if channel == "telegram":
         return True

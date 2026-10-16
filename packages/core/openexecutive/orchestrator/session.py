@@ -96,8 +96,9 @@ class Session:
     gate_sender_person_id: int | None = None
     # Set by a channel adapter when nobody but the speaker (and the
     # Executive) can read the conversation, e.g. a direct message
-    # (`delegation.settings.private_conversation`). On its own it grants
-    # nothing: Act as me and recalled notes also need a verified speaker.
+    # (`delegation.settings.private_conversation`, which also needs
+    # `speaker_verified`). Act as me and recalled notes also need the
+    # speaker's turn to be verified.
     private_chat: bool = False
     # The live alert board as the server derived it this turn, recorded by
     # `briefing.context.render_and_trust`. `ack_alert` refuses anything else on

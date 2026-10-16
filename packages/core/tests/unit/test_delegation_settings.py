@@ -367,3 +367,16 @@ def test_the_setup_check_is_bounded(roster: SimpleNamespace, monkeypatch: pytest
 def test_no_address_counts_as_typed_beside_an_attachment(attachment: str) -> None:
     assert typed_addresses(f"{attachment}\n\nemail sam@co.example as me") == set()
     assert typed_addresses("email sam@co.example as me") == {"sam@co.example"}
+
+
+def test_an_adapters_private_chat_is_private_only_for_a_sender_it_verified() -> None:
+    from openexecutive.delegation.settings import private_conversation
+
+    def chat(**kw: object) -> Session:
+        return Session(session_id="otherchat:dm:1", origin_channel="otherchat", caller_person_id=1, **kw)  # type: ignore[arg-type]
+
+    assert private_conversation(chat(private_chat=True, speaker_verified=True)) is True
+    # Anyone writing into an unverified one could manage its follow-ups
+    # (correction_tools._scheduled_by asks nothing else).
+    assert private_conversation(chat(private_chat=True)) is False
+    assert private_conversation(chat(speaker_verified=True)) is False
