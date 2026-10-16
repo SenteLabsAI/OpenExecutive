@@ -3322,6 +3322,19 @@ class MCPGateway:
         code_built = _code_built_admits(tool_input)
         if refused is not None and not code_built:
             return refused
+        # A turn another AI app asked over Open Executive's MCP server runs
+        # gateway reads only (schedule_tools.MCP_CLIENT_MCP_TOOLS). The chat
+        # loop already refuses anything else; this holds for any other path.
+        from openexecutive.orchestrator.schedule_tools import (
+            current_session,
+            mcp_client_withheld_error,
+            mcp_client_withholds,
+        )
+
+        if getattr(current_session.get(), "from_mcp_client", False) is True and mcp_client_withholds(
+            "call_tool", tool_input
+        ):
+            return mcp_client_withheld_error(str(tool_input.get("name") or "call_tool")[:200])
         session = self._require_session()
         arguments = tool_input.get("arguments", {})
         if isinstance(arguments, str):

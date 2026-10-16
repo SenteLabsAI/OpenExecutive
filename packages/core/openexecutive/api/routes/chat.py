@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import re
-import sqlite3
 import time
 import uuid
 from collections.abc import Callable
@@ -911,22 +910,7 @@ def _resolve_caller_person_id(request: Request) -> int | None:
       - a verified service call (``api.caller``) names no one and is never
         the principal → None.
     """
-    who = api_caller.caller(request)
-    try:
-        from openexecutive.people.store import (
-            find_person_by_email,
-            find_principal_person,
-        )
-        if who.email:
-            person = find_person_by_email(who.email)
-            return person.id if person is not None else None
-        if not who.defaults_to_principal:
-            return None
-        principal = find_principal_person()
-        return principal.id if principal is not None else None
-    except (OSError, sqlite3.Error) as exc:
-        logger.warning("caller_lookup_failed err=%s", exc)
-        return None
+    return api_caller.person_id_for(api_caller.caller(request))
 
 
 def _caller_is_principal_or_unclaimed(request: Request) -> bool:

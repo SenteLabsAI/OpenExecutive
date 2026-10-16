@@ -393,6 +393,9 @@ def _offered(session: Any, person: Person | None, enabled: bool) -> bool:
         return False
     if getattr(session, "private_to_principal", False) is True:
         return False
+    # Another AI app asking over the MCP server: nobody is here to approve.
+    if getattr(session, "from_mcp_client", False) is True:
+        return False
     override = getattr(session, "delegation_override", None)
     if isinstance(override, DelegationOverride):
         return override.gmail is not None

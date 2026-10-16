@@ -295,7 +295,10 @@ With the keys set:
   and query it was signed for, expires within 30 seconds, and works once.
 - **No caller header at all is a service.** A script, `curl` with only `x-api-key`, or an
   MCP client can still use the API, but it is **never the owner**. For MCP,
-  `ask_executive` asks as no one, and its `caller_email` is ignored.
+  `ask_executive` asks as no one, and the owner's memory and activity, the
+  briefing and the roster are refused. `/mcp` reads the caller the gate
+  verified, so a sign-in in front of it that sends a signed assertion gets
+  that person's answers.
 - **The UI's local-login session is the operator.** It is signed, names no one and runs as
   the owner, as before.
 - **Refusals are 401.** You get one for:

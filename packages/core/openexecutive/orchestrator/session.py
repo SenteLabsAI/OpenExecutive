@@ -65,6 +65,15 @@ class Session:
     # which runs on the host itself — the principal's own surface for
     # `content_trust.principal_speaking`, as the web chat is.
     from_cli: bool = False
+    # True only for a session minted by Open Executive's own MCP server
+    # (`mcp_server.ask_executive`): another AI app is asking, on behalf of
+    # `caller_person_id`. Such a turn reads and advises but never sends,
+    # posts, books, schedules, runs or changes anything: the chat loop
+    # neither offers nor runs `schedule_tools.MCP_CLIENT_WITHHELD_TOOLS`, Act
+    # as me, recall_history or extension tools, and of the gateway tools only
+    # the reads in `schedule_tools.MCP_CLIENT_MCP_TOOLS`. Never the
+    # principal's own surface for `content_trust.principal_speaking`.
+    from_mcp_client: bool = False
     # The rostered Person behind this conversation, when one is resolved. The
     # adapters already pass this to `Executive.chat(person_id=...)`; holding it
     # on the session too lets tool handlers running mid-turn tell "the approver
