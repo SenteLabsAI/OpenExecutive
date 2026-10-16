@@ -540,6 +540,16 @@ def test_onedrive_another_persons_turn_loses_the_entry_from_a_json_result(roster
     refused = _model_call(other, gateway, "microsoft_365__download-bytes",
                           {"target": f"/drives/b!Own-1/items/{file_id}/content"})
     assert "private to the person" in json.loads(refused)["error"]
+    # Graph decodes the raw path, so a percent-encoded id names the same file.
+    for encoded in (
+        "".join(f"%{ord(c):02X}" for c in file_id),
+        "".join(f"%25{ord(c):02X}" for c in file_id),
+    ):
+        before = len(storage.calls)
+        refused = _model_call(other, gateway, "microsoft_365__download-bytes",
+                              {"target": f"/drives/b!Own-1/items/{encoded}/content"})
+        assert "private to the person" in json.loads(refused)["error"]
+        assert storage.calls[before:] == []
 
 
 def test_hiding_drops_entries_then_lines_then_masks_what_is_left() -> None:
@@ -568,6 +578,7 @@ def test_an_unreadable_record_fails_closed_for_file_tools_only(
         "google_workspace__search_drive_files", "google_workspace__get_doc_content",
         "google_workspace__read_sheet_values", "google_workspace__get_spreadsheet_info",
         "google_workspace__get_presentation", "microsoft_365__download-bytes",
+        "microsoft_365__get-excel-range", "microsoft_365__create-excel-chart",
     ):
         refused = _model_call(None, gateway, tool, {"query": "x"})
         assert "Couldn't check which files are private" in json.loads(refused)["error"], tool
@@ -702,3 +713,21 @@ def test_a_copy_that_cant_be_recorded_is_not_shared_and_hidden_from_everyone(
     search = {"user_google_email": get_settings().exec_email_address, "query": "name contains 'loi'"}
     for who in (_owner_session(), _teammate_session(roster), None):
         assert file_id not in _model_call(who, gateway, "google_workspace__search_drive_files", search)
+
+
+def test_a_file_saved_while_a_listing_ran_is_hidden_from_that_listing(roster: SimpleNamespace) -> None:
+    storage = FakeStorage()
+    gateway = _gateway(storage)
+    other = _teammate_session(roster)
+    landed = "LANDEDMIDCALL1234567890"
+    answer = storage.answer
+
+    def save_lands_during_the_search(name: str, args: dict[str, Any]) -> str:
+        if name != "google_workspace__search_drive_files":
+            return answer(name, args)
+        saved_files.record(roster.principal, "google", landed, name="loi.pdf")
+        return f'Found files:\n- Name: "loi.pdf" (ID: {landed})\n- Name: "plan.txt" (ID: KEEP)'
+
+    storage.answer = save_lands_during_the_search  # type: ignore[method-assign]
+    found = _model_call(other, gateway, "google_workspace__search_drive_files", {"query": "loi"})
+    assert landed not in found and "KEEP" in found

@@ -1114,15 +1114,21 @@ def _code_built_admits(tool_input: Any) -> bool:
 #   elsewhere. Only the save's own code-built calls (``code_built_call``) touch
 #   it, and those skip this filter: they name nothing the model chose.
 #
+# Ids are matched raw and percent-decoded (a raw Graph path is decoded by
+# Graph), and the record is read again after each call, so a file a save
+# recorded while a listing ran is hidden from that listing too.
+#
 # Limits, honestly: it matches ids as text, so it hides a file only where its
 # id appears (a listing, a link); a result that names the file without its id
 # (an activity feed, a notification quoting its title) still shows the name. A
 # copy someone makes of it is a new file and isn't covered. Someone signed in
 # to the Executive's account outside the app sees everything. The lookup
 # fails closed for the file tools (``_FILE_TOOL_RE``: Drive, OneDrive, Docs,
-# Sheets, Slides): when the tables can't be read they are refused, while mail
+# Sheets, Slides, Excel): when the tables can't be read they are refused, while mail
 # and calendar tools run unfiltered.
-_FILE_TOOL_RE = re.compile(r"drive|folder|file|download_bytes|doc|sheet|slide|presentation")
+_FILE_TOOL_RE = re.compile(
+    r"drive|folder|file|download_bytes|doc|sheet|slide|presentation|excel|workbook"
+)
 _SAVED_FILE_REFUSAL = (
     "{tool} was not run: that file is private to the person it was saved for "
     "and isn't available in this conversation. Do not retry."
@@ -1176,20 +1182,34 @@ def _arguments_text(arguments: Any) -> str:
         return str(arguments)
 
 
+def _argument_spellings(arguments: Any) -> tuple[str, ...]:
+    """The arguments as text, raw and percent-decoded until stable: a raw
+    Graph path (``download-bytes``) is decoded by Graph, so "%30%31…" names
+    the same item as "01…"."""
+    spellings = [_arguments_text(arguments)]
+    for _ in range(3):
+        decoded = unquote(spellings[-1])
+        if decoded == spellings[-1]:
+            break
+        spellings.append(decoded)
+    return tuple(spellings)
+
+
+def _names_any(arguments: Any, ids: frozenset[str]) -> bool:
+    return any(
+        item_id in text for text in _argument_spellings(arguments) for item_id in ids
+    )
+
+
 def _names_saved_file(arguments: Any, hidden: frozenset[str]) -> bool:
-    if not hidden:
-        return False
-    text = _arguments_text(arguments)
-    return any(file_id in text for file_id in hidden)
+    return bool(hidden) and _names_any(arguments, hidden)
 
 
 def _names_saved_folder(normalized: str, arguments: Any, folders: frozenset[str]) -> bool:
     """Whether a model call names a folder the saves made, by id anywhere in
     its arguments, or (OneDrive) by a path through a folder of that name."""
-    if folders:
-        text = _arguments_text(arguments)
-        if any(folder_id in text for folder_id in folders):
-            return True
+    if folders and _names_any(arguments, folders):
+        return True
     if not normalized.startswith(_M365_PREFIX):
         return False
     from openexecutive.delegation.saved_files import FOLDER_NAME
@@ -3490,6 +3510,14 @@ class MCPGateway:
             and not _reveal_tokens.get()
         ):
             result_text = hide_roster_tokens(result_text)
+        if not code_built:
+            # Read again: a save that landed while this call ran (its file
+            # already in a listing, recorded only once its upload returned)
+            # is hidden too.
+            after = _saved_files_hidden(normalized)
+            if isinstance(after, str):
+                return after
+            hidden = _SavedView(hidden.files | after.files, hidden.folders | after.folders)
         if hidden:
             # Before anything below keeps or reads the result.
             result_text = _hide_saved_files(result_text, hidden.files)
