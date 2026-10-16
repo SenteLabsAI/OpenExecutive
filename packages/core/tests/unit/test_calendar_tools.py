@@ -1029,3 +1029,50 @@ def test_only_someone_on_the_team_asking_directly_counts(
 
 def test_no_session_does_not_count() -> None:
     assert _real_asked_on_a_verified_surface(None) is False
+
+
+# The approval card under a web chat reply: only for the person who approves.
+@pytest.mark.parametrize(
+    ("surface", "principal", "caller", "approver", "private", "expected"),
+    [
+        ({"from_web_chat": True}, True, 1, None, False, True),
+        ({"from_web_chat": True}, True, 1, 7, True, True),
+        ({"from_web_chat": True}, False, 7, 7, False, True),
+        ({"from_web_chat": True}, False, 7, 7, True, False),
+        ({"from_web_chat": True}, False, 7, 8, False, False),
+        ({"from_web_chat": True}, False, None, None, False, False),
+        ({"from_web_chat": False, "origin_channel": "slack"}, True, 1, None, False, False),
+    ],
+)
+def test_the_card_shows_in_chat_only_for_its_approver(
+    surface: dict[str, Any], principal: bool, caller: int | None,
+    approver: int | None, private: bool, expected: bool,
+) -> None:
+    from openexecutive.orchestrator.calendar_tools import _approval_card_here
+
+    session = SimpleNamespace(caller_person_id=caller, **surface)
+    with patch(
+        "openexecutive.orchestrator.people_tools.is_principal_on_verified_surface",
+        return_value=principal,
+    ):
+        assert _approval_card_here(session, approver, private) is expected
+    assert _approval_card_here(None, approver, private) is False
+
+
+def test_a_proposal_says_where_its_card_is() -> None:
+    pid = _add_person("Alice", "alice@example.com")
+    with patch(
+        "openexecutive.orchestrator.calendar_tools._approval_card_here", return_value=True,
+    ):
+        r = _call({
+            "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+            "attendee_person_ids": [pid], "confidence": 0.9,
+        })
+        again = _call({
+            "title": "Sync", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+            "attendee_person_ids": [pid], "confidence": 0.9,
+        })
+    assert r["status"] == "proposed" and r["approve_here"] is True
+    assert "right here in the chat" in r["message"]
+    assert again["status"] == "already_proposed" and again["approve_here"] is True
+    assert again["decision_instance_id"] == r["decision_instance_id"]

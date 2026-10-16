@@ -506,6 +506,31 @@ def _propose_via_decision_alert(
         )
 
 
+# What the model is told when the person in this web chat approves the booking
+# themselves: the card sits under its reply (action_chips carries its id), so
+# it should point there, not send them to the briefing.
+_CARD_HERE = (
+    "The approval card is shown right here in the chat, under your reply, and "
+    "also on the briefing. The booking happens when they tap Approve on it; "
+    "nothing in the chat books it."
+)
+
+
+def _approval_card_here(session: Any, approver_person_id: int | None, private: bool) -> bool:
+    """Whether the person in this web chat may approve the booking, so its card
+    is shown under the reply. The same rule as ``decisions._resolver``: the
+    principal, or the approver it went to unless it is the principal's private
+    booking. Any other surface (Slack, email, a scheduled run) shows no card."""
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+    if session is None or not getattr(session, "from_web_chat", False):
+        return False
+    if is_principal_on_verified_surface(session):
+        return True
+    caller = getattr(session, "caller_person_id", None)
+    return not private and caller is not None and caller == approver_person_id
+
+
 def _asked_on_a_verified_surface(session: Any) -> bool:
     """Whether someone on the team started this turn on a surface that
     verified who they are: the principal (``is_principal_on_verified_surface``)
@@ -677,10 +702,17 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     idem = _idem_key(attendee_emails, start.isoformat(), end.isoformat(), title)
     existing = get_live_by_idem(idem)
     if existing is not None:
+        here = _approval_card_here(
+            current_session.get(), existing.approver_person_id, _payload_private(existing)
+        )
         return json.dumps({
             "status": "already_proposed",
             "decision_instance_id": existing.id,
-            "message": "An identical proposal is already pending approval.",
+            "approve_here": here,
+            "message": (
+                "An identical proposal is already pending approval. " + _CARD_HERE
+                if here else "An identical proposal is already pending approval."
+            ),
         })
 
     # 10. Authority gate.
@@ -796,12 +828,16 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         severity="high" if gate_decision.action == "escalate" else "medium",
         private=private,
     )
+    here = _approval_card_here(session, approver_person_id, private)
     return json.dumps({
         "status": "proposed",
         "decision_instance_id": instance_id,
+        "approve_here": here,
         "message": (
-            "The booking has been surfaced on the briefing for approval. "
-            "The approver will be notified."
+            _CARD_HERE if here else (
+                "The booking has been surfaced on the briefing for approval. "
+                "The approver will be notified."
+            )
         ),
     })
 
