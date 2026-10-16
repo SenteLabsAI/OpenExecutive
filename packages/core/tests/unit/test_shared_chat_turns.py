@@ -170,7 +170,9 @@ def test_a_turn_others_wrote_into_is_not_offered_the_withheld_tools(people: dict
     assert _run_loop(_shared_turn(people["alex"], True), [], _gateway()).offered[0] == steered
 
 
-@pytest.mark.parametrize("tool", ["message_person", "send_company_broadcast", "upsert_person"])
+@pytest.mark.parametrize(
+    "tool", ["message_person", "send_company_broadcast", "upsert_person", "create_calendar_event"]
+)
 def test_a_turn_others_wrote_into_refuses_a_withheld_tool(people: dict[str, int], tool: str) -> None:
     from openexecutive.orchestrator import executive as executive_module
 
@@ -209,9 +211,12 @@ def test_a_turn_others_wrote_into_refuses_through_use_tool(people: dict[str, int
         "google_workspace__draft_gmail_message",
         "microsoft_365__send-mail",
         "microsoft_365__reply-mail-message",
+        "google_workspace__manage_event",
+        "microsoft_365__create-calendar-event",
+        "microsoft_365__cancel-calendar-event",
     ],
 )
-def test_a_turn_others_wrote_into_sends_no_mail_through_the_gateway(
+def test_a_turn_others_wrote_into_sends_no_mail_or_invites_through_the_gateway(
     people: dict[str, int], name: str
 ) -> None:
     gateway = _gateway()
@@ -233,3 +238,7 @@ def test_mail_reads_and_the_owners_own_turn_are_left_alone() -> None:
     assert shared_chat_withholds("call_tool", send) is True
     assert shared_chat_withholds("call_tool", {"name": 3}) is False
     assert shared_chat_withholds("list_people", {}) is False
+    events = {"name": "google_workspace__get_events", "arguments": {}}
+    assert shared_chat_withholds("call_tool", events) is False
+    for name in ("cancel_calendar_event", "create_calendar_event", "create_instant_meeting"):
+        assert name in SHARED_CHAT_WITHHELD_TOOLS
