@@ -5784,6 +5784,16 @@ external_monitoring:
     research grounding is the provider web_search path (Anthropic native /
     OpenRouter web plugin). A deployment that still sets the removed
     variables is unaffected (unknown env vars are ignored).
+    The guard holds across redirects and DNS changes: fetch_bounded
+    (`monitoring/sources/_http.py`) follows redirects itself, at most
+    MAX_REDIRECTS (3), and resolves and checks every hop, the first
+    included, against the same public-address rule as
+    validate_target_url. It then connects to the address it checked,
+    keeping the hostname in the Host header and the TLS server name, so a
+    public URL that redirects to 127.0.0.1, 169.254.169.254 or a private
+    IPv6 address, or a name that resolves differently on a second lookup,
+    is never fetched. A refused hop raises BlockedTargetError, an
+    httpx.HTTPError, so adapters log it and skip the tick.
   pipeline: |
     openexecutive.monitoring.pipeline — `run_external_monitor_scan(now)`
     is the per-tick entry point. It walks
