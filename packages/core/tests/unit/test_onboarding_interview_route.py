@@ -1270,3 +1270,143 @@ def test_an_abandoned_stored_session_is_swept_on_the_next_read(
     with sqlite3.connect(interview_store._path()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM onboarding_interviews").fetchone()[0] == 0
     assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+# ── changing an earlier answer (/onboard/interview/revise) ───────────────────
+
+
+def _two_answers(client: TestClient, seeded: list[Any]) -> str:
+    seeded.append(iv.Question(question="What do you sell?"))
+    sid = _start(client, "We are Northwind.")
+    seeded.append(iv.Question(question="How big is the team?"))
+    client.post("/onboard/interview/message", json={"session_id": sid, "message": "Tools."})
+    seeded.append(iv.Question(question="Who runs ops?"))
+    client.post("/onboard/interview/message", json={"session_id": sid, "message": "Forty."})
+    return sid
+
+
+def test_revise_drops_what_followed_and_asks_again(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    assert client.get(f"/onboard/interview/{sid}").json()["questions_asked"] == 3
+
+    seeded.append(iv.Question(question="Who are your customers?", hint="Trades?"))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 1, "message": "Tool rentals."},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["question"] == "Who are your customers?"
+    assert body["question_hint"] == "Trades?"
+    assert body["questions_asked"] == 2
+    turns = [t["text"] for t in client.get(f"/onboard/interview/{sid}").json()["turns"]]
+    assert turns == [
+        "We are Northwind.",
+        "What do you sell?",
+        "Tool rentals.",
+        "Who are your customers?",
+    ]
+
+
+def test_revise_can_redraft_and_clears_a_stale_draft(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    seeded.append(_draft())
+    client.post("/onboard/interview/draft", json={"session_id": sid})
+
+    seeded.append(_draft(summary="Rentals, not sales."))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 2, "message": "Twelve."},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "draft"
+    assert resp.json()["summary"] == "Rentals, not sales."
+    roles = [t.role for t in route._interview_sessions[sid].transcript]
+    assert all(a != b for a, b in zip(roles, roles[1:])), roles
+
+
+def test_revising_the_description_keeps_its_attachments(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="What do you sell?"))
+    resp = client.post(
+        "/onboard/interview/start",
+        data={"description": "We are Northwind."},
+        files=[("files", ("brief.md", b"Northwind brief text", "text/markdown"))],
+    )
+    sid = resp.json()["session_id"]
+
+    seeded.append(iv.Question(question="Who runs ops?"))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "We are Northwind Tools."},
+    )
+    assert resp.status_code == 200
+    first = route._interview_sessions[sid].transcript[0].text
+    assert first.startswith("We are Northwind Tools.\n\n=== Attached: brief.md")
+    assert "Northwind brief text" in first
+    assert resp.json()["questions_asked"] == 1
+
+
+def test_a_failed_revise_changes_nothing(client: TestClient, seeded: list[Any]) -> None:
+    sid = _two_answers(client, seeded)
+    before = client.get(f"/onboard/interview/{sid}").json()
+
+    seeded.append(iv.InterviewError("The setup assistant is unavailable right now."))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "SECRET-ARR-123"},
+    )
+    assert resp.status_code == 502
+    assert "SECRET-ARR-123" not in resp.text
+    assert client.get(f"/onboard/interview/{sid}").json() == before
+
+
+def test_revise_rejects_a_missing_answer_and_a_saved_session(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    for answer in (-1, 3):
+        resp = client.post(
+            "/onboard/interview/revise",
+            json={"session_id": sid, "answer": answer, "message": "x"},
+        )
+        assert resp.status_code == 404
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 0, "message": "  "}
+    )
+    assert resp.status_code == 422
+
+    route._interview_sessions[sid].saved = True
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 0, "message": "x"}
+    )
+    assert resp.status_code == 409
+
+
+def test_revise_is_owner_only(client: TestClient, seeded: list[Any]) -> None:
+    sid = _two_answers(client, seeded)
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "x"},
+        headers={"x-caller-email": "someone@else.test"},
+    )
+    assert resp.status_code == 404
+
+
+def test_start_over_forgets_the_session_everywhere(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    resp = client.delete(
+        f"/onboard/interview/{sid}", headers={"x-caller-email": "someone@else.test"}
+    )
+    assert resp.status_code == 404
+    assert client.delete(f"/onboard/interview/{sid}").status_code == 204
+    assert sid not in route._interview_sessions
+    assert interview_store.load(sid) is None
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404

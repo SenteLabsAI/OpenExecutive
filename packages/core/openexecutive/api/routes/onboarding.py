@@ -9,7 +9,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
 from openexecutive.api import caller as api_caller
 from openexecutive.api.intake_uploads import (
@@ -25,6 +25,7 @@ from openexecutive.api.models import (
     OnboardDepartmentDraft,
     OnboardMessageRequest,
     OnboardPersonDraft,
+    OnboardReviseRequest,
     OnboardSessionRequest,
     OnboardSessionResponse,
     OnboardStatusResponse,
@@ -303,6 +304,10 @@ class InterviewSession:
 # another worker finds the session again; a saved session's row is deleted
 # there at once, since the transcript carries the company's financials. A
 # page refresh is covered by GET /onboard/interview/{id}.
+# Where an attached file's text starts in the opening turn. An edit to the
+# description (POST /onboard/interview/revise) replaces only what is before it.
+ATTACHED_MARKER = "\n\n=== Attached: "
+
 _interview_sessions: OrderedDict[str, InterviewSession] = OrderedDict()
 _INTERVIEW_TTL_SECONDS = 2 * 3600
 _MAX_INTERVIEW_SESSIONS = 50
@@ -481,7 +486,7 @@ async def start_interview(
 
     opening = description.strip()
     for name, text in extracted:
-        opening += f"\n\n=== Attached: {name} ===\n{text[:_INTAKE_GEN_CHARS_PER_FILE]}"
+        opening += f"{ATTACHED_MARKER}{name} ===\n{text[:_INTAKE_GEN_CHARS_PER_FILE]}"
 
     if not opening.strip():
         # Nothing to work with yet — ask the opening question without a model
@@ -524,7 +529,7 @@ async def understand_description(
     extracted = await _gather_intake_attachments(files or [])
     text = description.strip()
     for name, body in extracted:
-        text += f"\n\n=== Attached: {name} ===\n{body[:_INTAKE_GEN_CHARS_PER_FILE]}"
+        text += f"{ATTACHED_MARKER}{name} ===\n{body[:_INTAKE_GEN_CHARS_PER_FILE]}"
     if not text.strip():
         raise HTTPException(status_code=422, detail="Tell me a little about your work first.")
     try:
@@ -568,6 +573,76 @@ async def interview_message(body: OnboardMessageRequest, request: Request) -> On
     # turn succeeds. Clearing it up front would mean a 502 destroyed the draft
     # the user was in the middle of reviewing.
     return await _advance_interview(body.session_id, session)
+
+
+@router.post("/onboard/interview/revise", response_model=OnboardTurnResponse)
+async def interview_revise(body: OnboardReviseRequest, request: Request) -> OnboardTurnResponse:
+    """Change an earlier answer and carry on from there.
+
+    Everything after that answer is dropped (the questions it led to and any
+    draft), the question count goes back to what had been asked before it,
+    and the interviewer runs again: a new question, or a fresh draft when it
+    already has enough. Editing the description keeps the files attached to
+    it. Nothing changes unless the new turn succeeds, so a 502 leaves the
+    interview as it was.
+    """
+    if len(body.message) > ONBOARD_MESSAGE_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Message is too long (limit {ONBOARD_MESSAGE_MAX_CHARS:,} characters).",
+        )
+    session = _get_interview(body.session_id, request)
+    if session.saved:
+        raise HTTPException(status_code=409, detail="This setup session was already saved.")
+    if not body.message.strip():
+        raise HTTPException(status_code=422, detail="Message is empty.")
+    answers = [i for i, t in enumerate(session.transcript) if t.role == "user"]
+    if not 0 <= body.answer < len(answers):
+        raise HTTPException(status_code=404, detail="That answer is not in this setup session.")
+
+    at = answers[body.answer]
+    text = body.message.strip()
+    if body.answer == 0:
+        # The opening turn carries the attached files' text after the
+        # description; an edit replaces only what was typed.
+        old = session.transcript[at].text
+        cut = old.find(ATTACHED_MARKER)
+        if cut != -1:
+            text += old[cut:]
+    kept = session.transcript[:at]
+    if transcript_chars(kept) + len(text) > MAX_TRANSCRIPT_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This setup conversation has gotten long. Draft the profile "
+                "now and edit it directly."
+            ),
+        )
+
+    before = (session.transcript, session.questions_asked, session.draft, session.last_hint)
+    session.transcript = [*kept, Turn(role="user", text=text)]
+    # Every assistant turn before the edit was a question, or a draft the
+    # person answered past; counting both errs towards fewer questions.
+    session.questions_asked = sum(1 for t in kept if t.role == "assistant")
+    session.draft = None
+    session.last_hint = ""
+    try:
+        return await _advance_interview(body.session_id, session)
+    except HTTPException:
+        session.transcript, session.questions_asked, session.draft, session.last_hint = before
+        raise
+
+
+@router.delete("/onboard/interview/{session_id}", status_code=204)
+async def discard_interview(session_id: str, request: Request) -> Response:
+    """Start over: forget this setup session here and in the store at once.
+
+    Only its owner can (someone else's gets the same 404 as an unknown id).
+    """
+    _get_interview(session_id, request)
+    _interview_sessions.pop(session_id, None)
+    interview_store.delete(session_id)
+    return Response(status_code=204)
 
 
 @router.post("/onboard/interview/draft", response_model=OnboardTurnResponse)

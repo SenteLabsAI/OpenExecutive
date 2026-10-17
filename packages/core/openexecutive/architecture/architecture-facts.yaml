@@ -9218,7 +9218,13 @@ company_onboarding:
     POST /onboard/interview/understand (multipart: description + files[]; one model call, no session, returns mode/role/company/focus where the text says so),
     POST /onboard/interview/start (multipart: description + files[]),
     POST /onboard/interview/message, POST /onboard/interview/draft,
-    GET /onboard/interview/{session_id}, POST /onboard/interview/commit.
+    POST /onboard/interview/revise (change one earlier answer, 0 = the
+    description, which keeps its attached files; drops every turn after it,
+    resets questions_asked to the assistant turns before it, and runs the
+    interviewer again; a failed turn restores the session),
+    GET /onboard/interview/{session_id}, DELETE /onboard/interview/{session_id}
+    (Start over: removes the session and its stored row at once),
+    POST /onboard/interview/commit.
     The original wizard endpoints (/onboard/start, /onboard/answer,
     /onboard/status/{id}) still serve the form fallback at /onboard?mode=form
     and the `openexecutive onboard` CLI. /onboard/start reads the workspace

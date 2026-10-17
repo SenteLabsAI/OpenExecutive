@@ -455,6 +455,27 @@ export async function forceOnboardDraft(sessionId: string): Promise<OnboardTurn>
   return res.json();
 }
 
+/** Change one of the person's earlier answers (0 = the description) and carry on from there. */
+export async function reviseOnboardAnswer(
+  sessionId: string,
+  answer: number,
+  message: string
+): Promise<OnboardTurn> {
+  const res = await fetch(`${API_BASE}/onboard/interview/revise`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, answer, message }),
+  });
+  if (!res.ok) throw await onboardError(res, "Could not change that answer");
+  return res.json();
+}
+
+/** Start over: the setup session is forgotten on the server at once. */
+export async function discardOnboardInterview(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/onboard/interview/${sessionId}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 404) throw new Error(`${res.status}`);
+}
+
 export async function getOnboardInterview(sessionId: string): Promise<OnboardSession> {
   const res = await fetch(`${API_BASE}/onboard/interview/${sessionId}`);
   if (!res.ok) throw new Error(`${res.status}`);
