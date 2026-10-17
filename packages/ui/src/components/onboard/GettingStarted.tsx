@@ -10,6 +10,7 @@ import {
   checklistVisible,
   checklistProgress,
   gettingStartedItems,
+  opensInPlace,
   recall,
   remember,
   STORAGE_KEYS,
@@ -125,10 +126,10 @@ export function GettingStartedCard({
               </p>
               <p className="text-[13px] text-fg-muted leading-snug">{item.detail}</p>
             </div>
-            {!item.done && item.id === "ask" && onAsk ? (
+            {opensInPlace(item, Boolean(onAsk)) ? (
               <button
                 type="button"
-                onClick={onAsk}
+                onClick={() => onAsk?.()}
                 className={buttonClass(item.optional ? "secondary" : "primary", "sm", "flex-shrink-0")}
               >
                 {item.action}
