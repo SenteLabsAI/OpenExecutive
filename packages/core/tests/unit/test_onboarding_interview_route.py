@@ -1326,7 +1326,7 @@ def test_revise_can_redraft_and_clears_a_stale_draft(
     assert resp.json()["phase"] == "draft"
     assert resp.json()["summary"] == "Rentals, not sales."
     roles = [t.role for t in route._interview_sessions[sid].transcript]
-    assert all(a != b for a, b in zip(roles, roles[1:])), roles
+    assert all(a != b for a, b in zip(roles, roles[1:], strict=False)), roles
 
 
 def test_revising_the_description_keeps_its_attachments(
