@@ -4192,6 +4192,18 @@ export async function createGoal(slug: string, body: GoalCreate): Promise<Goal> 
   return res.json();
 }
 
+/** Add a goal by area name: an existing area by slug or title, else a new
+ * one of that name, else (blank) "General". For a workspace with no areas. */
+export async function createGoalInArea(area: string, body: GoalCreate): Promise<Goal> {
+  const res = await fetch(`${API_BASE}/goals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, area }),
+  });
+  if (!res.ok) throw await goalError(res, "Couldn't add the goal");
+  return res.json();
+}
+
 export interface GoalPatch {
   period_type?: PeriodType;
   period_value?: string;
