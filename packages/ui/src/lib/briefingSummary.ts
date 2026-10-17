@@ -51,7 +51,7 @@ export function briefingSummary(c: SummaryCounts): SummaryPart[] {
     });
   if (c.handledOvernight > 0)
     parts.push({
-      text: `The Executive handled ${c.handledOvernight} overnight`,
+      text: `The Executive handled ${c.handledOvernight} on its own`,
       target: { kind: "panel", panel: "handled" },
     });
   if (c.peopleOverdue > 0)

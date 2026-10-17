@@ -580,7 +580,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
       tiles.push({
         key: "handled",
         value: String(handledRows.length),
-        label: "Handled overnight",
+        label: "Handled",
         sub: "by the Executive",
         subTone: "emerald",
       });
@@ -974,7 +974,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
               <SidePanel open={openPanel === "inFlight"} onClose={() => setOpenPanel(null)} title="Under way">
                 <InFlightPanelBody inFlight={inFlight} />
               </SidePanel>
-              <SidePanel open={openPanel === "handled"} onClose={() => setOpenPanel(null)} title="Handled overnight">
+              <SidePanel open={openPanel === "handled"} onClose={() => setOpenPanel(null)} title="Handled">
                 <HandledPanelBody
                   items={handledOvernight}
                   onReopen={handleReopen}
