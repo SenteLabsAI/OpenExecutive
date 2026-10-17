@@ -457,6 +457,20 @@ export type SettingsPageId =
   | "advanced"
   | "about";
 
+// The headed groups the Settings hub sorts its pages into, in order.
+export type SettingsGroupId = "you" | "company" | "more";
+
+export interface SettingsGroupDef {
+  id: SettingsGroupId;
+  label: string;
+}
+
+export const SETTINGS_GROUPS: SettingsGroupDef[] = [
+  { id: "you", label: "You and your Executive" },
+  { id: "company", label: "Company" },
+  { id: "more", label: "More" },
+];
+
 export interface SettingsPageDef {
   id: SettingsPageId;
   label: string;
@@ -465,11 +479,14 @@ export interface SettingsPageDef {
   /** What's on the page, as the hub tile says it. */
   description: string;
   hashes: string[];
+  /** The hub group the page is listed under. */
+  group: SettingsGroupId;
 }
 
 export const SETTINGS_PAGES: SettingsPageDef[] = [
   {
     id: "executive",
+    group: "you",
     label: "Your Executive",
     href: "/settings/executive",
     icon: "cog",
@@ -478,6 +495,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
   },
   {
     id: "notifications",
+    group: "you",
     label: "Notifications",
     href: "/settings/notifications",
     icon: "bell",
@@ -486,6 +504,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
   },
   {
     id: "memory",
+    group: "you",
     label: "About you",
     href: "/settings/memory",
     icon: "user",
@@ -494,6 +513,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
   },
   {
     id: "workspace",
+    group: "company",
     label: "Workspace",
     href: "/settings/workspace",
     icon: "building",
@@ -502,6 +522,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
   },
   {
     id: "advanced",
+    group: "more",
     label: "Advanced",
     href: "/settings/advanced",
     icon: "grid",
@@ -511,6 +532,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
   },
   {
     id: "about",
+    group: "more",
     label: "About",
     href: "/settings/about",
     icon: "info",
@@ -518,6 +540,17 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     hashes: ["about"],
   },
 ];
+
+// The hub's groups with the pages in each, in group order and each page in
+// the order given; a group with no page left is dropped.
+export function groupSettingsPages<P extends SettingsPageDef>(
+  pages: P[],
+  groups: SettingsGroupDef[] = SETTINGS_GROUPS,
+): { group: SettingsGroupDef; pages: P[] }[] {
+  return groups
+    .map((group) => ({ group, pages: pages.filter((p) => p.group === group.id) }))
+    .filter((g) => g.pages.length > 0);
+}
 
 // The page an old `/settings#<hash>` link meant, or null for no hash or one
 // that never named a section. Takes the hash with or without its "#".
