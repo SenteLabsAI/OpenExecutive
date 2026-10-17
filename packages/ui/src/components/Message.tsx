@@ -15,6 +15,7 @@ import { hostOf } from "@/lib/url";
 import { initials } from "@/lib/initials";
 import FeatureName from "@/components/FeatureName";
 import { ChatActionCards } from "@/components/ActionCards";
+import { useExecutiveName } from "@/components/executive/ExecutiveStatusContext";
 
 interface MessageProps {
   role: "user" | "assistant";
@@ -270,6 +271,7 @@ export default function Message({
   onEdit,
   author,
 }: MessageProps) {
+  const executiveName = useExecutiveName();
   // Approval cards this reply left, shown under it (ActionCards).
   const cardIds = useMemo(
     () =>
@@ -322,7 +324,7 @@ export default function Message({
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <div className="text-xs text-fg-muted mb-2 font-medium tracking-wide uppercase">Executive</div>
+        <div className="text-xs text-fg-muted mb-2 font-medium tracking-wide uppercase">{executiveName}</div>
         <div className="prose prose-invert prose-sm max-w-none
           prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:bg-surface-overlay prose-code:before:content-none prose-code:after:content-none
           prose-pre:bg-surface-overlay prose-pre:text-fg prose-pre:border

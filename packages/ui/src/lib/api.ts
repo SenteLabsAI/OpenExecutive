@@ -1578,6 +1578,8 @@ export interface ExecutiveStatus {
   held_actions: number;
   // Whether the signed-in viewer may resume (principal-only once one exists).
   can_resume: boolean;
+  // What the Executive calls itself (EXEC_DISPLAY_NAME).
+  name?: string;
 }
 
 export async function getExecutiveStatus(signal?: AbortSignal): Promise<ExecutiveStatus> {

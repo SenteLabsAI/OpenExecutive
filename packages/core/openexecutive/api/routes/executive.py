@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from openexecutive.api import caller as api_caller
+from openexecutive.config import get_settings
 from openexecutive.scheduler import pause as pause_store
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,9 @@ class ExecutiveStatus(BaseModel):
     held_actions: int = 0
     # Whether THIS caller may resume (principal-only once one exists).
     can_resume: bool = False
+    # What the Executive calls itself (EXEC_DISPLAY_NAME): the label over its
+    # replies in the web chat.
+    name: str = ""
 
 
 class PauseBody(BaseModel):
@@ -57,6 +61,7 @@ def _status(request: Request) -> ExecutiveStatus:
         **state.model_dump(),
         held_actions=pause_store.count_held_actions(),
         can_resume=_may_resume(request),
+        name=get_settings().exec_display_name.strip(),
     )
 
 

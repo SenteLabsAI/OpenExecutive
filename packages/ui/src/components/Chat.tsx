@@ -43,6 +43,7 @@ import {
   type LiveTurn,
 } from "@/lib/liveChat";
 import { useLiveChat } from "@/lib/useLiveChat";
+import { useExecutiveName } from "@/components/executive/ExecutiveStatusContext";
 import { confirmRedoText, dropLastTurn, lastTurn } from "@/lib/chatTurns";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { matchingMessages } from "@/lib/chatSearch";
@@ -119,6 +120,7 @@ const FALLBACK_SUBTITLE =
 export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart, initialFind, member, shareRequest }: ChatProps) {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
+  const executiveName = useExecutiveName();
 
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages ?? []);
   const [input, setInput] = useState(initialInput ?? "");
@@ -1129,7 +1131,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                     <BrandMark size="md" consulting />
                   </div>
                   <div className="flex-1 pt-1.5">
-                    <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">Executive</div>
+                    <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">{executiveName}</div>
                     <TurnStatusRow status={status} committeePhase={committeePhase} showMark={false} />
                   </div>
                 </div>
@@ -1156,7 +1158,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                         <BrandMark size="md" consulting />
                       </div>
                       <div className="flex-1 pt-1.5">
-                        <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">Executive</div>
+                        <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">{executiveName}</div>
                         <p className="text-sm text-fg-muted" aria-live="polite">
                           {othersTurn.activity ?? FALLBACK_ACTIVITY_LABEL}
                         </p>
