@@ -480,7 +480,9 @@ class OnboardReviseRequest(BaseModel):
 
     session_id: str
     # Which of the person's own answers, oldest first: 0 is the description.
-    answer: int
+    # Defaulted so a missing one gets the route's fixed 404, not a 422 that
+    # echoes the whole body (message included).
+    answer: int = -1
     # No Field(max_length=...) — see ONBOARD_MESSAGE_MAX_CHARS above.
     message: str
 

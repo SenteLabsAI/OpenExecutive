@@ -1410,3 +1410,63 @@ def test_start_over_forgets_the_session_everywhere(
     assert sid not in route._interview_sessions
     assert interview_store.load(sid) is None
     assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+def test_revising_a_files_only_description_keeps_every_file(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="What do you sell?"))
+    resp = client.post(
+        "/onboard/interview/start",
+        data={"description": ""},
+        files=[("files", ("brief.md", b"Northwind brief text", "text/markdown"))],
+    )
+    sid = resp.json()["session_id"]
+    seeded.append(iv.Question(question="Who runs ops?"))
+    client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "We are Northwind."},
+    )
+    first = route._interview_sessions[sid].transcript[0].text
+    assert first.startswith("We are Northwind.\n\n=== Attached: brief.md")
+    assert "Northwind brief text" in first
+
+
+def test_a_revise_missing_its_answer_is_404_without_echo(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "message": "SECRET-ARR-123"}
+    )
+    assert resp.status_code == 404
+    assert "SECRET-ARR-123" not in resp.text
+
+
+def test_an_unexpected_error_mid_revise_restores_the_session(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    seeded.append(_draft())
+    client.post("/onboard/interview/draft", json={"session_id": sid})
+    held = route._interview_sessions[sid]
+    before = (list(held.transcript), held.questions_asked, held.draft)
+
+    seeded.append(RuntimeError("database is locked"))
+    no_raise = TestClient(client.app, raise_server_exceptions=False)
+    resp = no_raise.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 1, "message": "x"}
+    )
+    assert resp.status_code == 500
+    assert (held.transcript, held.questions_asked, held.draft) == before
+
+
+def test_a_turn_finishing_after_start_over_does_not_store_it_again(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    in_flight = route._interview_sessions[sid]
+    assert client.delete(f"/onboard/interview/{sid}").status_code == 204
+    route._persist_interview(sid, in_flight)
+    assert interview_store.load(sid) is None
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404

@@ -297,6 +297,8 @@ class InterviewSession:
     last_touched: float = field(default_factory=time.monotonic)
     # Wall-clock time of the stored copy this one matches (interview_store).
     stored_at: float = 0.0
+    # Start over removed it: a turn still in flight must not write it back.
+    discarded: bool = False
 
 
 # The working table of this process, with a TTL and cap. Every turn is also
@@ -327,6 +329,8 @@ def _sweep_interview_sessions() -> None:
 
 
 def _persist_interview(session_id: str, session: InterviewSession) -> None:
+    if session.discarded:
+        return
     interview_store.save(session_id, session)
 
 
@@ -494,7 +498,9 @@ async def start_interview(
         _persist_interview(session_id, session)
         return _turn_response(session_id, session)
 
-    session.transcript.append(Turn(role="user", text=opening.strip()))
+    # rstrip only: with no description the turn starts at ATTACHED_MARKER,
+    # which an edit of the description (revise) relies on to keep the files.
+    session.transcript.append(Turn(role="user", text=opening.rstrip()))
     try:
         return await _advance_interview(session_id, session)
     except HTTPException:
@@ -628,7 +634,9 @@ async def interview_revise(body: OnboardReviseRequest, request: Request) -> Onbo
     session.last_hint = ""
     try:
         return await _advance_interview(body.session_id, session)
-    except HTTPException:
+    except BaseException:
+        # Anything, not only the mapped model errors: a half-revised session
+        # would have lost its draft and could end on two user turns.
         session.transcript, session.questions_asked, session.draft, session.last_hint = before
         raise
 
@@ -639,7 +647,7 @@ async def discard_interview(session_id: str, request: Request) -> Response:
 
     Only its owner can (someone else's gets the same 404 as an unknown id).
     """
-    _get_interview(session_id, request)
+    _get_interview(session_id, request).discarded = True
     _interview_sessions.pop(session_id, None)
     interview_store.delete(session_id)
     return Response(status_code=204)
