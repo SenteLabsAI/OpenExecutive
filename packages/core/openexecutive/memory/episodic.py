@@ -515,6 +515,40 @@ def initialize_db(db_path: Path | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+        # Chat topics (memory/chat_topics.py): the topic a chat is grouped
+        # under on its owner's Chats page, and who put it there. NULL source =
+        # not looked at yet; 'auto' = the model chose (topic_id NULL = none
+        # fits); 'owner' = the owner moved or ungrouped it, never retagged.
+        if "topic_id" not in _sessions_existing:
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN topic_id INTEGER")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        if "topic_source" not in _sessions_existing:
+            try:
+                conn.execute("ALTER TABLE sessions ADD COLUMN topic_source TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        # One person's topics. `kept` = the owner named, pinned or filed a chat
+        # under it, so it shows even with one chat and is never merged away.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_topics (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_person_id  INTEGER NOT NULL,
+                name             TEXT NOT NULL COLLATE NOCASE,
+                kept             INTEGER NOT NULL DEFAULT 0,
+                pinned_at        TEXT,
+                created_at       TEXT NOT NULL,
+                UNIQUE (owner_person_id, name)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_topic ON sessions(topic_id)"
+        )
         # Who a chat's owner shared it with, to read (session_store.share_session).
         conn.execute(
             """

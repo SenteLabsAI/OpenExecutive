@@ -67,3 +67,44 @@ test("pinned chats come first in Pinned, whatever their date", () => {
     ],
   );
 });
+
+test("topic view: pinned first, then topics in server order, one-offs under Other", async () => {
+  const { groupSessionsByTopic } = await import("../src/lib/sessionGroups.ts");
+  const chat = (session_id, extra = {}) => ({
+    session_id,
+    title: session_id,
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+    message_count: 2,
+    ...extra,
+  });
+  const topics = [
+    { id: 1, name: "Hiring a sales lead", chat_count: 2, kept: false },
+    { id: 2, name: "Acme renewal", chat_count: 1, kept: false },
+    { id: 3, name: "Board prep", chat_count: 1, kept: true },
+  ];
+  const groups = groupSessionsByTopic(
+    [
+      chat("pinned", { topic_id: 1, pinned_at: "2026-10-01T00:00:00Z" }),
+      chat("hire-a", { topic_id: 1 }),
+      chat("loose"),
+      chat("acme", { topic_id: 2 }),
+      chat("hire-b", { topic_id: 1 }),
+      chat("board", { topic_id: 3 }),
+      chat("gone", { topic_id: 99 }),
+    ],
+    topics,
+  );
+  assert.deepEqual(
+    groups.map((g) => [g.label, g.items.map((s) => s.session_id)]),
+    [
+      ["Pinned", ["pinned"]],
+      ["Hiring a sales lead", ["hire-a", "hire-b"]],
+      ["Board prep", ["board"]],
+      // A one-chat topic nobody kept, no topic, or an unknown one: Other, newest first.
+      ["Other", ["loose", "acme", "gone"]],
+    ],
+  );
+  assert.equal(groups[1].topic.id, 1);
+  assert.equal(groups[3].topic, undefined);
+});
