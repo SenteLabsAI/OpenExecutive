@@ -4701,6 +4701,15 @@ export interface AwaitingItem {
   overdue: boolean;
 }
 
+/** Home's first-week card: a goal to set while none is, and the top
+ * findings of the research setup ran. */
+export interface FirstWeekCard {
+  needs_goal: boolean;
+  findings: { title: string; summary: string }[];
+  // Setup was today and no morning brief has gone out yet.
+  brief_tomorrow: boolean;
+}
+
 export interface Today {
   departments: DepartmentBriefItem[];
   people: PersonBriefItem[];
@@ -4713,9 +4722,10 @@ export interface Today {
   // Optional for older API builds + test mocks.
   narrative_generated_at?: string | null;
   narrative_stale?: boolean;
-  // The install's first week: the brief opens with getting-started moves,
-  // so the page doesn't call the day quiet. Optional for older API builds.
+  // The install's first week (the principal's Home only): the first-week
+  // card shows instead of a quiet day. Optional for older API builds.
   first_week?: boolean;
+  first_week_card?: FirstWeekCard | null;
   // In-flight commitments (pending follow-ups/nudges) + people we're awaiting
   // a reply from. Optional/default-empty for older API builds + test mocks.
   in_flight?: InFlightItem[];

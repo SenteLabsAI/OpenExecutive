@@ -2820,9 +2820,15 @@ memory:
       part marks the run private. With Read my calendar on (and the same
       Act as me and gmail_status gates) it also lists up to eight of
       today's events on their own calendar as time and title, declined
-      ones skipped, keys meeting:<event id>, also private. The /today header gets the shared part
-      only (getting_started_shared, no mailbox read); GET /today sets
-      first_week so the UI drops the "Quiet day" banner.
+      ones skipped, keys meeting:<event id>, also private. The /today header
+      does not get the block. Home shows a first-week card instead
+      (first_week.first_week_card, no model call): a fixed goal ask while
+      no goal row exists, up to two findings from the latest team
+      executive_research run (parse_artifact_findings reads the stored
+      artifact's Findings reviewed lines), a Watch list link, and "first
+      morning brief comes tomorrow" on setup day until one is delivered.
+      GET /today sets first_week_card and first_week for the principal
+      only; the UI drops the "Quiet day" banner while there is a card.
     - Due-today reminders (memory.history_reminders, from the scheduler
       tick, 09:00 to 18:00 local) cover only promises made by email
       (approved_reply): chat promises are already open loops the nudge

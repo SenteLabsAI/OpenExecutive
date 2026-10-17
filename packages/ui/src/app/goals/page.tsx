@@ -26,7 +26,13 @@ export default function GoalsPage() {
     let cancelled = false;
     listDepartments()
       .then((ds) => {
-        if (!cancelled) setDepartments(ds);
+        if (cancelled) return;
+        setDepartments(ds);
+        // `?add=1` (Home's first-week card) opens the add form on load.
+        if (new URLSearchParams(window.location.search).get("add") === "1") {
+          const g = groupGoalsByArea(ds);
+          setAddingTo(g.withGoals[0]?.slug ?? g.all[0]?.slug ?? null);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load goals");

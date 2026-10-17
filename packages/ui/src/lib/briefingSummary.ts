@@ -121,19 +121,3 @@ export function proposalStatusChip(
   const age = ageLabel(p.created_at, now);
   return age ? { label: `${age} old`, tone: "neutral" } : null;
 }
-
-/** The line the summary under the greeting shows in the first week: the
- * brief's "**Move today:**" line (the header prompt always ends on one), as
- * plain text, so day one opens on a move rather than "All clear". Null when
- * the brief has no such line or none has been written yet. */
-export function firstWeekMove(narrative: string | null | undefined): string | null {
-  if (!narrative) return null;
-  for (const raw of narrative.split("\n")) {
-    const line = raw.replace(/^[\s>*-]*(?=\*\*)/, "").trim();
-    const m = /^\*\*\s*Move today:?\s*\*\*:?\s*(.+)$/i.exec(line) ?? /^\*\*\s*Move today:\s*(.+?)\*\*\s*$/i.exec(line);
-    if (!m) continue;
-    const text = m[1].replace(/\*\*|__|`/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\s+/g, " ").trim();
-    if (text) return text;
-  }
-  return null;
-}
