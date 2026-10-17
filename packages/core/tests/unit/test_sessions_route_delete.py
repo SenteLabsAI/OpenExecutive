@@ -46,3 +46,21 @@ def test_delete_session_success(client: TestClient) -> None:
 def test_delete_session_not_found(client: TestClient) -> None:
     resp = client.delete("/sessions/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_a_chat_whose_id_holds_a_slash_opens_and_deletes(client: TestClient) -> None:
+    # A Google Chat chat's id carries the space's name. The web proxy sends it
+    # as `~` + base64url (api/path_ids.py); a `%2F` never routes.
+    from openexecutive.api.path_ids import encode_path_id
+
+    principal_id = people_store.upsert_person(full_name="Alex", is_principal=True)
+    sid = "google_chat:spaces/AAQA~6"
+    session_store.create_session(sid, "Offers", "2024-01-01T00:00:00", caller_person_id=principal_id)
+    session_store.save_message(sid, "user", "hi")
+    segment = encode_path_id(sid)
+    assert "/" not in segment
+
+    assert client.get(f"/sessions/{segment}").json()["session_id"] == sid
+    assert [m["content"] for m in client.get(f"/sessions/{segment}/messages").json()] == ["hi"]
+    assert client.delete(f"/sessions/{segment}").status_code == 204
+    assert session_store.get_session_metadata(sid) is None
