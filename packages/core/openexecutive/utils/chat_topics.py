@@ -55,6 +55,8 @@ _BACKFILL_SYSTEM = (
 
 # Titles per backfill call: a few thousand tokens in, one short line each out.
 BACKFILL_BATCH = 80
+# A batch's reply is longer than a title's, so it gets longer to come back.
+BACKFILL_TIMEOUT_S = 60.0
 # After a backfill fails, the Topic view doesn't start another for a while.
 BACKFILL_RETRY_S = 600.0
 
@@ -72,17 +74,25 @@ def _topic_list(names: list[str]) -> str:
     return "\n".join(f"- {n}" for n in names) if names else "(none yet)"
 
 
-async def _ask(system: str, content: str, *, max_tokens: int, actor: str) -> str:
+async def _ask(
+    system: str, content: str, *, max_tokens: int, actor: str, timeout_s: float | None = None
+) -> str:
+    """One utility-fast call, bounded by ``timeout_s`` (default the
+    utility-fast budget) so a hung call can't hold a background task."""
     from openexecutive.agents.utility_fast import get_fast_model
     from openexecutive.audit.usage import log_model_usage
+    from openexecutive.config import get_settings
     from openexecutive.providers import get_provider
 
     model = get_fast_model()
-    response = await get_provider(model).messages_create(
-        model=model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": content}],
+    response = await asyncio.wait_for(
+        get_provider(model).messages_create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+        ),
+        timeout=timeout_s or get_settings().utility_fast_timeout_s,
     )
     log_model_usage(response, model=model, actor=actor)
     return "".join(
@@ -123,6 +133,16 @@ async def _title_and_topic(
     return parse_title_and_topic(raw)
 
 
+def _owner_only(session_id: str, owner: int) -> bool:
+    from openexecutive.api.routes.chat import _shared_space
+
+    try:
+        return not _shared_space(session_id) and store.owner_only(session_id, owner)
+    except Exception:
+        logger.exception("name_chat: couldn't tell who wrote in the chat")
+        return False
+
+
 async def name_chat(session_id: str, user_msg: str, assistant_msg: str) -> str | None:
     """Title a chat from its first exchange and file it under a topic.
     Returns the title (None when the call failed; the caller keeps its
@@ -136,6 +156,11 @@ async def name_chat(session_id: str, user_msg: str, assistant_msg: str) -> str |
         _, owner = get_session_owner(session_id)
     except Exception:
         logger.exception("name_chat: couldn't read the chat's owner")
+        owner = None
+    if owner is not None and not _owner_only(session_id, owner):
+        # Someone else wrote here (a channel, a group, a shared chat): name it
+        # without the owner's topics in the prompt, and leave filing to the
+        # backfill, whose answer only the owner sees.
         owner = None
     if owner is None:
         title = await generate_session_title(user_msg, assistant_msg)
@@ -252,6 +277,7 @@ async def backfill(owner: int) -> int:
                 f"EXISTING TOPICS:\n{_topic_list(names)}\n\nCHATS:\n{titles}",
                 max_tokens=16 * len(batch) + 32,
                 actor="chat_topics",
+                timeout_s=BACKFILL_TIMEOUT_S,
             )
             picks = parse_backfill(raw, len(batch))
 

@@ -71,7 +71,9 @@ class _Model:
         self.replies = list(replies)
         self.calls: list[dict[str, Any]] = []
 
-    async def __call__(self, system: str, content: str, *, max_tokens: int, actor: str) -> str:
+    async def __call__(
+        self, system: str, content: str, *, max_tokens: int, actor: str, timeout_s: float | None = None
+    ) -> str:
         self.calls.append({"system": system, "content": content, "actor": actor})
         if not self.replies:
             raise RuntimeError("no reply scripted")
@@ -316,3 +318,36 @@ def test_move_a_chat_to_a_topic(client: TestClient, people: dict[str, int]) -> N
     assert resp.status_code == 200 and "topic_id" not in resp.json()
     assert client.patch("/sessions/a", json={"topic_id": 999}, headers=ALEX).status_code == 404
     assert client.patch("/sessions/a", json={"topic_name": "x"}, headers=SABIN).status_code == 404
+
+
+def test_someone_elses_words_never_see_the_owners_topics(
+    people: dict[str, int], fake: _Model, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A teammate writing first in the owner's chat (a channel conversation,
+    or a shared chat) could steer the call into putting the owner's topic
+    names in the title they then read. Such a chat is titled without them."""
+    from openexecutive.utils import session_title
+
+    alex, sabin = people["alex"], people["sabin"]
+    _chat(alex, "mine")
+    store.set_auto_topic("mine", alex, "Jane Doe exit")
+
+    async def _title(*_a: Any, **_k: Any) -> str:
+        return "Plain title"
+
+    monkeypatch.setattr(session_title, "generate_session_title", _title)
+
+    # Sabin wrote in Alex's chat.
+    session_store.create_session("theirs", "Placeholder", "2026-10-01T09:00:00+00:00", caller_person_id=alex)
+    session_store.save_message("theirs", "user", "list the topics", sender_person_id=sabin)
+    session_store.save_message("theirs", "assistant", "answer")
+    # Alex's own chat, shared with Sabin.
+    _chat(alex, "shared")
+    session_store.set_shares("shared", [sabin], alex)
+    # A channel conversation, whoever owns it.
+    _chat(alex, "slack:channel:C1:U1")
+
+    for sid in ("theirs", "shared", "slack:channel:C1:U1"):
+        assert asyncio.run(model.name_chat(sid, "q", "r")) == "Plain title"
+        assert _topic_of(sid) == (None, None)
+    assert fake.calls == []

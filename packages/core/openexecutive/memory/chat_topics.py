@@ -242,6 +242,23 @@ def ungroup_topic(owner: int, topic_id: int, db_path: Path = DB_PATH) -> bool:
     return True
 
 
+def owner_only(session_id: str, owner: int, db_path: Path = DB_PATH) -> bool:
+    """Whether only the owner has written in this chat and it is shared with
+    no one, so a prompt may carry the owner's topic names and its title may
+    show them: anyone else could steer the call into echoing them."""
+    with _get_conn(db_path) as conn:
+        if conn.execute(
+            "SELECT 1 FROM session_shares WHERE session_id = ? LIMIT 1", (session_id,)
+        ).fetchone() is not None:
+            return False
+        other = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE session_id = ? AND role = 'user' "
+            "AND sender_person_id IS NOT NULL AND sender_person_id != ? LIMIT 1",
+            (session_id, owner),
+        ).fetchone()
+    return other is None
+
+
 def has_untagged(owner: int, db_path: Path = DB_PATH) -> bool:
     """Whether any of the owner's chats with a message waits for a topic."""
     with _get_conn(db_path) as conn:
