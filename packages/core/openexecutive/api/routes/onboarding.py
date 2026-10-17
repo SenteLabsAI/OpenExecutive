@@ -627,8 +627,9 @@ async def interview_revise(body: OnboardReviseRequest, request: Request) -> Onbo
         )
 
     # The new turn runs on a copy and replaces the session only once it
-    # succeeds: a failure leaves it untouched, and a turn another request
-    # adds meanwhile is never rolled back underneath it.
+    # succeeds, so a failure leaves it untouched. On success the edit wins
+    # over a turn another tab took meanwhile: editing an answer drops
+    # everything after it anyway.
     trial = dataclasses.replace(
         session,
         transcript=[*kept, Turn(role="user", text=text)],
