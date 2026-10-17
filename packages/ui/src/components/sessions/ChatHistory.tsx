@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
@@ -10,8 +10,10 @@ import {
   leaveSharedChat,
   listPeople,
   mergeChatTopic,
+  renameTopicArea,
   setSessionShares,
   ungroupChatTopic,
+  ungroupTopicArea,
   updateChatTopic,
   updateSession,
   type ChatTopic,
@@ -22,9 +24,18 @@ import { downloadChat } from "@/lib/downloadChat";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import { highlightParts, matchLabel } from "@/lib/chatSearch";
 import { CHANNEL_LABELS, sessionChannel, sessionTitle } from "@/lib/sessionChannel";
-import { groupSessionsByDate, groupSessionsByTopic, type GroupKey } from "@/lib/sessionGroups";
+import {
+  activeLabel,
+  groupSessionsByDate,
+  layoutTopics,
+  type GroupKey,
+  type TopicEntry,
+  type TopicGroup,
+} from "@/lib/sessionGroups";
 
 const GROUP_CAP = 20;
+// Chats an open topic shows before "Show N more".
+const TOPIC_CAP = 3;
 const DEFAULT_COLLAPSED = new Set<string>(["older" satisfies GroupKey, "other"]);
 
 export type ChatsView = "date" | "topic";
@@ -69,10 +80,21 @@ export default function ChatHistory({
   const [collapsedOverride, setCollapsedOverride] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Set<string>>(new Set());
 
-  const groups: ListGroup[] = useMemo(
-    () => (view === "topic" ? groupSessionsByTopic(sessions, topics) : groupSessionsByDate(sessions)),
-    [view, sessions, topics],
-  );
+  const groups: ListGroup[] = useMemo(() => (view === "topic" ? [] : groupSessionsByDate(sessions)), [view, sessions]);
+
+  if (view === "topic") {
+    return (
+      <TopicHistory
+        sessions={sessions}
+        searching={searching}
+        query={query}
+        topics={topics}
+        onSelect={onSelect}
+        onDelete={onDelete}
+        onChanged={onChanged}
+      />
+    );
+  }
 
   if (groups.length === 0) {
     return <p className="px-1 py-6 text-[15px] text-fg-muted">No conversations match.</p>;
@@ -142,6 +164,282 @@ export default function ChatHistory({
         );
       })}
     </div>
+  );
+}
+
+// The Topic view: pinned chats, then topics (and areas over related ones)
+// in bands by how long since their last chat, then Other. The active band
+// shows its topics; a quiet band folds into one line until opened. An open
+// topic shows its newest few chats. A search opens everything.
+function TopicHistory({
+  sessions,
+  searching,
+  query,
+  topics,
+  onSelect,
+  onDelete,
+  onChanged,
+}: {
+  sessions: SessionSummary[];
+  searching: boolean;
+  query: string;
+  topics: ChatTopic[];
+  onSelect: (sessionId: string) => void;
+  onDelete: (sessionId: string) => Promise<boolean>;
+  onChanged: () => void;
+}) {
+  const layout = useMemo(() => layoutTopics(sessions, topics), [sessions, topics]);
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  const [showAll, setShowAll] = useState<Set<string>>(new Set());
+
+  const firstActive = layout.bands[0]?.key === "active" ? layout.bands[0].entries[0] : undefined;
+  // Open by default: the most recent active topic (and an area's newest).
+  const openByDefault = new Set<string>(
+    firstActive ? [firstActive.key, ...(firstActive.children[0] ? [firstActive.children[0].key] : [])] : [],
+  );
+  const isOpen = (key: string) => searching || (key in opened ? opened[key] : openByDefault.has(key));
+  const toggle = (key: string) => setOpened((prev) => ({ ...prev, [key]: !isOpen(key) }));
+
+  if (!layout.pinned && !layout.other && layout.bands.length === 0) {
+    return <p className="px-1 py-6 text-[15px] text-fg-muted">No conversations match.</p>;
+  }
+
+  const rows = (key: string, items: SessionSummary[], indent: string) => {
+    const all = searching || showAll.has(key);
+    const visible = all ? items : items.slice(0, TOPIC_CAP);
+    const hidden = items.length - visible.length;
+    return (
+      <div className={`mt-1 mb-2 space-y-2 ${indent}`}>
+        {visible.map((s) => (
+          <ChatRow
+            key={s.session_id}
+            session={s}
+            query={query}
+            topics={topics}
+            onSelect={onSelect}
+            onDelete={onDelete}
+            onChanged={onChanged}
+          />
+        ))}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAll((prev) => new Set(prev).add(key))}
+            className="w-full text-left min-h-[40px] px-4 text-sm font-medium text-accent hover:text-fg cursor-pointer"
+          >
+            Show {hidden} more
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const header = ({
+    key,
+    label,
+    count,
+    preview,
+    when,
+    menu,
+    strong,
+    indent = "",
+  }: {
+    key: string;
+    label: string;
+    count: number;
+    preview?: string;
+    when?: string;
+    menu?: ReactNode;
+    strong?: boolean;
+    indent?: string;
+  }) => {
+    const open = isOpen(key);
+    return (
+      <div className={`flex flex-wrap items-center gap-1 border-b border-line ${indent}`}>
+        <button
+          type="button"
+          onClick={() => toggle(key)}
+          aria-expanded={open}
+          className="flex-1 min-w-0 flex items-center gap-2 min-h-[44px] px-1 text-left text-fg-muted hover:text-fg transition-colors cursor-pointer"
+        >
+          <Icon
+            name="chevron-right"
+            size="w-3.5 h-3.5"
+            className={`flex-shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+          />
+          <span className={`truncate font-semibold ${strong ? "text-[15px] text-fg" : "text-sm text-fg"}`}>{label}</span>
+          <span className="text-sm text-fg-subtle flex-shrink-0">{count}</span>
+          {!open && preview && (
+            <span className="hidden sm:inline min-w-0 truncate text-sm text-fg-subtle">{preview}</span>
+          )}
+          {when && <span className="ml-auto pl-2 flex-shrink-0 text-xs text-fg-subtle">{when}</span>}
+        </button>
+        {menu}
+      </div>
+    );
+  };
+
+  const topicBlock = (g: TopicGroup, indent: string) => (
+    <section key={g.key}>
+      {header({
+        key: g.key,
+        label: g.label,
+        count: g.items.length,
+        preview: g.items[0] ? sessionTitle(g.items[0]) : undefined,
+        when: activeLabel(g.items[0]?.updated_at ?? ""),
+        menu: g.topic ? <TopicMenu topic={g.topic} topics={topics} onChanged={onChanged} /> : undefined,
+        indent,
+      })}
+      {isOpen(g.key) && rows(g.key, g.items, indent)}
+    </section>
+  );
+
+  const entryBlock = (e: TopicEntry) =>
+    e.area ? (
+      <section key={e.key}>
+        {header({
+          key: e.key,
+          label: e.label,
+          count: e.items.length,
+          preview: e.children.map((g) => g.label).join(" · "),
+          when: activeLabel(e.lastActive),
+          menu: <AreaMenu area={e.area} onChanged={onChanged} />,
+          strong: true,
+        })}
+        {isOpen(e.key) && e.children.map((g) => topicBlock(g, "ml-6"))}
+      </section>
+    ) : (
+      topicBlock({ key: e.key, label: e.label, topic: e.topic, items: e.items }, "")
+    );
+
+  return (
+    <div>
+      {layout.pinned && (
+        <section>
+          {header({ key: "pinned", label: "Pinned", count: layout.pinned.items.length })}
+          {isOpen("pinned") && rows("pinned", layout.pinned.items, "")}
+        </section>
+      )}
+      {layout.bands.map((band) => {
+        const bandKey = `band:${band.key}`;
+        return (
+          <section key={band.key} aria-label={band.label} className="mt-6">
+            <h2 className="px-1 mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">{band.label}</h2>
+            {band.key === "active" ? (
+              band.entries.map(entryBlock)
+            ) : (
+              <>
+                {header({
+                  key: bandKey,
+                  label: `${band.entries.length} topic${band.entries.length === 1 ? "" : "s"}`,
+                  count: band.entries.reduce((n, e) => n + e.items.length, 0),
+                  preview: band.entries.map((e) => e.label).join(" · "),
+                })}
+                {isOpen(bandKey) && <div className="ml-6">{band.entries.map(entryBlock)}</div>}
+              </>
+            )}
+          </section>
+        );
+      })}
+      {layout.other && (
+        <section className="mt-6">
+          {header({ key: "other", label: "Other", count: layout.other.items.length, preview: "Chats under no topic" })}
+          {isOpen("other") && rows("other", layout.other.items, "")}
+        </section>
+      )}
+    </div>
+  );
+}
+
+// An area heading's ⋯ menu: Rename area and Ungroup area. Either is kept:
+// the model doesn't put an ungrouped area's topics back under one.
+function AreaMenu({ area, onChanged }: { area: string; onChanged: () => void }) {
+  const [panel, setPanel] = useState<"rename" | "ungroup" | null>(null);
+  const [name, setName] = useState(area);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      setPanel(null);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't update this area.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const open = (next: "rename" | "ungroup") => {
+    setError(null);
+    setName(area);
+    setPanel(next);
+  };
+
+  return (
+    <>
+      <OverflowMenu
+        label={`More actions for ${area}`}
+        items={[
+          { label: "Rename area", onSelect: () => open("rename") },
+          { label: "Ungroup area", onSelect: () => open("ungroup") },
+        ]}
+      />
+      {panel === "rename" && (
+        <form
+          className="basis-full mt-1 mb-2 flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-surface-elevated px-4 py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const trimmed = name.trim();
+            if (trimmed) void run(() => renameTopicArea(area, trimmed.slice(0, 40)));
+          }}
+        >
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setPanel(null);
+              }
+            }}
+            maxLength={40}
+            autoFocus
+            aria-label="Area name"
+            className="flex-1 min-w-[12rem] h-10 rounded-lg bg-surface border border-line px-3 text-[15px] text-fg focus:outline-none focus:border-accent/60 focus:ring-2 focus:ring-accent/20"
+          />
+          <Button size="sm" variant="primary" type="submit" disabled={!name.trim() || busy}>
+            {busy ? "Saving…" : "Save"}
+          </Button>
+          <Button size="sm" variant="ghost" type="button" onClick={() => setPanel(null)} disabled={busy}>
+            Cancel
+          </Button>
+        </form>
+      )}
+      {panel === "ungroup" && (
+        <div
+          role="alert"
+          className="basis-full mt-1 mb-2 flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-surface-elevated px-4 py-3"
+        >
+          <p className="mr-auto text-sm text-fg">Ungroup {area}? Its topics stay, each on its own.</p>
+          <Button size="sm" variant="primary" onClick={() => void run(() => ungroupTopicArea(area))} disabled={busy}>
+            {busy ? "Ungrouping…" : "Ungroup"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setPanel(null)} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {error && !panel && (
+        <p role="alert" className="basis-full mt-1 rounded-2xl border border-line bg-surface-elevated px-4 py-3 text-sm text-fg">
+          {error}
+        </p>
+      )}
+    </>
   );
 }
 

@@ -3,11 +3,13 @@
 - ``name_chat``: a new chat's first exchange gets its title and its topic in
   the one utility-fast call that used to give only the title.
 - ``tidy_new_topic``: when that call makes a new topic, one short call over
-  the topic names alone checks it against the owner's other topics and merges
-  it into one that means the same. No call on a turn that made no topic.
+  the topic names alone checks it against the owner's other topics: it merges
+  it into one that means the same, or else puts it under an area it shares
+  with related ones. No call on a turn that made no topic.
 - ``backfill``: chats from before topics (or whose naming failed) are filed
   in batches, from their titles only, the first time the owner opens the
-  Topic view.
+  Topic view; then ``assign_areas`` gives the topics not yet looked at their
+  areas, in one call over the names.
 """
 from __future__ import annotations
 
@@ -36,11 +38,31 @@ _NAME_SYSTEM = (
     "matter."
 )
 
+_AREA_RULE = (
+    "An area is a broader matter that two or more topics share: one property, "
+    "deal, client, fund or project (topics St. Albans Offers and St. Albans "
+    "Disposition share the area St. Albans). Name it in 1-3 words, reusing an "
+    "existing area, written exactly as listed, when one fits."
+)
+
 _TIDY_SYSTEM = (
-    "You keep a person's list of chat topics free of duplicates. You get one "
-    "new topic and their other topics. If the new topic is about the same "
-    "matter as one of the others, reply with that other topic exactly as "
-    "listed. Otherwise reply none. Reply with the topic or none only."
+    "You keep a person's list of chat topics tidy. You get one new topic and "
+    "their other topics, each with its area if it has one. Reply with exactly "
+    "three lines and nothing else:\n"
+    "Same: <the other topic about the same matter as the new one, exactly as "
+    "listed, or none>\n"
+    "Area: <the area the new topic shares with at least one other topic, or "
+    "none>\n"
+    "With: <the other topics in that area that have no area yet, exactly as "
+    "listed, separated by ; , or none>\n" + _AREA_RULE
+)
+
+_AREAS_SYSTEM = (
+    "You group a person's chat topics under areas. You get their topics, "
+    "numbered, each with its area if it has one. For each topic marked new, "
+    "reply with one line in the form <number>: <area>, and nothing else. "
+    + _AREA_RULE
+    + " Write none for a topic that shares its matter with no other topic."
 )
 
 _BACKFILL_SYSTEM = (
@@ -182,44 +204,122 @@ async def name_chat(session_id: str, user_msg: str, assistant_msg: str) -> str |
     return title
 
 
+def _topics_list(topics: list[dict[str, Any]], mark: set[int] | None = None) -> str:
+    lines = []
+    for i, t in enumerate(topics, start=1):
+        line = f"{i}. {t['name']}"
+        if t["area"]:
+            line += f" (area: {t['area']})"
+        elif mark is not None and t["id"] in mark:
+            line += " (new)"
+        lines.append(line)
+    return "\n".join(lines) if lines else "(none yet)"
+
+
+def parse_tidy(raw: str) -> tuple[str | None, str | None, list[str]]:
+    """``Same: …`` / ``Area: …`` / ``With: a; b`` lines. A reply of one bare
+    line is taken as Same, as the call answered before it gave areas."""
+    same: str | None = None
+    area: str | None = None
+    with_: list[str] = []
+    labelled = False
+    for line in raw.splitlines():
+        label, _, rest = line.partition(":")
+        key = label.strip().lower()
+        if key == "same":
+            labelled = True
+            same = store.clean_topic_name(rest)
+        elif key == "area":
+            labelled = True
+            area = store.clean_topic_name(rest)
+        elif key == "with":
+            labelled = True
+            with_ = [n for n in (store.clean_topic_name(p) for p in re.split(r"[;,]", rest)) if n]
+    if not labelled and raw.strip():
+        same = store.clean_topic_name(raw.strip().splitlines()[0])
+    return same, area, with_
+
+
 async def tidy_new_topic(owner: int, topic_id: int) -> int | None:
     """Merge a just-made topic into one of the owner's others that means the
-    same. Returns the topic it was merged into, if any. Leaves it alone once
-    the owner has touched it (renamed, pinned, filed a chat under it)."""
+    same, or else put it under the area it shares with related ones. Returns
+    the topic it was merged into, if any. Leaves the merge alone once the
+    owner has touched the topic (renamed, pinned, filed a chat under it)."""
     try:
         new = await asyncio.to_thread(store.owned_topic, owner, topic_id)
-        if new is None or new["kept"]:
+        if new is None:
             return None
-        others = [n for n in await asyncio.to_thread(store.topic_names, owner)
-                  if n.lower() != str(new["name"]).lower()]
+        all_topics = await asyncio.to_thread(store.topics_with_areas, owner)
+        others = [t for t in all_topics if t["id"] != topic_id]
         if not others:
             return None
         raw = await _ask(
             _TIDY_SYSTEM,
-            f"NEW TOPIC: {new['name']}\n\nOTHER TOPICS:\n{_topic_list(others)}",
-            max_tokens=24,
+            f"NEW TOPIC: {new['name']}\n\nOTHER TOPICS:\n{_topics_list(others)}",
+            max_tokens=64,
             actor="chat_topics",
         )
-        match = store.clean_topic_name(raw.splitlines()[0] if raw else "")
-        if not match:
-            return None
-        by_name = {n.lower(): n for n in others}
-        if match.lower() not in by_name:
-            return None
+        same, area, with_ = parse_tidy(raw)
+        by_name = {str(t["name"]).lower(): t for t in others}
+        if same and same.lower() in by_name and not new["kept"]:
 
-        def _merge() -> int | None:
-            current = store.owned_topic(owner, topic_id)
-            if current is None or current["kept"]:
-                return None
-            into_id = store.topic_id_by_name(owner, by_name[match.lower()])
-            if into_id is None:
-                return None
-            return into_id if store.merge_topics(owner, topic_id, into_id) else None
+            def _merge() -> int | None:
+                current = store.owned_topic(owner, topic_id)
+                if current is None or current["kept"]:
+                    return None
+                into_id = store.topic_id_by_name(owner, str(by_name[same.lower()]["name"]))
+                if into_id is None:
+                    return None
+                return into_id if store.merge_topics(owner, topic_id, into_id) else None
 
-        return await asyncio.to_thread(_merge)
+            merged = await asyncio.to_thread(_merge)
+            if merged is not None:
+                return merged
+        # An area needs another topic in it: one already there, or one named
+        # alongside that has none yet.
+        joining = [by_name[n.lower()]["id"] for n in with_ if n.lower() in by_name and not by_name[n.lower()]["area"]]
+        shared = area is not None and (
+            any(str(t["area"] or "").lower() == area.lower() for t in others) or joining
+        )
+        await asyncio.to_thread(store.set_area, owner, [topic_id, *joining] if shared else [topic_id], area if shared else None)
+        return None
     except Exception:
         logger.exception("tidy_new_topic: failed")
         return None
+
+
+async def assign_areas(owner: int) -> int:
+    """Give the owner's topics not yet looked at their areas, in one call
+    over the topic names. Returns how many got one. Raises when the call
+    fails, so the backfill waits before trying again."""
+    topics = await asyncio.to_thread(store.topics_with_areas, owner)
+    new = {t["id"] for t in topics if t["area"] is None}
+    if len(topics) < 3 or not new:
+        return 0
+    raw = await _ask(
+        _AREAS_SYSTEM,
+        f"TOPICS:\n{_topics_list(topics, new)}",
+        max_tokens=12 * len(new) + 32,
+        actor="chat_topics",
+        timeout_s=BACKFILL_TIMEOUT_S,
+    )
+    picks = parse_backfill(raw, len(topics))
+    # An area counts once two topics share it (an existing one included).
+    existing = [str(t["area"]).lower() for t in topics if t["area"]]
+    chosen = [str(a).lower() for i, a in picks.items() if a and topics[i - 1]["id"] in new]
+    count = {a: existing.count(a) + chosen.count(a) for a in set(existing + chosen)}
+    def _save() -> int:
+        n = 0
+        for i, t in enumerate(topics, start=1):
+            if t["id"] not in new:
+                continue
+            area = picks.get(i)
+            keep = area if area and count.get(area.lower(), 0) >= 2 else None
+            store.set_area(owner, [t["id"]], keep)
+            n += 1 if keep else 0
+        return n
+
+    return await asyncio.to_thread(_save)
 
 
 _LINE = re.compile(r"^\s*(\d+)\s*[:.)\-]\s*(.*)$")
@@ -289,6 +389,7 @@ async def backfill(owner: int) -> int:
                 return n
 
             filed += await asyncio.to_thread(_file)
+        await assign_areas(owner)
         _backfill_failed_at.pop(owner, None)
     except Exception:
         _backfill_failed_at[owner] = time.monotonic()

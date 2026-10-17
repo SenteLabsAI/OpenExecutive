@@ -180,10 +180,74 @@ def test_the_tidy_leaves_a_distinct_topic_and_a_kept_one(people: dict[str, int],
     assert made and new_id is not None
     fake.replies = ["none"]
     assert asyncio.run(model.tidy_new_topic(alex, new_id)) is None
+    # A topic the owner kept is never merged away, whatever the model says.
     store.keep_topic(alex, new_id)
+    fake.replies = ["Same: Acme renewal\nArea: none\nWith: none"]
     assert asyncio.run(model.tidy_new_topic(alex, new_id)) is None
-    assert len(fake.calls) == 1  # a kept topic isn't even asked about
     assert {t["name"] for t in store.list_topics(alex)} == {"Acme renewal", "Office move"}
+
+
+def test_tidy_lines_are_read() -> None:
+    assert model.parse_tidy("Same: none\nArea: St. Albans\nWith: St. Albans Offers; Broker fees") == (
+        None,
+        "St. Albans",
+        ["St. Albans Offers", "Broker fees"],
+    )
+    assert model.parse_tidy("Acme renewal") == ("Acme renewal", None, [])
+
+
+def test_a_new_topic_joins_an_area_with_related_ones(people: dict[str, int], fake: _Model) -> None:
+    alex = people["alex"]
+    for sid in ("a", "b", "c"):
+        _chat(alex, sid)
+    store.set_auto_topic("a", alex, "St. Albans Offers")
+    store.set_auto_topic("b", alex, "Board deck")
+    new_id, _ = store.set_auto_topic("c", alex, "St. Albans Disposition")
+    assert new_id is not None
+    fake.replies = ["Same: none\nArea: St. Albans\nWith: St. Albans Offers"]
+    assert asyncio.run(model.tidy_new_topic(alex, new_id)) is None
+    areas = {t["name"]: t.get("area") for t in store.list_topics(alex)}
+    assert areas == {"St. Albans Offers": "St. Albans", "St. Albans Disposition": "St. Albans", "Board deck": None}
+    assert "St. Albans Offers" in fake.calls[0]["content"]
+
+
+def test_an_area_needs_two_topics_and_an_ungrouped_one_stays_so(people: dict[str, int], fake: _Model) -> None:
+    alex = people["alex"]
+    for sid in ("a", "b", "c"):
+        _chat(alex, sid)
+    a_id, _ = store.set_auto_topic("a", alex, "St. Albans Offers")
+    store.set_auto_topic("b", alex, "Board deck")
+    new_id, _ = store.set_auto_topic("c", alex, "St. Albans Disposition")
+    assert a_id is not None and new_id is not None
+    # Alone in its area: no area.
+    fake.replies = ["Same: none\nArea: St. Albans\nWith: none"]
+    asyncio.run(model.tidy_new_topic(alex, new_id))
+    assert store.owned_topic(alex, new_id) is not None
+    assert all("area" not in t for t in store.list_topics(alex))
+    # The owner ungrouped the area: the model doesn't put the topic back.
+    store.set_area(alex, [a_id, new_id], "St. Albans")
+    assert store.ungroup_area(alex, "st. albans") == 2
+    fake.replies = ["Same: none\nArea: St. Albans\nWith: St. Albans Offers"]
+    asyncio.run(model.tidy_new_topic(alex, new_id))
+    assert all("area" not in t for t in store.list_topics(alex))
+
+
+def test_the_backfill_gives_topics_their_areas(people: dict[str, int], fake: _Model) -> None:
+    alex = people["alex"]
+    _chat(alex, "c1", "Offers on St. Albans", "2026-10-01T09:00:00+00:00")
+    _chat(alex, "c2", "St. Albans closing", "2026-10-02T09:00:00+00:00")
+    _chat(alex, "c3", "Board deck draft", "2026-10-03T09:00:00+00:00")
+    fake.replies = [
+        "1: Board deck\n2: St. Albans Disposition\n3: St. Albans Offers",
+        "1: none\n2: St. Albans\n3: St. Albans",
+    ]
+    assert store.needs_areas(alex) is False  # no topics yet
+    assert asyncio.run(model.backfill(alex)) == 3
+    assert "(new)" in fake.calls[1]["content"]
+    areas = {t["name"]: t.get("area") for t in store.list_topics(alex)}
+    assert areas == {"Board deck": None, "St. Albans Disposition": "St. Albans", "St. Albans Offers": "St. Albans"}
+    assert store.needs_areas(alex) is False
+    assert len(fake.calls) == 2
 
 
 def test_a_chat_with_no_owner_only_gets_a_title(db: Path, monkeypatch: pytest.MonkeyPatch, fake: _Model) -> None:
@@ -375,3 +439,24 @@ def test_the_backfill_leaves_a_chat_its_naming_filed_meanwhile(
     asyncio.run(model.backfill(alex))
     topic_id, _ = _topic_of("new")
     assert topic_id == store.topic_id_by_name(alex, "Acme renewal")
+
+
+def test_rename_and_ungroup_an_area(client: TestClient, people: dict[str, int]) -> None:
+    alex = people["alex"]
+    for sid in ("a", "b"):
+        _chat(alex, sid)
+    a_id, _ = store.set_auto_topic("a", alex, "St. Albans Offers")
+    b_id, _ = store.set_auto_topic("b", alex, "St. Albans Disposition")
+    assert a_id is not None and b_id is not None
+    store.set_area(alex, [a_id, b_id], "St Albans")
+    listed = client.get("/sessions/topics", headers=ALEX).json()["topics"]
+    assert {t["area"] for t in listed} == {"St Albans"} and all(t["updated_at"] for t in listed)
+
+    assert client.post("/sessions/topic-areas/rename", json={"area": "St Albans", "name": "St. Albans"}, headers=SABIN).status_code == 404
+    resp = client.post("/sessions/topic-areas/rename", json={"area": "st albans", "name": " St.  Albans "}, headers=ALEX)
+    assert resp.status_code == 204
+    assert {t["area"] for t in client.get("/sessions/topics", headers=ALEX).json()["topics"]} == {"St. Albans"}
+
+    assert client.post("/sessions/topic-areas/ungroup", json={"area": "Nowhere"}, headers=ALEX).status_code == 404
+    assert client.post("/sessions/topic-areas/ungroup", json={"area": "St. Albans"}, headers=ALEX).status_code == 204
+    assert all("area" not in t for t in client.get("/sessions/topics", headers=ALEX).json()["topics"])

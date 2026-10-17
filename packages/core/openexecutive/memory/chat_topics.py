@@ -5,6 +5,10 @@ A chat's topic is chosen by the model when the chat is named
 ungroup a topic. What the owner does sticks: a chat they filed
 (``topic_source = 'owner'``) is never retagged, and a topic they touched
 (``kept``) is never merged away by the tidy.
+
+Related topics share an ``area`` (one property, deal or client), which the
+Chats page shows as one heading over them. The model sets it; an area the
+owner renamed or ungrouped (``area_kept``) is left as they made it.
 """
 from __future__ import annotations
 
@@ -161,7 +165,7 @@ def list_topics(owner: int, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
         )
         rows = conn.execute(
             """
-            SELECT t.id, t.name, t.kept, t.pinned_at, COUNT(s.session_id) AS chat_count,
+            SELECT t.id, t.name, t.kept, t.pinned_at, t.area, COUNT(s.session_id) AS chat_count,
                    MAX(s.updated_at) AS updated_at
             FROM chat_topics t JOIN sessions s ON s.topic_id = t.id
             WHERE t.owner_person_id = ? AND s.caller_person_id = ?
@@ -180,6 +184,10 @@ def list_topics(owner: int, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
         }
         if r["pinned_at"]:
             item["pinned_at"] = r["pinned_at"]
+        if r["area"]:
+            item["area"] = str(r["area"])
+        if r["updated_at"]:
+            item["updated_at"] = str(r["updated_at"])
         out.append(item)
     return out
 
@@ -298,3 +306,68 @@ def untagged_sessions(owner: int, db_path: Path = DB_PATH) -> list[dict[str, str
             (owner,),
         ).fetchall()
     return [{"session_id": str(r["session_id"]), "title": str(r["title"])} for r in rows]
+
+
+def topics_with_areas(owner: int, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """The owner's topics that hold a chat, with their area ('' = none,
+    None = not looked at) and whether the owner set it, most recently used
+    first, for the area prompts."""
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.name, t.area, t.area_kept FROM chat_topics t
+            JOIN sessions s ON s.topic_id = t.id
+            WHERE t.owner_person_id = ?
+            GROUP BY t.id
+            ORDER BY MAX(s.updated_at) DESC
+            LIMIT ?
+            """,
+            (owner, PROMPT_TOPICS),
+        ).fetchall()
+    return [
+        {"id": int(r["id"]), "name": str(r["name"]), "area": r["area"], "area_kept": bool(r["area_kept"])}
+        for r in rows
+    ]
+
+
+def needs_areas(owner: int, db_path: Path = DB_PATH) -> bool:
+    """Whether any topic holding a chat waits for its area to be looked at,
+    once the owner has enough topics (three) for areas to mean anything."""
+    topics = topics_with_areas(owner, db_path)
+    return len(topics) >= 3 and any(t["area"] is None for t in topics)
+
+
+def set_area(owner: int, topic_ids: list[int], area: str | None, db_path: Path = DB_PATH) -> int:
+    """Put the owner's topics under ``area`` ('' when None: looked at, none).
+    Topics whose area the owner set are left alone. Returns how many moved."""
+    if not topic_ids:
+        return 0
+    marks = ",".join("?" for _ in topic_ids)
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            f"UPDATE chat_topics SET area = ? WHERE owner_person_id = ? AND area_kept = 0 AND id IN ({marks})",
+            (area or "", owner, *topic_ids),
+        )
+        return int(cur.rowcount)
+
+
+def rename_area(owner: int, area: str, name: str, db_path: Path = DB_PATH) -> int:
+    """Rename one of the owner's areas (an existing one's name joins the
+    two). Kept so. Returns how many topics it holds."""
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE chat_topics SET area = ?, area_kept = 1 WHERE owner_person_id = ? AND area = ?",
+            (name, owner, area),
+        )
+        return int(cur.rowcount)
+
+
+def ungroup_area(owner: int, area: str, db_path: Path = DB_PATH) -> int:
+    """Drop one of the owner's areas: its topics stand on their own, and the
+    model doesn't put them back under one. Returns how many it held."""
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE chat_topics SET area = '', area_kept = 1 WHERE owner_person_id = ? AND area = ?",
+            (owner, area),
+        )
+        return int(cur.rowcount)

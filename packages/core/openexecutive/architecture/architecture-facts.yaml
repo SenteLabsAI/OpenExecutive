@@ -2392,7 +2392,14 @@ memory:
     filed (topic_source 'owner') is never refiled, and a topic they renamed,
     pinned, merged into or filed a chat under (kept) is never merged away.
     A chat shared with someone keeps its owner's topic, which the reader
-    never sees.
+    never sees. Areas keep a long list short: related topics share
+    chat_topics.area (one property, deal or client) and show under one
+    heading. No extra call: the same short call that checks a new topic
+    also names its area, and the backfill ends with one call over the names
+    for topics not yet looked at. An area needs two topics; one the owner
+    renamed or ungrouped (area_kept) is left alone. The page bands topics by
+    their last chat (this week, quiet a week, two weeks, a month or more),
+    computed in the browser from updated_at, so it costs nothing server side.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking

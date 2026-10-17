@@ -147,6 +147,11 @@ class ChatTopic(BaseModel):
     # one chat, and the tidy never merges it away.
     kept: bool = False
     pinned_at: str | None = None
+    # The broader matter it shares with related topics (one property, deal
+    # or client): the Chats page shows them under one heading.
+    area: str | None = None
+    # When its newest chat was last active.
+    updated_at: str | None = None
 
 
 class ChatTopics(BaseModel):
@@ -165,6 +170,15 @@ class TopicUpdate(BaseModel):
 
 class TopicMerge(BaseModel):
     into_id: int
+
+
+class AreaRename(BaseModel):
+    area: str = Field(min_length=1, max_length=chat_topics.MAX_TOPIC_CHARS)
+    name: str = Field(min_length=1, max_length=chat_topics.MAX_TOPIC_CHARS)
+
+
+class AreaUngroup(BaseModel):
+    area: str = Field(min_length=1, max_length=chat_topics.MAX_TOPIC_CHARS)
 
 
 def _require_caller(request: Request) -> int:
@@ -194,7 +208,9 @@ async def get_topics(request: Request) -> ChatTopics:
     topics = await asyncio.to_thread(chat_topics.list_topics, caller)
     organizing = topic_model.backfill_running(caller)
     if not organizing:
-        waiting: bool = await asyncio.to_thread(chat_topics.has_untagged, caller)
+        waiting: bool = await asyncio.to_thread(chat_topics.has_untagged, caller) or await asyncio.to_thread(
+            chat_topics.needs_areas, caller
+        )
         if waiting:
             organizing = topic_model.start_backfill(caller)
     return ChatTopics(topics=[ChatTopic(**t) for t in topics], organizing=organizing)
@@ -216,6 +232,25 @@ def update_topic(topic_id: int, body: TopicUpdate, request: Request) -> ChatTopi
         if t["id"] == topic_id:
             return ChatTopic(**t)
     raise HTTPException(status_code=404, detail="Topic not found")
+
+
+@router.post("/sessions/topic-areas/rename", status_code=status.HTTP_204_NO_CONTENT)
+def rename_area(body: AreaRename, request: Request) -> Response:
+    """Rename one of the caller's areas. The name of another of their areas
+    joins the two."""
+    caller = _require_caller(request)
+    if not chat_topics.rename_area(caller, body.area, _topic_name(body.name)):
+        raise HTTPException(status_code=404, detail="Area not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/sessions/topic-areas/ungroup", status_code=status.HTTP_204_NO_CONTENT)
+def ungroup_area(body: AreaUngroup, request: Request) -> Response:
+    """Drop one of the caller's areas: its topics stand on their own."""
+    caller = _require_caller(request)
+    if not chat_topics.ungroup_area(caller, body.area):
+        raise HTTPException(status_code=404, detail="Area not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/sessions/topics/{topic_id}/merge", status_code=status.HTTP_204_NO_CONTENT)

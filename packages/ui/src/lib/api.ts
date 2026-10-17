@@ -1009,6 +1009,10 @@ export interface ChatTopic {
   /** The owner named, pinned or filed a chat under it: shown even with one chat. */
   kept: boolean;
   pinned_at?: string;
+  /** The broader matter it shares with related topics, shown as one heading over them. */
+  area?: string;
+  /** When its newest chat was last active. */
+  updated_at?: string;
 }
 
 /** The caller's topics; `organizing` while older chats are still being filed. */
@@ -1046,6 +1050,26 @@ export async function mergeChatTopic(topicId: number, intoId: number): Promise<v
 export async function ungroupChatTopic(topicId: number): Promise<void> {
   const res = await fetch(`${API_BASE}/sessions/topics/${topicId}`, { method: "DELETE" });
   if (!res.ok) throw await sessionError(res, "Couldn't ungroup this topic.");
+}
+
+/** Rename one of the caller's areas; another area's name joins the two. */
+export async function renameTopicArea(area: string, name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/topic-areas/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ area, name }),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't rename this area.");
+}
+
+/** Drop an area; its topics stand on their own. */
+export async function ungroupTopicArea(area: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/topic-areas/ungroup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ area }),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't ungroup this area.");
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
