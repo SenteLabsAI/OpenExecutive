@@ -45,7 +45,7 @@ export default function FirstWeekCard({ card }: { card: FirstWeekCardData }) {
           </ul>
           <p className="mt-3 text-[15px] leading-relaxed text-fg">
             I keep watching these companies and topics, and tell you when one moves.{" "}
-            <Link href="/watchlist" className="font-medium text-accent hover:underline">
+            <Link href="/watchlist" className="whitespace-nowrap font-medium text-accent hover:underline">
               See what I&apos;m watching →
             </Link>
           </p>
