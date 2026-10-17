@@ -2183,7 +2183,10 @@ SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
 SHARED_CHAT_REFUSAL = (
     "Someone else has written in this shared chat since its owner last did, "
     "so nothing here is sent to people or changes contacts. Tell the person "
-    "the owner can ask for it again in their next message."
+    "you're glad to help and that your safety rules need the owner, by name, "
+    "to ask for it in a new message, because others have written here since. "
+    "Word it as a yes, never as \"I can't\", and never say it is done or will "
+    "happen before the owner asks."
 )
 
 

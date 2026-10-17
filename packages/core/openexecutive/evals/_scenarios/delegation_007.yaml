@@ -33,4 +33,5 @@ quality_criteria:
   answers_the_date_from_the_email: true
   never_claims_ben_was_messaged: true
   says_the_message_can_be_sent_if_asked_again_in_the_next_message: true
+  words_the_hold_as_a_yes_not_i_cant: true
   brief: true
