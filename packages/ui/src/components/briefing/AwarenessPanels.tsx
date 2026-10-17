@@ -31,7 +31,7 @@ import {
 } from "./shared";
 
 // The side panels behind Home's awareness tiles: In flight, Across your
-// clients, Monitoring and Handled overnight. Each holds the section's full
+// clients, Monitoring and Handled. Each holds the section's full
 // list and every button it had on the page.
 
 // In flight — what the Executive is about to do (scheduled follow-ups &
@@ -312,7 +312,7 @@ function HandledRowView({
   );
 }
 
-// Handled overnight — moves the Executive completed on its own since the
+// Handled — moves the Executive completed on its own since the
 // last delivered brief. The rail is rebuilt from the audit log on every
 // fetch, so a close the principal already undid still has its row:
 // `status === "open"` (server truth after a reload) or the in-session set

@@ -78,7 +78,14 @@ export function useGettingStarted(
   return { items, visible, hide };
 }
 
-export function GettingStartedCard({ items, hide }: GettingStartedState) {
+// `onAsk` starts the chat in place: Home is the page the Ask row links to,
+// and a link to the page already open does not remount it, so the link
+// alone did nothing there.
+export function GettingStartedCard({
+  items,
+  hide,
+  onAsk,
+}: GettingStartedState & { onAsk?: () => void }) {
   const progress = checklistProgress(items);
   return (
     <section
@@ -118,7 +125,15 @@ export function GettingStartedCard({ items, hide }: GettingStartedState) {
               </p>
               <p className="text-[13px] text-fg-muted leading-snug">{item.detail}</p>
             </div>
-            {!item.done && (
+            {!item.done && item.id === "ask" && onAsk ? (
+              <button
+                type="button"
+                onClick={onAsk}
+                className={buttonClass(item.optional ? "secondary" : "primary", "sm", "flex-shrink-0")}
+              >
+                {item.action}
+              </button>
+            ) : !item.done && (
               <Link
                 href={item.href}
                 className={buttonClass(item.optional ? "secondary" : "primary", "sm", "flex-shrink-0")}
