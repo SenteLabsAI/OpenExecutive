@@ -64,14 +64,18 @@ async def generate_session_title(
             getattr(b, "text", "") for b in response.content
             if getattr(b, "type", "") == "text"
         ).strip()
-        if not raw:
-            return None
-        cleaned = raw.strip().strip('"').strip("'").rstrip(".!?,:;").strip()
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        cleaned = "".join(c for c in cleaned if c.isprintable())
-        if not cleaned:
-            return None
-        return cleaned[:max_len]
+        return clean_title(raw, max_len=max_len)
     except Exception:
         logger.exception("generate_session_title: failed")
         return None
+
+
+def clean_title(raw: str, *, max_len: int = 60) -> str | None:
+    """A model's title as one printable line, without quotes or end
+    punctuation, capped at ``max_len``. None when nothing is left."""
+    cleaned = raw.strip().strip('"').strip("'").rstrip(".!?,:;").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = "".join(c for c in cleaned if c.isprintable())
+    if not cleaned:
+        return None
+    return cleaned[:max_len]

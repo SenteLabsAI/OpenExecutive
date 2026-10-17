@@ -147,3 +147,18 @@ def _no_artifact_indexing(monkeypatch: pytest.MonkeyPatch):
         "openexecutive.orchestrator.artifact_tools._knowledge_store", lambda: None
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _chat_topics_title_only(monkeypatch: pytest.MonkeyPatch):
+    """Naming a chat (utils.chat_topics.name_chat) asks for its title and
+    topic in one call. Route it through session_title.generate_session_title,
+    looked up at call time, so a test's stub of that keeps naming the chat
+    and nothing reaches the provider; no topic is filed.
+    test_chat_topics.py restores the real call."""
+    from openexecutive.utils import chat_topics, session_title
+
+    async def _title_only(user_msg: str, assistant_msg: str, names: list[str]):
+        return await session_title.generate_session_title(user_msg, assistant_msg), None
+
+    monkeypatch.setattr(chat_topics, "_title_and_topic", _title_only)

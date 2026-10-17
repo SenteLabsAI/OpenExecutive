@@ -221,7 +221,7 @@ def list_sessions(
         rows = conn.execute(
             """
             SELECT s.session_id, s.title, s.created_at, s.updated_at, s.pinned_at,
-                   COUNT(m.id) AS message_count, MAX(m.id) AS last_id
+                   s.topic_id, COUNT(m.id) AS message_count, MAX(m.id) AS last_id
             FROM sessions s
             LEFT JOIN chat_messages m ON m.session_id = s.session_id
             WHERE s.caller_person_id = ?
@@ -255,6 +255,8 @@ def list_sessions(
         }
         if row["pinned_at"]:
             item["pinned_at"] = row["pinned_at"]
+        if row["topic_id"] is not None:
+            item["topic_id"] = row["topic_id"]
         msg = last.get(row["last_id"]) if row["last_id"] is not None else None
         # In a shared chat the last message may be a teammate's: no "You: ".
         mine = msg is not None and msg["sender_person_id"] in (None, caller_person_id)
@@ -339,7 +341,7 @@ def search_sessions(
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT s.session_id, s.title, s.created_at, s.updated_at,
+            SELECT s.session_id, s.title, s.created_at, s.updated_at, s.topic_id,
                    (SELECT COUNT(*) FROM chat_messages m
                      WHERE m.session_id = s.session_id) AS message_count,
                    (SELECT COUNT(*) FROM chat_messages m
@@ -363,6 +365,8 @@ def search_sessions(
                 for k in ("session_id", "title", "created_at", "updated_at",
                           "message_count", "match_count")
             }
+            if row["topic_id"] is not None:
+                item["topic_id"] = row["topic_id"]
             item["snippet"] = None
             if row["match_count"]:
                 hit = conn.execute(
@@ -402,7 +406,7 @@ def get_session_metadata(session_id: str, db_path: Path = DB_PATH) -> dict[str, 
         row = conn.execute(
             """
             SELECT s.session_id, s.title, s.created_at, s.updated_at, s.pinned_at,
-                   COUNT(m.id) AS message_count
+                   s.topic_id, COUNT(m.id) AS message_count
             FROM sessions s
             LEFT JOIN chat_messages m ON m.session_id = s.session_id
             WHERE s.session_id = ?
@@ -415,6 +419,8 @@ def get_session_metadata(session_id: str, db_path: Path = DB_PATH) -> dict[str, 
     meta = dict(row)
     if not meta.get("pinned_at"):
         meta.pop("pinned_at", None)
+    if meta.get("topic_id") is None:
+        meta.pop("topic_id", None)
     return meta
 
 
