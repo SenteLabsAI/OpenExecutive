@@ -513,3 +513,45 @@ def test_delete_department_invalidates_registry(client: TestClient) -> None:
     assert registry._cache is not None
     client.delete("/departments/finance")
     assert registry._cache is None
+
+
+# --------------------------------------------------------------------------- #
+# POST /goals — a goal by area name (the Goals page with no areas yet)
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture()
+def empty_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "departments.db")
+    registry.invalidate()
+    app = FastAPI()
+    app.include_router(departments_route.router)
+    return TestClient(app)
+
+
+def test_goal_with_no_area_named_goes_under_general(empty_client: TestClient) -> None:
+    resp = empty_client.post("/goals", json={"key_result": "Launch the product", "area": "  "})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["key_result"] == "Launch the product"
+    areas = empty_client.get("/departments").json()
+    assert [a["config"]["title"] for a in areas] == ["General"]
+    assert areas[0]["goals"][0]["id"] == resp.json()["id"]
+    # A second goal with no area joins it rather than making "General 2".
+    assert empty_client.post("/goals", json={"key_result": "Hire a designer"}).status_code == 201
+    areas = empty_client.get("/departments").json()
+    assert len(areas) == 1 and len(areas[0]["goals"]) == 2
+
+
+def test_goal_names_a_new_area_or_matches_an_existing_one(empty_client: TestClient) -> None:
+    resp = empty_client.post("/goals", json={"key_result": "Close 10 accounts", "area": "Sales"})
+    assert resp.status_code == 201
+    sales = empty_client.get("/departments").json()[0]["config"]
+    assert sales["title"] == "Sales" and sales["specialist_key"] is None
+    resp = empty_client.post("/goals", json={"key_result": "Close 20 accounts", "area": "sales"})
+    assert resp.json()["department_slug"] == sales["slug"]
+    assert len(empty_client.get("/departments").json()) == 1
+
+
+def test_goal_by_area_validates_the_goal(empty_client: TestClient) -> None:
+    assert empty_client.post("/goals", json={"key_result": "", "area": "Sales"}).status_code == 422
+    assert empty_client.post("/goals", json={"key_result": "x", "area": "a" * 81}).status_code == 422
+    assert empty_client.get("/departments").json() == []

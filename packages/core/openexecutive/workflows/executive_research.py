@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -1661,8 +1662,33 @@ def _inline(s: str) -> str:
     return out.strip()
 
 
+# One "Findings reviewed" line as `_render_artifact` writes it.
+_FINDING_LINE = re.compile(
+    r"^- \[(?P<severity>\w+) \| (?P<confidence>\w+)\] \((?P<specialist>[^)]*)\) "
+    r"\*\*(?P<title>.+?)\*\* — (?P<summary>.*)$"
+)
+
+
+def parse_artifact_findings(artifact: str) -> list[dict[str, str]]:
+    """The findings a stored run artifact lists under "Findings reviewed",
+    in the order written: ``severity``, ``confidence``, ``specialist``,
+    ``title`` and ``summary`` each. The run history keeps only the artifact,
+    so this reads back what `_render_artifact` wrote; anything else in the
+    artifact (the narrative, actions, watches) is skipped."""
+    findings: list[dict[str, str]] = []
+    in_section = False
+    for line in (artifact or "").splitlines():
+        if line.startswith("## "):
+            in_section = line.strip() == "## Findings reviewed"
+            continue
+        if in_section and (match := _FINDING_LINE.match(line.strip())):
+            findings.append({k: v.strip() for k, v in match.groupdict().items()})
+    return findings
+
+
 __all__ = [
     "RESEARCH_SPECIALISTS",
     "ExecutiveResearchInput",
     "ExecutiveResearchWorkflow",
+    "parse_artifact_findings",
 ]

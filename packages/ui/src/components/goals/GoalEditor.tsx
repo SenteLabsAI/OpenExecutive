@@ -7,6 +7,7 @@ import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   createGoal,
+  createGoalInArea,
   deleteGoal,
   updateGoal,
   type Goal,
@@ -310,14 +311,17 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
 // ---------------------------------------------------------------------------
 
 interface AddGoalFormProps {
-  /** The department (area) the goal is added to — the picker's first choice when `areas` is set. */
-  slug: string;
+  /** The department (area) the goal is added to — the picker's first choice
+   * when `areas` is set. Null when there is no area yet: the form then asks
+   * for one by name and the save creates it. */
+  slug: string | null;
   /** When set, a picker over these lets the user choose where the goal goes. */
   areas?: { slug: string; title: string }[];
   /** The picker's label: "Area" (solo) or "Department" (team). */
   areaLabel?: string;
   onCreated: (goal: Goal) => void;
-  onCancel: () => void;
+  /** Omitted when the form is the page's only content (no Cancel then). */
+  onCancel?: () => void;
 }
 
 // One thing to type — the goal. The timeframe is a chip (this quarter by
@@ -325,6 +329,8 @@ interface AddGoalFormProps {
 // until the department's check-in grades it.
 export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCancel }: AddGoalFormProps) {
   const [areaSlug, setAreaSlug] = useState(slug);
+  // Typed area name, used only when there is no area to pick from.
+  const [areaName, setAreaName] = useState("");
   const [form, setForm] = useState<{
     period_type: PeriodType;
     period_value: string;
@@ -355,13 +361,14 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
     try {
       const target = form.target.trim();
       const current = form.current.trim();
-      const goal = await createGoal(areaSlug, {
+      const body = {
         period_type: form.period_type,
         period_value: form.period_value,
         key_result: form.key_result.trim(),
         ...(target && { target }),
         ...(current && { current }),
-      });
+      };
+      const goal = areaSlug ? await createGoal(areaSlug, body) : await createGoalInArea(areaName.trim(), body);
       onCreated(goal);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Create failed");
@@ -370,11 +377,18 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
     }
   }
 
-  const onKeyDown = formKeys(submit, onCancel, saving);
+  const onKeyDown = formKeys(submit, onCancel ?? (() => {}), saving);
 
   return (
     <div className="py-5 space-y-4">
-      <div className="text-base font-semibold text-fg">New goal</div>
+      {slug ? (
+        <div className="text-base font-semibold text-fg">New goal</div>
+      ) : (
+        <div>
+          <div className="text-base font-semibold text-fg">Add your first goal</div>
+          <p className="mt-1 text-[15px] text-fg-muted">Just type it. The timeframe defaults to this quarter.</p>
+        </div>
+      )}
       <label className={LABEL_CLS}>
         What&apos;s the goal?
         <input
@@ -387,11 +401,25 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
           placeholder={GOAL_PLACEHOLDER}
         />
       </label>
+      {!areaSlug && (
+        <label className={LABEL_CLS}>
+          {areaLabel} (optional)
+          <input
+            value={areaName}
+            onChange={(e) => setAreaName(e.target.value)}
+            onKeyDown={onKeyDown}
+            maxLength={80}
+            className={INPUT_CLS}
+            placeholder="e.g. Sales or Product"
+          />
+          <span className="mt-1 block text-sm text-fg-muted">Left blank, it goes under General.</span>
+        </label>
+      )}
       {areas && areas.length > 1 && (
         <label className={LABEL_CLS}>
           {areaLabel}
           <select
-            value={areaSlug}
+            value={areaSlug ?? ""}
             onChange={(e) => setAreaSlug(e.target.value)}
             className={INPUT_CLS}
           >
@@ -436,9 +464,11 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
         <Button variant="primary" disabled={!canSubmit} onClick={submit}>
           {saving ? "Adding…" : "Add goal"}
         </Button>
-        <Button disabled={saving} onClick={onCancel}>
-          Cancel
-        </Button>
+        {onCancel && (
+          <Button disabled={saving} onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -26,7 +26,12 @@ say, from what the install already holds:
     as theirs: up to ``_MEETINGS_MAX`` of today's events, time and title only.
 
 The first week is ``FIRST_WEEK`` from when the principal's People row was
-created (onboarding writes it). Before that, or after it, the block is empty
+created (onboarding writes it).
+
+Home's first-week card (``first_week_card``) is built from the same week, in
+code rather than by a model: whether a goal is still to set, up to
+``_CARD_FINDINGS`` findings from the latest team research run (the one setup
+starts), and whether the first morning brief is still to come. Before that, or after it, the block is empty
 and every brief is exactly as before.
 
 Never raises: a failed source leaves its part out.
@@ -55,6 +60,11 @@ _INBOX_MAX = 5
 _INBOX_TIMEOUT_S = 30.0
 _MEETINGS_MAX = 8
 _TEXT_MAX = 120
+_CARD_FINDINGS = 2
+_CARD_TITLE_MAX = 80
+_CARD_SUMMARY_MAX = 220
+_SEVERITY_ORDER = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+_CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 HEADER = (
     "GETTING STARTED (the principal's first week; goal text, mail subjects and "
@@ -264,7 +274,7 @@ def _assemble(
 
 def getting_started_shared(now: datetime | None = None, *, solo: bool = False) -> GettingStarted:
     """The block without the principal's own inbox: goals and departments,
-    which everyone may see. Synchronous, for the /today header's hot path."""
+    which everyone may see. Synchronous; reads no mailbox."""
     if first_week_started(now) is None:
         return GettingStarted()
     try:
@@ -307,10 +317,104 @@ async def getting_started(
     return _assemble(goals, leaderless, inbox, keys, meetings, priorities=priorities)
 
 
+@dataclass
+class CardFinding:
+    """One research finding on the card: its headline and first sentence."""
+
+    title: str
+    summary: str
+
+
+@dataclass
+class FirstWeekCard:
+    """What Home's first-week card shows."""
+
+    # No goal row yet, so the card asks for one.
+    needs_goal: bool = False
+    findings: list[CardFinding] = field(default_factory=list)
+    # Setup was today (local) and no morning brief has gone out yet.
+    brief_tomorrow: bool = False
+
+
+def _first_sentence(text: str, limit: int) -> str:
+    text = _one_line(text, 10_000)
+    for end in (". ", "! ", "? "):
+        cut = text.find(end)
+        if 0 < cut < limit:
+            text = text[: cut + 1]
+            break
+    return _one_line(text, limit)
+
+
+def _card_findings() -> list[CardFinding]:
+    """The top findings of the latest finished team research run, most
+    severe and most certain first. A run someone started by hand is theirs
+    alone, so only team runs count."""
+    from openexecutive.workflows.executive_research import parse_artifact_findings
+    from openexecutive.workflows.persistence import get_run, list_runs
+
+    runs = list_runs("executive_research", limit=1, status="done", visible_to=None)
+    run = get_run(runs[0]["run_id"]) if runs else None
+    if run is None:
+        return []
+    found = parse_artifact_findings(run.get("artifact") or "")
+    found.sort(
+        key=lambda f: (_SEVERITY_ORDER.get(f["severity"], 9), _CONFIDENCE_ORDER.get(f["confidence"], 9))
+    )
+    return [
+        CardFinding(
+            title=_one_line(f["title"], _CARD_TITLE_MAX),
+            summary=_first_sentence(f["summary"], _CARD_SUMMARY_MAX),
+        )
+        for f in found[:_CARD_FINDINGS]
+    ]
+
+
+def _brief_still_to_come(started: datetime, now: datetime) -> bool:
+    from openexecutive.briefing.brief_state import last_delivered
+    from openexecutive.memory.workspace_settings import get_user_timezone
+    from openexecutive.workflows.morning_brief import BRIEF_KIND
+
+    tz = get_user_timezone()
+    if started.astimezone(tz).date() != now.astimezone(tz).date():
+        return False
+    return last_delivered(BRIEF_KIND) is None
+
+
+def first_week_card(now: datetime | None = None) -> FirstWeekCard | None:
+    """Home's first-week card, or None outside the first week or when it
+    has nothing to say (a goal is set and the research found nothing)."""
+    now = now or datetime.now(UTC)
+    started = first_week_started(now)
+    if started is None:
+        return None
+    card = FirstWeekCard()
+    try:
+        from openexecutive.departments.store import list_departments
+
+        card.needs_goal = not any(dept.goals for dept in list_departments())
+    except Exception:
+        logger.warning("first_week: departments unreadable", exc_info=True)
+    try:
+        card.findings = _card_findings()
+    except Exception:
+        logger.warning("first_week: research findings unreadable", exc_info=True)
+    if not (card.needs_goal or card.findings):
+        return None
+    try:
+        card.brief_tomorrow = _brief_still_to_come(started, now)
+    except Exception:
+        logger.warning("first_week: brief state unreadable", exc_info=True)
+    return card
+
+
 __all__ = [
     "FIRST_WEEK",
     "HEADER",
+    "CardFinding",
+    "FirstWeekCard",
     "GettingStarted",
+    "first_week_card",
     "first_week_started",
     "getting_started",
     "getting_started_shared",

@@ -266,7 +266,7 @@ def test_prompts_tell_the_model_what_to_do_with_it() -> None:
         assert narrative.GETTING_STARTED_RULE in prompt
         assert "**Getting started**" in prompt
     for prompt in (narrative.BRIEFING_NARRATIVE_SYSTEM, narrative.BRIEFING_NARRATIVE_SOLO_SYSTEM):
-        assert narrative.GETTING_STARTED_HEADER_RULE in prompt
+        assert "GETTING STARTED" not in prompt
 
 
 def test_fingerprint_moves_with_the_block_only_when_present() -> None:
@@ -282,7 +282,7 @@ def test_fingerprint_moves_with_the_block_only_when_present() -> None:
     assert build_brief_fingerprint(**kw, getting_started=["leaderless:ops"]) != named
 
 
-def test_today_header_is_not_quiet_in_the_first_week(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_today_header_leaves_the_first_week_to_the_card(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.api.routes import today as today_route
     from openexecutive.briefing import narrative_cache
 
@@ -291,28 +291,100 @@ def test_today_header_is_not_quiet_in_the_first_week(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(today_route, "_narrative_activity", lambda viewer, desc: [])
     monkeypatch.setattr(
         "openexecutive.briefing.first_week.getting_started_shared",
-        lambda now=None, solo=False: first_week.GettingStarted(),
-    )
-    ctx, _ = today_route._narrative_context(empty, None, None, "team")
-    assert ctx == narrative_cache.QUIET_CONTEXT
-    monkeypatch.setattr(
-        "openexecutive.briefing.first_week.getting_started_shared",
         lambda now=None, solo=False: first_week.GettingStarted(text=f"{first_week.HEADER}\n- Sales", keys=["leaderless:sales"]),
     )
     ctx, _ = today_route._narrative_context(empty, None, None, "team")
-    assert first_week.HEADER in ctx
-    # A teammate's own header never carries it.
-    viewer_ctx, _ = today_route._narrative_context(empty, None, {"name": "Sam", "role": "Ops"}, "team")
-    assert first_week.HEADER not in viewer_ctx
+    assert ctx == narrative_cache.QUIET_CONTEXT
 
 
-def test_the_quiet_banner_gives_way_only_to_a_header_that_carries_the_block() -> None:
-    from openexecutive.api.routes import today as today_route
-    from openexecutive.briefing import narrative_cache
+def _research_artifact(findings: list[tuple[str, str, str, str]]) -> str:
+    from openexecutive.monitoring.research.models import ResearchFinding
+    from openexecutive.workflows.executive_research import _render_artifact
 
-    assert today_route._first_week_header(f"x\n{first_week.HEADER}\n- Sales") is True
-    assert today_route._first_week_header(narrative_cache.QUIET_CONTEXT) is False
+    return _render_artifact(
+        deduped=[
+            ResearchFinding(title=t, summary=s, severity_hint=sev, confidence=conf)  # type: ignore[arg-type]
+            for t, s, sev, conf in findings
+        ],
+        per_specialist=[],
+        tool_calls=[],
+        narrative="I looked at **Rival** and routed it.\n\n## Not a finding\n- [high | high] (cso) **Fake** — no",
+        note="",
+    )
 
+
+def test_artifact_findings_read_back_as_written() -> None:
+    from openexecutive.workflows.executive_research import parse_artifact_findings
+
+    artifact = _research_artifact([("Rival cut prices", "Rival cut its plan to $49.\nMore.", "high", "medium")])
+    assert parse_artifact_findings(artifact) == [
+        {
+            "severity": "high", "confidence": "medium", "specialist": "",
+            "title": "Rival cut prices", "summary": "Rival cut its plan to $49. More.",
+        }
+    ]
+    assert parse_artifact_findings("") == []
+    assert parse_artifact_findings("# Executive research\n\nNo findings surfaced this run.") == []
+
+
+@pytest.fixture
+def card(setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    setup.artifact = _research_artifact([
+        ("Low one", "Minor.", "low", "high"),
+        ("Rival cut prices", "Rival cut its plan to $49 a seat. It also dropped the free tier.", "high", "high"),
+        ("New rule", "A new data law starts in March.", "high", "medium"),
+    ])
+    setup.departments = [_dept("sales", "Sales", head=None)]
+    setup.delivered = None
+    monkeypatch.setattr(
+        "openexecutive.workflows.persistence.list_runs",
+        lambda *a, **k: [{"run_id": "r1"}] if setup.artifact is not None else [],
+    )
+    monkeypatch.setattr(
+        "openexecutive.workflows.persistence.get_run", lambda run_id: {"artifact": setup.artifact},
+    )
+    monkeypatch.setattr("openexecutive.briefing.brief_state.last_delivered", lambda kind: setup.delivered)
+    monkeypatch.setattr(
+        "openexecutive.memory.workspace_settings.get_user_timezone", lambda *a, **k: ZoneInfo("UTC"),
+    )
+    return setup
+
+
+def test_card_asks_for_a_goal_and_shows_the_top_findings(card: SimpleNamespace) -> None:
+    out = first_week.first_week_card(NOW)
+    assert out is not None and out.needs_goal
+    assert [f.title for f in out.findings] == ["Rival cut prices", "New rule"]
+    assert out.findings[0].summary == "Rival cut its plan to $49 a seat."
+    # Setup was yesterday, so the first brief isn't "tomorrow".
+    assert out.brief_tomorrow is False
+
+
+def test_card_says_the_first_brief_comes_tomorrow_only_on_setup_day(card: SimpleNamespace) -> None:
+    card.principal = _principal(NOW - timedelta(hours=1))
+    out = first_week.first_week_card(NOW)
+    assert out is not None and out.brief_tomorrow
+    card.delivered = object()
+    out = first_week.first_week_card(NOW)
+    assert out is not None and not out.brief_tomorrow
+
+
+def test_card_drops_the_ask_once_a_goal_is_set_and_hides_with_nothing_to_say(card: SimpleNamespace) -> None:
+    card.departments = [_dept("sales", "Sales", head=None, goals=[_goal(7, "sales", "Close 10")])]
+    out = first_week.first_week_card(NOW)
+    assert out is not None and not out.needs_goal and len(out.findings) == 2
+    card.artifact = None
+    assert first_week.first_week_card(NOW) is None
+
+
+def test_card_without_findings_still_asks_for_a_goal(card: SimpleNamespace) -> None:
+    card.artifact = "# Executive research\n\nNo findings surfaced this run."
+    out = first_week.first_week_card(NOW)
+    assert out is not None and out.needs_goal and out.findings == []
+
+
+def test_no_card_after_the_first_week(card: SimpleNamespace) -> None:
+    card.principal = _principal(NOW - timedelta(days=9))
+    assert first_week.first_week_card(NOW) is None
 
 
 class _Calendar(_Mailbox):
@@ -367,3 +439,18 @@ async def test_calendar_part_needs_its_switch_and_a_connected_mailbox(
     assert "CALENDAR" not in block.text and block.private is False
     not_delivery = await first_week.getting_started(include_inbox=False, now=NOW)
     assert "CALENDAR" not in not_delivery.text
+
+
+def test_today_serves_the_card_to_the_principal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.api.routes import today as today_route
+
+    monkeypatch.setattr(
+        "openexecutive.briefing.first_week.first_week_card",
+        lambda now=None: first_week.FirstWeekCard(
+            needs_goal=True, findings=[first_week.CardFinding(title="Rival", summary="Cut prices.")],
+        ),
+    )
+    out = today_route._first_week_card()
+    assert out is not None and out.needs_goal and out.findings[0].title == "Rival"
+    monkeypatch.setattr("openexecutive.briefing.first_week.first_week_card", lambda now=None: None)
+    assert today_route._first_week_card() is None

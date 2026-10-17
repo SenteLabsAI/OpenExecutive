@@ -18,7 +18,7 @@ import {
   type Today,
 } from "@/lib/api";
 import type { AlertApproval } from "@/lib/approvals";
-import { briefingSummary, firstWeekMove, greeting, type SummaryPart } from "@/lib/briefingSummary";
+import { briefingSummary, greeting, type SummaryPart } from "@/lib/briefingSummary";
 import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
 import { groupHandled } from "@/lib/handled";
@@ -43,6 +43,7 @@ import {
   inFlightNext,
 } from "./briefing/AwarenessPanels";
 import ApprovedRow from "./briefing/ApprovedRow";
+import FirstWeekCard from "./briefing/FirstWeekCard";
 import NarrativeBody from "./briefing/Narrative";
 import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
@@ -660,24 +661,20 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const showNeedsYouMenu = staleNeedsYouIds.length > 0 || mineProposals.length > 0;
 
   const hasBrief = Boolean(today && (today.narrative || today.narrative_stale));
-  // The first week (GETTING STARTED in the brief): the brief is the most
-  // useful thing on the page, so it opens in the page rather than behind
-  // "Read today's brief", and an empty summary line reads its move instead
-  // of "All clear".
+  // The first week: the first-week card takes the page's top slot, so the
+  // day isn't called quiet and the summary line points at it.
+  const firstWeekCard = today?.first_week_card ?? null;
   const firstWeek = Boolean(today?.first_week);
-  const firstWeekBrief = firstWeek && hasBrief;
-  const move = firstWeek ? firstWeekMove(today?.narrative) : null;
   const briefFreshness = today
     ? today.narrative_stale
       ? "Refreshing…"
       : narrativeUpdatedLabel(today.narrative_generated_at, new Date())
     : null;
 
-  // In the first week the brief above opens with getting-started moves, so
-  // the day isn't "quiet" even with nothing on the board yet (once that brief
-  // has been written; until then the banner stays).
+  // In the first week the first-week card says what to start on, so the day
+  // isn't "quiet" even with nothing on the board yet.
   const quietBanner =
-    isQuiet && activeDepts.length > 0 && !(today?.first_week && today?.narrative) ? (
+    isQuiet && activeDepts.length > 0 && !firstWeekCard ? (
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/25 bg-emerald-500/5 px-4 py-3">
         <span className={`text-[15px] ${TONE_TEXT.emerald}`}>Quiet day — nothing needs your attention.</span>
         {!solo && (
@@ -715,15 +712,9 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
             {today && (
               <p className="mt-2 text-base sm:text-lg text-fg-muted leading-snug">
                 {summary.length === 0
-                  ? move
-                    ? (
-                        <>
-                          <span className="font-semibold text-fg">Move today:</span> {move}
-                        </>
-                      )
-                    : firstWeek
-                      ? "Your first week. The brief below says where to start."
-                      : "All clear — nothing needs you right now."
+                  ? firstWeekCard
+                    ? "Your first week. Start below."
+                    : "All clear — nothing needs you right now."
                   : summary.map((part, i) => (
                       <span key={part.text}>
                         {part.target.kind === "href" ? (
@@ -780,29 +771,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
             </div>
           )}
 
-          {today && firstWeekBrief && (
-            <section
-              aria-labelledby="sec-getting-started-brief"
-              className="mb-6 rounded-2xl border border-accent/25 bg-accent/5 px-4 py-3 sm:px-5"
-            >
-              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-3">
-                <h2
-                  id="sec-getting-started-brief"
-                  className="text-xs font-semibold uppercase tracking-wider text-accent"
-                >
-                  Getting started · your first week
-                </h2>
-                {briefFreshness && <span className="text-xs text-fg-muted">{briefFreshness}</span>}
-              </div>
-              <NarrativeBody
-                narrative={today.narrative}
-                stale={today.narrative_stale ?? false}
-                solo={solo}
-                onContinue={onContinue}
-                intro={false}
-              />
-            </section>
-          )}
+          {firstWeekCard && <FirstWeekCard card={firstWeekCard} />}
 
           {bannerSlot && <div className="mb-6">{bannerSlot}</div>}
 
@@ -819,7 +788,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   {replies.cards.length > 0 && <InfoTip align="left">{REPLIES_WAITING_TIP}</InfoTip>}
                   {actionCards.cards.length > 0 && <InfoTip align="left">{ACTION_CARDS_TIP}</InfoTip>}
                   <div className="ml-auto flex items-center gap-1">
-                    {hasBrief && !firstWeekBrief && (
+                    {hasBrief && (
                       <button
                         type="button"
                         onClick={() => setOpenPanel("brief")}

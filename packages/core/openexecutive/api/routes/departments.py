@@ -136,6 +136,17 @@ class GoalCreate(BaseModel):
     status: GoalStatus = "on_track"
 
 
+class GoalCreateInArea(GoalCreate):
+    """A goal for an area named in words: an existing one by slug or title,
+    else a new area of that name, else (blank) ``DEFAULT_GOAL_AREA``."""
+
+    area: str = Field(default="", max_length=80)
+
+
+# Where a goal goes when no area is named.
+DEFAULT_GOAL_AREA = "General"
+
+
 class GoalPatch(BaseModel):
     # Stripped first, so a whitespace-only goal or period is rejected like "".
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -356,6 +367,25 @@ def _delete_goal_impl(slug: str, goal_id: int) -> None:
 )
 def create_goal(slug: str, body: GoalCreate) -> Goal:
     return _create_goal(slug, body)
+
+
+@router.post("/goals", response_model=Goal, status_code=status.HTTP_201_CREATED)
+def create_goal_in_area(body: GoalCreateInArea) -> Goal:
+    """Add a goal by area name, creating the area when there is none by that
+    name. The Goals page uses it when the workspace has no areas yet (setup
+    creates none for a solo workspace or a team that names none). Like
+    ``POST /departments``, a new area gets no specialist."""
+    title = body.area or DEFAULT_GOAL_AREA
+    store.initialize_db()
+    known = [d.config for d in store.list_departments()]
+    match = store.match_department(title, known)
+    if match is None:
+        try:
+            match = store.create_department(title).config
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        registry.invalidate()
+    return _create_goal(match.slug, GoalCreate.model_validate(body.model_dump(exclude={"area"})))
 
 
 @router.patch("/departments/{slug}/goals/{goal_id}", response_model=Goal)
