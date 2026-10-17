@@ -116,6 +116,13 @@ export function useExecutiveStatus(): ExecutiveStatusContextValue {
   return ctx;
 }
 
+/** The Executive's name for the label over its replies; "Executive" until the
+ *  status loads, or outside the provider. */
+export function useExecutiveName(): string {
+  const ctx = useContext(ExecutiveStatusContext);
+  return ctx?.status?.name?.trim() || "Executive";
+}
+
 /** "3:42 PM" today, "Mon 3:42 PM" otherwise. */
 export function formatPausedAt(iso: string | null): string {
   if (!iso) return "";

@@ -36,7 +36,8 @@ def client(audit_events: list[Any]) -> TestClient:
     return TestClient(app)
 
 
-def test_status_defaults_to_running(client: TestClient) -> None:
+def test_status_defaults_to_running(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EXEC_DISPLAY_NAME", raising=False)
     resp = client.get("/executive/status")
     assert resp.status_code == 200
     assert resp.json() == {
@@ -47,7 +48,13 @@ def test_status_defaults_to_running(client: TestClient) -> None:
         "held_actions": 0,
         # No principal on the roster yet: resume stays open.
         "can_resume": True,
+        "name": "Open Executive",
     }
+
+
+def test_status_names_the_executive(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXEC_DISPLAY_NAME", " Ava ")
+    assert client.get("/executive/status").json()["name"] == "Ava"
 
 
 def test_pause_then_resume(

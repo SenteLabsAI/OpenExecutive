@@ -8,6 +8,7 @@ import {
 } from "@/lib/callerAssertion";
 import { isCrossSiteWrite } from "@/lib/crossSite";
 import { localLoginSessionAllowed } from "@/lib/localLogin";
+import { upstreamSegment } from "@/lib/proxySegments";
 
 // Streaming-aware proxy to the FastAPI backend. Replaces the `rewrites()` rule
 // in next.config.ts, which buffers SSE responses in dev so the chat stream
@@ -70,7 +71,8 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
     });
   }
 
-  const path = params.path.join("/");
+  // An id holding a slash goes on as one segment (proxySegments.ts).
+  const path = params.path.map(upstreamSegment).join("/");
   const url = new URL(`${BACKEND_BASE}/${path}`);
   // Preserve query string.
   req.nextUrl.searchParams.forEach((v, k) => url.searchParams.append(k, v));

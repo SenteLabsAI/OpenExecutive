@@ -30,6 +30,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from openexecutive.api import path_ids  # noqa: F401  (registers the {…:session} convertor)
 from openexecutive.audit import AuditLogger, get_audit_logger
 from openexecutive.audit.logger import EVENT_TYPES
 
@@ -663,7 +664,7 @@ def _compute_degradations(events: list[Any]) -> list[Degradation]:
 
 
 @router.get(
-    "/audit/sessions/{session_id}",
+    "/audit/sessions/{session_id:session}",
     response_model=AuditSessionResponse,
 )
 def get_audit_session(session_id: str, request: Request) -> AuditSessionResponse:

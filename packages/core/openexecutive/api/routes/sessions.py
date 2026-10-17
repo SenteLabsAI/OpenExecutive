@@ -11,7 +11,10 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from openexecutive.api import chat_live
+from openexecutive.api import (
+    chat_live,
+    path_ids,  # noqa: F401  (registers the {…:session} convertor)
+)
 from openexecutive.api.models import SessionSummary
 from openexecutive.api.routes import chat as chat_route
 from openexecutive.api.routes.chat import (
@@ -261,7 +264,7 @@ def get_shared_sessions(request: Request) -> list[SessionSummary]:
     return out
 
 
-@router.get("/sessions/{session_id}", response_model=SessionSummary, response_model_exclude_none=True)
+@router.get("/sessions/{session_id:session}", response_model=SessionSummary, response_model_exclude_none=True)
 def get_session(session_id: str, request: Request) -> SessionSummary:
     _, member = _require_chat_access(request, session_id)
     meta = get_session_metadata(session_id)
@@ -278,7 +281,7 @@ def get_session(session_id: str, request: Request) -> SessionSummary:
     return summary
 
 
-@router.get("/sessions/{session_id}/messages")
+@router.get("/sessions/{session_id:session}/messages")
 def get_session_messages(session_id: str, request: Request) -> list[dict]:
     """The chat's messages. In a shared chat each person's message also says
     who wrote it (``sender_person_id``, ``sender_name``)."""
@@ -316,7 +319,7 @@ class ChatPeople(BaseModel):
     people: list[ChatPerson]
 
 
-@router.get("/sessions/{session_id}/people", response_model=ChatPeople)
+@router.get("/sessions/{session_id:session}/people", response_model=ChatPeople)
 def get_session_people(session_id: str, request: Request) -> ChatPeople:
     """Everyone in the chat, its owner first, for anyone in it."""
     caller, _ = _require_chat_access(request, session_id)
@@ -326,7 +329,7 @@ def get_session_people(session_id: str, request: Request) -> ChatPeople:
     )
 
 
-@router.post("/sessions/{session_id}/typing", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/sessions/{session_id:session}/typing", status_code=status.HTTP_204_NO_CONTENT)
 def post_session_typing(session_id: str, request: Request) -> Response:
     """Tell the others in a shared chat that the caller is writing. Sent at
     most every couple of seconds while they type; a chat of one has nobody to
@@ -350,7 +353,7 @@ def _still_in(request: Request, session_id: str, caller: int | None, member: boo
     return _session_access(request, session_id, caller) == "allowed"
 
 
-@router.get("/sessions/{session_id}/live")
+@router.get("/sessions/{session_id:session}/live")
 async def live_session(session_id: str, request: Request) -> StreamingResponse:
     """The chat as it happens, for a page that has it open: someone's
     message and the reply as it is written, who is typing, and who joined
@@ -415,7 +418,7 @@ class SessionUpdate(BaseModel):
     topic_name: str | None = Field(default=None, min_length=1, max_length=chat_topics.MAX_TOPIC_CHARS)
 
 
-@router.patch("/sessions/{session_id}", response_model=SessionSummary, response_model_exclude_none=True)
+@router.patch("/sessions/{session_id:session}", response_model=SessionSummary, response_model_exclude_none=True)
 def update_session(session_id: str, body: SessionUpdate, request: Request) -> SessionSummary:
     """The owner names their chat (the automatic title never replaces it
     after) or pins it to the top of their list."""
@@ -468,14 +471,14 @@ def _share_list(session_id: str) -> list[ShareEntry]:
     return out
 
 
-@router.get("/sessions/{session_id}/shares", response_model=list[ShareEntry])
+@router.get("/sessions/{session_id:session}/shares", response_model=list[ShareEntry])
 def get_session_shares(session_id: str, request: Request) -> list[ShareEntry]:
     """Who the owner shared this chat with."""
     _require_owner(request, session_id)
     return _share_list(session_id)
 
 
-@router.put("/sessions/{session_id}/shares", response_model=list[ShareEntry])
+@router.put("/sessions/{session_id:session}/shares", response_model=list[ShareEntry])
 def put_session_shares(session_id: str, body: SharesUpdate, request: Request) -> list[ShareEntry]:
     """Share the chat with exactly these team members, who then read it and
     write in it with its owner. Only a chat started here: a chat app's
@@ -516,7 +519,7 @@ def put_session_shares(session_id: str, body: SharesUpdate, request: Request) ->
     return _share_list(session_id)
 
 
-@router.delete("/sessions/{session_id}/shares/me", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/sessions/{session_id:session}/shares/me", status_code=status.HTTP_204_NO_CONTENT)
 def leave_session(session_id: str, request: Request) -> Response:
     """Leave a chat someone shared with the caller. It goes from their list;
     its owner can add them again."""
@@ -539,7 +542,7 @@ def leave_session(session_id: str, request: Request) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/sessions/{session_id}/export")
+@router.get("/sessions/{session_id:session}/export")
 def export_session(session_id: str, request: Request) -> Response:
     """The chat as a Markdown file, for anyone in it."""
     _require_chat_access(request, session_id)
@@ -570,7 +573,7 @@ class RewindResponse(BaseModel):
     message: str
 
 
-@router.post("/sessions/{session_id}/rewind", response_model=RewindResponse)
+@router.post("/sessions/{session_id:session}/rewind", response_model=RewindResponse)
 async def rewind_session(session_id: str, body: RewindRequest, request: Request) -> RewindResponse:
     """Take back the chat's last turn so the owner can ask it again, as it
     was (Try again) or edited. The page then sends the message as a normal
@@ -611,7 +614,7 @@ async def rewind_session(session_id: str, body: RewindRequest, request: Request)
     return RewindResponse(message="\n\n".join(asked))
 
 
-@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/sessions/{session_id:session}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_session_route(session_id: str, request: Request) -> Response:
     _require_session_access(request, session_id)
     deleted = delete_session(session_id)
@@ -631,7 +634,7 @@ class MessageFeedback(BaseModel):
 
 
 @router.post(
-    "/sessions/{session_id}/messages/{message_id}/feedback",
+    "/sessions/{session_id:session}/messages/{message_id}/feedback",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def post_message_feedback(
@@ -684,7 +687,7 @@ _FOLLOWUP_CACHE_MAX = 512
 _followup_cache: dict[tuple[str, int], tuple[float, str]] = {}
 
 
-@router.get("/sessions/{session_id}/followup")
+@router.get("/sessions/{session_id:session}/followup")
 async def get_followup_suggestion(session_id: str, request: Request) -> dict[str, Any]:
     """One suggested next message for the chat composer.
 
