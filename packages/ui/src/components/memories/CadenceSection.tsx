@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   cancelScheduledAction,
@@ -154,7 +155,7 @@ export function activityLine(item: ActivityItem): { verb: string; subject: strin
     case "nudge_sent":
       return { verb: "nudged", subject: item.target ?? "a stalled item" };
     case "cadence_sent":
-      return { verb: "ran cadence for", subject: item.department ?? "a department" };
+      return { verb: "checked in with", subject: item.department ?? "a team" };
     case "workflow_resumed":
       return { verb: "resumed workflow with", subject: item.target ?? "someone" };
     case "proposal_routed":
@@ -166,7 +167,8 @@ export function activityLine(item: ActivityItem): { verb: string; subject: strin
     case "advice_given":
       return { verb: "advised on", subject: item.summary };
     case "workflow_done":
-      return { verb: "completed", subject: item.summary };
+      // The summary already says what it did ("Researched your market").
+      return { verb: "", subject: item.summary };
     case "initiative_started":
       return { verb: "kicked off initiative:", subject: item.summary };
     case "decision_resolved":
@@ -196,6 +198,11 @@ export const SUMMARY_KINDS = new Set([
   "took_the_lead",
   "sent_as_you",
 ]);
+
+/** Where a finished run's write-up opens, when it kept one. */
+export function writeUpHref(item: ActivityItem): string | null {
+  return item.artifact_id ? `/artifacts/${encodeURIComponent(item.artifact_id)}` : null;
+}
 
 // Take the lead and Handle it for me rows say whose name it acted in.
 export function actingAs(item: ActivityItem): string | null {
@@ -297,7 +304,7 @@ export function RecentActivity() {
                       <span className="text-xs font-semibold text-fg-muted">{actingAs(it)}</span>
                     </>
                   )}
-                  <span className="text-sm text-fg-muted">{verb}</span>
+                  {verb && <span className="text-sm text-fg-muted">{verb}</span>}
                   {!subjectIsSummary && (
                     <span className="text-sm text-fg" title={subject}>{subject}</span>
                   )}
@@ -310,6 +317,19 @@ export function RecentActivity() {
                 {it.summary && (
                   <p className="text-[15px] text-fg leading-snug break-words line-clamp-2 mt-0.5" title={it.summary}>
                     {it.summary}
+                  </p>
+                )}
+                {(it.detail || writeUpHref(it)) && (
+                  <p className="text-sm text-fg-muted leading-snug break-words mt-0.5">
+                    {it.detail}
+                    {writeUpHref(it) && (
+                      <>
+                        {it.detail && " "}
+                        <Link href={writeUpHref(it)!} className="font-semibold text-accent hover:underline whitespace-nowrap">
+                          Read it
+                        </Link>
+                      </>
+                    )}
                   </p>
                 )}
               </li>

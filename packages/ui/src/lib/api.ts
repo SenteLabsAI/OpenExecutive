@@ -4967,6 +4967,8 @@ export async function reviewAlerts(): Promise<AlertReviewSummary> {
 // "dm_sent" | "email_sent" | "nudge_sent" | "cadence_sent" |
 // "workflow_resumed" | "proposal_routed" | "decision_logged" |
 // "advice_given" | "action".
+// A finished run ("workflow_done") also carries `detail`, one line on what
+// came of it, and `artifact_id`, its write-up when it kept one.
 export interface ActivityItem {
   kind: string;
   summary: string;
@@ -4974,6 +4976,8 @@ export interface ActivityItem {
   target: string | null;
   department: string | null;
   at: string;
+  detail?: string | null;
+  artifact_id?: string | null;
 }
 
 export interface ActivityResponse {

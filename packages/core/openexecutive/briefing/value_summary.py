@@ -2,9 +2,9 @@
 
 The engagement value report (``workflows/engagement_value_report.py``) is
 written for a fractional executive's client and runs only on demand; the
-weekly review runs in solo mode only; and Pulse's Done recently is a feed of
-the last few rows. This module is the owner's own tally, for ``GET /today/value``, the
-"Your month" card on Pulse and the monthly message
+weekly review runs in solo mode only; and the rows of Pulse's Done for you are a
+feed of the last few. This module is the owner's own tally, for ``GET /today/value``,
+the count line atop Done for you and the monthly message
 (``scheduler.runner._run_monthly_value``).
 
 Every number is a ``COUNT(*)`` of rows that prove the thing happened, read
@@ -14,7 +14,7 @@ straight from SQLite; no model writes or estimates any of it, and there is no
   • messages sent — the DM handlers' own ``tool_invocation`` rows
     (``kind=outbound``, sent, not held or suppressed) to anyone but the owner,
     plus mail sent through the Gmail or Outlook tools. Mail sent from a chat
-    turn counts here, whatever Done recently shows.
+    turn counts here, whatever the activity feed shows.
   • inbox replies drafted and sent — the owner's own Act as me rows.
   • meetings booked — successful calendar create calls.
   • briefs delivered — the scheduler's ``delivered`` row per brief.

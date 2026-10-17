@@ -7,11 +7,11 @@ import { getValueSummary, type ValueSummary } from "@/lib/api";
 import { deltaLabel, headline, visibleLines } from "@/lib/valueSummary";
 import { Skeleton } from "./shared";
 
-// What the Executive did for the owner this month (GET /today/value): a
-// "Your month" card at the top of the Pulse overview and the full count on
+// What the Executive did for the owner this month (GET /today/value): the
+// count line at the top of Pulse's Done for you panel and the full count on
 // its own screen (`/memories?tab=value`). Every number is counted from the
 // record; the endpoint is the owner's alone, so for anyone else (a 403) the
-// card doesn't render.
+// line doesn't render.
 
 type Period = "month" | "week";
 
@@ -40,29 +40,24 @@ function useValueSummary(period: Period, offset: number) {
   return { summary: current?.summary, error: current?.error ?? false };
 }
 
-/** The overview card: one sentence about this month, linking to the rest. */
-export function YourMonthCard() {
+/** The top line of Done for you: this month's count, opening the rest. */
+export function MonthCountLine() {
   const { summary } = useValueSummary("month", 0);
   if (summary === null) return null;
   const line = summary ? headline(summary.lines) : "";
   return (
     <Link
       href="/memories?tab=value"
-      className="group flex items-center justify-between gap-4 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-6 hover:border-accent/50 hover:bg-surface-overlay transition-colors"
+      className="flex items-center justify-between gap-3 rounded-xl bg-surface-overlay px-3 py-2.5 my-2 text-[15px] font-semibold text-fg hover:bg-surface transition-colors"
     >
-      <div className="min-w-0">
-        <h2 className="text-lg font-semibold text-fg">Your month</h2>
-        {summary === undefined ? (
-          <Skeleton className="h-5 w-64 mt-2" />
-        ) : (
-          <p className="text-[15px] text-fg-muted mt-1">
-            {line
-              ? `${summary.label}: ${line}.`
-              : `Nothing counted yet for ${summary.label}. What it does for you adds up here.`}
-          </p>
-        )}
-      </div>
-      <Icon name="chevron-right" size="w-5 h-5" />
+      {summary === undefined ? (
+        <Skeleton className="h-5 w-64" />
+      ) : (
+        <span className="min-w-0">
+          {line ? `${summary.label}: ${line}` : `Nothing counted yet for ${summary.label}`}
+        </span>
+      )}
+      <Icon name="chevron-right" size="w-4 h-4" className="shrink-0 text-accent" />
     </Link>
   );
 }

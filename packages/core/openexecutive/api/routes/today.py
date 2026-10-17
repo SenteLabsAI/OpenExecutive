@@ -551,6 +551,10 @@ class ActivityItem(BaseModel):
     target: str | None
     department: str | None
     at: str
+    # A finished run's line on what came of it (`workflows.run_outcome`),
+    # and the artifact id of its write-up when it kept one (`run:<id>`).
+    detail: str | None = None
+    artifact_id: str | None = None
 
 
 class ActivityResponse(BaseModel):
@@ -1230,16 +1234,26 @@ def _build_activity(
     # starve the done ones out of the pool. Bucket at `updated_at` (completion).
     # Team runs only: the rail is shown to everyone, and a run someone started
     # by hand is theirs alone (`persistence.run_visible_to`).
-    for run in wf_persistence.list_runs(status="done", limit=pool, visible_to=None):
+    # Rows say what the work was and what came of it (`run_outcome`), never
+    # the run's log title ("Executive Research (periodic)").
+    from openexecutive.workflows import run_outcome
+
+    for run in wf_persistence.list_runs(
+        status="done", limit=pool, visible_to=None, with_body=True,
+    ):
         if run.get("workflow_name") in exclude_workflows:
             continue
         items.append(ActivityItem(
             kind="workflow_done",
-            summary=run.get("title") or run.get("workflow_name") or "Workflow",
+            summary=run_outcome.plain_name(run),
             actor="Executive",
             target=None,
             department=None,
             at=run["updated_at"],
+            detail=run_outcome.outcome_line(run),
+            artifact_id=(
+                f"run:{run['run_id']}" if run_outcome.has_write_up(run.get("artifact")) else None
+            ),
         ))
 
     # Initiatives the Executive kicked off / is tracking. `created_at` marks

@@ -912,7 +912,12 @@ def test_activity_includes_workflow_initiative_decision_alert(
     for it in items:
         by_kind.setdefault(it["kind"], []).append(it)
 
-    assert [i["summary"] for i in by_kind.get("workflow_done", [])] == ["Morning brief"]
+    # Named in plain words, not by the run's log title; a brief gets no line
+    # (its text is the brief) but links to its write-up.
+    [done] = by_kind.get("workflow_done", [])
+    assert done["summary"] == "Sent the morning brief"
+    assert done["detail"] is None
+    assert done["artifact_id"] == "run:run-1"
     assert [i["summary"] for i in by_kind.get("initiative_started", [])] == ["AI Opportunity Assessment"]
     # Decision summary derives the verb from status + a human payload key.
     assert by_kind["decision_resolved"][0]["summary"] == "Approved: Book weekly sync"
@@ -2297,8 +2302,8 @@ def test_rhythm_runs_stay_out_of_the_briefs_activity(
             10, exclude_workflows=today_route.RHYTHM_WORKFLOWS,
         ).items
     ]
-    assert "Executive Reflection 2026-09-28" in rail
-    assert "Executive Reflection 2026-09-28" not in brief
+    assert "Looked back on the day" in rail
+    assert "Looked back on the day" not in brief
     assert "Teardown of Acme" in brief
 
 

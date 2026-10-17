@@ -5,12 +5,14 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getActivity, getHistory, getReflection, listStandingFacts, type ActivityItem } from "@/lib/api";
 import Icon from "@/components/Icon";
 import { upcomingLabel, whenLabel, type MemoryView } from "@/lib/pulseView";
-import { SUMMARY_KINDS, activityLine } from "./CadenceSection";
+import { SUMMARY_KINDS, activityLine, writeUpHref } from "./CadenceSection";
 import type { PulseData } from "./PulseHeader";
 import { Skeleton, metaFor } from "./shared";
+import { MonthCountLine } from "./ValueSection";
 
 // The Pulse overview's three blocks under the heartbeat: the next few things
-// the Executive will do (Coming up), the last few it did (Done recently), and
+// the Executive will do (Coming up), the month's count and the last few it
+// did (Done for you), and
 // a tile per kind of memory. Each links to its full list on its own screen
 // (`/memories?tab=…`), so the overview stays short.
 
@@ -52,12 +54,15 @@ function PreviewRow({
   title,
   detail,
   chip,
+  href,
 }: {
   when: string;
   upcoming: boolean;
   title: string;
   detail?: string;
   chip?: string;
+  /** A finished run's write-up: "Read it" after the detail. */
+  href?: string | null;
 }) {
   return (
     <li className="flex items-start gap-3 py-3 border-t border-line first:border-t-0">
@@ -77,9 +82,17 @@ function PreviewRow({
             </span>
           )}
         </div>
-        {detail && (
-          <div className="text-sm text-fg-muted mt-0.5 line-clamp-1" title={detail}>
+        {(detail || href) && (
+          <div className={`text-sm text-fg-muted mt-0.5 ${href ? "line-clamp-3" : "line-clamp-1"}`} title={detail}>
             {detail}
+            {href && (
+              <>
+                {detail && " "}
+                <Link href={href} className="font-semibold text-accent hover:underline whitespace-nowrap">
+                  Read it
+                </Link>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -151,8 +164,9 @@ function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** The last few things it did on its own. */
-export function DoneRecently() {
+/** This month's count, then the last few things it did on its own, each
+ *  saying what came of it. */
+export function DoneForYou() {
   const [items, setItems] = useState<ActivityItem[] | null>(null);
 
   useEffect(() => {
@@ -170,7 +184,8 @@ export function DoneRecently() {
   }, []);
 
   return (
-    <PreviewCard title="Done recently" href="/memories?tab=activity" linkLabel="All activity">
+    <PreviewCard title="Done for you" href="/memories?tab=activity" linkLabel="All activity">
+      <MonthCountLine />
       {items === null ? (
         <RowsSkeleton />
       ) : items.length === 0 ? (
@@ -182,8 +197,11 @@ export function DoneRecently() {
             // For summary-style kinds the subject IS the summary, so the
             // detail line says only what kind of thing it was.
             // A plain "action" has nothing to add beyond its summary.
+            // A finished run says what came of it (and links its write-up).
             const detail =
-              it.kind === "action"
+              it.kind === "workflow_done"
+                ? (it.detail ?? undefined)
+                : it.kind === "action"
                 ? undefined
                 : SUMMARY_KINDS.has(it.kind)
                   ? capitalise(verb.replace(/:$/, ""))
@@ -195,6 +213,7 @@ export function DoneRecently() {
                 when={whenLabel(it.at)}
                 title={it.summary || detail || capitalise(verb)}
                 detail={it.summary ? detail : undefined}
+                href={writeUpHref(it)}
               />
             );
           })}

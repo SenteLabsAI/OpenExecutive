@@ -1,4 +1,4 @@
-// Pure helpers for the "Your month" card and screen on Pulse
+// Pure helpers for the month count on Pulse's Done for you panel and its screen
 // (components/memories/ValueSection.tsx). Kept free of React so
 // scripts/valueSummary.test.mjs can run them under plain node.
 

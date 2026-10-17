@@ -1,5 +1,5 @@
 // Pure helpers for the Pulse page: which screen a `?tab=` link opens, and the
-// short "when" labels on its Coming up and Done recently lists. Kept free of
+// short "when" labels on its Coming up and Done for you lists. Kept free of
 // React so scripts/pulseView.test.mjs can run them under plain node.
 
 /** The Pulse overview, or one of the focused screens it links to. */
