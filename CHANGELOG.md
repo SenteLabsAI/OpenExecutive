@@ -9,6 +9,28 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.1](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.0...v0.6.1) (2026-10-17)
+
+
+### Added
+
+* **briefing:** show a first-week card on Home instead of the getting-started brief ([#523](https://github.com/SenteLabsAI/OpenExecutive/issues/523)) ([fd53d82](https://github.com/SenteLabsAI/OpenExecutive/commit/fd53d827ee62dbdb0cc3c7c44ec1e45c5fdfe619))
+* **chat:** group chats by topic on the Chats page ([#521](https://github.com/SenteLabsAI/OpenExecutive/issues/521)) ([3c6497e](https://github.com/SenteLabsAI/OpenExecutive/commit/3c6497e6a5a4a486dbb725042d7d66b005bf4d27))
+* **onboarding:** let setup answers be changed and redrafted ([#527](https://github.com/SenteLabsAI/OpenExecutive/issues/527)) ([cecb9f8](https://github.com/SenteLabsAI/OpenExecutive/commit/cecb9f8c97529e9e5b2ed36d869365c44555d56a))
+* **ui:** group the Settings pages under headings ([#530](https://github.com/SenteLabsAI/OpenExecutive/issues/530)) ([86f73e5](https://github.com/SenteLabsAI/OpenExecutive/commit/86f73e56758973100bbea7746d1b862a7575d2e3))
+* **ui:** say what each finished run did in Pulse's Done for you ([#528](https://github.com/SenteLabsAI/OpenExecutive/issues/528)) ([4a4494b](https://github.com/SenteLabsAI/OpenExecutive/commit/4a4494bd221aa9726adf47a106f07e93fd41b8eb))
+
+
+### Fixed
+
+* **alerts:** answer a create_alert call missing its subject or body ([#518](https://github.com/SenteLabsAI/OpenExecutive/issues/518)) ([3b6975c](https://github.com/SenteLabsAI/OpenExecutive/commit/3b6975c708bcacd30238534865744411be07f899))
+* **chat:** open and delete Google Chat chats from the web ([#526](https://github.com/SenteLabsAI/OpenExecutive/issues/526)) ([b3600f1](https://github.com/SenteLabsAI/OpenExecutive/commit/b3600f1975654cbbe0b2c7f01818836768a1e733))
+* **chat:** show the Executive's name over its replies ([#524](https://github.com/SenteLabsAI/OpenExecutive/issues/524)) ([5b9b79d](https://github.com/SenteLabsAI/OpenExecutive/commit/5b9b79deca654acd7f3934dbb6a827d9df85f6ed))
+* **chat:** word next-message holds as a yes with a reason ([#532](https://github.com/SenteLabsAI/OpenExecutive/issues/532)) ([b62af21](https://github.com/SenteLabsAI/OpenExecutive/commit/b62af213f097b8c3ce1937528eb58d9a72bede1b))
+* **memory:** keep an adapter's speaker check on turns the chat review grades ([#520](https://github.com/SenteLabsAI/OpenExecutive/issues/520)) ([cb49225](https://github.com/SenteLabsAI/OpenExecutive/commit/cb4922557e2dc121bbe08e24e87141dd7e3a54fd))
+* **ui:** make the getting-started Ask button open a chat, and drop "overnight" ([#522](https://github.com/SenteLabsAI/OpenExecutive/issues/522)) ([95f98ef](https://github.com/SenteLabsAI/OpenExecutive/commit/95f98efbdaf16826eab4b0bb4f68f624e38caf64))
+* **ui:** show the Home ⋯ menu only in a chat ([#525](https://github.com/SenteLabsAI/OpenExecutive/issues/525)) ([c29a90a](https://github.com/SenteLabsAI/OpenExecutive/commit/c29a90a39904518579974c13bf39d9b3623b8516))
+
 ## [0.6.0](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.5.6...v0.6.0) (2026-10-16)
 
 
