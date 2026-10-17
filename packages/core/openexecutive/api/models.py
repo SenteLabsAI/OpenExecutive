@@ -478,6 +478,18 @@ class OnboardSessionRequest(BaseModel):
     session_id: str
 
 
+class OnboardReviseRequest(BaseModel):
+    """Change one of the person's earlier answers and carry on from there."""
+
+    session_id: str
+    # Which of the person's own answers, oldest first: 0 is the description.
+    # Defaulted so a missing one gets the route's fixed 404, not a 422 that
+    # echoes the whole body (message included).
+    answer: int = -1
+    # No Field(max_length=...) — see ONBOARD_MESSAGE_MAX_CHARS above.
+    message: str
+
+
 # No Field(max_length=...) on any of the draft models below, for the same
 # reason as ONBOARD_MESSAGE_MAX_CHARS above: FastAPI's 422 body echoes the
 # rejected value, and a commit body carries the company's financials. Lengths

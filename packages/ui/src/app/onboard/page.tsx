@@ -6,12 +6,18 @@ import OnboardWizard from "@/components/OnboardWizard";
 import OnboardConversation, {
   type Bubble,
 } from "@/components/onboard/OnboardConversation";
+import OnboardAnswers from "@/components/onboard/OnboardAnswers";
 import OnboardDescribe from "@/components/onboard/OnboardDescribe";
 import OnboardDone from "@/components/onboard/OnboardDone";
 import OnboardDraftReview from "@/components/onboard/OnboardDraftReview";
 import VoicePicker from "@/components/executive/VoicePicker";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { getOnboardInterview, type OnboardTurn, type WorkspaceMode } from "@/lib/api";
+import {
+  discardOnboardInterview,
+  getOnboardInterview,
+  type OnboardTurn,
+  type WorkspaceMode,
+} from "@/lib/api";
 import { clearSetupMemory, recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
 
 // Onboarding is a focused full-screen flow — exempt from the AppShell chrome
@@ -65,6 +71,10 @@ function OnboardFlow() {
   // Resuming: the remembered session is being fetched.
   const [resuming, setResuming] = useState(() => recall(STORAGE_KEYS.session) !== null);
   const [resumed, setResumed] = useState(false);
+  // Bumped by Start over, so the conversation starts again from empty.
+  const [restarts, setRestarts] = useState(0);
+  // Bumped by each redraft from an edited answer, so the review starts afresh.
+  const [redrafts, setRedrafts] = useState(0);
 
   const formMode = params.get("mode") === "form";
   const chosenFor = params.get("for");
@@ -113,6 +123,32 @@ function OnboardFlow() {
       cancelled = true;
     };
   }, []);
+
+  // Start over: forget this setup here and on the server, then begin again
+  // from the description (or, on a re-run, from the opening question).
+  function startOver() {
+    const sid = recall(STORAGE_KEYS.session);
+    if (sid) void discardOnboardInterview(sid).catch(() => {});
+    clearSetupMemory();
+    setTurn(null);
+    setConversationTurn(null);
+    setResumeTurns([]);
+    setResumed(false);
+    setChosenHere(null);
+    setRestarts((n) => n + 1);
+  }
+
+  const resumedBanner = resumed && (
+    <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-accent/25 bg-accent/5 px-4 py-3 text-sm text-fg-muted">
+      <span>Picking up where you left off. Your answers were kept.</span>
+      <button
+        onClick={startOver}
+        className="shrink-0 text-accent hover:opacity-80 transition-opacity"
+      >
+        Start over
+      </button>
+    </div>
+  );
 
   function finish() {
     clearSetupMemory();
@@ -168,7 +204,10 @@ function OnboardFlow() {
   if (turn?.phase === "draft") {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 w-full">
+        {resumedBanner}
         <OnboardDraftReview
+          // A redraft after an edited answer starts the review afresh.
+          key={redrafts}
           turn={turn}
           onBackToConversation={() => {
             // Keep the session and its transcript — "ask me more" must not
@@ -177,6 +216,23 @@ function OnboardFlow() {
             setTurn(null);
           }}
           onSaved={finish}
+          answers={
+            <OnboardAnswers
+              compact
+              sessionId={turn.session_id}
+              bubbles={resumeTurns}
+              onRevised={(next, turns) => {
+                setResumeTurns(turns);
+                if (next.phase === "draft") {
+                  setTurn(next);
+                  setRedrafts((n) => n + 1);
+                } else {
+                  setConversationTurn(next);
+                  setTurn(null);
+                }
+              }}
+            />
+          }
         />
       </div>
     );
@@ -192,13 +248,10 @@ function OnboardFlow() {
         </p>
       </div>
 
-      {resumed && (
-        <p className="mb-4 rounded-xl border border-accent/25 bg-accent/5 px-4 py-3 text-sm text-fg-muted">
-          Picking up where you left off. Your answers were kept.
-        </p>
-      )}
+      {resumedBanner}
 
       <OnboardConversation
+        key={restarts}
         initialTurn={conversationTurn}
         initialTurns={resumeTurns}
         solo={mode === "solo"}

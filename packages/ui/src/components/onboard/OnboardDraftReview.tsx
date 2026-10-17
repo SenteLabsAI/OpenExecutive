@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useSession } from "next-auth/react";
 import { ProfileSections } from "@/components/company-profile/ProfileSections";
 import OnboardDepartmentsDraft from "@/components/onboard/OnboardDepartmentsDraft";
@@ -21,12 +21,15 @@ interface Props {
   turn: OnboardTurn;
   onBackToConversation: () => void;
   onSaved: () => void;
+  /** Shown under the summary: the answers the draft was built from, each editable. */
+  answers?: ReactNode;
 }
 
 export default function OnboardDraftReview({
   turn,
   onBackToConversation,
   onSaved,
+  answers,
 }: Props) {
   // The draft is local state until the single commit at the end — every edit
   // below, including the ProfileSections ones, just merges into it.
@@ -160,6 +163,8 @@ export default function OnboardDraftReview({
           </ul>
         </div>
       )}
+
+      {answers}
 
       {/* "org" is omitted: org_structure is derived from the two tables below
           when you save, so editing it here would be a second source of truth. */}

@@ -139,7 +139,9 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
       const description = text.trim();
       const turn = await startOnboardInterview(description, files);
       const turns: DescribeResult["turns"] = [];
-      if (description) turns.push({ role: "user", text: description });
+      // Files alone still make the opening answer (the server's first turn),
+      // so the answers line up with the server's when one is edited.
+      if (description || files.length > 0) turns.push({ role: "user", text: description });
       if (turn.phase === "question" && turn.question) {
         turns.push({ role: "assistant", text: turn.question });
       }

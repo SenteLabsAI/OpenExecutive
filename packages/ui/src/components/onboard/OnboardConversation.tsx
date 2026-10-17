@@ -8,6 +8,7 @@ import {
   type OnboardTurn,
   type RoleKind,
 } from "@/lib/api";
+import OnboardAnswers from "@/components/onboard/OnboardAnswers";
 
 const MAX_FILES = 8;
 
@@ -142,24 +143,6 @@ export default function OnboardConversation({
           )}
         </div>
 
-        {earlier.length > 0 && (
-          <details className="text-xs text-fg-muted">
-            <summary className="cursor-pointer hover:text-fg transition-colors">
-              Earlier in this conversation ({earlier.length}{" "}
-              {earlier.length === 1 ? "message" : "messages"})
-            </summary>
-            <div className="flex flex-col gap-3 mt-3">
-              {earlier.map((b, i) => (
-                <div key={i} className={b.role === "user" ? "pl-6" : ""}>
-                  <p className="text-[10px] uppercase tracking-wide text-fg-subtle mb-0.5">
-                    {b.role === "user" ? "You" : "Setup"}
-                  </p>
-                  <p className="text-xs text-fg whitespace-pre-wrap">{b.text}</p>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
       </div>
 
       <div className="flex flex-col gap-2">
@@ -232,7 +215,24 @@ export default function OnboardConversation({
         </div>
       </div>
 
+      {/* Below the box you answer in: a new question keeps that in view. */}
       <div ref={bottomRef} />
+
+      {started && (
+        <OnboardAnswers
+          sessionId={turn!.session_id}
+          bubbles={earlier}
+          disabled={busy}
+          onRevised={(next, turns) => {
+            if (next.phase === "draft") {
+              onDraft(next, turns);
+              return;
+            }
+            setTurn(next);
+            setBubbles(turns);
+          }}
+        />
+      )}
     </div>
   );
 }
