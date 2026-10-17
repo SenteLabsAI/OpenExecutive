@@ -1251,9 +1251,7 @@ def _build_activity(
             department=None,
             at=run["updated_at"],
             detail=run_outcome.outcome_line(run),
-            artifact_id=(
-                f"run:{run['run_id']}" if run_outcome.has_write_up(run.get("artifact")) else None
-            ),
+            artifact_id=run_outcome.write_up_id(run),
         ))
 
     # Initiatives the Executive kicked off / is tracking. `created_at` marks

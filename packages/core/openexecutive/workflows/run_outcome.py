@@ -7,9 +7,10 @@ line on what came of it. Both are read from the run's stored row, so older
 runs read the same way as new ones and nothing extra is written or called.
 
 The line is built only from the stored artifact, which the run's viewers can
-already open in full (`artifact_records`), and a brief or reflection gets
-none: their text is the brief itself, or drew on what is private to the
-principal (`persistence.PRIVATE_RUN_ARTIFACT`).
+already open in full (`artifact_records`). A brief gets no line (its text is
+the brief itself; a private one is stored as `PRIVATE_RUN_ARTIFACT`). The
+reflection gets neither a line nor a link: it reads the principal's live
+alerts and its write-up is not screened for what is private to them.
 """
 from __future__ import annotations
 
@@ -32,6 +33,9 @@ _NO_LINE: frozenset[str] = frozenset({
     "morning_brief", "end_of_day_digest", "executive_reflection",
 })
 
+# Never linked from the feed (module docstring).
+_NO_LINK: frozenset[str] = frozenset({"executive_reflection"})
+
 # Stored when a run finished without a write-up.
 _EMPTY_ARTIFACTS: frozenset[str] = frozenset({"", "(no artifact)", PRIVATE_RUN_ARTIFACT})
 
@@ -44,6 +48,13 @@ _TITLE_NOISE = re.compile(r"\s*(\(.*\)|\d{4}-\d{2}-\d{2}|\d{4}-W\d{2})\s*$")
 def has_write_up(artifact: str | None) -> bool:
     """Whether the run kept a write-up worth opening."""
     return (artifact or "").strip() not in _EMPTY_ARTIFACTS
+
+
+def write_up_id(run: dict[str, Any]) -> str | None:
+    """The artifact id the feed links as "Read it", or None."""
+    if run.get("workflow_name") in _NO_LINK or not has_write_up(run.get("artifact")):
+        return None
+    return f"run:{run['run_id']}"
 
 
 def plain_name(run: dict[str, Any]) -> str:

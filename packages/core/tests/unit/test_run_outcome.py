@@ -129,6 +129,12 @@ def test_no_write_up_means_no_line_and_no_link(artifact: str) -> None:
     assert not run_outcome.has_write_up(artifact)
 
 
+def test_the_reflection_is_never_linked() -> None:
+    run = _run("executive_reflection", artifact="Mail from a contact is unanswered.")
+    assert run_outcome.write_up_id(run) is None
+    assert run_outcome.write_up_id(_run("weekly_review", artifact="# Weekly review")) == "run:r1"
+
+
 def test_a_long_line_is_clipped_at_a_word() -> None:
     line = run_outcome.outcome_line(_run("board_prep", artifact="word " * 80))
     assert line is not None and len(line) <= 160 and line.endswith("…")

@@ -212,6 +212,10 @@ def get_run(run_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
     return out
 
 
+# How much of each artifact `list_runs(with_body=True)` reads.
+BODY_CHARS = 20_000
+
+
 def list_runs(
     workflow_name: str | None = None,
     limit: int = 100,
@@ -228,7 +232,8 @@ def list_runs(
     runs. `visible_to` keeps only the runs that person may see
     (`run_visible_to`; None = nobody on the roster: team runs only); the
     default "all" is for the server's own reads, never a person's.
-    `with_body` adds each run's `inputs` (parsed) and `artifact`."""
+    `with_body` adds each run's `inputs` (parsed) and the start of its
+    `artifact` (`BODY_CHARS`), enough to say what came of it."""
     if not _resolve(db_path).exists():
         return []
     clauses: list[str] = []
@@ -248,7 +253,7 @@ def list_runs(
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
             "SELECT run_id, workflow_name, title, status, created_at, updated_at"
-            + (", inputs, artifact " if with_body else " ")
+            + (f", inputs, substr(artifact, 1, {BODY_CHARS}) AS artifact " if with_body else " ")
             + f"FROM workflow_runs {where}ORDER BY updated_at DESC LIMIT ?",
             params,
         ).fetchall()
