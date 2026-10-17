@@ -976,6 +976,55 @@ export interface SessionSummary {
   shared_by?: string;
   /** Shared-with-me list only: when it was shared. */
   shared_at?: string;
+  /** The owner's topic this chat is filed under; absent when none. */
+  topic_id?: number;
+}
+
+/** One of the caller's chat topics (the Topic view on Chats). */
+export interface ChatTopic {
+  id: number;
+  name: string;
+  chat_count: number;
+  /** The owner named, pinned or filed a chat under it: shown even with one chat. */
+  kept: boolean;
+  pinned_at?: string;
+}
+
+/** The caller's topics; `organizing` while older chats are still being filed. */
+export async function listChatTopics(): Promise<{ topics: ChatTopic[]; organizing: boolean }> {
+  const res = await fetch(`${API_BASE}/sessions/topics`);
+  if (!res.ok) throw new Error("Failed to list topics");
+  return res.json();
+}
+
+/** Rename and / or pin a topic. Renaming to another topic's name merges them. */
+export async function updateChatTopic(
+  topicId: number,
+  patch: { name?: string; pinned?: boolean },
+): Promise<ChatTopic> {
+  const res = await fetch(`${API_BASE}/sessions/topics/${topicId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't update this topic.");
+  return res.json();
+}
+
+/** Move every chat under one topic to another. */
+export async function mergeChatTopic(topicId: number, intoId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/topics/${topicId}/merge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ into_id: intoId }),
+  });
+  if (!res.ok) throw await sessionError(res, "Couldn't merge these topics.");
+}
+
+/** Drop a topic; its chats stay, under no topic. */
+export async function ungroupChatTopic(topicId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/topics/${topicId}`, { method: "DELETE" });
+  if (!res.ok) throw await sessionError(res, "Couldn't ungroup this topic.");
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {
@@ -1027,10 +1076,12 @@ export async function listSharedSessions(): Promise<SessionSummary[]> {
   return res.json();
 }
 
-/** Rename and / or pin the caller's own chat. A renamed chat keeps its name. */
+/** Rename, pin and / or file the caller's own chat. A renamed chat keeps its
+ * name; `topic_id: null` files it under no topic, `topic_name` under that
+ * topic (made if new). */
 export async function updateSession(
   sessionId: string,
-  patch: { title?: string; pinned?: boolean },
+  patch: { title?: string; pinned?: boolean; topic_id?: number | null; topic_name?: string },
 ): Promise<SessionSummary> {
   const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",

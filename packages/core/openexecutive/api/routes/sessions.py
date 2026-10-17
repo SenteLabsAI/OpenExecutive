@@ -25,7 +25,7 @@ from openexecutive.api.routes.chat import (
     chat_people,
     forget_session,
 )
-from openexecutive.memory import chat_export
+from openexecutive.memory import chat_export, chat_topics
 from openexecutive.memory.session_store import (
     delete_session,
     get_session_metadata,
@@ -135,6 +135,106 @@ def _person_name(person_id: int | None) -> str | None:
     return person.full_name if person is not None else None
 
 
+class ChatTopic(BaseModel):
+    id: int
+    name: str
+    # How many of the caller's chats are filed under it.
+    chat_count: int
+    # The owner named, pinned or filed a chat under it: it shows even with
+    # one chat, and the tidy never merges it away.
+    kept: bool = False
+    pinned_at: str | None = None
+
+
+class ChatTopics(BaseModel):
+    topics: list[ChatTopic]
+    # True while older chats are being filed in the background; list again
+    # in a few seconds to see them under their topics.
+    organizing: bool = False
+
+
+class TopicUpdate(BaseModel):
+    """Rename and / or pin a topic. A field left out is left as it is."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=chat_topics.MAX_TOPIC_CHARS)
+    pinned: bool | None = None
+
+
+class TopicMerge(BaseModel):
+    into_id: int
+
+
+def _require_caller(request: Request) -> int:
+    caller = _resolve_caller_person_id(request)
+    if caller is None:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return caller
+
+
+def _topic_name(raw: str) -> str:
+    name = chat_topics.clean_topic_name(raw)
+    if not name:
+        raise HTTPException(status_code=422, detail="A topic needs a name")
+    return name
+
+
+@router.get("/sessions/topics", response_model=ChatTopics, response_model_exclude_none=True)
+async def get_topics(request: Request) -> ChatTopics:
+    """The caller's chat topics. The first time, and whenever chats are
+    waiting for one, it starts filing them in the background
+    (``organizing``)."""
+    from openexecutive.utils import chat_topics as topic_model
+
+    caller = _resolve_caller_person_id(request)
+    if caller is None:
+        return ChatTopics(topics=[])
+    topics = await asyncio.to_thread(chat_topics.list_topics, caller)
+    organizing = topic_model.backfill_running(caller)
+    if not organizing:
+        waiting: bool = await asyncio.to_thread(chat_topics.has_untagged, caller)
+        if waiting:
+            organizing = topic_model.start_backfill(caller)
+    return ChatTopics(topics=[ChatTopic(**t) for t in topics], organizing=organizing)
+
+
+@router.patch("/sessions/topics/{topic_id}", response_model=ChatTopic, response_model_exclude_none=True)
+def update_topic(topic_id: int, body: TopicUpdate, request: Request) -> ChatTopic:
+    """Rename or pin one of the caller's topics. Renaming to the name of
+    another of their topics merges the two."""
+    caller = _require_caller(request)
+    if chat_topics.owned_topic(caller, topic_id) is None:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if body.name is not None:
+        moved = chat_topics.rename_topic(caller, topic_id, _topic_name(body.name))
+        topic_id = moved if moved is not None else topic_id
+    if body.pinned is not None:
+        chat_topics.pin_topic(caller, topic_id, body.pinned)
+    for t in chat_topics.list_topics(caller):
+        if t["id"] == topic_id:
+            return ChatTopic(**t)
+    raise HTTPException(status_code=404, detail="Topic not found")
+
+
+@router.post("/sessions/topics/{topic_id}/merge", status_code=status.HTTP_204_NO_CONTENT)
+def merge_topic(topic_id: int, body: TopicMerge, request: Request) -> Response:
+    """Move every chat under one of the caller's topics to another of theirs."""
+    caller = _require_caller(request)
+    if not chat_topics.merge_topics(caller, topic_id, body.into_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    chat_topics.keep_topic(caller, body.into_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/sessions/topics/{topic_id}", status_code=status.HTTP_204_NO_CONTENT)
+def ungroup_topic(topic_id: int, request: Request) -> Response:
+    """Drop one of the caller's topics. Its chats go under no topic and stay
+    there; none is deleted."""
+    caller = _require_caller(request)
+    if not chat_topics.ungroup_topic(caller, topic_id):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/sessions/shared-with-me",
     response_model=list[SessionSummary],
@@ -172,6 +272,7 @@ def get_session(session_id: str, request: Request) -> SessionSummary:
         # Only the owner pins, so a member never sees the owner's pin.
         _, owner = get_session_owner(session_id)
         summary.pinned_at = None
+        summary.topic_id = None
         summary.shared_with_you = True
         summary.shared_by = _person_name(owner) or "Someone on your team"
     return summary
@@ -304,21 +405,39 @@ async def live_session(session_id: str, request: Request) -> StreamingResponse:
 
 
 class SessionUpdate(BaseModel):
-    """Rename and / or pin a chat. A field left out is left as it is."""
+    """Rename, pin and / or file a chat. A field left out is left as it is.
+    ``topic_id`` null files it under no topic; ``topic_name`` files it under
+    the caller's topic of that name, made if new."""
 
     title: str | None = Field(default=None, min_length=1, max_length=120)
     pinned: bool | None = None
+    topic_id: int | None = None
+    topic_name: str | None = Field(default=None, min_length=1, max_length=chat_topics.MAX_TOPIC_CHARS)
 
 
 @router.patch("/sessions/{session_id}", response_model=SessionSummary, response_model_exclude_none=True)
 def update_session(session_id: str, body: SessionUpdate, request: Request) -> SessionSummary:
     """The owner names their chat (the automatic title never replaces it
     after) or pins it to the top of their list."""
-    _require_owner(request, session_id)
-    if body.title is not None:
-        title = " ".join(body.title.split())
-        if not title:
-            raise HTTPException(status_code=422, detail="A title can't be blank")
+    owner = _require_owner(request, session_id)
+    # Everything is checked before anything is written, so a refused field
+    # leaves the chat as it was.
+    title = " ".join(body.title.split()) if body.title is not None else None
+    if title == "":
+        raise HTTPException(status_code=422, detail="A title can't be blank")
+    topic_name = _topic_name(body.topic_name) if body.topic_name is not None else None
+    if (
+        topic_name is None
+        and "topic_id" in body.model_fields_set
+        and body.topic_id is not None
+        and chat_topics.owned_topic(owner, body.topic_id) is None
+    ):
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if topic_name is not None:
+        chat_topics.file_session(session_id, owner, name=topic_name)
+    elif "topic_id" in body.model_fields_set:
+        chat_topics.file_session(session_id, owner, topic_id=body.topic_id)
+    if title is not None:
         rename_session(session_id, title)
     if body.pinned is not None:
         set_pinned(session_id, body.pinned)
