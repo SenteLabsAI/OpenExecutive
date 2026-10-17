@@ -58,7 +58,7 @@ _NAME_BAD = re.compile(r'[\x00-\x1f\x7f"*:<>?/\\|#%]')
 _MIME_RE = re.compile(r"^[A-Za-z0-9.+_-]+/[A-Za-z0-9.+_-]+$")
 _GOOGLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 _GOOGLE_LINK_PREFIXES = ("https://drive.google.com/", "https://docs.google.com/")
-# workspace-mcp's create_drive_file / create_drive_folder answer (1.29.0):
+# workspace-mcp's create_drive_file / create_drive_folder answer (1.29.0, unchanged in 2.1.0):
 # "Successfully created file '<name>' (ID: <id>) in folder '<folder>' for
 # <email>. Link: <link>". The name comes first and may hold anything, so the
 # greedy match takes the last "' (ID: " — the real one.

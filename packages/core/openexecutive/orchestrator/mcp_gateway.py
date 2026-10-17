@@ -111,7 +111,7 @@ _FORWARDED_ENV_VARS = (
 
 # Outbound Gmail tools whose arguments may carry recipients. Any tool name
 # matching one of these (after the `google_workspace__` namespace prefix) is
-# subject to the recipient allow-list. Names track workspace-mcp 1.29.0: the
+# subject to the recipient allow-list. Names track workspace-mcp 2.1.0: the
 # send/reply/forward surface is a single `send_gmail_message` (reply is that
 # tool with thread_id/quoting; forward is its `forward_message_id` arg, which
 # `_GMAIL_ALLOWED_ARG_KEYS` refuses), and `draft_gmail_message` replaced
@@ -555,7 +555,8 @@ _GMAIL_RECIPIENT_FIELDS = ("to", "cc", "bcc")
 # is rejected by default. Add new keys here only after confirming they cannot
 # carry an unvalidated address.
 #
-# Deliberately NOT allowed (workspace-mcp 1.29.0 send_gmail_message args):
+# Deliberately NOT allowed (workspace-mcp send_gmail_message args, and since
+# 2.1.0 draft_gmail_message's too):
 #   - reply_all: workspace-mcp derives To/Cc from the thread itself, so the
 #     recipients never pass through the roster check below.
 #   - forward_message_id / include_forwarded_attachments: forward any inbox

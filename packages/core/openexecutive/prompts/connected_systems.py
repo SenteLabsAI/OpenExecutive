@@ -27,7 +27,7 @@ GOOGLE_SERVER = "google_workspace"
 _SERVER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 # The Google Workspace tools the Executive reaches for on most turns, by
-# service, as workspace-mcp 1.29.0 (pinned in docker/Dockerfile) names them.
+# service, as workspace-mcp 2.1.0 (pinned in docker/Dockerfile) names them.
 # A new workspace-mcp can rename tools: re-check this list when bumping the
 # pin. Apps Script tools stay out, since the gateway refuses them. Listing a
 # name here never widens access: every call still runs the gateway's gates
@@ -85,7 +85,7 @@ GOOGLE_SERVICE_OF: dict[str, str] = {
 }
 
 # Pinned tools that workspace-mcp's `core` tier does NOT include, read from
-# `core/tool_tiers.yaml` in the pinned 1.29.0. Tiers are cumulative, so
+# `core/tool_tiers.yaml` in the pinned 2.1.0. Tiers are cumulative, so
 # `extended` and `complete` carry all 24 and only `core` needs subtracting.
 # Re-check when bumping the pin, exactly as for the manifest above.
 GOOGLE_TOOLS_ABOVE_CORE: frozenset[str] = frozenset({

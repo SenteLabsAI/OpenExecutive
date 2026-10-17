@@ -8335,7 +8335,7 @@ integrations:
     and block 0 carries a Connected Systems section built from them
     (prompts/connected_systems.render_connected_systems) with the Google tool
     names pinned by service (GOOGLE_TOOL_MANIFEST, checked against
-    workspace-mcp 1.29.0 — re-check on a bump). extensible-mcp's
+    workspace-mcp 2.1.0 — re-check on a bump). extensible-mcp's
     DiscoveredToolsFilter runs only tools one of the session's searches
     returned and keeps them for the session's life, so the lifespan runs
     MCPGateway.prime_pinned_tools() once in the background when
@@ -8373,7 +8373,7 @@ integrations:
     single-tenant model (one install = one company = one exec Google account), so
     the server is inherently one-per-install; co-locating means a new install needs
     only the API+UI apps. workspace-mcp is baked into the API image in its own
-    venv (docker/Dockerfile: `uv pip install workspace-mcp==1.29.0` at /opt/
+    venv (docker/Dockerfile: `uv pip install workspace-mcp==2.1.0` at /opt/
     workspace-mcp — it has the --tool-tier flag and a fastmcp that works
     with modern pydantic) and launched by
     docker/workspace-mcp-launch.sh, referenced as the `command` of the

@@ -81,7 +81,8 @@ CREATE INDEX IF NOT EXISTS idx_session_drive_searches
     ON session_drive_searches(session_id, person_id, query);
 """
 
-# workspace-mcp 1.29.0 output shapes (gdrive/drive_tools.py).
+# workspace-mcp output shapes (gdrive/drive_tools.py), as of 2.1.0. Since 2.0
+# a search Drive did not finish ends in a WARNING line, which matches no item.
 _EMPTY_SEARCH_PREFIX = "No files found for '"
 _SEARCH_HEADER_RE = re.compile(r"^Found \d+ files for ")
 # workspace-mcp interpolates the file's name and type unescaped, so a name
