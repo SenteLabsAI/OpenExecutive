@@ -20,7 +20,7 @@ import PausedBanner from "@/components/executive/PausedBanner";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { ChatMessage, DebugEvent, getSessionMessages, updateSession } from "@/lib/api";
 import { downloadChat } from "@/lib/downloadChat";
-import { recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
+import { ASK_SUGGESTION, recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
 import { sessionTitle } from "@/lib/sessionChannel";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -109,6 +109,14 @@ export default function HomePage() {
     setPendingPrompt(undefined);
     setPendingMemoryText(undefined);
   }, []);
+
+  // The getting-started checklist's Ask: a new chat with its suggested
+  // question typed in, to edit or send.
+  const handleAskFromChecklist = useCallback(() => {
+    handleNewChat();
+    setPendingPrompt(ASK_SUGGESTION);
+    setAutoSubmitPending(false);
+  }, [handleNewChat]);
 
   // Continue a briefing thread in chat — invoked when the user clicks a
   // Department card, proposal, or activity row. Switches mode to "chat"
@@ -248,7 +256,7 @@ export default function HomePage() {
       <PausedBanner />
     </div>
   ) : gettingStarted.visible ? (
-    <GettingStartedCard {...gettingStarted} />
+    <GettingStartedCard {...gettingStarted} onAsk={handleAskFromChecklist} />
   ) : !isOnboarded && health ? (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-accent/25 bg-accent/5 px-4 py-3">
       <p className="text-[15px] text-fg-muted">{profileCopy.missingBanner}</p>
@@ -354,8 +362,10 @@ export default function HomePage() {
             </span>
           </div>
           {/* Agent activity (the live trace of the Executive's turn) lives in
-              this ⋯ menu; the panel itself opens on the right as before. */}
-          <OverflowMenu
+              this ⋯ menu; the panel itself opens on the right as before. Only
+              in a chat: on the briefing there is no turn to trace and no chat
+              to pin or rename, so the menu would hold nothing useful. */}
+          {mode === "chat" && <OverflowMenu
             label="Home options"
             items={[
               ...chatItems,
@@ -364,7 +374,7 @@ export default function HomePage() {
                 onSelect: () => setDebugOpen((o) => !o),
               },
             ]}
-          />
+          />}
         </div>
 
         {/* In chat the notices stay as strips above the conversation; on
@@ -420,7 +430,7 @@ export default function HomePage() {
       </main>
 
       {/* Debug panel */}
-      {debugOpen && (
+      {debugOpen && mode === "chat" && (
         <DebugPanel
           events={debugEvents}
           isLive={isTurnInFlight}

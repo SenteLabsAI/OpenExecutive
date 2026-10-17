@@ -73,16 +73,18 @@ async def _title(session_id: str, user_text: str, reply: str) -> None:
         get_session_metadata,
         update_session_title,
     )
-    from openexecutive.utils.session_title import generate_session_title
+    from openexecutive.utils.chat_topics import name_chat
 
     meta = await asyncio.to_thread(get_session_metadata, session_id)
     # Only a conversation's first exchange names it; later turns and a title
-    # someone already gave it are left alone.
+    # someone already gave it are left alone. Naming also files it under a
+    # topic on its owner's Chats page.
     if meta is None or int(meta.get("message_count") or 0) != 2:
         return
-    title = await generate_session_title(user_text, reply) or first_line_title(user_text)
-    if title:
-        await asyncio.to_thread(update_session_title, session_id, title)
+    if not await name_chat(session_id, user_text, reply):
+        title = first_line_title(user_text)
+        if title:
+            await asyncio.to_thread(update_session_title, session_id, title)
 
 
 def title_after_turn(session_id: str, user_text: str, reply: str) -> None:

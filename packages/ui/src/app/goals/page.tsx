@@ -26,7 +26,13 @@ export default function GoalsPage() {
     let cancelled = false;
     listDepartments()
       .then((ds) => {
-        if (!cancelled) setDepartments(ds);
+        if (cancelled) return;
+        setDepartments(ds);
+        // `?add=1` (Home's first-week card) opens the add form on load.
+        if (new URLSearchParams(window.location.search).get("add") === "1") {
+          const g = groupGoalsByArea(ds);
+          setAddingTo(g.withGoals[0]?.slug ?? g.all[0]?.slug ?? null);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load goals");
@@ -91,11 +97,20 @@ export default function GoalsPage() {
               )}
 
               {grouped.all.length === 0 ? (
-                <p className="text-[15px] text-fg-muted">
-                  {mode === "solo"
-                    ? "There are no areas to put goals in yet. Areas come with your profile — finish setup first."
-                    : "There are no departments to put goals in yet. Add one on the Departments page first."}
-                </p>
+                // No area yet (setup makes none for a solo workspace or a team
+                // that names none): the form is the page, and the save creates
+                // the area it names.
+                <div className="rounded-2xl border border-line bg-surface-elevated px-5">
+                  <AddGoalForm
+                    slug={null}
+                    areaLabel={unit === "area" ? "Area" : "Department"}
+                    onCreated={() => {
+                      listDepartments()
+                        .then(setDepartments)
+                        .catch((e) => setError(e instanceof Error ? e.message : "Failed to load goals"));
+                    }}
+                  />
+                </div>
               ) : total === 0 && addingTo === null ? (
                 <div className="rounded-2xl border border-line bg-surface-elevated p-8 text-center">
                   <p className="text-base font-medium text-fg">No goals yet.</p>

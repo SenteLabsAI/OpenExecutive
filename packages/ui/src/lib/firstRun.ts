@@ -72,6 +72,17 @@ export const OWN_MAILBOX_SENDS = "Drafts replies as you. Sends only if you turn 
 
 const FIRST_QUESTION_MAX = 160;
 
+/** The question the getting-started checklist suggests; its Ask button
+ * starts a chat with it typed in. */
+export const ASK_SUGGESTION = "What should I focus on this week?";
+
+/** True when a row's button runs the page's own handler instead of following
+ * its link: the Ask row on Home, where the link points at the page already
+ * open and so does nothing. */
+export function opensInPlace(item: Pick<ChecklistItem, "id" | "done">, hasAskHandler: boolean): boolean {
+  return !item.done && item.id === "ask" && hasAskHandler;
+}
+
 /**
  * The first question the last setup screen offers, built from what setup
  * just saved: the first of this year's priorities, else the north star,
@@ -166,7 +177,7 @@ export function gettingStartedItems(input: ChecklistInput): ChecklistItem[] {
     {
       id: "ask",
       title: "Ask your Executive something",
-      detail: input.hasAsked ? "First conversation saved" : "Try “What should I focus on this week?”",
+      detail: input.hasAsked ? "First conversation saved" : `Try “${ASK_SUGGESTION}”`,
       done: input.hasAsked,
       optional: false,
       href: "/?new=1",

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ASK_SUGGESTION,
   checklistComplete,
   checklistProgress,
   checklistVisible,
   firstQuestion,
   gettingStartedItems,
   OWN_MAILBOX_SENDS,
+  opensInPlace,
   shouldRedirectToOnboard,
 } from "../src/lib/firstRun.ts";
 
@@ -103,4 +105,17 @@ test("the checklist waits for every answer, so it never flashes", () => {
   assert.equal(checklistVisible({ hidden: true, loaded: true, items: open }), false);
   const done = open.map((i) => ({ ...i, done: true }));
   assert.equal(checklistVisible({ hidden: false, loaded: true, items: done }), false);
+});
+
+test("the Ask row suggests the question its button types in", () => {
+  const ask = gettingStartedItems(base).find((i) => i.id === "ask");
+  assert.equal(ask.detail, `Try “${ASK_SUGGESTION}”`);
+});
+
+test("only an open Ask row runs the page's handler, and only when there is one", () => {
+  const [profile, ask] = gettingStartedItems(base);
+  assert.equal(opensInPlace(ask, true), true);
+  assert.equal(opensInPlace(ask, false), false);
+  assert.equal(opensInPlace({ ...ask, done: true }, true), false);
+  assert.equal(opensInPlace(profile, true), false);
 });

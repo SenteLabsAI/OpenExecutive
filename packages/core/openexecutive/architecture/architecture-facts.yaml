@@ -2377,6 +2377,22 @@ memory:
     a chat-app conversation's reply also lives in that app. The page asks
     first when the reply being redone already did something (action chips),
     since the new turn could do it again.
+  chat_topics: |
+    The Chats page groups a person's own chats by date or by topic
+    (memory/chat_topics.py, utils/chat_topics.py). Topics are per owner
+    (chat_topics rows; sessions.topic_id, sessions.topic_source). Why it
+    costs almost nothing: the one utility-fast call that already titled a
+    new chat now returns its topic too, choosing from the owner's recent
+    topic names, so filing adds a few tokens, not a call. A second short
+    call runs only when that turn made a new topic: it checks the new name
+    against the others (names only) and merges a duplicate at once, rather
+    than a scheduled tidy. Older chats are filed from their titles in
+    batches, started by the first Topic view, not at boot, so an idle tenant
+    spends no CPU or usage on it. What the owner does sticks: a chat they
+    filed (topic_source 'owner') is never refiled, and a topic they renamed,
+    pinned, merged into or filed a chat under (kept) is never merged away.
+    A chat shared with someone keeps its owner's topic, which the reader
+    never sees.
   session_scoping: |
     Decisions and advice rows carry a session_id so per-thread continuity
     (Discord, Telegram) can pull just-this-thread history without leaking
@@ -2820,9 +2836,15 @@ memory:
       part marks the run private. With Read my calendar on (and the same
       Act as me and gmail_status gates) it also lists up to eight of
       today's events on their own calendar as time and title, declined
-      ones skipped, keys meeting:<event id>, also private. The /today header gets the shared part
-      only (getting_started_shared, no mailbox read); GET /today sets
-      first_week so the UI drops the "Quiet day" banner.
+      ones skipped, keys meeting:<event id>, also private. The /today header
+      does not get the block. Home shows a first-week card instead
+      (first_week.first_week_card, no model call): a fixed goal ask while
+      no goal row exists, up to two findings from the latest team
+      executive_research run (parse_artifact_findings reads the stored
+      artifact's Findings reviewed lines), a Watch list link, and "first
+      morning brief comes tomorrow" on setup day until one is delivered.
+      GET /today sets first_week_card and first_week for the principal
+      only; the UI drops the "Quiet day" banner while there is a card.
     - Due-today reminders (memory.history_reminders, from the scheduler
       tick, 09:00 to 18:00 local) cover only promises made by email
       (approved_reply): chat promises are already open loops the nudge

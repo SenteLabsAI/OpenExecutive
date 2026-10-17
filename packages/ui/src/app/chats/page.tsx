@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Icon from "@/components/Icon";
 import { buttonClass } from "@/components/ui/Button";
-import ChatHistory, { ChatRow } from "@/components/sessions/ChatHistory";
+import ChatHistory, { ChatRow, type ChatsView } from "@/components/sessions/ChatHistory";
 import { useSessions } from "@/components/sessions/SessionsContext";
-import { listSharedSessions, searchSessions, type SessionSummary } from "@/lib/api";
+import {
+  listChatTopics,
+  listSharedSessions,
+  searchSessions,
+  type ChatTopic,
+  type SessionSummary,
+} from "@/lib/api";
 import {
   CHANNEL_LABELS,
   CHANNEL_ORDER,
@@ -17,6 +23,39 @@ import {
 } from "@/lib/sessionChannel";
 
 type ChannelFilter = SessionChannel | "all";
+
+const VIEW_KEY = "oe.chats.view";
+// While older chats are being filed, how often and how long to look again.
+const ORGANIZE_POLL_MS = 3000;
+const ORGANIZE_POLLS = 20;
+
+// Date or Topic, remembered per browser; the server render is always Date.
+const viewListeners = new Set<() => void>();
+let sessionView: ChatsView | null = null;
+
+function storedView(): ChatsView {
+  if (sessionView) return sessionView;
+  try {
+    return window.localStorage.getItem(VIEW_KEY) === "topic" ? "topic" : "date";
+  } catch {
+    return "date";
+  }
+}
+
+function saveView(next: ChatsView): void {
+  sessionView = next;
+  try {
+    window.localStorage.setItem(VIEW_KEY, next);
+  } catch {
+    // Private mode: the choice lasts this visit.
+  }
+  viewListeners.forEach((fn) => fn());
+}
+
+function subscribeView(fn: () => void): () => void {
+  viewListeners.add(fn);
+  return () => viewListeners.delete(fn);
+}
 
 // Full conversation history: every chat, including conversations that
 // arrived through Slack, Telegram and Discord. Each row opens its chat;
@@ -34,6 +73,47 @@ export default function ChatsPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const view = useSyncExternalStore(subscribeView, storedView, () => "date" as const);
+  const chooseView = saveView;
+
+  // The caller's topics, loaded for the Topic view. While older chats are
+  // being filed it looks again every few seconds, reloading the list too so
+  // each chat lands under its topic.
+  const [topics, setTopics] = useState<ChatTopic[]>([]);
+  const [organizing, setOrganizing] = useState(false);
+  const [topicsVersion, setTopicsVersion] = useState(0);
+  useEffect(() => {
+    if (view !== "topic") return;
+    let live = true;
+    let polls = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      listChatTopics()
+        .then((res) => {
+          if (!live) return;
+          setTopics(res.topics);
+          setOrganizing(res.organizing);
+          if (polls > 0) refresh();
+          if (res.organizing && polls < ORGANIZE_POLLS) {
+            polls += 1;
+            timer = setTimeout(load, ORGANIZE_POLL_MS);
+          }
+        })
+        .catch(() => {
+          if (live) setOrganizing(false);
+        });
+    };
+    load();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [view, topicsVersion, refresh]);
+  const changed = () => {
+    refresh();
+    setTopicsVersion((v) => v + 1);
+  };
 
   // Chats teammates shared with the viewer, to write in with them. Kept out
   // of the channel tabs and counts. A failure just leaves the section hidden.
@@ -167,7 +247,27 @@ export default function ChatsPage() {
                 );
               })}
             </div>
-            <div className="relative sm:ml-auto sm:w-72">
+            <div
+              role="tablist"
+              aria-label="Group chats by"
+              className="inline-flex items-center gap-1 p-1 rounded-xl ring-1 ring-line bg-surface-elevated sm:ml-auto"
+            >
+              {(["date", "topic"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === v}
+                  onClick={() => chooseView(v)}
+                  className={`min-h-[40px] px-4 text-[15px] font-medium rounded-lg transition cursor-pointer ${
+                    view === v ? "bg-accent/10 text-accent" : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
+                  }`}
+                >
+                  {v === "date" ? "Date" : "Topic"}
+                </button>
+              ))}
+            </div>
+            <div className="relative sm:w-72">
               <Icon
                 name="search"
                 size="w-4 h-4"
@@ -206,10 +306,17 @@ export default function ChatsPage() {
             </>
           ) : (
             <>
+            {view === "topic" && organizing && (
+              <p role="status" className="px-1 pb-3 text-sm text-fg-muted">
+                Grouping your earlier chats by topic…
+              </p>
+            )}
             <ChatHistory
               sessions={visible}
               searching={searching}
               query={shown ? trimmed : ""}
+              view={view}
+              topics={topics}
               onSelect={(id) => {
                 // Opened from a message match: the chat steps through the matches.
                 const hit = shown?.find((s) => s.session_id === id);
@@ -217,7 +324,7 @@ export default function ChatsPage() {
                 router.push(`/?session=${encodeURIComponent(id)}${find}`);
               }}
               onDelete={remove}
-              onChanged={refresh}
+              onChanged={changed}
             />
             {sharedSection}
             </>

@@ -155,23 +155,20 @@ _rename_tasks: set[asyncio.Task[None]] = set()
 def _rename_session_in_background(
     session_id: str, message: str, full_response: str, turn_id: str
 ) -> None:
-    """Generate and store a session title without holding up the stream.
+    """Generate and store a session title (and topic) without holding up the stream.
 
     Used on the stop path only. Everywhere else the rename is awaited so the
     sidebar has the good title by the time the client acts on `done`.
     """
     from openexecutive.config import get_settings
-    from openexecutive.memory.session_store import update_session_title
-    from openexecutive.utils.session_title import generate_session_title
+    from openexecutive.utils.chat_topics import name_chat
 
     async def _run() -> None:
         try:
-            new_title = await asyncio.wait_for(
-                generate_session_title(message, full_response),
+            await asyncio.wait_for(
+                name_chat(session_id, message, full_response),
                 timeout=get_settings().utility_fast_timeout_s,
             )
-            if new_title:
-                update_session_title(session_id, new_title)
         except Exception:
             # asyncio.TimeoutError is an Exception subclass in 3.11+, so this
             # covers the timeout and any DB failure. A missed rename only
@@ -1596,19 +1593,14 @@ async def _run_chat_turn(
                         session.session_id, message, full_response, turn_id
                     )
                 elif is_first_turn:
-                    from openexecutive.memory.session_store import (
-                        update_session_title,
-                    )
-                    from openexecutive.utils.session_title import (
-                        generate_session_title,
-                    )
+                    from openexecutive.utils.chat_topics import name_chat
+
                     try:
-                        new_title = await asyncio.wait_for(
-                            generate_session_title(message, full_response),
+                        # Titles the chat and files it under a topic.
+                        await asyncio.wait_for(
+                            name_chat(session.session_id, message, full_response),
                             timeout=settings.utility_fast_timeout_s,
                         )
-                        if new_title:
-                            update_session_title(session.session_id, new_title)
                     except Exception:
                         # asyncio.TimeoutError is a subclass of Exception in
                         # Python 3.11+; catching Exception covers both the
