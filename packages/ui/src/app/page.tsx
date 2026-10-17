@@ -362,8 +362,10 @@ export default function HomePage() {
             </span>
           </div>
           {/* Agent activity (the live trace of the Executive's turn) lives in
-              this ⋯ menu; the panel itself opens on the right as before. */}
-          <OverflowMenu
+              this ⋯ menu; the panel itself opens on the right as before. Only
+              in a chat: on the briefing there is no turn to trace and no chat
+              to pin or rename, so the menu would hold nothing useful. */}
+          {mode === "chat" && <OverflowMenu
             label="Home options"
             items={[
               ...chatItems,
@@ -372,7 +374,7 @@ export default function HomePage() {
                 onSelect: () => setDebugOpen((o) => !o),
               },
             ]}
-          />
+          />}
         </div>
 
         {/* In chat the notices stay as strips above the conversation; on
@@ -428,7 +430,7 @@ export default function HomePage() {
       </main>
 
       {/* Debug panel */}
-      {debugOpen && (
+      {debugOpen && mode === "chat" && (
         <DebugPanel
           events={debugEvents}
           isLive={isTurnInFlight}
