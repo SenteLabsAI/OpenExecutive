@@ -48,6 +48,7 @@ import json
 import re
 from typing import Any
 
+# outside_content imports this module only inside functions, so this stays safe.
 from openexecutive.orchestrator.outside_content import ASK_AGAIN_TONE
 
 # What runs once the turn has read the owner's mail: everything but a door
