@@ -163,6 +163,15 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             "source": "email",
             "from_address": sender,
         }
+    # A script or saved workflow calls this without the tool schema's checks,
+    # so a missing field gets an answer the caller can act on, not a KeyError.
+    missing = [k for k in ("subject", "body") if not str(tool_input.get(k) or "").strip()]
+    if missing:
+        logger.warning("create_alert: missing %s", ", ".join(missing))
+        return json.dumps({"error": (
+            f"create_alert needs {' and '.join(missing)}: pass a short 'subject' "
+            "headline and a 'body' saying what needs attention"
+        )})
     source, external_id, from_address = (
         str(tool_input.get("source") or "unknown"),
         str(tool_input.get("external_id") or ""),
