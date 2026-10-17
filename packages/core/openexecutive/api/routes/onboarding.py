@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import logging
 import sqlite3
 import time
@@ -301,15 +302,15 @@ class InterviewSession:
     discarded: bool = False
 
 
+# Where an attached file's text starts in the opening turn. An edit to the
+# description (POST /onboard/interview/revise) replaces only what is before it.
+ATTACHED_MARKER = "\n\n=== Attached: "
+
 # The working table of this process, with a TTL and cap. Every turn is also
 # written through to SQLite (onboarding/interview_store.py), so a restart or
 # another worker finds the session again; a saved session's row is deleted
 # there at once, since the transcript carries the company's financials. A
 # page refresh is covered by GET /onboard/interview/{id}.
-# Where an attached file's text starts in the opening turn. An edit to the
-# description (POST /onboard/interview/revise) replaces only what is before it.
-ATTACHED_MARKER = "\n\n=== Attached: "
-
 _interview_sessions: OrderedDict[str, InterviewSession] = OrderedDict()
 _INTERVIEW_TTL_SECONDS = 2 * 3600
 _MAX_INTERVIEW_SESSIONS = 50
@@ -625,20 +626,28 @@ async def interview_revise(body: OnboardReviseRequest, request: Request) -> Onbo
             ),
         )
 
-    before = (session.transcript, session.questions_asked, session.draft, session.last_hint)
-    session.transcript = [*kept, Turn(role="user", text=text)]
-    # Every assistant turn before the edit was a question, or a draft the
-    # person answered past; counting both errs towards fewer questions.
-    session.questions_asked = sum(1 for t in kept if t.role == "assistant")
-    session.draft = None
-    session.last_hint = ""
-    try:
-        return await _advance_interview(body.session_id, session)
-    except BaseException:
-        # Anything, not only the mapped model errors: a half-revised session
-        # would have lost its draft and could end on two user turns.
-        session.transcript, session.questions_asked, session.draft, session.last_hint = before
-        raise
+    # The new turn runs on a copy and replaces the session only once it
+    # succeeds: a failure leaves it untouched, and a turn another request
+    # adds meanwhile is never rolled back underneath it.
+    trial = dataclasses.replace(
+        session,
+        transcript=[*kept, Turn(role="user", text=text)],
+        # Every assistant turn before the edit was a question, or a draft the
+        # person answered past; counting both errs towards fewer questions.
+        questions_asked=sum(1 for t in kept if t.role == "assistant"),
+        draft=None,
+        last_hint="",
+    )
+    response = await _advance_interview(body.session_id, trial)
+    session.transcript = trial.transcript
+    session.questions_asked = trial.questions_asked
+    session.draft = trial.draft
+    session.last_hint = trial.last_hint
+    session.stored_at = trial.stored_at
+    if session.discarded:
+        # Start over landed while this turn was running: don't keep it.
+        interview_store.delete(body.session_id)
+    return response
 
 
 @router.delete("/onboard/interview/{session_id}", status_code=204)

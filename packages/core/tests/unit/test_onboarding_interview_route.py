@@ -1470,3 +1470,24 @@ def test_a_turn_finishing_after_start_over_does_not_store_it_again(
     route._persist_interview(sid, in_flight)
     assert interview_store.load(sid) is None
     assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+def test_a_failed_revise_never_rolls_back_a_turn_added_meanwhile(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revise turn runs on a copy, so another request's turn on the
+    same session survives a revise that fails."""
+    sid = _two_answers(client, seeded)
+    held = route._interview_sessions[sid]
+
+    async def _concurrent_then_fail(transcript: list[iv.Turn], **kwargs: Any) -> Any:
+        held.transcript.append(iv.Turn(role="user", text="added meanwhile"))
+        raise iv.InterviewError("The setup assistant is unavailable right now.")
+
+    monkeypatch.setattr(iv, "advance", _concurrent_then_fail)
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 0, "message": "x"}
+    )
+    assert resp.status_code == 502
+    assert held.transcript[-1].text == "added meanwhile"
+    assert held.transcript[0].text == "We are Northwind."
