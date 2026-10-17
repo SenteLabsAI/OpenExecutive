@@ -129,3 +129,141 @@ export function groupSessionsByTopic(
   }
   return groups;
 }
+
+export type BandKey = "active" | "week" | "twoWeeks" | "month";
+
+/** A heading in a band: one topic, or an area over two or more related ones. */
+export interface TopicEntry {
+  /** "topic:<id>" or "area:<name>". */
+  key: string;
+  label: string;
+  /** The topic, for its menu; absent on an area. */
+  topic?: ChatTopic;
+  /** The area's name, for its menu; absent on a topic. */
+  area?: string;
+  /** An area's topics, most recently active first. */
+  children: TopicGroup[];
+  /** Every chat under it, newest first. */
+  items: SessionSummary[];
+  /** When its newest chat was last active. */
+  lastActive: string;
+}
+
+export interface TopicBand {
+  key: BandKey;
+  label: string;
+  entries: TopicEntry[];
+}
+
+export interface TopicLayout {
+  pinned?: TopicGroup;
+  bands: TopicBand[];
+  other?: TopicGroup;
+}
+
+const BANDS: { key: BandKey; label: string; under: number }[] = [
+  { key: "active", label: "Active this week", under: 7 },
+  { key: "week", label: "Quiet for a week", under: 14 },
+  { key: "twoWeeks", label: "Quiet for 2 weeks", under: 30 },
+  { key: "month", label: "Quiet for a month or more", under: Infinity },
+];
+
+const at = (iso: string) => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? 0 : t;
+};
+
+function newest(items: SessionSummary[]): string {
+  return items.reduce((best, s) => (at(s.updated_at) > at(best) ? s.updated_at : best), items[0]?.updated_at ?? "");
+}
+
+function withinArea(name: string, area: string): string {
+  if (!name.toLowerCase().startsWith(area.toLowerCase())) return name;
+  const rest = name.slice(area.length).replace(/^[\s:·–—-]+/, "");
+  return rest ? rest[0].toUpperCase() + rest.slice(1) : name;
+}
+
+/**
+ * The Topic view, laid out to stay short as topics pile up: pinned chats,
+ * then each topic (or area over related topics) in a band by how long since
+ * its last chat (this week, a week, two weeks, a month or more), then Other.
+ * An area heads only two or more topics that still show; a lone one stands
+ * as its topic. A pinned topic stays in the active band. Within a band,
+ * pinned first, then the most recently active.
+ */
+export function layoutTopics(
+  sessions: SessionSummary[],
+  topics: ChatTopic[],
+  now: Date = new Date(),
+): TopicLayout {
+  const groups = groupSessionsByTopic(sessions, topics);
+  const layout: TopicLayout = { bands: [] };
+  const byArea = new Map<string, TopicGroup[]>();
+  const loose: TopicGroup[] = [];
+  for (const g of groups) {
+    if (g.key === "pinned") layout.pinned = g;
+    else if (g.key === "other") layout.other = g;
+    else if (g.topic?.area) {
+      const key = g.topic.area.toLowerCase();
+      byArea.set(key, [...(byArea.get(key) ?? []), g]);
+    } else loose.push(g);
+  }
+  const entries: TopicEntry[] = loose.map((g) => ({
+    key: g.key,
+    label: g.label,
+    topic: g.topic,
+    children: [],
+    items: g.items,
+    lastActive: newest(g.items),
+  }));
+  for (const list of byArea.values()) {
+    if (list.length < 2) {
+      for (const g of list) {
+        entries.push({ key: g.key, label: g.label, topic: g.topic, children: [], items: g.items, lastActive: newest(g.items) });
+      }
+      continue;
+    }
+    const area = list[0].topic?.area ?? list[0].label;
+    // Under its area a topic drops the area's name it starts with
+    // ("St. Albans Offers" reads "Offers" under St. Albans).
+    const children = [...list]
+      .sort((a, b) => at(newest(b.items)) - at(newest(a.items)))
+      .map((g) => ({ ...g, label: withinArea(g.label, area) }));
+    const items = children.flatMap((g) => g.items).sort((a, b) => at(b.updated_at) - at(a.updated_at));
+    entries.push({ key: `area:${area.toLowerCase()}`, label: area, area, children, items, lastActive: newest(items) });
+  }
+  const pinned = (e: TopicEntry) =>
+    e.topic ? !!e.topic.pinned_at : e.children.some((g) => !!g.topic?.pinned_at);
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const bandOf = (e: TopicEntry) => {
+    if (pinned(e)) return BANDS[0];
+    const t = at(e.lastActive);
+    const days = t >= startOfToday ? 0 : Math.ceil((startOfToday - t) / DAY_MS);
+    return BANDS.find((b) => days < b.under) ?? BANDS[BANDS.length - 1];
+  };
+  for (const band of BANDS) {
+    const inBand = entries
+      .filter((e) => bandOf(e) === band)
+      .sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || at(b.lastActive) - at(a.lastActive));
+    if (inBand.length) layout.bands.push({ key: band.key, label: band.label, entries: inBand });
+  }
+  return layout;
+}
+
+/** When a topic was last active, in a word: Today, Yesterday, the weekday
+ *  this week, else the date. */
+export function activeLabel(iso: string, now: Date = new Date()): string {
+  const t = at(iso);
+  if (!t) return "";
+  const then = new Date(t);
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (t >= startOfToday) return "Today";
+  const days = Math.ceil((startOfToday - t) / DAY_MS);
+  if (days <= 1) return "Yesterday";
+  if (days < 7) return then.toLocaleDateString(undefined, { weekday: "short" });
+  return then.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(then.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  });
+}

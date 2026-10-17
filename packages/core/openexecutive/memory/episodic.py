@@ -549,6 +549,21 @@ def initialize_db(db_path: Path | None = None) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_topic ON sessions(topic_id)"
         )
+        # A topic's area: a broader matter it shares with other topics (one
+        # property, deal or client), shown as one heading over them. NULL =
+        # not looked at yet; '' = looked at, none. `area_kept` = the owner
+        # renamed or ungrouped its area, so the model leaves it alone.
+        _topics_existing = {r[1] for r in conn.execute("PRAGMA table_info(chat_topics)").fetchall()}
+        for column, ddl in (
+            ("area", "ALTER TABLE chat_topics ADD COLUMN area TEXT COLLATE NOCASE"),
+            ("area_kept", "ALTER TABLE chat_topics ADD COLUMN area_kept INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in _topics_existing:
+                try:
+                    conn.execute(ddl)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
         # Who a chat's owner shared it with, to read (session_store.share_session).
         conn.execute(
             """
