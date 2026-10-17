@@ -351,3 +351,27 @@ def test_someone_elses_words_never_see_the_owners_topics(
         assert asyncio.run(model.name_chat(sid, "q", "r")) == "Plain title"
         assert _topic_of(sid) == (None, None)
     assert fake.calls == []
+
+
+def test_a_refused_field_leaves_the_chat_unfiled(client: TestClient, people: dict[str, int]) -> None:
+    _chat(people["alex"], "a")
+    resp = client.patch("/sessions/a", json={"topic_name": "Hiring", "title": "   "}, headers=ALEX)
+    assert resp.status_code == 422
+    assert _topic_of("a") == (None, None)
+
+
+def test_the_backfill_leaves_a_chat_its_naming_filed_meanwhile(
+    people: dict[str, int], fake: _Model, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alex = people["alex"]
+    _chat(alex, "new", "Placeholder")
+
+    async def _reply(*_a: Any, **_k: Any) -> str:
+        # The chat's own naming lands while the batch call runs.
+        store.set_auto_topic("new", alex, "Acme renewal")
+        return "1: none"
+
+    monkeypatch.setattr(model, "_ask", _reply)
+    asyncio.run(model.backfill(alex))
+    topic_id, _ = _topic_of("new")
+    assert topic_id == store.topic_id_by_name(alex, "Acme renewal")

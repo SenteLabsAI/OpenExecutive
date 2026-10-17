@@ -72,10 +72,16 @@ def _topic_id(conn: Any, owner: int, name: str, kept: bool) -> tuple[int, bool]:
 
 
 def set_auto_topic(
-    session_id: str, owner: int, name: str | None, db_path: Path = DB_PATH
+    session_id: str,
+    owner: int,
+    name: str | None,
+    db_path: Path = DB_PATH,
+    *,
+    only_untagged: bool = False,
 ) -> tuple[int | None, bool]:
     """File a chat under the model's topic (made if new; None = none fits).
-    A chat the owner filed is left as it is. Returns the topic id and whether
+    A chat the owner filed is left as it is, and with ``only_untagged`` so is
+    any chat already filed. Returns the topic id and whether
     the topic was just made; (None, False) when nothing changed or none fits.
     One transaction, so a list running meanwhile never drops the new topic
     as empty."""
@@ -85,6 +91,10 @@ def set_auto_topic(
             (session_id, owner),
         ).fetchone()
         if row is None or row["topic_source"] == "owner":
+            return None, False
+        # The backfill fills only chats still waiting: a new chat's own naming
+        # may have filed it while the batch call ran.
+        if only_untagged and row["topic_source"] is not None:
             return None, False
         topic_id, made = _topic_id(conn, owner, name, False) if name else (None, False)
         conn.execute(

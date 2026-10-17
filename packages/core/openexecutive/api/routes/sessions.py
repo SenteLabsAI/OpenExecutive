@@ -420,16 +420,24 @@ def update_session(session_id: str, body: SessionUpdate, request: Request) -> Se
     """The owner names their chat (the automatic title never replaces it
     after) or pins it to the top of their list."""
     owner = _require_owner(request, session_id)
-    if body.topic_name is not None:
-        chat_topics.file_session(session_id, owner, name=_topic_name(body.topic_name))
-    elif "topic_id" in body.model_fields_set and not chat_topics.file_session(
-        session_id, owner, topic_id=body.topic_id
+    # Everything is checked before anything is written, so a refused field
+    # leaves the chat as it was.
+    title = " ".join(body.title.split()) if body.title is not None else None
+    if title == "":
+        raise HTTPException(status_code=422, detail="A title can't be blank")
+    topic_name = _topic_name(body.topic_name) if body.topic_name is not None else None
+    if (
+        topic_name is None
+        and "topic_id" in body.model_fields_set
+        and body.topic_id is not None
+        and chat_topics.owned_topic(owner, body.topic_id) is None
     ):
         raise HTTPException(status_code=404, detail="Topic not found")
-    if body.title is not None:
-        title = " ".join(body.title.split())
-        if not title:
-            raise HTTPException(status_code=422, detail="A title can't be blank")
+    if topic_name is not None:
+        chat_topics.file_session(session_id, owner, name=topic_name)
+    elif "topic_id" in body.model_fields_set:
+        chat_topics.file_session(session_id, owner, topic_id=body.topic_id)
+    if title is not None:
         rename_session(session_id, title)
     if body.pinned is not None:
         set_pinned(session_id, body.pinned)

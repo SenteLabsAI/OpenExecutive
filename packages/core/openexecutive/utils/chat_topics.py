@@ -284,7 +284,7 @@ async def backfill(owner: int) -> int:
             def _file(batch: list[dict[str, str]] = batch, picks: dict[int, str | None] = picks) -> int:
                 n = 0
                 for i, chat in enumerate(batch, start=1):
-                    store.set_auto_topic(chat["session_id"], owner, picks.get(i))
+                    store.set_auto_topic(chat["session_id"], owner, picks.get(i), only_untagged=True)
                     n += 1
                 return n
 
