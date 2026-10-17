@@ -104,6 +104,9 @@ _SURFACE_FIELDS = (
     "origin_channel_ref",
     "private_chat",
     "shared_chat",
+    # An adapter's own verification, so the review's rebuilt session passes
+    # the same check the live turn did (record_turn keeps such turns).
+    "speaker_verified",
 )
 
 

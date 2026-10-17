@@ -149,6 +149,18 @@ def test_an_adapters_own_verification_counts(roster: SimpleNamespace) -> None:
     assert _record(roster.teammate, session=unverified) is None
 
 
+def test_an_adapter_verified_turn_is_graded_on_review(db: Path, roster: SimpleNamespace,
+                                                      provider: _Provider) -> None:
+    session = Session(session_id="s-1", origin_channel="otherchat", caller_person_id=roster.principal.id,
+                      speaker_verified=True)
+    assert _record(roster.principal, session=session) is not None
+    provider.grades = [{"turn": 1, "verdict": "fine"}]
+    _review(db)
+    [row] = _turns(db)
+    assert json.loads(row["surface"])["speaker_verified"] is True
+    assert row["verdict"] == "fine"
+
+
 def test_a_message_with_an_attachment_is_not_kept(roster: SimpleNamespace) -> None:
     assert _record(roster.principal, text="see attached [Attached: deck.pdf]") is None
 
