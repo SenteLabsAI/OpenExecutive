@@ -520,10 +520,13 @@ def _approval_card_here(session: Any, approver_person_id: int | None, private: b
     """Whether the person in this web chat may approve the booking, so its card
     is shown under the reply. The same rule as ``decisions._resolver``: the
     principal, or the approver it went to unless it is the principal's private
-    booking. Any other surface (Slack, email, a scheduled run) shows no card."""
+    booking. A chat app that shows cards with buttons
+    (``channel_cards.shows_cards``) counts as the web chat; any other surface
+    (Slack, email, a scheduled run) shows no card."""
+    from openexecutive.integrations.channel_cards import card_here
     from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
 
-    if session is None or not getattr(session, "from_web_chat", False):
+    if session is None or not card_here(session):
         return False
     if is_principal_on_verified_surface(session):
         return True

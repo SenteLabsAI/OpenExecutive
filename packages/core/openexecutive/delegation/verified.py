@@ -7,10 +7,21 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 NOT_YOURS = "not_yours"
 SIGNING_REQUIRED = "caller_signing_required"
+
+
+@dataclass(frozen=True)
+class ChatTap:
+    """A tap on a card's button in a chat app, by the person at ``email``:
+    made only by ``integrations.channel_cards`` once the chat app proved who
+    tapped (a private chat that is theirs, on a connection only that app can
+    call)."""
+
+    email: str
 
 
 def caller_refusal(caller: Any, email: str) -> str | None:
@@ -21,7 +32,8 @@ def caller_refusal(caller: Any, email: str) -> str | None:
     person, or the local operator under local login. Signing off: only an API
     that answers this computer alone (local login), where the person at the
     keyboard is the owner. Anything else could be whoever holds the shared
-    secret."""
+    secret. A ``ChatTap`` is that person when it names their address.
+    """
     from openexecutive.api.caller import signing_on
     from openexecutive.utils.deployment import is_local_login
 
@@ -30,6 +42,8 @@ def caller_refusal(caller: Any, email: str) -> str | None:
         # is the turn's speaker, not a signed request, so nothing that needs
         # one goes through. Those wait for a tap on a card instead.
         return SIGNING_REQUIRED
+    if isinstance(caller, ChatTap):
+        return None if caller.email and caller.email == email else NOT_YOURS
     if signing_on():
         if caller.kind == "user" and caller.email == email:
             return None

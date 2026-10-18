@@ -314,6 +314,10 @@ With the keys set:
   the API can tell it is the owner asking: with the keys set, or under local login. On a
   server without them it answers `409 caller_signing_required`, and the owner sends the
   draft from Gmail instead.
+- **A card's Approve button in Telegram doesn't need them.** In a private Telegram chat on
+  a webhook with `TELEGRAM_WEBHOOK_SECRET` set, a tap is tied to the person by their chat
+  id on the People roster. Whoever can edit someone's Telegram chat id there can approve
+  their cards, so on a server without signed callers keep the shared secret to the owner.
 
 **To call an owner-only route from a terminal**, sign that one request with the UI's key:
 

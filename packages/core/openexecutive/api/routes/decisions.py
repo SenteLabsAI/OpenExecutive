@@ -374,6 +374,14 @@ async def _approve_booking(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
     """Meeting booking: create the calendar event, then record the approval."""
+    return await _book(instance, body, by_principal=_approver_is_principal(request), resolver=resolver)
+
+
+async def _book(
+    instance: DecisionInstance, body: ApproveBody, *, by_principal: bool, resolver: int | None
+) -> DecisionInstance:
+    """Book ``instance``'s meeting and record the approval. Contacts go on
+    the invite only when ``by_principal``."""
     instance_id = instance.id
     original_payload = _parse_payload(instance)
     final_payload = dict(original_payload)
@@ -411,9 +419,7 @@ async def _approve_booking(
 
     # Create the actual calendar event. Contacts on the invite only when the
     # principal is the one approving.
-    result = await _execute_booking(
-        instance, final_payload, by_principal=_approver_is_principal(request)
-    )
+    result = await _execute_booking(instance, final_payload, by_principal=by_principal)
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["error"])
 
@@ -866,6 +872,13 @@ async def reject_decision(instance_id: int, body: RejectBody, request: Request) 
     instance = _visible_instance(instance_id, request)
     spec = _spec_for(instance)
     resolver = _resolver(instance, request)
+    return await _reject(instance, spec, resolver)
+
+
+async def _reject(
+    instance: DecisionInstance, spec: DecisionClassSpec, resolver: int | None
+) -> DecisionInstance:
+    instance_id = instance.id
     if instance.status != STATUS_PROPOSED:
         raise HTTPException(
             status_code=409,
@@ -881,6 +894,52 @@ async def reject_decision(instance_id: int, body: RejectBody, request: Request) 
         except Exception:
             logger.exception("decisions/reject: after-reject step failed for instance %d", instance_id)
     return updated
+
+
+# The cards a chat app shows with Approve and Skip buttons
+# (integrations.channel_cards): the two a chat reply leaves for the person
+# chatting, as the web chat shows them under its reply.
+CHAT_CARD_CLASSES = frozenset({_CALENDAR_CLASS, "delegation_actions"})
+
+
+async def resolve_in_chat(instance_id: int, person: Any, *, approve: bool) -> DecisionInstance:
+    """Approve or skip a card tapped in a chat app, for ``person``: the one the
+    adapter proved tapped it. The rule is the web chat's (``_resolver``): a
+    card of actions is its person's alone; a meeting is the principal's, or
+    its approver's unless it is the principal's private booking. Raises
+    HTTPException, as the routes do."""
+    from openexecutive.delegation.action_cards import ApproveRefused
+    from openexecutive.delegation.action_cards import approve as approve_actions
+    from openexecutive.delegation.gmail import normalize_email
+    from openexecutive.delegation.verified import ChatTap
+    from openexecutive.people.store import find_principal_person
+
+    instance = get_decision_instance(instance_id)
+    if instance is None or instance.decision_class not in CHAT_CARD_CLASSES or person.id is None:
+        raise HTTPException(status_code=404, detail="This card is no longer there.")
+    spec = _spec_for(instance)
+    principal = find_principal_person()
+    is_principal = principal is not None and principal.id == person.id
+    if _approver_only(instance):
+        allowed = person.id == instance.approver_person_id
+    else:
+        allowed = is_principal or (person.id == instance.approver_person_id and not _is_private(instance))
+    if not allowed:
+        # As the routes: a card that isn't theirs is not there.
+        raise HTTPException(status_code=404, detail="This card is no longer there.")
+    if not approve:
+        return await _reject(instance, spec, person.id)
+    if instance.status != STATUS_PROPOSED:
+        raise HTTPException(status_code=409, detail="This card was already handled.")
+    if instance.decision_class == _CALENDAR_CLASS:
+        return await _book(instance, ApproveBody(), by_principal=is_principal, resolver=person.id)
+    try:
+        await approve_actions(
+            instance, caller=ChatTap(normalize_email(person.email or "")), resolver=person.id,
+        )
+    except ApproveRefused as refused:
+        raise HTTPException(status_code=refused.status, detail=refused.message) from None
+    return _refresh(instance.id)
 
 
 @router.post("/decisions/{instance_id}/cancel", response_model=DecisionInstance)

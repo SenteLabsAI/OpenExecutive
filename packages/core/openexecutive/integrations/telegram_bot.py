@@ -125,6 +125,122 @@ async def send_message(token: str, chat_id: int, text: str) -> str | None:
     return last_message_id
 
 
+async def send_card(token: str, chat_id: int, decision_id: int, text: str) -> None:
+    """Send an approval card as a message with Approve and Skip buttons
+    (``integrations.channel_cards``). Plain text: the card quotes what the
+    Executive proposed, which may come from someone's mail."""
+    from openexecutive.integrations import channel_cards
+
+    resp = await _get_http_client().post(
+        _tg_url(token, "sendMessage"),
+        json={
+            "chat_id": chat_id,
+            "text": text[:_MAX_MSG_LEN],
+            "link_preview_options": {"is_disabled": True},
+            "reply_markup": {"inline_keyboard": [[
+                {"text": "Approve", "callback_data": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
+                {"text": "Skip", "callback_data": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
+            ]]},
+        },
+    )
+    if resp.is_error:
+        logger.error("Telegram: sending card %d failed: %s %s", decision_id, resp.status_code, resp.text)
+
+
+async def _send_cards(token: str, chat_id: int, cards: list[int]) -> None:
+    from openexecutive.integrations import channel_cards
+
+    for decision_id in cards[: channel_cards.MAX_CARDS]:
+        try:
+            text = await asyncio.to_thread(channel_cards.card_text, decision_id)
+            if text:
+                await send_card(token, chat_id, decision_id, text)
+        except Exception:
+            logger.exception("Telegram: couldn't send card %d", decision_id)
+
+
+async def _handle_card_tap(
+    *, callback_id: str, chat_id: int, message_id: int, card_text: str, data: str, token: str,
+) -> None:
+    """A tap on a card's Approve or Skip button. The webhook checked that
+    only Telegram can call it and that the tapper is the private chat's own
+    person; the chat must be someone on the roster, and
+    ``decisions.resolve_in_chat`` decides whether the card is theirs."""
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.integrations import channel_cards
+    from openexecutive.people.store import find_person_by_telegram_chat_id
+
+    client = _get_http_client()
+    parsed = channel_cards.parse_callback(data)
+    person = await asyncio.to_thread(find_person_by_telegram_chat_id, str(chat_id))
+    if parsed is None or person is None:
+        try:
+            await client.post(
+                _tg_url(token, "answerCallbackQuery"),
+                json={"callback_query_id": callback_id, "text": "This card is no longer there."},
+            )
+        except Exception:
+            logger.exception("Telegram: couldn't answer a tap on chat %s", chat_id)
+        return
+    decision_id, approve = parsed
+    line = await channel_cards.resolve(decision_id, person, approve=approve)
+    choice = "approve" if approve else "skip"
+    await asyncio.to_thread(
+        audit_log,
+        "integration_inbound",
+        f"Telegram card {decision_id}: tapped {choice.capitalize()}: {line[:120]}",
+        actor="telegram",
+        details={"channel": "telegram", "chat_id": chat_id, "decision_id": decision_id,
+                 "choice": choice, "outcome": channel_cards.outcome_of(line), "person_id": person.id},
+    )
+    try:
+        await client.post(
+            _tg_url(token, "answerCallbackQuery"),
+            json={"callback_query_id": callback_id, "text": line[:190]},
+        )
+        if line == channel_cards.BUSY:
+            # The tap still deciding it updates the card.
+            return
+        # The card keeps what it said, with the outcome under it and no buttons.
+        await client.post(
+            _tg_url(token, "editMessageText"),
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": f"{card_text}\n\n{line}"[:_MAX_MSG_LEN],
+                "link_preview_options": {"is_disabled": True},
+            },
+        )
+    except Exception:
+        logger.exception("Telegram: couldn't update card %d after the tap", decision_id)
+
+
+def _card_tap(callback: Any) -> dict[str, Any] | None:
+    """The fields of a card button tap that proves who made it, or None: a
+    private chat, tapped by that chat's own Telegram user."""
+    if not isinstance(callback, dict):
+        return None
+    message = callback.get("message")
+    sender = callback.get("from")
+    if not isinstance(message, dict) or not isinstance(sender, dict):
+        return None
+    chat = message.get("chat")
+    if not isinstance(chat, dict) or chat.get("type") != "private":
+        return None
+    chat_id = chat.get("id")
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0 or sender.get("id") != chat_id:
+        return None
+    if not isinstance(callback.get("id"), str) or not isinstance(message.get("message_id"), int):
+        return None
+    return {
+        "callback_id": callback["id"],
+        "chat_id": chat_id,
+        "message_id": message["message_id"],
+        "card_text": str(message.get("text") or ""),
+        "data": str(callback.get("data") or ""),
+    }
+
+
 async def _get_telegram_file_bytes(token: str, file_id: str) -> tuple[str, bytes]:
     """Resolve a Telegram file_id to a download URL and fetch the bytes.
 
@@ -337,6 +453,13 @@ async def _process_and_reply(
                     user_message=message_text,
                 )
 
+            from openexecutive.integrations.channel_cards import shows_cards
+
+            # A private chat on a webhook only Telegram can call shows the
+            # reply's cards with Approve and Skip buttons.
+            cards_here = shows_cards(session)
+            cards: list[int] = []
+
             briefing_context = await asyncio.to_thread(
                 attach_briefing_context,
                 session,
@@ -352,8 +475,9 @@ async def _process_and_reply(
                 episodic_context=episodic_context,
                 attachment_blocks=att_image_blocks or None,
                 briefing_context=briefing_context,
-                channel_context_block=build_channel_context_block("telegram"),
+                channel_context_block=build_channel_context_block("telegram", cards_here=cards_here),
                 person_id=person_id,
+                cards=cards if cards_here else None,
             )
             from openexecutive.integrations.attachments import with_heard
             from openexecutive.orchestrator.disclosure import with_chat_line
@@ -361,6 +485,8 @@ async def _process_and_reply(
             await send_message(
                 token, chat_id, with_chat_line(with_heard(response, heard), f"telegram:{session_id}")
             )
+            if cards:
+                await _send_cards(token, chat_id, cards)
         except Exception:
             logger.exception("Telegram: handler error for message %s", message_id)
             try:
@@ -580,6 +706,17 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
         from openexecutive.integrations.telegram_chats import record_from_update
 
         record_from_update(body)
+
+    # A tap on a card's Approve or Skip button (integrations.channel_cards).
+    # Only on a webhook Telegram alone can call: otherwise anyone could post
+    # a tap naming someone's chat.
+    if "callback_query" in body:
+        from openexecutive.integrations.channel_cards import telegram_proves_taps
+
+        tap = _card_tap(body.get("callback_query"))
+        if tap is not None and telegram_proves_taps():
+            background_tasks.add_task(_handle_card_tap, token=settings.telegram_bot_token, **tap)
+        return {}
 
     # Only handle regular messages (ignore channel posts, edited messages, etc.)
     message = body.get("message")
