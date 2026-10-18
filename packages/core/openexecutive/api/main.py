@@ -24,6 +24,7 @@ from openexecutive.api.routes import (
     artifacts,
     audit,
     chat,
+    chat_directory,
     clients,
     company_profile,
     decisions,
@@ -394,6 +395,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # departments code references person IDs (FK ordering).
     from openexecutive.people.store import initialize_db as initialize_people_db
     initialize_people_db()
+    # Telegram chats the bot has seen, for the People and department pickers.
+    from openexecutive.integrations.telegram_chats import (
+        initialize_db as initialize_telegram_chats_db,
+    )
+    initialize_telegram_chats_db()
     # Replays of held roster-request messages run on this loop, whichever
     # thread resolves the request (integrations.roster_intake).
     from openexecutive.integrations.roster_intake import bind_loop
@@ -996,6 +1002,7 @@ def create_app() -> FastAPI:
     app.include_router(audit.router, tags=["audit"])
     app.include_router(departments.router, tags=["departments"])
     app.include_router(people.router, tags=["people"])
+    app.include_router(chat_directory.router, tags=["people"])
     app.include_router(today.router, tags=["today"])
     app.include_router(scheduled.router, tags=["scheduled"])
     app.include_router(executive.router, tags=["executive"])

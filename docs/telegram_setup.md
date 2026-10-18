@@ -76,6 +76,8 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
 
 Access is roster-driven. The bot only answers a chat whose ID matches the `telegram_chat_id` of a non-archived Person — add or edit the Person in the **/people** UI. Messages from any other chat are dropped without a reply.
 
+The easy way: ask the person to send the bot any message, then pick them by name under **Telegram** on their People page. For a department's group, add the bot to the group, send any message there, and pick it under **Telegram group** in the department's **Channels** settings. The bot remembers chats only when `TELEGRAM_WEBHOOK_SECRET` is set.
+
 To find a chat ID, message the bot once and check the API logs for:
 
 ```

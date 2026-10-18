@@ -1,10 +1,11 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { AddGoalForm, GoalRow } from "@/components/goals/GoalEditor";
 import Button from "@/components/ui/Button";
+import ChatPicker, { useChatDirectory } from "@/components/ui/ChatPicker";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
 import SidePanel from "@/components/ui/SidePanel";
@@ -19,6 +20,7 @@ import {
   type Goal,
   type Person,
 } from "@/lib/api";
+import { type ChatProvider, closestOption, findOption } from "@/lib/chatDirectory";
 import {
   WEEKDAYS,
   checkInSpec,
@@ -203,6 +205,31 @@ export default function DepartmentDetailPage() {
     watched_entities: "",
   });
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("charter");
+
+  // Slack, Discord and Telegram rooms by name (the principal's alone; for
+  // anyone else there is no list and the id fields stay).
+  const channelDirectory = useChatDirectory("channels");
+  const channelList = (p: ChatProvider) =>
+    channelDirectory === undefined ? undefined : (channelDirectory?.[p] ?? null);
+  // The room named most like the department, pre-selected while none is set.
+  const channelSuggestion = (p: "slack" | "discord") => {
+    const best = dept ? closestOption(dept.config.title, channelDirectory?.[p].options ?? []) : null;
+    return best ? { option: best, reason: "Closest match" } : null;
+  };
+  const channelName = (p: ChatProvider, id: string) =>
+    findOption(channelDirectory?.[p].options ?? [], id)?.name ?? id;
+  const setSlackChannel = useCallback(
+    (id: string) => setSettingsForm((f) => (f.slack_channel_id === id ? f : { ...f, slack_channel_id: id })),
+    [],
+  );
+  const setDiscordChannel = useCallback(
+    (id: string) => setSettingsForm((f) => (f.discord_channel_id === id ? f : { ...f, discord_channel_id: id })),
+    [],
+  );
+  const setTelegramGroup = useCallback(
+    (id: string) => setSettingsForm((f) => (f.telegram_chat_id === id ? f : { ...f, telegram_chat_id: id })),
+    [],
+  );
   const settingsTabsId = useId();
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsErr, setSettingsErr] = useState<string | null>(null);
@@ -453,9 +480,9 @@ export default function DepartmentDetailPage() {
                       : []),
                     ...(dept.headcount != null ? [["Headcount", String(dept.headcount)]] : []),
                     ...(dept.budget_usd != null ? [["Budget", `$${dept.budget_usd.toLocaleString()}`]] : []),
-                    ...(dept.config.slack_channel_id ? [["Slack channel", dept.config.slack_channel_id]] : []),
-                    ...(dept.config.discord_channel_id ? [["Discord channel", dept.config.discord_channel_id]] : []),
-                    ...(dept.config.telegram_chat_id ? [["Telegram chat", dept.config.telegram_chat_id]] : []),
+                    ...(dept.config.slack_channel_id ? [["Slack channel", channelName("slack", dept.config.slack_channel_id)]] : []),
+                    ...(dept.config.discord_channel_id ? [["Discord channel", channelName("discord", dept.config.discord_channel_id)]] : []),
+                    ...(dept.config.telegram_chat_id ? [["Telegram group", channelName("telegram", dept.config.telegram_chat_id)]] : []),
                     ...((dept.config.watched_entities ?? []).length > 0
                       ? [["Watched entities", (dept.config.watched_entities ?? []).join(", ")]]
                       : []),
@@ -708,47 +735,39 @@ export default function DepartmentDetailPage() {
                   {settingsTab === "channels" && (
                     <>
                       <p className={SECTION_INTRO_CLS}>
-                        When set, the Executive can post department-scoped updates to these rooms via{" "}
-                        <code className="font-mono text-sm">send_department_message</code>. Leave blank to have OE
-                        fall back to DMing the department head.
+                        The Executive posts this department&apos;s updates in these rooms. Leave one empty and it
+                        messages the department head instead. A suggested room is only saved when you press Save.
                       </p>
-                      <div className="space-y-4">
-                        <label className={LABEL_CLS}>
-                          Slack channel ID
-                          <input
-                            type="text"
-                            value={settingsForm.slack_channel_id}
-                            onChange={(e) =>
-                              setSettingsForm((f) => ({ ...f, slack_channel_id: e.target.value }))
-                            }
-                            placeholder="C01234ABCDE"
-                            className={`${FIELD_CLS} font-mono`}
-                          />
-                        </label>
-                        <label className={LABEL_CLS}>
-                          Discord channel ID
-                          <input
-                            type="text"
-                            value={settingsForm.discord_channel_id}
-                            onChange={(e) =>
-                              setSettingsForm((f) => ({ ...f, discord_channel_id: e.target.value }))
-                            }
-                            placeholder="123456789012345678"
-                            className={`${FIELD_CLS} font-mono`}
-                          />
-                        </label>
-                        <label className={LABEL_CLS}>
-                          Telegram chat ID
-                          <input
-                            type="text"
-                            value={settingsForm.telegram_chat_id}
-                            onChange={(e) =>
-                              setSettingsForm((f) => ({ ...f, telegram_chat_id: e.target.value }))
-                            }
-                            placeholder="-1001234567890"
-                            className={`${FIELD_CLS} font-mono`}
-                          />
-                        </label>
+                      <div className="space-y-5">
+                        <ChatPicker
+                          label="Slack channel"
+                          value={settingsForm.slack_channel_id}
+                          onChange={setSlackChannel}
+                          list={channelList("slack")}
+                          suggestion={channelSuggestion("slack")}
+                          rawLabel="Slack channel ID"
+                          rawPlaceholder="C01234ABCDE"
+                        />
+                        <ChatPicker
+                          label="Discord channel"
+                          value={settingsForm.discord_channel_id}
+                          onChange={setDiscordChannel}
+                          list={channelList("discord")}
+                          suggestion={channelSuggestion("discord")}
+                          unavailableText="No text channels in the bot's servers."
+                          rawLabel="Discord channel ID"
+                          rawPlaceholder="123456789012345678"
+                        />
+                        <ChatPicker
+                          label="Telegram group"
+                          value={settingsForm.telegram_chat_id}
+                          onChange={setTelegramGroup}
+                          list={channelList("telegram")}
+                          unavailableText="The bot hasn't seen any groups yet."
+                          notListedHint="Not listed? Add the bot to the group and send any message there."
+                          rawLabel="Telegram chat ID"
+                          rawPlaceholder="-1001234567890"
+                        />
                       </div>
                     </>
                   )}

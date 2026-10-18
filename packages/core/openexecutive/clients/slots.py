@@ -172,6 +172,9 @@ _BLANK_WIPE_TABLES = (
     "roster_ack_log",
     "roster_request_messages",
     "roster_requests",
+    # Telegram chats the bot has seen (integrations.telegram_chats): names
+    # of who wrote to this company's bot, for its People pickers.
+    "telegram_chats",
     "person_emails",
     "person_authority_scope",
     "person_availability",

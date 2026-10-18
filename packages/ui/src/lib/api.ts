@@ -1,5 +1,6 @@
 import type { AlertApproval } from "@/lib/approvals";
 import type { AnswerSources } from "@/lib/answerSources";
+import type { DirectoryListing, DirectoryOption } from "@/lib/chatDirectory";
 import type { HistoryNote, HistoryState } from "@/lib/history";
 import type { NotificationSettings, NotificationSettingsUpdate } from "@/lib/notifications";
 import type { SetupStatus } from "@/lib/setupStatus";
@@ -4454,6 +4455,41 @@ export interface PersonCreate {
   on_leave_until?: string | null;
   authority_scope?: string[];
   availability?: AvailabilityWindow[];
+}
+
+// The Slack, Discord and Telegram people and rooms the bots can reach, by
+// name, for the pickers (lib/chatDirectory.ts). The principal's alone: for
+// anyone else (403), or when it can't be read, this is null and the pickers
+// keep only the by-hand id field.
+async function getDirectory(path: string): Promise<DirectoryListing | null> {
+  try {
+    const res = await fetch(`${API_BASE}/chat-directory/${path}`);
+    if (!res.ok) return null;
+    return (await res.json()) as DirectoryListing;
+  } catch {
+    return null;
+  }
+}
+
+export function getChatDirectoryPeople(): Promise<DirectoryListing | null> {
+  return getDirectory("people");
+}
+
+export function getChatDirectoryChannels(): Promise<DirectoryListing | null> {
+  return getDirectory("channels");
+}
+
+// The Slack person with this work email, or null (no match, no Slack bot, or
+// not the principal).
+export async function findSlackPersonByEmail(email: string): Promise<DirectoryOption | null> {
+  try {
+    const res = await fetch(`${API_BASE}/chat-directory/slack/lookup?email=${encodeURIComponent(email)}`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { configured: boolean; match: DirectoryOption | null };
+    return body.match ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // Adding, editing and archiving people is the principal's alone (403 for anyone

@@ -1,12 +1,14 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { ChatAppPickers } from "@/components/people/ChatAppPickers";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button from "@/components/ui/Button";
+import { useChatDirectory, useSlackEmailMatch } from "@/components/ui/ChatPicker";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
@@ -547,8 +549,11 @@ export default function PersonDetailPage() {
   const [tab, setTab] = useState<PersonTab>("overview");
   const tabsId = useId();
 
-  // Edit mode keeps the chat ids and leave date in a closed Advanced fold.
+  // Edit mode keeps the leave date in a closed Advanced fold.
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // The chat apps fold: closed until opened, or until Slack finds them by
+  // email (null: not toggled yet).
+  const [showChat, setShowChat] = useState<boolean | null>(null);
 
   // Edit form state — mirrors the person fields we allow editing
   const [form, setForm] = useState({
@@ -586,6 +591,16 @@ export default function PersonDetailPage() {
   // availability windows, no departments — and nothing to chase.
   const contact = person ? isContact(person) : false;
   const formContact = form.kind === "contact" && !person?.is_principal;
+
+  // Slack, Discord and Telegram by name, while editing (the principal's alone;
+  // for anyone else there is no list and the id fields stay).
+  const chatDirectory = useChatDirectory("people", editing);
+  const slackMatch = useSlackEmailMatch(form.email, editing && !!chatDirectory?.slack.configured);
+  const setChatId = useCallback(
+    (field: "slack_user_id" | "discord_user_id" | "telegram_chat_id", id: string) =>
+      setForm((f) => (f[field] === id ? f : { ...f, [field]: id })),
+    [],
+  );
 
   function resetForm(p: Person) {
     setForm({
@@ -913,6 +928,20 @@ export default function PersonDetailPage() {
                       )}
                     </div>
 
+                    {/* Chat apps, picked by name */}
+                    <DisclosureSection
+                      label="Chat apps"
+                      open={showChat ?? !!slackMatch}
+                      onToggle={() => setShowChat(!(showChat ?? !!slackMatch))}
+                    >
+                      <ChatAppPickers
+                        ids={form}
+                        onChange={setChatId}
+                        directory={chatDirectory}
+                        slackMatch={slackMatch}
+                      />
+                    </DisclosureSection>
+
                     {/* Advanced */}
                     <DisclosureSection
                       label="Advanced"
@@ -929,38 +958,6 @@ export default function PersonDetailPage() {
                         />
                       </label>
 
-                      <label className={LABEL_CLS}>
-                        Slack user ID
-                        <input
-                          value={form.slack_user_id}
-                          onChange={(e) => setForm((f) => ({ ...f, slack_user_id: e.target.value }))}
-                          className={INPUT_CLS}
-                          placeholder="U01ABC123"
-                        />
-                      </label>
-
-                      <label className={LABEL_CLS}>
-                        Discord user ID
-                        <input
-                          value={form.discord_user_id}
-                          onChange={(e) => setForm((f) => ({ ...f, discord_user_id: e.target.value }))}
-                          className={INPUT_CLS}
-                          placeholder="123456789012345678"
-                        />
-                        <span className={HINT_CLS}>
-                          Right-click your Discord username and &quot;Copy User ID&quot; (developer mode required).
-                        </span>
-                      </label>
-
-                      <label className={LABEL_CLS}>
-                        Telegram chat ID
-                        <input
-                          value={form.telegram_chat_id}
-                          onChange={(e) => setForm((f) => ({ ...f, telegram_chat_id: e.target.value }))}
-                          className={INPUT_CLS}
-                          placeholder="123456789"
-                        />
-                      </label>
                     </DisclosureSection>
                   </div>
                 ) : (

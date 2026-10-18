@@ -7579,6 +7579,47 @@ auth:
         script and by the UI (scripts/callerAssertion.test.mjs).
 
 integrations:
+  chat_directory: |
+    No raw chat ids: the person page, Add person and a department's
+    Channels settings pick Slack, Discord and Telegram people and rooms by
+    name (integrations/chat_directory.py; GET /chat-directory/people,
+    /chat-directory/channels, /chat-directory/slack/lookup?email= in
+    api/routes/chat_directory.py). The id is still what is saved, and the
+    by-hand field stays under "Enter an ID by hand" (all there is for a
+    provider with no bot).
+      • Slack: conversations.list (public + private the bot is in;
+        channels:read, groups:read, public only on missing_scope) and
+        users.list (no bots, no deactivated; users:read, users:read.email
+        for the profile email). users.lookupByEmail matches a person by
+        work email after the cached list; the picker pre-selects it as
+        "Found by email" with "Not them?".
+      • Discord: REST API with the bot token. Text and announcement
+        channels of the bot's servers (DISCORD_GUILD_IDS when set) and
+        their members. Members need the Server Members privileged intent;
+        a 401/403 reads as members_available=false with no options, not
+        an error.
+      • Telegram: no list API, so telegram_bot's webhook records each
+        chat an update comes from (integrations/telegram_chats.py,
+        table telegram_chats: chat_id PK, chat_type, title, username,
+        first_seen_at, last_seen_at; newest 500 kept). Private chats are
+        people, group/supergroup are rooms. A group that migrated to a
+        supergroup or removed the bot is dropped.
+      • TRUST: Telegram chats are recorded only when TELEGRAM_WEBHOOK_SECRET
+        checked out; without it anyone could post an update putting a name
+        of their choice next to a chat id. A row is a suggestion only and
+        grants nothing; the roster still gates who is answered.
+      • The routes are the principal's alone (chat._caller_is_principal_or_unclaimed,
+        the same rule as changing the People list): the lists name everyone
+        in the company's Slack and Discord with their email. Anyone else
+        gets 403 and the pickers fall back to the by-hand field.
+      • Each provider/kind is cached in-process for 60 s, capped at 2,000
+        items; a provider that fails reads as ok=false with no options.
+        configured=false when the token is unset. Tokens go only in the
+        Authorization header to slack.com / discord.com, never returned.
+      • A department's Slack/Discord pickers pre-select the room named most
+        like the department (lib/chatDirectory.closestOption in the UI);
+        saved only when the person presses Save.
+      • telegram_chats is per company: clients.slots._BLANK_WIPE_TABLES.
   chat_app_conversations: |
     A Telegram chat, a Slack or Discord DM and a person's @mentions in
     one channel are each one endless stream with a fixed base id
