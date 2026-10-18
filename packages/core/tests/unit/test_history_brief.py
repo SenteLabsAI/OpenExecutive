@@ -320,7 +320,7 @@ def test_the_digest_follows_a_leave_out_quietly_and_leads_with_the_day(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A subject the owner asked to keep out of their briefs reaches the
-    digest as a leave-out, and the prompt says to leave it out without
+    digest written for them alone as a leave-out (never a shared run), and the prompt says to leave it out without
     announcing it, never report its own briefs, and skip empty sections."""
     from openexecutive import providers
     from openexecutive.briefing import brief_requests, grounding
@@ -341,6 +341,8 @@ def test_the_digest_follows_a_leave_out_quietly_and_leads_with_the_day(
         brief_requests, "render_parts",
         lambda **_kw: ("", brief_requests.LEAVE_OUT_HEADER + "\n- the lender's silence"),
     )
+    asyncio.run(_digest(False))
+    assert "the lender's silence" not in provider.calls[-1]["messages"][0]["content"]
     asyncio.run(_digest(True))
     assert "- the lender's silence" in provider.calls[-1]["messages"][0]["content"]
     for prompt in (_EOD_DIGEST_SYSTEM, _EOD_DIGEST_SOLO_SYSTEM):

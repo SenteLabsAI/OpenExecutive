@@ -352,10 +352,14 @@ def _the_day(since: datetime, now: datetime) -> tuple[list[str], list[str], dict
             keys["conversation"] = [r["at"] for r in rows]
     except Exception:
         logger.exception("eod_digest: reading today's chats failed")
-    live = gather_live_signals(since, now=now, include_private=True, use_cached_calendar=False)
-    # Chat titles add nothing to the chats themselves.
-    live_lines = render_live_blocks(replace(live, conversations=()), window="today")
-    keys.update({k: v for k, v in live.keys.items() if k != "conversations" and v})
+    live_lines: list[str] = []
+    try:
+        live = gather_live_signals(since, now=now, include_private=True, use_cached_calendar=False)
+        # Chat titles add nothing to the chats themselves.
+        live_lines = render_live_blocks(replace(live, conversations=()), window="today")
+        keys.update({k: v for k, v in live.keys.items() if k != "conversations" and v})
+    except Exception:
+        logger.exception("eod_digest: reading today's mail failed")
     return conversation, live_lines, keys
 
 
@@ -470,9 +474,16 @@ class EndOfDayDigestWorkflow(Workflow):
         except Exception:
             logger.exception("eod_digest: coming-up read failed")
             coming_up = []
-        from openexecutive.briefing.brief_requests import render_parts
+        # The leave-out list is the principal's own words: only on the
+        # delivery to them alone.
+        leave_out = ""
+        if PRINCIPAL_DELIVERY.get():
+            from openexecutive.briefing.brief_requests import render_parts
 
-        _raise, leave_out = await asyncio.to_thread(render_parts)
+            try:
+                _raise, leave_out = await asyncio.to_thread(render_parts)
+            except Exception:
+                logger.exception("eod_digest: reading the leave-out list failed")
         fingerprint = brief_state.build_brief_fingerprint(
             today_data=today_data, activity=activity, handled=handled, since=since,
             mode=mode, owner_notes=owner_notes.keys, live_keys=day_keys or None,
