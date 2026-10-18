@@ -84,28 +84,23 @@ def _in_window(window: AvailabilityWindow, now: datetime) -> bool:
 
 def _channel_ref_for(person: Person, channel: str) -> str | None:
     """Return the channel reference string for a Person on a given channel."""
-    if channel == "email":
-        return person.email
-    if channel == "slack":
-        return person.slack_user_id
-    if channel == "telegram":
-        return person.telegram_chat_id
-    if channel == "discord":
-        return person.discord_user_id
-    return None
+    from openexecutive.people.reach import channel_id
+
+    return channel_id(person, channel)
 
 
 def _resolve_channel(person: Person) -> tuple[str, str | None]:
-    """Return (preferred_channel, channel_ref_or_None) for the person.
-
-    If preferred_channel is "any", tries email → slack → discord → telegram
-    in order.
+    """Return (channel, channel_ref_or_None) for the person: the first channel
+    in ``people.reach.reach_order`` (their pick, else where they last talked,
+    then Slack, Discord, Telegram, then email). A picked channel with no id
+    stays the answer, with no ref.
     """
+    from openexecutive.people.reach import reach_order
+
     pref = person.preferred_channel
     if pref != "any":
         return pref, _channel_ref_for(person, pref)
-    # Try in priority order.
-    for ch in ("email", "slack", "discord", "telegram"):
+    for ch in reach_order(person):
         ref = _channel_ref_for(person, ch)
         if ref:
             return ch, ref

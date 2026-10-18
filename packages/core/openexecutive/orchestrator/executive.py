@@ -3629,6 +3629,12 @@ class Executive:
             common_kwargs["peer_memory_context"] = peer_memory_context
         if standing_facts is not None:
             common_kwargs["standing_facts"] = standing_facts
+        # A chat app turn from the person's own account: messages to them go
+        # here next, unless they picked a channel (people.reach).
+        if session.origin_channel:
+            from openexecutive.people.reach import note_talked
+
+            await asyncio.to_thread(note_talked, session)
         stream = (
             self.stream_chat_with_committee(**common_kwargs)
             if committee_review

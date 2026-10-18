@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { availableChannels, onLeaveLine, reachLine } from "../src/lib/personReach.ts";
+import { availableChannels, onLeaveLine, reachLine, reachOrder } from "../src/lib/personReach.ts";
 
 const base = {
   email: null,
@@ -16,17 +16,26 @@ test("a preferred channel is named with the reply time", () => {
   assert.equal(reachLine(p), "Reaches them on Discord, replies within 12h");
 });
 
-test("any channel lists what they have, email first", () => {
+test("any channel lists chat apps first, email last", () => {
   const p = { ...base, email: "ada@example.com", telegram_chat_id: "123" };
   assert.deepEqual(availableChannels(p), ["email", "telegram"]);
-  assert.equal(reachLine(p, { self: true }), "Reaches you by email or Telegram, replies within 24h");
+  assert.equal(reachLine(p, { self: true }), "Reaches you on Telegram or by email, replies within 24h");
   const three = { ...p, slack_user_id: "U01" };
-  assert.equal(reachLine(three), "Reaches them by email, Slack or Telegram, replies within 24h");
+  assert.equal(reachLine(three), "Reaches them on Slack, Telegram or by email, replies within 24h");
+});
+
+test("any channel goes where they last talked first", () => {
+  const p = { ...base, email: "ada@example.com", slack_user_id: "U01", telegram_chat_id: "123", last_channel: "telegram" };
+  assert.deepEqual(reachOrder(p), ["telegram", "slack", "email"]);
+  assert.equal(reachLine(p), "Reaches them on Telegram, where they last talked, replies within 24h");
+  assert.equal(reachLine(p, { self: true, contact: true }), "Reaches you on Telegram, where you last talked");
+  // A pick wins over where they last talked.
+  assert.deepEqual(reachOrder({ ...p, preferred_channel: "slack" }), ["slack", "telegram", "email"]);
 });
 
 test("a preferred channel with no id falls back to what they have", () => {
-  const p = { ...base, email: "ada@example.com", preferred_channel: "slack" };
-  assert.equal(reachLine(p), "Reaches them by email, replies within 24h");
+  const p = { ...base, email: "ada@example.com", telegram_chat_id: "123", preferred_channel: "slack" };
+  assert.equal(reachLine(p), "Reaches them on Telegram or by email, replies within 24h");
 });
 
 test("a contact has no reply time", () => {

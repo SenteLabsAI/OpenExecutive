@@ -53,7 +53,7 @@ const ALL_SCOPES = [
 ];
 
 const CHANNELS = [
-  { value: "any", label: "Any channel" },
+  { value: "any", label: "Where they last talked" },
   { value: "email", label: "Email" },
   { value: "slack", label: "Slack" },
   { value: "discord", label: "Discord" },
@@ -903,7 +903,7 @@ export default function PersonDetailPage() {
                           </select>
                         </label>
                         <p className={HINT_CLS}>
-                          Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : (CHANNELS.find((c) => c.value === form.preferred_channel)?.label ?? form.preferred_channel)}.
+                          Proposals routed to this person are sent via {form.preferred_channel === "any" ? "the app they last talked in, then any other" : (CHANNELS.find((c) => c.value === form.preferred_channel)?.label ?? form.preferred_channel)}.
                         </p>
                       </div>
                       {!formContact && (

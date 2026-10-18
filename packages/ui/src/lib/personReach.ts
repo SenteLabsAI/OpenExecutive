@@ -9,7 +9,8 @@ import type { Person } from "@/lib/api";
 type ReachFields = Pick<
   Person,
   "email" | "slack_user_id" | "discord_user_id" | "telegram_chat_id" | "preferred_channel" | "response_sla_hours"
->;
+> &
+  Partial<Pick<Person, "last_channel">>;
 
 const CHANNEL_NAMES: Record<string, string> = {
   email: "email",
@@ -38,22 +39,41 @@ export function availableChannels(p: ReachFields): string[] {
 }
 
 /**
+ * The order the Executive tries them in, as the server does
+ * (people/reach.py): their pick, else the chat app they last talked in, then
+ * Slack, Discord, Telegram, then email.
+ */
+export function reachOrder(p: ReachFields): string[] {
+  const have = availableChannels(p);
+  const chat = ["slack", "discord", "telegram"].filter((c) => have.includes(c));
+  const pref = p.preferred_channel || "any";
+  const first = pref !== "any" ? pref : (p.last_channel ?? null);
+  const order = [...(first && chat.includes(first) ? [first] : []), ...chat.filter((c) => c !== first)];
+  if (have.includes("email")) {
+    if (first === "email") order.unshift("email");
+    else order.push("email");
+  }
+  return order;
+}
+
+/**
  * "Reaches them on Discord, replies within 12h". `self` says "you" on your
  * own card; a contact has no reply time.
  */
 export function reachLine(p: ReachFields, opts: { self?: boolean; contact?: boolean } = {}): string {
   const who = opts.self ? "you" : "them";
-  const have = availableChannels(p);
+  const order = reachOrder(p);
+  if (order.length === 0) return opts.self ? "No email or chat app set for you yet" : "No email or chat app set for them yet";
+  const pref = p.preferred_channel || "any";
   let how: string;
-  // Delivery tries the preferred channel first among those with an address
-  // or id, so a preferred channel with nothing set reads like "any".
-  if (p.preferred_channel && p.preferred_channel !== "any" && have.includes(p.preferred_channel)) {
-    how = `Reaches ${who} ${channelPhrase(p.preferred_channel)}`;
+  if (pref !== "any" && order[0] === pref) {
+    how = `Reaches ${who} ${channelPhrase(pref)}`;
+  } else if (pref === "any" && p.last_channel && order[0] === p.last_channel) {
+    how = `Reaches ${who} ${channelPhrase(p.last_channel)}, where ${opts.self ? "you" : "they"} last talked`;
   } else {
-    if (have.length === 0) return opts.self ? "No email or chat app set for you yet" : "No email or chat app set for them yet";
-    // "by email or Telegram", "on Slack or Discord"
-    const [first, ...rest] = have;
-    how = `Reaches ${who} ${joinOr([channelPhrase(first), ...rest.map((c) => CHANNEL_NAMES[c] ?? c)])}`;
+    // "on Slack or Telegram", "on Telegram or by email"
+    const [first, ...rest] = order;
+    how = `Reaches ${who} ${joinOr([channelPhrase(first), ...rest.map((c) => (c === "email" ? "by email" : CHANNEL_NAMES[c] ?? c))])}`;
   }
   return opts.contact ? how : `${how}, replies within ${p.response_sla_hours}h`;
 }
