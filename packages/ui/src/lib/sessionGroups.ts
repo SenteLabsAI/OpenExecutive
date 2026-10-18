@@ -179,7 +179,10 @@ function newest(items: SessionSummary[]): string {
 
 function withinArea(name: string, area: string): string {
   if (!name.toLowerCase().startsWith(area.toLowerCase())) return name;
-  const rest = name.slice(area.length).replace(/^[\s:·–—-]+/, "");
+  // Only a whole word: "Boardwalk Permit" stays as is under "Board".
+  const after = name.slice(area.length);
+  if (after && !/^[\s:·–—-]/.test(after)) return name;
+  const rest = after.replace(/^[\s:·–—-]+/, "");
   return rest ? rest[0].toUpperCase() + rest.slice(1) : name;
 }
 
