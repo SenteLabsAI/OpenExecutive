@@ -953,7 +953,12 @@ class TestInitiativeNudgeToThePrincipal:
         _patch_settings(monkeypatch)
         _make_principal()  # web-only: no chat id, no email
         _idle_initiative()
-        now = _now()
+        # Midweek noon, so the +1h scan below stays in the same ISO week (a
+        # run late on Sunday UTC would otherwise file next week's card).
+        real = _now()
+        now = (real + timedelta(days=(2 - real.weekday()) % 7 or 7)).replace(
+            hour=12, minute=0, second=0, microsecond=0
+        )
 
         assert await nudge_engine.run_nudge_scan(now=now) == 0
         (card,) = alert_store.list_alerts()
