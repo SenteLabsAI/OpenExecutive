@@ -1265,7 +1265,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.docx,.doc,.txt,.md,.csv"
+              accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.docx,.doc,.xlsx,.xlsm,.txt,.md,.csv"
               onChange={handleFilesPicked}
               className="hidden"
               aria-hidden="true"

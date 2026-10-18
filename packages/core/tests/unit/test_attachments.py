@@ -166,12 +166,35 @@ async def test_build_attachment_output_empty_extraction_returns_notice():
 
 async def test_build_attachment_output_unsupported_type_returns_notice():
     extra_text, image_blocks = await build_attachment_output(
-        "model.xlsx", b"PK...", "application/vnd.ms-excel"
+        "deck.pptx", b"PK...", "application/vnd.ms-powerpoint"
     )
 
     assert image_blocks == []
     assert "unsupported type" in extra_text.lower()
-    assert "model.xlsx" in extra_text
+    assert "deck.pptx" in extra_text
+
+
+async def test_build_attachment_output_reads_an_excel_workbook():
+    import io
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active.append(["Region", "Q3 revenue"])
+    wb.active.append(["East", 412000])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    with patch("openexecutive.integrations.attachments._schedule_ingest") as mock_ingest:
+        extra_text, image_blocks = await build_attachment_output(
+            "q3.xlsx", buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    assert image_blocks == []
+    assert "[Attached: q3.xlsx]" in extra_text
+    assert "East" in extra_text and "412000" in extra_text
+    mock_ingest.assert_called_once()
 
 
 # --------------------------------------------------------------------------- #

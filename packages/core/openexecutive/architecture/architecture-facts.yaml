@@ -2308,6 +2308,12 @@ knowledge:
       "--- ATTACHMENT TEXT ---" (15k chars each). Outside the model loop, so
       it works on private turns without widening PRIVATE_TURN_MCP_TOOLS.
       An unknown sender's attachments stay a list (no downloads).
+      Image attachments (png/jpg/gif/webp) are downloaded the same way
+      (resolve_readable_file with suffixes=IMAGE_MEDIA_TYPES) and passed as
+      attachment_blocks: MAX_IMAGES 3, none under MIN_IMAGE_BYTES 10 KB
+      (logos, tracking pixels), none over MAX_IMAGE_BYTES 3 MB (the model
+      API's 5 MB base64 cap would fail the turn). A mail source's
+      read_attachments may return EmailAttachments(text, image_blocks).
     - anything else — the chat tool `read_document`
       (orchestrator.document_tools): `path` (a file another tool saved,
       e.g. get_drive_file_download_url for a scanned Drive PDF) or company
@@ -8209,7 +8215,7 @@ integrations:
     handling for the web chat, Discord, and Telegram. Inbound images are
     extracted to Anthropic vision content blocks and forwarded to the
     Executive in the same turn as the text. Inbound documents
-    (PDF/DOCX/TXT/MD/CSV) have their text extracted and inlined into the
+    (PDF/DOCX/XLSX/TXT/MD/CSV) have their text extracted and inlined into the
     user message AND are indexed into the ChromaDB
     ``inbound_attachments`` collection in a fire-and-forget background
     task. Per-file cap 20 MB; extracted text

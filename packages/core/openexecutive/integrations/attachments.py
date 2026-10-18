@@ -13,7 +13,7 @@ background task so they surface in future RAG retrieval sessions.
 Supported file types
 ---------------------
 Images:   image/png, image/jpeg, image/gif, image/webp
-Docs:     .pdf, .docx, .doc, .txt, .md, .rst, .csv
+Docs:     .pdf, .docx, .doc, .xlsx, .xlsm, .txt, .md, .rst, .csv
           (a scanned PDF is converted by ``knowledge.pdf_reader``)
 
 Limits
@@ -40,7 +40,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
 _MAX_EXTRACTED_CHARS = 40_000
-_EXTRACTABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".txt", ".md", ".rst", ".csv"})
+_EXTRACTABLE_SUFFIXES = frozenset(
+    {".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".txt", ".md", ".rst", ".csv"}
+)
 _SUPPORTED_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 # Strong refs so background ingest tasks aren't GC'd before they complete.
@@ -248,7 +250,8 @@ def _schedule_ingest(text: str, filename: str) -> None:
 # Per-attachment routing
 # ------------------------------------------------------------------ #
 
-def _build_image_block(data: bytes, content_type: str) -> dict[str, Any]:
+def build_image_block(data: bytes, content_type: str) -> dict[str, Any]:
+    """An Anthropic vision content block for one image."""
     return {
         "type": "image",
         "source": {
@@ -321,7 +324,7 @@ async def build_attachment_output(
         ct = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix.lstrip('.')}"
 
     if ct in _SUPPORTED_IMAGE_TYPES:
-        return "", [_build_image_block(data, ct)]
+        return "", [build_image_block(data, ct)]
 
     if suffix in _EXTRACTABLE_SUFFIXES:
         text, note, converted = await _extract_text(data, filename, inbound=inbound)
@@ -339,7 +342,7 @@ async def build_attachment_output(
         _schedule_ingest(text, filename)
         return extra_text, []
 
-    return f"(Could not read {filename}: unsupported type — supported: PDF, DOCX, TXT, MD, PNG, JPG, GIF, WebP)", []
+    return f"(Could not read {filename}: unsupported type — supported: PDF, DOCX, XLSX, TXT, MD, CSV, PNG, JPG, GIF, WebP)", []
 
 
 # ------------------------------------------------------------------ #

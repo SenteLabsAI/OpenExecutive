@@ -313,13 +313,19 @@ def _err(message: str) -> str:
     return json.dumps({"error": message})
 
 
-def resolve_readable_file(raw: str, extra_dirs: list[Path] | None = None) -> Path | str:
+def resolve_readable_file(
+    raw: str,
+    extra_dirs: list[Path] | None = None,
+    *,
+    suffixes: frozenset[str] | None = None,
+) -> Path | str:
     """Resolve a path a tool may read, or return the reason it may not.
 
     Confined to the configured download directories (plus ``extra_dirs``):
     the path is resolved (symlinks followed, ``..`` collapsed) BEFORE the
     containment check, so neither can escape it. Shared by ``oe__read_file``
-    and the Executive's ``read_document`` tool.
+    and the Executive's ``read_document`` tool. ``suffixes`` replaces the
+    readable document types (the email poller reads images with it).
     """
     if not raw:
         return "path is required — pass the file path a previous tool returned"
@@ -332,8 +338,9 @@ def resolve_readable_file(raw: str, extra_dirs: list[Path] | None = None) -> Pat
         return "that file is outside the folders tools may read (downloaded attachments only)"
     if not resolved.is_file():
         return "not a file"
-    if resolved.suffix.lower() not in _READABLE_SUFFIXES:
-        return "unsupported file type — readable: " + ", ".join(sorted(_READABLE_SUFFIXES))
+    readable = _READABLE_SUFFIXES if suffixes is None else suffixes
+    if resolved.suffix.lower() not in readable:
+        return "unsupported file type — readable: " + ", ".join(sorted(readable))
     if resolved.stat().st_size > _MAX_READ_FILE_BYTES:
         return "file is larger than 25 MB"
     return resolved

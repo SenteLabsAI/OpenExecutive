@@ -249,6 +249,16 @@ def test_attachments_are_read_for_a_known_sender_only(turn: dict[str, Any]) -> N
     stranger_reader.assert_not_awaited()
 
 
+def test_a_sources_images_reach_the_turn(turn: dict[str, Any]) -> None:
+    from openexecutive.integrations.email_attachments import EmailAttachments
+
+    block = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}
+    reader = AsyncMock(return_value=EmailAttachments("[Attached q3.csv]", [block]))
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent(), attachments=reader))
+    assert turn["turns"][0]["attachment_blocks"] == [block]
+    assert "--- ATTACHMENT TEXT ---\n[Attached q3.csv]" in turn["turns"][0]["user_message"]
+
+
 def test_a_failed_send_is_the_outcome_and_audited(turn: dict[str, Any]) -> None:
     outcome = _handle(_mail(TEAMMATE, proven=True, send=_Sent(error="relay refused")))
     assert outcome == "answer not sent: relay refused"

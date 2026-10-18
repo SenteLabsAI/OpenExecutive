@@ -2070,7 +2070,7 @@ async def chat_upload(
 ) -> StreamingResponse:
     """Streaming chat turn with file/photo attachments.
 
-    Documents (PDF/DOCX/TXT/MD/CSV) have their text extracted, inlined into
+    Documents (PDF/DOCX/XLSX/TXT/MD/CSV) have their text extracted, inlined into
     the user message, and indexed into the ChromaDB ``inbound_attachments``
     collection as a background task — exactly the behavior the Discord and
     Telegram bots already use. That collection is never retrieved from, so an
