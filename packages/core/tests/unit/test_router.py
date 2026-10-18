@@ -149,5 +149,6 @@ def test_the_specialist_options_keep_their_routing_cues(key: str, cue: str) -> N
     from openexecutive.orchestrator.router import SPECIALIST_TOOLS
 
     text = SPECIALIST_TOOLS[0]["input_schema"]["properties"]["specialist"]["description"]
+    text = text.partition(": ")[2]
     option = next(part for part in text.split("; ") if part.startswith(f"{key} ("))
     assert cue in option
