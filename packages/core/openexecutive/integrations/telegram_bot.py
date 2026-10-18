@@ -184,12 +184,14 @@ async def _handle_card_tap(
         return
     decision_id, approve = parsed
     line = await channel_cards.resolve(decision_id, person, approve=approve)
-    audit_log(
+    choice = "approve" if approve else "skip"
+    await asyncio.to_thread(
+        audit_log,
         "integration_inbound",
-        f"Telegram card {decision_id} {'approved' if approve else 'skipped'}: {line[:120]}",
+        f"Telegram card {decision_id}: tapped {choice.capitalize()}: {line[:120]}",
         actor="telegram",
         details={"channel": "telegram", "chat_id": chat_id, "decision_id": decision_id,
-                 "choice": "approve" if approve else "skip", "person_id": person.id},
+                 "choice": choice, "outcome": channel_cards.outcome_of(line), "person_id": person.id},
     )
     try:
         await client.post(

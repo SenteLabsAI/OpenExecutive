@@ -282,7 +282,7 @@ def test_a_tap_answers_audits_and_leaves_the_card_without_buttons(
 
     tap(4242, "card:7:a")
     assert resolved == [(7, person, True)]
-    assert audited == [{"channel": "telegram", "chat_id": 4242, "decision_id": 7, "choice": "approve", "person_id": 3}]
+    assert audited == [{"channel": "telegram", "chat_id": 4242, "decision_id": 7, "choice": "approve", "outcome": "done", "person_id": 3}]
     assert [m for m, _ in fake_telegram.posts] == ["answerCallbackQuery", "editMessageText"]
     edited = fake_telegram.posts[1][1]
     assert edited["text"] == "Meeting to book\n\nApproved." and "reply_markup" not in edited
@@ -330,3 +330,10 @@ def test_a_busy_tap_only_answers(fake_telegram: _FakeTelegram, monkeypatch: pyte
         callback_id="q1", chat_id=4242, message_id=9, card_text="Meeting to book", data="card:7:a", token=TOKEN,
     ))
     assert [(m, b["text"]) for m, b in fake_telegram.posts] == [("answerCallbackQuery", "Already on it.")]
+
+
+def test_a_taps_outcome_is_recorded_apart_from_its_choice() -> None:
+    assert channel_cards.outcome_of("Approved.") == "done"
+    assert channel_cards.outcome_of("Skipped.") == "done"
+    assert channel_cards.outcome_of("Not done: This card was already handled.") == "refused"
+    assert channel_cards.outcome_of(channel_cards.BUSY) == "busy"

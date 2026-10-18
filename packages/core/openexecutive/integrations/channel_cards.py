@@ -142,6 +142,13 @@ def outcome_text(approved: bool, error: str | None) -> str:
     return "Approved." if approved else "Skipped."
 
 
+def outcome_of(line: str) -> str:
+    """``done``, ``busy`` or ``refused``, for the audit row of a tap."""
+    if line == BUSY:
+        return "busy"
+    return "refused" if line.startswith("Not done") else "done"
+
+
 async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
     """Approve or skip a card for ``person``, the proven tapper. Returns the
     line to show under the card."""
