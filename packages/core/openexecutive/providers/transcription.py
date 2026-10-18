@@ -8,6 +8,10 @@ server run locally, or OpenRouter, which is the default whenever
 no transcription: ``available()`` is false, the chat mic is hidden and a
 voice note gets a line asking for text.
 
+A recording's length is read from its container before it is sent, and
+the bytes sent each day are capped (``TRANSCRIPTION_MAX_MB_PER_DAY``): the
+servers bill by length, and a file can misstate its own.
+
 Each call is recorded like a model call (one ``cache_event`` row, actor
 ``transcription``, with the cost the server reports), so ``/audit/usage``
 counts it. A deployment that keeps its own ledger can also hear of every
@@ -20,6 +24,7 @@ import math
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -74,6 +79,12 @@ class Usage:
 
 _listeners: list[Callable[[Usage], None]] = []
 
+# Bytes sent to the speech server this UTC day, and being sent right now.
+# The length a container states is the sender's word, so the day's bytes are
+# the bound that holds: TRANSCRIPTION_MAX_MB_PER_DAY. Kept in this process.
+_SENT_TODAY: dict[str, int] = {}
+_in_flight = 0
+
 
 def add_usage_listener(listener: Callable[[Usage], None]) -> None:
     """Call ``listener`` after every transcription (it must not raise)."""
@@ -100,6 +111,33 @@ def target() -> Target | None:
             via_openrouter=True,
         )
     return None
+
+
+def _utc_day() -> str:
+    return datetime.now(UTC).date().isoformat()
+
+
+def _reserve(size: int) -> bool:
+    """Take ``size`` bytes of today's allowance, or say there isn't room.
+    Synchronous, so concurrent voice notes can't all pass the check."""
+    global _in_flight
+    from openexecutive.config import get_settings
+
+    cap_mb = int(get_settings().transcription_max_mb_per_day)
+    if cap_mb > 0 and _SENT_TODAY.get(_utc_day(), 0) + _in_flight + size > cap_mb * 1024 * 1024:
+        return False
+    _in_flight += size
+    return True
+
+
+def _settle(size: int) -> None:
+    """The reserved bytes were sent (sent or not, the server may bill)."""
+    global _in_flight
+    _in_flight = max(0, _in_flight - size)
+    day = _utc_day()
+    for stale in [d for d in _SENT_TODAY if d != day]:
+        del _SENT_TODAY[stale]
+    _SENT_TODAY[day] = _SENT_TODAY.get(day, 0) + size
 
 
 def available() -> bool:
@@ -162,22 +200,27 @@ async def transcribe(
         headers["HTTP-Referer"] = s.openrouter_referer or "https://github.com/"
         headers["X-Title"] = s.openrouter_app_title
     name = Path(filename).name or "voice-note"
+    if not _reserve(len(data)):
+        raise TranscriptionError("today's limit on voice notes is used up")
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            resp = await client.post(
-                f"{where.base_url}/audio/transcriptions",
-                headers=headers,
-                data={"model": where.model, "response_format": "json"},
-                files={"file": (name, data, _media_type(name, content_type))},
-            )
-        resp.raise_for_status()
-        body = resp.json()
-    except httpx.HTTPStatusError as exc:
-        logger.warning("transcription failed: HTTP %s", exc.response.status_code)
-        raise TranscriptionError("the speech service didn't answer") from exc
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("transcription failed (%s)", type(exc).__name__)
-        raise TranscriptionError("the speech service didn't answer") from exc
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+                resp = await client.post(
+                    f"{where.base_url}/audio/transcriptions",
+                    headers=headers,
+                    data={"model": where.model, "response_format": "json"},
+                    files={"file": (name, data, _media_type(name, content_type))},
+                )
+            resp.raise_for_status()
+            body = resp.json()
+        except httpx.HTTPStatusError as exc:
+            logger.warning("transcription failed: HTTP %s", exc.response.status_code)
+            raise TranscriptionError("the speech service didn't answer") from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("transcription failed (%s)", type(exc).__name__)
+            raise TranscriptionError("the speech service didn't answer") from exc
+    finally:
+        _settle(len(data))
     if not isinstance(body, dict):
         raise TranscriptionError("the speech service didn't answer")
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
@@ -316,8 +359,8 @@ def _wav_seconds(data: bytes) -> float | None:
     at = data.find(b"data", 12)
     if at == -1 or not byte_rate:
         return None
-    size = struct.unpack_from("<I", data, at + 4)[0]
-    return min(size, len(data) - at - 8) / byte_rate
+    # The bytes that follow, not the size field: a server plays them all.
+    return (len(data) - at - 8) / byte_rate
 
 
 def _minutes(seconds: int) -> str:

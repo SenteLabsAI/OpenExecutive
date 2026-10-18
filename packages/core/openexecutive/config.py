@@ -231,6 +231,9 @@ class Settings(BaseSettings):
     transcription_model: str | None = Field(None, alias="TRANSCRIPTION_MODEL")
     # Longest voice note transcribed, in seconds.
     transcription_max_seconds: int = Field(300, alias="TRANSCRIPTION_MAX_SECONDS")
+    # Audio sent to the speech server per UTC day, in MB (0 = no limit). The
+    # servers bill by length, which a file can misstate; bytes it can't.
+    transcription_max_mb_per_day: int = Field(200, alias="TRANSCRIPTION_MAX_MB_PER_DAY")
 
     @field_validator("anthropic_workspace_id", mode="before")
     @classmethod

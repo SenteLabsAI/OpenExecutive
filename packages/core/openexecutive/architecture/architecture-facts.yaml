@@ -2326,7 +2326,10 @@ knowledge:
       TRANSCRIPTION_MAX_SECONDS (300) caps, the length read on the server
       from the Ogg / WebM / MP4 / WAV container (recording_seconds; the
       browser's own stop is not trusted); a file whose length can't be read
-      (mp3, flac, aac) is held to 16 KB per allowed second. Each call writes one usage row
+      (mp3, flac, aac) is held to 16 KB per allowed second. A container's length is the
+      sender's word, so the bound that holds is bytes: at most
+      TRANSCRIPTION_MAX_MB_PER_DAY (200) sent per UTC day, counted in
+      process, failed calls included. Each call writes one usage row
       (actor "transcription", the server's reported cost) and tells any
       add_usage_listener listener. In the chat apps (integrations.
       attachments) only a voice note the sender recorded there (Telegram

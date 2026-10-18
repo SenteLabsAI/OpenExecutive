@@ -20,6 +20,7 @@ def _settings(**over: Any) -> SimpleNamespace:
         transcription_api_key=None,
         transcription_model=None,
         transcription_max_seconds=300,
+        transcription_max_mb_per_day=200,
         openrouter_api_key=None,
         openrouter_base_url="https://openrouter.ai/api/v1",
         openrouter_referer=None,
@@ -27,6 +28,12 @@ def _settings(**over: Any) -> SimpleNamespace:
     )
     base.update(over)
     return SimpleNamespace(**base)
+
+
+@pytest.fixture(autouse=True)
+def fresh_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(transcription, "_SENT_TODAY", {})
+    monkeypatch.setattr(transcription, "_in_flight", 0)
 
 
 @pytest.fixture()
@@ -178,6 +185,19 @@ async def test_a_recording_of_unreadable_length_is_held_to_a_size(settings, serv
         await transcription.transcribe(b"ID3" + b"0" * 160_001, "call.mp3")
     assert server["requests"] == []
     assert await transcription.transcribe(b"ID3" + b"0" * 1000, "call.mp3") == "move my call"
+
+
+async def test_the_days_audio_is_capped_by_bytes(settings, server) -> None:
+    # A file can state any length, so bytes are the bound that holds.
+    settings(openrouter_api_key="or-key", transcription_max_mb_per_day=1)
+    half = _wav(0.1) + b"\0" * (400 * 1024)
+    assert await transcription.transcribe(half, "a.wav") == "move my call"
+    server["answer"] = (500, {"error": "down"})
+    with pytest.raises(transcription.TranscriptionError, match="service"):
+        await transcription.transcribe(half, "b.wav")  # still sent, still counted
+    with pytest.raises(transcription.TranscriptionError, match="today's limit"):
+        await transcription.transcribe(half, "c.wav")
+    assert len(server["requests"]) == 2
 
 
 def test_audio_is_known_by_type_or_name() -> None:
