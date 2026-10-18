@@ -196,6 +196,9 @@ async def _handle_card_tap(
             _tg_url(token, "answerCallbackQuery"),
             json={"callback_query_id": callback_id, "text": line[:190]},
         )
+        if line == channel_cards.BUSY:
+            # The tap still deciding it updates the card.
+            return
         # The card keeps what it said, with the outcome under it and no buttons.
         await client.post(
             _tg_url(token, "editMessageText"),

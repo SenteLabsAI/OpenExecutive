@@ -30,6 +30,9 @@ SKIP = "s"
 # A reply leaves at most this many cards (action_cards.CARDS_PER_TURN plus a meeting).
 MAX_CARDS = 4
 
+# What a second tap gets while the first is still deciding the card; the
+# card itself is left for the first tap to update.
+BUSY = "Already on it."
 # Cards a tap is deciding right now (one process serves a company's taps).
 _resolving: set[int] = set()
 
@@ -150,7 +153,7 @@ async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
     # second tap can land while the first is still booking: it is turned
     # away rather than racing it to a second invite.
     if decision_id in _resolving:
-        return "Already on it."
+        return BUSY
     _resolving.add(decision_id)
     try:
         await resolve_in_chat(decision_id, person, approve=approve)

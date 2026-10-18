@@ -316,3 +316,17 @@ def test_a_second_tap_while_the_first_is_booking_is_turned_away(monkeypatch: pyt
     assert sorted(asyncio.run(both())) == ["Already on it.", "Approved."]
     assert calls == [7]
     assert asyncio.run(channel_cards.resolve(7, SimpleNamespace(id=1), approve=False)) == "Skipped."
+
+
+def test_a_busy_tap_only_answers(fake_telegram: _FakeTelegram, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_telegram_chat_id", lambda chat: SimpleNamespace(id=3))
+
+    async def busy(decision_id: int, who: Any, *, approve: bool) -> str:
+        return channel_cards.BUSY
+
+    monkeypatch.setattr(channel_cards, "resolve", busy)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    asyncio.run(telegram_bot._handle_card_tap(
+        callback_id="q1", chat_id=4242, message_id=9, card_text="Meeting to book", data="card:7:a", token=TOKEN,
+    ))
+    assert [(m, b["text"]) for m, b in fake_telegram.posts] == [("answerCallbackQuery", "Already on it.")]
