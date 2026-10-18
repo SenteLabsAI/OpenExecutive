@@ -21,6 +21,10 @@ carries signature logos and tracking pixels as attachments too, and those
 would only spend tokens. One over ``MAX_IMAGE_BYTES`` is skipped with a
 note, because the model API refuses a larger image and would fail the turn.
 
+Audio attachments (a voice note, a recorded call) are transcribed, up to
+``MAX_AUDIO``, and their words appended like a document's: a file's words,
+not the sender's.
+
 Everything is best-effort: a failure becomes a one-line note in the turn, and
 the Executive can still use ``read_document`` on a file it downloads itself.
 """
@@ -50,6 +54,8 @@ IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif", ".webp": "image/webp",
 }
 MAX_IMAGES = 3
+# Voice notes and recordings, transcribed (providers.transcription).
+MAX_AUDIO = 2
 # Below this an image is a logo, an icon or a tracking pixel.
 MIN_IMAGE_BYTES = 10 * 1024
 # The model API takes an image up to 5 MB once base64'd (4/3 larger).
@@ -185,6 +191,35 @@ async def _read_image(
     return build_image_block(data, media_type)
 
 
+async def _read_audio(
+    gateway: MCPGateway, message_id: str, user_email: str, ref: EmailAttachmentRef
+) -> str:
+    """One audio attachment's words, as attachment text, or the note."""
+    from openexecutive.integrations.attachments import format_attached_text
+    from openexecutive.providers import transcription
+
+    resolved = await _download(
+        gateway, message_id, user_email, ref,
+        suffixes=frozenset(transcription.AUDIO_MEDIA_TYPES),
+    )
+    if isinstance(resolved, str):
+        return resolved
+    try:
+        data = resolved.read_bytes()
+    except OSError as exc:
+        logger.warning("email audio read failed (%s)", type(exc).__name__)
+        return f"(Could not read {ref.name})"
+    try:
+        words = await transcription.transcribe(data, ref.name)
+    except transcription.TranscriptionError as exc:
+        return f"(Could not transcribe {ref.name}: {exc})"
+    if not words:
+        return f"(Attached {ref.name}: no words in it)"
+    return format_attached_text(
+        ref.name, words, note="transcribed", max_chars=MAX_CHARS_PER_ATTACHMENT
+    )
+
+
 async def read_email_attachments(
     gateway: MCPGateway,
     message_id: str,
@@ -228,4 +263,17 @@ async def read_email_attachments(
     extra = len(images) - MAX_IMAGES
     if extra > 0:
         parts.append(f"(Skipped {extra} more image(s))")
+
+    from openexecutive.providers import transcription
+
+    if transcription.available():
+        audio = [r for r in refs if Path(r.name).suffix.lower() in transcription.AUDIO_MEDIA_TYPES]
+        for ref in audio[:MAX_AUDIO]:
+            if ref.size_bytes > transcription.MAX_BYTES:
+                parts.append(f"(Skipped {ref.name}: recording too large)")
+                continue
+            parts.append(await _read_audio(gateway, message_id, user_email, ref))
+        extra = len(audio) - MAX_AUDIO
+        if extra > 0:
+            parts.append(f"(Skipped {extra} more recording(s))")
     return EmailAttachments("\n\n".join(parts), blocks)

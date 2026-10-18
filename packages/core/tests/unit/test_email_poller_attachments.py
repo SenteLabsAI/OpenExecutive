@@ -395,3 +395,68 @@ def test_saved_path_must_match_the_saved_filename(download_dir) -> None:
     assert _saved_path(mismatched) is None
     assert _saved_path("Filename: x Saved to: /etc/passwd") is None
     assert _saved_path(None) is None
+
+
+# ── Voice notes and recordings ───────────────────────────────────────────────
+
+
+async def test_a_recording_is_transcribed_as_attachment_text(download_dir, monkeypatch) -> None:
+    from openexecutive.providers import transcription
+
+    sent: list[tuple[bytes, str]] = []
+
+    async def fake_transcribe(data: bytes, filename: str, content_type: str = "", **_: Any) -> str:
+        sent.append((data, filename))
+        return "Ship the Harbor Point deck Friday."
+
+    monkeypatch.setattr(transcription, "available", lambda: True)
+    monkeypatch.setattr(transcription, "transcribe", fake_transcribe)
+    clip = download_dir / "note.m4a"
+    clip.write_bytes(b"m4a-bytes")
+
+    read = await read_email_attachments(
+        _Gateway({"V": clip}), "m1", EXEC, [EmailAttachmentRef("note.m4a", "V", 9)]
+    )
+
+    assert sent == [(b"m4a-bytes", "note.m4a")]
+    assert "Ship the Harbor Point deck Friday." in read.text
+    assert "note.m4a" in read.text and "transcribed" in read.text
+    assert read.image_blocks == []
+
+
+async def test_recordings_are_left_alone_without_transcription(download_dir, monkeypatch) -> None:
+    from openexecutive.providers import transcription
+
+    monkeypatch.setattr(transcription, "available", lambda: False)
+    gateway = _Gateway()
+
+    read = await read_email_attachments(
+        gateway, "m1", EXEC, [EmailAttachmentRef("note.m4a", "V", 9)]
+    )
+
+    assert gateway.calls == []
+    assert read.text == ""
+
+
+async def test_recordings_are_capped_and_failures_become_notes(download_dir, monkeypatch) -> None:
+    from openexecutive.integrations.email_attachments import MAX_AUDIO
+    from openexecutive.providers import transcription
+
+    async def failing(*_: Any, **__: Any) -> str:
+        raise transcription.TranscriptionError("the speech service didn't answer")
+
+    monkeypatch.setattr(transcription, "available", lambda: True)
+    monkeypatch.setattr(transcription, "transcribe", failing)
+    files, refs = {}, []
+    for i in range(MAX_AUDIO + 1):
+        path = download_dir / f"v{i}.ogg"
+        path.write_bytes(b"OggS")
+        files[f"V{i}"] = path
+        refs.append(EmailAttachmentRef(f"v{i}.ogg", f"V{i}", 4))
+    gateway = _Gateway(files)
+
+    read = await read_email_attachments(gateway, "m1", EXEC, refs)
+
+    assert len(gateway.calls) == MAX_AUDIO
+    assert "(Could not transcribe v0.ogg: the speech service didn't answer)" in read.text
+    assert read.text.endswith("(Skipped 1 more recording(s))")

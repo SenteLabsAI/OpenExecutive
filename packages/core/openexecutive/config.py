@@ -220,6 +220,18 @@ class Settings(BaseSettings):
         _DEFAULT_OPENROUTER_CATALOG_REFRESH_S, alias="OPENROUTER_CATALOG_REFRESH_S"
     )
 
+    # ---- Speech to text (voice notes, the chat mic) ---------------------
+    # Any server with the standard POST /audio/transcriptions call (OpenAI,
+    # Groq, OpenRouter, a self-hosted Whisper server). Unset, it uses
+    # OpenRouter when OPENROUTER_API_KEY is set; with neither there is no
+    # transcription and voice notes get a line asking for text instead.
+    transcription_base_url: str | None = Field(None, alias="TRANSCRIPTION_BASE_URL")
+    transcription_api_key: str | None = Field(None, alias="TRANSCRIPTION_API_KEY")
+    # Blank: elevenlabs/scribe-v2 on OpenRouter, whisper-1 elsewhere.
+    transcription_model: str | None = Field(None, alias="TRANSCRIPTION_MODEL")
+    # Longest voice note transcribed, in seconds.
+    transcription_max_seconds: int = Field(300, alias="TRANSCRIPTION_MAX_SECONDS")
+
     @field_validator("anthropic_workspace_id", mode="before")
     @classmethod
     def _parse_anthropic_workspace_id(cls, v: Any) -> Any:

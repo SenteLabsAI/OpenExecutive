@@ -6,6 +6,7 @@ import Message from "./Message";
 import BrandMark from "./BrandMark";
 import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
 import Icon from "./Icon";
+import MicButton from "./MicButton";
 import InfoTip from "./InfoTip";
 import OverflowMenu from "./ui/OverflowMenu";
 import { SharePanel } from "./sessions/ChatHistory";
@@ -32,6 +33,7 @@ import {
   type ChatPeople,
   type LiveChatEvent,
 } from "@/lib/api";
+import { joinDictation } from "@/lib/dictation";
 import { initials } from "@/lib/initials";
 import {
   applyLiveEvent,
@@ -1328,6 +1330,18 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 style={{ minHeight: "24px" }}
               />
             </div>
+            {/* Talk instead of typing: the words land in the box to send. */}
+            {!isLoading && (
+              <MicButton
+                disabled={Boolean(blockedBy)}
+                onText={(text) => {
+                  setInput((prev) => joinDictation(prev, text));
+                  setFileError(null);
+                  textareaRef.current?.focus();
+                }}
+                onError={setFileError}
+              />
+            )}
             {isLoading && (
               <button
                 type="button"

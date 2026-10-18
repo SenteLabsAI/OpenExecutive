@@ -13,6 +13,7 @@ from typing import Any, Literal, NamedTuple
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from openexecutive.api import caller as api_caller
 from openexecutive.api import chat_live
@@ -2139,6 +2140,53 @@ async def chat_upload(
         memory_text=f"{message}\n\n(Attached files: {', '.join(filenames)})",
         turn_files=turn_files.collect(uploads),
     )
+
+
+# ---------------------------------------------------------------------------
+# The chat mic: speech to text into the message box.
+# ---------------------------------------------------------------------------
+
+
+class VoiceStatus(BaseModel):
+    available: bool
+    max_seconds: int
+
+
+class TranscribeResponse(BaseModel):
+    text: str
+
+
+@router.get("/chat/voice", response_model=VoiceStatus)
+async def chat_voice() -> VoiceStatus:
+    """Whether the chat mic can turn speech into words here, and how long a
+    recording it takes. The mic is hidden when ``available`` is false."""
+    from openexecutive.providers import transcription
+
+    return VoiceStatus(available=transcription.available(), max_seconds=transcription.max_seconds())
+
+
+@router.post("/chat/transcribe", response_model=TranscribeResponse)
+async def chat_transcribe(
+    file: UploadFile = File(...),  # noqa: B008 — FastAPI multipart marker
+) -> TranscribeResponse:
+    """The words in a recording from the chat mic. They go into the message
+    box, where the person reads and sends them; nothing is sent or kept
+    here."""
+    from openexecutive.providers import transcription
+
+    if not transcription.available():
+        raise HTTPException(status_code=404, detail="Speech to text isn't set up")
+    filename = file.filename or "recording.webm"
+    if not transcription.is_audio(filename, file.content_type or ""):
+        raise HTTPException(status_code=400, detail="That isn't a recording")
+    data = await file.read(transcription.MAX_BYTES + 1)
+    if len(data) > transcription.MAX_BYTES:
+        raise HTTPException(status_code=413, detail="The recording is too long")
+    try:
+        text = await transcription.transcribe(data, filename, file.content_type or "")
+    except transcription.TranscriptionError as exc:
+        raise HTTPException(status_code=502, detail=f"Couldn't hear it: {exc}") from exc
+    return TranscribeResponse(text=text)
 
 
 # ---------------------------------------------------------------------------

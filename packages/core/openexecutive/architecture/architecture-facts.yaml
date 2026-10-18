@@ -2314,6 +2314,25 @@ knowledge:
       (logos, tracking pixels), none over MAX_IMAGE_BYTES 3 MB (the model
       API's 5 MB base64 cap would fail the turn). A mail source's
       read_attachments may return EmailAttachments(text, image_blocks).
+      Audio attachments (ogg/m4a/mp3/wav/webm/…) are transcribed when
+      providers.transcription is available: MAX_AUDIO 2, the words appended
+      as attachment text (untrusted-wrapped, note "transcribed").
+    - voice notes — providers.transcription turns audio into words before
+      the turn (Claude takes no audio). Any OpenAI-compatible
+      POST {base}/audio/transcriptions server: TRANSCRIPTION_BASE_URL (+
+      _API_KEY, _MODEL, default whisper-1) wins; else OpenRouter when
+      OPENROUTER_API_KEY is set (elevenlabs/scribe-v2); else none, and a
+      voice note becomes a line asking the sender to type it. 25 MB and
+      TRANSCRIPTION_MAX_SECONDS (300) caps. Each call writes one usage row
+      (actor "transcription", the server's reported cost) and tells any
+      add_usage_listener listener. Chat-app voice notes (Telegram voice /
+      video_note / audio, Slack, Discord, Google Chat) go through
+      integrations.attachments and become the sender's own words
+      ("[Voice note, transcribed]"; senders are roster-gated); the reply
+      opens with Heard: "…" (attachments.with_heard) so a mishearing shows.
+      The web chat mic records in the browser and posts to
+      POST /chat/transcribe; the words land in the message box to edit and
+      send, nothing is kept. GET /chat/voice says whether the mic shows.
     - anything else — the chat tool `read_document`
       (orchestrator.document_tools): `path` (a file another tool saved,
       e.g. get_drive_file_download_url for a scanned Drive PDF) or company

@@ -234,6 +234,7 @@ async def _process_and_reply(
     # Process file / photo attachments before entering the chat lock so that
     # slow downloads don't hold the lock while the chat serialises.
     att_image_blocks: list[dict] = []
+    heard: list[str] = []
     if attachment_file_ids:
         try:
             from openexecutive.integrations.attachments import build_attachment_output
@@ -246,7 +247,7 @@ async def _process_and_reply(
                     # Telegram requires a separate getFile API call rather than
                     # a direct URL download.
                     att_text, img_blocks = await build_attachment_output(
-                        filename, data, content_type
+                        filename, data, content_type, heard=heard
                     )
                     if att_text:
                         message_text = (
@@ -351,9 +352,12 @@ async def _process_and_reply(
                 channel_context_block=build_channel_context_block("telegram"),
                 person_id=person_id,
             )
+            from openexecutive.integrations.attachments import with_heard
             from openexecutive.orchestrator.disclosure import with_chat_line
 
-            await send_message(token, chat_id, with_chat_line(response, f"telegram:{session_id}"))
+            await send_message(
+                token, chat_id, with_chat_line(with_heard(response, heard), f"telegram:{session_id}")
+            )
         except Exception:
             logger.exception("Telegram: handler error for message %s", message_id)
             try:
@@ -445,6 +449,22 @@ def _message_content(message: dict[str, Any]) -> tuple[str, list[tuple[str, str,
         file_id = largest.get("file_id", "")
         if file_id:
             attachment_file_ids.append((file_id, f"photo_{file_id}.jpg", "image/jpeg"))
+
+    # A voice note (recorded in Telegram), a round video note, or an audio
+    # file: transcribed into the sender's words.
+    for key, default_name, default_type in (
+        ("voice", "voice.ogg", "audio/ogg"),
+        ("video_note", "video_note.mp4", "video/mp4"),
+        ("audio", "audio.mp3", "audio/mpeg"),
+    ):
+        media = message.get(key)
+        if isinstance(media, dict) and media.get("file_id"):
+            filename = media.get("file_name") or default_name
+            content_type = media.get("mime_type") or default_type
+            if key == "video_note":
+                # Its sound is what matters; the speech service takes mp4.
+                content_type = "audio/mp4"
+            attachment_file_ids.append((media["file_id"], filename, content_type))
     return text, attachment_file_ids
 
 

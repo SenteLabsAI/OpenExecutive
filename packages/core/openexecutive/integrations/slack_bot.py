@@ -431,7 +431,9 @@ def _file_name(file: dict) -> str:
     return str(file.get("name") or file.get("title") or "file")
 
 
-async def _read_shared_files(files: list[dict]) -> tuple[str, list[dict]]:
+async def _read_shared_files(
+    files: list[dict], heard: list[str] | None = None
+) -> tuple[str, list[dict]]:
     """Download and read the files a rostered sender shared — documents to
     text (a scanned PDF converted), images to vision blocks — through the
     same ``process_attachments`` path Discord uses. Needs the bot's
@@ -465,7 +467,7 @@ async def _read_shared_files(files: list[dict]) -> tuple[str, list[dict]]:
     blocks: list[dict] = []
     if items:
         try:
-            text, blocks = await process_attachments(items)
+            text, blocks = await process_attachments(items, heard=heard)
         except Exception:
             logger.exception("Slack: attachment processing failed")
             notes.append("(Could not process the attached files)")
@@ -899,8 +901,11 @@ async def create_slack_app():
         # turn — so no one off the roster can make the bot download anything.
         att_text = ""
         att_image_blocks: list[dict] = []
+        heard: list[str] = []
         if files:
-            att_text, att_image_blocks = await _read_shared_files(files)
+            att_text, att_image_blocks = await _read_shared_files(files, heard)
+            # A voice note's words are the sender's own words.
+            own_words = "\n\n".join(p for p in (*heard, own_words) if p)
 
         try:
             from openexecutive.integrations.channel_context import (
@@ -1032,10 +1037,11 @@ async def create_slack_app():
 
                 # No unfurls: Slack would fetch a link in the reply on its own,
                 # and a reply can quote mail a sender wrote to carry data out in one.
+                from openexecutive.integrations.attachments import with_heard
                 from openexecutive.orchestrator.disclosure import with_chat_line
 
                 await say(
-                    text=with_chat_line(response, f"slack:{session_id}"),
+                    text=with_chat_line(with_heard(response, heard), f"slack:{session_id}"),
                     thread_ts=thread_ts, unfurl_links=False, unfurl_media=False,
                 )
 

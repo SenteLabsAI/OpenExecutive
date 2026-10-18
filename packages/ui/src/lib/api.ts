@@ -275,6 +275,48 @@ async function* sseData<T>(response: Response): AsyncGenerator<T> {
  * stays the authority on how the turn actually finished — this only flips the
  * server-side switch. Returns whether the server accepted the stop.
  */
+export interface VoiceStatus {
+  available: boolean;
+  max_seconds: number;
+}
+
+// Whether the chat mic can turn speech into words here. Null when the
+// backend can't say (an older one): the mic stays hidden.
+export async function getVoiceStatus(): Promise<VoiceStatus | null> {
+  try {
+    const res = await fetch(`${API_BASE}/chat/voice`);
+    if (!res.ok) return null;
+    return (await res.json()) as VoiceStatus;
+  } catch {
+    return null;
+  }
+}
+
+// The words in one recording from the chat mic. Throws with a line fit to
+// show under the message box.
+export async function transcribeRecording(recording: Blob, filename: string): Promise<string> {
+  const form = new FormData();
+  form.append("file", recording, filename);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/chat/transcribe`, { method: "POST", body: form });
+  } catch {
+    throw new Error("Couldn't reach Open Executive to hear it. Try again.");
+  }
+  if (!res.ok) {
+    let detail = "Couldn't hear it. Try again.";
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") detail = body.detail;
+    } catch {
+      // not JSON — keep the plain line
+    }
+    throw new Error(detail);
+  }
+  const body = (await res.json()) as { text?: string };
+  return body.text ?? "";
+}
+
 export async function stopChat(clientTurnId: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/chat/stop`, {
