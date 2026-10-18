@@ -40,7 +40,9 @@ DB_PATH = Path(os.environ.get("EPISODIC_DB_PATH", "./episodic_memory.db"))
 # updates the bot does not handle, so they are never recorded.
 PERSON_TYPES = frozenset({"private"})
 GROUP_TYPES = frozenset({"group", "supergroup"})
-MAX_ROWS = 500
+# Kept per kind (people, groups), newest first, so a flood of new groups
+# can never push the people out, or the other way round.
+MAX_ROWS = 250
 _MAX_TEXT = 200
 
 _DDL = f"""
@@ -125,13 +127,16 @@ def record_chat(
             """,
             (str(chat_id), chat_type, title, username, stamp, stamp),
         )
+        kind = PERSON_TYPES if chat_type in PERSON_TYPES else GROUP_TYPES
+        marks = ",".join("?" for _ in kind)
         conn.execute(
             f"""
-            DELETE FROM {TABLE} WHERE chat_id NOT IN (
-                SELECT chat_id FROM {TABLE} ORDER BY last_seen_at DESC LIMIT ?
+            DELETE FROM {TABLE} WHERE chat_type IN ({marks}) AND chat_id NOT IN (
+                SELECT chat_id FROM {TABLE} WHERE chat_type IN ({marks})
+                ORDER BY last_seen_at DESC LIMIT ?
             )
             """,
-            (MAX_ROWS,),
+            (*sorted(kind), *sorted(kind), MAX_ROWS),
         )
     return True
 

@@ -5755,7 +5755,8 @@ external_monitoring:
     - nothing is saved: Start watching POSTs the draft to /watchlist,
       Change something opens the by-hand form filled in from it.
     - errors are plain: 422 (empty, too long, or the model's own "cannot"
-      reason / a failed check), 429 past DESCRIBE_PER_HOUR (30, in-process),
+      reason / a failed check), 429 past DESCRIBE_PER_HOUR (30, in-process) or
+      DESCRIBE_PER_CALLER_PER_HOUR (10 per signed-in caller),
       502 / 504 when the model call fails or times out.
     - create's display_label now maps to the adapter's label key for every
       kind (validation.display_label_config, shared with the chat tool), so
@@ -7642,17 +7643,23 @@ integrations:
       • Telegram: no list API, so telegram_bot's webhook records each
         chat an update comes from (integrations/telegram_chats.py,
         table telegram_chats: chat_id PK, chat_type, title, username,
-        first_seen_at, last_seen_at; newest 500 kept). Private chats are
+        first_seen_at, last_seen_at; newest 250 kept per kind, so new
+        groups never push people out). Private chats are
         people, group/supergroup are rooms. A group that migrated to a
         supergroup or removed the bot is dropped.
       • TRUST: Telegram chats are recorded only when TELEGRAM_WEBHOOK_SECRET
         checked out; without it anyone could post an update putting a name
         of their choice next to a chat id. A row is a suggestion only and
-        grants nothing; the roster still gates who is answered.
+        grants nothing; the roster still gates who is answered. Anyone can
+        still pick their own Telegram name, so each person option's detail
+        shows what they can't choose: the @username, when they first wrote,
+        and who on the roster already has that chat ("already linked to X").
       • The routes are the principal's alone (chat._caller_is_principal_or_unclaimed,
-        the same rule as changing the People list): the lists name everyone
-        in the company's Slack and Discord with their email. Anyone else
-        gets 403 and the pickers fall back to the by-hand field.
+        the same rule as changing the People list). Channels also open while
+        no one is principal yet (first setup); people and the email lookup
+        wait for a principal, since they name everyone in the company's
+        Slack and Discord with their email. Anyone else gets 403 and the
+        pickers fall back to the by-hand field.
       • Each provider/kind is cached in-process for 60 s, capped at 2,000
         items; a provider that fails reads as ok=false with no options.
         configured=false when the token is unset. Tokens go only in the

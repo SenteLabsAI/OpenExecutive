@@ -31,6 +31,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any, Literal
 
 import httpx
@@ -365,11 +366,43 @@ def _telegram_list(kind: Kind) -> ProviderList:
         DirectoryOption(
             id=c.chat_id,
             name=c.title or (f"@{c.username}" if c.username else "Telegram chat"),
-            detail=f"@{c.username}" if c.username and c.title else "",
+            detail=_telegram_detail(
+                c,
+                verb="first wrote" if kind == "people" else "seen since",
+                linked_to=_telegram_linked_name(c.chat_id) if kind == "people" else "",
+            ),
         )
         for c in chats
     ]
     return ProviderList(configured=True, options=options)
+
+
+def _telegram_linked_name(chat_id: str) -> str:
+    """Who on the roster already has this Telegram chat, if anyone."""
+    from openexecutive.people import store as people_store
+
+    try:
+        person = people_store.find_person_by_telegram_chat_id(chat_id, include_contacts=True)
+    except Exception:
+        return ""
+    return person.full_name if person is not None else ""
+
+
+def _telegram_detail(chat: Any, *, verb: str, linked_to: str) -> str:
+    """What tells two chats with the same name apart: anyone can pick their
+    own Telegram name, so show the @username, when they first wrote, and who
+    already has this chat."""
+    parts: list[str] = []
+    if chat.username and chat.title:
+        parts.append(f"@{chat.username}")
+    try:
+        first = datetime.fromisoformat(chat.first_seen_at)
+        parts.append(f"{verb} {first.strftime('%b')} {first.day}, {first.year}")
+    except (TypeError, ValueError):
+        pass
+    if linked_to:
+        parts.append(f"already linked to {linked_to}")
+    return " · ".join(parts)
 
 
 # --------------------------------------------------------------------------- #

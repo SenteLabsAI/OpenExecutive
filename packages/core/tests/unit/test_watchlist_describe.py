@@ -39,6 +39,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture(autouse=True)
 def _fresh_call_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(describe, "_CALLS", type(describe._CALLS)())
+    monkeypatch.setattr(describe, "_CALLER_CALLS", {})
 
 
 @pytest.fixture(autouse=True)
@@ -252,10 +253,10 @@ async def test_describe_rejects_empty_long_and_too_many(
     with pytest.raises(describe.DescribeError) as exc:
         await describe.describe_watch("x" * (describe.TEXT_MAX_CHARS + 1))
     assert exc.value.code == "too_long"
-    for _ in range(describe.DESCRIBE_PER_HOUR):
-        await describe.describe_watch("watch GLBX", now=1000.0)
+    for i in range(describe.DESCRIBE_PER_HOUR):
+        await describe.describe_watch("watch GLBX", now=1000.0, caller_key=f"p{i}@example.com")
     with pytest.raises(describe.DescribeError) as exc:
-        await describe.describe_watch("watch GLBX", now=1001.0)
+        await describe.describe_watch("watch GLBX", now=1001.0, caller_key="new@example.com")
     assert exc.value.code == "too_many"
     # An hour later the window has moved on.
     await describe.describe_watch("watch GLBX", now=1000.0 + 3600)
@@ -422,3 +423,16 @@ def test_detail_route_carries_noise_and_patch_quiets_it(client: TestClient, db: 
     # "Keep as is" alone is a valid PATCH.
     assert client.patch("/watchlist/stock-glbx", json={"quiet_noise_nudge": True}).status_code == 200
     assert client.patch("/watchlist/stock-glbx", json={"quiet_noise_nudge": False}).status_code == 400
+
+
+async def test_describe_caps_each_caller_on_their_own(
+    db: Path, profile: CompanyProfile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_model(monkeypatch, {"signal_type": "stock", "target": "GLBX"})
+    for _ in range(describe.DESCRIBE_PER_CALLER_PER_HOUR):
+        await describe.describe_watch("watch GLBX", now=1000.0, caller_key="a@example.com")
+    with pytest.raises(describe.DescribeError) as exc:
+        await describe.describe_watch("watch GLBX", now=1001.0, caller_key="a@example.com")
+    assert exc.value.code == "too_many"
+    # Someone else still has their own tries.
+    await describe.describe_watch("watch GLBX", now=1001.0, caller_key="b@example.com")

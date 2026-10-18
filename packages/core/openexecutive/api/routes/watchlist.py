@@ -14,10 +14,11 @@ import logging
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from openexecutive.alerts.models import AlertSeverity
+from openexecutive.api import caller as api_caller
 from openexecutive.audit import log_event as audit_log
 from openexecutive.monitoring import store as ms
 from openexecutive.monitoring.describe import DescribeError, WatchDraft, describe_watch
@@ -203,13 +204,13 @@ _DESCRIBE_STATUS = {"too_many": 429, "timeout": 504, "unavailable": 502}
 
 
 @router.post("/watchlist/describe", response_model=WatchDraft)
-async def describe_watchlist_entry(body: WatchlistDescribe) -> WatchDraft:
+async def describe_watchlist_entry(body: WatchlistDescribe, request: Request) -> WatchDraft:
     """Draft a watch from a sentence ("tell me if Initech's stock moves more
     than 8%"). Nothing is saved: the UI shows the draft in plain words and
     POSTs it to ``/watchlist`` once the person says Start watching. A
     request that can't become a watch is a 422 with a plain reason."""
     try:
-        return await describe_watch(body.text)
+        return await describe_watch(body.text, caller_key=api_caller.caller(request).email)
     except DescribeError as exc:
         raise HTTPException(status_code=_DESCRIBE_STATUS.get(exc.code, 422), detail=exc.message) from exc
 

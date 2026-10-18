@@ -336,10 +336,11 @@ async def test_telegram_directory_from_seen_chats(monkeypatch: pytest.MonkeyPatc
     people = (await chat_directory.list_directory("people")).telegram
     channels = (await chat_directory.list_directory("channels")).telegram
     assert people.configured
-    assert sorted((o.id, o.name, o.detail) for o in people.options) == [
-        ("42", "Noor", "@noorh"),
-        ("43", "@anon", ""),
-    ]
+    details = {o.id: (o.name, o.detail) for o in people.options}
+    assert details["42"][0] == "Noor"
+    assert details["42"][1].startswith("@noorh · first wrote ")
+    assert details["43"][0] == "@anon"
+    assert details["43"][1].startswith("first wrote ")
     assert [(o.id, o.name) for o in channels.options] == [("-100777", "Ops room")]
 
 
@@ -425,6 +426,32 @@ def test_routes_refuse_everyone_else(client: TestClient, caller: dict[str, str])
     assert lookup.status_code == 403
 
 
-def test_routes_open_on_a_first_setup(client: TestClient) -> None:
-    # No principal yet: whoever is setting up may use the pickers.
-    assert client.get("/chat-directory/people", headers=STRANGER).status_code == 200
+def test_first_setup_opens_channels_but_not_people(client: TestClient) -> None:
+    # No principal yet: whoever is setting up may pick channels, but the
+    # people lists (names and emails) wait until someone is principal.
+    assert client.get("/chat-directory/channels", headers=STRANGER).status_code == 200
+    assert client.get("/chat-directory/people", headers=STRANGER).status_code == 403
+    lookup = client.get("/chat-directory/slack/lookup", params={"email": "a@example.com"}, headers=STRANGER)
+    assert lookup.status_code == 403
+
+
+def test_telegram_groups_never_push_people_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telegram_chats, "MAX_ROWS", 3)
+    telegram_chats.record_from_update(_update({"id": 42, "type": "private", "first_name": "Noor"}))
+    for i in range(10):
+        telegram_chats.record_from_update(_update({"id": -100 - i, "type": "group", "title": f"Room {i}"}))
+    assert [c.chat_id for c in telegram_chats.list_chats("people")] == ["42"]
+    assert len(telegram_chats.list_chats("groups")) == 3
+
+
+async def test_telegram_option_says_who_already_has_the_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", TELEGRAM_TOKEN)
+    people_store.initialize_db()
+    people_store.upsert_person(full_name="Olive", email="olive@example.com", telegram_chat_id="42")
+    people_registry.invalidate()
+    # Someone else names themselves after Olive.
+    telegram_chats.record_from_update(_update({"id": 42, "type": "private", "first_name": "Olive"}))
+    telegram_chats.record_from_update(_update({"id": 77, "type": "private", "first_name": "Olive"}))
+    options = {o.id: o.detail for o in (await chat_directory.list_directory("people")).telegram.options}
+    assert options["42"].endswith("already linked to Olive")
+    assert "already linked" not in options["77"]

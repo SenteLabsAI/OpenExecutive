@@ -69,8 +69,12 @@ STOCK_DEFAULT_PCT = 5.0
 # EDGAR's default form filter (monitoring.sources.edgar._DEFAULT_FORMS).
 EDGAR_DEFAULT_FORMS = ("8-K", "10-K", "10-Q")
 
-# In-process cap on model calls (newest last): a guard on spend, not a record.
+# In-process caps on model calls (newest last): a guard on spend, not a record.
+# One for the whole instance, and a smaller one per caller so one person
+# can't use up everyone's hour.
 _CALLS: deque[float] = deque()
+DESCRIBE_PER_CALLER_PER_HOUR = 10
+_CALLER_CALLS: dict[str, deque[float]] = {}
 
 
 class DescribeError(Exception):
@@ -218,12 +222,17 @@ def _turn(text: str, context: str) -> str:
     return "\n\n".join(parts)
 
 
-def _take_call_slot(now: float) -> None:
-    while _CALLS and now - _CALLS[0] >= 3600:
-        _CALLS.popleft()
-    if len(_CALLS) >= DESCRIBE_PER_HOUR:
+def _take_call_slot(now: float, caller_key: str = "") -> None:
+    mine = _CALLER_CALLS.setdefault(caller_key, deque())
+    for calls in (_CALLS, mine):
+        while calls and now - calls[0] >= 3600:
+            calls.popleft()
+    if len(_CALLS) >= DESCRIBE_PER_HOUR or len(mine) >= DESCRIBE_PER_CALLER_PER_HOUR:
         raise DescribeError("too_many", "That's a lot of tries in an hour. Try again a little later.")
     _CALLS.append(now)
+    mine.append(now)
+    for key in [k for k, v in _CALLER_CALLS.items() if not v]:
+        del _CALLER_CALLS[key]
 
 
 async def _call_model(turn: str) -> dict[str, Any]:
@@ -388,14 +397,14 @@ async def build_draft(payload: dict[str, Any]) -> WatchDraft:
     )
 
 
-async def describe_watch(text: str, *, now: float | None = None) -> WatchDraft:
+async def describe_watch(text: str, *, now: float | None = None, caller_key: str = "") -> WatchDraft:
     """Draft a watch from ``text``. Raises ``DescribeError``."""
     request = (text or "").replace("\r", "").strip()
     if not request:
         raise DescribeError("empty", "Say what to watch first.")
     if len(request) > TEXT_MAX_CHARS:
         raise DescribeError("too_long", f"Keep it under {TEXT_MAX_CHARS} characters.")
-    _take_call_slot(time.monotonic() if now is None else now)
+    _take_call_slot(time.monotonic() if now is None else now, caller_key)
     payload = await _call_model(_turn(request, _company_context()))
     return await build_draft(payload)
 
