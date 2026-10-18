@@ -2480,6 +2480,14 @@ memory:
     into that person's later chat turns, never read by briefs, scheduled
     runs or the six-hourly alert review. The episodic extractor cannot hold
     one: it stores only decisions backed by a commitment quote.
+    IN BRIEFS — every brief prompt (the /today header, a teammate's header,
+    the morning brief, the end-of-day digest) carries
+    `briefing.narrative.STANDING_FACTS_RULE`: use the facts quietly, never
+    mention one or that it was saved, leave an item a fact settles out
+    without saying it was dropped, and never stretch a fact to an item it
+    does not name. Why: the header had no rule for the block and turned a
+    fact saved in chat into its top point ("a standing fact says X, so drop
+    it"), applied to an item the fact never named.
     WRITE PATH — chat tools in `orchestrator/fact_tools.py`:
       - `remember_fact(subject, statement, previous_value?, replaces_fact_id?,
         source_quote)` and `forget_fact(fact_id, rationale, source_quote)` —
@@ -3607,7 +3615,9 @@ attunement:
       people-waiting) — only once due; excluded from
       `last_contact_at_by_person`, engagement_activity followups_completed,
       and the /today activity feed (`list_scheduled_actions(exclude_internal=
-      True)` filters in SQL so loops can't starve its window);
+      True)` filters in SQL so loops can't starve its window; it also drops
+      `brief_delivery` rows, the done row a brief's own send writes, so no
+      brief reads its last message back as work done);
       `executive_reflection` OPEN LOOPS block (≤10, overdue flagged).
     closing: |
       Owner reports done (extraction pass); `close_open_loop` chat tool or
