@@ -174,10 +174,13 @@ async def _handle_card_tap(
     parsed = channel_cards.parse_callback(data)
     person = await asyncio.to_thread(find_person_by_telegram_chat_id, str(chat_id))
     if parsed is None or person is None:
-        await client.post(
-            _tg_url(token, "answerCallbackQuery"),
-            json={"callback_query_id": callback_id, "text": "This card is no longer there."},
-        )
+        try:
+            await client.post(
+                _tg_url(token, "answerCallbackQuery"),
+                json={"callback_query_id": callback_id, "text": "This card is no longer there."},
+            )
+        except Exception:
+            logger.exception("Telegram: couldn't answer a tap on chat %s", chat_id)
         return
     decision_id, approve = parsed
     line = await channel_cards.resolve(decision_id, person, approve=approve)

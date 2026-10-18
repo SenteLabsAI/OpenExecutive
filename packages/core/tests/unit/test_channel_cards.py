@@ -230,3 +230,69 @@ def test_a_meeting_is_booked_by_the_owner_or_its_approver(
     private = seed(roster.teammate, "k3", private=True)
     assert asyncio.run(channel_cards.resolve(private, get_person(roster.teammate), approve=False)).startswith("Not done")
     assert get_decision_instance(private).status == "proposed"
+
+
+class _FakeTelegram:
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, dict[str, Any]]] = []
+
+    async def post(self, url: str, json: dict[str, Any]) -> Any:  # noqa: A002 - httpx's keyword
+        self.posts.append((url.rsplit("/", 1)[-1], json))
+        return SimpleNamespace(is_error=False, status_code=200, text="")
+
+
+@pytest.fixture
+def fake_telegram(monkeypatch: pytest.MonkeyPatch) -> _FakeTelegram:
+    fake = _FakeTelegram()
+    monkeypatch.setattr(telegram_bot, "_get_http_client", lambda: fake)
+    return fake
+
+
+def test_a_card_goes_out_with_approve_and_skip(fake_telegram: _FakeTelegram) -> None:
+    asyncio.run(telegram_bot.send_card(TOKEN, 4242, 7, "Meeting to book\nPilot review"))
+    [(method, body)] = fake_telegram.posts
+    assert method == "sendMessage" and body["chat_id"] == 4242
+    assert body["text"] == "Meeting to book\nPilot review" and "parse_mode" not in body
+    assert body["reply_markup"] == {"inline_keyboard": [[
+        {"text": "Approve", "callback_data": "card:7:a"},
+        {"text": "Skip", "callback_data": "card:7:s"},
+    ]]}
+
+
+def test_a_tap_answers_audits_and_leaves_the_card_without_buttons(
+    fake_telegram: _FakeTelegram, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    person = SimpleNamespace(id=3)
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_telegram_chat_id",
+                        lambda chat: person if chat == "4242" else None)
+    resolved: list[tuple[int, Any, bool]] = []
+
+    async def resolve(decision_id: int, who: Any, *, approve: bool) -> str:
+        resolved.append((decision_id, who, approve))
+        return "Approved."
+
+    monkeypatch.setattr(channel_cards, "resolve", resolve)
+    audited: list[dict[str, Any]] = []
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: audited.append(k["details"]))
+
+    def tap(chat_id: int, data: str) -> None:
+        asyncio.run(telegram_bot._handle_card_tap(
+            callback_id="q1", chat_id=chat_id, message_id=9, card_text="Meeting to book", data=data, token=TOKEN,
+        ))
+
+    tap(4242, "card:7:a")
+    assert resolved == [(7, person, True)]
+    assert audited == [{"channel": "telegram", "chat_id": 4242, "decision_id": 7, "choice": "approve", "person_id": 3}]
+    assert [m for m, _ in fake_telegram.posts] == ["answerCallbackQuery", "editMessageText"]
+    edited = fake_telegram.posts[1][1]
+    assert edited["text"] == "Meeting to book\n\nApproved." and "reply_markup" not in edited
+
+    # Off the roster, or data that isn't a card's: answered, never resolved.
+    fake_telegram.posts.clear()
+    tap(999, "card:7:a")
+    tap(4242, "something:else")
+    assert len(resolved) == 1 and len(audited) == 1
+    assert [(m, b["text"]) for m, b in fake_telegram.posts] == [
+        ("answerCallbackQuery", "This card is no longer there."),
+        ("answerCallbackQuery", "This card is no longer there."),
+    ]
