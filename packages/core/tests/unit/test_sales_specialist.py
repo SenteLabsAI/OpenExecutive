@@ -72,7 +72,7 @@ def test_consult_specialist_enum_is_the_sorted_registry() -> None:
     spec = SPECIALIST_TOOLS[0]["input_schema"]["properties"]["specialist"]
     assert spec["enum"] == sorted(SPECIALIST_REGISTRY)
     assert "sales" in spec["enum"]
-    assert "sales (Head of Sales" in spec["description"]
+    assert "sales (pipeline" in spec["description"]
 
 
 def test_every_specialist_is_described() -> None:
