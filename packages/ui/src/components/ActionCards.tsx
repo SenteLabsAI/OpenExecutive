@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import ChatAppActionCard from "@/components/ChatAppActionCard";
 import ChatMeetingCard from "@/components/ChatMeetingCard";
 import FeatureName from "@/components/FeatureName";
 import {
@@ -209,8 +210,9 @@ export function ActionCardItem({
 export function ChatActionCards({ ids }: { ids: number[] }) {
   const { cards, loaded, gone } = useActionCards();
   const shown = cards.filter((c) => ids.includes(c.decision_id));
-  // Any other id is an approval of another kind (a meeting), shown by its own
-  // card once the action cards are known not to hold it.
+  // Any other id is an approval of another kind (a meeting, something asked
+  // for in chat), shown by its own card once the action cards are known not to
+  // hold it. Each card shows only its own kind.
   const others = loaded ? ids.filter((id) => !cards.some((c) => c.decision_id === id)) : [];
   if (shown.length === 0 && others.length === 0) return null;
   return (
@@ -219,7 +221,10 @@ export function ChatActionCards({ ids }: { ids: number[] }) {
         <ActionCardItem key={card.decision_id} card={card} onGone={gone} />
       ))}
       {others.map((id) => (
-        <ChatMeetingCard key={id} id={id} />
+        <div key={id}>
+          <ChatMeetingCard id={id} />
+          <ChatAppActionCard id={id} />
+        </div>
       ))}
     </div>
   );

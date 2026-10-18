@@ -74,6 +74,12 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         "write, read back or list documents such as memos, reports and plans (artifacts)",
         ("draft_artifact", "get_artifact", "list_artifacts"),
     ),
+    "app": (
+        "do what the app's own buttons do: pin, rename, delete or share chats; topics, documents, "
+        "files, cards on Today, workflows, memory, departments, skills, the person's own settings; "
+        "links to screens",
+        ("do_in_app", "find_in_app", "open_in_app"),
+    ),
     "messaging": (
         "Slack, Telegram and Discord messages, department messages, company broadcasts",
         (

@@ -41,6 +41,7 @@ from openexecutive.memory.workspace_settings import (
     pin_turn_workspace_mode,
 )
 from openexecutive.orchestrator import (
+    app_control_catalog,  # noqa: F401  (fills the app tools' catalog)
     claim_check,
     department_gate,
     extensions,
@@ -62,6 +63,10 @@ from openexecutive.orchestrator.alert_tools import (
     handle_create_alert,
 )
 from openexecutive.orchestrator.answer_sources import TurnSources, record_web_sources
+from openexecutive.orchestrator.app_control import (
+    APP_TOOL_HANDLERS,
+    APP_TOOLS,
+)
 from openexecutive.orchestrator.artifact_tools import (
     DRAFT_ARTIFACT_TOOL_HANDLERS,
     DRAFT_ARTIFACT_TOOLS,
@@ -81,6 +86,7 @@ from openexecutive.orchestrator.content_trust import (
 from openexecutive.orchestrator.correction_tools import (
     CORRECTION_TOOL_HANDLERS,
     CORRECTION_TOOLS,
+    pending_followups_block,
 )
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.decision_tools import (
@@ -767,6 +773,7 @@ _ALL_SKILL_TOOLS = [
     *FORM_TOOLS,
     *GUIDE_TOOLS,
     *PYTHON_JOB_TOOLS,
+    *APP_TOOLS,
 ]
 
 
@@ -798,6 +805,7 @@ _ALL_SKILL_HANDLERS = {
     **FORM_TOOL_HANDLERS,
     **GUIDE_TOOL_HANDLERS,
     **PYTHON_JOB_TOOL_HANDLERS,
+    **APP_TOOL_HANDLERS,
 }
 
 
@@ -1173,6 +1181,15 @@ class Executive:
         if drive_memory:
             user_content_parts.append(
                 {"type": "text", "text": f"<drive_memory>\n{drive_memory}\n</drive_memory>"}
+            )
+        # The follow-ups this speaker scheduled that haven't gone out
+        # (correction_tools.pending_followups_block), so a turn about the
+        # thing one waits for closes it instead of leaving it to fire stale.
+        # Changes as they are set and sent, so the user turn.
+        followups = pending_followups_block(session)
+        if followups:
+            user_content_parts.append(
+                {"type": "text", "text": f"<pending_followups>\n{followups}\n</pending_followups>"}
             )
 
         # Attachment blocks (images) are inserted before the text message so
