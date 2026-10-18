@@ -3561,8 +3561,14 @@ class Executive:
         channel_context_block: str = "",
         memory_text: str | None = None,
         standing_facts: str | None = None,
+        cards: list[int] | None = None,
     ) -> str:
         """Non-streaming chat — collects and returns the full response.
+
+        ``cards``, when given, collects the ids of the approval cards the
+        reply left (the ``decision_id`` on its ``action_taken`` events, as the
+        web chat shows under the reply), for a chat app that shows them
+        (``integrations.channel_cards``).
 
         When ``committee_review=True`` the call routes through
         ``stream_chat_with_committee`` so the answer is the revised
@@ -3615,4 +3621,8 @@ class Executive:
         async for chunk in stream:
             if isinstance(chunk, str) and chunk != self._THINKING:
                 result += chunk
+            elif cards is not None and isinstance(chunk, dict) and chunk.get("type") == "action_taken":
+                decision_id = chunk.get("decision_id")
+                if isinstance(decision_id, int) and not isinstance(decision_id, bool) and decision_id not in cards:
+                    cards.append(decision_id)
         return result

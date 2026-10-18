@@ -62,6 +62,8 @@ curl -F "url=https://<your-api-host>/webhook/telegram" \
 
 Expected response: `{"ok":true,"result":true,"description":"Webhook was set"}`.
 
+Leave `allowed_updates` out (or include both `message` and `callback_query`): taps on a card's **Approve** and **Skip** buttons arrive as `callback_query` updates. With the secret set, a meeting to book or a card of actions the Executive leaves in a private chat comes with those buttons.
+
 Re-run this command whenever the host URL or the secret changes. Verify the registration with:
 
 ```bash

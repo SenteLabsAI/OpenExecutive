@@ -1,0 +1,166 @@
+"""Approval cards in a chat app, with Approve and Skip buttons.
+
+The web chat shows the cards a reply leaves (a meeting to book, a card of
+actions from ``propose_actions``) under that reply, for the person chatting
+to tap. A chat app that can prove who taps a button shows them the same way:
+the adapter collects the reply's cards (``Executive.chat(cards=...)``), sends
+each as a short message with two buttons, and passes a tap to
+``api.routes.decisions.resolve_in_chat``, which applies the web chat's rule
+for who may decide it.
+
+Telegram is the one so far. A tap proves who made it only in a private chat
+(the chat is the person; ``from.id`` must equal the chat id) on a webhook
+only Telegram can call (``TELEGRAM_WEBHOOK_SECRET`` set and valid), the same
+bar as a verified speaker there (``people_tools._is_verified_speaker_surface``).
+Anywhere else no card is shown and the Executive is told the card is on Today.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Telegram callback_data: "card:<decision id>:a" (Approve) or ":s" (Skip).
+_PREFIX = "card"
+APPROVE = "a"
+SKIP = "s"
+# A reply leaves at most this many cards (action_cards.CARDS_PER_TURN plus a meeting).
+MAX_CARDS = 4
+
+_CLASS_LABEL = {
+    "meeting_scheduling": "Meeting to book",
+    "delegation_actions": "Waiting for your approval",
+}
+
+
+def telegram_proves_taps() -> bool:
+    """Whether a Telegram update can only come from Telegram."""
+    from openexecutive.config import get_settings
+
+    s = get_settings()
+    return bool(s.telegram_bot_token and s.telegram_webhook_secret and s.telegram_webhook_secret_valid)
+
+
+def shows_cards(session: Any) -> bool:
+    """Whether this turn's chat shows its cards with buttons: a private
+    Telegram chat with someone on the roster, on a webhook only Telegram can
+    call. Fails closed."""
+    if session is None or getattr(session, "origin_channel", "") != "telegram":
+        return False
+    ref = str(getattr(session, "origin_channel_ref", "") or "")
+    if not ref.isdigit() or getattr(session, "caller_person_id", None) is None:
+        return False
+    try:
+        return telegram_proves_taps()
+    except Exception:
+        logger.warning("channel_cards: couldn't read the Telegram settings", exc_info=True)
+        return False
+
+
+def card_here(session: Any) -> bool:
+    """Whether a card left on this turn is shown in the chat it was left in:
+    the web chat (and the phone app, which uses it), or a chat app that
+    ``shows_cards``."""
+    return bool(getattr(session, "from_web_chat", False)) or shows_cards(session)
+
+
+def callback_data(decision_id: int, choice: str) -> str:
+    return f"{_PREFIX}:{decision_id}:{choice}"
+
+
+def parse_callback(data: Any) -> tuple[int, bool] | None:
+    """(decision id, approve) from a button's callback data, or None."""
+    if not isinstance(data, str):
+        return None
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != _PREFIX or parts[2] not in (APPROVE, SKIP):
+        return None
+    if not parts[1].isdigit() or len(parts[1]) > 12:
+        return None
+    return int(parts[1]), parts[2] == APPROVE
+
+
+def _when(start: Any, end: Any) -> str:
+    try:
+        s = datetime.fromisoformat(str(start))
+        e = datetime.fromisoformat(str(end))
+    except ValueError:
+        return ""
+    day = s.strftime("%a %d %b").replace(" 0", " ")
+    return f"{day}, {s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+
+
+def card_text(decision_id: int) -> str | None:
+    """What the card says, or None when it isn't one a chat shows or isn't
+    waiting any more."""
+    from openexecutive.api.routes.decisions import CHAT_CARD_CLASSES
+    from openexecutive.memory.decision_ledger import STATUS_PROPOSED, get_decision_instance
+
+    instance = get_decision_instance(decision_id)
+    if instance is None or instance.decision_class not in CHAT_CARD_CLASSES:
+        return None
+    if instance.status != STATUS_PROPOSED:
+        return None
+    try:
+        payload = json.loads(instance.proposed_payload_json or "{}")
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    lines = [_CLASS_LABEL[instance.decision_class]]
+    if instance.decision_class == "meeting_scheduling":
+        title = str(payload.get("title") or "Meeting").strip()[:200]
+        lines.append(title)
+        when = _when(payload.get("start"), payload.get("end"))
+        if when:
+            lines.append(when)
+        who = [str(a) for a in payload.get("attendee_emails") or [] if a][:10]
+        if who:
+            lines.append("With " + ", ".join(who))
+    else:
+        why = str(payload.get("why") or "").strip()[:300]
+        if why:
+            lines.append(why)
+        for action in payload.get("actions") or []:
+            if isinstance(action, dict) and action.get("summary"):
+                lines.append(f"- {str(action['summary'])[:400]}")
+    return "\n".join(lines)
+
+
+def outcome_text(approved: bool, error: str | None) -> str:
+    if error:
+        return f"Not done: {error}"
+    return "Approved." if approved else "Skipped."
+
+
+async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
+    """Approve or skip a card for ``person``, the proven tapper. Returns the
+    line to show under the card."""
+    from fastapi import HTTPException
+
+    from openexecutive.api.routes.decisions import resolve_in_chat
+
+    try:
+        await resolve_in_chat(decision_id, person, approve=approve)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "it couldn't be done."
+        return outcome_text(approve, detail)
+    except Exception:
+        logger.exception("channel_cards: resolving card %d failed", decision_id)
+        return outcome_text(approve, "something went wrong. Check Today before trying again.")
+    return outcome_text(approve, None)
+
+
+__all__ = [
+    "MAX_CARDS",
+    "callback_data",
+    "card_here",
+    "card_text",
+    "parse_callback",
+    "resolve",
+    "shows_cards",
+    "telegram_proves_taps",
+]

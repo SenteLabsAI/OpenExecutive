@@ -8047,6 +8047,17 @@ integrations:
     the Discuss handoff acks over HTTP first, so its alert is no longer
     unread and would not be in a digest.
 
+    Approval cards with buttons. A private Telegram chat on a webhook only
+    Telegram can call (``integrations.channel_cards.shows_cards``) gets the
+    cards a reply leaves (a meeting to book, a ``propose_actions`` card)
+    as messages with Approve and Skip buttons, and its ``<channel>`` block
+    says so (``cards_here``). A tap is taken only when ``from.id`` is the
+    private chat's id on the verified webhook, and
+    ``decisions.resolve_in_chat`` applies the web chat's who-may-decide
+    rule, with ``delegation.verified.ChatTap`` standing in for the
+    signed-in caller. Every other chat app sends no card, and
+    ``propose_actions`` tells the model the card is on Today.
+
     Errors. The catch-all logs with session/user/channel/thread/mode,
     writes an ``integration_inbound`` row with
     ``details.outcome="handler_error"`` under the inbound's session_id,

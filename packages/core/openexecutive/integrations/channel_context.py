@@ -39,7 +39,7 @@ _RESOLVER_CHANNELS = frozenset({"slack", "discord", "telegram"})
 
 
 def build_channel_context_block(
-    channel: str, *, ui_base_url: str | None = None
+    channel: str, *, ui_base_url: str | None = None, cards_here: bool = False
 ) -> str:
     """Render the `<channel>` body for an inbound message on *channel*.
 
@@ -50,6 +50,10 @@ def build_channel_context_block(
     than at each call site keeps the adapters to a single argument and means a
     settings problem degrades to a block with no link — never an exception on
     the reply path, which is exactly the failure mode #136 was reported for.
+
+    ``cards_here``: this chat shows the cards a reply leaves with Approve and
+    Skip buttons (``channel_cards.shows_cards``), so a meeting to book or a
+    card of actions can be approved here with a tap.
     """
     label = _CHANNEL_LABELS.get(channel)
     if label is None:
@@ -82,10 +86,29 @@ def build_channel_context_block(
             "approve it here.\n"
         )
 
+    if cards_here:
+        seen = (
+            "They see the text you send back. A meeting you propose to book, "
+            "or a card of actions you leave them, is also sent here as a card "
+            "with Approve and Skip buttons, under your reply.\n"
+        )
+        booking = (
+            "- A meeting you propose to book, or a card of actions, is approved "
+            "with its Approve button in this chat (or on the briefing page). A "
+            "typed 'yes' does not approve it: point them to the button.\n"
+        )
+    else:
+        seen = (
+            "They cannot see the app's cards, buttons, or panels in this "
+            "conversation — only the text you send back.\n"
+        )
+        booking = (
+            "- Proposals that book something (a meeting, a calendar hold) can ONLY "
+            f"be approved on {where}. You have no tool for those. Say so plainly.\n"
+        )
     return (
         f"You are talking to this person over {label}, not in the Open "
-        "Executive web app. They cannot see the app's cards, buttons, or "
-        "panels in this conversation — only the text you send back.\n"
+        f"Executive web app. {seen}"
         "\n"
         "What that means for approvals:\n"
         f"- Briefing proposals and alerts are approved or dismissed on {where}. "
@@ -94,8 +117,7 @@ def build_channel_context_block(
         "[Discuss mode — alert_id=N] primer. If you do not have a trustworthy "
         "alert_id, say the proposal needs to be actioned on the briefing page "
         "and point them there — do not imply that replying here approves it.\n"
-        "- Proposals that book something (a meeting, a calendar hold) can ONLY "
-        f"be approved on {where}. You have no tool for those. Say so plainly.\n"
+        f"{booking}"
         f"{signoff}"
         "\n"
         "Never ask for a confirmation you cannot act on. If the action needs "
