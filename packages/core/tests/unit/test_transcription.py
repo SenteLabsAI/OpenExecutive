@@ -175,7 +175,7 @@ async def test_a_long_recording_is_refused_by_its_real_length(settings, server) 
 async def test_a_recording_of_unreadable_length_is_held_to_a_size(settings, server) -> None:
     settings(openrouter_api_key="or-key", transcription_max_seconds=10)
     with pytest.raises(transcription.TranscriptionError, match="10 seconds"):
-        await transcription.transcribe(b"ID3" + b"0" * 80_001, "call.mp3")
+        await transcription.transcribe(b"ID3" + b"0" * 160_001, "call.mp3")
     assert server["requests"] == []
     assert await transcription.transcribe(b"ID3" + b"0" * 1000, "call.mp3") == "move my call"
 
@@ -194,7 +194,7 @@ async def test_a_voice_note_becomes_the_senders_words(settings, server) -> None:
     heard: list[str] = []
 
     text, blocks = await attachments.build_attachment_output(
-        "voice.ogg", b"OggS", "audio/ogg", heard=heard
+        "voice.ogg", b"OggS", "audio/ogg", heard=heard, voice_note=True
     )
 
     assert blocks == []
@@ -204,9 +204,27 @@ async def test_a_voice_note_becomes_the_senders_words(settings, server) -> None:
 
 async def test_a_voice_note_without_transcription_asks_for_text(settings) -> None:
     heard: list[str] = []
-    text, _ = await attachments.build_attachment_output("voice.ogg", b"OggS", "audio/ogg", heard=heard)
+    text, _ = await attachments.build_attachment_output(
+        "voice.ogg", b"OggS", "audio/ogg", heard=heard, voice_note=True
+    )
     assert "could not be transcribed" in text and "type it" in text
     assert heard == []
+
+
+async def test_an_audio_file_is_read_as_a_files_words(settings, server) -> None:
+    # A recorded call or a forwarded clip may hold someone else's voice, so
+    # its words are wrapped like a document's, never taken as the sender's.
+    settings(openrouter_api_key="or-key")
+    heard: list[str] = []
+
+    text, _ = await attachments.build_attachment_output(
+        "board-call.m4a", b"m4a", "audio/mp4", heard=heard
+    )
+
+    assert heard == []
+    assert "[Voice note" not in text
+    assert "board-call.m4a" in text and "move my call" in text
+    assert '<untrusted_content source="attachment"' in text
 
 
 def test_the_reply_opens_with_what_was_heard() -> None:
@@ -222,6 +240,31 @@ def test_telegram_voice_notes_are_read_as_audio() -> None:
 
     text, files = _message_content({"voice": {"file_id": "V1", "mime_type": "audio/ogg", "duration": 4}})
     assert text == ""
-    assert files == [("V1", "voice.ogg", "audio/ogg")]
+    assert files == [("V1", "voice.ogg", "audio/ogg", True)]
     _, files = _message_content({"video_note": {"file_id": "N1"}})
-    assert files == [("N1", "video_note.mp4", "audio/mp4")]
+    assert files == [("N1", "video_note.mp4", "audio/mp4", True)]
+    _, files = _message_content({"audio": {"file_id": "A1", "file_name": "call.mp3"}})
+    assert files == [("A1", "call.mp3", "audio/mpeg", False)]
+
+
+async def test_only_a_recorded_voice_note_is_the_senders_speech(settings, server, monkeypatch) -> None:
+    # Discord voice messages and Slack clips are marked by the adapter; an
+    # uploaded audio file on the same channel is not.
+    settings(openrouter_api_key="or-key")
+
+    async def fake_download(url: str, **_: Any) -> bytes:
+        return b"OggS"
+
+    monkeypatch.setattr(attachments, "download_bytes", fake_download)
+    heard: list[str] = []
+    text, _ = await attachments.process_attachments(
+        [
+            attachments.AttachmentItem(url="u1", filename="voice-message.ogg", content_type="audio/ogg", voice_note=True),
+            attachments.AttachmentItem(url="u2", filename="podcast.mp3", content_type="audio/mpeg"),
+        ],
+        heard=heard,
+    )
+    assert heard == ["move my call"]
+    assert "[Voice note, transcribed]\nmove my call" in text
+    assert "[Attached: podcast.mp3" in text
+

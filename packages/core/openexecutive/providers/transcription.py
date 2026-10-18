@@ -45,8 +45,8 @@ _TIMEOUT_S = 90.0
 # The servers bill by length, and a file's size says little about it (25 MB
 # of 8 kbps audio is seven hours). A recording whose length can't be read
 # from its container (mp3, flac, aac) is held to the size it would have at
-# this rate over the time limit, so a low-bitrate file can't run far past it.
-_UNREAD_BYTES_PER_SECOND = 8_000
+# 128 kbps over the time limit, so a low-bitrate file can't run far past it.
+_UNREAD_BYTES_PER_SECOND = 16_000
 
 
 class TranscriptionError(Exception):

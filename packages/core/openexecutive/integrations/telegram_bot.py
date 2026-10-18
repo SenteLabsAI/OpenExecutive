@@ -13,6 +13,9 @@ from openexecutive.config import get_settings
 from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
 
 logger = logging.getLogger(__name__)
+
+# (file_id, filename, content_type, voice_note)
+TelegramFile = tuple[str, str, str, bool]
 router = APIRouter()
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
@@ -163,12 +166,12 @@ async def _process_and_reply(
     chat_id: int,
     message_id: int,
     token: str,
-    attachment_file_ids: list[tuple[str, str, str]] | None = None,
+    attachment_file_ids: list[TelegramFile] | None = None,
 ) -> None:
     """Handle one inbound Telegram message.
 
-    ``attachment_file_ids`` is a list of ``(file_id, filename, content_type)``
-    tuples for any files or photos attached to the message.
+    ``attachment_file_ids`` is a list of ``(file_id, filename, content_type,
+    voice_note)`` tuples for any files or photos attached to the message.
     """
     # Per-conversation session id — stamped on every audit row (inbound,
     # chat_turn, specialist_consult, tool_invocation) so a single request can
@@ -239,7 +242,7 @@ async def _process_and_reply(
         try:
             from openexecutive.integrations.attachments import build_attachment_output
 
-            for file_id, filename, content_type in attachment_file_ids:
+            for file_id, filename, content_type, voice_note in attachment_file_ids:
                 try:
                     _file_path, data = await _get_telegram_file_bytes(token, file_id)
                     # build_attachment_output works on bytes directly — we
@@ -247,7 +250,7 @@ async def _process_and_reply(
                     # Telegram requires a separate getFile API call rather than
                     # a direct URL download.
                     att_text, img_blocks = await build_attachment_output(
-                        filename, data, content_type, heard=heard
+                        filename, data, content_type, heard=heard, voice_note=voice_note
                     )
                     if att_text:
                         message_text = (
@@ -422,16 +425,16 @@ async def _start_fresh_and_reply(chat_id: int, token: str) -> None:
 _COMMAND_RE = re.compile(r"^/(start|help|ask)(?:@\w+)?\s*", re.IGNORECASE)
 
 
-def _message_content(message: dict[str, Any]) -> tuple[str, list[tuple[str, str, str]]]:
+def _message_content(message: dict[str, Any]) -> tuple[str, list[TelegramFile]]:
     """A Telegram message's text (known bot commands stripped) and its
-    attachments as ``(file_id, filename, content_type)``. Downloads happen
+    attachments as ``(file_id, filename, content_type, voice_note)``. Downloads happen
     later, in ``_process_and_reply``, so the webhook stays fast."""
     text: str = message.get("text", "") or message.get("caption", "")
     text = text.strip()
     # Only strip known bot commands (/start, /help, /ask), not arbitrary slash-prefixed content.
     text = _COMMAND_RE.sub("", text).strip()
 
-    attachment_file_ids: list[tuple[str, str, str]] = []
+    attachment_file_ids: list[TelegramFile] = []
 
     # Single document (any file type).
     doc = message.get("document")
@@ -440,7 +443,7 @@ def _message_content(message: dict[str, Any]) -> tuple[str, list[tuple[str, str,
         filename = doc.get("file_name") or f"file_{file_id}"
         content_type = doc.get("mime_type") or ""
         if file_id:
-            attachment_file_ids.append((file_id, filename, content_type))
+            attachment_file_ids.append((file_id, filename, content_type, False))
 
     # Photos — Telegram sends an array of sizes; pick the largest.
     photos = message.get("photo")
@@ -448,14 +451,15 @@ def _message_content(message: dict[str, Any]) -> tuple[str, list[tuple[str, str,
         largest = max(photos, key=lambda p: p.get("file_size", 0))
         file_id = largest.get("file_id", "")
         if file_id:
-            attachment_file_ids.append((file_id, f"photo_{file_id}.jpg", "image/jpeg"))
+            attachment_file_ids.append((file_id, f"photo_{file_id}.jpg", "image/jpeg", False))
 
-    # A voice note (recorded in Telegram), a round video note, or an audio
-    # file: transcribed into the sender's words.
-    for key, default_name, default_type in (
-        ("voice", "voice.ogg", "audio/ogg"),
-        ("video_note", "video_note.mp4", "video/mp4"),
-        ("audio", "audio.mp3", "audio/mpeg"),
+    # A voice note or a round video note, recorded in Telegram, is the
+    # sender's own speech; an audio file (a recorded call, a clip) is a
+    # file's words, read like a document.
+    for key, default_name, default_type, voice_note in (
+        ("voice", "voice.ogg", "audio/ogg", True),
+        ("video_note", "video_note.mp4", "video/mp4", True),
+        ("audio", "audio.mp3", "audio/mpeg", False),
     ):
         media = message.get(key)
         if isinstance(media, dict) and media.get("file_id"):
@@ -464,7 +468,7 @@ def _message_content(message: dict[str, Any]) -> tuple[str, list[tuple[str, str,
             if key == "video_note":
                 # Its sound is what matters; the speech service takes mp4.
                 content_type = "audio/mp4"
-            attachment_file_ids.append((media["file_id"], filename, content_type))
+            attachment_file_ids.append((media["file_id"], filename, content_type, voice_note))
     return text, attachment_file_ids
 
 
@@ -475,7 +479,7 @@ async def _hold_unknown_sender(
     chat_id: int,
     message_id: int,
     token: str,
-    attachment_file_ids: list[tuple[str, str, str]],
+    attachment_file_ids: list[TelegramFile],
 ) -> None:
     """Hold a private-chat message from someone off the roster for the
     principal to confirm (``integrations.roster_intake``) and tell them it
@@ -514,10 +518,11 @@ async def _replay_held(message: Any, _request: Any) -> bool:
     payload = message.payload
     if not token or not payload.get("chat_id"):
         return False
-    attachments = [
-        (str(a[0]), str(a[1]), str(a[2]))
+    # Messages held before voice notes were told apart carry three fields.
+    attachments: list[TelegramFile] = [
+        (str(a[0]), str(a[1]), str(a[2]), len(a) == 4 and a[3] is True)
         for a in payload.get("attachment_file_ids") or []
-        if isinstance(a, (list, tuple)) and len(a) == 3
+        if isinstance(a, (list, tuple)) and len(a) in (3, 4)
     ]
     await _process_and_reply(
         message_text=str(payload.get("message_text") or ""),

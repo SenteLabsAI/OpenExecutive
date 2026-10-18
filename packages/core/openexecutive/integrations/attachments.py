@@ -66,6 +66,9 @@ class AttachmentItem:
     content_type: str = ""
     size: int = 0
     headers: dict[str, str] = field(default_factory=dict)
+    # Recorded in the chat app by the sender, so their own speech. Any other
+    # audio (a recorded call, a forwarded clip) is read as a file's words.
+    voice_note: bool = False
 
 
 # ------------------------------------------------------------------ #
@@ -352,6 +355,20 @@ async def _voice_note_text(
     return f"[Voice note, transcribed]\n{words}"
 
 
+async def _audio_file_text(data: bytes, filename: str, content_type: str) -> str:
+    """An audio file's words, wrapped like a document's: someone else may
+    be speaking in it, so they are never the sender's instructions."""
+    from openexecutive.providers import transcription
+
+    try:
+        words = await transcription.transcribe(data, filename, content_type)
+    except transcription.TranscriptionError as exc:
+        return f"(Could not transcribe {filename}: {exc})"
+    if not words:
+        return f"(Attached {filename}: no words in it)"
+    return format_attached_text(filename, words, note="transcribed")
+
+
 async def build_attachment_output(
     filename: str,
     data: bytes,
@@ -359,6 +376,7 @@ async def build_attachment_output(
     *,
     inbound: bool = True,
     heard: list[str] | None = None,
+    voice_note: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Route one attachment to the right handler.
 
@@ -366,7 +384,9 @@ async def build_attachment_output(
     concatenate results across all attachments. ``inbound`` (the default:
     a file a channel delivered) meters a scanned PDF's conversion by the
     inbound page budget; the web upload route, where the signed-in user
-    sends it, passes False. A voice note's words are added to ``heard``.
+    sends it, passes False. ``voice_note`` marks audio the sender recorded
+    in the chat app: its words are theirs and are added to ``heard``. Other
+    audio is transcribed into attachment text.
     """
     # Normalise content_type — some servers omit it or add parameters.
     # All normalization (non-standard aliases, suffix inference) happens once
@@ -381,8 +401,9 @@ async def build_attachment_output(
     from openexecutive.providers.transcription import is_audio
 
     if is_audio(filename, ct):
-        # Sent by the person in the chat, so their words, not a file's.
-        return await _voice_note_text(data, filename, ct, heard), []
+        if voice_note:
+            return await _voice_note_text(data, filename, ct, heard), []
+        return await _audio_file_text(data, filename, ct), []
 
     if ct in _SUPPORTED_IMAGE_TYPES:
         sniffed = sniff_image_type(data)
@@ -449,7 +470,8 @@ async def process_attachments(
 
         try:
             extra_text, image_blocks = await build_attachment_output(
-                item.filename, data, item.content_type, heard=heard
+                item.filename, data, item.content_type, heard=heard,
+                voice_note=item.voice_note,
             )
         except Exception:
             logger.exception("attachments: processing failed for %s", item.filename)

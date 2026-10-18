@@ -461,6 +461,8 @@ async def _read_shared_files(
                 content_type=str(f.get("mimetype") or ""),
                 size=size if isinstance(size, int) else 0,
                 headers={"Authorization": f"Bearer {token}"},
+                # A clip recorded in Slack; an uploaded audio file is not.
+                voice_note=f.get("subtype") == "slack_audio",
             )
         )
     text = ""

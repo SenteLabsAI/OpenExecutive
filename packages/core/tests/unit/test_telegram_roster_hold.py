@@ -109,4 +109,4 @@ def test_a_held_telegram_message_is_replayed_through_the_handler(monkeypatch: py
     assert asyncio.run(telegram_bot._replay_held(message, None)) is True
     kwargs = handled.await_args.kwargs
     assert kwargs["chat_id"] == 777
-    assert kwargs["attachment_file_ids"] == [("f1", "a.pdf", "application/pdf")]
+    assert kwargs["attachment_file_ids"] == [("f1", "a.pdf", "application/pdf", False)]

@@ -1522,6 +1522,7 @@ def create_discord_bot():
                         filename=a.filename,
                         content_type=a.content_type or "",
                         size=a.size,
+                        voice_note=a.is_voice_message(),
                     )
                     for a in message.attachments
                 ], heard=heard)
