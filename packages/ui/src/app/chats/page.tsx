@@ -6,6 +6,7 @@ import Link from "next/link";
 import Icon from "@/components/Icon";
 import { buttonClass } from "@/components/ui/Button";
 import ChatHistory, { ChatRow, type ChatsView } from "@/components/sessions/ChatHistory";
+import { ChannelLogo } from "@/components/sessions/ChannelLogo";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import {
   listChatTopics,
@@ -276,6 +277,7 @@ export default function ChatsPage() {
                         : "border-line text-fg-muted hover:text-fg hover:bg-surface-overlay"
                     }`}
                   >
+                    {t !== "all" && <ChannelLogo channel={t} className="w-4 h-4 mr-1.5 -mt-0.5 align-middle" />}
                     {t === "all" ? "All" : CHANNEL_LABELS[t]}
                     <span className="ml-1.5 text-fg-subtle">{count}</span>
                   </button>

@@ -181,6 +181,36 @@ def _shorten(text: str, cap: int) -> str:
     return cut.rstrip()
 
 
+_WORD = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*")
+
+
+def _drop_name_before_signature(body: str, signature: str) -> str:
+    """``body`` without a closing name that the signature's first line
+    already gives, so the name is not written twice: "Thanks,\nOlivia" above
+    "Olivia Owner" keeps "Thanks,", and "Best, Olivia" keeps "Best,"."""
+    first = next(
+        (line.strip() for line in signature.splitlines() if line.strip().strip("-").strip()), ""
+    )
+    sig_words = {w.casefold() for w in _WORD.findall(first)}
+
+    def is_name(text: str) -> bool:
+        words = _WORD.findall(text)
+        return (
+            0 < len(words) <= 3
+            and all(w.casefold() in sig_words for w in words)
+            and not _WORD.sub("", text).strip(" .-–—~")
+        )
+
+    lines = body.rstrip().split("\n")
+    last = lines[-1].strip()
+    if len(lines) > 1 and is_name(last):
+        return "\n".join(lines[:-1]).rstrip()
+    head, comma, tail = last.rpartition(",")
+    if comma and head.strip() and len(_WORD.findall(head)) <= 4 and is_name(tail):
+        return "\n".join([*lines[:-1], head.rstrip() + ","])
+    return body
+
+
 def _render_user_turn(
     *,
     writer_name: str,
@@ -303,7 +333,7 @@ async def compose(
         # Everything it wrote was a link or an address the intent never gave.
         raise ComposeError("the draft had nothing left once links and addresses were checked")
     if signature.strip() and signature.strip() not in body:
-        body = f"{body}\n\n{signature.strip()}"
+        body = f"{_drop_name_before_signature(body, signature)}\n\n{signature.strip()}"
     subject = reply_subject if thread_text is not None and reply_subject else payload.get("subject")
     questions = payload.get("open_questions")
     return ComposedDraft(
