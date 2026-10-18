@@ -923,6 +923,9 @@ def create_app() -> FastAPI:
             provided = request.headers.get("x-api-key", "")
             if not provided or not hmac.compare_digest(provided, shared_secret):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
+            # What the MCP server reads before it lets a request turn on
+            # "may act" (mcp_server.may_act): this request passed the check.
+            request.state.shared_secret_ok = True
             return await call_next(request)
     else:
         logging.getLogger("openexecutive").warning(

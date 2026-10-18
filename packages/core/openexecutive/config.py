@@ -521,6 +521,12 @@ class Settings(BaseSettings):
     # as not answered, so a hung workspace server can't hold a turn, a brief or
     # the email poller.
     mcp_tool_timeout_s: float = Field(120.0, alias="MCP_TOOL_TIMEOUT_S", gt=0)
+    # Lets `ask_executive` over Open Executive's own MCP server act
+    # (`Session.mcp_client_may_act`) on an install with no
+    # BACKEND_SHARED_SECRET. With a secret configured this is ignored, and only
+    # the `x-mcp-client-actions: on` header on a request the secret
+    # authenticated turns it on (`mcp_server.may_act`).
+    mcp_client_actions: bool = Field(False, alias="MCP_CLIENT_ACTIONS")
 
     # Which Google services the co-located workspace-mcp child loads, and at
     # which tier. These are the same two variables `docker/workspace-mcp-launch.sh`

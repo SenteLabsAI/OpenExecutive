@@ -29,11 +29,22 @@ Design notes
   company profile, departments, specialists, knowledge and the workflow
   catalog to anyone who reached ``/mcp``.
 
-* **ask_executive never acts.** Its turn is marked
-  ``Session.from_mcp_client``: the chat loop offers and runs no tool that
-  sends, posts, books, schedules, runs or changes stored state
-  (``schedule_tools.MCP_CLIENT_WITHHELD_TOOLS``), no Act as me or extension
-  tool, and of the gateway tools only reads (``MCP_CLIENT_MCP_TOOLS``).
+* **ask_executive reads and advises, unless the request may act.** Its turn
+  is marked ``Session.from_mcp_client``: by default the chat loop offers and
+  runs no tool that sends, posts, books, schedules, runs or changes stored
+  state (``schedule_tools.MCP_CLIENT_WITHHELD_TOOLS``), no Act as me or
+  extension tool, and of the gateway tools only reads
+  (``MCP_CLIENT_MCP_TOOLS``). A request may turn on "may act"
+  (``Session.mcp_client_may_act``, ``may_act``): with a shared secret
+  configured, only by the ``x-mcp-client-actions: on`` header on a request
+  the secret authenticated (the gate marks it, ``api.main``); with none, only
+  by the ``MCP_CLIENT_ACTIONS`` setting, and the header is ignored. Such a
+  turn runs the speaker's own changes inside Open Executive under each
+  tool's own checks, proposes anything that reaches another person on an
+  approval card (``propose_actions``, carried out on its own only by their
+  Handle it for me), is still never offered
+  ``MCP_CLIENT_ACTING_WITHHELD_TOOLS``, and every audit row it writes names
+  the app (``audit.via_app``).
 
 * **DNS-rebinding protection** (FastMCP's Host-header check) is disabled: the
   endpoint authenticates with a header secret (not a cookie), so a browser
@@ -87,8 +98,17 @@ _INSTRUCTIONS = (
     "business knowledge base and company documents), `list_workflows` (the "
     "catalog of multi-step executive workflows), and `ask_executive` (one "
     "synthesized answer from the Executive). None of them sends, posts, books "
-    "or changes anything."
+    "or changes anything, except `ask_executive` when this server allows it to "
+    "act: then it makes changes inside Open Executive and leaves messages and "
+    "meetings on cards the person approves (or that go on their own under "
+    "their Handle it for me)."
 )
+
+# The request header that asks for a turn that may act (``may_act``).
+ACTIONS_HEADER = "x-mcp-client-actions"
+# What the API's shared-secret gate sets on a request it let through.
+SHARED_SECRET_OK = "shared_secret_ok"
+_CLIENT_NAME_MAX = 60
 
 mcp = FastMCP(
     name="open-executive",
@@ -171,6 +191,49 @@ def _who() -> api_caller.Caller:
     if request is None:
         return api_caller.Caller("service")
     return api_caller.caller(request)
+
+
+def may_act() -> bool:
+    """Whether the request in progress may act (``Session.mcp_client_may_act``).
+
+    With ``BACKEND_SHARED_SECRET`` configured: only when the request carries
+    ``x-mcp-client-actions: on`` and the API's shared-secret gate let it
+    through (``request.state.shared_secret_ok``, set by the gate in
+    ``api.main`` after its ``x-api-key`` check). Without one: the
+    ``MCP_CLIENT_ACTIONS`` setting, whatever the header says. Fails closed."""
+    import os
+
+    try:
+        if os.environ.get("BACKEND_SHARED_SECRET", "").strip():
+            request = _request()
+            if request is None or request is _NO_MCP_REQUEST:
+                return False
+            asked = str(request.headers.get(ACTIONS_HEADER, "")).strip().lower() == "on"
+            state = getattr(request, "state", None)
+            return asked and getattr(state, SHARED_SECRET_OK, False) is True
+        from openexecutive.config import get_settings
+
+        return get_settings().mcp_client_actions is True
+    except Exception:
+        logger.warning("mcp_server: couldn't tell whether the request may act — answering no", exc_info=True)
+        return False
+
+
+def client_name() -> str:
+    """The MCP client's own name (``clientInfo.name`` from its initialize),
+    as one plain line, or "an AI app" when it gave none (a stateless request
+    has no initialize of its own)."""
+    from openexecutive.utils.prompt_blocks import plain
+
+    name = ""
+    try:
+        params = mcp.get_context().session.client_params
+        info = getattr(params, "clientInfo", None)
+        name = str(getattr(info, "name", "") or "")
+    except Exception:
+        name = ""
+    cleaned = " ".join(plain(name).split())[:_CLIENT_NAME_MAX].strip()
+    return cleaned or "an AI app"
 
 
 def _resolve(who: api_caller.Caller) -> McpCaller:
@@ -417,9 +480,16 @@ async def ask_executive(message: str) -> str:
     """Ask the Executive a question and get one synthesized, cross-domain answer.
 
     The Executive answers as it would in Open Executive for the person signed
-    in, drawing on the specialists, company knowledge and memory. It reads and
-    advises only: it does not send, post, book or change anything. The
-    conversation is recorded in Open Executive's memory. Non-streaming.
+    in, drawing on the specialists, company knowledge and memory. By default
+    it reads and advises only: it does not send, post, book or change
+    anything. When this server allows it to act, it can also make changes
+    inside Open Executive for that person (alerts, open loops, follow-ups,
+    the watch list, goals, decisions, remembered facts, people and the
+    company profile, as their own permissions allow), and it leaves a message
+    or a meeting on a card for them to approve, which goes on its own only
+    when their Handle it for me covers it. It never runs scripts or
+    workflows, connects servers or changes the install. The conversation is
+    recorded in Open Executive's memory. Non-streaming.
 
     Args:
         message: The question for the Executive.
@@ -438,6 +508,7 @@ async def ask_executive(message: str) -> str:
     from openexecutive.onboarding.profile_builder import load_or_create_profile
 
     profile = await asyncio.to_thread(load_or_create_profile)
+    acting = may_act()
     session = Session(
         company_profile=profile if not profile.is_empty() else None,
         # A client that resolves to no one reads and publishes no one's
@@ -445,15 +516,32 @@ async def ask_executive(message: str) -> str:
         # a speakerless session for the principal's own work).
         documents_viewer=NOBODY if person_id is None else None,
         # Another AI app is asking: the turn reads and advises but never
-        # sends, posts, books or changes anything (Session.from_mcp_client).
+        # sends, posts, books or changes anything (Session.from_mcp_client),
+        # unless this request may act (Session.mcp_client_may_act).
         from_mcp_client=True,
+        mcp_client_may_act=acting,
         caller_person_id=person_id,
     )
 
     executive = Executive(mcp_gateway=get_active_gateway())
-    return await executive.chat(
-        user_message=message, session=session, person_id=person_id
+    if not acting:
+        return await executive.chat(
+            user_message=message, session=session, person_id=person_id
+        )
+    from openexecutive.audit import via_app
+    from openexecutive.briefing.context import render_and_trust
+
+    # The live board, as the web chat shows it, and what ack_alert may clear:
+    # only for someone on the roster (a caller that is no one clears nothing).
+    briefing_context = (
+        await asyncio.to_thread(render_and_trust, session) if person_id is not None else ""
     )
+    # Every row this turn writes names the app that asked.
+    with via_app(client_name()):
+        return await executive.chat(
+            user_message=message, session=session, person_id=person_id,
+            briefing_context=briefing_context,
+        )
 
 
 # ---------------------------------------------------------------------------

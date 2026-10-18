@@ -316,9 +316,21 @@ and roster to someone on the roster (the briefing narrowed as the web app
 narrows it), and the company profile, departments, specialists, knowledge and
 workflow catalog to anyone. With signed callers on, a client holding only the
 shared secret is a service: never the owner, and `ask_executive` asks as no
-one. `ask_executive` only reads and advises: on its turn the Executive is not
-offered anything that sends, posts, books, schedules, runs or changes stored
-data, and of the connected MCP servers' tools only the reads.
+one. By default `ask_executive` only reads and advises: on its turn the
+Executive is not offered anything that sends, posts, books, schedules, runs or
+changes stored data, and of the connected MCP servers' tools only the reads.
+
+A client can let it act by sending `x-mcp-client-actions: on` (honored only on a
+request the `BACKEND_SHARED_SECRET` authenticated; with no secret set the header
+is ignored and `MCP_CLIENT_ACTIONS=true` turns it on for every request). Then it
+makes the person's own changes inside Open Executive (alerts, open loops,
+follow-ups, the watch list, goals, decision outcomes, remembered facts, people
+and the company profile), each under the same permissions as in the web app.
+A message or a meeting is left on an approval card instead of sent: it waits
+for the person's tap on the web, or goes on its own when their Handle it for me
+is on and covers the people on it and nothing on it is sensitive. It still
+never runs scripts or workflows, loads MCP servers or reads their mailbox, and
+every action is recorded as coming from the AI app.
 
 This is the inverse of the `MCP_ENABLED` and `MCP_SERVERS_CONFIG_PATH` settings
 under [Configuration](#configuration), which configure the MCP *gateway*: Open

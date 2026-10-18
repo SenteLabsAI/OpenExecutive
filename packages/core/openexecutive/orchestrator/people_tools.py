@@ -321,8 +321,8 @@ def _audit(tool: str, kind: str, ok: bool, summary: str, details: dict[str, Any]
 # Surfaces that verify who sent every message: the web chat (the signed-in
 # Google account, stamped by the UI proxy), and Slack / Discord (the platform's
 # own user id, over an authenticated connection). Email (an unauthenticated
-# From header), Google Chat (its sender is matched by email for the department gate only), the CLI, the MCP server and
-# unattended runs (scheduler, workflows, alert review) don't. Telegram only
+# From header), Google Chat (its sender is matched by email for the department gate only), the CLI, the MCP server
+# (unless the turn may act: `Session.mcp_client_may_act`) and unattended runs (scheduler, workflows, alert review) don't. Telegram only
 # sometimes — see `_is_verified_speaker_surface`. A channel adapter this module
 # doesn't know counts when it verified the sender itself
 # (`Session.speaker_verified`, with the `caller_person_id` it resolved).
@@ -348,6 +348,13 @@ def _adapter_verified_turn(session: Any) -> bool:
 def _is_verified_speaker_surface(session: Any) -> bool:
     if bool(getattr(session, "from_web_chat", False)):
         return True
+    # Another AI app over Open Executive's own MCP server: its caller is the
+    # one the API verified (`api.caller`), as for the web chat, but only a
+    # turn allowed to act (`Session.mcp_client_may_act`) counts it, so each
+    # tool's own owner-only and person checks then decide. A read-only one
+    # never does.
+    if getattr(session, "from_mcp_client", False) is True:
+        return getattr(session, "mcp_client_may_act", False) is True and _adapter_verified_turn(session)
     if getattr(session, "speaker_verified", False) is True and _adapter_verified_turn(session):
         return True
     channel = str(getattr(session, "origin_channel", "") or "")

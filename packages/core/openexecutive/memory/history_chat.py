@@ -99,6 +99,9 @@ def verified_speaker(session: Any, person: Any) -> bool:
             or getattr(session, "private_to_principal", False) is True
             or bool(getattr(session, "email_from", None))
             or isinstance(getattr(session, "delegation_override", None), DelegationOverride)
+            # Another AI app's text, even on a turn allowed to act: never
+            # noted as the person's own words.
+            or getattr(session, "from_mcp_client", False) is True
         ):
             return False
         if getattr(session, "caller_person_id", None) != person.id:

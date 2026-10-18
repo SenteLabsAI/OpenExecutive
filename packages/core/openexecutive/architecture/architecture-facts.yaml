@@ -9032,7 +9032,7 @@ integrations:
     caller (x-caller-assertion for POST /mcp/), as the UI proxy does, so gets
     per-person answers with the same rules as the web app.
 
-    ASK_EXECUTIVE NEVER ACTS: it takes only `message` (the caller comes from
+    ASK_EXECUTIVE READS ONLY, UNLESS IT MAY ACT: it takes only `message` (the caller comes from
     the request, never an argument) and builds a Session with
     from_mcp_client=True and caller_person_id = the resolved person (NOBODY
     as documents_viewer when that is no one). On such a turn the chat loop
@@ -9061,6 +9061,60 @@ integrations:
     tool has an MCP title and annotations, and descriptions state what a
     tool does without steering a client between tools.
 
+    MAY ACT (opt-in, per request): mcp_server.may_act() sets
+    Session.mcp_client_may_act. With BACKEND_SHARED_SECRET configured it is
+    true only when the request carries `x-mcp-client-actions: on` AND the
+    API's shared-secret gate let it through (the gate sets
+    request.state.shared_secret_ok after its x-api-key compare_digest; the
+    mounted app shares request.state). With no secret, the header is ignored
+    and the MCP_CLIENT_ACTIONS setting (default false) decides. Fails closed.
+    On such a turn (schedule_tools.mcp_client_acting; read_only_turn is
+    false, mcp_rules_turn still true):
+      - The fixed withheld set is MCP_CLIENT_ACTING_WITHHELD_TOOLS =
+        MCP_CLIENT_WITHHELD_TOOLS - MCP_CLIENT_RUNS_WHEN_ACTING, so a newly
+        withheld tool stays withheld here until it is listed on purpose.
+        Runs directly (each under its own owner-only / person checks): alerts
+        (ack, create, leave_out_of_brief), open loops (close, assign),
+        follow-ups (schedule, cancel, move), the watch list (add, remove,
+        tune), goals and department goals, decision outcomes, remember/forget
+        facts, roster writes (upsert, archive, set_department_head) and the
+        company profile. Still withheld: everything that reaches another
+        person directly (DMs, calendar create/cancel/instant meeting,
+        broadcasts, department messages), load_mcp_server, run_script,
+        run_python_job, list_saved_tools, the workflow tools,
+        run_executive_research, and the rest of the read-only set
+        (propose_form_values, read_document, draft_artifact, mark_draft_sent,
+        resolve_roster_request). Extension tools, recall_history and Act as
+        me's mailbox tools are not offered; gateway calls stay
+        MCP_CLIENT_MCP_TOOLS. A withheld call gets mcp_client_withheld_error
+        (acting=True): do it in Open Executive itself.
+      - people_tools._is_verified_speaker_surface counts the turn as
+        verified for caller_person_id (the caller api.caller verified, as for
+        the web chat), so the tools' own checks decide; a read-only MCP turn
+        never counts. history_chat.verified_speaker still refuses every MCP
+        turn, so no History note or conversation review is taken from an AI
+        app's text. ask_executive renders the live board
+        (briefing.context.render_and_trust) so ack_alert has its trusted set.
+      - Outward actions go on an approval card: propose_actions
+        (action_card_tools) is offered alone of Act as me's tools, its
+        speaker the verified caller with Act as me on. The card follows the
+        person's mode (action_cards.on_its_own_refusal follow_handle_it,
+        kept on the card's payload so run_on_its_own re-checks the same
+        rule): with Suggested actions not in training, it is carried out at
+        once when Handle it for me is on at a setting covering people they
+        know (every card recipient is on the roster), no add_contact, and
+        the plain-code checks pass (Act as me on, signed callers or local
+        login, nothing sensitive, no link or amount, a message no longer
+        than the setting's replies and ON_ITS_OWN_MESSAGE_MAX, the daily
+        cap), and the turn read no outside text (outside_content.read_outside)
+        or mail. In training the training rule applies. Otherwise the card
+        waits for the person's tap on the web, as any card.
+      - Every audit row the turn writes carries details.via = the MCP
+        client's clientInfo.name, or "an AI app" (audit.via_app; FastMCP runs
+        stateless, so a tool call usually has no initialize of its own); the
+        card's payload keeps via and its approved / handled / held rows
+        repeat it.
+
     Surface — what's valuable beyond chat (OE already has six chat channels, so
     a chat-only server adds nothing): company-grounded context as READ-ONLY
     resources, and the specialist council as tools.
@@ -9076,9 +9130,10 @@ integrations:
         stateless, the specialist enum is a Literal pinned to SPECIALIST_REGISTRY
         by a unit test), search_knowledge (knowledge.retriever.retrieve),
         list_workflows (workflows.list_workflows → Workflow.meta), and ask_executive
-        (Executive.chat, non-streaming, as the verified caller, never acting —
-        see ASK_EXECUTIVE NEVER ACTS). No tool here sends or mutates company
-        state; ask_executive's conversation is recorded in memory.
+        (Executive.chat, non-streaming, as the verified caller, reading only
+        unless the request may act — see ASK_EXECUTIVE READS ONLY and MAY
+        ACT). No other tool here sends or mutates company state;
+        ask_executive's conversation is recorded in memory.
 
     DEFERRED by design: workflow EXECUTION is not exposed — workflows are
     long-running async generators (minutes) that would exceed a single MCP

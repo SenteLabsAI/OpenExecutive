@@ -48,6 +48,10 @@ from openexecutive.orchestrator import (
     take_the_lead,
     tool_groups,
 )
+from openexecutive.orchestrator.action_card_tools import (
+    ACTION_CARD_TOOL_HANDLERS,
+    ACTION_CARD_TOOLS,
+)
 from openexecutive.orchestrator.action_chips import summarize_action
 from openexecutive.orchestrator.activity_labels import (
     fallback_activity,
@@ -145,6 +149,7 @@ from openexecutive.orchestrator.router import (
     route_parallel,
 )
 from openexecutive.orchestrator.schedule_tools import (
+    MCP_CLIENT_ACTING_WITHHELD_TOOLS,
     MCP_CLIENT_WITHHELD_TOOLS,
     PRIVATE_TURN_WITHHELD_TOOLS,
     SCHEDULE_TOOL_HANDLERS,
@@ -153,13 +158,14 @@ from openexecutive.orchestrator.schedule_tools import (
     UNATTENDED_WITHHELD_TOOLS,
     current_session,
     filter_tools_for_workspace_mode,
+    mcp_client_acting,
     mcp_client_allows_mcp_tool,
     mcp_client_withheld_error,
     mcp_client_withholds,
+    mcp_rules_turn,
     private_turn_allows_mcp_tool,
     private_turn_withheld_error,
     private_turn_withholds,
-    read_only_turn,
     shared_chat_withheld_error,
     shared_chat_withholds,
     tools_withheld_in_mode,
@@ -2176,9 +2182,18 @@ class Executive:
         # offered or run (`MCP_CLIENT_WITHHELD_TOOLS`) — a fixed set, so the
         # variant keeps a stable tool prefix of its own. A scheduled run a
         # teammate queued gets the same (`read_only_turn`): the runner sends
-        # what it writes.
-        mcp_client = read_only_turn(current_session.get())
-        mcp_client_withheld = MCP_CLIENT_WITHHELD_TOOLS if mcp_client else frozenset()
+        # what it writes. An AI app's turn that may act
+        # (`Session.mcp_client_may_act`) runs the speaker's own changes inside
+        # Open Executive and is denied the smaller fixed
+        # `MCP_CLIENT_ACTING_WITHHELD_TOOLS` instead; what reaches another
+        # person it proposes on an approval card (propose_actions, below).
+        mcp_client = mcp_rules_turn(current_session.get())
+        mcp_acting = mcp_client_acting(current_session.get())
+        mcp_client_withheld = (
+            (MCP_CLIENT_ACTING_WITHHELD_TOOLS if mcp_acting else MCP_CLIENT_WITHHELD_TOOLS)
+            if mcp_client
+            else frozenset()
+        )
         # A shared web chat someone other than its owner has written into
         # since the owner last did (`Session.others_spoke_last`): nothing
         # that sends to people or changes contacts (`SHARED_CHAT_WITHHELD_TOOLS`,
@@ -2216,6 +2231,12 @@ class Executive:
             if ghostwrite_offered
             else _ALL_SKILL_HANDLERS
         )
+        # An AI app's turn that may act: of Act as me's tools, only the
+        # approval card (no mailbox), always offered so the variant's prefix
+        # is stable; its handler checks the speaker (action_card_tools).
+        if mcp_acting and not replaying:
+            delegation_tools = [*ACTION_CARD_TOOLS]
+            turn_handlers = {**turn_handlers, **ACTION_CARD_TOOL_HANDLERS}
         # Always in the loop: recall_history joins the same way, only on a
         # turn whose speaker may read their own notes here (history_tools).
         history_offered = (
@@ -2522,7 +2543,7 @@ class Executive:
             withheld_mcp_uses += [
                 tu for tu in mcp_tool_uses
                 if mcp_client
-                and mcp_client_withholds(tu["name"], tu["input"])
+                and mcp_client_withholds(tu["name"], tu["input"], acting=mcp_acting)
                 and tu not in withheld_mcp_uses
             ]
             # A shared chat others have written into: no mail send, reply,
@@ -2725,7 +2746,7 @@ class Executive:
                 )
                 results_by_id[tu["id"]] = outside_content.outside_withheld_error(label)
             for tu in withheld_uses:
-                if mcp_client and mcp_client_withholds(tu["name"], tu["input"]):
+                if mcp_client and mcp_client_withholds(tu["name"], tu["input"], acting=mcp_acting):
                     # Fail closed: never run, and leave a trace. A call_tool
                     # is named by the tool it asked for.
                     kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
@@ -2752,7 +2773,7 @@ class Executive:
                         },
                         private=private_turn,
                     )
-                    results_by_id[tu["id"]] = mcp_client_withheld_error(label)
+                    results_by_id[tu["id"]] = mcp_client_withheld_error(label, acting=mcp_acting)
                     continue
                 if private_turn and private_turn_withholds(tu["name"], tu["input"]):
                     # Fail closed: never run, and leave a trace — private to

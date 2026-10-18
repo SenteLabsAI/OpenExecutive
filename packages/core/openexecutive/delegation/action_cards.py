@@ -41,6 +41,16 @@ invite carried out on its own is never booked as already approved: the
 meeting gate decides as for any meeting nobody tapped (a time chosen from
 someone's mail must not land on a calendar unasked), so it may go to the
 approver as a proposal.
+
+**From another AI app.** A card proposed on a turn another AI app asked to
+act (``Session.mcp_client_may_act``) follows the person's mode instead
+(``follow_handle_it``, kept on the card so the check at run time is the
+same): with Suggested actions not in training, it is carried out on its own
+when their Handle it for me is on at a setting that covers people they know
+(every setting does; everyone on a card is on their roster), and the same
+plain-code checks find nothing against it, with a message no longer than
+that setting's replies. A new contact always waits. In training, the rule
+above applies. The card, and every row about it, names the app (``via``).
 """
 from __future__ import annotations
 
@@ -301,11 +311,13 @@ def open_cards(person_id: int, *, now: datetime | None = None) -> list[Any]:
 
 def propose(
     speaker: Any, actions: list[dict[str, Any]], why: str, *, session_id: str | None, on_its_own: bool = False,
+    follow_handle_it: bool = False, via: str | None = None,
 ) -> int:
     """Store a card for ``speaker`` (``actions`` already ``check``ed); returns
     its decision id. The same actions still waiting are that card.
     ``on_its_own`` marks it for ``run_on_its_own`` (``on_its_own_refusal``
-    found nothing against it)."""
+    found nothing against it); ``follow_handle_it`` keeps the rule it was
+    checked by, and ``via`` the AI app that asked for it."""
     from openexecutive.memory.decision_ledger import create_decision_instance
 
     digest = hashlib.sha256(
@@ -320,6 +332,10 @@ def propose(
         "private": True,
         "person_id": speaker.id, "why": _one_line(why, WHY_MAX), "digest": digest, "actions": actions,
     }
+    if follow_handle_it:
+        payload["follow_handle_it"] = True
+    if via:
+        payload["via"] = _one_line(via, NAME_MAX)
     return create_decision_instance(
         decision_class=DECISION_CLASS,
         department="executive",
@@ -366,29 +382,63 @@ def cards(person: Any) -> list[ActionCard]:
     return out
 
 
-def on_its_own_refusal(person: Any, actions: list[dict[str, Any]], *, now: datetime) -> str | None:
+def on_its_own_refusal(
+    person: Any, actions: list[dict[str, Any]], *, now: datetime, follow_handle_it: bool = False,
+) -> str | None:
     """Why a card of ``actions`` may not be carried out on its own (a short
-    code), or None when it may. Plain code only; never raises (an error
-    refuses)."""
+    code), or None when it may. ``follow_handle_it``: a card from another AI
+    app, which follows the person's Handle it for me unless Suggested actions
+    is in training. Plain code only; never raises (an error refuses)."""
     try:
-        return _on_its_own_refusal(person, actions, now)
+        return _on_its_own_refusal(person, actions, now, follow_handle_it=follow_handle_it)
     except Exception:
         logger.warning("action_cards: the on-its-own rules failed — asking instead", exc_info=True)
         return "uncountable"
 
 
-def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> str | None:
+def _handle_it_refusal(person: Any, actions: list[dict[str, Any]]) -> tuple[str | None, int]:
+    """For a card from another AI app outside training: why the person's
+    Handle it for me doesn't cover it, or None, with the longest message its
+    setting sends on its own."""
+    from openexecutive.delegation import handle_it
+
+    settings = handle_it.get(person.id)
+    if not settings.enabled:
+        return "handle_it_off", 0
+    # Everyone on a card is on their roster (``check``): people they know.
+    # A new contact is not, and always waits.
+    if any(a.get("kind") == "add_contact" for a in actions):
+        return "new_contact", 0
+    if settings.level(handle_it.KIND_REPLY_KNOWN) != handle_it.LEVEL_HANDLE:
+        return "level", 0
+    return None, min(ON_ITS_OWN_MESSAGE_MAX, settings.rules.max_body_chars)
+
+
+def _on_its_own_refusal(
+    person: Any, actions: list[dict[str, Any]], now: datetime, *, follow_handle_it: bool = False,
+) -> str | None:
     from openexecutive.delegation import handle_it, training
     from openexecutive.delegation.settings import can_delegate, is_enabled
     from openexecutive.memory.decision_ledger import STATUS_EXECUTED, list_instances
 
-    if person is None or person.id is None or not training.get(person.id).actions:
+    if person is None or person.id is None:
+        return "training_off"
+    in_training = training.get(person.id).actions
+    by_mode = follow_handle_it and not in_training
+    if not by_mode and not in_training:
         return "training_off"
     if not can_delegate(person) or not is_enabled(person.id):
         return "act_as_me_off"
     if not handle_it.signing_ok():
         return "signing_off"
-    if not actions or any(training.allowed_action(person.id, a) is None for a in actions):
+    if not actions:
+        return "not_allowed"
+    message_max = ON_ITS_OWN_MESSAGE_MAX
+    if by_mode:
+        refused, message_max = _handle_it_refusal(person, actions)
+        if refused is not None:
+            return refused
+    elif any(training.allowed_action(person.id, a) is None for a in actions):
         return "not_allowed"
     for action in actions:
         given = action.get("input")
@@ -400,7 +450,7 @@ def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetim
             return "link"
         if any(handle_it._AMOUNT_RE.search(t) for t in texts):
             return "amount"
-        if len(str(stored.get("text") or "")) > ON_ITS_OWN_MESSAGE_MAX:
+        if len(str(stored.get("text") or "")) > message_max:
             return "long"
     day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     done_today = list_instances(
@@ -416,6 +466,12 @@ def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetim
 # One card carried out on its own at a time, so two turns can't both pass
 # the daily limit before either is counted.
 _ON_ITS_OWN_LOCK = asyncio.Lock()
+
+
+def _via(payload: dict[str, Any]) -> dict[str, str]:
+    """``{"via": app}`` for a card another AI app asked for, else empty."""
+    via = payload.get("via")
+    return {"via": via} if isinstance(via, str) and via else {}
 
 
 def audit(event: str, summary: str, details: dict[str, Any]) -> None:
@@ -551,6 +607,7 @@ async def approve(
     audit("delegation_actions_approved", f"Person {person.id} approved an action card", {
         "person_id": person.id, "decision_id": instance.id,
         "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],
+        **_via(payload),
     })
     if allow:
         _allow_done(person.id, actions, results, decision_id=instance.id)
@@ -628,12 +685,15 @@ async def run_on_its_own(decision_id: int, person: Any, *, now: datetime | None 
     actions = [a for a in payload.get("actions") or [] if isinstance(a, dict)]
     async with _ON_ITS_OWN_LOCK:
         with rows_for_person(person.id):
-            refused = on_its_own_refusal(person, actions, now=at)
+            refused = on_its_own_refusal(
+                person, actions, now=at, follow_handle_it=payload.get("follow_handle_it") is True,
+            )
             if refused is not None:
                 # An ordinary card again, waiting on their tap.
                 hand_back(decision_id, {**payload, "held_because": refused})
                 audit("delegation_actions_held", f"Left person {person.id}'s action card for them", {
                     "person_id": person.id, "decision_id": decision_id, "reason": refused,
+                    **_via(payload),
                 })
                 return None
             if not claim_for_execution(decision_id, resolver_person_id=None):
@@ -665,6 +725,7 @@ def _finish_on_its_own(
     audit("delegation_actions_handled", f"Carried out person {person.id}'s action card on its own", {
         "person_id": person.id, "decision_id": decision_id,
         "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],
+        **_via(payload),
     })
     return results
 

@@ -74,6 +74,20 @@ class Session:
     # the reads in `schedule_tools.MCP_CLIENT_MCP_TOOLS`. Never the
     # principal's own surface for `content_trust.principal_speaking`.
     from_mcp_client: bool = False
+    # Set with `from_mcp_client` when the request turned on "may act"
+    # (`mcp_server.ask_executive`: the `x-mcp-client-actions: on` header on a
+    # request the deployment's shared secret authenticated, or
+    # `MCP_CLIENT_ACTIONS` where no secret is configured). Such a turn runs
+    # the speaker's own changes inside Open Executive (alerts, open loops,
+    # follow-ups, the watch list, goals, decision outcomes, remembered facts,
+    # roster and company profile writes, each under its own owner-only and
+    # person checks), counts as a verified surface for `caller_person_id`,
+    # and offers anything that reaches another person only as an approval
+    # card (`propose_actions`), which goes on its own only by the speaker's
+    # Handle it for me (`action_cards.on_its_own_refusal`). It is still
+    # never offered `schedule_tools.MCP_CLIENT_ACTING_WITHHELD_TOOLS`, Act as
+    # me's mailbox tools, recall_history or extension tools.
+    mcp_client_may_act: bool = False
     # The rostered Person behind this conversation, when one is resolved. The
     # adapters already pass this to `Executive.chat(person_id=...)`; holding it
     # on the session too lets tool handlers running mid-turn tell "the approver

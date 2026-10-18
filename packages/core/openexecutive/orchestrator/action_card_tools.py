@@ -14,6 +14,17 @@ that read untrusted mail, so a message it sends has model-written text
 nobody reads first: the allowance covers who and what kind, not the words,
 and the sensitive, link, amount and length checks and the daily cap are
 what bound it.
+
+A turn another AI app asked to act (``Session.mcp_client_may_act``) is
+offered this tool alone of Act as me's, with no mailbox: what reaches another
+person (a message, an invite) is proposed here instead of sent. Its speaker
+is the caller the API verified (``Session.caller_person_id``), with Act as me
+on. Such a card follows their Handle it for me: it is carried out at once
+when that is on (and Suggested actions not in training) and plain code finds
+nothing against it (``action_cards.on_its_own_refusal`` with
+``follow_handle_it``), and the turn read no outside text
+(``outside_content.read_outside``) or mail; otherwise it waits for their
+tap, as any card does.
 """
 from __future__ import annotations
 
@@ -78,41 +89,91 @@ def _error(message: str) -> str:
     return json.dumps({"error": message})
 
 
-async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
-    from openexecutive.delegation import action_cards
-    from openexecutive.orchestrator.delegation_tools import _writer
-    from openexecutive.orchestrator.schedule_tools import current_session
+def _ai_app_speaker(session: Any) -> tuple[Any, Any] | str:
+    """``(person, pinned)`` for a turn another AI app asked to act, or the
+    refusal: the caller the API verified, on the roster, with Act as me on
+    (a card is approved, and carried out, under Act as me)."""
+    from openexecutive.delegation.settings import can_delegate, is_enabled, turn_delegation
+    from openexecutive.orchestrator.people_tools import _is_verified_speaker_surface
+    from openexecutive.people.store import get_person
 
-    writer = _writer(PROPOSE_ACTIONS)
-    if isinstance(writer, str):
-        return writer
-    pinned = writer.pinned
+    pinned = turn_delegation(session)
+    caller = getattr(session, "caller_person_id", None)
+    try:
+        person = get_person(int(caller)) if isinstance(caller, int) and not isinstance(caller, bool) else None
+    except Exception:
+        logger.warning("propose_actions: couldn't read the speaker", exc_info=True)
+        person = None
+    if pinned is None or person is None or person.id is None or not _is_verified_speaker_surface(session):
+        return _error(
+            "I can't tell who this is for, so I can't leave a card. Tell the person "
+            "to do it in Open Executive itself. Do not retry."
+        )
+    if not can_delegate(person) or not is_enabled(person.id):
+        return _error(
+            "Cards need Act as me on for them, and it is off. Tell the person to do "
+            "it in Open Executive itself. Do not retry."
+        )
+    return person, pinned
+
+
+async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
+    from openexecutive.audit import rows_via
+    from openexecutive.delegation import action_cards
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.orchestrator.delegation_tools import _writer
+    from openexecutive.orchestrator.schedule_tools import current_session, mcp_client_acting
+
+    session = current_session.get()
+    # Another AI app asked, and may act: the card follows their Handle it for me.
+    ai_app = mcp_client_acting(session)
+    if ai_app:
+        found = _ai_app_speaker(session)
+        if isinstance(found, str):
+            return found
+        person, pinned = found
+    else:
+        writer = _writer(PROPOSE_ACTIONS)
+        if isinstance(writer, str):
+            return writer
+        person, pinned = writer.person, writer.pinned
     if getattr(pinned, "action_cards", 0) >= action_cards.CARDS_PER_TURN:
         return _error(f"That's {action_cards.CARDS_PER_TURN} cards this turn. Put the rest on one of them.")
-    checked = action_cards.check(tool_input.get("actions"), writer.person, now=datetime.now(UTC))
+    checked = action_cards.check(tool_input.get("actions"), person, now=datetime.now(UTC))
     if isinstance(checked, str):
         return _error(checked)
+    via = (rows_via() or "an AI app") if ai_app else None
     try:
-        if len(action_cards.open_cards(writer.person.id)) >= action_cards.OPEN_CARDS_MAX:
+        if len(action_cards.open_cards(person.id)) >= action_cards.OPEN_CARDS_MAX:
             return _error(f"They already have {action_cards.OPEN_CARDS_MAX} cards waiting. Ask them to clear some first.")
         pinned.action_cards = getattr(pinned, "action_cards", 0) + 1
-        session = current_session.get()
-        # In training, a card of actions they all allowed is carried out now.
-        on_its_own = action_cards.on_its_own_refusal(writer.person, checked, now=datetime.now(UTC)) is None
+        # In training, a card of actions they all allowed is carried out now;
+        # from an AI app, one their Handle it for me covers.
+        on_its_own = action_cards.on_its_own_refusal(
+            person, checked, now=datetime.now(UTC), follow_handle_it=ai_app,
+        ) is None
+        # From an AI app, a turn that read outside text (a document, a web
+        # page, mail) never sends on its own: its words may be that text's.
+        if ai_app and on_its_own and (
+            outside_content.read_outside() or getattr(pinned, "touched_mail", False) is True
+        ):
+            on_its_own = False
         decision_id = action_cards.propose(
-            writer.person, checked, str(tool_input.get("why") or ""),
+            person, checked, str(tool_input.get("why") or ""),
             session_id=getattr(session, "session_id", None), on_its_own=on_its_own,
+            follow_handle_it=ai_app, via=via,
         )
     except Exception:
         logger.warning("propose_actions: couldn't store the card", exc_info=True)
         return _error("Couldn't leave the card just now. Try again in a moment.")
-    action_cards.audit("delegation_actions_proposed", f"Left person {writer.person.id} an action card", {
-        "person_id": writer.person.id, "decision_id": decision_id,
+    action_cards.audit("delegation_actions_proposed", f"Left person {person.id} an action card", {
+        "person_id": person.id, "decision_id": decision_id,
         "kinds": [a["kind"] for a in checked],
+        **({"via": via} if via else {}),
     })
     if on_its_own:
         try:
-            results = await action_cards.run_on_its_own(decision_id, writer.person)
+            results = await action_cards.run_on_its_own(decision_id, person)
         except Exception:
             logger.warning("propose_actions: carrying out an allowed card failed", exc_info=True)
             results = None
@@ -124,7 +185,11 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
                     {"action": checked[r["index"]]["summary"], "status": r["status"], "detail": r.get("detail", "")}
                     for r in results
                 ],
-                "note": "They allowed these in training, so they were carried out now. Tell them what happened.",
+                "note": (
+                    "Their settings (Handle it for me) let these go without a tap, so they were carried out now. Tell them what happened."
+                    if ai_app else
+                    "They allowed these in training, so they were carried out now. Tell them what happened."
+                ),
             })
     return json.dumps({
         "status": "waiting_for_approval",

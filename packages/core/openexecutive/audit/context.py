@@ -132,6 +132,11 @@ _rows_owner: ContextVar[int | None] = ContextVar("audit_rows_owner", default=Non
 _rows_on_principal_turn: ContextVar[bool] = ContextVar(
     "audit_rows_on_principal_turn", default=False
 )
+# Which AI app asked for the work, for a turn another app asked over Open
+# Executive's own MCP server and allowed to act (``Session.mcp_client_may_act``).
+# Every row written inside ``rows_via`` carries it as ``details["via"]``, so
+# the record shows the change came from that app, not from Open Executive.
+_rows_via: ContextVar[str | None] = ContextVar("audit_rows_via", default=None)
 
 
 def rows_private() -> bool:
@@ -147,6 +152,26 @@ def rows_owner() -> int | None:
 def rows_on_principal_turn() -> bool:
     """Whether audit rows written now are on the principal's own turn."""
     return _rows_on_principal_turn.get()
+
+
+def rows_via() -> str | None:
+    """The AI app every audit row written now came from, or None."""
+    return _rows_via.get()
+
+
+@contextlib.contextmanager
+def via_app(name: str | None) -> Iterator[None]:
+    """Mark every audit row written inside the block as asked for by the AI
+    app ``name`` (``details["via"]``). None or empty marks nothing; an inner
+    block never changes an outer one's app. Save/restore, as in
+    ``set_turn``."""
+    prior = _rows_via.get()
+    if prior is None and name:
+        _rows_via.set(name)
+    try:
+        yield
+    finally:
+        _rows_via.set(prior)
 
 
 @contextlib.contextmanager
@@ -206,12 +231,15 @@ def unscoped_audit_rows() -> Iterator[None]:
     prior_private = _rows_private.get()
     prior_principal = _rows_on_principal_turn.get()
     prior_owner = _rows_owner.get()
+    prior_via = _rows_via.get()
     _rows_private.set(False)
     _rows_on_principal_turn.set(False)
     _rows_owner.set(None)
+    _rows_via.set(None)
     try:
         yield
     finally:
         _rows_private.set(prior_private)
         _rows_on_principal_turn.set(prior_principal)
         _rows_owner.set(prior_owner)
+        _rows_via.set(prior_via)

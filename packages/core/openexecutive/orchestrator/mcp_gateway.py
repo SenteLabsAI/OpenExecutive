@@ -3542,19 +3542,24 @@ class MCPGateway:
         if refused is not None and not code_built:
             return refused
         # A turn another AI app asked over Open Executive's MCP server runs
-        # gateway reads only (schedule_tools.MCP_CLIENT_MCP_TOOLS). The chat
-        # loop already refuses anything else; this holds for any other path.
+        # gateway reads only (schedule_tools.MCP_CLIENT_MCP_TOOLS), whether or
+        # not it may act: a mail send or draft goes on an approval card. The
+        # chat loop already refuses anything else; this holds for any other
+        # path.
         from openexecutive.orchestrator.schedule_tools import (
             current_session,
+            mcp_client_acting,
             mcp_client_withheld_error,
             mcp_client_withholds,
-            read_only_turn,
+            mcp_rules_turn,
         )
 
-        if read_only_turn(current_session.get()) and mcp_client_withholds(
-            "call_tool", tool_input
-        ):
-            return mcp_client_withheld_error(str(tool_input.get("name") or "call_tool")[:200])
+        turn_session = current_session.get()
+        if mcp_rules_turn(turn_session) and mcp_client_withholds("call_tool", tool_input):
+            return mcp_client_withheld_error(
+                str(tool_input.get("name") or "call_tool")[:200],
+                acting=mcp_client_acting(turn_session),
+            )
         session = self._require_session()
         arguments = tool_input.get("arguments", {})
         if isinstance(arguments, str):

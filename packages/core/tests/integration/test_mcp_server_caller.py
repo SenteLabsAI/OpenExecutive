@@ -189,3 +189,81 @@ def test_ask_executive_asks_as_the_signed_caller(
     assert kwargs["person_id"] == person_id
     assert kwargs["session"].from_mcp_client is True
     assert kwargs["session"].caller_person_id == person_id
+
+
+def _secret_app(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The API app behind a shared secret, open mode for callers."""
+    from openexecutive.api.main import create_app
+    from openexecutive.mcp_server import server as mcp_server
+
+    monkeypatch.setenv("BACKEND_SHARED_SECRET", "s3cret")
+    monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
+    app = create_app()
+    endpoint = next(
+        getattr(r, "endpoint", None) or getattr(r, "app", None)
+        for r in mcp_server._http_app.routes
+        if hasattr(getattr(r, "endpoint", None) or getattr(r, "app", None), "session_manager")
+    )
+    monkeypatch.setattr(endpoint, "session_manager", endpoint.session_manager)
+    return app, endpoint
+
+
+@pytest.mark.parametrize(
+    ("headers", "may_act"),
+    [
+        ({"x-api-key": "s3cret", "x-mcp-client-actions": "on"}, True),
+        ({"x-api-key": "s3cret"}, False),
+    ],
+)
+def test_the_actions_header_counts_only_behind_the_shared_secret(
+    roster: dict[str, int], monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], may_act: bool
+) -> None:
+    # The setting is ignored once a secret is configured.
+    monkeypatch.setenv("MCP_CLIENT_ACTIONS", "true")
+    app, endpoint = _secret_app(monkeypatch)
+    chat = AsyncMock(return_value="An answer")
+    with (
+        patch("openexecutive.orchestrator.executive.Executive.chat", new=chat),
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=None),
+        patch("openexecutive.briefing.context.render_and_trust", return_value=""),
+    ):
+        out = _rpc(
+            app, endpoint, "tools/call",
+            {"name": "ask_executive", "arguments": {"message": "Close the pilot loop"}}, headers,
+        )
+    assert out["result"]["content"][0]["text"] == "An answer"
+    session = chat.await_args.kwargs["session"]
+    assert session.from_mcp_client is True
+    assert session.mcp_client_may_act is may_act
+    assert session.caller_person_id == roster["principal"]
+
+
+def test_a_wrong_key_never_reaches_the_tool(roster: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    app, endpoint = _secret_app(monkeypatch)
+    manager = _fresh_manager(endpoint)
+
+    async def _go() -> int:
+        async with manager.run():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/mcp/", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                    headers={"x-api-key": "wrong", "x-mcp-client-actions": "on",
+                             "accept": "application/json, text/event-stream"},
+                )
+        return response.status_code
+
+    assert asyncio.run(_go()) == 401
+
+
+def test_without_a_secret_the_header_is_ignored(roster: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MCP_CLIENT_ACTIONS", raising=False)
+    app, endpoint = _app(monkeypatch, signed=False)
+    chat = AsyncMock(return_value="An answer")
+    with (
+        patch("openexecutive.orchestrator.executive.Executive.chat", new=chat),
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=None),
+    ):
+        _rpc(app, endpoint, "tools/call",
+             {"name": "ask_executive", "arguments": {"message": "x"}}, {"x-mcp-client-actions": "on"})
+    assert chat.await_args.kwargs["session"].mcp_client_may_act is False

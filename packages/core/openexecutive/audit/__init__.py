@@ -13,8 +13,10 @@ from openexecutive.audit.context import (
     principal_turn_rows,
     private_rows,
     rows_for_person,
+    rows_via,
     set_turn,
     unscoped_audit_rows,
+    via_app,
 )
 from openexecutive.audit.logger import (
     AuditEvent,
@@ -37,7 +39,9 @@ __all__ = [
     "principal_turn_rows",
     "private_rows",
     "rows_for_person",
+    "rows_via",
     "set_audit_logger",
     "set_turn",
     "unscoped_audit_rows",
+    "via_app",
 ]

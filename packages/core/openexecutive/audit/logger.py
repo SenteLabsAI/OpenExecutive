@@ -410,6 +410,13 @@ class AuditLogger:
         private rows stay as above.
         """
         try:
+            # A turn another AI app asked to act (``audit.context.via_app``):
+            # every row says which app asked.
+            from openexecutive.audit.context import rows_via
+
+            via = rows_via()
+            if via and not (details and "via" in details):
+                details = {**(details or {}), "via": via}
             owner = _row_owner(private_to_person)
             is_private = (
                 bool(private) or owner is not None or _private_to_principal(summary, details, full)
