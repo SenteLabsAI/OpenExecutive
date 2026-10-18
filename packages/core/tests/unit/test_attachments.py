@@ -160,6 +160,16 @@ async def test_build_attachment_output_empty_extraction_returns_notice():
     assert "could not extract" in extra_text.lower()
 
 
+async def test_build_attachment_output_types_an_image_by_its_bytes():
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    _, blocks = await build_attachment_output("photo.jpg", png, "image/jpeg")
+    assert blocks[0]["source"]["media_type"] == "image/png"
+
+    extra_text, blocks = await build_attachment_output("photo.png", b"not an image", "image/png")
+    assert blocks == []
+    assert "Could not read photo.png" in extra_text
+
+
 # --------------------------------------------------------------------------- #
 # build_attachment_output — unsupported type
 # --------------------------------------------------------------------------- #

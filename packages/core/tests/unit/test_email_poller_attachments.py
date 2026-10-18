@@ -29,7 +29,7 @@ from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 EXEC = "ai@example.com"
 # Large enough not to read as a signature logo (MIN_IMAGE_BYTES).
-PHOTO_BYTES = b"\x89PNG" + b"0" * (20 * 1024)
+PHOTO_BYTES = b"\xff\xd8\xff\xe0" + b"0" * (20 * 1024)
 
 
 async def _read_text(*args: Any) -> str:
@@ -287,6 +287,19 @@ def test_a_photo_reaches_the_turn_as_an_image(download_dir) -> None:
     assert block["type"] == "image"
     assert block["source"]["media_type"] == "image/jpeg"
     assert base64.standard_b64decode(block["source"]["data"]) == PHOTO_BYTES
+
+
+async def test_an_image_is_typed_by_its_bytes_not_its_name(download_dir) -> None:
+    png = download_dir / "chart.jpg"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * (20 * 1024))
+    junk = download_dir / "fake.png"
+    junk.write_bytes(b"0" * (20 * 1024))
+    refs = [EmailAttachmentRef("chart.jpg", "C", 20 * 1024), EmailAttachmentRef("fake.png", "F", 20 * 1024)]
+
+    read = await read_email_attachments(_Gateway({"C": png, "F": junk}), "m1", EXEC, refs)
+
+    assert [b["source"]["media_type"] for b in read.image_blocks] == ["image/png"]
+    assert read.text == "(Could not read fake.png)"
 
 
 def test_an_email_without_images_passes_no_blocks(download_dir, scanned) -> None:

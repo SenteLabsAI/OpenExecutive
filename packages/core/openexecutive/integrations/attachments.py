@@ -250,6 +250,21 @@ def _schedule_ingest(text: str, filename: str) -> None:
 # Per-attachment routing
 # ------------------------------------------------------------------ #
 
+def sniff_image_type(data: bytes) -> str | None:
+    """The image type the bytes themselves say, or None if they aren't one
+    the model takes. The model API refuses an image whose bytes don't match
+    its declared type, so a misnamed file must not go by its name."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def build_image_block(data: bytes, content_type: str) -> dict[str, Any]:
     """An Anthropic vision content block for one image."""
     return {
@@ -324,7 +339,10 @@ async def build_attachment_output(
         ct = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix.lstrip('.')}"
 
     if ct in _SUPPORTED_IMAGE_TYPES:
-        return "", [build_image_block(data, ct)]
+        sniffed = sniff_image_type(data)
+        if sniffed is None:
+            return f"(Could not read {filename}: not a PNG, JPG, GIF or WebP image)", []
+        return "", [build_image_block(data, sniffed)]
 
     if suffix in _EXTRACTABLE_SUFFIXES:
         text, note, converted = await _extract_text(data, filename, inbound=inbound)

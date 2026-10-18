@@ -15,8 +15,8 @@ resolve_readable_file``, the check ``oe__read_file`` uses) before it is read
 — with a scanned PDF converted by ``knowledge.pdf_reader``. Only this email's
 own attachments are read, so no tool is widened for the turn.
 
-Images (PNG, JPEG, GIF, WebP) come back as vision blocks for the turn, as
-they do in chat. A few at most, and none under ``MIN_IMAGE_BYTES``: mail
+Images (PNG, JPEG, GIF, WebP, typed by their bytes) come back as vision
+blocks for the turn, as they do in chat. A few at most, and none under ``MIN_IMAGE_BYTES``: mail
 carries signature logos and tracking pixels as attachments too, and those
 would only spend tokens. One over ``MAX_IMAGE_BYTES`` is skipped with a
 note, because the model API refuses a larger image and would fail the turn.
@@ -164,9 +164,8 @@ async def _read_image(
     gateway: MCPGateway, message_id: str, user_email: str, ref: EmailAttachmentRef
 ) -> dict[str, Any] | str:
     """One image attachment as a vision block, or the note for the turn."""
-    from openexecutive.integrations.attachments import build_image_block
+    from openexecutive.integrations.attachments import build_image_block, sniff_image_type
 
-    suffix = Path(ref.name).suffix.lower()
     resolved = await _download(
         gateway, message_id, user_email, ref, suffixes=frozenset(IMAGE_MEDIA_TYPES)
     )
@@ -179,8 +178,10 @@ async def _read_image(
         return f"(Could not read {ref.name})"
     if len(data) > MAX_IMAGE_BYTES:
         return f"(Skipped {ref.name}: image too large — limit {MAX_IMAGE_BYTES // (1024 * 1024)} MB)"
-    # The saved name may differ from the sender's; the type is the saved file's.
-    media_type = IMAGE_MEDIA_TYPES.get(resolved.suffix.lower()) or IMAGE_MEDIA_TYPES[suffix]
+    # Typed by its bytes, not its name: a mismatch would fail the whole turn.
+    media_type = sniff_image_type(data)
+    if media_type is None:
+        return f"(Could not read {ref.name})"
     return build_image_block(data, media_type)
 
 
