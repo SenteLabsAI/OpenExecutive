@@ -60,7 +60,7 @@ const KINDS: PersonKind[] = ["team", "contact"];
 const TONE_DOT = { ok: "bg-emerald-500", warn: "bg-amber-500", muted: "bg-fg-subtle" } as const;
 
 function channelLabel(channel: string): string {
-  return channel === "any" ? "Any channel" : channel.charAt(0).toUpperCase() + channel.slice(1);
+  return channel === "any" ? "Where they last talked" : channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
 function PersonCard({ person, today }: { person: Person; today: string }) {
@@ -486,7 +486,7 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
                   </select>
                 </label>
                 <p className={HINT_CLS}>
-                  Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : form.preferred_channel}.
+                  Proposals routed to this person are sent via {form.preferred_channel === "any" ? "the app they last talked in, then any other" : form.preferred_channel}.
                 </p>
               </div>
               <div>

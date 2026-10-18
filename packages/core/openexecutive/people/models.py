@@ -104,6 +104,11 @@ class Person(BaseModel):
     telegram_chat_id: str | None = None
     discord_user_id: str | None = None
     preferred_channel: PreferredChannel = "any"
+    # The chat app they last talked to the Executive in, from their own
+    # account (``people.reach.note_talked``), and when (ISO, UTC). With
+    # ``preferred_channel`` "any", messages go there first.
+    last_channel: str | None = None
+    last_channel_at: str | None = None
     availability: list[AvailabilityWindow] = Field(default_factory=list)
     authority_scope: list[AuthorityScope] = Field(default_factory=list)
     response_sla_hours: int = 24

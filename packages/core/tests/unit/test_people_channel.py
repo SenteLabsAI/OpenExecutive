@@ -186,7 +186,7 @@ def test_prefer_channel_for_returns_channel_inside_window() -> None:
     assert result == ("slack", "U12345")
 
 
-def test_prefer_channel_any_tries_email_first() -> None:
+def test_prefer_channel_any_tries_chat_apps_before_email() -> None:
     pid = people_store.upsert_person(
         full_name="Any Chan",
         email="any@co.com",
@@ -196,7 +196,21 @@ def test_prefer_channel_any_tries_email_first() -> None:
     people_registry.invalidate()
     result = prefer_channel_for(pid, now=datetime.now(UTC))
     assert result is not None
-    assert result[0] == "email"  # email tried first for "any"
+    assert result[0] == "slack"  # email is the backup for "any"
+
+
+def test_prefer_channel_any_goes_where_they_last_talked() -> None:
+    pid = people_store.upsert_person(
+        full_name="Any Chan",
+        email="any@co.com",
+        slack_user_id="U999",
+        telegram_chat_id="4242",
+        preferred_channel="any",
+    )
+    people_store.note_last_channel(pid, "telegram")
+    people_registry.invalidate()
+    result = prefer_channel_for(pid, now=datetime.now(UTC))
+    assert result is not None and result[0] == "telegram"
 
 
 def test_prefer_channel_returns_none_when_no_ref() -> None:

@@ -23,7 +23,7 @@ import os
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from openexecutive.people.models import (
@@ -179,6 +179,14 @@ def initialize_db(db_path: Path | None = None) -> None:
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+        # Additive migration: the chat app each person last talked in.
+        for column in ("last_channel", "last_channel_at"):
+            if column not in cols:
+                try:
+                    conn.execute(f"ALTER TABLE people ADD COLUMN {column} TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
         # The principal is never a contact; repair a hand-edited row so every
         # team-only read keeps finding them.
         conn.execute(
@@ -247,6 +255,15 @@ def _load_aliases(person_id: int, conn: sqlite3.Connection) -> list[str]:
     return [row["email"] for row in rows]
 
 
+def _optional(row: sqlite3.Row, column: str) -> str | None:
+    """A column ``initialize_db`` may not have migrated yet reads as None."""
+    try:
+        value = row[column]
+    except (IndexError, KeyError):
+        return None
+    return str(value) if value else None
+
+
 def _row_to_person(row: sqlite3.Row, conn: sqlite3.Connection) -> Person:
     person_id = int(row["id"])
     try:
@@ -278,6 +295,8 @@ def _row_to_person(row: sqlite3.Row, conn: sqlite3.Connection) -> Person:
         telegram_chat_id=row["telegram_chat_id"],
         discord_user_id=row["discord_user_id"],
         preferred_channel=row["preferred_channel"],
+        last_channel=_optional(row, "last_channel"),
+        last_channel_at=_optional(row, "last_channel_at"),
         response_sla_hours=int(row["response_sla_hours"]),
         on_leave_until=on_leave,
         reports_to_person_id=row["reports_to_person_id"],
@@ -382,6 +401,29 @@ def upsert_person(
     if became_contact and db_path is None:
         _left_the_team(person_id)
     return person_id
+
+
+def note_last_channel(
+    person_id: int,
+    channel: str,
+    *,
+    now: datetime | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Record that ``person_id`` just talked in ``channel``. Leaves
+    ``updated_at`` alone (it isn't an edit of the person), and skips the write
+    while the stored channel is the same and under an hour old. True when it
+    wrote."""
+    stamp = (now or datetime.now(UTC)).astimezone(UTC)
+    an_hour_ago = (stamp - timedelta(hours=1)).isoformat()
+    with _get_conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE people SET last_channel = ?, last_channel_at = ?"
+            " WHERE id = ? AND (last_channel IS NULL OR last_channel != ?"
+            " OR last_channel_at IS NULL OR last_channel_at < ?)",
+            (channel, stamp.isoformat(), person_id, channel, an_hour_ago),
+        )
+        return cur.rowcount > 0
 
 
 def set_authority_scope(

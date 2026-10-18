@@ -4512,10 +4512,22 @@ people:
     openexecutive.people.channel — resolves a person to a deliverable
     (channel, channel_ref) pair. Uses the person's explicit
     preferred_channel when set; when preferred_channel is "any",
-    falls back to email → slack → discord → telegram in that order.
+    takes the first channel in people.reach.reach_order.
     `prefer_channel_for()` also enforces availability windows (returns
     None if the person is on leave or outside all configured windows;
     no windows means always-on).
+  reach: |
+    openexecutive.people.reach — one order for every message the
+    Executive sends a person (reach_order): preferred_channel; with "any",
+    last_channel, the chat app they last talked in; then slack → discord →
+    telegram; then email as the backup (first when preferred). Used by
+    scheduler.runner.delivery_order (briefs), schedule_tools.message_person
+    and _dm_channel_for (messages, follow-ups) and people.channel
+    (nudges). note_talked runs from Executive.chat on a chat app turn and
+    writes people.last_channel / last_channel_at (store.note_last_channel,
+    at most hourly for the same app, updated_at untouched) only when the
+    turn's channel ref is the person's own stored Slack / Discord id or
+    private (positive) Telegram chat id.
   notification_settings: |
     Each team member sets their own on Settings → Notifications
     (GET/PUT /notifications/settings, api.routes.notifications; caller

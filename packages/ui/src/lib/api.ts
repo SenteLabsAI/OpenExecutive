@@ -4435,6 +4435,9 @@ export interface Person {
   telegram_chat_id: string | null;
   discord_user_id: string | null;
   preferred_channel: string;
+  // The chat app they last talked to the Executive in (slack, discord or
+  // telegram); with preferred_channel "any" messages go there first.
+  last_channel?: string | null;
   availability: AvailabilityWindow[];
   authority_scope: string[];
   response_sla_hours: number;

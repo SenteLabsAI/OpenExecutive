@@ -1438,6 +1438,14 @@ async def handle_message_person(tool_input: dict[str, Any]) -> str:
     return await message_person(tool_input)
 
 
+def _chat_candidates(person: Any) -> list[tuple[str, str | None]]:
+    """The person's chat channels as (channel, stored id) pairs, in
+    ``people.reach.reach_order``'s order."""
+    from openexecutive.people.reach import channel_id, reach_order
+
+    return [(c, channel_id(person, c)) for c in reach_order(person, email=False)]
+
+
 async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = True) -> str:
     """Send a DM to a rostered person, resolving the channel + real channel id
     server-side from their person_id.
@@ -1504,18 +1512,12 @@ async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = T
     configured = configured_integrations(get_settings())
 
     # Candidate channels for this person, each a (channel, the person's stored
-    # id for it) pair. Stable-sorted so preferred_channel comes first and the
-    # rest keep discord > telegram > slack order. We only route to a channel
+    # id for it) pair, in people.reach's order (their pick, else where they
+    # last talked, then Slack > Discord > Telegram). We only route to a channel
     # that is configured on this deployment AND that the person has a
     # well-formed id for (a malformed stored id is skipped, not handed to the
     # API as a misleading "bad arguments" error from the delegate).
-    candidates: list[tuple[str, str | None]] = [
-        ("discord", person.discord_user_id),
-        ("telegram", person.telegram_chat_id),
-        ("slack", person.slack_user_id),
-    ]
-    preferred = (person.preferred_channel or "").lower()
-    candidates.sort(key=lambda c: 0 if c[0] == preferred else 1)
+    candidates = _chat_candidates(person)
 
     # Try each usable channel in turn; a send failure (e.g. Discord 403 when the
     # bot can't DM that user) falls through to the next channel rather than
@@ -1667,15 +1669,7 @@ def resolve_person_scheduled_dm(
     ``slack_dm``) so a caller can enqueue a follow-up the runner will deliver.
     The two share the channel-validation rules; keep them in sync.
     """
-    candidates: list[tuple[str, str | None]] = [
-        ("discord", getattr(person, "discord_user_id", None)),
-        ("telegram", getattr(person, "telegram_chat_id", None)),
-        ("slack", getattr(person, "slack_user_id", None)),
-    ]
-    preferred = (getattr(person, "preferred_channel", "") or "").lower()
-    candidates.sort(key=lambda c: 0 if c[0] == preferred else 1)
-
-    for channel, channel_ref in candidates:
+    for channel, channel_ref in _chat_candidates(person):
         if channel not in configured or not channel_ref:
             continue
         if channel == "discord":

@@ -2106,50 +2106,38 @@ def _delivered_ok(result_json: str) -> bool:
     )
 
 
-# `Person.preferred_channel` values (people/models.py PreferredChannel) mapped
-# to the delivery channels below. "any" has no entry: it keeps the fallback
-# order.
-_PREFERRED_TO_DELIVERY: dict[str, str] = {
+# ``people.reach`` channel names mapped to the delivery channels below.
+_REACH_TO_DELIVERY: dict[str, str] = {
     "slack": "slack_dm",
     "discord": "discord_dm",
     "telegram": "telegram",
     "email": "email",
 }
-# Chat fallback order after the preferred channel. Email comes after all of
-# them unless it is the preference — see `delivery_order`.
-_CHAT_DELIVERY_ORDER: tuple[str, ...] = ("slack_dm", "discord_dm", "telegram")
 
 
 def delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
     """The channels a message can reach ``principal`` on, in the order to try.
 
-    Chat channels the principal has an id for come first — the preferred one
-    ahead of the rest (slack, discord, telegram). Email (it needs the MCP
-    gateway, ``email_ready``) is tried first when it is the preference, and
-    otherwise last, as the backup: delivery stops at the first channel that
-    sends, so an owner linked by email at setup (preference ``any``) with a
-    working Slack still never gets the briefs by email too — only when every
-    chat channel is missing or fails.
+    The order is ``people.reach.reach_order``: the preferred channel, or with
+    no preference the chat app they last talked in, then the other chat apps
+    (Slack, Discord, Telegram), then email (it needs the MCP gateway,
+    ``email_ready``) as the backup unless it was the one picked. Delivery
+    stops at the first channel that sends, so an owner with a working Slack
+    never gets the briefs by email too — only when every chat channel is
+    missing or fails.
     Empty when nothing can deliver — e.g. a principal who only uses the web UI.
     """
     if principal is None:
         return []
-    ids = {
-        "slack_dm": principal.slack_user_id,
-        "discord_dm": principal.discord_user_id,
+    from openexecutive.people.reach import reach_order
+
+    order: list[str] = []
+    for channel in reach_order(principal, email=email_ready):
         # Only a private chat: a group's id is negative, and everyone in it
         # would read the message.
-        "telegram": principal.telegram_chat_id if str(principal.telegram_chat_id or "").isdigit() else None,
-    }
-    chat = [c for c in _CHAT_DELIVERY_ORDER if ids[c]]
-    pref = (principal.preferred_channel or "any").lower()
-    preferred = _PREFERRED_TO_DELIVERY.get(pref)
-    order = ([preferred] if preferred in chat else []) + [c for c in chat if c != preferred]
-    if email_ready and principal.email:
-        if pref == "email":
-            order.insert(0, "email")
-        else:
-            order.append("email")
+        if channel == "telegram" and not str(principal.telegram_chat_id or "").isdigit():
+            continue
+        order.append(_REACH_TO_DELIVERY[channel])
     return order
 
 
