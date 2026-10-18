@@ -144,12 +144,10 @@ def open_tools_tool(offered: Iterable[str]) -> dict[str, Any]:
     return {
         "name": OPEN_TOOLS,
         "description": (
-            "Open a group of further tools. You have more tools than the ones listed "
-            "directly; they sit in the groups below. When a request needs one, open "
-            "its group: the result gives each tool's description and input, and you "
-            "then call it with use_tool. Open a group only when the request needs it. "
-            "Before you tell the person you can't do something, check these groups: "
-            "if one covers it, open it.\n"
+            "Open a group of further tools; the result gives each tool's description "
+            "and input, and you call it with use_tool. Open one only when the request "
+            "needs it, and before telling the person you can't do something, check "
+            "whether a group below covers it.\n"
             + lines
         ),
         "input_schema": {

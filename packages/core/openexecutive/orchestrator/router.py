@@ -50,16 +50,29 @@ SPECIALIST_DESCRIPTIONS = {
     "triage": "Chief of Staff — evaluates inbound events (email/Slack/docs) for significance and decides alerting",
 }
 
+
+
+def _short_option(key: str, description: str) -> str:
+    """'cfo (Chief Financial Officer: financial modeling, unit economics,
+    fundraising)': the title and the first three areas. The chat re-sends the
+    tool list on every call, so the full area lists stay in
+    SPECIALIST_DESCRIPTIONS for the places that show them once."""
+    title, _, areas = description.partition(" — ")
+    first = ", ".join(a.strip() for a in areas.split(",")[:3]) if areas else ""
+    return f"{key} ({title}: {first})" if first else f"{key} ({title})"
+
+
+_SPECIALIST_OPTIONS = ", ".join(_short_option(k, v) for k, v in SPECIALIST_DESCRIPTIONS.items())
+
 SPECIALIST_TOOLS: list[dict[str, Any]] = [
     {
         "name": "consult_specialist",
         "description": (
-            "Consult a specialist executive agent for domain-specific analysis. "
-            "Use this to get deep expertise from the relevant functional leader "
-            "whenever a question asks for judgment in their area: a decision, a plan, "
-            "an analysis, a negotiation, a hire, a contract term, a pricing or fundraising "
-            "move, a board message. Not for lookups, scheduling, status or routine drafting. "
-            "You may call this multiple times in parallel for cross-domain questions."
+            "Consult a specialist executive for analysis in their area whenever a "
+            "question asks for judgment: a decision, a plan, an analysis, a negotiation, "
+            "a hire, a contract term, a pricing or fundraising move, a board message. "
+            "Not for lookups, scheduling, status or routine drafting. Call several in "
+            "parallel for cross-domain questions."
         ),
         "input_schema": {
             "type": "object",
@@ -67,15 +80,15 @@ SPECIALIST_TOOLS: list[dict[str, Any]] = [
                 "specialist": {
                     "type": "string",
                     "enum": sorted(SPECIALIST_REGISTRY.keys()),
-                    "description": f"Which specialist to consult. Options: {', '.join(f'{k} ({v})' for k, v in SPECIALIST_DESCRIPTIONS.items())}",
+                    "description": f"Which specialist to consult: {_SPECIALIST_OPTIONS}.",
                 },
                 "query": {
                     "type": "string",
-                    "description": "The specific question or task for the specialist. Be precise — they only see this query and the conversation context.",
+                    "description": "The precise question or task; the specialist sees only this and the conversation context.",
                 },
                 "context": {
                     "type": "string",
-                    "description": "Relevant context from the conversation that the specialist needs to give a good answer.",
+                    "description": "Context from the conversation the specialist needs.",
                 },
             },
             "required": ["specialist", "query"],

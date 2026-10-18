@@ -391,12 +391,10 @@ def _record_outbound_context(
 SCHEDULE_FOLLOWUP_TOOL: dict[str, Any] = {
     "name": "schedule_followup",
     "description": (
-        "Queue a proactive follow-up message to be sent to the user at a future time via "
-        "their channel. Use ONLY when the user explicitly asks for a follow-up, reminder, "
-        "check-in, or scheduled action. Convert any relative time (\"tomorrow 9am\", "
-        "\"in 2 hours\") to an ISO8601 UTC timestamp yourself before calling — the user's "
-        "timezone is provided in your system prompt. Do NOT use this to defer normal "
-        "in-conversation replies."
+        "Queue a follow-up message to the user at a future time on their channel. Use "
+        "ONLY when the user explicitly asks for a follow-up, reminder, check-in or "
+        "scheduled action, never to defer a normal reply. Convert relative times "
+        "(\"tomorrow 9am\") to ISO8601 UTC yourself, using the timezone in your system prompt."
     ),
     "input_schema": {
         "type": "object",
@@ -421,19 +419,16 @@ SCHEDULE_FOLLOWUP_TOOL: dict[str, Any] = {
             "intent": {
                 "type": "string",
                 "description": (
-                    "1-3 sentences describing what to do at run_at, including any context "
-                    "the future Executive call will need (the topic, decision being followed "
-                    "up on, key facts). Be specific — the future session will not see this "
-                    "conversation's history."
+                    "1-3 sentences on what to do at run_at, with the context it needs "
+                    "(topic, decision, key facts): that run will not see this conversation."
                 ),
             },
             "department": {
                 "type": "string",
                 "description": (
-                    "Optional department slug (e.g. 'finance', 'hr_talent'). When set, "
-                    "the authority gate applies at fire time: propose_only departments "
-                    "will route the action to the appropriate approver instead of "
-                    "dispatching it directly."
+                    "Optional department slug (e.g. 'finance'). When set, that department's "
+                    "authority applies at fire time: a propose_only department routes it "
+                    "to an approver instead of sending it."
                 ),
             },
             "assigned_to_person_id": {
