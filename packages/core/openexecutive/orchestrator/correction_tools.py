@@ -11,7 +11,9 @@ brief kept the item and the follow-up still fired.
   follow-ups the speaker scheduled, from a conversation of their own (or
   this one, when nobody else reads it). Being in a shared thread, or being
   who a follow-up is for, is not enough. Nothing else can be listed,
-  cancelled or moved from here.
+  cancelled or moved from here. Every turn also shows the speaker's
+  pending ones (``pending_followups_block``), so one whose reason is
+  already settled gets cancelled in that turn.
 - ``mark_draft_sent``: the speaker's latest chat draft that still counts as
   waiting is marked sent, so the brief stops calling it waiting
   (``delegation.drafts``; the Gmail check marks the rest).
@@ -140,15 +142,16 @@ def _refused(detail: str) -> str:
     return json.dumps({"status": "refused", "detail": detail})
 
 
-def _speaker() -> Any:
-    """The verified speaker's People row (principal or teammate), or None."""
+def _speaker(session: Any = None) -> Any:
+    """The verified speaker's People row (principal or teammate), or None.
+    ``session`` defaults to the turn's own (``current_session``)."""
     from openexecutive.orchestrator.people_tools import (
         is_principal_on_verified_surface,
         teammate_on_verified_surface,
     )
     from openexecutive.people.store import get_person
 
-    session = _session()
+    session = session if session is not None else _session()
     if session is None or getattr(session, "unattended", False):
         return None
     try:
@@ -242,6 +245,52 @@ def _mine(action: Any, person: Any, session: Any) -> bool:
     if action.channel == "__internal__":
         return False
     return _scheduled_by(action, person, session)
+
+
+_BLOCK_MAX = 10
+
+
+def pending_followups_block(session: Any) -> str:
+    """The body of the turn's ``<pending_followups>`` block: the follow-ups
+    the verified speaker scheduled that haven't gone out, so a turn where the
+    thing one waits for has already happened closes it then and there,
+    instead of it firing later about something done. "" when there are none,
+    the speaker isn't verified, or the lookup fails (it never blocks a turn).
+    """
+    from openexecutive.memory.episodic import list_scheduled_actions
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    try:
+        person = _speaker(session)
+        if person is None:
+            return ""
+        rows = [
+            a for a in list_scheduled_actions(status="pending", limit=500, exclude_internal=True)
+            if _mine(a, person, session)
+        ][:_BLOCK_MAX]
+        if not rows:
+            return ""
+        zone = get_user_timezone()
+        lines = []
+        for a in rows:
+            try:
+                when = datetime.fromisoformat(a.run_at.replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=UTC)
+                at = when.astimezone(zone).strftime("%a %d %b %H:%M")
+            except ValueError:
+                at = a.run_at
+            lines.append(f"- #{a.id}, {at}: {' '.join(a.intent_text.split())[:200]}")
+    except Exception:
+        logger.warning("correction_tools: pending follow-ups lookup failed", exc_info=True)
+        return ""
+    return (
+        "Follow-ups they scheduled that haven't gone out yet. If this message "
+        "shows one is already done or no longer needed (what it waits for has "
+        "happened, or they just dealt with it), cancel it with cancel_followup "
+        "and its id, and tell them in one line. Leave the others alone and "
+        "don't mention them.\n" + "\n".join(lines)
+    )
 
 
 async def handle_list_followups(tool_input: dict[str, Any]) -> str:

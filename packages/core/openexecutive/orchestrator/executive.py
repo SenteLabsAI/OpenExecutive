@@ -81,6 +81,7 @@ from openexecutive.orchestrator.content_trust import (
 from openexecutive.orchestrator.correction_tools import (
     CORRECTION_TOOL_HANDLERS,
     CORRECTION_TOOLS,
+    pending_followups_block,
 )
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.decision_tools import (
@@ -1173,6 +1174,15 @@ class Executive:
         if drive_memory:
             user_content_parts.append(
                 {"type": "text", "text": f"<drive_memory>\n{drive_memory}\n</drive_memory>"}
+            )
+        # The follow-ups this speaker scheduled that haven't gone out
+        # (correction_tools.pending_followups_block), so a turn about the
+        # thing one waits for closes it instead of leaving it to fire stale.
+        # Changes as they are set and sent, so the user turn.
+        followups = pending_followups_block(session)
+        if followups:
+            user_content_parts.append(
+                {"type": "text", "text": f"<pending_followups>\n{followups}\n</pending_followups>"}
             )
 
         # Attachment blocks (images) are inserted before the text message so
