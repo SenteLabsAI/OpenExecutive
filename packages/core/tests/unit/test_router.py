@@ -10,6 +10,8 @@ import asyncio
 import os
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-not-used")
 
 from openexecutive.orchestrator.router import (  # noqa: E402
@@ -131,3 +133,21 @@ def test_route_to_specialist_unknown_returns_error_string() -> None:
     """Pre-existing behaviour — guard against regression."""
     result = asyncio.run(route_to_specialist(specialist_name="nope", query="x"))
     assert "Unknown specialist" in result
+
+
+def test_every_specialist_has_a_short_option() -> None:
+    from openexecutive.orchestrator.router import SPECIALIST_REGISTRY, SPECIALIST_SHORT
+
+    assert set(SPECIALIST_SHORT) == set(SPECIALIST_REGISTRY)
+
+
+@pytest.mark.parametrize(
+    ("key", "cue"),
+    [("sales", "discounting"), ("cmo", "crisis"), ("cso", "OKRs"), ("cfo", "fundraising")],
+)
+def test_the_specialist_options_keep_their_routing_cues(key: str, cue: str) -> None:
+    from openexecutive.orchestrator.router import SPECIALIST_TOOLS
+
+    text = SPECIALIST_TOOLS[0]["input_schema"]["properties"]["specialist"]["description"]
+    option = next(part for part in text.split("; ") if part.startswith(f"{key} ("))
+    assert cue in option

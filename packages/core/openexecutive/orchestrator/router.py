@@ -50,19 +50,24 @@ SPECIALIST_DESCRIPTIONS = {
     "triage": "Chief of Staff — evaluates inbound events (email/Slack/docs) for significance and decides alerting",
 }
 
+# One line per specialist for the consult_specialist tool. The chat re-sends
+# the tool list on every call, so these are shorter than
+# SPECIALIST_DESCRIPTIONS (shown once, in the Agent Council and workflow
+# designer) but keep each area's routing cues.
+SPECIALIST_SHORT = {
+    "cso": "strategy, competition, M&A, positioning, OKRs",
+    "cfo": "finance, unit economics, fundraising, cash flow",
+    "chro": "hiring, compensation, performance, culture, org design",
+    "gc": "contracts, IP, employment law, compliance",
+    "coo": "processes, vendors, scaling, operating metrics",
+    "cmo": "GTM, brand, messaging, PR, crisis communications",
+    "cpo": "roadmap, prioritization, product strategy",
+    "sales": "pipeline, discovery, pricing and discounting, proposals, forecasting",
+    "board_comms": "board decks, investor relations, governance",
+    "triage": "whether an inbound event is significant",
+}
 
-
-def _short_option(key: str, description: str) -> str:
-    """'cfo (Chief Financial Officer: financial modeling, unit economics,
-    fundraising)': the title and the first three areas. The chat re-sends the
-    tool list on every call, so the full area lists stay in
-    SPECIALIST_DESCRIPTIONS for the places that show them once."""
-    title, _, areas = description.partition(" — ")
-    first = ", ".join(a.strip() for a in areas.split(",")[:3]) if areas else ""
-    return f"{key} ({title}: {first})" if first else f"{key} ({title})"
-
-
-_SPECIALIST_OPTIONS = ", ".join(_short_option(k, v) for k, v in SPECIALIST_DESCRIPTIONS.items())
+_SPECIALIST_OPTIONS = "; ".join(f"{k} ({v})" for k, v in SPECIALIST_SHORT.items())
 
 SPECIALIST_TOOLS: list[dict[str, Any]] = [
     {
