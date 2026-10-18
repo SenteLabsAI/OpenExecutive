@@ -1846,6 +1846,11 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "remember_fact",
     "resolve_roster_request",
     "update_company_profile",
+    # App control (orchestrator/app_control.py) acts as the person asking, and
+    # its cards wait for their tap: nobody is there to ask or to tap.
+    "do_in_app",
+    "find_in_app",
+    "open_in_app",
 })
 
 
@@ -2239,6 +2244,8 @@ def mcp_client_withheld_error(tool_name: str, *, acting: bool = False) -> str:
 # the variant keeps a stable tool prefix of its own.
 SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "archive_person",
+    # Changes in the app as the owner: their word, not a guest's.
+    "do_in_app",
     # Invites and cancellations mail the attendees.
     "cancel_calendar_event",
     "create_calendar_event",

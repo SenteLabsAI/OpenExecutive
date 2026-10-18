@@ -90,6 +90,10 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "create_calendar_event",
     "create_instant_meeting",
     "cancel_calendar_event",
+    # App control (orchestrator/app_control.py): done, or a card waiting for a
+    # tap; and a link to a screen
+    "do_in_app",
+    "open_in_app",
 })
 
 
@@ -214,7 +218,7 @@ def summarize_action(
     if (
         parsed is not None
         and parsed.get("status") == "waiting_for_approval"
-        and tool_name != "propose_actions"
+        and tool_name not in ("propose_actions", "do_in_app")
     ):
         # Held for someone's approval (a team member's send or change, the
         # department gate): nothing happened yet, so no "done" chip.
@@ -530,6 +534,25 @@ def summarize_action(
         url = tool_input.get("url", "")
         payload["summary"] = f"Connected MCP server: {url}" if url else "Connected MCP server"
         payload["target"] = url or None
+    elif tool_name == "do_in_app":
+        status = (parsed or {}).get("status")
+        if status == "done":
+            payload["summary"] = str((parsed or {}).get("did") or "Done")
+        elif status == "waiting_for_approval":
+            card = str((parsed or {}).get("card") or "")
+            payload["summary"] = f"Waiting for your OK: {card}" if card else "Waiting for your OK"
+            # The chat shows the card itself under its message, by this id.
+            decision_id = (parsed or {}).get("decision_id")
+            if isinstance(decision_id, int) and not isinstance(decision_id, bool):
+                payload["decision_id"] = decision_id
+        else:
+            return None
+    elif tool_name == "open_in_app":
+        link = (parsed or {}).get("link")
+        if (parsed or {}).get("status") != "link" or not isinstance(link, str) or not link.startswith("/") or link.startswith("//"):
+            return None
+        payload["summary"] = f"Open {(parsed or {}).get('screen') or 'it'}"
+        payload["link"] = link
     elif tool_name == "run_workflow":
         wf = str(tool_input.get("workflow", "")).replace("_", " ")
         run_id = (parsed or {}).get("run_id")

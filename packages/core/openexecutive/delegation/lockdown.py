@@ -126,6 +126,11 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # Only PRIVATE_TURN_MCP_TOOLS: reads, and sends whose every recipient the
     # gateway checks (mail_touched_withholds).
     "call_tool",
+    # App control (orchestrator/app_control.py): after a mail read every
+    # action is a card the speaker taps; the list and the links stay in the app.
+    "do_in_app",
+    "find_in_app",
+    "open_in_app",
 })
 
 MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({

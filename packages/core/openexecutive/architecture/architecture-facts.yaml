@@ -4654,6 +4654,27 @@ people:
     pay a daily model + Honcho call for a note nobody sees.
 
 scheduler:
+  followup_already_handled: |
+    A follow-up can be overtaken by events (the reply it waits for lands and
+    the person deals with it in another chat). Two checks keep it current.
+    At fire time (runner._since_scheduled_block): an ad hoc row back to the
+    person who set it (runner._followup_owner: created_by_person_id, else
+    the originating session's owner, the principal when it has none; only
+    when the address is their own, runner._own_ref) gets their own chat
+    messages since created_at (session_store.own_messages_since: role user,
+    sent by them or in their own conversation from before senders were
+    recorded; newest 30, 300 chars each) in <since_scheduled> tags, and is
+    asked to answer ALREADY_HANDLED: <why> and send nothing when that shows
+    it is done. The runner then marks the row cancelled (last_error
+    'skipped: already handled (...)') and audits phase skipped. The
+    teammate path (_run_teammate_followup) applies the same block and skips
+    its own send. Only the person's own words are quoted, never replies, so
+    mail a reply quoted cannot reach an unattended run this way. In chat:
+    every turn by a verified speaker carries <pending_followups> in the user
+    turn (correction_tools.pending_followups_block, list_followups' ownership
+    rule, up to 10) asking the Executive to cancel_followup one the message
+    shows is settled. The conversation review cannot do this for a chat that
+    read mail (it skips those turns), which is the case that prompted it.
   monthly_value: |
     The owner's monthly tally (briefing/value_summary.py). A tick hook,
     `_maybe_send_monthly_value` → `value_summary.maybe_send_monthly`

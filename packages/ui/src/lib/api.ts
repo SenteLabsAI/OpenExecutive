@@ -5594,6 +5594,21 @@ export async function rejectDecision(
   return res.json();
 }
 
+// Confirm something asked for in chat (an app_action card): the route says
+// why in words when it can't be done, and that is what the card shows.
+export async function approveAppAction(id: number): Promise<DecisionInstance> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits: null }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    throw new Error(typeof body.detail === "string" ? body.detail : "That didn't go through.");
+  }
+  return res.json();
+}
+
 
 // ── Client-company slots (fractional / multi-client mode) ──────────────────
 

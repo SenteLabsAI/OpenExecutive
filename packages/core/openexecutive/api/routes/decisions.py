@@ -787,10 +787,61 @@ _DEPARTMENT_ACTION = DecisionClassSpec(
     after_reject=_department_action_declined,
 )
 
+async def _carry_out_app_action(
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
+) -> DecisionInstance:
+    """Something the person asked for in chat that waits for their tap
+    (``orchestrator.app_control``: a delete, a share, turning on something
+    that acts as them): do it with this request, the tapper's own, through
+    the route its button calls, which checks them again. Claimed first, so it
+    runs once; a card older than a day is turned down instead."""
+    from openexecutive.audit import log_event
+    from openexecutive.memory.decision_ledger import claim_for_execution, finish_execution
+    from openexecutive.orchestrator import app_control
+
+    payload = _parse_payload(instance)
+    if app_control.card_stale(instance.created_at):
+        mark_resolved(instance.id, STATUS_REJECTED, resolver_person_id=resolver)
+        raise HTTPException(
+            status_code=409, detail="This was more than a day ago, so it wasn't done. Ask again in chat.",
+        )
+    if not claim_for_execution(instance.id, resolver_person_id=resolver):
+        raise HTTPException(status_code=409, detail="Someone else resolved this decision first.")
+    details = {"decision_id": instance.id, "action": payload.get("action"), "id": payload.get("id")}
+    try:
+        did = await app_control.carry_out(payload, request)
+    except (app_control.Refused, HTTPException) as exc:
+        reason = app_control.refusal_text(exc) if isinstance(exc, HTTPException) else str(exc)
+        finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": reason})
+        log_event("app_action_refused", f"Card {instance.id} refused", actor="user", details=details)
+        status_code = exc.status_code if isinstance(exc, HTTPException) and exc.status_code < 500 else 409
+        raise HTTPException(status_code=status_code, detail=reason) from None
+    except Exception:
+        logger.exception("decisions/approve: app action %d failed", instance.id)
+        finish_execution(instance.id, STATUS_FAILED, final_payload={**payload, "error": "failed"})
+        raise HTTPException(
+            status_code=502, detail="That didn't go through. Check before trying again.",
+        ) from None
+    finish_execution(instance.id, STATUS_APPROVED_UNCHANGED, final_payload={**payload, "did": did})
+    log_event("app_action_done", did[:200], actor="user", details=details)
+    return _refresh(instance.id)
+
+
+# Something asked for in chat that waits for its person's tap
+# (orchestrator.app_control): theirs alone, and never an alert.
+_APP_ACTION = DecisionClassSpec(
+    name="app_action",
+    principal_only=False,
+    approver_only=True,
+    alert_source=None,
+    approve=_carry_out_app_action,
+)
+
 DECISION_CLASSES: dict[str, DecisionClassSpec] = {
     spec.name: spec
     for spec in (
         _MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD, _DELEGATED_ACTIONS, _DEPARTMENT_ACTION,
+        _APP_ACTION,
     )
 }
 

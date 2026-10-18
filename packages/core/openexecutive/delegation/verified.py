@@ -4,6 +4,9 @@ turning Handle it for me on), kept apart so routes can check it without
 importing the send path (``reply_send``)."""
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 NOT_YOURS = "not_yours"
@@ -22,6 +25,11 @@ def caller_refusal(caller: Any, email: str) -> str | None:
     from openexecutive.api.caller import signing_on
     from openexecutive.utils.deployment import is_local_login
 
+    if _from_chat.get():
+        # A route run from a chat turn (orchestrator.app_control): the caller
+        # is the turn's speaker, not a signed request, so nothing that needs
+        # one goes through. Those wait for a tap on a card instead.
+        return SIGNING_REQUIRED
     if signing_on():
         if caller.kind == "user" and caller.email == email:
             return None
@@ -35,3 +43,17 @@ def caller_refusal(caller: Any, email: str) -> str | None:
             return None
         return NOT_YOURS
     return SIGNING_REQUIRED
+
+
+_from_chat: ContextVar[bool] = ContextVar("verified_from_chat", default=False)
+
+
+@contextmanager
+def from_chat() -> Iterator[None]:
+    """Mark routes called inside this block as run from a chat turn, so
+    ``caller_refusal`` refuses them whoever the caller names."""
+    token = _from_chat.set(True)
+    try:
+        yield
+    finally:
+        _from_chat.reset(token)

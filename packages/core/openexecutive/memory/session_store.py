@@ -438,6 +438,40 @@ def get_session_owner(session_id: str, db_path: Path = DB_PATH) -> tuple[bool, i
     return True, (int(owner) if owner is not None else None)
 
 
+def own_messages_since(
+    person_id: int,
+    since: str,
+    *,
+    limit: int = 30,
+    max_chars: int = 300,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, str]]:
+    """What ``person_id`` wrote in chat after ``since`` (ISO 8601), oldest
+    first: the newest ``limit`` of their own messages, each as one line of at
+    most ``max_chars``. Only their words, never a reply or what someone else
+    wrote in a chat they share; a message from before senders were recorded
+    counts when the conversation is theirs."""
+    if not db_path.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT m.created_at, m.content FROM chat_messages m "
+            "JOIN sessions s ON s.session_id = m.session_id "
+            "WHERE m.role = 'user' AND m.created_at > ? AND (m.sender_person_id = ? "
+            "OR (m.sender_person_id IS NULL AND s.caller_person_id = ?)) "
+            "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+            (since, person_id, person_id, limit),
+        ).fetchall()
+    out: list[dict[str, str]] = []
+    for row in reversed(rows):
+        text = " ".join(str(row["content"] or "").split())
+        if len(text) > max_chars:
+            text = text[: max_chars - 1].rstrip() + "…"
+        if text:
+            out.append({"at": str(row["created_at"]), "text": text})
+    return out
+
+
 def mark_mail_private(
     session_id: str,
     owner_person_id: int | None = None,
