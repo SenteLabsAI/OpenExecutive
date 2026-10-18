@@ -37,6 +37,8 @@ import {
 const GROUP_CAP = 20;
 // Chats an open topic shows before "Show N more".
 const TOPIC_CAP = 3;
+// How many topics a band shows before "Show N more topics".
+const BAND_CAP = 5;
 const DEFAULT_COLLAPSED = new Set<string>(["older" satisfies GroupKey, "other"]);
 
 export type ChatsView = "date" | "topic";
@@ -170,8 +172,9 @@ export default function ChatHistory({
 
 // The Topic view: pinned chats, then topics (and areas over related ones)
 // in bands by how long since their last chat, then Other. The active band
-// shows its topics; a quiet band folds into one line until opened. An open
-// topic shows its newest few chats. A search opens everything.
+// shows its topics; a quiet band folds into one line until opened. A band
+// shows its five most recent topics, one short line each, then "Show N more
+// topics"; an open topic shows its newest few chats. A search opens everything.
 function TopicHistory({
   sessions,
   searching,
@@ -286,7 +289,6 @@ function TopicHistory({
         key: g.key,
         label: g.label,
         count: g.items.length,
-        preview: g.items[0] ? sessionTitle(g.items[0]) : undefined,
         when: activeLabel(g.items[0]?.updated_at ?? ""),
         menu: g.topic ? <TopicMenu topic={g.topic} topics={topics} onChanged={onChanged} /> : undefined,
         indent,
@@ -313,6 +315,26 @@ function TopicHistory({
       topicBlock({ key: e.key, label: e.label, topic: e.topic, items: e.items }, "")
     );
 
+  const entries = (key: string, list: TopicEntry[]) => {
+    const all = searching || showAll.has(key);
+    const visible = all ? list : list.slice(0, BAND_CAP);
+    const hidden = list.length - visible.length;
+    return (
+      <>
+        {visible.map(entryBlock)}
+        {hidden > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAll((prev) => new Set(prev).add(key))}
+            className="w-full text-left min-h-[40px] px-6 text-sm font-medium text-accent hover:text-fg border-b border-line cursor-pointer"
+          >
+            Show {hidden} more topic{hidden === 1 ? "" : "s"}
+          </button>
+        )}
+      </>
+    );
+  };
+
   return (
     <div>
       {layout.pinned && (
@@ -327,7 +349,7 @@ function TopicHistory({
           <section key={band.key} aria-label={band.label} className="mt-6">
             <h2 className="px-1 mb-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">{band.label}</h2>
             {band.key === "active" ? (
-              band.entries.map(entryBlock)
+              entries(bandKey, band.entries)
             ) : (
               <>
                 {header({
@@ -336,7 +358,7 @@ function TopicHistory({
                   count: band.entries.reduce((n, e) => n + e.items.length, 0),
                   preview: band.entries.map((e) => e.label).join(" · "),
                 })}
-                {isOpen(bandKey) && <div className="ml-6">{band.entries.map(entryBlock)}</div>}
+                {isOpen(bandKey) && <div className="ml-6">{entries(bandKey, band.entries)}</div>}
               </>
             )}
           </section>

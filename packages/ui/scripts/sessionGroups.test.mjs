@@ -175,3 +175,44 @@ test("activeLabel says Today, Yesterday, a weekday, then the date", async () => 
   );
   assert.equal(activeLabel("", now), "");
 });
+
+test("topic layout: an area's name comes off only as a whole word", async () => {
+  const { layoutTopics } = await import("../src/lib/sessionGroups.ts");
+  const now = new Date(2026, 9, 17, 12, 0, 0);
+  const when = new Date(2026, 9, 16, 9).toISOString();
+  const topics = [
+    { id: 1, name: "Board: Q3 deck", chat_count: 2, kept: false, area: "Board" },
+    { id: 2, name: "Boardwalk Permit", chat_count: 2, kept: false, area: "Board" },
+  ];
+  const sessions = ["a", "b", "c", "d"].map((id, i) => ({
+    session_id: id,
+    title: id,
+    created_at: when,
+    updated_at: when,
+    message_count: 2,
+    topic_id: i < 2 ? 1 : 2,
+  }));
+  const [area] = layoutTopics(sessions, topics, now).bands[0].entries;
+  assert.deepEqual(area.children.map((g) => g.label).sort(), ["Boardwalk Permit", "Q3 deck"]);
+});
+
+test("topic layout: six days ago is still this week, seven is quiet", async () => {
+  const { layoutTopics } = await import("../src/lib/sessionGroups.ts");
+  const now = new Date(2026, 9, 17, 12, 0, 0);
+  const topics = [
+    { id: 1, name: "Six", chat_count: 2, kept: false },
+    { id: 2, name: "Seven", chat_count: 2, kept: false },
+  ];
+  const chat = (session_id, day, topic_id) => {
+    const t = new Date(2026, 9, 17 - day, 9).toISOString();
+    return { session_id, title: session_id, created_at: t, updated_at: t, message_count: 2, topic_id };
+  };
+  const sessions = [chat("s1", 6, 1), chat("s2", 6, 1), chat("v1", 7, 2), chat("v2", 7, 2)];
+  assert.deepEqual(
+    layoutTopics(sessions, topics, now).bands.map((b) => [b.label, b.entries.map((e) => e.label)]),
+    [
+      ["Active this week", ["Six"]],
+      ["Quiet for a week", ["Seven"]],
+    ],
+  );
+});
