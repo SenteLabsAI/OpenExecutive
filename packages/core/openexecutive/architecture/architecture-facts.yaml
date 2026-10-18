@@ -10507,6 +10507,33 @@ delegation:
     "call_tool:<unlisted>": that name is the model's own text, which mail
     could steer, and the log is not private (the audit row keeps it). The
     same goes for a turn private to the principal.
+  reply_answers: |
+    delegation.answers — "Decide before sending" with taps. The ghostwriter's
+    compose_reply tool returns each open question as {question, choices
+    (2-4 short answers the writer might pick, never facts), about (time,
+    document, other)}; ghostwriter.parse_questions also takes plain strings,
+    so a model answering in the old shape still gives its questions.
+    ComposedDraft keeps open_questions as strings (chat, Handle it, the
+    evals and every reader use them unchanged) plus question_choices in the
+    same order. On a card (inbox.compose_reply, follow_ups) answers.suggest
+    fills two kinds in code: a time question, with Read my calendar on and
+    the scan's mailbox client, gets up to 3 free half hours, one a day over
+    the next 5 working days from tomorrow (calendar.events_for, then
+    briefing.top_three.free_gaps in the workspace zone and business hours;
+    all-day and declined events don't block), source "I checked your
+    calendar: these are free."; only times are used, never an event's
+    title, and no model sees them. A document question whose words match a
+    company document's name (knowledge.loader.list_company_docs) gets
+    'I'll send "<name>" separately', source 'Found "<name>" in your
+    documents.' Attaching is not offered: a card's draft is plain text
+    (card_drafts keeps no files and update_draft_text refuses a draft with
+    files), so a choice never says a file is attached. The card payload
+    stores question_choices beside open_questions; cards made before it
+    have none and show plain questions. Answers are saved by POST
+    /delegation/replies/{id}/answer (see the delegation API notes);
+    answered_questions keeps {index: answer}. Send in the UI waits until
+    every question with choices is answered, unless the words were changed
+    by hand (questions_settled); the server doesn't add a send rule.
   inbox_watcher: |
     delegation.inbox — the second switch, "Draft replies to my inbox"
     (delegation_inbox_watch: person_id, enabled, watch_since, last_poll_at,
@@ -10831,7 +10858,24 @@ delegation:
     /delegation/replies/{id}/text {text} changes a reply's words on its card
     and, when it is in their Drafts, there too, only while that draft is still
     the version the card last saw (409 draft_changed / draft_not_plain /
-    caller_signing_required, 422 empty / too_long); it sends nothing. Send is POST /decisions/{id}/approve (edits carry the
+    caller_signing_required, 422 empty / too_long); it sends nothing, and a
+    change by hand sets questions_settled. POST
+    /delegation/replies/{id}/answer {answers: [{question_index,
+    answer_text}]} (delegation.answers) answers what the reply left open:
+    one composer-model call (REWRITE_PROMPT + the person's voice block, no
+    tools, the draft and answers tag-scrubbed in the user turn) rewrites
+    the body, signature and AI line kept out and put back, then
+    ghostwriter.lint (links and addresses in neither the draft nor the
+    answers removed, flags added to the card) and card_drafts.edit's own
+    checks and mailbox update (rewrite= hook, held in _EDITING across the
+    model call). It stores answered_questions {index: answer}, returns the
+    card with changed_sentences (new sentences, found in code), 422
+    no_such_question / empty / too_long, 429 too_many past
+    ANSWERS_PER_HOUR (30) per person, 502 rewrite_failed; it sends nothing.
+    Cards carry questions [{text, choices, source, answer}] (from
+    open_questions + question_choices; a card made before choices shows
+    none) and questions_settled. Why choices: tapping an answer beats
+    rewriting the draft by hand on a phone. Send is POST /decisions/{id}/approve (edits carry the
     second yes; 409 confirm / caller_signing_required / draft_gone /
     you_replied / inbox_off / client_slot / the Gmail codes, 429
     rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST

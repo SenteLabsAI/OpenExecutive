@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import Button, { buttonClass } from "@/components/ui/Button";
 import {
+  answerReplyQuestions,
   dismissReplyCard,
   editReplyText,
   getReplyCards,
@@ -13,6 +14,8 @@ import {
 } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import {
+  highlightPieces,
+  questionsLeft,
   relationLabel,
   replyFlagLines,
   mailboxName,
@@ -31,7 +34,11 @@ import FeatureName from "@/components/FeatureName";
 // leaves you to decide and anything to check. The reply waits on the card
 // alone unless you chose to keep replies in your Drafts too. Edit changes its
 // words right on the card (and in your Drafts when it's there:
-// PUT /delegation/replies/{id}/text). Send (the card's primary) sends it from
+// PUT /delegation/replies/{id}/text). "Decide before sending" offers short
+// answers to tap, or "Something else…" to type one: each rewrites the draft
+// with it (POST /delegation/replies/{id}/answer) and lightly marks the new
+// sentences. Send waits until each question with answers to tap is
+// answered, or you changed the words with Edit. Send (the card's primary) sends it from
 // your own mailbox after you confirm who it goes to; Open in Gmail (when it's
 // in your Drafts) and Dismiss are their own buttons beside it.
 // GET /delegation/replies answers only the owner, so nothing shows for
@@ -87,8 +94,9 @@ export function useReplyCards() {
 
 // What the Replies-waiting cards are, for the Needs you header's tip.
 export const REPLIES_WAITING_TIP =
-  "Mail that needs you, with a first reply the Executive wrote in your voice. Tap Edit to " +
-  "change or add to it right here. Nothing is sent until you tap Send. If you keep replies " +
+  "Mail that needs you, with a first reply the Executive wrote in your voice. Tap an answer " +
+  "under Decide before sending to write it in, or tap Edit to change it yourself. Nothing is " +
+  "sent until you tap Send. If you keep replies " +
   "in your Drafts too, Dismiss deletes that draft unless you changed it in your mailbox. " +
   "Only you see these.";
 
@@ -122,6 +130,11 @@ export function ReplyCardItem({
   const [editing, setEditing] = useState<string | null>(null);
   // Drafts in training: keep what you sent as an example when you changed it first.
   const [keepExample, setKeepExample] = useState(true);
+  // "Something else…": which question's answer box is open, and its words.
+  const [typing, setTyping] = useState<{ index: number; text: string } | null>(null);
+  const questions = card.questions ?? [];
+  const left = questionsLeft(card);
+  const changed = card.changed_sentences ?? [];
   const learnsStyle = Boolean(card.learns_style);
   // Being settled: Gmail didn't confirm a send. The server says so, and the
   // section reads the cards again until it's settled.
@@ -158,6 +171,24 @@ export function ReplyCardItem({
       setEditing(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save your change.");
+    } finally {
+      setStep({ kind: "idle" });
+    }
+  };
+
+  const answer = async (index: number, text: string) => {
+    const words = text.trim();
+    if (!words) return;
+    setStep({ kind: "busy", label: "Writing it in…" });
+    setError(null);
+    try {
+      const updated = await answerReplyQuestions(card.decision_id, [
+        { question_index: index, answer_text: words },
+      ]);
+      onChanged?.(updated);
+      setTyping(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't add that to your reply.");
     } finally {
       setStep({ kind: "idle" });
     }
@@ -290,7 +321,17 @@ export function ReplyCardItem({
               clampDraft ? "line-clamp-4" : ""
             }`}
           >
-            {card.draft_body}
+            {changed.length > 0
+              ? highlightPieces(card.draft_body, changed).map((piece, i) =>
+                  piece.changed ? (
+                    <mark key={i} className="rounded bg-accent/15 px-0.5 text-fg">
+                      {piece.text}
+                    </mark>
+                  ) : (
+                    <span key={i}>{piece.text}</span>
+                  ),
+                )
+              : card.draft_body}
           </p>
           {draftIsLong(card.draft_body) && !confirming && (
             <button
@@ -310,7 +351,80 @@ export function ReplyCardItem({
         <p className="mt-3 text-xs text-fg-subtle break-words">Why it waited for you: {card.waited_because}</p>
       )}
 
-      {card.open_questions.length > 0 && (
+      {questions.some((q) => q.choices.length > 0) ? (
+        <div className="mt-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
+          <ul className="mt-1.5 space-y-3">
+            {questions.map((q, i) => (
+              <li key={i} className="text-sm text-fg">
+                <div className="break-words">
+                  {q.answer && <span className="mr-1 text-accent" aria-label="Answered">✓</span>}
+                  {q.text}
+                </div>
+                {q.source && <div className="mt-0.5 text-xs text-fg-subtle break-words">{q.source}</div>}
+                {q.answer && (
+                  <div className="mt-0.5 text-xs text-fg-muted break-words">Your answer: {q.answer}</div>
+                )}
+                {q.choices.length > 0 && editing === null && !unconfirmed && (
+                  <div className="mt-1.5 flex flex-wrap gap-2">
+                    {q.choices.map((choice) => (
+                      <button
+                        key={choice}
+                        type="button"
+                        disabled={busy}
+                        aria-pressed={q.answer === choice}
+                        onClick={() => void answer(i, choice)}
+                        className={`min-h-10 max-w-full rounded-full border px-3.5 py-1.5 text-left text-sm break-words transition-colors cursor-pointer disabled:opacity-50 ${
+                          q.answer === choice
+                            ? "border-accent bg-accent/10 text-fg"
+                            : "border-line bg-surface text-fg-muted hover:border-line-strong hover:text-fg"
+                        }`}
+                      >
+                        {choice}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-expanded={typing?.index === i}
+                      onClick={() => setTyping(typing?.index === i ? null : { index: i, text: "" })}
+                      className="min-h-10 rounded-full border border-dashed border-line px-3.5 py-1.5 text-sm text-fg-muted hover:border-line-strong hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      Something else…
+                    </button>
+                  </div>
+                )}
+                {typing?.index === i && (
+                  <form
+                    className="mt-2 flex flex-wrap items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void answer(i, typing.text);
+                    }}
+                  >
+                    <input
+                      type="text"
+                      aria-label={`Your answer: ${q.text}`}
+                      value={typing.text}
+                      maxLength={500}
+                      autoFocus
+                      disabled={busy}
+                      onChange={(e) => setTyping({ index: i, text: e.target.value })}
+                      className="min-h-10 min-w-0 flex-1 basis-48 rounded-xl border border-line-strong bg-surface px-3 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
+                    />
+                    <Button type="submit" variant="secondary" disabled={busy || !typing.text.trim()}>
+                      Use this
+                    </Button>
+                  </form>
+                )}
+              </li>
+            ))}
+          </ul>
+          {busy && step.label === "Writing it in…" && (
+            <p className="mt-2 text-xs text-fg-subtle" aria-live="polite">Writing it into your reply…</p>
+          )}
+        </div>
+      ) : card.open_questions.length > 0 && (
         <div className="mt-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
           <ul className="mt-1 list-disc pl-5 space-y-0.5 text-sm text-fg">
@@ -377,11 +491,19 @@ export function ReplyCardItem({
           </div>
         </div>
       ) : editing !== null ? null : (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
+        <>
+        {left > 0 && (
+          <p className="mt-4 text-xs text-fg-subtle">
+            {left === 1
+              ? "Answer the question above to send, or tap Edit to write it yourself."
+              : `Answer the ${left} questions above to send, or tap Edit to write it yourself.`}
+          </p>
+        )}
+        <div className={`${left > 0 ? "mt-2" : "mt-4"} flex flex-wrap items-center gap-2`}>
           <Button
             variant="primary"
             onClick={() => setStep({ kind: "ask", recipients: card.draft_to, allow: false })}
-            disabled={busy}
+            disabled={busy || left > 0}
           >
             {busy ? step.label : "Send"}
           </Button>
@@ -389,7 +511,7 @@ export function ReplyCardItem({
             <Button
               variant="secondary"
               onClick={() => setStep({ kind: "ask", recipients: card.draft_to, allow: true })}
-              disabled={busy}
+              disabled={busy || left > 0}
             >
               Send + allow
             </Button>
@@ -420,6 +542,7 @@ export function ReplyCardItem({
             Dismiss
           </Button>
         </div>
+        </>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </article>

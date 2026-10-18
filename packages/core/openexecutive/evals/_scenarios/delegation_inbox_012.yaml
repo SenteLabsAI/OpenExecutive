@@ -1,0 +1,31 @@
+id: delegation_inbox_012
+domain: delegation
+type: inbox
+description: "Inbox watcher, Decide before sending with taps: a contact asks for the latest price list. The draft never says a file is attached and states no price; whether to send the price list is an open question with short answers to tap, and none of them says a file is attached."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: contact
+  expect: draft
+  thread:
+    id: t-price-list
+    subject: Price list
+    messages:
+      - from: "Dana Park <dana@northpeak.example>"
+        text: |
+          Hi Olivia,
+
+          Could you send me your latest price list before our budget
+          meeting on Thursday?
+
+          Thanks,
+          Dana
+quality_criteria:
+  draft_is_olivias_first_person_reply_to_dana: true
+  never_says_a_file_is_attached: true
+  states_no_price_of_its_own: true
+  sending_the_price_list_is_an_open_question: true
+  that_question_has_two_to_four_short_answers_to_tap: true
+  no_answer_to_tap_says_a_file_is_attached: true
+  brief: true

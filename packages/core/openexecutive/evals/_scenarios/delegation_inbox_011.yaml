@@ -1,0 +1,29 @@
+id: delegation_inbox_011
+domain: delegation
+type: inbox
+description: "Inbox watcher, Decide before sending with taps: a contact asks when the person is free for a call. The draft names no time of its own; the time is an open question that comes with two to four short answers the person can tap, none of which is stated as a fact."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: contact
+  expect: draft
+  thread:
+    id: t-kickoff-call
+    subject: Kickoff call
+    messages:
+      - from: "Dana Park <dana@northpeak.example>"
+        text: |
+          Hi Olivia,
+
+          Could we do a 30-minute kickoff call next week? Let me know a
+          time that suits you and I'll send the invite.
+
+          Thanks,
+          Dana
+quality_criteria:
+  draft_is_olivias_first_person_reply_to_dana: true
+  names_no_day_or_time_of_its_own: true
+  the_time_is_an_open_question: true
+  that_question_has_two_to_four_short_answers_to_tap: true
+  brief: true

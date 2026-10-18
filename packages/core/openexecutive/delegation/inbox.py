@@ -721,11 +721,19 @@ class Reply:
     references: str | None
     # Everyone else the email went to, on a group email (reply to all).
     cc: list[str] = field(default_factory=list)
+    # What the person can tap to answer each open question, in order
+    # (``delegation.answers.suggest``); shorter than ``open_questions`` when
+    # a question has none.
+    question_choices: list[dict[str, Any]] = field(default_factory=list)
 
 
-async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str, own: set[str]) -> Reply | str:
+async def compose_reply(
+    person: Any, message: Any, thread: Any, *, relation: str, own: set[str], mailbox: Any = None,
+) -> Reply | str:
     """The reply to ``message``, written as ``person``, or why there is none
-    (a code). Raises ``ComposeError`` when the composer returns nothing."""
+    (a code). ``mailbox`` is their mailbox's client, which also reads their
+    calendar for a time question's free slots (Read my calendar on); None
+    offers none. Raises ``ComposeError`` when the composer returns nothing."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import Recipient, asks_if_ai, compose
     from openexecutive.delegation.threads import plan_reply, thread_text, writer_said
@@ -781,11 +789,15 @@ async def compose_reply(person: Any, message: Any, thread: Any, *, relation: str
     )
     if not composed.subject:
         return "no_subject"
+    from openexecutive.delegation.answers import suggest
+
     questions = list(composed.open_questions)
+    choices = await suggest(person, questions, composed.question_choices, mailbox=mailbox)
     flags = [*card_flags(message, plan, own=own, exec_address=exec_address), *composed.flags]
     if "asks_if_ai" in flags:
         questions.append("They asked whether they're talking to an AI — answer that yourself.")
     return Reply(
+        question_choices=choices,
         to=plan["to"],
         cc=cc,
         subject=composed.subject,
@@ -861,6 +873,8 @@ def _card_payload(
         "draft_subject": reply.subject,
         "draft_body": reply.body,
         "open_questions": reply.open_questions,
+        # One per question, in order (delegation.answers).
+        "question_choices": reply.question_choices,
         "flags": reply.flags,
         "kind": verdict.kind,
         "confidence": verdict.confidence,
@@ -1146,7 +1160,7 @@ async def _consider(
     saved = False
     try:
         try:
-            reply = await compose_reply(person, message, thread, relation=relation, own=own)
+            reply = await compose_reply(person, message, thread, relation=relation, own=own, mailbox=client)
         except ComposeError:
             reply = "compose_failed"
         except Exception as exc:

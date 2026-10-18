@@ -176,9 +176,14 @@ async def _follow_up(
         except ComposeError:
             inbox._retry_later(person.id, sent.id, "compose_failed")
             return False
+        from openexecutive.delegation.answers import suggest
+
         reply = inbox.Reply(
             to=to, cc=cc, subject=composed.subject, body=composed.body,
             open_questions=list(composed.open_questions), flags=list(composed.flags),
+            question_choices=await suggest(
+                person, list(composed.open_questions), composed.question_choices, mailbox=client, now=now,
+            ),
             in_reply_to=sent.message_id_header or None,
             references=references_header(sent.references, sent.message_id_header),
         )

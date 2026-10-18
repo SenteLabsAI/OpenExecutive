@@ -300,6 +300,7 @@ Subject: {reply.get('subject', '')}
 {reply.get('body', '')}
 
 OPEN QUESTIONS SHOWN TO THE PERSON: {json.dumps(reply.get('open_questions') or [])}
+ANSWERS THE PERSON CAN TAP FOR EACH, IN ORDER: {json.dumps([c.get('choices') for c in reply.get('question_choices') or [] if isinstance(c, dict)])}
 FLAGS: {json.dumps(reply.get('flags') or [])}
 
 Quality criteria the draft must satisfy:

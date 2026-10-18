@@ -52,6 +52,11 @@ class ReplyCard:
     in_mailbox: bool = True
     # Which of their mailboxes it sends from: "Gmail" or "Outlook".
     mailbox: str = "Gmail"
+    # The open questions with what can be tapped to answer each
+    # (delegation.answers.questions_for): text, choices, source, answer.
+    questions: list[dict[str, Any]] = field(default_factory=list)
+    # Changed by hand on the card: what is left open no longer holds Send.
+    questions_settled: bool = False
 
 
 def _strings(value: Any) -> list[str]:
@@ -61,6 +66,8 @@ def _strings(value: Any) -> list[str]:
 def cards(person: Any) -> list[ReplyCard]:
     """``person``'s open reply cards, newest first."""
     from openexecutive.delegation import training
+    from openexecutive.delegation.answers import questions_for
+    from openexecutive.delegation.card_drafts import QUESTIONS_SETTLED
     from openexecutive.delegation.gmail import credential_provider, mailbox_link
     from openexecutive.delegation.handle_it import REASONS
     from openexecutive.delegation.inbox import card_payload, ledger_flags, open_cards
@@ -105,6 +112,8 @@ def cards(person: Any) -> list[ReplyCard]:
             learns_style=trained.drafts,
             in_mailbox=bool(draft_id),
             mailbox=mailbox,
+            questions=questions_for(payload),
+            questions_settled=payload.get(QUESTIONS_SETTLED) is True,
         ))
     return out
 

@@ -49,6 +49,13 @@ Routes:
                                     Drafts when it is there too. Needs a
                                     caller the API knows is that person, like
                                     Send (delegation.card_drafts)
+  POST   /delegation/replies/{id}/answer — {answers: [{question_index,
+                                    answer_text}]}: answer what the reply
+                                    left to decide; one model call rewrites
+                                    the draft with it, saved like the text
+                                    route (same checks); returns the card
+                                    with changed_sentences. 429 past the
+                                    hourly limit (delegation.answers)
   PUT    /delegation/handle-it    — {enabled?, mode?}: Handle it for me,
                                     the inbox watcher sending some replies on
                                     its own, mode careful | balanced | bold
@@ -353,6 +360,18 @@ class InboxUpdate(BaseModel):
     mailbox_drafts: bool | None = None
 
 
+class ReplyQuestionOut(BaseModel):
+    """One thing a reply card leaves the caller to decide."""
+
+    text: str
+    # 2 to 4 short answers to tap, or none.
+    choices: list[str] = Field(default_factory=list)
+    # Where the choices came from: their calendar or a document ("" for none).
+    source: str = ""
+    # The answer they gave from the card ("" while it is open).
+    answer: str = ""
+
+
 class ReplyCardOut(BaseModel):
     decision_id: int
     status: str
@@ -383,6 +402,13 @@ class ReplyCardOut(BaseModel):
     in_mailbox: bool = True
     # Which of their mailboxes it sends from: "Gmail" or "Outlook".
     mailbox: str = "Gmail"
+    # The open questions with what can be tapped to answer each; on a card
+    # made before choices, each has none.
+    questions: list[ReplyQuestionOut] = Field(default_factory=list)
+    # Changed by hand on the card: what is left open no longer holds Send.
+    questions_settled: bool = False
+    # POST .../answer only: the sentences its rewrite added or changed.
+    changed_sentences: list[str] = Field(default_factory=list)
 
 
 class RepliesOut(BaseModel):
@@ -393,6 +419,19 @@ class ReplyTextUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(max_length=20_000)
+
+
+class ReplyAnswerIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_index: int = Field(ge=0, le=20)
+    answer_text: str = Field(min_length=1, max_length=500)
+
+
+class ReplyAnswersIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answers: list[ReplyAnswerIn] = Field(min_length=1, max_length=6)
 
 
 class CardActionOut(BaseModel):
@@ -907,6 +946,43 @@ async def update_delegation_reply_text(request: Request, decision_id: int, body:
     if card is None:
         raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
     return ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+
+
+@router.post("/delegation/replies/{decision_id}/answer", response_model=ReplyCardOut)
+async def answer_delegation_reply(request: Request, decision_id: int, body: ReplyAnswersIn) -> ReplyCardOut:
+    """Answer what one of the caller's reply cards left them to decide:
+    the draft is rewritten with the answers in their voice and saved like a
+    change of its words (``delegation.answers.answer`` through
+    ``card_drafts.edit``: the same caller and card checks, and the same
+    update in their Drafts when it is there). Their own cards only; sends
+    nothing. 429 past ``answers.ANSWERS_PER_HOUR`` rewrites an hour."""
+    from openexecutive.delegation import answers
+    from openexecutive.delegation.inbox import DECISION_CLASS
+    from openexecutive.delegation.replies import cards
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    instance = get_decision_instance(decision_id)
+    if instance is None or instance.decision_class != DECISION_CLASS or instance.approver_person_id != person_id:
+        raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    try:
+        _, changed = await answers.answer(
+            instance,
+            caller=api_caller.caller(request),
+            resolver=person_id,
+            answers=[answers.Answer(question_index=a.question_index, text=a.answer_text) for a in body.answers],
+        )
+    except SendRefused as refused:
+        raise HTTPException(
+            status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},
+        ) from None
+    card = next((c for c in cards(person) if c.decision_id == decision_id), None)
+    if card is None:
+        raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    out = ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+    return out.model_copy(update={"changed_sentences": changed})
 
 
 @router.get("/delegation/actions", response_model=ActionCardsOut)

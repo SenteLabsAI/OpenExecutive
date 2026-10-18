@@ -418,10 +418,15 @@ def test_only_the_send_path_sends_and_only_the_approve_route_and_the_watcher_rea
     assert _uses("send_draft") == {"delegation/reply_send.py"}
     assert _uses("send_approved_reply") == {"api/routes/decisions.py"}
     assert _uses("send_on_its_own") == {"delegation/inbox.py"}
-    # card_drafts and the edit route use its refusals and caller check only.
+    # card_drafts, answers and the edit routes use its refusals and caller check only.
     assert _importers("openexecutive.delegation.reply_send") == {
         "api/routes/decisions.py", "api/routes/delegation.py", "delegation/inbox.py", "delegation/card_drafts.py",
+        "delegation/answers.py",
     }
+    assert _importers("openexecutive.delegation.reply_send.SendRefused") >= {"delegation/answers.py"}
+    assert not ({"send_draft", "send_approved_reply", "send_on_its_own"} & {
+        n for n, files in _index()[0].items() if "delegation/answers.py" in files
+    })
 
 
 def test_only_dismiss_deletes_a_draft() -> None:

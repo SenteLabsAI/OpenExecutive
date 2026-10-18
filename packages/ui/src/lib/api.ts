@@ -2031,6 +2031,24 @@ export interface ReplyCard {
   in_mailbox?: boolean;
   // Which of your mailboxes it sends from: "Gmail" or "Outlook".
   mailbox?: string;
+  // The open questions with answers to tap; absent on an older backend,
+  // and a card made before choices has none.
+  questions?: ReplyQuestion[];
+  // You changed the words by hand: what is left open no longer holds Send.
+  questions_settled?: boolean;
+  // Only from answering: the sentences the rewrite added or changed.
+  changed_sentences?: string[];
+}
+
+// One thing a reply leaves you to decide (GET /delegation/replies).
+export interface ReplyQuestion {
+  text: string;
+  // 2 to 4 short answers to tap, or none.
+  choices: string[];
+  // Where they came from ("I checked your calendar: these are free."), or "".
+  source: string;
+  // The answer you gave on the card, "" while it is open.
+  answer: string;
 }
 
 // "How I write": learned from your own sent mail; you can edit and lock it.
@@ -2325,6 +2343,21 @@ export async function editReplyText(id: number, text: string): Promise<ReplyCard
     body: JSON.stringify({ text }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't save your change.");
+  return (await res.json()) as ReplyCard;
+}
+
+// Answer what a reply left you to decide: the draft is rewritten with it
+// in your voice and saved on its card (and in your Drafts when it's there).
+export async function answerReplyQuestions(
+  id: number,
+  answers: { question_index: number; answer_text: string }[],
+): Promise<ReplyCard> {
+  const res = await fetch(`${API_BASE}/delegation/replies/${id}/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answers }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't add that to your reply.");
   return (await res.json()) as ReplyCard;
 }
 

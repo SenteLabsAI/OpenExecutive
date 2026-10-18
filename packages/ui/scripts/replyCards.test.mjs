@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  highlightPieces,
+  questionsLeft,
   isMailboxLink,
   mailboxName,
   relationLabel,
@@ -92,4 +94,24 @@ test("a failed send says whether the card is gone", () => {
   assert.equal(sendLeftNothing("caller_signing_required"), false);
   // A failed send is the first warning on the card.
   assert.match(replyFlagLines(["others_on_thread", "send_failed"])[0], /didn't go through/);
+});
+
+test("questionsLeft counts only open questions with answers to tap, and none once edited by hand", () => {
+  const questions = [
+    { text: "When?", choices: ["Mon 10:00", "Tue 09:00"], answer: "" },
+    { text: "Which?", choices: ["A", "B"], answer: "A" },
+    { text: "Are you an AI?", choices: [], answer: "" },
+  ];
+  assert.equal(questionsLeft({ questions }), 1);
+  assert.equal(questionsLeft({ questions, questions_settled: true }), 0);
+  // An older backend or card: nothing holds Send back.
+  assert.equal(questionsLeft({}), 0);
+});
+
+test("highlightPieces marks the new sentences and keeps every character in order", () => {
+  const body = "Hi Dana,\n\nThanks. Friday at 10 works for me. See you then.";
+  const pieces = highlightPieces(body, ["Friday at 10 works for me.", "Not in the body."]);
+  assert.equal(pieces.map((p) => p.text).join(""), body);
+  assert.deepEqual(pieces.filter((p) => p.changed).map((p) => p.text), ["Friday at 10 works for me."]);
+  assert.deepEqual(highlightPieces(body, []), [{ text: body, changed: false }]);
 });
