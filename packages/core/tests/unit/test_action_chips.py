@@ -347,6 +347,8 @@ _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "read_my_email_attachment",
     "my_email_awaiting_reply",
     "my_email_read_before",
+    # app_control — a list of what the person may change
+    "find_in_app",
 })
 
 
@@ -356,6 +358,7 @@ def _all_registered_tool_names() -> set[str]:
     Kept here as a helper so both drift tests use the exact same source
     of truth — drift between them would defeat the guard.
     """
+    from openexecutive.orchestrator.app_control import APP_TOOL_HANDLERS
     from openexecutive.orchestrator.artifact_tools import DRAFT_ARTIFACT_TOOL_HANDLERS
     from openexecutive.orchestrator.broadcast_tools import BROADCAST_TOOL_HANDLERS
     from openexecutive.orchestrator.calendar_tools import CALENDAR_TOOL_HANDLERS
@@ -385,6 +388,7 @@ def _all_registered_tool_names() -> set[str]:
         | set(DRAFT_ARTIFACT_TOOL_HANDLERS)
         | set(MCP_TOOL_NAMES)
         | set(WORKFLOW_RUN_TOOL_HANDLERS)
+        | set(APP_TOOL_HANDLERS)
         # Act as me: its own registry, offered per turn (never _ALL_SKILL_TOOLS).
         | set(DELEGATION_TOOL_HANDLERS)
         # `create_alert` is in chat module rather than a HANDLERS dict.
