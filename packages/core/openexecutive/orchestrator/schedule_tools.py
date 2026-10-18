@@ -1443,7 +1443,8 @@ def _chat_candidates(person: Any) -> list[tuple[str, str | None]]:
     ``people.reach.reach_order``'s order."""
     from openexecutive.people.reach import channel_id, reach_order
 
-    return [(c, channel_id(person, c)) for c in reach_order(person, email=False)]
+    # A group id stays a candidate here, as before: message_person validates it.
+    return [(c, channel_id(person, c)) for c in reach_order(person, email=False, telegram_groups=True)]
 
 
 async def message_person(tool_input: dict[str, Any], *, alert_fallback: bool = True) -> str:

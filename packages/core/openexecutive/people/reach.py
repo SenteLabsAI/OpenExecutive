@@ -51,10 +51,19 @@ def first_choice(person: Person) -> str | None:
     return last if last in _TALK_CHANNELS else None
 
 
-def reach_order(person: Person, *, email: bool = True) -> list[str]:
+def _private_telegram(person: Person) -> bool:
+    return str(person.telegram_chat_id or "").isdigit()
+
+
+def reach_order(person: Person, *, email: bool = True, telegram_groups: bool = False) -> list[str]:
     """The channels ``person`` has an address or id for, in the order to try
-    (see the module docstring). ``email=False`` leaves email out."""
-    chat = [c for c in CHAT_ORDER if channel_id(person, c)]
+    (see the module docstring). ``email=False`` leaves email out. A Telegram
+    group id (negative: everyone in the group reads it) counts only with
+    ``telegram_groups``, for a message someone asked to send there."""
+    chat = [
+        c for c in CHAT_ORDER
+        if channel_id(person, c) and (c != "telegram" or telegram_groups or _private_telegram(person))
+    ]
     first = first_choice(person)
     order = ([first] if first in chat else []) + [c for c in chat if c != first]
     if email and person.email:
@@ -81,8 +90,14 @@ def note_talked(session: Any) -> bool:
         person = get_person(person_id)
         if person is None or person.archived or channel_id(person, channel) != ref:
             return False
-        if channel == "telegram" and not ref.isdigit():
-            return False  # a group chat isn't theirs alone
+        if channel == "telegram":
+            if not ref.isdigit():
+                return False  # a group chat isn't theirs alone
+            from openexecutive.integrations.channel_cards import telegram_proves_taps
+
+            # Without a valid webhook secret anyone can post a Telegram update.
+            if not telegram_proves_taps():
+                return False
         return note_last_channel(person_id, channel)
     except Exception:
         logger.warning("reach: couldn't record where person %s last talked", person_id, exc_info=True)

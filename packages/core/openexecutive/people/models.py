@@ -108,7 +108,8 @@ class Person(BaseModel):
     # account (``people.reach.note_talked``), and when (ISO, UTC). With
     # ``preferred_channel`` "any", messages go there first.
     last_channel: str | None = None
-    last_channel_at: str | None = None
+    # Not serialised: when someone last talked is nobody else's business.
+    last_channel_at: str | None = Field(default=None, exclude=True)
     availability: list[AvailabilityWindow] = Field(default_factory=list)
     authority_scope: list[AuthorityScope] = Field(default_factory=list)
     response_sla_hours: int = 24

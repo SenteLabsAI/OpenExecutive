@@ -64,6 +64,13 @@ def _session(channel: str, ref: str, person_id: int | None) -> SimpleNamespace:
     return SimpleNamespace(origin_channel=channel, origin_channel_ref=ref, caller_person_id=person_id)
 
 
+@pytest.fixture(autouse=True)
+def _telegram_secured(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.integrations import channel_cards
+
+    monkeypatch.setattr(channel_cards, "telegram_proves_taps", lambda: True)
+
+
 def test_a_turn_from_their_own_account_is_remembered() -> None:
     pid = people_store.upsert_person(full_name="Ada", slack_user_id="U01", telegram_chat_id="4242")
 
@@ -86,6 +93,25 @@ def test_a_turn_not_from_their_own_account_is_not() -> None:
     assert not note_talked(_session("slack", "U01", pid + 99))
     stored = people_store.get_person(pid)
     assert stored is not None and stored.last_channel is None
+
+
+def test_a_telegram_turn_without_a_webhook_secret_is_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.integrations import channel_cards
+
+    monkeypatch.setattr(channel_cards, "telegram_proves_taps", lambda: False)
+    pid = people_store.upsert_person(full_name="Ada", telegram_chat_id="4242")
+    assert not note_talked(_session("telegram", "4242", pid))
+
+
+def test_a_telegram_group_is_never_where_they_are_reached() -> None:
+    group = _person(slack_user_id=None, discord_user_id=None, telegram_chat_id="-100", last_channel="telegram")
+    assert reach_order(group) == ["email"]
+    assert reach_order(group, telegram_groups=True) == ["telegram", "email"]
+
+
+def test_when_they_last_talked_is_not_serialised() -> None:
+    dumped = _person(last_channel="slack", last_channel_at="2026-10-01T09:00:00+00:00").model_dump()
+    assert dumped["last_channel"] == "slack" and "last_channel_at" not in dumped
 
 
 def test_the_same_app_is_written_at_most_hourly() -> None:

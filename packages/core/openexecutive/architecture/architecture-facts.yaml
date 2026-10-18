@@ -4527,7 +4527,11 @@ people:
     writes people.last_channel / last_channel_at (store.note_last_channel,
     at most hourly for the same app, updated_at untouched) only when the
     turn's channel ref is the person's own stored Slack / Discord id or
-    private (positive) Telegram chat id.
+    private (positive) Telegram chat id, and for Telegram only on a
+    webhook only Telegram can call (channel_cards.telegram_proves_taps).
+    A Telegram group id is left out of the order except for
+    message_person (telegram_groups=True). last_channel_at is not
+    serialised (Field exclude).
   notification_settings: |
     Each team member sets their own on Settings → Notifications
     (GET/PUT /notifications/settings, api.routes.notifications; caller

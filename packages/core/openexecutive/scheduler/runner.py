@@ -2131,14 +2131,9 @@ def delivery_order(principal: Person | None, *, email_ready: bool) -> list[str]:
         return []
     from openexecutive.people.reach import reach_order
 
-    order: list[str] = []
-    for channel in reach_order(principal, email=email_ready):
-        # Only a private chat: a group's id is negative, and everyone in it
-        # would read the message.
-        if channel == "telegram" and not str(principal.telegram_chat_id or "").isdigit():
-            continue
-        order.append(_REACH_TO_DELIVERY[channel])
-    return order
+    # Never a Telegram group (reach_order leaves a negative id out): everyone
+    # in it would read the message.
+    return [_REACH_TO_DELIVERY[c] for c in reach_order(principal, email=email_ready)]
 
 
 def google_workspace_ready() -> bool:
