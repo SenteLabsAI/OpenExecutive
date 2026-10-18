@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
+import { ChatAppPickers } from "@/components/people/ChatAppPickers";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import Button from "@/components/ui/Button";
+import { useChatDirectory, useSlackEmailMatch } from "@/components/ui/ChatPicker";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
 import SidePanel from "@/components/ui/SidePanel";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
@@ -192,6 +194,18 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
   const [showContact, setShowContact] = useState(false);
   const [showAuthority, setShowAuthority] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
+
+  // Slack, Discord and Telegram by name. Slack suggests whoever has the
+  // email typed above, and opens the fold to show it until it is toggled.
+  const chatDirectory = useChatDirectory("people");
+  const slackMatch = useSlackEmailMatch(form.email, !!chatDirectory?.slack.configured);
+  const [contactToggled, setContactToggled] = useState(false);
+  const contactOpen = showContact || (!contactToggled && !!slackMatch);
+  const setChatId = useCallback(
+    (field: "slack_user_id" | "discord_user_id" | "telegram_chat_id", id: string) =>
+      setForm((f) => (f[field] === id ? f : { ...f, [field]: id })),
+    [],
+  );
 
   useEffect(() => {
     // After the panel has taken focus on open, so it remembers the button
@@ -449,9 +463,12 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
 
           {/* Contact & routing */}
           <DisclosureSection
-            label={contact ? "Chat IDs" : "Contact & routing"}
-            open={showContact}
-            onToggle={() => setShowContact((v) => !v)}
+            label={contact ? "Chat apps" : "Contact & routing"}
+            open={contactOpen}
+            onToggle={() => {
+              setContactToggled(true);
+              setShowContact(!contactOpen);
+            }}
           >
             {!contact && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -493,38 +510,12 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
             </div>
             )}
 
-            <label className={LABEL_CLS}>
-              Slack user ID
-              <input
-                value={form.slack_user_id}
-                onChange={(e) => setForm((f) => ({ ...f, slack_user_id: e.target.value }))}
-                className={INPUT_CLS}
-                placeholder="U01ABC123"
-              />
-            </label>
-
-            <label className={LABEL_CLS}>
-              Discord user ID
-              <input
-                value={form.discord_user_id}
-                onChange={(e) => setForm((f) => ({ ...f, discord_user_id: e.target.value }))}
-                className={INPUT_CLS}
-                placeholder="123456789012345678"
-              />
-              <span className={HINT_CLS}>
-                Right-click your Discord username and &quot;Copy User ID&quot; (developer mode required).
-              </span>
-            </label>
-
-            <label className={LABEL_CLS}>
-              Telegram chat ID
-              <input
-                value={form.telegram_chat_id}
-                onChange={(e) => setForm((f) => ({ ...f, telegram_chat_id: e.target.value }))}
-                className={INPUT_CLS}
-                placeholder="123456789"
-              />
-            </label>
+            <ChatAppPickers
+              ids={form}
+              onChange={setChatId}
+              directory={chatDirectory}
+              slackMatch={slackMatch}
+            />
           </DisclosureSection>
 
           {/* Approval authority — a contact approves nothing */}
