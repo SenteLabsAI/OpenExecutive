@@ -94,7 +94,7 @@ def test_a_reply_keeps_its_subject_gets_the_signature_and_loses_planted_links(
     draft = _compose()
     assert draft.subject == "Re: Brand refresh pilot"
     assert "evil.example" not in draft.body
-    assert draft.body.endswith("Olivia Owner\nFernway Studio")
+    assert draft.body.endswith("Best,\n\nOlivia Owner\nFernway Studio")
     assert draft.flags == ["removed_link"]
     assert draft.open_questions == ["Scope doc by Friday?"]
     system, turn = calls[0]
@@ -103,6 +103,29 @@ def test_a_reply_keeps_its_subject_gets_the_signature_and_loses_planted_links(
     # intent is in its own block.
     assert turn.count("</thread>") == 1 and "‹\\/thread>" in turn
     assert "<intent>\nYes to Oct 5; day rate $1,500.\n</intent>" in turn
+
+
+@pytest.mark.parametrize(
+    ("closing", "kept"),
+    [
+        ("Thanks,\nOlivia", "Thanks,"),
+        ("Best, Olivia", "Best,"),
+        ("Cheers,\n- Olivia Owner", "Cheers,"),
+        ("Thanks,\nDana", "Thanks,\nDana"),
+        ("Talk soon, Dana", "Talk soon, Dana"),
+    ],
+)
+def test_a_closing_name_the_signature_repeats_is_dropped(
+    monkeypatch: pytest.MonkeyPatch, closing: str, kept: str
+) -> None:
+    _model(monkeypatch, {"subject": "x", "body": f"Hi Dana,\n\nYes to Oct 5.\n\n{closing}"})
+    draft = _compose()
+    assert draft.body == f"Hi Dana,\n\nYes to Oct 5.\n\n{kept}\n\nOlivia Owner\nFernway Studio"
+
+
+def test_the_closing_name_stays_without_a_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    _model(monkeypatch, {"subject": "x", "body": "Hi Dana,\n\nYes.\n\nThanks,\nOlivia"})
+    assert _compose(signature="").body.endswith("Thanks,\nOlivia")
 
 
 def test_the_writers_own_words_come_after_the_thread_in_their_own_block(
