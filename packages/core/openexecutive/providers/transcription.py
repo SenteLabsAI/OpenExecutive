@@ -182,7 +182,8 @@ async def transcribe(
     if duration_s is not None and duration_s > limit:
         raise too_long
     measured = recording_seconds(data, filename, content_type)
-    if measured is not None:
+    # 0 is unreadable too: a fragmented mp4 (Safari's recorder) says 0.
+    if measured:
         if measured > limit:
             raise too_long
     elif len(data) > limit * _UNREAD_BYTES_PER_SECOND:
