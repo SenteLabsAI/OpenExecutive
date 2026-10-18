@@ -23,7 +23,8 @@ import {
 import { downloadChat } from "@/lib/downloadChat";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import { highlightParts, matchLabel } from "@/lib/chatSearch";
-import { CHANNEL_LABELS, sessionChannel, sessionTitle } from "@/lib/sessionChannel";
+import { sessionChannel, sessionTitle } from "@/lib/sessionChannel";
+import { ChannelLogo } from "@/components/sessions/ChannelLogo";
 import {
   activeLabel,
   groupSessionsByDate,
@@ -690,11 +691,7 @@ export function ChatRow({
         >
           <span className="flex items-center gap-2 min-w-0">
             <span className="text-base font-medium text-fg truncate">{sessionTitle(session)}</span>
-            {channel !== "web" && (
-              <span className="flex-shrink-0 text-[11px] font-medium uppercase tracking-wide text-fg-muted ring-1 ring-line rounded-md px-1.5 py-0.5 leading-none">
-                {CHANNEL_LABELS[channel]}
-              </span>
-            )}
+            <ChannelLogo channel={channel} label />
           </span>
           <span className="block text-sm text-fg-subtle mt-0.5">
             {sharedWithYou ? (
