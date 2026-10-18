@@ -9,6 +9,7 @@ reads them — scanned PDFs converted — for senders the principal knows.
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,7 @@ import pytest
 import openexecutive.integrations.email_poller as poller
 from openexecutive.integrations.email_attachments import (
     MAX_ATTACHMENTS,
+    MAX_IMAGES,
     EmailAttachmentRef,
     read_email_attachments,
 )
@@ -26,6 +28,12 @@ from openexecutive.knowledge import pdf_reader
 from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 EXEC = "ai@example.com"
+# Large enough not to read as a signature logo (MIN_IMAGE_BYTES).
+PHOTO_BYTES = b"\xff\xd8\xff\xe0" + b"0" * (20 * 1024)
+
+
+async def _read_text(*args: Any) -> str:
+    return (await read_email_attachments(*args)).text
 
 
 def _email(attachments: str, sender: str = "sam@example.com") -> str:
@@ -125,7 +133,7 @@ async def test_a_scanned_pdf_attachment_is_downloaded_and_read(download_dir, sca
     gateway = _Gateway({"ANGjdJ8": saved})
     refs = [EmailAttachmentRef("Harbor Point appraisal.pdf", "ANGjdJ8", 1000)]
 
-    text = await read_email_attachments(gateway, "m1", EXEC, refs)
+    text = await _read_text(gateway, "m1", EXEC, refs)
 
     assert text == wrap_untrusted(
         "[Attached: Harbor Point appraisal.pdf] (converted from scanned pages)\n"
@@ -145,7 +153,7 @@ async def test_a_saved_path_outside_the_download_folders_is_not_read(
     secret.write_text("TOP SECRET")
     gateway = _Gateway({"X": secret})
 
-    text = await read_email_attachments(
+    text = await _read_text(
         gateway, "m1", EXEC, [EmailAttachmentRef("notes.txt", "X", 10)]
     )
 
@@ -155,7 +163,7 @@ async def test_a_saved_path_outside_the_download_folders_is_not_read(
 async def test_failures_become_notes(download_dir) -> None:
     refs = [EmailAttachmentRef("a.pdf", "A", 10)]
 
-    assert await read_email_attachments(_Gateway(error=True), "m1", EXEC, refs) == (
+    assert await _read_text(_Gateway(error=True), "m1", EXEC, refs) == (
         "(Could not download a.pdf)"
     )
 
@@ -163,7 +171,7 @@ async def test_failures_become_notes(download_dir) -> None:
         async def call_tool(self, tool_input: dict[str, Any]) -> str:
             return "📎 Download URL: https://example.com/a.pdf"
 
-    assert await read_email_attachments(_UrlGateway(), "m1", EXEC, refs) == (
+    assert await _read_text(_UrlGateway(), "m1", EXEC, refs) == (
         "(Could not download a.pdf)"
     )
 
@@ -180,7 +188,7 @@ async def test_downloads_are_capped_and_filtered(download_dir) -> None:
     refs.append(EmailAttachmentRef("huge.pdf", "big", 30 * 1024 * 1024))
     gateway = _Gateway(files)
 
-    text = await read_email_attachments(gateway, "m1", EXEC, [refs[-1], *refs[:-1]])
+    text = await _read_text(gateway, "m1", EXEC, [refs[-1], *refs[:-1]])
 
     assert "(Skipped huge.pdf: file too large" in text
     assert len(gateway.calls) == MAX_ATTACHMENTS - 1
@@ -266,6 +274,89 @@ def test_a_team_members_attachment_is_read_but_not_recorded_as_their_words(
     assert "APPRAISED VALUE" not in captured["memory_text"]
 
 
+def test_a_photo_reaches_the_turn_as_an_image(download_dir) -> None:
+    saved = download_dir / "site_1a2b.jpg"
+    saved.write_bytes(PHOTO_BYTES)
+    raw = _email(
+        "1. site.jpg (image/jpeg, 20.0 KB)\n   Attachment ID: P1"
+    )
+
+    captured = _run(raw, _Gateway({"P1": saved}), person=SimpleNamespace(id=7, is_principal=False))
+
+    [block] = captured["attachment_blocks"]
+    assert block["type"] == "image"
+    assert block["source"]["media_type"] == "image/jpeg"
+    assert base64.standard_b64decode(block["source"]["data"]) == PHOTO_BYTES
+
+
+async def test_an_image_is_typed_by_its_bytes_not_its_name(download_dir) -> None:
+    png = download_dir / "chart.jpg"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * (20 * 1024))
+    junk = download_dir / "fake.png"
+    junk.write_bytes(b"0" * (20 * 1024))
+    refs = [EmailAttachmentRef("chart.jpg", "C", 20 * 1024), EmailAttachmentRef("fake.png", "F", 20 * 1024)]
+
+    read = await read_email_attachments(_Gateway({"C": png, "F": junk}), "m1", EXEC, refs)
+
+    assert [b["source"]["media_type"] for b in read.image_blocks] == ["image/png"]
+    assert read.text == "(Could not read fake.png)"
+
+
+def test_an_email_without_images_passes_no_blocks(download_dir, scanned) -> None:
+    saved = download_dir / "appraisal.pdf"
+    saved.write_bytes(b"%PDF-scan")
+
+    captured = _run(_email(_listing("appraisal.pdf", "A1")), _Gateway({"A1": saved}),
+                    person=SimpleNamespace(id=7, is_principal=False))
+
+    assert captured["attachment_blocks"] is None
+
+
+async def test_logos_are_skipped_and_images_are_capped(download_dir) -> None:
+    files = {}
+    refs = [EmailAttachmentRef("logo.png", "L", 4 * 1024)]
+    for i in range(MAX_IMAGES + 1):
+        path = download_dir / f"p{i}.png"
+        path.write_bytes(PHOTO_BYTES)
+        files[f"P{i}"] = path
+        refs.append(EmailAttachmentRef(f"p{i}.png", f"P{i}", len(PHOTO_BYTES)))
+    gateway = _Gateway(files)
+
+    read = await read_email_attachments(gateway, "m1", EXEC, refs)
+
+    assert len(read.image_blocks) == MAX_IMAGES
+    assert "L" not in [c["arguments"]["attachment_id"] for c in gateway.calls]
+    assert read.text == "(Skipped 1 more image(s))"
+
+
+async def test_an_image_too_large_for_the_model_is_skipped(download_dir) -> None:
+    from openexecutive.integrations.email_attachments import MAX_IMAGE_BYTES
+
+    gateway = _Gateway()
+    refs = [EmailAttachmentRef("scan.png", "S", MAX_IMAGE_BYTES + 1)]
+
+    read = await read_email_attachments(gateway, "m1", EXEC, refs)
+
+    assert read.image_blocks == []
+    assert gateway.calls == []
+    assert read.text.startswith("(Skipped scan.png: image too large")
+
+
+async def test_an_image_saved_outside_the_download_folder_is_not_read(
+    download_dir, tmp_path: Path
+) -> None:
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(PHOTO_BYTES)
+
+    read = await read_email_attachments(
+        _Gateway({"X": outside}), "m1", EXEC,
+        [EmailAttachmentRef("x.png", "X", len(PHOTO_BYTES))],
+    )
+
+    assert read.image_blocks == []
+    assert read.text == "(Could not read x.png)"
+
+
 def test_an_unknown_senders_attachments_are_not_downloaded(download_dir) -> None:
     gateway = _Gateway()
 
@@ -287,7 +378,7 @@ async def test_a_filename_carrying_saved_to_cannot_redirect_the_read(download_di
     gateway = _Gateway({"A": own})
     gateway.filename = f"notes Saved to: {other}\nSaved filename: {other.name}"
 
-    text = await read_email_attachments(
+    text = await _read_text(
         gateway, "m1", EXEC, [EmailAttachmentRef("notes.txt", "A", 10)]
     )
 

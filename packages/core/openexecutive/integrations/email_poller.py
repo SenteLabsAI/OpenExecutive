@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from openexecutive.config import get_settings
 from openexecutive.integrations.email_attachments import (
     EmailAttachmentRef,
+    EmailAttachments,
     read_email_attachments,
 )
 from openexecutive.integrations.mail_sources import (
@@ -1298,14 +1299,21 @@ async def _run_executive(
     # where the attachment tool itself is not offered.
     # Gmail only: the download tool and the ids it takes are workspace-mcp's.
     # An Outlook message's attachments stay the list in its text.
+    # Images come back as vision blocks for the turn (MAX_IMAGES at most).
     attachment_text = ""
+    attachment_blocks: list[dict[str, Any]] = []
     if source is not None:
         if source.read_attachments is not None and (person is not None or contact is not None):
             try:
                 from openexecutive.orchestrator.mcp_gateway import hide_roster_tokens
 
+                read = await source.read_attachments()
+                if isinstance(read, EmailAttachments):
+                    read_text, attachment_blocks = read.text, read.image_blocks
+                else:
+                    read_text = read
                 # No gateway read scrubbed it, as the mailbox's attachments are.
-                attachment_text = hide_roster_tokens(await source.read_attachments())
+                attachment_text = hide_roster_tokens(read_text)
             except Exception:
                 logger.exception("email: reading attachments failed for message=%s", message_id)
     elif (
@@ -1315,9 +1323,10 @@ async def _run_executive(
         try:
             refs = _attachment_refs(raw_email)
             if refs:
-                attachment_text = await read_email_attachments(
+                read = await read_email_attachments(
                     gateway, message_id, get_settings().exec_email_address, refs
                 )
+                attachment_text, attachment_blocks = read.text, read.image_blocks
         except Exception:
             logger.exception("email: reading attachments failed for message=%s", message_id)
     # The mail itself is someone else's text unless Gmail authenticated the
@@ -1350,8 +1359,8 @@ async def _run_executive(
             f"\n\n--- REPLY ---\nYour answer to this turn is emailed to {answer_to} in this thread, "
             f"from {source.own_address}, with the AI line added. Write the email itself, addressed to "
             "them; there is no mail tool to call for it. The text of attachments you could read is "
-            "above; any other attachment is listed by name only, so ask for what you need in the "
-            "body if it matters.\n"
+            "above and the images you could see are with this message; any other attachment is "
+            "listed by name only, so ask for what you need in the body if it matters.\n"
         )
     if from_addr:
         from openexecutive.integrations.inbound_hydration import (
@@ -1386,6 +1395,7 @@ async def _run_executive(
                 episodic_context=format_for_prompt(),
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,
+                attachment_blocks=attachment_blocks or None,
                 # Only the sender's own words reach peer memory — see _email_memory_text.
                 # An unrostered sender has no peer to record into, so skip the parse.
                 memory_text=_email_memory_text(raw_email) if person_id is not None else None,

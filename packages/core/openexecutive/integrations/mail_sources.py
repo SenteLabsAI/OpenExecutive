@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from openexecutive.integrations.workspace.mail import InboundMessage
 
 if TYPE_CHECKING:
+    from openexecutive.integrations.email_attachments import EmailAttachments
     from openexecutive.orchestrator.mcp_gateway import MCPGateway
 
 logger = logging.getLogger(__name__)
@@ -71,9 +72,10 @@ class InboundMail:
     # fact, a teammate's turn isn't theirs alone, and a stranger isn't told
     # their mail is waiting.
     prove_sender: Callable[[], Awaitable[bool]] = _unproven
-    # The text of the readable attachments, for the turn ("" for none). Called
-    # only for a sender the principal knows.
-    read_attachments: Callable[[], Awaitable[str]] | None = None
+    # The readable attachments, for the turn: their text ("" for none), or an
+    # ``EmailAttachments`` when there are images too. Called only for a
+    # sender the principal knows.
+    read_attachments: Callable[[], Awaitable[str | EmailAttachments]] | None = None
     # What a held message keeps so ``MailSource.replay`` can handle it again
     # once the principal says who the sender is.
     hold_payload: dict[str, Any] = field(default_factory=dict)
