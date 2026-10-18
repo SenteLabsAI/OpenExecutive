@@ -16,6 +16,7 @@ import {
   type WatchlistItem,
   type WatchlistSignal,
 } from "@/lib/api";
+import { raiseTheBar, triggerInWords } from "@/lib/watchWords";
 
 /** Relative time for display, e.g. "3h ago", "just now", "never". */
 function formatRelTime(iso: string | null): string {
@@ -61,6 +62,63 @@ function outcomeStyle(outcome: string | null): string {
 function outcomeLabel(outcome: string | null): string {
   if (outcome === null) return "pending";
   return outcome.replace(/^suppressed_/, "suppressed: ");
+}
+
+/**
+ * "You dismissed 6 of the last 8 alerts from this." Offers a quieter watch,
+ * stopping, or keeping it; any answer stops the question until a fresh run
+ * of alerts is dismissed too (the server remembers it).
+ */
+function NoisyNudge({
+  item,
+  onPatched,
+  onStop,
+}: {
+  item: WatchlistItem;
+  onPatched: (updated: WatchlistItem, said: string) => void;
+  onStop: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const noise = item.noise;
+  if (!noise?.noisy) return null;
+  const raise = raiseTheBar(item);
+
+  async function answer(patch: Parameters<typeof patchWatchlistItem>[1], said: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      const updated = await patchWatchlistItem(item.slug, { ...patch, quiet_noise_nudge: true });
+      onPatched(updated, said);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "That didn't save.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 mb-4">
+      <p className="text-[15px] text-fg">
+        You dismissed {noise.recent_dismissed} of the last {noise.recent_alerts} alerts from this.
+        {raise ? " Only tell you about bigger changes?" : " Keep watching it?"}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {raise && (
+          <Button variant="primary" disabled={busy} onClick={() => void answer(raise.patch, raise.done)}>
+            {raise.label}
+          </Button>
+        )}
+        <Button variant="ghost" disabled={busy} onClick={onStop}>
+          Stop watching
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={() => void answer({}, "")}>
+          Keep as is
+        </Button>
+      </div>
+      {err && <p className="mt-2 text-sm text-rose-500">{err}</p>}
+    </div>
+  );
 }
 
 function SignalRow({ signal }: { signal: WatchlistSignal }) {
@@ -120,6 +178,8 @@ export default function WatchDetailPage() {
   // toggle-revert race where two clicks land in the wrong final state.
   const [toggling, setToggling] = useState(false);
   const [modeChanging, setModeChanging] = useState(false);
+  // What the noisy-watch answer changed, said once it is saved.
+  const [nudgeSaid, setNudgeSaid] = useState("");
   // slug → title, for "for: <department>" on a routed research watch.
   const [departmentTitles, setDepartmentTitles] = useState<Record<string, string>>({});
 
@@ -318,6 +378,24 @@ export default function WatchDetailPage() {
             </div>
           </div>
 
+          <NoisyNudge
+            item={item}
+            onPatched={(updated, said) => {
+              // The PATCH answer has no noise block: the question is answered.
+              setItem({ ...updated, noise: undefined });
+              setNudgeSaid(said);
+            }}
+            onStop={() => {
+              setConfirming(true);
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+          />
+          {nudgeSaid && (
+            <p className="rounded-2xl border border-line bg-surface-elevated p-4 mb-4 text-[15px] text-fg" role="status">
+              Done. {nudgeSaid}
+            </p>
+          )}
+
           {error && (
             <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}
@@ -361,10 +439,16 @@ export default function WatchDetailPage() {
               )}
             </dl>
             <div className="mt-3">
-              <div className="text-sm text-fg-muted mb-1">Trigger</div>
-              <pre className="text-xs font-mono bg-surface-input/40 border border-line rounded p-2 overflow-x-auto">
-                {JSON.stringify(item.trigger_json, null, 2)}
-              </pre>
+              <div className="text-sm text-fg-muted mb-1">Tells you when</div>
+              <p className="text-[15px] text-fg">{triggerInWords(item.signal_type, item.trigger_json)}</p>
+              <details className="mt-1.5">
+                <summary className="inline-flex min-h-10 cursor-pointer items-center text-sm text-fg-subtle">
+                  Exact trigger
+                </summary>
+                <pre className="text-xs font-mono bg-surface-input/40 border border-line rounded p-2 overflow-x-auto">
+                  {JSON.stringify(item.trigger_json, null, 2)}
+                </pre>
+              </details>
             </div>
           </div>
 

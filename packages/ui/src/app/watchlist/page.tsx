@@ -12,16 +12,20 @@ import {
   createWatchlistItem,
   declineWatchSuggestion,
   deleteWatchlistItem,
+  describeWatch,
+  draftToCreate,
   listDepartments,
   listWatchlist,
   patchWatchlistItem,
   type WatchDeclineReason,
+  type WatchDraft,
   type WatchlistCadence,
   type WatchlistItem,
   type WatchlistSeverity,
   type WatchlistSignalType,
 } from "@/lib/api";
 import { suggestWatchSlug } from "@/lib/watchSlug";
+import { triggerInWords } from "@/lib/watchWords";
 
 const fieldCls =
   "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40";
@@ -232,63 +236,95 @@ function WatchCard({
   );
 }
 
-interface AddModalProps {
-  onCreated: (w: WatchlistItem) => void;
-  onClose: () => void;
+/** The form's starting values; a draft from "Change something" fills them. */
+interface FormInitial {
+  slug?: string;
+  signalType?: WatchlistSignalType;
+  target?: string;
+  displayLabel?: string;
+  trigger?: Record<string, unknown>;
+  cadence?: WatchlistCadence;
+  severityFloor?: WatchlistSeverity;
+  severityCeiling?: WatchlistSeverity;
+  mode?: "active" | "dry_run";
+  notes?: string;
 }
 
-function AddWatchModal({ onCreated, onClose }: AddModalProps) {
-  const [slug, setSlug] = useState("");
-  const [signalType, setSignalType] = useState<WatchlistSignalType>("stock");
-  const [target, setTarget] = useState("");
-  const [trigger, setTrigger] = useState("");
-  const [cadence, setCadence] = useState<WatchlistCadence>("15min");
-  const [severityFloor, setSeverityFloor] = useState<WatchlistSeverity>("low");
-  const [severityCeiling, setSeverityCeiling] = useState<WatchlistSeverity>("urgent");
-  const [mode, setMode] = useState<"active" | "dry_run">("active");
-  const [notes, setNotes] = useState("");
+function draftToInitial(draft: WatchDraft): FormInitial {
+  const known = SIGNAL_TYPES.some((s) => s.value === draft.signal_type);
+  return {
+    slug: draft.slug,
+    signalType: known ? (draft.signal_type as WatchlistSignalType) : "stock",
+    target: draft.target,
+    displayLabel: draft.display_label,
+    trigger: draft.trigger,
+    cadence: (CADENCES as string[]).includes(draft.cadence) ? (draft.cadence as WatchlistCadence) : "15min",
+    severityFloor: draft.severity_floor,
+    severityCeiling: draft.severity_ceiling,
+    mode: draft.mode === "dry_run" ? "dry_run" : "active",
+    notes: draft.notes,
+  };
+}
+
+/** The trigger box's text as an object, or null while it isn't valid JSON. */
+function parseTrigger(text: string): Record<string, unknown> | null {
+  if (!text.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+interface WatchFormProps {
+  initial?: FormInitial;
+  onCreated: (w: WatchlistItem) => void;
+}
+
+function WatchForm({ initial, onCreated }: WatchFormProps) {
+  const [slug, setSlug] = useState(initial?.slug ?? "");
+  const [signalType, setSignalType] = useState<WatchlistSignalType>(initial?.signalType ?? "stock");
+  const [target, setTarget] = useState(initial?.target ?? "");
+  const [displayLabel, setDisplayLabel] = useState(initial?.displayLabel ?? "");
+  const [trigger, setTrigger] = useState(
+    initial?.trigger && Object.keys(initial.trigger).length ? JSON.stringify(initial.trigger) : "",
+  );
+  const [cadence, setCadence] = useState<WatchlistCadence>(initial?.cadence ?? "15min");
+  const [severityFloor, setSeverityFloor] = useState<WatchlistSeverity>(initial?.severityFloor ?? "low");
+  const [severityCeiling, setSeverityCeiling] = useState<WatchlistSeverity>(
+    initial?.severityCeiling ?? "urgent",
+  );
+  const [mode, setMode] = useState<"active" | "dry_run">(initial?.mode ?? "active");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Slug, trigger, cadence, mode and severity sit under "More options" with
-  // their defaults; it opens by itself when an error points into it.
-  const [moreOpen, setMoreOpen] = useState(false);
-  const typeRef = useRef<HTMLSelectElement>(null);
-
-  useEffect(() => {
-    typeRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    if (saving) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [saving, onClose]);
+  // their defaults; it opens by itself when an error points into it, or
+  // when a draft brought a trigger with it.
+  const [moreOpen, setMoreOpen] = useState(Boolean(initial?.trigger && Object.keys(initial.trigger).length));
 
   const targetHint = SIGNAL_TYPES.find((s) => s.value === signalType)?.hint ?? "";
   const slugSuggestion = suggestWatchSlug(signalType, target);
+  const parsedTrigger = parseTrigger(trigger);
 
   async function submit() {
     setSaving(true);
     setErr(null);
-    let parsedTrigger: Record<string, unknown> = {};
-    if (trigger.trim()) {
-      try {
-        parsedTrigger = JSON.parse(trigger);
-      } catch {
-        setErr("Trigger must be valid JSON, e.g. {\"abs_change_pct_gte\": 5}");
-        setMoreOpen(true);
-        setSaving(false);
-        return;
-      }
+    if (parsedTrigger === null) {
+      setErr("Trigger must be valid JSON, e.g. {\"abs_change_pct_gte\": 5}");
+      setMoreOpen(true);
+      setSaving(false);
+      return;
     }
     try {
       const created = await createWatchlistItem({
         slug: slug.trim() || slugSuggestion,
         signal_type: signalType,
         target: target.trim(),
+        display_label: displayLabel.trim(),
         trigger: parsedTrigger,
         cadence,
         severity_floor: severityFloor,
@@ -307,193 +343,342 @@ function AddWatchModal({ onCreated, onClose }: AddModalProps) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60"
-      onClick={saving ? undefined : onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add monitor"
-        className="bg-surface-elevated border border-line rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[92vh] overflow-y-auto p-5 sm:p-7 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-xl font-bold tracking-tight text-fg mb-5">Add monitor</h2>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="watch-signal-type" className={labelCls}>Signal type</label>
-            <select
-              id="watch-signal-type"
-              ref={typeRef}
-              value={signalType}
-              onChange={(e) => setSignalType(e.target.value as WatchlistSignalType)}
-              className={fieldCls}
-            >
-              {SIGNAL_TYPES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="watch-target" className={labelCls}>Target</label>
-            <input
-              id="watch-target"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder={targetHint}
-              className={fieldCls}
-            />
-            <p className="text-sm text-fg-subtle mt-1.5">{targetHint}</p>
-            {BILLED_SIGNAL_TYPES.has(signalType) && (
-              <p className="text-sm text-amber-600 dark:text-amber-300 mt-1.5">
-                ⚠ Billed: runs an LLM web search on every poll. Prefer a slower
-                cadence (daily / weekly) and a tight query.
-              </p>
-            )}
-          </div>
-          <div>
-            <label htmlFor="watch-notes" className={labelCls}>Notes</label>
-            <input
-              id="watch-notes"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              maxLength={500}
-              placeholder="Why watch this?"
-              className={fieldCls}
-            />
-          </div>
-
-          <details
-            className="rounded-xl border border-line px-4 py-2"
-            open={moreOpen}
-            onToggle={(e) => setMoreOpen((e.target as HTMLDetailsElement).open)}
-          >
-            <summary className="flex min-h-10 cursor-pointer items-center text-[15px] font-medium text-fg">
-              More options
-              <span className="ml-2 text-sm font-normal text-fg-subtle">
-                {slug.trim() || slugSuggestion || "name"} · {cadence} · {mode} · {severityFloor}→{severityCeiling}
-              </span>
-            </summary>
-            <div className="space-y-4 py-3">
-              <div>
-                <label htmlFor="watch-slug" className={labelCls}>Slug (kebab-case)</label>
-                <input
-                  id="watch-slug"
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
-                  placeholder={slugSuggestion || "stock-aapl"}
-                  className={fieldCls}
-                />
-                <p className="text-sm text-fg-subtle mt-1.5">
-                  Left empty, it is named {slugSuggestion ? <code>{slugSuggestion}</code> : "from the type and target"}.
-                </p>
-              </div>
-              <div>
-                <label htmlFor="watch-trigger" className={labelCls}>Trigger (JSON, optional)</label>
-                <textarea
-                  id="watch-trigger"
-                  value={trigger}
-                  onChange={(e) => setTrigger(e.target.value)}
-                  placeholder={
-                    signalType === "stock"
-                      ? '{"abs_change_pct_gte": 5}'
-                      : signalType === "edgar"
-                        ? '{"forms": ["8-K", "10-K"]}'
-                        : signalType === "rss" ||
-                            signalType === "query" ||
-                            signalType === "page_watch"
-                          ? '{"keywords": ["layoffs", "downtime"]}'
-                          : "{}"
-                  }
-                  rows={3}
-                  className={`${fieldCls} font-mono text-sm`}
-                />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="watch-cadence" className={labelCls}>Cadence</label>
-                  <select
-                    id="watch-cadence"
-                    value={cadence}
-                    onChange={(e) => setCadence(e.target.value as WatchlistCadence)}
-                    className={fieldCls}
-                  >
-                    {CADENCES.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="watch-mode" className={labelCls}>Mode</label>
-                  <select
-                    id="watch-mode"
-                    value={mode}
-                    onChange={(e) => setMode(e.target.value as "active" | "dry_run")}
-                    className={fieldCls}
-                  >
-                    <option value="active">active</option>
-                    <option value="dry_run">dry_run</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="watch-floor" className={labelCls}>Severity floor</label>
-                  <select
-                    id="watch-floor"
-                    value={severityFloor}
-                    onChange={(e) => setSeverityFloor(e.target.value as WatchlistSeverity)}
-                    className={fieldCls}
-                  >
-                    {SEVERITIES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="watch-ceiling" className={labelCls}>Severity ceiling</label>
-                  <select
-                    id="watch-ceiling"
-                    value={severityCeiling}
-                    onChange={(e) => setSeverityCeiling(e.target.value as WatchlistSeverity)}
-                    className={fieldCls}
-                  >
-                    {SEVERITIES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-          </details>
-        </div>
-
-        {err && (
-          <div className="mt-4 px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
-            {err}
-          </div>
+    <div className="space-y-4 pt-3">
+      <div>
+        <label htmlFor="watch-signal-type" className={labelCls}>Signal type</label>
+        <select
+          id="watch-signal-type"
+          value={signalType}
+          onChange={(e) => setSignalType(e.target.value as WatchlistSignalType)}
+          className={fieldCls}
+        >
+          {SIGNAL_TYPES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label htmlFor="watch-target" className={labelCls}>Target</label>
+        <input
+          id="watch-target"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          placeholder={targetHint}
+          className={fieldCls}
+        />
+        <p className="text-sm text-fg-subtle mt-1.5">{targetHint}</p>
+        {BILLED_SIGNAL_TYPES.has(signalType) && (
+          <p className="text-sm text-amber-600 dark:text-amber-300 mt-1.5">
+            ⚠ Billed: runs an LLM web search on every poll. Prefer a slower
+            cadence (daily / weekly) and a tight query.
+          </p>
         )}
+      </div>
+      <div>
+        <label htmlFor="watch-label" className={labelCls}>Name (optional)</label>
+        <input
+          id="watch-label"
+          value={displayLabel}
+          onChange={(e) => setDisplayLabel(e.target.value)}
+          maxLength={80}
+          placeholder="e.g. Initech"
+          className={fieldCls}
+        />
+      </div>
+      <div>
+        <label htmlFor="watch-notes" className={labelCls}>Notes</label>
+        <input
+          id="watch-notes"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          maxLength={500}
+          placeholder="Why watch this?"
+          className={fieldCls}
+        />
+      </div>
 
-        <div className="flex justify-end gap-2 mt-5">
-          <Button variant="ghost" disabled={saving} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            disabled={saving || !(slug.trim() || slugSuggestion) || !target.trim()}
-            onClick={submit}
-          >
-            {saving ? "Adding…" : "Add monitor"}
-          </Button>
+      <details
+        className="rounded-xl border border-line px-4 py-2"
+        open={moreOpen}
+        onToggle={(e) => setMoreOpen((e.target as HTMLDetailsElement).open)}
+      >
+        <summary className="flex min-h-10 cursor-pointer flex-wrap items-center gap-x-2 text-[15px] font-medium text-fg">
+          More options
+          <span className="min-w-0 truncate text-sm font-normal text-fg-subtle">
+            {slug.trim() || slugSuggestion || "name"} · {cadence} · {mode} · {severityFloor}→{severityCeiling}
+          </span>
+        </summary>
+        <div className="space-y-4 py-3">
+          <div>
+            <label htmlFor="watch-slug" className={labelCls}>Slug (kebab-case)</label>
+            <input
+              id="watch-slug"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              placeholder={slugSuggestion || "stock-aapl"}
+              className={fieldCls}
+            />
+            <p className="text-sm text-fg-subtle mt-1.5">
+              Left empty, it is named {slugSuggestion ? <code>{slugSuggestion}</code> : "from the type and target"}.
+            </p>
+          </div>
+          <div>
+            <label htmlFor="watch-trigger" className={labelCls}>Trigger (JSON, optional)</label>
+            <textarea
+              id="watch-trigger"
+              value={trigger}
+              onChange={(e) => setTrigger(e.target.value)}
+              placeholder={
+                signalType === "stock"
+                  ? '{"abs_change_pct_gte": 5}'
+                  : signalType === "edgar"
+                    ? '{"forms": ["8-K", "10-K"]}'
+                    : signalType === "rss" ||
+                        signalType === "query" ||
+                        signalType === "page_watch"
+                      ? '{"keywords": ["layoffs", "downtime"]}'
+                      : "{}"
+              }
+              rows={3}
+              className={`${fieldCls} font-mono text-sm`}
+            />
+            <p className="text-sm text-fg-subtle mt-1.5">
+              {parsedTrigger === null
+                ? "Not valid JSON yet."
+                : `Tells you when: ${triggerInWords(signalType, parsedTrigger)}.`}
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="watch-cadence" className={labelCls}>Cadence</label>
+              <select
+                id="watch-cadence"
+                value={cadence}
+                onChange={(e) => setCadence(e.target.value as WatchlistCadence)}
+                className={fieldCls}
+              >
+                {CADENCES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="watch-mode" className={labelCls}>Mode</label>
+              <select
+                id="watch-mode"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as "active" | "dry_run")}
+                className={fieldCls}
+              >
+                <option value="active">active</option>
+                <option value="dry_run">dry_run</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="watch-floor" className={labelCls}>Severity floor</label>
+              <select
+                id="watch-floor"
+                value={severityFloor}
+                onChange={(e) => setSeverityFloor(e.target.value as WatchlistSeverity)}
+                className={fieldCls}
+              >
+                {SEVERITIES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="watch-ceiling" className={labelCls}>Severity ceiling</label>
+              <select
+                id="watch-ceiling"
+                value={severityCeiling}
+                onChange={(e) => setSeverityCeiling(e.target.value as WatchlistSeverity)}
+                className={fieldCls}
+              >
+                {SEVERITIES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
+      </details>
+
+      {err && (
+        <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
+          {err}
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <Button
+          variant="primary"
+          disabled={saving || !(slug.trim() || slugSuggestion) || !target.trim()}
+          onClick={submit}
+        >
+          {saving ? "Adding…" : "Add monitor"}
+        </Button>
       </div>
     </div>
+  );
+}
+
+/** "Here's what I'll watch": a draft in plain words, not saved yet. */
+function DraftCard({
+  draft,
+  busy,
+  onStart,
+  onChange,
+}: {
+  draft: WatchDraft;
+  busy: boolean;
+  onStart: () => void;
+  onChange: () => void;
+}) {
+  const lines: [string, string][] = [
+    ["Watching", draft.watching],
+    ["Tells you when", draft.tell_you_when],
+    ["How often", draft.how_often],
+    ["How loud", draft.how_loud],
+  ];
+  return (
+    <div className="mt-4 rounded-2xl border border-accent/40 bg-surface p-4 sm:p-5">
+      <h3 className="text-base font-semibold text-fg mb-3">Here&apos;s what I&apos;ll watch</h3>
+      <dl className="space-y-2.5">
+        {lines.map(([label, value]) => (
+          <div key={label} className="grid grid-cols-1 gap-0.5 sm:grid-cols-[9rem_1fr] sm:gap-3">
+            <dt className="text-sm text-fg-muted">{label}</dt>
+            <dd className="min-w-0 break-words text-[15px] text-fg">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {BILLED_SIGNAL_TYPES.has(draft.signal_type) && (
+        <p className="text-sm text-amber-600 dark:text-amber-300 mt-3">
+          This one runs a web search each time it looks, which costs a little each time.
+        </p>
+      )}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button variant="primary" disabled={busy} onClick={onStart}>
+          {busy ? "Starting…" : "Start watching"}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={onChange}>
+          Change something
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** "What should I watch?" — a sentence in, a draft out, then the by-hand form. */
+function SetUpWatch({ onCreated }: { onCreated: (w: WatchlistItem) => void }) {
+  const [text, setText] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [draft, setDraft] = useState<WatchDraft | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [byHandOpen, setByHandOpen] = useState(false);
+  // Remounts the form with a draft's values when "Change something" opens it.
+  const [formSeed, setFormSeed] = useState<{ key: number; initial?: FormInitial }>({ key: 0 });
+  const byHandRef = useRef<HTMLDetailsElement>(null);
+
+  async function ask() {
+    if (!text.trim() || asking) return;
+    setAsking(true);
+    setErr(null);
+    setDraft(null);
+    try {
+      setDraft(await describeWatch(text.trim()));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't read that just now.");
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  async function start() {
+    if (!draft) return;
+    setStarting(true);
+    setErr(null);
+    try {
+      const created = await createWatchlistItem(draftToCreate(draft));
+      setDraft(null);
+      setText("");
+      onCreated(created);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't start watching.");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  function changeSomething() {
+    if (!draft) return;
+    setFormSeed((s) => ({ key: s.key + 1, initial: draftToInitial(draft) }));
+    setDraft(null);
+    setByHandOpen(true);
+    requestAnimationFrame(() => byHandRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
+  return (
+    <section className="mb-8 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5 shadow-sm">
+      <label htmlFor="watch-describe" className="block text-base font-semibold text-fg mb-2">
+        What should I watch?
+      </label>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          id="watch-describe"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void ask();
+          }}
+          maxLength={500}
+          placeholder="e.g. Tell me if Initech's stock moves more than 8%"
+          className={`${fieldCls} min-w-0 flex-1`}
+        />
+        <Button
+          variant="primary"
+          className="flex-shrink-0"
+          disabled={asking || !text.trim()}
+          onClick={() => void ask()}
+        >
+          {asking ? "Reading…" : "Set it up"}
+        </Button>
+      </div>
+      {err && (
+        <div className="mt-3 px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
+          {err}
+        </div>
+      )}
+      {draft && <DraftCard draft={draft} busy={starting} onStart={() => void start()} onChange={changeSomething} />}
+      <details
+        ref={byHandRef}
+        className="mt-4 rounded-xl border border-line px-4 py-2"
+        open={byHandOpen}
+        onToggle={(e) => setByHandOpen((e.target as HTMLDetailsElement).open)}
+      >
+        <summary className="flex min-h-10 cursor-pointer items-center text-[15px] font-medium text-fg">
+          Set it up by hand
+        </summary>
+        <WatchForm
+          key={formSeed.key}
+          initial={formSeed.initial}
+          onCreated={(w) => {
+            setByHandOpen(false);
+            setFormSeed((s) => ({ key: s.key + 1 }));
+            onCreated(w);
+          }}
+        />
+      </details>
+    </section>
   );
 }
 
@@ -501,7 +686,6 @@ export default function WatchlistPage() {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
   const [busySlugs, setBusySlugs] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // slug → title for the "for: <department>" label on routed watches.
@@ -639,18 +823,9 @@ export default function WatchlistPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface">
-      {showAdd && (
-        <AddWatchModal
-          onCreated={(w) => {
-            setItems((prev) => [...prev, w]);
-            setShowAdd(false);
-          }}
-          onClose={() => setShowAdd(false)}
-        />
-      )}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+          <div className="mb-6">
             <div className="max-w-2xl">
               <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">
                 What the Executive watches
@@ -660,10 +835,9 @@ export default function WatchlistPage() {
                 severity + triage become proposals in your briefing.
               </p>
             </div>
-            <Button variant="primary" className="self-start sm:self-auto flex-shrink-0" onClick={() => setShowAdd(true)}>
-              + Add monitor
-            </Button>
           </div>
+
+          <SetUpWatch onCreated={(w) => setItems((prev) => [...prev, w])} />
 
           {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
           {error && (
@@ -674,15 +848,12 @@ export default function WatchlistPage() {
           {!loading && !error && items.length === 0 && (
             <div className="rounded-2xl border border-dashed border-line p-8 text-center">
               <p className="text-fg-muted text-[15px] mb-3">Nothing being watched yet.</p>
-              <p className="text-sm text-fg-subtle mb-4">
-                Ask the Executive in chat:{" "}
+              <p className="text-sm text-fg-subtle">
+                Say what to watch in the box above, or ask the Executive in chat:{" "}
                 <span className="italic">
-                  Watch Apple stock, alert me on 5% moves.
+                  Watch Initech&apos;s stock, alert me on 5% moves.
                 </span>
               </p>
-              <Button variant="primary" onClick={() => setShowAdd(true)}>
-                Add a monitor →
-              </Button>
             </div>
           )}
 

@@ -13,6 +13,7 @@ there.
 from __future__ import annotations
 
 import re
+from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from openexecutive.alerts.models import AlertSeverity
@@ -88,11 +89,56 @@ def registrable_domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+# Slug prefix per signal type. Mirrors packages/ui/src/lib/watchSlug.ts so a
+# watch named by the UI and one named by the API read the same.
+_SLUG_PREFIX: dict[str, str] = {
+    "stock": "stock",
+    "rss": "rss",
+    "vendor_status": "status",
+    "edgar": "edgar",
+    "page_watch": "page",
+    "query": "search",
+}
+_SLUG_MAX_LEN = 61
+
+
+def suggest_watch_slug(signal_type: str, target: str) -> str:
+    """A slug from the signal type and target, kebab-cased to
+    ``WATCHLIST_SLUG_RE`` (``""`` without a target). Same rule as the UI's
+    ``suggestWatchSlug``."""
+    t = (target or "").strip().lower()
+    if not t:
+        return ""
+    t = re.sub(r"^[a-z][a-z0-9+.-]*://", "", t)
+    t = re.sub(r"^www\.", "", t)
+    prefix = _SLUG_PREFIX.get(signal_type) or re.sub(r"[^a-z0-9]+", "-", signal_type.lower())
+    body = re.sub(r"[^a-z0-9]+", "-", t)
+    slug = re.sub(r"-+", "-", f"{prefix}-{body}").lstrip("-")
+    return slug[:_SLUG_MAX_LEN].rstrip("-")
+
+
+def display_label_config(signal_type: str, display_label: Any) -> dict[str, Any]:
+    """Map the user-facing label onto the adapter-specific config key."""
+    config: dict[str, Any] = {}
+    if display_label:
+        if signal_type == "vendor_status":
+            config["vendor_label"] = display_label
+        elif signal_type == "rss":
+            config["feed_label"] = display_label
+        elif signal_type == "stock":
+            config["display_name"] = display_label
+        elif signal_type in ("query", "edgar", "page_watch"):
+            config["label"] = display_label
+    return config
+
+
 __all__ = [
     "VALID_SEVERITY_VALUES",
     "WATCHLIST_SLUG_RE",
+    "display_label_config",
     "is_valid_severity",
     "is_valid_watchlist_slug",
     "normalize_target",
     "registrable_domain",
+    "suggest_watch_slug",
 ]

@@ -5175,6 +5175,34 @@ export interface WatchlistItem {
   trust_score: number;
   notes: string;
   origin: WatchlistOrigin | string;
+  /** Detail route only: how many of its recent alerts were dismissed. */
+  noise?: WatchNoise;
+}
+
+/** A watch's last alerts (up to 8) since its noise question was last answered. */
+export interface WatchNoise {
+  recent_alerts: number;
+  recent_dismissed: number;
+  /** At least 6 of the last 8 were dismissed: ask whether to make it quieter. */
+  noisy: boolean;
+}
+
+/** A watch written from a sentence (POST /watchlist/describe). Not saved. */
+export interface WatchDraft {
+  slug: string;
+  signal_type: WatchlistSignalType | string;
+  target: string;
+  display_label: string;
+  trigger: Record<string, unknown>;
+  cadence: WatchlistCadence | string;
+  mode: WatchlistMode | string;
+  severity_floor: WatchlistSeverity;
+  severity_ceiling: WatchlistSeverity;
+  notes: string;
+  watching: string;
+  tell_you_when: string;
+  how_often: string;
+  how_loud: string;
 }
 
 export interface WatchlistSignal {
@@ -5218,6 +5246,37 @@ export interface WatchlistPatch {
   severity_ceiling?: WatchlistSeverity;
   trigger?: Record<string, unknown>;
   notes?: string;
+  /** Stop asking whether this watch is too noisy (for the alerts so far). */
+  quiet_noise_nudge?: boolean;
+}
+
+/** Draft a watch from what the person typed. Throws with a plain reason. */
+export async function describeWatch(text: string): Promise<WatchDraft> {
+  const res = await fetch(`${API_BASE}/watchlist/describe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    throw new Error(await errorDetail(res, "Couldn't read that just now. Try again, or set it up by hand."));
+  }
+  return res.json();
+}
+
+/** The create body for a draft the person approved as it is. */
+export function draftToCreate(draft: WatchDraft): WatchlistCreate {
+  return {
+    slug: draft.slug,
+    signal_type: draft.signal_type,
+    target: draft.target,
+    display_label: draft.display_label,
+    trigger: draft.trigger,
+    cadence: draft.cadence,
+    mode: draft.mode,
+    severity_floor: draft.severity_floor,
+    severity_ceiling: draft.severity_ceiling,
+    notes: draft.notes,
+  };
 }
 
 export async function listWatchlist(options: {
