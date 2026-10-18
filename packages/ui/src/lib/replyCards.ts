@@ -107,3 +107,46 @@ const GONE_CODES = new Set(["draft_gone", "you_replied", "already_handled"]);
 export function sendLeftNothing(code: string): boolean {
   return GONE_CODES.has(code);
 }
+
+type Question = { text: string; choices: readonly string[]; answer: string };
+
+/** How many questions with answers to tap are still open. Send waits for
+ * them, unless the words were changed by hand (``questions_settled``).
+ * A question with no choices (an older card, or the AI question) never
+ * holds Send back, as before. */
+export function questionsLeft(card: {
+  questions?: readonly Question[];
+  questions_settled?: boolean;
+}): number {
+  if (card.questions_settled) return 0;
+  return (card.questions ?? []).filter((q) => q.choices.length > 0 && !q.answer.trim()).length;
+}
+
+/** ``body`` cut into pieces, each marked when it is one of ``changed`` (the
+ * sentences an answer just wrote), so the card can highlight them. Every
+ * character of ``body`` is in exactly one piece, in order. */
+export function highlightPieces(
+  body: string,
+  changed: readonly string[],
+): { text: string; changed: boolean }[] {
+  const marks: [number, number][] = [];
+  for (const sentence of changed) {
+    const s = sentence.trim();
+    if (!s) continue;
+    const at = body.indexOf(s);
+    if (at < 0) continue;
+    const end = at + s.length;
+    if (marks.some(([a, b]) => at < b && end > a)) continue;
+    marks.push([at, end]);
+  }
+  marks.sort((x, y) => x[0] - y[0]);
+  const pieces: { text: string; changed: boolean }[] = [];
+  let cursor = 0;
+  for (const [a, b] of marks) {
+    if (a > cursor) pieces.push({ text: body.slice(cursor, a), changed: false });
+    pieces.push({ text: body.slice(a, b), changed: true });
+    cursor = b;
+  }
+  if (cursor < body.length) pieces.push({ text: body.slice(cursor), changed: false });
+  return pieces;
+}
