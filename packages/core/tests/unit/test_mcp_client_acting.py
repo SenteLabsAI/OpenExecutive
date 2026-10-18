@@ -96,14 +96,18 @@ def test_the_acting_set_is_the_read_only_set_minus_the_changes_it_may_make() -> 
     assert MCP_CLIENT_ACTING_WITHHELD_TOOLS == MCP_CLIENT_WITHHELD_TOOLS - MCP_CLIENT_RUNS_WHEN_ACTING
     for name in (*OUTWARD, *NEVER):
         assert name in MCP_CLIENT_ACTING_WITHHELD_TOOLS, name
-    assert {
-        "ack_alert", "add_watchlist_entry", "archive_person", "assign_open_loop",
+    runs = {
+        "ack_alert", "add_watchlist_entry", "assign_open_loop",
         "cancel_followup", "close_open_loop", "create_alert", "create_goal", "forget_fact",
         "leave_out_of_brief", "move_followup", "record_decision_outcome", "remember_fact",
-        "remove_watchlist_entry", "schedule_followup", "set_department_head",
+        "remove_watchlist_entry", "schedule_followup",
         "tune_watchlist_entry", "update_company_profile", "update_department_goal",
-        "upsert_person",
-    } == MCP_CLIENT_RUNS_WHEN_ACTING
+    }
+    assert runs == MCP_CLIENT_RUNS_WHEN_ACTING
+    # The roster stays out of reach: someone added on one call would be
+    # someone a card reaches on the next.
+    for name in ("upsert_person", "archive_person", "set_department_head"):
+        assert name in MCP_CLIENT_ACTING_WITHHELD_TOOLS
 
 
 def test_which_turns_the_rules_cover() -> None:
@@ -159,7 +163,11 @@ def test_an_acting_turn_is_offered_its_own_stable_list(roster: SimpleNamespace) 
     assert act.PROPOSE_ACTIONS not in read_only.offered[0]
 
 
-@pytest.mark.parametrize("tool", ["message_person", "create_calendar_event", "run_workflow", "save_workflow"])
+@pytest.mark.parametrize(
+    "tool",
+    ["message_person", "create_calendar_event", "run_workflow", "save_workflow",
+     "upsert_person", "archive_person", "set_department_head"],
+)
 def test_an_acting_turn_refuses_what_it_is_not_offered(roster: SimpleNamespace, tool: str) -> None:
     from openexecutive.orchestrator import executive as executive_module
 
@@ -199,10 +207,25 @@ def test_the_gateway_still_refuses_a_send_on_an_acting_turn(roster: SimpleNamesp
 # --- outward actions become cards -------------------------------------------
 
 
+def _settle(*person_ids: int, days: int = 30) -> None:
+    """Make these roster entries ``days`` old."""
+    import sqlite3
+    from datetime import timedelta
+
+    when = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(str(people_store.DB_PATH))
+    try:
+        conn.executemany("UPDATE people SET created_at = ? WHERE id = ?", [(when, p) for p in person_ids])
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def act_as_me(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     set_enabled(roster.principal, True, updated_by="t")
     monkeypatch.setattr(handle_it, "signing_ok", lambda: True)
+    _settle(roster.principal, roster.teammate)
     return roster
 
 
@@ -406,4 +429,45 @@ def test_a_turn_that_read_outside_text_waits(act_as_me: SimpleNamespace, sends: 
     handle_it.set_(act_as_me.principal, enabled=True, updated_by="t")
     with patch.object(outside_content, "read_outside", return_value=True):
         result = _ai_propose(act_as_me.principal, {"why": "x", "actions": [_message(act_as_me.teammate)]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+
+
+@pytest.mark.parametrize(("days", "expected"), [(1, "new_person"), (6, "new_person"), (8, None)])
+def test_no_one_added_lately_is_reached_on_its_own(
+    act_as_me: SimpleNamespace, sends: list[Any], days: int, expected: str | None
+) -> None:
+    roster = act_as_me
+    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    newcomer = people_store.upsert_person(full_name="Nia New", email="nia@co.example")
+    _settle(newcomer, days=days)
+    person = people_store.get_person(roster.principal)
+    for proposed in (_message(newcomer), _invite(roster.principal, newcomer)):
+        checked = action_cards.check([proposed], person, now=datetime.now(UTC))
+        assert not isinstance(checked, str)
+        assert action_cards.on_its_own_refusal(
+            person, checked, now=datetime.now(UTC), follow_handle_it=True,
+        ) == expected
+
+
+def test_planting_someone_then_messaging_them_never_sends_on_its_own(
+    act_as_me: SimpleNamespace, sends: list[Any]
+) -> None:
+    """Call 1 can't add anyone; whoever was added another way this week
+    still waits on call 2's card."""
+    from openexecutive.orchestrator import executive as executive_module
+
+    roster = act_as_me
+    handle_it.set_(roster.principal, enabled=True, updated_by="t")
+    upsert = AsyncMock(return_value=json.dumps({"status": "saved"}))
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu-1", name="upsert_person",
+        input={"full_name": "Eve Planted", "email": "eve@attacker.example"},
+    )
+    with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"upsert_person": upsert}):
+        provider = _run_loop(_acting(roster.principal), [tool_use])
+    upsert.assert_not_awaited()
+    assert MCP_CLIENT_ACTING_REFUSAL in json.loads(_results(provider)["tu-1"])["error"]
+    assert people_store.find_person_by_email("eve@attacker.example", include_contacts=True) is None
+    planted = people_store.upsert_person(full_name="Eve Planted", email="eve@attacker.example")
+    result = _ai_propose(roster.principal, {"why": "x", "actions": [_message(planted)]})
     assert result["status"] == "waiting_for_approval" and sends == []

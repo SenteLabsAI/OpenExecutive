@@ -80,7 +80,7 @@ class Session:
     # `MCP_CLIENT_ACTIONS` where no secret is configured). Such a turn runs
     # the speaker's own changes inside Open Executive (alerts, open loops,
     # follow-ups, the watch list, goals, decision outcomes, remembered facts,
-    # roster and company profile writes, each under its own owner-only and
+    # and company profile writes, never the roster, each under its own owner-only and
     # person checks), counts as a verified surface for `caller_person_id`,
     # and offers anything that reaches another person only as an approval
     # card (`propose_actions`), which goes on its own only by the speaker's

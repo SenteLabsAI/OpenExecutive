@@ -484,8 +484,8 @@ async def ask_executive(message: str) -> str:
     it reads and advises only: it does not send, post, book or change
     anything. When this server allows it to act, it can also make changes
     inside Open Executive for that person (alerts, open loops, follow-ups,
-    the watch list, goals, decisions, remembered facts, people and the
-    company profile, as their own permissions allow), and it leaves a message
+    the watch list, goals, decisions, remembered facts and the company
+    profile, as their own permissions allow; never the People list), and it leaves a message
     or a meeting on a card for them to approve, which goes on its own only
     when their Handle it for me covers it. It never runs scripts or
     workflows, connects servers or changes the install. The conversation is

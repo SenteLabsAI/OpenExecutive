@@ -49,8 +49,11 @@ same): with Suggested actions not in training, it is carried out on its own
 when their Handle it for me is on at a setting that covers people they know
 (every setting does; everyone on a card is on their roster), and the same
 plain-code checks find nothing against it, with a message no longer than
-that setting's replies. A new contact always waits. In training, the rule
-above applies. The card, and every row about it, names the app (``via``).
+that setting's replies. A new contact always waits, and so does a card to
+anyone whose roster entry is under ``SETTLED_AFTER`` old (``_settled``), so
+someone added or planted lately is never reached without a tap. An invite is
+never booked as approved by them: the meeting gate decides. In training, the
+rule above applies. The card, and every row about it, names the app (``via``).
 """
 from __future__ import annotations
 
@@ -83,6 +86,9 @@ HORIZON = timedelta(days=366)
 # a message no longer than this.
 ON_ITS_OWN_PER_DAY = 10
 ON_ITS_OWN_MESSAGE_MAX = 1200
+# A card from another AI app reaches no one on its own whose roster entry is
+# newer than this: it waits for a tap.
+SETTLED_AFTER = timedelta(days=7)
 
 _EMAIL_RE = re.compile(r"^[^@\s<>,;\"']+@[^@\s<>,;\"']+\.[^@\s<>,;\"']+$")
 
@@ -396,7 +402,7 @@ def on_its_own_refusal(
         return "uncountable"
 
 
-def _handle_it_refusal(person: Any, actions: list[dict[str, Any]]) -> tuple[str | None, int]:
+def _handle_it_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> tuple[str | None, int]:
     """For a card from another AI app outside training: why the person's
     Handle it for me doesn't cover it, or None, with the longest message its
     setting sends on its own."""
@@ -411,7 +417,47 @@ def _handle_it_refusal(person: Any, actions: list[dict[str, Any]]) -> tuple[str 
         return "new_contact", 0
     if settings.level(handle_it.KIND_REPLY_KNOWN) != handle_it.LEVEL_HANDLE:
         return "level", 0
+    if not all(_settled(pid, person.id, now) for pid in _recipients(actions)):
+        return "new_person", 0
     return None, min(ON_ITS_OWN_MESSAGE_MAX, settings.rules.max_body_chars)
+
+
+def _recipients(actions: list[dict[str, Any]]) -> list[Any]:
+    """Everyone a card's messages and invites reach, by roster id."""
+    out: list[Any] = []
+    for action in actions:
+        given = action.get("input")
+        stored: dict[str, Any] = given if isinstance(given, dict) else {}
+        if action.get("kind") == "message":
+            out.append(stored.get("person_id"))
+        elif action.get("kind") == "invite":
+            ids = stored.get("attendee_person_ids")
+            out.extend(ids if isinstance(ids, list) else [None])
+    return out
+
+
+def _settled(person_id: Any, speaker_id: int, now: datetime) -> bool:
+    """Whether a card from another AI app may reach ``person_id`` with no
+    tap: the speaker, or someone on the roster they know (team or contact)
+    whose entry is older than ``SETTLED_AFTER``, so nobody added or planted
+    lately is reached on its own. Fails closed."""
+    from openexecutive.people.store import get_person
+
+    pid = _int(person_id)
+    if pid is None:
+        return False
+    if pid == speaker_id:
+        return True
+    found = get_person(pid)
+    if found is None or found.archived or found.kind not in ("team", "contact"):
+        return False
+    try:
+        created = datetime.fromisoformat(str(found.created_at or ""))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return now - created >= SETTLED_AFTER
 
 
 def _on_its_own_refusal(
@@ -435,7 +481,7 @@ def _on_its_own_refusal(
         return "not_allowed"
     message_max = ON_ITS_OWN_MESSAGE_MAX
     if by_mode:
-        refused, message_max = _handle_it_refusal(person, actions)
+        refused, message_max = _handle_it_refusal(person, actions, now)
         if refused is not None:
             return refused
     elif any(training.allowed_action(person.id, a) is None for a in actions):

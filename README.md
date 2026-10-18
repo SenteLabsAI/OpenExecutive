@@ -324,13 +324,17 @@ A client can let it act by sending `x-mcp-client-actions: on` (honored only on a
 request the `BACKEND_SHARED_SECRET` authenticated; with no secret set the header
 is ignored and `MCP_CLIENT_ACTIONS=true` turns it on for every request). Then it
 makes the person's own changes inside Open Executive (alerts, open loops,
-follow-ups, the watch list, goals, decision outcomes, remembered facts, people
-and the company profile), each under the same permissions as in the web app.
+follow-ups, the watch list, goals, decision outcomes, remembered facts and the
+company profile), each under the same permissions as in the web app. It never
+changes the People list; a new contact goes on a card that always waits.
 A message or a meeting is left on an approval card instead of sent: it waits
 for the person's tap on the web, or goes on its own when their Handle it for me
-is on and covers the people on it and nothing on it is sensitive. It still
+is on, everyone on it has been on the People list for at least a week, and
+nothing on it is sensitive. It still
 never runs scripts or workflows, loads MCP servers or reads their mailbox, and
-every action is recorded as coming from the AI app.
+every action is recorded as coming from the AI app. On a server without signed
+callers (`CALLER_ASSERTION_PUBLIC_KEYS`), acting mode trusts whoever holds the
+shared secret to say who is asking.
 
 This is the inverse of the `MCP_ENABLED` and `MCP_SERVERS_CONFIG_PATH` settings
 under [Configuration](#configuration), which configure the MCP *gateway*: Open

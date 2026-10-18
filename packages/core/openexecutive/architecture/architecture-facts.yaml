@@ -9077,8 +9077,10 @@ integrations:
         (ack, create, leave_out_of_brief), open loops (close, assign),
         follow-ups (schedule, cancel, move), the watch list (add, remove,
         tune), goals and department goals, decision outcomes, remember/forget
-        facts, roster writes (upsert, archive, set_department_head) and the
-        company profile. Still withheld: everything that reaches another
+        facts and the company profile. Still withheld: roster writes
+        (upsert_person, archive_person, set_department_head: someone added
+        on one call would be someone a card reaches on the next; a new
+        contact goes on an add_contact card, which always waits), everything that reaches another
         person directly (DMs, calendar create/cancel/instant meeting,
         broadcasts, department messages), load_mcp_server, run_script,
         run_python_job, list_saved_tools, the workflow tools,
@@ -9102,7 +9104,10 @@ integrations:
         kept on the card's payload so run_on_its_own re-checks the same
         rule): with Suggested actions not in training, it is carried out at
         once when Handle it for me is on at a setting covering people they
-        know (every card recipient is on the roster), no add_contact, and
+        know (every card recipient is on the roster as team or contact, and
+        each roster entry is at least action_cards.SETTLED_AFTER, 7 days,
+        old, so nobody added or planted lately is reached), no add_contact,
+        an invite never booked as approved (the meeting gate decides), and
         the plain-code checks pass (Act as me on, signed callers or local
         login, nothing sensitive, no link or amount, a message no longer
         than the setting's replies and ON_ITS_OWN_MESSAGE_MAX, the daily

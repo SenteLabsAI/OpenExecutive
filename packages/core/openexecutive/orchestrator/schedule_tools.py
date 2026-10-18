@@ -2118,6 +2118,9 @@ MCP_CLIENT_REFUSAL = (
 #   send_company_broadcast, send_department_message: they reach other
 #   people; a message or an invite is proposed as a card, the rest stay with
 #   Open Executive itself.
+# - upsert_person, archive_person, set_department_head: roster writes. A
+#   person added here would be someone a later card reaches; a new contact
+#   goes on a card instead (`add_contact`, which always waits for a tap).
 # - load_mcp_server, run_script, run_python_job, list_saved_tools,
 #   save_workflow, draft_workflow, run_workflow, suggest_workflow,
 #   run_executive_research: they change the install or run code or work
@@ -2132,7 +2135,6 @@ MCP_CLIENT_REFUSAL = (
 MCP_CLIENT_RUNS_WHEN_ACTING: frozenset[str] = frozenset({
     "ack_alert",
     "add_watchlist_entry",
-    "archive_person",
     "assign_open_loop",
     "cancel_followup",
     "close_open_loop",
@@ -2145,11 +2147,9 @@ MCP_CLIENT_RUNS_WHEN_ACTING: frozenset[str] = frozenset({
     "remember_fact",
     "remove_watchlist_entry",
     "schedule_followup",
-    "set_department_head",
     "tune_watchlist_entry",
     "update_company_profile",
     "update_department_goal",
-    "upsert_person",
 })
 MCP_CLIENT_ACTING_WITHHELD_TOOLS: frozenset[str] = MCP_CLIENT_WITHHELD_TOOLS - MCP_CLIENT_RUNS_WHEN_ACTING
 
