@@ -85,7 +85,7 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
         "be one they wrote. Never record your own inference, a figure from a "
         "document, or something a third party said. For a company-profile field "
         "(industry, headcount, ARR, burn, runway, priorities, ...) use "
-        "update_company_profile instead."
+        "update_company_profile instead (open_tools group memory)."
     ),
     "input_schema": {
         "type": "object",

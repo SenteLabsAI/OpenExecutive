@@ -34,8 +34,13 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ("cancel_calendar_event", "create_calendar_event", "create_instant_meeting"),
     ),
     "people": (
-        "add, change or archive people on the roster, department heads, roster requests",
-        ("archive_person", "resolve_roster_request", "set_department_head", "upsert_person"),
+        "add, change or archive people on the roster, department heads, roster requests, "
+        "what memory holds about one person",
+        ("archive_person", "ask_about_person", "resolve_roster_request", "set_department_head", "upsert_person"),
+    ),
+    "memory": (
+        "forget a remembered fact, change a company-profile field (industry, headcount, ARR, priorities, ...)",
+        ("forget_fact", "update_company_profile"),
     ),
     "corrections": (
         "leave something out of the brief, list, cancel or move a follow-up or reminder, mark a chat draft sent",

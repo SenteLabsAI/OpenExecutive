@@ -52,9 +52,19 @@ def test_each_tool_sits_in_one_group() -> None:
     assert len(listed) == len(set(listed))
 
 
-@pytest.mark.parametrize("name", ["consult_specialist", "propose_form_values", "message_person"])
+@pytest.mark.parametrize(
+    "name", ["consult_specialist", "propose_form_values", "message_person", "read_user_guide"]
+)
 def test_the_everyday_tools_stay_direct(name: str) -> None:
     assert name not in tool_groups.DEFERRED
+
+
+@pytest.mark.parametrize(
+    ("name", "group"),
+    [("ask_about_person", "people"), ("forget_fact", "memory"), ("update_company_profile", "memory")],
+)
+def test_the_rarely_used_tools_sit_in_a_group(name: str, group: str) -> None:
+    assert tool_groups.DEFERRED[name] == group
 
 
 def test_open_tools_lists_every_group() -> None:

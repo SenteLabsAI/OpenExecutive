@@ -343,8 +343,9 @@ caching:
     only way to be labelled reads-only on the review card.
   deferred_tool_groups: |
     The less common skill tools are not in the tool list. orchestrator.
-    tool_groups.GROUPS puts them in named groups (calendar, people, goals,
-    watch_and_alerts, workflows, documents, messaging, skills), and
+    tool_groups.GROUPS puts them in named groups (calendar, people, memory,
+    corrections, goals, watch_and_alerts, workflows, documents, app,
+    messaging), and
     tool_groups.split takes them out of the turn's offered tools after every
     filter (workspace mode, unattended, private turn) and BEFORE the sort,
     adding two small tools in their place: open_tools(group), whose
@@ -365,9 +366,13 @@ caching:
     audit rows as a direct call. use_tool accepts only names in
     tool_groups.DEFERRED; anything else, or input that is not an object,
     gets an error tool result. The everyday tools (consult_specialist,
-    propose_form_values, read_user_guide, people and memory lookups, follow-ups, the MCP
-    meta-tools) stay direct. This cut the direct list from about 19.5k to
-    about 6-7k tokens, which every model call of a turn re-sends.
+    propose_form_values, read_user_guide, message_person, lookup_person,
+    list_people, remember_fact, follow-ups, the MCP meta-tools) stay direct.
+    This cut the direct list from about 19.5k to about 6-7k tokens, which
+    every model call of a turn re-sends. ask_about_person (people group),
+    forget_fact and update_company_profile (memory group) moved behind
+    open_tools later: on a busy test install they ran about 2 times in 674
+    answers, and their ~5k characters of descriptions were re-sent on every call.
   rag_context_placement: User turn (NOT the system prompt) — RAG hits vary per query, would poison the cache if cached.
   intra_turn_cache: |
     executive._apply_loop_cache_marker moves a single ephemeral marker onto
