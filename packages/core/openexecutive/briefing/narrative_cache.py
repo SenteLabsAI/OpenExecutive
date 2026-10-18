@@ -107,7 +107,7 @@ def initialize_db(db_path: Path | None = None) -> None:
 # into the input hash so a prompt change invalidates every cached narrative on
 # the next view — otherwise a wording fix wouldn't surface until the underlying
 # state changed (or the daily date rollover).
-NARRATIVE_PROMPT_VERSION = "6"
+NARRATIVE_PROMPT_VERSION = "7"
 
 
 # Stands in for the rendered context when nothing on the viewer's board wants

@@ -26,7 +26,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from openexecutive.briefing.narrative import GROUNDING_RULE, READER_NAME_RULE
+from openexecutive.briefing.narrative import (
+    GROUNDING_RULE,
+    READER_NAME_RULE,
+    STANDING_FACTS_RULE,
+)
 from openexecutive.briefing.reader import fix_slips, mask, principal_reader, reader_line
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.workflows.base import (
@@ -84,6 +88,7 @@ _EOD_DIGEST_SYSTEM = (
     "  4. **Sleep on this** — at most ONE open question worth the "
     "principal mulling overnight. Skip if there isn't one.\n\n"
     + _NOTES_SECTION + GROUNDING_RULE + " " + READER_NAME_RULE + " "
+    + STANDING_FACTS_RULE + " "
     "Skip headers for empty sections. If the day was genuinely quiet, "
     "output one line: 'Quiet day — nothing carrying forward.'"
 )
@@ -112,6 +117,7 @@ _EOD_DIGEST_SOLO_SYSTEM = (
     "  4. **Sleep on this** — at most ONE open question worth the "
     "principal mulling overnight. Skip if there isn't one.\n\n"
     + _NOTES_SECTION + GROUNDING_RULE + " " + READER_NAME_RULE + " "
+    + STANDING_FACTS_RULE + " "
     "This digest is for one person: name goals by their area, never a "
     "department, and add no sections about a team roster or people waiting "
     "on the reader. Skip headers for empty sections. If the day was "

@@ -98,6 +98,25 @@ def _is_contact_ref(channel: str, channel_ref: str, finder: Callable[..., Any]) 
     return person is not None and getattr(person, "kind", "team") != "team"
 
 
+# The kind the next sends in this context record their done row as
+# (``recorded_as``); the default is an ordinary send.
+_RECORD_KIND: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "schedule_tools_record_kind", default="ad_hoc"
+)
+
+
+@contextlib.contextmanager
+def recorded_as(kind: str) -> Iterator[None]:
+    """Record the sends made inside this block as ``kind``. The scheduler
+    wraps a brief's delivery in ``recorded_as(BRIEF_DELIVERY_KIND)`` so the
+    activity feed, which every later brief reads, leaves it out."""
+    token = _RECORD_KIND.set(kind)
+    try:
+        yield
+    finally:
+        _RECORD_KIND.reset(token)
+
+
 def _record_send_to_activity(
     *,
     channel: str,
@@ -148,6 +167,7 @@ def _record_send_to_activity(
                 channel_ref=channel_ref,
                 intent_text=intent_text[:160],
                 originating_session_id=session_id,
+                kind=_RECORD_KIND.get(),
                 status="done",
             )
         except Exception as exc:

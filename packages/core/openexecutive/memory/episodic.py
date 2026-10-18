@@ -1515,7 +1515,8 @@ def count_activity_by_day(
         ("scheduled_actions",
          "SELECT substr(run_at, 1, 10) AS day FROM scheduled_actions"
          " WHERE status = 'done' AND channel != '__internal__'"
-         " AND kind != 'nudge_scan' AND substr(run_at, 1, 10) >= ?"),
+         " AND kind != 'nudge_scan' AND kind != 'brief_delivery'"
+         " AND substr(run_at, 1, 10) >= ?"),
         ("workflow_runs",
          "SELECT substr(updated_at, 1, 10) AS day FROM workflow_runs"
          " WHERE status = 'done' AND substr(updated_at, 1, 10) >= ?"),
@@ -1818,6 +1819,14 @@ def get_scheduled_action(
     return ScheduledAction(**dict(row)) if row else None
 
 
+# The kind of the done row a send writes when it delivers one of the
+# Executive's own briefs or digests to its reader (``orchestrator.schedule_tools.
+# recorded_as``). It still counts for the outbound guard, but it is not work
+# done for anyone: the activity feed and the heatmap leave it out, so a brief
+# never reads its own last message back as news.
+BRIEF_DELIVERY_KIND = "brief_delivery"
+
+
 def list_scheduled_actions(
     *,
     status: str | None = None,
@@ -1830,7 +1839,8 @@ def list_scheduled_actions(
 
     ``exclude_internal`` drops ``__internal__``-channel rows in SQL, so a
     caller that only wants real sends (the activity feed) is not starved by
-    internal rows — open loops, heartbeats — filling its ``limit``.
+    internal rows — open loops, heartbeats — filling its ``limit``. It drops
+    brief deliveries (``BRIEF_DELIVERY_KIND``) too.
 
     `order` sorts by `run_at`: "asc" (default) puts the soonest-due pending
     rows first — the right default for the upcoming queue; "desc" puts the
@@ -1850,6 +1860,8 @@ def list_scheduled_actions(
         params.append(status)
     if exclude_internal:
         clauses.append("channel != '__internal__'")
+        clauses.append("kind != ?")
+        params.append(BRIEF_DELIVERY_KIND)
     where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
     with _get_conn(resolved) as conn:
         rows = conn.execute(

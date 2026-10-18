@@ -260,3 +260,32 @@ def test_the_reader_line_is_framing_and_the_rules_reach_every_brief() -> None:
             "'the principal'", "")
     assert READER_NAME_RULE in _viewer_system_prompt("Dana Lee", "Ops")
     assert "ONLY the people under PEOPLE YOU ARE WAITING ON" in STANDALONE_BRIEF_SYSTEM
+
+
+def test_every_brief_uses_standing_facts_quietly() -> None:
+    """A fact the reader saved in chat must not come back as a brief point
+    ("a standing fact says the Maple Court buyout is done, so drop it"): every
+    brief prompt carries the rule to use facts silently and leave settled
+    items out without announcing it."""
+    from openexecutive.briefing.narrative import (
+        BRIEFING_NARRATIVE_SOLO_SYSTEM,
+        BRIEFING_NARRATIVE_SYSTEM,
+        STANDALONE_BRIEF_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SYSTEM,
+        STANDING_FACTS_RULE,
+        _viewer_system_prompt,
+    )
+    from openexecutive.workflows.end_of_day_digest import (
+        _EOD_DIGEST_SOLO_SYSTEM,
+        _EOD_DIGEST_SYSTEM,
+    )
+
+    for prompt in (
+        BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SYSTEM, STANDALONE_BRIEF_SOLO_SYSTEM,
+        _EOD_DIGEST_SYSTEM, _EOD_DIGEST_SOLO_SYSTEM,
+        _viewer_system_prompt("Dana Lee", "Ops"),
+    ):
+        assert STANDING_FACTS_RULE in prompt
+    assert "Never mention a standing fact" in STANDING_FACTS_RULE
+    assert "never write that it was dropped" in STANDING_FACTS_RULE

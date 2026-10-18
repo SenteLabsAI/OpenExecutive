@@ -2431,3 +2431,27 @@ def test_a_failed_run_card_carries_its_run(client: TestClient) -> None:
     by_headline = {p["headline"]: p for p in client.get("/today").json()["proposals"]}
     assert by_headline["Finance check-in didn't finish"]["failed_run_id"] == "r-9"
     assert by_headline["other"]["failed_run_id"] is None  # only a failure card names a run
+
+
+def test_a_delivered_brief_stays_off_the_activity_rail_and_heatmap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A brief's own delivery is not work done: the rail (which every later
+    brief reads) and the heatmap leave it out, so a brief never repeats its
+    last top call as news."""
+    db = tmp_path / "brief_rail.db"
+    _setup_isolated_db(db, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+    for text, kind in (
+        ("**Top call:** pick up the Maple Court buyout", episodic.BRIEF_DELIVERY_KIND),
+        ("Sent the lease summary to Dana", "ad_hoc"),
+    ):
+        episodic.insert_scheduled_action(
+            run_at=now, channel="telegram", channel_ref="42", intent_text=text,
+            kind=kind, status="done", db_path=db,
+        )
+
+    summaries = [i.summary for i in today_route._build_activity(20).items]
+    assert any("lease summary" in s for s in summaries)
+    assert not any("Maple Court" in s for s in summaries)
+    assert dict(episodic.count_activity_by_day(1)) == {now[:10]: 1}

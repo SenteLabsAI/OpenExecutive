@@ -2323,7 +2323,13 @@ async def _deliver_to_principal(text: str, *, label: str = "Update") -> Principa
     if principal is None:
         return PrincipalDelivery(False, "no principal Person row found", "no_owner")
     plan = delivery_order(principal, email_ready=await ensure_email_ready())
-    return await _send_on_plan(principal, plan, text, label=label)
+    from openexecutive.memory.episodic import BRIEF_DELIVERY_KIND
+    from openexecutive.orchestrator.schedule_tools import recorded_as
+
+    # Everything sent here is a brief or digest to its reader: its done row
+    # must not read as work done, or the next brief repeats it as news.
+    with recorded_as(BRIEF_DELIVERY_KIND):
+        return await _send_on_plan(principal, plan, text, label=label)
 
 
 async def deliver_to_person(person: Person, text: str, *, label: str = "Update") -> PrincipalDelivery:
