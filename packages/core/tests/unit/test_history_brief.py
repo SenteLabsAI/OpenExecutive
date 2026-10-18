@@ -269,6 +269,87 @@ def test_the_digest_recaps_the_owners_notes_only_when_it_is_theirs(
     assert _result(mine)["private_to_principal"] is True
 
 
+def test_the_digest_reads_the_owners_own_chats_today_only_when_it_is_theirs(
+    db: Path, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What moved today is mostly said in chat: the digest written for the
+    owner alone carries their own conversations with the Executive (their
+    words and its replies), never a teammate's, and a shared run carries
+    none. Without it the digest reported only its own briefs."""
+    import functools
+
+    from openexecutive import providers
+    from openexecutive.briefing import grounding
+    from openexecutive.memory import session_store
+
+    provider = _Provider()
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    async def _ground(text: str, **_kw: Any) -> tuple[str, None]:
+        return text, None
+
+    monkeypatch.setattr(grounding, "ground_brief", _ground)
+    monkeypatch.setattr(
+        session_store, "own_conversation_since",
+        functools.partial(session_store.own_conversation_since, db_path=db),
+    )
+    stamp = NOW.isoformat()
+    session_store.create_session("s-owner", "Maple Court offers", stamp, roster.owner, db_path=db)
+    session_store.create_session("s-ben", "Ben's chat", stamp, roster.teammate, db_path=db)
+    session_store.save_message("s-owner", "user", "Where did the top offer land?", db_path=db)
+    session_store.save_message(
+        "s-owner", "assistant", "Harbor Partners came up to $4.5M; final numbers Monday.", db_path=db,
+    )
+    session_store.save_message("s-ben", "user", "Ben's private question", db_path=db)
+
+    shared = asyncio.run(_digest(False))
+    assert "TODAY WITH YOU" not in provider.calls[-1]["messages"][0]["content"]
+    assert _result(shared)["private_to_principal"] is False
+
+    mine = asyncio.run(_digest(True))
+    content = provider.calls[-1]["messages"][0]["content"]
+    assert "TODAY WITH YOU" in content
+    assert "the reader: Where did the top offer land?" in content
+    assert "the Executive: Harbor Partners came up to $4.5M" in content
+    assert "Ben's private question" not in content
+    assert _result(mine)["private_to_principal"] is True
+
+
+def test_the_digest_follows_a_leave_out_quietly_and_leads_with_the_day(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subject the owner asked to keep out of their briefs reaches the
+    digest as a leave-out, and the prompt says to leave it out without
+    announcing it, never report its own briefs, and skip empty sections."""
+    from openexecutive import providers
+    from openexecutive.briefing import brief_requests, grounding
+    from openexecutive.workflows.end_of_day_digest import (
+        _EOD_DIGEST_SOLO_SYSTEM,
+        _EOD_DIGEST_SYSTEM,
+    )
+
+    provider = _Provider()
+    monkeypatch.setattr(providers, "get_provider", lambda _m: provider)
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-test")
+
+    async def _ground(text: str, **_kw: Any) -> tuple[str, None]:
+        return text, None
+
+    monkeypatch.setattr(grounding, "ground_brief", _ground)
+    monkeypatch.setattr(
+        brief_requests, "render_parts",
+        lambda **_kw: ("", brief_requests.LEAVE_OUT_HEADER + "\n- the lender's silence"),
+    )
+    asyncio.run(_digest(True))
+    assert "- the lender's silence" in provider.calls[-1]["messages"][0]["content"]
+    for prompt in (_EOD_DIGEST_SYSTEM, _EOD_DIGEST_SOLO_SYSTEM):
+        assert "TODAY WITH YOU" in prompt
+        assert "Never report a brief, digest or reflection you sent" in prompt
+        assert "just leave it out" in prompt
+        assert "never a line saying a section is empty" in prompt
+
+
 # --------------------------------------------------------------------------- #
 # Reminders
 # --------------------------------------------------------------------------- #

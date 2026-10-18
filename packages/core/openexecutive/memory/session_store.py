@@ -472,6 +472,43 @@ def own_messages_since(
     return out
 
 
+def own_conversation_since(
+    person_id: int,
+    since: str,
+    *,
+    limit: int = 24,
+    max_chars: int = 280,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, str]]:
+    """``person_id``'s own conversations with the Executive after ``since``
+    (ISO 8601), oldest first: the newest ``limit`` messages, theirs and the
+    Executive's replies, as ``{"at", "role", "text"}`` with ``text`` one line
+    of at most ``max_chars``. Only conversations they own, so nobody else's
+    words or a reply written to someone else ever reach it. The end-of-day
+    digest reads it: what moved today is mostly said in chat."""
+    if not db_path.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT m.created_at, m.role, m.content FROM chat_messages m "
+            "JOIN sessions s ON s.session_id = m.session_id "
+            "WHERE s.caller_person_id = ? AND m.created_at > ? "
+            "AND m.role IN ('user', 'assistant') "
+            "AND (m.role = 'assistant' OR m.sender_person_id IS NULL "
+            "OR m.sender_person_id = ?) "
+            "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+            (person_id, since, person_id, limit),
+        ).fetchall()
+    out: list[dict[str, str]] = []
+    for row in reversed(rows):
+        text = " ".join(str(row["content"] or "").split())
+        if len(text) > max_chars:
+            text = text[: max_chars - 1].rstrip() + "…"
+        if text:
+            out.append({"at": str(row["created_at"]), "role": str(row["role"]), "text": text})
+    return out
+
+
 def mark_mail_private(
     session_id: str,
     owner_person_id: int | None = None,

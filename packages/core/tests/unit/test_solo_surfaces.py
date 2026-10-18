@@ -632,7 +632,7 @@ def test_solo_brief_prompts_drop_the_team_sections() -> None:
         assert "departments / goals" not in prompt
     for section in ("**Top call**", "**What changed**", "**Needs you**", "**Goals at risk**"):
         assert section in STANDALONE_BRIEF_SOLO_SYSTEM
-    assert "**Open decisions**" in _EOD_DIGEST_SOLO_SYSTEM
+    assert "**Next**" in _EOD_DIGEST_SOLO_SYSTEM and "named with its area" in _EOD_DIGEST_SOLO_SYSTEM
     assert "name the person and what's blocking" not in _EOD_DIGEST_SOLO_SYSTEM
 
 
