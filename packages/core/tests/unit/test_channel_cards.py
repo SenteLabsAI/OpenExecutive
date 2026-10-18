@@ -296,3 +296,23 @@ def test_a_tap_answers_audits_and_leaves_the_card_without_buttons(
         ("answerCallbackQuery", "This card is no longer there."),
         ("answerCallbackQuery", "This card is no longer there."),
     ]
+
+
+def test_a_second_tap_while_the_first_is_booking_is_turned_away(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    async def slow(decision_id: int, person: Any, *, approve: bool) -> None:
+        calls.append(decision_id)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(decisions_route, "resolve_in_chat", slow)
+
+    async def both() -> list[str]:
+        return list(await asyncio.gather(
+            channel_cards.resolve(7, SimpleNamespace(id=1), approve=True),
+            channel_cards.resolve(7, SimpleNamespace(id=1), approve=True),
+        ))
+
+    assert sorted(asyncio.run(both())) == ["Already on it.", "Approved."]
+    assert calls == [7]
+    assert asyncio.run(channel_cards.resolve(7, SimpleNamespace(id=1), approve=False)) == "Skipped."

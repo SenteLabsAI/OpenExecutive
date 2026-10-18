@@ -30,6 +30,9 @@ SKIP = "s"
 # A reply leaves at most this many cards (action_cards.CARDS_PER_TURN plus a meeting).
 MAX_CARDS = 4
 
+# Cards a tap is deciding right now (one process serves a company's taps).
+_resolving: set[int] = set()
+
 _CLASS_LABEL = {
     "meeting_scheduling": "Meeting to book",
     "delegation_actions": "Waiting for your approval",
@@ -143,6 +146,12 @@ async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
 
     from openexecutive.api.routes.decisions import resolve_in_chat
 
+    # The buttons stay until the card is edited after this returns, so a
+    # second tap can land while the first is still booking: it is turned
+    # away rather than racing it to a second invite.
+    if decision_id in _resolving:
+        return "Already on it."
+    _resolving.add(decision_id)
     try:
         await resolve_in_chat(decision_id, person, approve=approve)
     except HTTPException as exc:
@@ -151,6 +160,8 @@ async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
     except Exception:
         logger.exception("channel_cards: resolving card %d failed", decision_id)
         return outcome_text(approve, "something went wrong. Check Today before trying again.")
+    finally:
+        _resolving.discard(decision_id)
     return outcome_text(approve, None)
 
 
