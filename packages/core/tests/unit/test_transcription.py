@@ -2,6 +2,7 @@
 becomes in a chat turn."""
 from __future__ import annotations
 
+import struct
 from types import SimpleNamespace
 from typing import Any
 
@@ -126,6 +127,57 @@ async def test_too_long_or_too_large_is_refused_before_sending(settings, server)
     with pytest.raises(transcription.TranscriptionError, match="MB"):
         await transcription.transcribe(b"0" * (transcription.MAX_BYTES + 1), "voice.ogg")
     assert server["requests"] == []
+
+
+def _ogg_opus(seconds: float) -> bytes:
+    def page(granule: int, payload: bytes) -> bytes:
+        return b"OggS" + bytes([0, 0]) + struct.pack("<q", granule) + b"\0" * 12 + bytes([1, len(payload)]) + payload
+
+    head = b"OpusHead" + bytes([1, 1]) + struct.pack("<H", 312) + b"\0" * 8
+    return page(0, head) + page(312 + int(seconds * 48_000), b"audio")
+
+
+def _wav(seconds: float) -> bytes:
+    rate = 8_000
+    fmt = struct.pack("<HHIIHH", 1, 1, rate, rate * 2, 2, 16)
+    body = b"\0" * int(seconds * rate * 2)
+    return b"RIFF" + struct.pack("<I", 36 + len(body)) + b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt + b"data" + struct.pack("<I", len(body)) + body
+
+
+def _m4a(seconds: float) -> bytes:
+    mvhd_body = b"\0" * 4 + b"\0" * 8 + struct.pack(">II", 1000, int(seconds * 1000)) + b"\0" * 80
+    mvhd = struct.pack(">I", 8 + len(mvhd_body)) + b"mvhd" + mvhd_body
+    ftyp = struct.pack(">I", 16) + b"ftypM4A \0\0\0\0"
+    mdat = struct.pack(">I", 12) + b"mdat" + b"mvhd"  # the name inside audio is not the box
+    return ftyp + mdat + struct.pack(">I", 8 + len(mvhd)) + b"moov" + mvhd
+
+
+def test_a_recordings_length_is_read_from_its_container() -> None:
+    assert transcription.recording_seconds(_ogg_opus(42.0), "v.ogg") == pytest.approx(42.0)
+    assert transcription.recording_seconds(_wav(1.5), "v.wav") == pytest.approx(1.5)
+    assert transcription.recording_seconds(_m4a(90.0), "v.m4a") == pytest.approx(90.0)
+    assert transcription.recording_seconds(b"ID3\x04" + b"\0" * 100, "v.mp3") is None
+    assert transcription.recording_seconds(b"OggS", "v.ogg") is None
+
+
+async def test_a_long_recording_is_refused_by_its_real_length(settings, server) -> None:
+    # The cap is the server's, not the browser's: a long file posted
+    # straight to the route is measured before anything is sent.
+    settings(openrouter_api_key="or-key", transcription_max_seconds=300)
+    with pytest.raises(transcription.TranscriptionError, match="5 minutes"):
+        await transcription.transcribe(_ogg_opus(301), "voice.ogg", "audio/ogg")
+    with pytest.raises(transcription.TranscriptionError, match="5 minutes"):
+        await transcription.transcribe(_m4a(3600), "call.m4a")
+    assert server["requests"] == []
+    assert await transcription.transcribe(_ogg_opus(299), "voice.ogg") == "move my call"
+
+
+async def test_a_recording_of_unreadable_length_is_held_to_a_size(settings, server) -> None:
+    settings(openrouter_api_key="or-key", transcription_max_seconds=10)
+    with pytest.raises(transcription.TranscriptionError, match="10 seconds"):
+        await transcription.transcribe(b"ID3" + b"0" * 80_001, "call.mp3")
+    assert server["requests"] == []
+    assert await transcription.transcribe(b"ID3" + b"0" * 1000, "call.mp3") == "move my call"
 
 
 def test_audio_is_known_by_type_or_name() -> None:

@@ -2323,7 +2323,10 @@ knowledge:
       _API_KEY, _MODEL, default whisper-1) wins; else OpenRouter when
       OPENROUTER_API_KEY is set (elevenlabs/scribe-v2); else none, and a
       voice note becomes a line asking the sender to type it. 25 MB and
-      TRANSCRIPTION_MAX_SECONDS (300) caps. Each call writes one usage row
+      TRANSCRIPTION_MAX_SECONDS (300) caps, the length read on the server
+      from the Ogg / WebM / MP4 / WAV container (recording_seconds; the
+      browser's own stop is not trusted); a file whose length can't be read
+      (mp3, flac, aac) is held to 8 KB per allowed second. Each call writes one usage row
       (actor "transcription", the server's reported cost) and tells any
       add_usage_listener listener. Chat-app voice notes (Telegram voice /
       video_note / audio, Slack, Discord, Google Chat) go through
