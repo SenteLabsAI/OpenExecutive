@@ -486,8 +486,51 @@ async def from_the_team(tool_input: Any, result: Any, gateway: Any) -> bool:
             arguments = _arguments(tool_input)
             if arguments.get("detailed") is not True and not arguments.get("event_id"):
                 return False
-        return only_team_addresses(result)
+            return only_team_addresses(result) and _google_organizers_on_team(result)
+        return only_team_addresses(result) and _graph_organizers_on_team(result)
     return False
+
+
+def _google_organizers_on_team(result: Any) -> bool:
+    """A detailed ``get_events`` result where every event names its
+    organizer, a teammate: each ``Organizer:`` line carries a team address
+    (a calendar id, or a name with no address, is no one's), and there are
+    at least as many as events (``Description:`` lines, one an event).
+    Never raises: an error is no."""
+    try:
+        text = result if isinstance(result, str) else ""
+        organizers = re.findall(r"^\s*-?\s*Organizer:\s*(.*)$", text, re.MULTILINE)
+        events = re.findall(r"^\s*-?\s*Description:", text, re.MULTILINE)
+        if not organizers or len(organizers) < len(events):
+            return False
+        team = _team_addresses()
+        for line in organizers:
+            found = [a.lower().rstrip(".") for a in _ADDRESS.findall(line)]
+            if len(found) != 1 or found[0].endswith(_CALENDAR_IDS) or found[0] not in team:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _graph_organizers_on_team(result: Any) -> bool:
+    """A Microsoft 365 calendar result where every event's
+    ``organizer.emailAddress.address`` is a teammate's: a result trimmed
+    (``select``) to leave the organizer out is no one's. Never raises: an
+    error is no."""
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else result
+        events = parsed.get("value") if isinstance(parsed, dict) and "value" in parsed else [parsed]
+        if not isinstance(events, list) or not events:
+            return isinstance(events, list)
+        team = _team_addresses()
+        for event in events:
+            address = ((event.get("organizer") or {}).get("emailAddress") or {}).get("address")
+            if not isinstance(address, str) or address.strip().lower() not in team:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 async def mark_read(source: str, tool_input: Any, result: Any, gateway: Any = None) -> None:
