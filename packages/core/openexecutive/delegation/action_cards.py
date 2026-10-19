@@ -17,6 +17,12 @@ checked when it is proposed and again when it is carried out:
 - ``message``: a direct message to someone on the roster (``message_person``).
 - ``add_contact``: a new contact for the principal; their cards only, since
   contacts are the principal's.
+- ``drive_files``: rename and/or move up to ``DRIVE_FILES_MAX`` Google Drive
+  files (``MCPGateway.tapped_drive_change``); the principal's cards only. For
+  a change the Drive gate won't make on the model's say-so (a file that isn't
+  the company's own, or a turn that read outside content): the tap is the
+  approval, so only the folder it goes to is checked. It always waits for
+  the tap.
 
 **Whose it is.** A card is a ``delegation_actions`` decision for the person
 who was speaking, theirs alone (``approver_only``: not even the principal sees
@@ -76,7 +82,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DECISION_CLASS = "delegation_actions"
-KINDS: tuple[str, ...] = ("invite", "message", "add_contact")
+KINDS: tuple[str, ...] = ("invite", "message", "add_contact", "drive_files")
+# Kinds that never run without the person's tap.
+TAP_ONLY_KINDS = frozenset({"add_contact", "drive_files"})
+DRIVE_FILES_MAX = 25
+FILE_NAME_MAX = 200
+_DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 MAX_ACTIONS = 5
 CARDS_PER_TURN = 3
 OPEN_CARDS_MAX = 25
@@ -268,6 +279,76 @@ def _check_contact(action: dict[str, Any], speaker: Any) -> dict[str, Any] | str
     }
 
 
+def _check_drive_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] | str:
+    if not speaker.is_principal:
+        return "drive_files: the Executive's Drive is the owner's; only they can change it."
+    raw = action.get("files")
+    if not isinstance(raw, list) or not raw:
+        return "drive_files: pass `files`, each with a `file_id` and the new `name` if it is renamed."
+    if len(raw) > DRIVE_FILES_MAX:
+        return f"drive_files: at most {DRIVE_FILES_MAX} files on one action."
+    move_to = str(action.get("move_to") or "").strip()
+    if move_to and not _DRIVE_ID_RE.match(move_to):
+        return "drive_files: `move_to` must be a Drive folder id."
+    files: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return "drive_files: each file is an object with `file_id` and an optional `name`."
+        file_id = str(entry.get("file_id") or "").strip()
+        if not _DRIVE_ID_RE.match(file_id):
+            return "drive_files: each `file_id` must be a Drive file id."
+        name = _one_line(entry.get("name"), FILE_NAME_MAX + 1)
+        if len(name) > FILE_NAME_MAX:
+            return f"drive_files: keep each `name` to {FILE_NAME_MAX} characters."
+        if not name and not move_to:
+            return "drive_files: give each file a new `name`, or pass `move_to`."
+        if file_id == move_to:
+            return "drive_files: a folder can't be moved into itself."
+        if any(f["file_id"] == file_id for f in files):
+            continue
+        files.append({"file_id": file_id, "name": name})
+    renamed = sum(1 for f in files if f["name"])
+    count = f"{len(files)} file" + ("" if len(files) == 1 else "s")
+    if renamed and move_to:
+        summary = f"Rename and move {count} in Drive"
+    elif move_to:
+        summary = f"Move {count} in Drive"
+    else:
+        summary = f"Rename {count} in Drive"
+    lines = [f"{f['file_id']} → {f['name']}" for f in files if f["name"]]
+    return {
+        "kind": "drive_files", "input": {"files": files, "move_to": move_to},
+        "summary": summary, "text": "\n".join(lines),
+    }
+
+
+async def describe_drive_files(actions: list[dict[str, Any]]) -> None:
+    """Put each Drive file's current name, and the folder's, on checked
+    ``drive_files`` actions, for the card to show. Ids stay where a name
+    can't be read. Never raises."""
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+
+    drive = [a for a in actions if a.get("kind") == "drive_files"]
+    gateway = get_active_gateway()
+    if not drive or gateway is None:
+        return
+    for action in drive:
+        stored = action["input"]
+        ids = [f["file_id"] for f in stored["files"]] + ([stored["move_to"]] if stored["move_to"] else [])
+        try:
+            names = await gateway.drive_item_names(ids[:DRIVE_FILES_MAX + 1])
+        except Exception:
+            logger.warning("action_cards: couldn't read the Drive names", exc_info=True)
+            continue
+
+        shown = {i: _one_line(names.get(i) or i, FILE_NAME_MAX) for i in ids}
+        action["text"] = "\n".join(
+            f"{shown[f['file_id']]} → {f['name']}" if f["name"] else shown[f["file_id"]] for f in stored["files"]
+        )
+        if stored["move_to"]:
+            action["summary"] = f"{action['summary']}, to {shown[stored['move_to']]}"
+
+
 def check(actions: Any, speaker: Any, *, now: datetime) -> list[dict[str, Any]] | str:
     """``actions`` as they will be stored, or why they can't be."""
     if not isinstance(actions, list) or not actions:
@@ -286,6 +367,8 @@ def check(actions: Any, speaker: Any, *, now: datetime) -> list[dict[str, Any]] 
             checked = _check_invite(action, speaker, now)
         elif kind == "add_contact":
             checked = _check_contact(action, speaker)
+        elif kind == "drive_files":
+            checked = _check_drive_files(action, speaker)
         else:
             return f"`kind` must be one of {', '.join(KINDS)}."
         if isinstance(checked, str):
@@ -418,9 +501,11 @@ def _handle_it_refusal(person: Any, actions: list[dict[str, Any]], now: datetime
     if not settings.enabled:
         return "handle_it_off", 0
     # Everyone on a card is on their roster (``check``): people they know.
-    # A new contact is not, and always waits.
+    # A new contact is not, and always waits, as does a Drive change.
     if any(a.get("kind") == "add_contact" for a in actions):
         return "new_contact", 0
+    if any(a.get("kind") in TAP_ONLY_KINDS for a in actions):
+        return "tap_only", 0
     if settings.level(handle_it.KIND_REPLY_KNOWN) != handle_it.LEVEL_HANDLE:
         return "level", 0
     refused = _known_people_refusal(person, actions, now)
@@ -434,6 +519,8 @@ def _known_people_refusal(person: Any, actions: list[dict[str, Any]], now: datet
     roster: a new contact, or anyone added lately, waits for a tap."""
     if any(a.get("kind") == "add_contact" for a in actions):
         return "new_contact"
+    if any(a.get("kind") in TAP_ONLY_KINDS for a in actions):
+        return "tap_only"
     if not all(_settled(pid, person.id, now) for pid in _recipients(actions)):
         return "new_person"
     return None
@@ -499,6 +586,8 @@ def _on_its_own_refusal(
         return "signing_off"
     if not actions:
         return "not_allowed"
+    if any(a.get("kind") == "drive_files" for a in actions):
+        return "tap_only"
     message_max = ON_ITS_OWN_MESSAGE_MAX
     if by_mode:
         refused, message_max = _handle_it_refusal(person, actions, now)
@@ -610,10 +699,33 @@ async def _do(action: dict[str, Any], person: Any, *, tapped: bool = True) -> di
             )
             people_registry.invalidate()
             return {"status": "done", "detail": "Added."}
+        if kind == "drive_files":
+            return await _do_drive_files(tool_input, tapped=tapped)
     except Exception:
         logger.exception("action_cards: a %s action failed", kind)
         return {"status": "failed", "detail": "Something went wrong, so it may not have happened. Check before trying again."}
     return {"status": "failed", "detail": "Unknown action."}
+
+
+async def _do_drive_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, str]:
+    """Rename and/or move each file on a ``drive_files`` action, one by one."""
+    from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
+
+    if not tapped:
+        return {"status": "failed", "detail": "A Drive change waits for a tap."}
+    gateway = await ensure_active_gateway()
+    if gateway is None:
+        return {"status": "failed", "detail": "Google Drive isn't connected right now."}
+    failed: list[str] = []
+    files = stored["files"]
+    for f in files:
+        error = await gateway.tapped_drive_change(f["file_id"], name=f["name"], move_to=stored["move_to"])
+        if error is not None:
+            failed.append(f"{f['name'] or f['file_id']}: {error}")
+    if not failed:
+        return {"status": "done", "detail": f"Done for {len(files)} file" + ("" if len(files) == 1 else "s") + "."}
+    detail = f"{len(files) - len(failed)} of {len(files)} done. " + "; ".join(failed[:3])
+    return {"status": "failed", "detail": detail[:300]}
 
 
 async def approve(

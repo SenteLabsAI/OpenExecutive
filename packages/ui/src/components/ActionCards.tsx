@@ -44,13 +44,14 @@ export function useActionCards() {
 // What the action cards are, for the Needs you header's tip.
 export const ACTION_CARDS_TIP =
   "Things your email called for that the Executive can't do on its own after reading it: " +
-  "a meeting, a message to someone, a new contact. Each is shown exactly as it will happen, " +
+  "a meeting, a message to someone, a new contact, a rename or move in Drive. Each is shown exactly as it will happen, " +
   "and nothing happens until you tap Approve. Untick anything you don't want. Only you see these.";
 
 const KIND_LABEL: Record<string, string> = {
   invite: "Meeting",
   message: "Message",
   add_contact: "New contact",
+  drive_files: "Drive files",
 };
 
 const RESULT_LABEL: Record<string, string> = {

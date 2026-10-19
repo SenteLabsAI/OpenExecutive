@@ -635,3 +635,94 @@ def test_the_route_picks_one_of_ask_training_or_on(
     assert (on["actions"], on["actions_on"]) == (False, True)
     ask = client.put("/delegation/training", json={"actions_on": False}, headers=olivia).json()["training"]
     assert (ask["actions"], ask["actions_on"]) == (False, False)
+
+
+# --------------------------------------------------------------------------- #
+# Drive files: a rename or move the Drive gate won't make on its own
+# --------------------------------------------------------------------------- #
+
+SCAN_1, SCAN_2, PROCESSED = "1scanFileAAAA01", "1scanFileBBBB02", "1processedFolder3"
+
+
+class _DriveGateway:
+    def __init__(self) -> None:
+        self.changes: list[tuple[str, str, str]] = []
+
+    async def drive_item_names(self, ids: list[str]) -> dict[str, str]:
+        names = {SCAN_1: "scan_0001.pdf", SCAN_2: "scan_0002.pdf", PROCESSED: "processed"}
+        return {i: names[i] for i in ids if i in names}
+
+    async def tapped_drive_change(self, file_id: str, *, name: str = "", move_to: str = "") -> str | None:
+        self.changes.append((file_id, name, move_to))
+        return "Drive said no." if file_id == SCAN_2 and move_to else None
+
+
+@pytest.fixture
+def drive(monkeypatch: pytest.MonkeyPatch) -> _DriveGateway:
+    from openexecutive.orchestrator import mcp_gateway
+
+    gateway = _DriveGateway()
+    monkeypatch.setattr(mcp_gateway, "get_active_gateway", lambda: gateway)
+
+    async def ensure() -> _DriveGateway:
+        return gateway
+
+    monkeypatch.setattr(mcp_gateway, "ensure_active_gateway", ensure)
+    return gateway
+
+
+def _drive(move_to: str = "", **names: str) -> dict[str, Any]:
+    files = [{"file_id": SCAN_1, "name": names.get("one", "Harbor View - 2026 Invoice.pdf")},
+             {"file_id": SCAN_2, "name": names.get("two", "")}]
+    return {"kind": "drive_files", "files": files, **({"move_to": move_to} if move_to else {})}
+
+
+def test_a_drive_card_shows_each_file_and_does_nothing_until_tapped(
+    roster: SimpleNamespace, drive: _DriveGateway,
+) -> None:
+    result = _propose(_session(FakeMailbox()), {"why": "Rename the scans", "actions": [_drive(two="Elm Street.pdf")]})
+    assert result["status"] == "waiting_for_approval"
+    listed = action_cards.cards(people_store.get_person(roster.principal))[0].actions[0]
+    assert listed.kind == "drive_files" and listed.summary == "Rename 2 files in Drive"
+    assert listed.text == (
+        "scan_0001.pdf → Harbor View - 2026 Invoice.pdf\nscan_0002.pdf → Elm Street.pdf"
+    )
+    assert drive.changes == []
+
+
+def test_approving_a_drive_card_renames_and_moves_each_file(
+    roster: SimpleNamespace, drive: _DriveGateway, signed: dict[str, Any],
+) -> None:
+    set_enabled(roster.principal, True, updated_by="t")
+    card = _card(_session(FakeMailbox()), [_drive(move_to=PROCESSED, one="Harbor.pdf")])
+    payload = json.loads(card.proposed_payload_json)
+    assert payload["actions"][0]["summary"] == "Rename and move 2 files in Drive, to processed"
+    results = _approve(card)
+    assert drive.changes == [(SCAN_1, "Harbor.pdf", PROCESSED), (SCAN_2, "", PROCESSED)]
+    assert results[0]["status"] == "failed" and results[0]["detail"].startswith("1 of 2 done.")
+
+
+@pytest.mark.parametrize(("action", "error"), [
+    ({"kind": "drive_files", "files": []}, "`files`"),
+    ({"kind": "drive_files", "files": [{"file_id": "short"}]}, "Drive file id"),
+    ({"kind": "drive_files", "files": [{"file_id": SCAN_1}]}, "new `name`"),
+    ({"kind": "drive_files", "files": [{"file_id": SCAN_1}], "move_to": "../x"}, "folder id"),
+    ({"kind": "drive_files", "files": [{"file_id": SCAN_1, "name": "x"}] * 26}, "at most 25"),
+])
+def test_bad_drive_actions_are_refused(roster: SimpleNamespace, action: dict[str, Any], error: str) -> None:
+    assert error in _propose(_session(FakeMailbox()), {"why": "x", "actions": [action]})["error"]
+
+
+def test_a_team_member_cant_leave_a_drive_card(roster: SimpleNamespace) -> None:
+    assert "owner's" in _propose(_teammate_session(), {"why": "x", "actions": [_drive(two="x.pdf")]})["error"]
+
+
+def test_a_drive_card_always_waits_for_the_tap(
+    actions_on: SimpleNamespace, drive: _DriveGateway, signed: dict[str, Any],
+) -> None:
+    person = people_store.get_person(actions_on.principal)
+    checked = action_cards.check([_drive(two="Elm Street.pdf")], person, now=datetime.now(UTC))
+    assert not isinstance(checked, str)
+    assert action_cards.on_its_own_refusal(person, checked, now=datetime.now(UTC)) == "tap_only"
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_drive(two="Elm Street.pdf")]})
+    assert result["status"] == "waiting_for_approval" and drive.changes == []

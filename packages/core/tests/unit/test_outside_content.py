@@ -628,3 +628,77 @@ def test_a_hold_is_the_speakers_own(upserts: list[dict[str, Any]]) -> None:
 ])
 def test_what_counts_as_a_go(message: str, go: bool) -> None:
     assert bool(oc.GO_RE.match(message)) is go
+
+
+# --- the company's own Drive is not outside --------------------------------
+
+OURS = "1ourScanFileId0001"
+THEIRS = "1theirSharedFile002"
+FOLDER = "1ourScansFolder0003"
+READ_OURS = {"name": "google_workspace__get_drive_file_content", "arguments": {"file_id": OURS}}
+READ_THEIRS = {"name": "google_workspace__get_drive_file_content", "arguments": {"file_id": THEIRS}}
+LIST_OURS = {"name": "google_workspace__list_drive_items", "arguments": {"folder_id": FOLDER}}
+RENAME = {"name": "google_workspace__update_drive_file", "arguments": {"file_id": OURS, "name": "Bill.pdf"}}
+
+
+class _CompanyGateway(_Gateway):
+    def __init__(self, ours: set[str]) -> None:
+        super().__init__()
+        self.ours = ours
+        self.looked_up: list[str] = []
+
+    async def company_drive_items(self, ids: list[str]) -> set[str]:
+        self.looked_up.extend(ids)
+        return {i for i in ids if i in self.ours}
+
+
+@pytest.mark.parametrize(("call", "item"), [
+    (READ_OURS, OURS),
+    (LIST_OURS, FOLDER),
+    ({"name": "google_workspace__read_sheet_values", "arguments": {"spreadsheetId": OURS, "range_name": "A1"}}, OURS),
+    ({"name": "google_workspace__get_drive_file_content", "arguments": json.dumps({"file_id": OURS})}, OURS),
+    # A search, a form, mail, or a read pointed elsewhere is never one item.
+    ({"name": "google_workspace__search_drive_files", "arguments": {"query": "scans"}}, None),
+    ({"name": "google_workspace__get_form", "arguments": {"form_id": OURS}}, None),
+    ({"name": "google_workspace__get_gmail_message_content", "arguments": {"message_id": OURS}}, None),
+    ({"name": "google_workspace__list_drive_items", "arguments": {"folder_id": "root", "drive_id": OURS}}, None),
+    ({"name": "google_workspace__get_drive_file_content", "arguments": {"file_id": [OURS]}}, None),
+    ({"name": "google_workspace__get_drive_file_content", "arguments": {"file_id": "x/../y"}}, None),
+])
+def test_what_reads_one_company_item(call: dict[str, Any], item: str | None) -> None:
+    assert oc.company_read_item(call) == item
+
+
+def test_reading_a_company_file_leaves_the_turn_free_to_rename_it(audit: list[dict[str, Any]]) -> None:
+    gateway = _CompanyGateway({OURS, FOLDER})
+    _run(
+        [ToolUseBlock("tu1", "call_tool", LIST_OURS), ToolUseBlock("tu2", "call_tool", READ_OURS)],
+        [ToolUseBlock("tu3", "call_tool", RENAME)],
+        [ToolUseBlock("tu4", "call_tool", READ_OURS)],
+        gateway=gateway,
+    )
+    assert gateway.calls == [LIST_OURS, READ_OURS, RENAME, READ_OURS]
+    # Each id is looked up once a turn.
+    assert sorted(gateway.looked_up) == sorted([FOLDER, OURS])
+    assert not [r for r in audit if r["details"].get("refused") == "outside_content"]
+
+
+def test_a_file_shared_in_from_outside_still_holds_the_turn() -> None:
+    gateway = _CompanyGateway({OURS})
+    provider = _run(
+        [ToolUseBlock("tu1", "call_tool", READ_THEIRS)],
+        [ToolUseBlock("tu2", "call_tool", RENAME)],
+        gateway=gateway,
+    )
+    assert gateway.calls == [READ_THEIRS]
+    assert "drive_files" in json.loads(_result(provider, "tu2"))["error"]
+
+
+def test_a_script_renames_the_company_files_it_read() -> None:
+    gateway = _CompanyGateway({OURS})
+    script = (
+        f'google_workspace__get_drive_file_content(file_id="{OURS}")\n'
+        f'google_workspace__update_drive_file(file_id="{OURS}", name="Bill.pdf")'
+    )
+    _run([ToolUseBlock("tu1", "run_script", {"script": script})], gateway=gateway)
+    assert [c["name"] for c in gateway.calls] == [READ_OURS["name"], RENAME["name"]]

@@ -2518,6 +2518,11 @@ class Executive:
                     replayed = reading_budget.replay(tu)
                     if replayed is not None:
                         group_results[tu["id"]] = replayed
+            # A read of the company's own Drive item is not outside content:
+            # look those up first, so source_of (and defers_read) pass them.
+            await outside_content.vet_reads(
+                [tu for tu in tool_uses if tu["id"] not in group_results], self._mcp_gateway
+            )
             # The person just said go to what the last turn held: the first
             # round that reads runs its other calls without those reads, so a
             # re-read doesn't hold the approved steps again
@@ -3285,6 +3290,10 @@ class Executive:
                         probe_name, probe_input
                     ):
                         return outside_content.outside_withheld_error(tool[:200]), True
+                    if not own:
+                        await outside_content.vet_reads(
+                            [{"name": probe_name, "input": probe_input}], self._mcp_gateway
+                        )
                     source = outside_content.source_of(probe_name, probe_input)
                     try:
                         if own:
