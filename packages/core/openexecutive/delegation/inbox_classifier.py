@@ -93,7 +93,8 @@ something of by name, exactly as written ("Good morning, Brennan" gives \
 when it names nobody. Never include the sender's own name or names that only \
 appear in the signature or a quoted message.
 - asked_of_them: true only when the email asks this person themselves: it \
-names or greets them, or they are its only addressee. False when it is \
+names or greets them, they are its only addressee, or they are the only one \
+in To and it answers <their_last_email>. False when it is \
 addressed to someone else by name ("Brennan: ..."), when it asks a group \
 without naming them, or when they are only copied (Cc).
 - confidence: how sure you are that needs_reply and kind are right, from 0 to 1.
@@ -103,8 +104,11 @@ wrote in the thread before the email: read the email as an answer to it. \
 When they asked to meet or talk and the email says when the sender is free, \
 or that they are free, without a time being settled, it is scheduling and \
 needs_reply is true: they can offer times. That holds even when the sender \
-says they will check with someone or come back with times. When the email \
-settles what they asked and leaves nothing for them to do, it needs no reply.
+says they will check with someone or come back with times. A time the \
+sender proposes is not settled until this person accepts it: "would \
+Thursday at 11 suit?" waits on their yes, so it is scheduling and needs_reply \
+is true. When the email settles what they asked and leaves nothing for them \
+to do (it accepts a time they offered), it needs no reply.
 
 When unsure, say needs_reply false."""
 

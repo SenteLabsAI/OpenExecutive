@@ -1,0 +1,35 @@
+id: delegation_inbox_015
+domain: delegation
+type: inbox
+description: "Inbox watcher: the person asks to move a meeting and a contact answers with a time of their own (\"would Thursday at 11 suit?\"), copying a colleague. The time waits on the person's yes, so a reply is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: correspondent
+  expect: draft
+  thread:
+    id: t-budget-review-move
+    subject: "RE: Q3 budget review"
+    messages:
+      - from: "Olivia Owner <olivia@fernway.example>"
+        to: ["dana@northpeak.example"]
+        cc: ["sam@fernway.example"]
+        text: |
+          Hi Dana,
+
+          Something came up for Monday. Could we push the budget review to
+          Thursday? Tell me what time suits you.
+
+          Olivia
+      - from: "Dana Park <dana@northpeak.example>"
+        to: ["olivia@fernway.example"]
+        cc: ["sam@fernway.example"]
+        text: |
+          No problem. Would Thursday at 11 suit?
+
+          Dana
+quality_criteria:
+  accepts_or_answers_the_proposed_time: true
+  promises_nothing_new: true
+  brief: true
