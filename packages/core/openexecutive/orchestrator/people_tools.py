@@ -1082,6 +1082,11 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         {"person_id": new_id, "action": action},
     )
     stored = people_store.get_person(new_id)
+    if existing is None and stored is not None and stored.kind == "contact":
+        # Listed in Contacts' "Changes I made", so a chat add has an Undo too.
+        from openexecutive.people.contact_keeper import note_chat_add
+
+        note_chat_add(new_id, full_name, stored.email)
     return json.dumps({
         "status": "ok",
         "action": action,

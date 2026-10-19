@@ -27,6 +27,7 @@ from openexecutive.api.routes import (
     chat_directory,
     clients,
     company_profile,
+    contacts,
     decisions,
     delegation,
     departments,
@@ -1002,6 +1003,7 @@ def create_app() -> FastAPI:
     app.include_router(audit.router, tags=["audit"])
     app.include_router(departments.router, tags=["departments"])
     app.include_router(people.router, tags=["people"])
+    app.include_router(contacts.router, tags=["people"])
     app.include_router(chat_directory.router, tags=["people"])
     app.include_router(today.router, tags=["today"])
     app.include_router(scheduled.router, tags=["scheduled"])

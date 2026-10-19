@@ -179,6 +179,9 @@ export function activityLine(item: ActivityItem): { verb: string; subject: strin
       return { verb: "took the lead:", subject: item.summary };
     case "sent_as_you":
       return { verb: "sent as you:", subject: item.summary };
+    case "contacts_kept":
+      // The summary says it; the detail has the counts.
+      return { verb: "", subject: item.summary };
     default:
       return { verb: "acted on", subject: item.summary };
   }
@@ -197,11 +200,18 @@ export const SUMMARY_KINDS = new Set([
   "alert_raised",
   "took_the_lead",
   "sent_as_you",
+  "contacts_kept",
 ]);
 
 /** Where a finished run's write-up opens, when it kept one. */
 export function writeUpHref(item: ActivityItem): string | null {
+  if (item.kind === "contacts_kept") return "/people?tab=contacts";
   return item.artifact_id ? `/artifacts/${encodeURIComponent(item.artifact_id)}` : null;
+}
+
+/** What the link after a row's detail says. */
+export function writeUpLabel(item: ActivityItem): string {
+  return item.kind === "contacts_kept" ? "See changes" : "Read it";
 }
 
 // Take the lead and Handle it for me rows say whose name it acted in.
@@ -326,7 +336,7 @@ export function RecentActivity() {
                       <>
                         {it.detail && " "}
                         <Link href={writeUpHref(it)!} className="font-semibold text-accent hover:underline whitespace-nowrap">
-                          Read it
+                          {writeUpLabel(it)}
                         </Link>
                       </>
                     )}

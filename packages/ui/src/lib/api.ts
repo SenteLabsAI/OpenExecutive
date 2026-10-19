@@ -4488,6 +4488,63 @@ export async function getPeopleViewer(): Promise<PeopleViewer> {
   return res.json();
 }
 
+// Contacts the Executive keeps up to date (people/contact_keeper.py): what
+// it changed, with an Undo each, and the switch. The principal's alone.
+export type ContactKeeperMode = "on" | "ask" | "off";
+
+export interface ContactChange {
+  id: number;
+  person_id: number | null;
+  action: "add" | "update";
+  field: "contact" | "full_name" | "role" | "email_alias";
+  email: string;
+  full_name: string;
+  old_value: string;
+  new_value: string;
+  reason: "emailed" | "met" | "asked" | "from_line" | "signature";
+  evidence: number;
+  status: "applied" | "suggested" | "undone" | "dismissed";
+  seen: boolean;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface ContactChanges {
+  mode: ContactKeeperMode;
+  status: string;
+  last_run_at: string | null;
+  changes: ContactChange[];
+}
+
+async function contactsCall<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}/contacts${path}`, init);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === "string" ? body.detail : `Request failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export function getContactChanges(personId?: number): Promise<ContactChanges> {
+  return contactsCall(`/changes${personId !== undefined ? `?person_id=${personId}` : ""}`);
+}
+
+export function setContactKeeperMode(mode: ContactKeeperMode): Promise<ContactChanges> {
+  return contactsCall("/keeper", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export function markContactChangesSeen(): Promise<ContactChanges> {
+  return contactsCall("/changes/seen", { method: "POST" });
+}
+
+export function decideContactChange(id: number, verb: "undo" | "accept" | "dismiss"): Promise<ContactChange> {
+  return contactsCall(`/changes/${id}/${verb}`, { method: "POST" });
+}
+
 export async function getPerson(id: number): Promise<Person> {
   const res = await fetch(`${API_BASE}/people/${id}`);
   if (!res.ok) throw new Error(`Failed to load person: ${res.statusText}`);

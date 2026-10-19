@@ -347,6 +347,8 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
         "valid_id",
         # Read my calendar (delegation.calendar): read-only.
         "list_events", "calendar_granted",
+        # A contact's newest mail, for their signature (people.contact_keeper): read-only.
+        "latest_from",
     }
     # Gmail's send endpoints (/settings/sendAs is a read, and allowed): the
     # draft one, once, and never messages.send, which sends any text.
@@ -719,3 +721,15 @@ def test_the_script_asks_for_the_calendar_only_with_the_flag() -> None:
     payload = script.credential_payload(EMAIL, "r", "c", "s", scopes=[*script.SCOPES, script.CALENDAR_SCOPE])
     assert payload["scopes"][-1] == gm.SCOPE_CALENDAR
     assert script.credential_payload(EMAIL, "r", "c", "s")["scopes"] == list(gm.SCOPES)
+
+
+def test_each_recipient_keeps_the_name_it_was_written_with() -> None:
+    raw = {"id": "m1", "threadId": "t1", "payload": {"headers": [
+        {"name": "From", "value": "Olivia Owner <olivia@co.example>"},
+        {"name": "To", "value": '"Shah, Priya" <Priya.Shah@northwind.example>, bare@x.example'},
+        {"name": "Cc", "value": "Marco Diaz <marco@fabrikam.example>"},
+    ]}}
+    message = gm.parse_message(raw)
+    assert message.names == {
+        "priya.shah@northwind.example": "Shah, Priya", "bare@x.example": "", "marco@fabrikam.example": "Marco Diaz",
+    }

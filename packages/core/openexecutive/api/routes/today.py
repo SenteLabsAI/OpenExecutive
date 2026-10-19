@@ -2011,11 +2011,41 @@ def get_today_activity(
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
     built = _build_activity(limit)
-    mine = _sent_as_caller(request)
+    mine = [*_sent_as_caller(request), *_contacts_kept_for_caller(request)]
     if not mine:
         return built
     merged = sorted([*built.items, *mine], key=lambda i: i.at, reverse=True)
     return ActivityResponse(items=merged[:limit])
+
+
+def _contacts_kept_for_caller(request: Request) -> list[ActivityItem]:
+    """One line a day on what the Executive changed in the contacts, for the
+    principal alone (contacts are theirs). Counts only. Best effort."""
+    from openexecutive.api.routes.people import caller_is_principal
+    from openexecutive.people import contact_changes
+
+    try:
+        if not caller_is_principal(request):
+            return []
+        days = contact_changes.counts_by_day()
+    except Exception:
+        logger.warning("activity: couldn't read the contact changes", exc_info=True)
+        return []
+    items: list[ActivityItem] = []
+    for _day, added, updated, latest in days:
+        parts = [f"{added} added"] if added else []
+        if updated:
+            parts.append(f"{updated} updated")
+        items.append(ActivityItem(
+            kind="contacts_kept",
+            summary="Kept your contacts up to date",
+            detail=", ".join(parts),
+            actor="executive",
+            target=None,
+            department=None,
+            at=latest,
+        ))
+    return items
 
 
 def _sent_as_caller(request: Request) -> list[ActivityItem]:
