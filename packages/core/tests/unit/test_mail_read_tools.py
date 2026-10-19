@@ -270,14 +270,23 @@ def test_the_process_log_never_carries_their_mail() -> None:
     assert "budget" in _log_value("list_people", {"query": "budget"})
 
 
-def test_quoted_history_and_drafts_are_left_out_and_long_threads_trimmed(roster: SimpleNamespace) -> None:
+def test_quoted_history_is_left_out_and_long_threads_trimmed(roster: SimpleNamespace) -> None:
     messages = [_msg(i, DANA, f"Message {i}\n\nOn Mon, Olivia wrote:\n> quoted {i}") for i in range(1, 13)]
-    messages.append(_msg(13, OWNER, "unsent", labels=["DRAFT"]))
     result = _read(_thread_session(*messages), {"thread_id": "t1"})
     assert result["messages_in_thread"] == 12
     assert result["shown_from"] == 12 - mr.READ_MESSAGES + 1
     assert "Message 12" in result["thread"] and "Message 2\n" not in result["thread"]
-    assert "quoted" not in result["thread"] and "unsent" not in result["thread"]
+    assert "quoted" not in result["thread"]
+
+
+def test_a_draft_reads_as_their_draft_not_sent(roster: SimpleNamespace) -> None:
+    """A thread that is only a draft saved for them must not read as empty."""
+    draft = _msg(1, OWNER, "Does Wednesday at 10 work?", labels=["DRAFT"])
+    result = _read(_thread_session(draft), {"thread_id": "t1"})
+    assert result["status"] == "ok"
+    assert "Your draft, not sent" in result["thread"]
+    assert "Does Wednesday at 10 work?" in result["thread"]
+    assert "Yours —" not in result["thread"]
 
 
 def test_a_bad_thread_id_is_refused(roster: SimpleNamespace) -> None:

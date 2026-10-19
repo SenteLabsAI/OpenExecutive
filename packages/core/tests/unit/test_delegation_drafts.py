@@ -24,7 +24,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     episodic.initialize_db(path)
     caps._SAVED_TODAY.clear()
     caps._IN_FLIGHT.clear()
+    drafts._seen.clear()
     yield path
+    drafts._seen.clear()
     caps._SAVED_TODAY.clear()
     caps._IN_FLIGHT.clear()
 
@@ -153,6 +155,25 @@ async def test_a_chat_draft_sent_in_gmail_stops_waiting() -> None:
     box.asked.clear()
     assert await drafts.settle_waiting(PERSON, now=NOW, gmail=box) == 0
     assert box.asked == ["d2"]
+
+
+async def test_a_waiting_draft_is_named_by_who_it_goes_to_and_its_subject() -> None:
+    _record(1, drafts.SOURCE_CHAT, "t1", "d1")
+    _record(1, drafts.SOURCE_CHAT, None, "d2")
+    day = NOW.replace(hour=0)
+    # Before any settle pass: listed, but nothing read yet.
+    assert [(d.to, d.subject) for d in drafts.waiting_drafts(1, day)] == [((), ""), ((), "")]
+
+    class Box:
+        async def get_draft(self, draft_id: str) -> Any:
+            if draft_id == "d1":
+                return None  # sent
+            message = SimpleNamespace(to=["dana@example.com"], cc=[], subject="Wednesday meeting")
+            return SimpleNamespace(draft_id=draft_id, message=message)
+
+    assert await drafts.settle_waiting(PERSON, now=NOW, gmail=Box()) == 1
+    waiting = drafts.waiting_drafts(1, day)
+    assert [(d.to, d.subject) for d in waiting] == [(("dana@example.com",), "Wednesday meeting")]
 
 
 async def test_settling_reads_nothing_without_recent_chat_drafts() -> None:

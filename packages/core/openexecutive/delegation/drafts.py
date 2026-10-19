@@ -10,11 +10,15 @@ leaves out when it learns from sent mail:
   person's own writing to learn from.
 
 Metadata only: ids and times, never an address, a subject or any text.
+Who a waiting chat draft goes to and its subject are read from the mailbox
+by ``settle_waiting`` and kept in memory only (``waiting_drafts``), so the
+briefs can name the draft.
 """
 from __future__ import annotations
 
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,6 +37,20 @@ _SOURCES = frozenset({SOURCE_CHAT, SOURCE_INBOX})
 SETTLE_WINDOW = timedelta(days=2)
 # At most this many Gmail reads per settle pass.
 _SETTLE_MAX = 20
+
+
+@dataclass(frozen=True)
+class WaitingDraft:
+    """A chat draft still in the person's Drafts, as the briefs name it."""
+
+    created_at: str
+    to: tuple[str, ...] = ()
+    subject: str = ""
+
+
+# Row id -> (to, subject) as the last ``settle_waiting`` read them from the
+# mailbox. In memory only: the table keeps no address or subject.
+_seen: dict[int, tuple[tuple[str, ...], str]] = {}
 
 
 def _db(db_path: Path | None) -> Path:
@@ -197,16 +215,35 @@ def count_waiting(person_id: int, since: datetime, *, db_path: Path | None = Non
 
 
 def _waiting(person_id: int, since: datetime, db_path: Path | None) -> list[tuple[int, str]]:
+    return [(row_id, draft_id) for row_id, draft_id, _ in _waiting_rows(person_id, since, db_path)]
+
+
+def _waiting_rows(
+    person_id: int, since: datetime, db_path: Path | None
+) -> list[tuple[int, str, str]]:
     where, params = _waiting_sql(person_id, since)
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            f"SELECT id, draft_id {where} ORDER BY id DESC LIMIT ?",  # noqa: S608
+            f"SELECT id, draft_id, created_at {where} ORDER BY id DESC LIMIT ?",  # noqa: S608
             (*params, _SETTLE_MAX),
         ).fetchall()
     finally:
         conn.close()
-    return [(int(r[0]), str(r[1] or "")) for r in rows]
+    return [(int(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
+
+
+def waiting_drafts(
+    person_id: int, since: datetime, *, db_path: Path | None = None
+) -> list[WaitingDraft]:
+    """``person_id``'s chat drafts since ``since`` still counted as waiting,
+    newest first, each with who it goes to and its subject when a settle
+    pass has read them (empty until one has)."""
+    out = []
+    for row_id, _, created_at in _waiting_rows(person_id, since, db_path):
+        to, subject = _seen.get(row_id, ((), ""))
+        out.append(WaitingDraft(created_at=created_at, to=to, subject=subject))
+    return out
 
 
 def latest_waiting(person_id: int, since: datetime, *, db_path: Path | None = None) -> int | None:
@@ -256,8 +293,14 @@ async def settle_waiting(
         if not valid_id(draft_id):
             continue  # nothing to look up
         try:
-            if await client.get_draft(draft_id) is not None:
+            found = await client.get_draft(draft_id)
+            if found is not None:
+                message = getattr(found, "message", None)
+                recipients = [*getattr(message, "to", []), *getattr(message, "cc", [])]
+                to = tuple(str(a) for a in recipients[:5] if a)
+                _seen[row_id] = (to, str(getattr(message, "subject", "") or ""))
                 continue
+            _seen.pop(row_id, None)
             mark_gone(row_id, now, db_path=db_path)
             gone += 1
         except GmailError as exc:

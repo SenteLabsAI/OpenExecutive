@@ -131,7 +131,8 @@ READ_MY_EMAIL_TOOL: dict[str, Any] = {
         "Read one email thread in the mailbox of the person you are speaking "
         "with, by the thread_id search_my_email or my_email_awaiting_reply "
         f"returned: its last {READ_MESSAGES} messages, each sender's own words "
-        "(quoted history left out), and the files attached to them "
+        "(quoted history left out), drafts saved there marked not sent, and "
+        "the files attached to them "
         "(`attachments`: message_id and index; open one with "
         "read_my_email_attachment). Their own messages are marked yours. Use it "
         "to answer what a thread says or to summarise it. Read-only."
@@ -442,6 +443,13 @@ def _render_thread(messages: list[Any], first: int, own: str) -> str:
     for i, m in enumerate(messages, first):
         text = plain(sender_new_text(m.text or ""))[:READ_MESSAGE_CHARS]
         date = one_line(m.date or m.received_at, 60)
+        if "DRAFT" in m.labels:
+            # Saved, never sent: whoever wrote it (them, Act as me, another
+            # app), it went to no one, so its words stay quoted data.
+            to = ", ".join([*m.to, *m.cc][:10])
+            header = f"[{i}] Your draft, not sent — {date}\nTo: {one_line(to, 400)}"
+            parts.append(f"[{i}]\n" + wrap_untrusted(f"{header}\n\n{text}", source="email", author=own))
+            continue
         if mine(m, own):
             # Outside any block, so it can neither open nor close a tag, nor
             # start what looks like another message.
@@ -493,13 +501,15 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
 
     async def read(writer: Any) -> str:
         thread = await writer.mailbox.get_thread(thread_id)
-        messages = [m for m in thread.messages if "DRAFT" not in m.labels]
+        # Drafts included, marked as not sent: a thread that is only a draft
+        # (a new email saved for them) must not read as empty.
+        messages = list(thread.messages)
         if not messages:
             return json.dumps({"status": "not_found", "detail": "That thread has no messages."})
         shown = messages[-READ_MESSAGES:]
         first = len(messages) - len(shown) + 1
         _remember_read(writer, thread.id, messages[0])
-        _note_senders(writer, [_sender(m) for m in shown])
+        _note_senders(writer, [_sender(m) for m in shown if "DRAFT" not in m.labels])
         return json.dumps({
             "status": "ok",
             "thread_id": thread.id,

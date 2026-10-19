@@ -179,6 +179,9 @@ class LiveSignals:
     inbound_shown: int = 0
     stuck: tuple[str, ...] = ()
     drafts: int = 0
+    # One line per waiting draft: when, to whom, its subject (as far as the
+    # last settle pass read them).
+    draft_lines: tuple[str, ...] = ()
     conversations: tuple[str, ...] = ()
     # The reader's own messages to the Executive, newest first. Background,
     # so they never make the window non-empty on their own.
@@ -392,22 +395,41 @@ def _outbound_blocked(
     return out
 
 
-def _drafts(since: datetime, include_private: bool) -> int:
+def _drafts(
+    since: datetime, include_private: bool, tz: tzinfo, now: datetime | None = None,
+) -> tuple[int, list[str]]:
     """The reader's chat drafts from the window still in their Drafts, as
-    far as the last ``delegation.drafts.settle_waiting`` saw: one they sent
-    or deleted in Gmail stops counting once a settle pass finds it gone."""
+    far as the last ``delegation.drafts.settle_waiting`` saw (one they sent
+    or deleted in Gmail stops counting once a settle pass finds it gone),
+    and a line naming each: when it was saved, who it goes to, its subject."""
     if not include_private:
-        return 0  # every delegation row is private to the principal
+        return 0, []  # every delegation row is private to the principal
     from openexecutive.delegation import drafts
     from openexecutive.memory import episodic
     from openexecutive.people.store import find_principal_person
 
     principal = find_principal_person()
     if principal is None or principal.id is None:
-        return 0
+        return 0, []
     if not episodic._resolve_db_path(None).exists():
-        return 0  # a read must not create the database
-    return drafts.count_waiting(principal.id, since)
+        return 0, []  # a read must not create the database
+    count = drafts.count_waiting(principal.id, since)
+    if not count:
+        return 0, []
+    return count, [
+        draft_line(d, tz, now) for d in drafts.waiting_drafts(principal.id, since)
+    ]
+
+
+def draft_line(draft: Any, tz: tzinfo, now: datetime | None = None) -> str:
+    """``[09:07] to dana@example.com — "Q3 numbers"``; the parts not read
+    yet are left out."""
+    line = f"[{_local_hhmm(draft.created_at, tz, now)}]"
+    if draft.to:
+        line += f" to {_one_line(', '.join(draft.to), 160)}"
+    if draft.subject:
+        line += f' — "{_one_line(draft.subject, 120)}"'
+    return line
 
 
 def _conversations(
@@ -587,8 +609,9 @@ def gather_live_signals(
     except Exception:
         logger.exception("live_signals: outbound-blocked read failed")
     drafts = 0
+    draft_lines: list[str] = []
     try:
-        drafts = _drafts(since, include_private)
+        drafts, draft_lines = _drafts(since, include_private, tz, now)
     except Exception:
         logger.exception("live_signals: drafts read failed")
     conversations: list[str] = []
@@ -624,6 +647,7 @@ def gather_live_signals(
         inbound_shown=shown,
         stuck=tuple(stuck),
         drafts=drafts,
+        draft_lines=tuple(draft_lines),
         conversations=tuple(conversations),
         own=tuple(own),
         calendar=calendar_lines,
@@ -631,6 +655,7 @@ def gather_live_signals(
             "inbound": sorted(inbound_keys),
             "stuck": sorted(s.split("] ", 1)[-1] for s in stuck),
             "drafts": drafts,
+            "draft_lines": sorted(line.split("] ", 1)[-1] for line in draft_lines),
             "conversations": sorted(conversation_keys),
             "calendar": calendar_key,
         },
@@ -664,7 +689,12 @@ def render_live_blocks(signals: LiveSignals, *, window: str) -> list[str]:
             parts.append(
                 f"- {n} email draft{'s' if n != 1 else ''} saved in the reader's own "
                 "Gmail (Act as me), waiting for them to review and send"
+                + (
+                    "; name each by who it goes to and its subject:"
+                    if signals.draft_lines else ""
+                )
             )
+            parts.extend(f"  - {line}" for line in signals.draft_lines)
         parts.append("")
     background = "background only: what the reader already said and asked, never news"
     if signals.own:

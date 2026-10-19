@@ -147,6 +147,35 @@ async def test_a_draft_sent_in_gmail_leaves_stuck(monkeypatch: pytest.MonkeyPatc
     assert "draft" not in "\n".join(live_signals.render_live_blocks(signals, window="today so far"))
 
 
+async def test_a_waiting_draft_is_named_in_stuck(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The brief names the draft (who it goes to, its subject), not just a
+    count, so the reader knows which one it means."""
+    from openexecutive.delegation import drafts, gmail
+    from openexecutive.people import store as people_store
+
+    principal = SimpleNamespace(id=1, email="owner@example.com", email_aliases=[])
+    monkeypatch.setattr(people_store, "find_principal_person", lambda *a, **k: principal)
+    monkeypatch.setattr(drafts, "_seen", {})
+    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d1",
+                  message_id="m1", now=datetime.now(UTC))
+
+    class Waiting:
+        def __init__(self, email: str) -> None:
+            pass
+
+        async def get_draft(self, draft_id: str) -> Any:
+            message = SimpleNamespace(to=["dana@example.com"], cc=[], subject="Pilot pricing")
+            return SimpleNamespace(draft_id=draft_id, message=message)
+
+    monkeypatch.setattr(gmail, "gmail_for", Waiting)
+    assert await live_signals.settle_principal_drafts() == 0
+
+    signals = live_signals.gather_live_signals(_since(), include_private=True)
+    text = "\n".join(live_signals.render_live_blocks(signals, window="today so far"))
+    assert signals.drafts == 1
+    assert 'to dana@example.com — "Pilot pricing"' in text
+
+
 def test_window_excludes_older_rows(audit: AuditLogger) -> None:
     _email(audit, "sam@x.com", "old news")
     later = datetime.now(UTC) + timedelta(seconds=1)
