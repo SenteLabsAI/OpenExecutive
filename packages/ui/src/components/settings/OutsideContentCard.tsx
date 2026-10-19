@@ -19,7 +19,7 @@ const OPTIONS: { value: OutsideContentMode; title: string; text: string }[] = [
   {
     value: "outsiders",
     title: "Only for outsiders",
-    text: "Meetings I set up, your team's mail, files you send me and company folders don't stop me. Invites, mail from anyone else and web pages do.",
+    text: "Meetings I set up and your team's mail don't stop me. Invites, mail from anyone else, files and web pages do.",
   },
   {
     value: "trust",

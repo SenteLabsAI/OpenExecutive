@@ -109,22 +109,25 @@ def _started(session: Session, **kw: Any) -> set[str]:
     return asyncio.run(go())
 
 
-def test_outsiders_trusts_a_file_someone_on_people_sent(monkeypatch: pytest.MonkeyPatch) -> None:
-    _use(monkeypatch, outside_mode.OUTSIDERS)
-    known = Session(caller_person_id=4)
-    assert _started(known, user_message="[Attached: quote.pdf]\nsee") == set()
-    assert _started(Session(), user_message="[Attached: quote.pdf]\nsee") == {oc.ATTACHMENT}
-    by_mail = Session(caller_person_id=4, origin_channel="email")
-    assert _started(by_mail, user_message="[Attached: quote.pdf]\nsee") == {oc.ATTACHMENT}
-    by_mail.email_authenticated = True
-    assert _started(by_mail, user_message="[Attached: quote.pdf]\nsee") == set()
+def test_files_hold_the_turn_unless_dont_ask(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A file carries whoever wrote it, not the person who sent it.
+    msg = "[Attached: quote.pdf]\nsee"
+    for mode in (outside_mode.ASK, outside_mode.OUTSIDERS):
+        _use(monkeypatch, mode)
+        assert _started(Session(caller_person_id=4), user_message=msg) == {oc.ATTACHMENT}
+    _use(monkeypatch, outside_mode.TRUST)
+    assert _started(Session(), user_message=msg) == set()
+    _use(monkeypatch, outside_mode.TRUST, principal=False)
+    assert _started(Session(), user_message=msg) == {oc.ATTACHMENT}
 
 
-def test_outsiders_trusts_synced_company_folders(monkeypatch: pytest.MonkeyPatch) -> None:
-    _use(monkeypatch, outside_mode.OUTSIDERS)
-    assert _started(Session(), user_message="hi", retrieved_context="### Synced Google Drive (x)") == set()
-    _use(monkeypatch, outside_mode.ASK)
-    assert _started(Session(), user_message="hi", retrieved_context="### Synced Google Drive (x)") == {oc.SYNCED}
+def test_synced_folders_hold_the_turn_unless_dont_ask(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = "### Synced Google Drive (x)"
+    for mode in (outside_mode.ASK, outside_mode.OUTSIDERS):
+        _use(monkeypatch, mode)
+        assert _started(Session(), user_message="hi", retrieved_context=ctx) == {oc.SYNCED}
+    _use(monkeypatch, outside_mode.TRUST)
+    assert _started(Session(), user_message="hi", retrieved_context=ctx) == set()
 
 
 GMAIL = {"name": "google_workspace__get_gmail_message_content", "arguments": {"message_id": "abc123"}}

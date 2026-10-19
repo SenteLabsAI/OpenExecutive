@@ -54,8 +54,7 @@ someone not in People, remembers nothing.
 
 How much a read holds is the owner's setting (``orchestrator.outside_mode``),
 fixed at the start of each turn (``TurnOutside.mode``). Under "Only for
-outsiders" an attachment the speaker sent and a synced company folder mark
-nothing, and neither does a Gmail search's list of ids, a Gmail message Gmail
+outsiders" a Gmail search's list of ids marks nothing, and neither does a Gmail message Gmail
 authenticated as a teammate's, or a calendar read naming only the team
 (``mark_read``). Under "Don't ask", on the principal's own turn, nothing but
 mail from someone not in People marks it.
@@ -217,12 +216,13 @@ def begin_turn(
     state.mode = outside_mode.for_turn(session)
     if getattr(session, "sender_off_team", False) is True:
         state.sources.add(SENDER)
-    if (attachment_blocks or _ATTACHMENT_MARK.search(user_message or "")) and not _speaker_sent_it(
-        session, state.mode
-    ):
-        state.sources.add(ATTACHMENT)
-    if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS) and state.mode == outside_mode.ASK:
-        state.sources.add(SYNCED)
+    # A file or a synced page carries whoever wrote it, not the speaker: it
+    # holds the turn unless the principal chose "Don't ask".
+    if state.mode != outside_mode.TRUST:
+        if attachment_blocks or _ATTACHMENT_MARK.search(user_message or ""):
+            state.sources.add(ATTACHMENT)
+        if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS):
+            state.sources.add(SYNCED)
     key = _held_key(session, state)
     if key:
         stored = _HELD.pop(key, None)
@@ -243,21 +243,6 @@ def begin_turn(
         with contextlib.suppress(AttributeError):
             session.turn_outside = state
     return state
-
-
-def _speaker_sent_it(session: Any, mode: str) -> bool:
-    """Whether a file on this message counts as the speaker's own, not
-    outside text: not under "Ask every time", and the speaker is someone on
-    People (by a signed-in or verified chat account, or authenticated mail)."""
-    from openexecutive.orchestrator import outside_mode
-
-    if mode == outside_mode.TRUST:
-        return True
-    if mode != outside_mode.OUTSIDERS or getattr(session, "caller_person_id", None) is None:
-        return False
-    if str(getattr(session, "origin_channel", "") or "") == "email":
-        return getattr(session, "email_authenticated", False) is True
-    return True
 
 
 def end_turn(state: TurnOutside) -> None:
