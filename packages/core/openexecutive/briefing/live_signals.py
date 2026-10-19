@@ -270,11 +270,15 @@ def _inbound(
             seen_ids.add(message_id)
         channel = str(details.get("channel") or "")
         reply = ""
+        # Set only where the principal is actually identified, never from the
+        # label: a chat display name can read "the reader" too.
+        is_own = False
         if channel == "email":
             address = str(details.get("from") or "").strip().lower()
             sender = _one_line(details.get("from"), 80)
             if address and address in principal:
                 sender = "the reader"
+                is_own = True
             topic = _one_line(details.get("subject"), 100)
             # The cards are private to the principal: their reading stays out
             # of a shared read.
@@ -296,12 +300,13 @@ def _inbound(
                 sender = sender[len(f"{channel} from "):]
             if _is_principal_chat(details, principal_person):
                 sender = "the reader"
+                is_own = True
             topic = _one_line(text, 100)
-        if sender == "the reader":
+        if is_own:
             if include_private and len(own) < _OWN_MAX:
                 own.append(f"[{_local_hhmm(ev.ts, tz, now)}] {channel or 'message'}: {topic}")
             continue
-        if _uses_principal_name(sender, principal_person):
+        if sender.lower() == "the reader" or _uses_principal_name(sender, principal_person):
             # Someone else whose display name holds the reader's name: the
             # brief masks that name, so say plainly it isn't them.
             sender = _IMPOSTOR
