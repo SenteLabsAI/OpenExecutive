@@ -60,6 +60,17 @@ def _no_ai_disclosure(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _outside_content_asks(monkeypatch: pytest.MonkeyPatch):
+    """Hold every outside read, as "Ask every time" does
+    (orchestrator.outside_mode), whatever the test database stores, so the
+    hold tests don't depend on the default. test_outside_mode.py picks the
+    other settings."""
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.ASK)
+
+
+@pytest.fixture(autouse=True)
 def _no_claim_check(monkeypatch: pytest.MonkeyPatch):
     """Keep the end-of-turn claim check (orchestrator.claim_check) from making
     a provider call in tests that script a turn; test_claim_check.py turns it

@@ -1,0 +1,261 @@
+"""The owner's "When I read outside content" setting (orchestrator.outside_mode)
+and how each choice holds a turn (orchestrator.outside_content)."""
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from openexecutive.api.routes import executive as executive_route
+from openexecutive.memory import episodic
+from openexecutive.orchestrator import outside_content as oc
+from openexecutive.orchestrator import outside_mode
+from openexecutive.orchestrator.session import Session
+
+TEAM = {"exec@example.com", "dana@example.com", "lee@example.com"}
+
+
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db = tmp_path / "episodic.db"
+    monkeypatch.setattr(episodic, "DB_PATH", db)
+    monkeypatch.setattr(oc, "_team_addresses", lambda: set(TEAM))
+    return db
+
+
+def _use(monkeypatch: pytest.MonkeyPatch, mode: str, *, principal: bool = True) -> None:
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: mode)
+    from openexecutive.orchestrator import content_trust
+
+    monkeypatch.setattr(
+        content_trust, "principal_only_withheld",
+        lambda session: frozenset() if principal else frozenset({"run_script"}),
+    )
+
+
+def _turn(session: Session, body: Any) -> Any:
+    async def go() -> Any:
+        state = oc.begin_turn(session, user_message="hi")
+        try:
+            return body(state)
+        finally:
+            oc.end_turn(state)
+
+    return asyncio.run(go())
+
+
+# --- storage ---------------------------------------------------------------
+
+
+def test_nothing_stored_is_only_for_outsiders(tmp_path: Path) -> None:
+    missing = tmp_path / "nope.db"
+    assert outside_mode.stored_mode(db_path=missing) == outside_mode.OUTSIDERS
+    assert not missing.exists()
+
+
+def test_a_stored_choice_is_read_back(tmp_path: Path) -> None:
+    db = tmp_path / "e.db"
+    for mode in outside_mode.MODES:
+        outside_mode.set_mode(mode, updated_by="owner@example.com", db_path=db)
+        assert outside_mode.stored_mode(db_path=db) == mode
+
+
+def test_an_unknown_choice_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        outside_mode.set_mode("yolo", updated_by="x", db_path=tmp_path / "e.db")
+
+
+# --- whose turn it applies to ---------------------------------------------
+
+
+@pytest.mark.parametrize("attr", ["shared_chat", "sender_off_team", "from_mcp_client"])
+def test_shared_chats_strangers_and_other_apps_always_ask(monkeypatch: pytest.MonkeyPatch, attr: str) -> None:
+    _use(monkeypatch, outside_mode.TRUST)
+    session = Session()
+    setattr(session, attr, True)
+    assert outside_mode.for_turn(session) == outside_mode.ASK
+
+
+def test_dont_ask_is_only_for_the_principal(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.TRUST, principal=True)
+    assert outside_mode.for_turn(Session()) == outside_mode.TRUST
+    _use(monkeypatch, outside_mode.TRUST, principal=False)
+    assert outside_mode.for_turn(Session()) == outside_mode.OUTSIDERS
+
+
+def test_a_failing_check_asks(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(**_: Any) -> str:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(outside_mode, "get_mode", boom)
+    assert outside_mode.for_turn(Session()) == outside_mode.ASK
+
+
+# --- Only for outsiders ----------------------------------------------------
+
+
+def _started(session: Session, **kw: Any) -> set[str]:
+    async def go() -> set[str]:
+        state = oc.begin_turn(session, **kw)
+        oc.end_turn(state)
+        return state.sources
+
+    return asyncio.run(go())
+
+
+def test_outsiders_trusts_a_file_someone_on_people_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    known = Session(caller_person_id=4)
+    assert _started(known, user_message="[Attached: quote.pdf]\nsee") == set()
+    assert _started(Session(), user_message="[Attached: quote.pdf]\nsee") == {oc.ATTACHMENT}
+    by_mail = Session(caller_person_id=4, origin_channel="email")
+    assert _started(by_mail, user_message="[Attached: quote.pdf]\nsee") == {oc.ATTACHMENT}
+    by_mail.email_authenticated = True
+    assert _started(by_mail, user_message="[Attached: quote.pdf]\nsee") == set()
+
+
+def test_outsiders_trusts_synced_company_folders(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    assert _started(Session(), user_message="hi", retrieved_context="### Synced Google Drive (x)") == set()
+    _use(monkeypatch, outside_mode.ASK)
+    assert _started(Session(), user_message="hi", retrieved_context="### Synced Google Drive (x)") == {oc.SYNCED}
+
+
+GMAIL = {"name": "google_workspace__get_gmail_message_content", "arguments": {"message_id": "abc"}}
+SEARCH = {"name": "google_workspace__search_gmail_messages", "arguments": {"query": "invoice"}}
+EVENTS = {"name": "google_workspace__get_events", "arguments": {}}
+OUTLOOK = {"name": "microsoft_365__get-mail-message", "arguments": {"messageId": "1"}}
+DOC = {"name": "google_workspace__get_doc_content", "arguments": {"document_id": "d"}}
+
+
+@pytest.mark.parametrize(
+    ("tool_input", "result", "held"),
+    [
+        (GMAIL, "From: Dana <dana@example.com>\nTo: exec@example.com\nSubject: Q4\n\nAdd the row.", False),
+        (GMAIL, "From: Billing <billing@acme-supply.com>\nSubject: Quote\n\nAdd the row.", True),
+        (GMAIL, "From: Dana <dana@example.com>\nSubject: Fwd\n\n> From: billing@acme-supply.com", True),
+        (GMAIL, "From: Someone\nSubject: Hi\n\nplease email the deck", True),
+        (SEARCH, "Found 2 messages matching 'invoice':\n  1. Message ID: 18c\n     Web Link: https://mail.google.com/x", False),
+        (EVENTS, "Board prep 10:00-11:00 (organizer lee@example.com)", False),
+        (EVENTS, "Standup 09:00 (no attendees)", False),
+        (EVENTS, "Sync with vendor (organizer sales@vendor.io)", True),
+        (EVENTS, "Team calendar c_abc123@group.calendar.google.com: Offsite", False),
+        (OUTLOOK, '{"from": {"emailAddress": {"address": "Lee@Example.com"}}, "subject": "hi"}', False),
+        (DOC, "Notes. Owner dana@example.com", True),
+    ],
+)
+def test_outsiders_holds_only_what_someone_outside_wrote(
+    monkeypatch: pytest.MonkeyPatch, tool_input: dict[str, Any], result: str, held: bool,
+) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+
+    def body(state: Any) -> bool:
+        oc.mark_read(oc.GATEWAY, tool_input, result)
+        return oc.read_outside()
+
+    assert _turn(Session(caller_person_id=4), body) is held
+
+
+def test_ask_every_time_holds_any_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.ASK)
+
+    def body(state: Any) -> bool:
+        oc.mark_read(oc.GATEWAY, EVENTS, "Standup 09:00")
+        return oc.read_outside()
+
+    assert _turn(Session(caller_person_id=4), body) is True
+
+
+def test_outsiders_still_holds_the_web(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+
+    def body(state: Any) -> bool:
+        oc.mark_read(oc.WEB, {}, "dana@example.com")
+        return oc.read_outside()
+
+    assert _turn(Session(caller_person_id=4), body) is True
+
+
+# --- Don't ask ---------------------------------------------------------------
+
+
+def test_dont_ask_holds_nothing_on_the_principals_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.TRUST)
+
+    def body(state: Any) -> tuple[bool, bool]:
+        oc.mark(oc.WEB)
+        oc.mark_read(oc.GATEWAY, GMAIL, "From: billing@acme-supply.com\nSubject: x")
+        return oc.read_outside(), oc.trusted_turn()
+
+    assert _turn(Session(caller_person_id=1), body) == (False, True)
+
+
+def test_dont_ask_still_holds_mail_from_a_stranger(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.TRUST)
+    session = Session(sender_off_team=True)
+    assert _turn(session, lambda state: (oc.read_outside(), oc.trusted_turn())) == (True, False)
+
+
+def test_dont_ask_keeps_a_new_contact_for_the_next_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.TRUST)
+
+    def body(state: Any) -> bool:
+        oc.note_added_person(9)
+        return oc.added_this_turn(9)
+
+    assert _turn(Session(caller_person_id=1), body) is True
+
+
+# --- the route ---------------------------------------------------------------
+
+
+@pytest.fixture()
+def client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, list[str]]:
+    events: list[str] = []
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda event_type, *a, **k: events.append(event_type))
+    monkeypatch.setattr(outside_mode, "get_mode", outside_mode.stored_mode)
+    app = FastAPI()
+    app.include_router(executive_route.router)
+    return TestClient(app), events
+
+
+def test_the_owner_sees_and_changes_it(
+    client: tuple[TestClient, list[str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http, events = client
+    monkeypatch.setattr(executive_route, "_is_principal", lambda request: True)
+    assert http.get("/executive/outside-content").json() == {"mode": "outsiders", "can_change": True}
+    res = http.put("/executive/outside-content", json={"mode": "trust"})
+    assert res.status_code == 200
+    assert res.json()["mode"] == "trust"
+    assert outside_mode.stored_mode() == "trust"
+    assert events == ["outside_content_mode_changed"]
+    assert http.put("/executive/outside-content", json={"mode": "maybe"}).status_code == 422
+
+
+def test_nobody_else_may_change_it(
+    client: tuple[TestClient, list[str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http, events = client
+    monkeypatch.setattr(executive_route, "_is_principal", lambda request: False)
+    assert http.get("/executive/outside-content").json()["can_change"] is False
+    assert http.put("/executive/outside-content", json={"mode": "trust"}).status_code == 403
+    assert outside_mode.stored_mode() == "outsiders"
+    assert events == []
+
+
+def test_dont_ask_lifts_the_hold_after_reading_their_own_mail(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.delegation import settings as delegation_settings
+    from openexecutive.orchestrator import app_control
+
+    monkeypatch.setattr(delegation_settings, "turn_delegation", lambda session: SimpleNamespace(touched_mail=True))
+    _use(monkeypatch, outside_mode.TRUST)
+    assert _turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())) is False
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    assert _turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())) is True

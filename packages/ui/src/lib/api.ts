@@ -1735,6 +1735,32 @@ export async function getSetupStatus(signal?: AbortSignal): Promise<SetupStatus>
   return res.json();
 }
 
+// Settings → Your Executive → When I read outside content: how far text
+// someone else wrote holds what it does next (orchestrator/outside_mode.py).
+export type OutsideContentMode = "ask" | "outsiders" | "trust";
+
+export interface OutsideContentSetting {
+  mode: OutsideContentMode;
+  can_change: boolean;
+}
+
+export async function getOutsideContent(signal?: AbortSignal): Promise<OutsideContentSetting> {
+  const res = await fetch(`${API_BASE}/executive/outside-content`, { signal, cache: "no-store" });
+  if (!res.ok) throw new Error("Couldn't load this setting");
+  return res.json();
+}
+
+export async function setOutsideContent(mode: OutsideContentMode): Promise<OutsideContentSetting> {
+  const res = await fetch(`${API_BASE}/executive/outside-content`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (res.status === 403) throw new Error("Only the account owner can change this.");
+  if (!res.ok) throw new Error("Couldn't save that. Try again.");
+  return res.json();
+}
+
 export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> {
   const res = await fetch(`${API_BASE}/executive/pause`, {
     method: "POST",

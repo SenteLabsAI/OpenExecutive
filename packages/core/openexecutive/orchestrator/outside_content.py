@@ -52,6 +52,14 @@ turn, under every usual check, so it trusts the person's go no more than
 before; it only stops a re-read from undoing it. A shared chat, or mail from
 someone not in People, remembers nothing.
 
+How much a read holds is the owner's setting (``orchestrator.outside_mode``),
+fixed at the start of each turn (``TurnOutside.mode``). Under "Only for
+outsiders" an attachment the speaker sent and a synced company folder mark
+nothing, and a mail or calendar read marks the turn only when what came back
+shows an address that is neither on People nor the Executive's own
+(``mark_read``). Under "Don't ask", on the principal's own turn, nothing but
+mail from someone not in People marks it.
+
 Plain code, no model. State lives in a context variable and on the session,
 set at the start of each turn (``begin_turn``) and closed when it ends
 (``end_turn``); with no turn open (the email poller, a brief, a test)
@@ -170,6 +178,8 @@ class TurnOutside:
     # that reads defers its reads until those have been made (``defers_read``).
     go_first: tuple[str, ...] = ()
     go_first_done: bool = False
+    # The owner's setting as it applies to this turn (``outside_mode.for_turn``).
+    mode: str = "ask"
 
     @property
     def read(self) -> bool:
@@ -201,11 +211,16 @@ def begin_turn(
         shared=getattr(session, "shared_chat", False) is True,
         previous=_TURN.get(),
     )
+    from openexecutive.orchestrator import outside_mode
+
+    state.mode = outside_mode.for_turn(session)
     if getattr(session, "sender_off_team", False) is True:
         state.sources.add(SENDER)
-    if attachment_blocks or _ATTACHMENT_MARK.search(user_message or ""):
+    if (attachment_blocks or _ATTACHMENT_MARK.search(user_message or "")) and not _speaker_sent_it(
+        session, state.mode
+    ):
         state.sources.add(ATTACHMENT)
-    if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS):
+    if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS) and state.mode == outside_mode.ASK:
         state.sources.add(SYNCED)
     key = _held_key(session, state)
     if key:
@@ -227,6 +242,21 @@ def begin_turn(
         with contextlib.suppress(AttributeError):
             session.turn_outside = state
     return state
+
+
+def _speaker_sent_it(session: Any, mode: str) -> bool:
+    """Whether a file on this message counts as the speaker's own, not
+    outside text: not under "Ask every time", and the speaker is someone on
+    People (by a signed-in or verified chat account, or authenticated mail)."""
+    from openexecutive.orchestrator import outside_mode
+
+    if mode == outside_mode.TRUST:
+        return True
+    if mode != outside_mode.OUTSIDERS or getattr(session, "caller_person_id", None) is None:
+        return False
+    if str(getattr(session, "origin_channel", "") or "") == "email":
+        return getattr(session, "email_authenticated", False) is True
+    return True
 
 
 def end_turn(state: TurnOutside) -> None:
@@ -321,11 +351,110 @@ def current() -> TurnOutside | None:
 
 
 def mark(source: str) -> None:
-    """Record that the turn in progress read outside content. No turn bound:
-    nothing to mark."""
+    """Record that the turn in progress read outside content. No turn bound,
+    or "Don't ask" on the principal's own turn: nothing to mark."""
+    from openexecutive.orchestrator import outside_mode
+
     state = current()
-    if state is not None:
-        state.sources.add(source)
+    if state is None:
+        return
+    if state.mode == outside_mode.TRUST and source != SENDER:
+        return
+    state.sources.add(source)
+
+
+# Mail and calendar reads of the two workspace servers, by their own name: a
+# result whose every address is on People (``mark_read``) is the team's.
+_MAIL_WORDS = ("gmail", "mail", "message", "thread", "inbox")
+_CALENDAR_WORDS = ("calendar", "event", "freebusy", "free_busy")
+_ADDRESS = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Calendar ids look like addresses but name no one.
+_CALENDAR_IDS = ("calendar.google.com",)
+# What only a message's own text carries: a mail result naming no address but
+# showing one of these could be a sender hiding who they are.
+_MAIL_TEXT = re.compile(r"subject|body|snippet|preview|content", re.IGNORECASE)
+# Past this many addresses the result is not checked: it counts as outside.
+_MAX_ADDRESSES = 200
+
+
+def _mail_or_calendar(tool_input: Any) -> str | None:
+    """``"mail"`` or ``"calendar"`` for a Google or Microsoft 365 read of
+    either, else None."""
+    named = tool_input.get("name") if isinstance(tool_input, dict) else None
+    if not isinstance(named, str):
+        return None
+    name = named.strip().lower()
+    if not name.startswith(_KNOWN_SERVERS):
+        return None
+    own = re.split(r"__|\.", name)[-1].replace("-", "_")
+    if any(w in own for w in _CALENDAR_WORDS):
+        return "calendar"
+    if any(w in own for w in _MAIL_WORDS):
+        return "mail"
+    return None
+
+
+def _team_addresses() -> set[str]:
+    """Everyone on People (contacts included) and the Executive itself,
+    lowercased, by primary address and alias."""
+    from openexecutive.config import get_settings
+    from openexecutive.people.store import list_people
+
+    found = {str(get_settings().exec_email_address or "").strip().lower()}
+    for person in list_people(include_contacts=True):
+        for address in [getattr(person, "email", None), *(getattr(person, "email_aliases", None) or [])]:
+            if isinstance(address, str) and address.strip():
+                found.add(address.strip().lower())
+    found.discard("")
+    return found
+
+
+def from_the_team(kind: str, result: Any) -> bool:
+    """Whether a mail or calendar read's ``result`` shows only the team:
+    every address in it is on People or the Executive's own. A result naming
+    nobody is the team's for a calendar, and for mail only when it shows no
+    mail text (a search's ids and links). Never raises: an error is no."""
+    try:
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        found = {
+            a.lower().rstrip(".") for a in _ADDRESS.findall(text)
+            if not a.lower().rstrip(".").endswith(_CALENDAR_IDS)
+        }
+        if len(found) > _MAX_ADDRESSES:
+            return False
+        if not found:
+            # A calendar read naming no one is the person's own events; a
+            # mail read naming no one only when it carries no mail text
+            # either (a search's ids and links).
+            return kind == "calendar" or not _MAIL_TEXT.search(text)
+        return found <= _team_addresses()
+    except Exception:
+        return False
+
+
+def mark_read(source: str, tool_input: Any, result: Any) -> None:
+    """``mark`` for a read whose result is in hand: under "Only for
+    outsiders", a mail or calendar read that shows only the team
+    (``from_the_team``) marks nothing."""
+    from openexecutive.orchestrator import outside_mode
+
+    state = current()
+    if state is None:
+        return
+    if source == GATEWAY and state.mode != outside_mode.ASK:
+        kind = _mail_or_calendar(tool_input)
+        if kind is not None and from_the_team(kind, result):
+            return
+    mark(source)
+
+
+def trusted_turn() -> bool:
+    """Whether the turn in progress is the principal's own under "Don't ask"
+    (``outside_mode.TRUST``): no read, theirs or anyone's, holds it."""
+    from openexecutive.orchestrator import outside_mode
+
+    state = current()
+    return state is not None and state.mode == outside_mode.TRUST
 
 
 def read_outside() -> bool:

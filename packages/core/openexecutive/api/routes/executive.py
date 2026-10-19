@@ -13,10 +13,14 @@ check, so resume is then open rather than leaving a pause no one can lift.
 
 ``paused_by`` comes from the ``x-caller-email`` the UI proxy stamps from the
 signed-in session; direct API callers fall back to ``"api"``.
+
+Also here: the owner's "When I read outside content" setting
+(``orchestrator.outside_mode``), which only the principal may change.
 """
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -115,3 +119,53 @@ def resume_executive(request: Request) -> ExecutiveStatus:
             },
         )
     return _status(request)
+
+
+class OutsideContentOut(BaseModel):
+    # "ask" (Ask every time), "outsiders" (Only for outsiders) or "trust"
+    # (Don't ask): orchestrator.outside_mode.
+    mode: str
+    # Whether THIS caller may change it: the principal only.
+    can_change: bool = False
+
+
+class OutsideContentIn(BaseModel):
+    mode: Literal["ask", "outsiders", "trust"]
+
+
+def _is_principal(request: Request) -> bool:
+    from openexecutive.api.routes.people import caller_is_principal
+
+    return caller_is_principal(request)
+
+
+@router.get("/executive/outside-content", response_model=OutsideContentOut)
+def get_outside_content(request: Request) -> OutsideContentOut:
+    """When a read of someone else's text holds what the Executive does next
+    (orchestrator.outside_mode)."""
+    from openexecutive.orchestrator import outside_mode
+
+    return OutsideContentOut(mode=outside_mode.get_mode(), can_change=_is_principal(request))
+
+
+@router.put("/executive/outside-content", response_model=OutsideContentOut)
+def set_outside_content(request: Request, body: OutsideContentIn) -> OutsideContentOut:
+    """Change it. The principal only: it decides how far text from outside
+    the company can steer their Executive."""
+    from openexecutive.orchestrator import outside_mode
+
+    if not _is_principal(request):
+        raise HTTPException(status_code=403, detail="Only the account owner can change this.")
+    before = outside_mode.get_mode()
+    actor = api_caller.actor(request)
+    if before != body.mode:
+        outside_mode.set_mode(body.mode, updated_by=actor)
+        from openexecutive.audit import log_event as audit_log
+
+        audit_log(
+            "outside_content_mode_changed",
+            f"When I read outside content: {before} -> {body.mode}",
+            actor=actor,
+            details={"before": before, "mode": body.mode},
+        )
+    return OutsideContentOut(mode=outside_mode.get_mode(), can_change=True)

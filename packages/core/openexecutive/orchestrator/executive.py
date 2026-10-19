@@ -2602,7 +2602,9 @@ class Executive:
             # list stays as it is, so the cached prefix never changes
             # mid-turn.
             mail_touched_uses: list[dict[str, Any]] = []
-            if pinned_delegation is not None and (
+            # Under "Don't ask", on the principal's own turn, reading their
+            # mail holds nothing (orchestrator.outside_mode).
+            if pinned_delegation is not None and not outside_content.trusted_turn() and (
                 pinned_delegation.read_mail
                 or any(tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in dispatch_uses)
             ):
@@ -3320,7 +3322,7 @@ class Executive:
                             outside_content.mark(source)
                         return text, True
                     if source is not None:
-                        outside_content.mark(source)
+                        outside_content.mark_read(source, probe_input, text)
                     _made.append((call_input, text, None))
                     return text, looks_like_error(text)
 
@@ -3523,7 +3525,7 @@ class Executive:
             # results: from the next round on the turn is held.
             for tu, source in round_sources:
                 if tu not in outside_uses and tu not in mail_touched_uses and tu not in withheld_uses:
-                    outside_content.mark(source)
+                    outside_content.mark_read(source, tu["input"], results_by_id.get(tu["id"], ""))
 
             current_messages.append({"role": "assistant", "content": response_content})
             # Cap here, at the single point every result reaches the model,

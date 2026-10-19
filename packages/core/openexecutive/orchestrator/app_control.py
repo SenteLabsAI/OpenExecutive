@@ -328,7 +328,10 @@ def _turn_read_outside(session: Any) -> bool:
     except Exception:
         return True
     pinned = turn_delegation(session)
-    return bool(pinned is not None and getattr(pinned, "touched_mail", False) is True)
+    return bool(
+        pinned is not None and getattr(pinned, "touched_mail", False) is True
+        and not outside_content.trusted_turn()
+    )
 
 
 # --------------------------------------------------------------------------- #
