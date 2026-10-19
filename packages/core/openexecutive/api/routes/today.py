@@ -493,6 +493,30 @@ class HeldBackItem(BaseModel):
     lines: list[str]
 
 
+class NarrativePoint(BaseModel):
+    """One point of Right now (the /today header): its Markdown, and when it
+    first appeared today (ISO-8601 UTC)."""
+
+    text: str
+    since: str | None = None
+
+
+class MorningBriefItem(BaseModel):
+    """Today's delivered morning brief, for Right now's "Earlier today" link."""
+
+    at: str
+    text: str
+
+
+class CalendarNextItem(BaseModel):
+    """A meeting still ahead today, for Right now's calendar list. ``start``
+    is ISO-8601 UTC; None with ``all_day``."""
+
+    title: str
+    start: str | None = None
+    all_day: bool = False
+
+
 class TodayResponse(BaseModel):
     departments: list[DepartmentBriefItem]
     people: list[PersonBriefItem]
@@ -507,6 +531,18 @@ class TodayResponse(BaseModel):
     # narrative lands without a reload. Additive; None / False on a cold cache.
     narrative_generated_at: str | None = None
     narrative_stale: bool = False
+    # The same narrative split for Home's Right now card
+    # (``briefing.right_now``): the bold opener, the points with when each
+    # first appeared today, and the Move today line. Plus when this reader
+    # last looked, so the page can say what is new since. Additive.
+    narrative_lead: str | None = None
+    narrative_points: list[NarrativePoint] = Field(default_factory=list)
+    narrative_move: str | None = None
+    narrative_seen_at: str | None = None
+    # The principal's own: today's delivered morning brief and the meetings
+    # still ahead today. Additive; None / empty for anyone else.
+    morning_brief: MorningBriefItem | None = None
+    calendar_next: list[CalendarNextItem] = Field(default_factory=list)
     # In-flight work the Executive will do soon (pending follow-ups / nudges)
     # and people we're awaiting a reply from. Both additive, default empty.
     in_flight: list[InFlightItem] = []
@@ -1817,6 +1853,7 @@ def _attach_narrative(
                 response.narrative = cached.narrative_text
                 response.narrative_generated_at = cached.generated_at
                 age_s = int((datetime.now(UTC) - written).total_seconds())
+                _attach_right_now(response, scope, cached.narrative_text, cached.generated_at)
         scheduled = is_stale and background_tasks is not None and not _in_failure_backoff(scope)
         if scheduled:
             assert background_tasks is not None
@@ -1828,6 +1865,23 @@ def _attach_narrative(
         )
     except Exception:
         logger.exception("today: briefing narrative attach failed (scope=%s)", scope)
+
+
+def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at: str) -> None:
+    """Split the served narrative for Home's Right now card. A point with no
+    recorded time (a header written before times were kept) takes the
+    header's own time."""
+    from openexecutive.briefing import narrative_cache, right_now
+
+    parts = right_now.split_narrative(text)
+    times = right_now.point_times(scope, narrative_cache.local_today())
+    response.narrative_lead = parts.lead
+    response.narrative_move = parts.move
+    response.narrative_points = [
+        NarrativePoint(text=p, since=times.get(right_now.point_key(p), written_at))
+        for p in parts.points
+    ]
+    response.narrative_seen_at = right_now.seen_at(scope)
 
 
 async def _regen_briefing_narrative(
@@ -1939,12 +1993,16 @@ async def _regen_briefing_narrative_locked(
     if not text:
         logger.warning("today: narrative regen returned no text (scope=%s) — not cached", scope)
         return False
+    written_at = narrative_cache.utc_now_iso()
     narrative_cache.put(narrative_cache.BriefingNarrative(
         scope=scope,
         input_hash=input_hash,
         narrative_text=text,
-        generated_at=narrative_cache.utc_now_iso(),
+        generated_at=written_at,
     ))
+    from openexecutive.briefing import right_now
+
+    right_now.record_points(scope, text, written_at)
     logger.info(
         "today: narrative regenerated scope=%s ms=%d quiet=%s context_chars=%d",
         scope, int((time.monotonic() - started) * 1000),
@@ -2025,7 +2083,77 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         response.held_back = _held_back(datetime.now(UTC))
         response.first_week_card = _first_week_card()
         response.first_week = response.first_week_card is not None
+        response.morning_brief = _morning_brief_today()
+        response.calendar_next = _calendar_next(datetime.now(UTC))
     return response
+
+
+@router.post("/today/seen", tags=["today"])
+async def mark_today_seen(request: Request) -> dict[str, str]:
+    """The reader looked at Right now: the next view counts its points as new
+    only when they appeared after this. Stored per narrative scope, the same
+    scope ``GET /today`` serves this caller."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.briefing import narrative_cache, right_now
+    from openexecutive.people.store import get_person
+
+    caller = _resolve_caller_person_id(request)
+    if caller is None:
+        scope = narrative_cache.COMPANY_SCOPE
+    elif _is_principal(caller):
+        scope = narrative_cache.DEFAULT_SCOPE
+    elif get_person(caller) is not None:
+        scope = f"person:{caller}"
+    else:
+        scope = narrative_cache.COMPANY_SCOPE
+    return {"seen_at": right_now.mark_seen(scope)}
+
+
+def _morning_brief_today() -> MorningBriefItem | None:
+    """Today's delivered morning brief, or None. Never raises."""
+    from openexecutive.briefing import brief_state, narrative_cache
+    from openexecutive.workflows.morning_brief import BRIEF_KIND
+
+    try:
+        last = brief_state.last_delivered(BRIEF_KIND)
+        written = _parse_aware(last.generated_at) if last else None
+        if last is None or written is None or not last.narrative_text.strip():
+            return None
+        if narrative_cache.local_today(written) != narrative_cache.local_today():
+            return None
+        return MorningBriefItem(at=last.generated_at, text=last.narrative_text)
+    except Exception:
+        logger.exception("today: morning brief read failed")
+        return None
+
+
+# Right now lists at most this many of the meetings still ahead today.
+_CALENDAR_NEXT_MAX = 3
+
+
+def _calendar_next(now: datetime) -> list[CalendarNextItem]:
+    """The meetings still ahead today from the cached calendar read (never
+    calls out): all-day events, then the one in progress and the next ones."""
+    from openexecutive.briefing.live_signals import cached_calendar
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    try:
+        events = cached_calendar(now, get_user_timezone()) or []
+    except Exception:
+        logger.exception("today: calendar read failed")
+        return []
+    items = [CalendarNextItem(title=e.title, all_day=True) for e in events if e.all_day]
+    timed = sorted(
+        (e for e in events if not e.all_day and e.start is not None and e.end is not None),
+        key=lambda e: e.start,
+    )
+    for e in timed:
+        # Over (a zero-length one once it starts); one in progress stays.
+        over = e.start < now if e.end == e.start else e.end <= now
+        if over:
+            continue
+        items.append(CalendarNextItem(title=e.title, start=e.start.astimezone(UTC).isoformat()))
+    return items[:_CALENDAR_NEXT_MAX]
 
 
 def _first_week_card() -> FirstWeekCardModel | None:

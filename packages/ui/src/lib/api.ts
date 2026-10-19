@@ -5019,6 +5019,24 @@ export interface FirstWeekCard {
   brief_tomorrow: boolean;
 }
 
+export interface NarrativePoint {
+  text: string;
+  // When the point first appeared today (ISO UTC).
+  since?: string | null;
+}
+
+export interface MorningBriefItem {
+  at: string;
+  text: string;
+}
+
+export interface CalendarNextItem {
+  title: string;
+  // ISO UTC; null for an all-day event.
+  start?: string | null;
+  all_day?: boolean;
+}
+
 export interface Today {
   departments: DepartmentBriefItem[];
   people: PersonBriefItem[];
@@ -5031,6 +5049,17 @@ export interface Today {
   // Optional for older API builds + test mocks.
   narrative_generated_at?: string | null;
   narrative_stale?: boolean;
+  // The same narrative split for Home's Right now card: the bold opener, the
+  // points with when each first appeared today, the Move today line, and when
+  // this reader last looked. Optional for older API builds + test mocks.
+  narrative_lead?: string | null;
+  narrative_points?: NarrativePoint[];
+  narrative_move?: string | null;
+  narrative_seen_at?: string | null;
+  // The owner's own: today's delivered morning brief and the meetings still
+  // ahead today.
+  morning_brief?: MorningBriefItem | null;
+  calendar_next?: CalendarNextItem[];
   // The install's first week (the principal's Home only): the first-week
   // card shows instead of a quiet day. Optional for older API builds.
   first_week?: boolean;
@@ -5059,6 +5088,15 @@ export async function getToday(): Promise<Today> {
   const res = await fetch(`${API_BASE}/today`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load today: ${res.statusText}`);
   return res.json();
+}
+
+// The reader looked at Right now: its next view counts points as new only
+// when they appeared after this. Best-effort; returns the time stored.
+export async function markTodaySeen(): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/today/seen`, { method: "POST" });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { seen_at?: string };
+  return body.seen_at ?? null;
 }
 
 // The latest morning brief or end-of-day digest that didn't reach the owner,

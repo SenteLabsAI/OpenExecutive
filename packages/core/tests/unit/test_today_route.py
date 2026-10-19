@@ -2507,3 +2507,72 @@ def test_a_delivered_brief_stays_off_the_activity_rail_and_heatmap(
     assert any("lease summary" in s for s in summaries)
     assert not any("Maple Court" in s for s in summaries)
     assert dict(episodic.count_activity_by_day(1)) == {now[:10]: 1}
+
+
+# --------------------------------------------------------------------------- #
+# Right now: the header split for Home's card
+# --------------------------------------------------------------------------- #
+
+_RIGHT_NOW_HEADER = (
+    "**Lakeside is the one thing to move today.**\n\n"
+    "- **Lakeside renewal** — they want a price before 4 PM.\n\n"
+    "**Move today:** Send Lakeside the price."
+)
+
+
+def test_today_splits_the_header_for_right_now(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "rn.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+
+    async def _fake(**_kw: object) -> str:
+        return _RIGHT_NOW_HEADER
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _fake)
+    c = _make_client()
+    c.get("/today")
+    data = c.get("/today").json()
+    assert data["narrative_lead"] == "Lakeside is the one thing to move today."
+    assert data["narrative_move"] == "Send Lakeside the price."
+    [point] = data["narrative_points"]
+    assert point["text"].startswith("**Lakeside renewal**")
+    assert point["since"] == data["narrative_generated_at"]
+    assert data["narrative_seen_at"] is None
+    # Not the principal: no morning brief or calendar.
+    assert data["morning_brief"] is None and data["calendar_next"] == []
+
+
+def test_today_seen_is_returned_on_the_next_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "rn-seen.db"
+    _setup_isolated_db(db, monkeypatch)
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=narrative_cache.COMPANY_SCOPE, input_hash="x",
+        narrative_text=_RIGHT_NOW_HEADER, generated_at=narrative_cache.utc_now_iso(),
+    ), db_path=db)
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+
+    c = _make_client()
+    seen = c.post("/today/seen").json()["seen_at"]
+    assert c.get("/today").json()["narrative_seen_at"] == seen
+
+
+def test_calendar_next_lists_what_is_still_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.briefing import live_signals
+    from openexecutive.briefing.top_three import CalendarEvent
+
+    now = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+    events = [
+        CalendarEvent(title="Offsite", start=None, end=None, all_day=True),
+        CalendarEvent(title="Done", start=now - timedelta(hours=2), end=now - timedelta(hours=1)),
+        CalendarEvent(title="In progress", start=now - timedelta(minutes=10), end=now + timedelta(minutes=20)),
+        CalendarEvent(title="Next", start=now + timedelta(hours=1), end=now + timedelta(hours=2)),
+        CalendarEvent(title="Later", start=now + timedelta(hours=3), end=now + timedelta(hours=4)),
+    ]
+    monkeypatch.setattr(live_signals, "cached_calendar", lambda _now, _tz: events)
+    items = today_route._calendar_next(now)
+    assert [i.title for i in items] == ["Offsite", "In progress", "Next"]
+    assert items[0].all_day and items[0].start is None

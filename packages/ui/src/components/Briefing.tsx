@@ -9,6 +9,7 @@ import {
   approveDecision,
   bulkAckAlerts,
   getToday,
+  markTodaySeen,
   rejectDecision,
   reopenAlert,
   rerunWorkflowRun,
@@ -28,6 +29,7 @@ import {
   narrativeUpdatedLabel,
   shouldRefreshOnFocus,
 } from "@/lib/narrativeFreshness";
+import { seenBaseline } from "@/lib/rightNow";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
 import InfoTip from "./InfoTip";
@@ -44,7 +46,7 @@ import {
 } from "./briefing/AwarenessPanels";
 import ApprovedRow from "./briefing/ApprovedRow";
 import FirstWeekCard from "./briefing/FirstWeekCard";
-import NarrativeBody from "./briefing/Narrative";
+import { RightNowBody, RightNowCard } from "./briefing/RightNow";
 import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
@@ -661,6 +663,18 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const showNeedsYouMenu = staleNeedsYouIds.length > 0 || mineProposals.length > 0;
 
   const hasBrief = Boolean(today && (today.narrative || today.narrative_stale));
+  // What counts as new on Right now: the reader's last look earlier today,
+  // taken from the first header this visit shows and held for the visit, so
+  // the dots don't vanish when the page records this look.
+  const [rightNowBaseline, setRightNowBaseline] = useState<{ at: Date | null } | null>(null);
+  const seenWrittenRef = useRef<string | null>(null);
+  const shownWrittenAt = today?.narrative ? today.narrative_generated_at ?? null : null;
+  useEffect(() => {
+    if (!today || !shownWrittenAt || seenWrittenRef.current === shownWrittenAt) return;
+    setRightNowBaseline((b) => b ?? { at: seenBaseline(today.narrative_seen_at, new Date()) });
+    seenWrittenRef.current = shownWrittenAt;
+    void markTodaySeen().catch(() => { /* best-effort */ });
+  }, [today, shownWrittenAt]);
   // The first week: the first-week card takes the page's top slot, so the
   // day isn't called quiet and the summary line points at it.
   const firstWeekCard = today?.first_week_card ?? null;
@@ -777,6 +791,15 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
 
           {today && (
             <>
+              {hasBrief && (
+                <RightNowCard
+                  today={today}
+                  baseline={rightNowBaseline?.at ?? null}
+                  updatedLabel={briefFreshness}
+                  onOpen={() => setOpenPanel("brief")}
+                />
+              )}
+
               {/* Needs you — decisions routed to the caller, and replies
                   waiting to be sent. */}
               <section id={NEEDS_YOU_ID} className="mb-8 scroll-mt-4">
@@ -788,17 +811,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   {replies.cards.length > 0 && <InfoTip align="left">{REPLIES_WAITING_TIP}</InfoTip>}
                   {actionCards.cards.length > 0 && <InfoTip align="left">{ACTION_CARDS_TIP}</InfoTip>}
                   <div className="ml-auto flex items-center gap-1">
-                    {hasBrief && (
-                      <button
-                        type="button"
-                        onClick={() => setOpenPanel("brief")}
-                        className={`min-h-[40px] rounded-xl px-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors${
-                          !today.narrative ? " animate-pulse" : ""
-                        }`}
-                      >
-                        {today.narrative ? "Read today's brief" : "Catching up on today…"}
-                      </button>
-                    )}
                     {showNeedsYouMenu && <OverflowMenu size="sm" label="Needs you options" items={needsYouMenu} />}
                   </div>
                 </div>
@@ -911,16 +923,15 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
               <SidePanel
                 open={openPanel === "brief"}
                 onClose={() => setOpenPanel(null)}
-                title="Today's brief"
-                subtitle={<span aria-live="polite">{briefFreshness ?? dateLabel}</span>}
+                title="Right now"
+                subtitle={
+                  <span aria-live="polite">
+                    {briefFreshness ? `${briefFreshness} · rewritten as things change` : dateLabel}
+                  </span>
+                }
                 width="lg"
               >
-                <NarrativeBody
-                  narrative={today.narrative}
-                  stale={today.narrative_stale ?? false}
-                  solo={solo}
-                  onContinue={onContinue}
-                />
+                <RightNowBody today={today} baseline={rightNowBaseline?.at ?? null} onContinue={onContinue} />
               </SidePanel>
               <SidePanel
                 open={openPanel === "departments"}
