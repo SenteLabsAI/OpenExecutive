@@ -153,16 +153,21 @@ def point_times(scope: str, day: str) -> dict[str, str]:
     return {r["point_key"]: r["first_seen"] for r in rows}
 
 
-def mark_seen(scope: str, at: str | None = None) -> str:
-    """Record that the reader looked at Right now; returns the time stored."""
+def mark_seen(scope: str, at: str | None = None) -> str | None:
+    """Record that the reader looked at Right now; returns the time stored,
+    or None when it could not be written. Never raises."""
     at = at or narrative_cache.utc_now_iso()
-    initialize_db()
-    with narrative_cache._get_conn() as conn:
-        conn.execute(
-            "INSERT INTO briefing_reader_seen (scope, seen_at) VALUES (?, ?) "
-            "ON CONFLICT(scope) DO UPDATE SET seen_at = excluded.seen_at",
-            (scope, at),
-        )
+    try:
+        initialize_db()
+        with narrative_cache._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO briefing_reader_seen (scope, seen_at) VALUES (?, ?) "
+                "ON CONFLICT(scope) DO UPDATE SET seen_at = excluded.seen_at",
+                (scope, at),
+            )
+    except Exception:
+        logger.exception("right_now: recording a look failed (scope=%s)", scope)
+        return None
     return at
 
 
