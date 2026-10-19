@@ -2139,20 +2139,20 @@ def _calendar_next(now: datetime) -> list[CalendarNextItem]:
 
     try:
         events = cached_calendar(now, get_user_timezone()) or []
+        items = [CalendarNextItem(title=e.title, all_day=True) for e in events if e.all_day]
+        timed = sorted(
+            (e for e in events if not e.all_day and e.start is not None and e.end is not None),
+            key=lambda e: e.start,
+        )
+        for e in timed:
+            # Over (a zero-length one once it starts); one in progress stays.
+            over = e.start < now if e.end == e.start else e.end <= now
+            if over:
+                continue
+            items.append(CalendarNextItem(title=e.title, start=e.start.astimezone(UTC).isoformat()))
     except Exception:
         logger.exception("today: calendar read failed")
         return []
-    items = [CalendarNextItem(title=e.title, all_day=True) for e in events if e.all_day]
-    timed = sorted(
-        (e for e in events if not e.all_day and e.start is not None and e.end is not None),
-        key=lambda e: e.start,
-    )
-    for e in timed:
-        # Over (a zero-length one once it starts); one in progress stays.
-        over = e.start < now if e.end == e.start else e.end <= now
-        if over:
-            continue
-        items.append(CalendarNextItem(title=e.title, start=e.start.astimezone(UTC).isoformat()))
     return items[:_CALENDAR_NEXT_MAX]
 
 

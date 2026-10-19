@@ -77,6 +77,8 @@ function PointRow({
 function Lead({ today }: { today: Today }) {
   const lead = today.narrative_lead;
   if (lead) return <p className="text-[17px] font-semibold leading-snug text-fg">{lead}</p>;
+  // A header that opens with a point has no lead: its points show below.
+  if ((today.narrative_points ?? []).length > 0) return null;
   // An older API without the split: the whole header as written.
   return (
     <div className="prose prose-invert max-w-none text-[15px] prose-p:my-1 prose-strong:text-fg">
