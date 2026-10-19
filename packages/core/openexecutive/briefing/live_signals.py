@@ -416,8 +416,12 @@ def _drafts(
     count = drafts.count_waiting(principal.id, since)
     if not count:
         return 0, []
+    # Only the ones a settle pass has read: a bare time names nothing (the
+    # count still covers them).
     return count, [
-        draft_line(d, tz, now) for d in drafts.waiting_drafts(principal.id, since)
+        draft_line(d, tz, now)
+        for d in drafts.waiting_drafts(principal.id, since)
+        if d.to or d.subject
     ]
 
 
