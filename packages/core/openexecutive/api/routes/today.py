@@ -1881,7 +1881,9 @@ def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at
         NarrativePoint(text=p, since=times.get(right_now.point_key(p), written_at))
         for p in parts.points
     ]
-    response.narrative_seen_at = right_now.seen_at(scope)
+    # Only a rostered reader's own scope has a last look (see /today/seen).
+    if scope != narrative_cache.COMPANY_SCOPE:
+        response.narrative_seen_at = right_now.seen_at(scope)
 
 
 async def _regen_briefing_narrative(
@@ -2089,23 +2091,21 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
 
 
 @router.post("/today/seen", tags=["today"])
-async def mark_today_seen(request: Request) -> dict[str, str]:
+async def mark_today_seen(request: Request) -> dict[str, str | None]:
     """The reader looked at Right now: the next view counts its points as new
     only when they appeared after this. Stored per narrative scope, the same
-    scope ``GET /today`` serves this caller."""
+    scope ``GET /today`` serves this caller; an unrostered caller's shared
+    scope keeps none."""
     from openexecutive.api.routes.chat import _resolve_caller_person_id
     from openexecutive.briefing import narrative_cache, right_now
     from openexecutive.people.store import get_person
 
     caller = _resolve_caller_person_id(request)
-    if caller is None:
-        scope = narrative_cache.COMPANY_SCOPE
-    elif _is_principal(caller):
-        scope = narrative_cache.DEFAULT_SCOPE
-    elif get_person(caller) is not None:
-        scope = f"person:{caller}"
-    else:
-        scope = narrative_cache.COMPANY_SCOPE
+    if caller is None or get_person(caller) is None:
+        # The shared `company` scope is read by every unrostered caller, so a
+        # look there is nobody's in particular: not recorded.
+        return {"seen_at": None}
+    scope = narrative_cache.DEFAULT_SCOPE if _is_principal(caller) else f"person:{caller}"
     return {"seen_at": right_now.mark_seen(scope)}
 
 

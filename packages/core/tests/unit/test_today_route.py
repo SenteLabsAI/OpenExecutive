@@ -2544,10 +2544,35 @@ def test_today_splits_the_header_for_right_now(
     assert data["morning_brief"] is None and data["calendar_next"] == []
 
 
-def test_today_seen_is_returned_on_the_next_view(
+def test_today_seen_round_trips_in_a_teammates_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "rn-seen.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db,
+    )
+    people_store.upsert_person(full_name="Sam Teammate", email="sam@co.com", db_path=db)
+    people_registry.invalidate()
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+    c = _make_client()
+    me = {"x-caller-email": "sam@co.com"}
+    pid = c.get("/today", headers=me).json()["caller_person_id"]
+    assert pid is not None
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=f"person:{pid}", input_hash="x",
+        narrative_text=_RIGHT_NOW_HEADER, generated_at=narrative_cache.utc_now_iso(),
+    ), db_path=db)
+
+    seen = c.post("/today/seen", headers=me).json()["seen_at"]
+    assert seen
+    assert c.get("/today", headers=me).json()["narrative_seen_at"] == seen
+
+
+def test_an_unrostered_look_is_not_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "rn-company.db"
     _setup_isolated_db(db, monkeypatch)
     narrative_cache.put(narrative_cache.BriefingNarrative(
         scope=narrative_cache.COMPANY_SCOPE, input_hash="x",
@@ -2556,8 +2581,8 @@ def test_today_seen_is_returned_on_the_next_view(
     monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
 
     c = _make_client()
-    seen = c.post("/today/seen").json()["seen_at"]
-    assert c.get("/today").json()["narrative_seen_at"] == seen
+    assert c.post("/today/seen").json()["seen_at"] is None
+    assert c.get("/today").json()["narrative_seen_at"] is None
 
 
 def test_calendar_next_lists_what_is_still_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
