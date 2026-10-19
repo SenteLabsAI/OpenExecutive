@@ -182,7 +182,7 @@ def _reaches(lesson: dict[str, Any], row: sqlite3.Row) -> bool:
     mine = int(lesson["person_id"]) == int(row["person_id"])
     if not mine and not lesson["shared"]:
         return False
-    return lessons._matches(lesson, lessons._content_words(str(row["message"])))
+    return lessons._matches(lesson, str(row["message"]))
 
 
 def due_cases(

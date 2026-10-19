@@ -825,7 +825,8 @@ was asked.
 
 For a miss, say what the person wanted instead in one or two sentences \
 (wanted), and copy as quote at least four of their exact words, from the THEM \
-lines of that turn or the next ones, that show it (a miss a SIGNAL shows needs \
+lines of that turn or the next ones, that show it (their correction or their \
+ask again, never your own reply) (a miss a SIGNAL shows needs \
 no quote when they said nothing about it). Then the kind: company when \
 something only this workspace knows would have fixed it (a term they use, a \
 fact, a preference, which specialist to ask, doing a thing rather than \
@@ -852,7 +853,7 @@ GRADE_TOOL: dict[str, Any] = {
                         "wanted": {"type": "string",
                                    "description": "For a miss: what the person wanted instead."},
                         "quote": {"type": "string",
-                                  "description": "For a miss: at least four of their exact words that show it."},
+                                  "description": "For a miss: at least four of their exact words (a THEM line, never your reply) that show it."},
                     },
                     "required": ["turn", "verdict"],
                 },
@@ -1339,6 +1340,9 @@ async def _run_loop(
     messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
     done: list[str] = []
     changes = 0
+    # One fact per subject a pass: the model tends to save a correction again
+    # in other words, and each save replaces the last.
+    facts_saved: set[str] = set()
     for iteration in range(MAX_ITERATIONS):
         response = await get_provider(model).messages_create(
             model=model, max_tokens=_MAX_TOKENS, system=_SYSTEM, tools=tools, messages=messages,
@@ -1355,6 +1359,8 @@ async def _run_loop(
                 out = json.dumps({"error": f"no tool {name!r} here"})
             elif name in _READ_TOOLS:
                 out = await handlers[name](tool_input)
+            elif name == "remember_fact" and _fact_key(tool_input) and _fact_key(tool_input) in facts_saved:
+                out = json.dumps({"status": "noop", "detail": "already saved in this review"})
             elif changes >= MAX_CHANGES:
                 out = json.dumps({"status": "refused", "detail": "change limit for this review reached"})
             else:
@@ -1371,10 +1377,16 @@ async def _run_loop(
                                        turns=turns, db_path=db_path)
                     if _went_through(out):
                         done.append(name)
+                        if name == "remember_fact":
+                            facts_saved.add(_fact_key(tool_input))
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:2000]})
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": results})
     return done
+
+
+def _fact_key(tool_input: dict[str, Any]) -> str:
+    return " ".join(str(tool_input.get("subject") or "").casefold().split())
 
 
 def _content_words(text: str) -> set[str]:

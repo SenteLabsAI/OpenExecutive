@@ -252,6 +252,17 @@ def test_it_closes_a_loop_the_person_said_is_done(db: Path, roster: SimpleNamesp
     assert _tool_results(provider)[0]["status"] == "closed"
 
 
+def test_a_fact_is_saved_once_a_review(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    _record(roster.principal)
+    fact = {"subject": "Vendor email", "statement": "The vendor email was sent already.",
+            "source_quote": "I sent the vendor email already"}
+    provider.script = [[("remember_fact", fact), ("remember_fact", {**fact, "subject": " vendor  EMAIL"})]]
+    _review(db)
+    first, second = _tool_results(provider)
+    assert first["status"] == "ok"
+    assert second == {"status": "noop", "detail": "already saved in this review"}
+
+
 def test_a_change_without_their_words_is_refused(db: Path, roster: SimpleNamespace,
                                                  provider: _Provider) -> None:
     loop_id = open_loop(owner_person_id=roster.principal.id, description="Send the vendor email",

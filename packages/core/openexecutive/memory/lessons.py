@@ -14,7 +14,10 @@ The Executive's own turn gets the matching lessons as a ``<lessons>`` block
 (``build_lessons_block``); each specialist call gets them under the
 ``<failure_cases>`` block it already reads (``lessons_for_query``). A lesson
 matches a message when they share two content words (the lesson's text and
-the quote it came from, against the message); a short list of short lines
+the quote it came from, against the message), or one name: a word written
+with a capital or a digit, mid-sentence in the message ("Atlas", "R2"),
+since a lesson about what a name means shares only that word with the
+question it answers. A short list of short lines
 needs no vector index, and the match is what makes the counters below mean
 something. The block says the current request wins and nothing in it
 authorizes an action, as the style block does.
@@ -72,8 +75,8 @@ MAX_ACTIVE = 40
 MAX_PER_TURN = 6
 MAX_NEW_WORDS = 2
 RETIRE_AFTER_SHOWN = 5
-# Two shared content words, always: one common word ("report") matches too
-# much, so a lesson with a single content word reaches nothing.
+# Two shared content words: one common word ("report") matches too much.
+# One shared name is enough (``_names``).
 _MATCH_WORDS = 2
 
 # Beyond the style rules' deny-list (which has the acting verbs and the
@@ -395,9 +398,36 @@ def _content_words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9']+", text.casefold()) if len(w) >= 4 and w not in _STOPWORDS}
 
 
-def _matches(lesson: dict[str, Any], message_words: set[str]) -> bool:
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9']*")
+
+
+def _names(text: str, *, sentence_starts: bool = True) -> set[str]:
+    """The name-like words in ``text``, casefolded: written with a capital
+    or a digit ("Atlas", "R2", "Q4"), not a stopword or a bare number.
+    ``sentence_starts=False`` skips a word that opens a sentence, where a
+    capital says nothing."""
+    out: set[str] = set()
+    for m in _TOKEN_RE.finditer(text):
+        word = m.group()
+        if not any(c.isupper() or c.isdigit() for c in word) or word.isdigit():
+            continue
+        if not sentence_starts and re.search(r"(^|[.!?:]\s+)$", text[: m.start()]):
+            continue
+        folded = word.casefold()
+        if len(folded) >= 2 and folded not in _STOPWORDS:
+            out.add(folded)
+    return out
+
+
+def _matches(lesson: dict[str, Any], message: str) -> bool:
+    """Whether ``lesson`` reaches a turn about ``message``: two shared
+    content words, or one shared name (a lesson about what "Atlas" or "R2"
+    means shares only that word with the question it answers)."""
     own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
-    return len(own & message_words) >= _MATCH_WORDS
+    if len(own & _content_words(message)) >= _MATCH_WORDS:
+        return True
+    names = _names(lesson["text"]) | _names(lesson["quote"])
+    return bool(names & _names(message, sentence_starts=False))
 
 
 def lessons_for(
@@ -411,8 +441,7 @@ def lessons_for(
     try:
         from openexecutive.people.store import find_principal_person
 
-        words = _content_words(message)
-        if not words:
+        if not _content_words(message) and not _names(message, sentence_starts=False):
             return []
         principal = find_principal_person()
         principal_id = int(principal.id) if principal is not None and principal.id is not None else -1
@@ -425,7 +454,7 @@ def lessons_for(
             ).fetchall()
         finally:
             conn.close()
-        return [lesson for lesson in map(_out, rows) if _matches(lesson, words)][:MAX_PER_TURN]
+        return [lesson for lesson in map(_out, rows) if _matches(lesson, message)][:MAX_PER_TURN]
     except Exception:
         logger.debug("lessons: lookup failed", exc_info=True)
         return []

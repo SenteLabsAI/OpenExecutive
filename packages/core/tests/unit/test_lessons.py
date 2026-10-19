@@ -124,6 +124,18 @@ def test_a_lesson_reaches_the_turns_it_matches(roster: SimpleNamespace) -> None:
     assert "Pipeline" not in lessons.build_lessons_block(roster.principal.id, "how is the pipeline looking")
 
 
+def test_one_shared_name_is_enough(roster: SimpleNamespace) -> None:
+    _add(roster.principal.id, "Atlas means the Dallas warehouse move.",
+         quote="Atlas always means the Dallas warehouse move")
+    _add(roster.principal.id, "Answer to R2 as your name.", quote="your name is R2 from now on")
+    block = lessons.build_lessons_block(roster.principal.id, "Give me a two-line update on Atlas for the board.")
+    assert "Atlas means the Dallas warehouse move." in block and "R2" not in block
+    assert "Answer to R2" in lessons.build_lessons_block(roster.principal.id, "Hey, are you R2?")
+    # A capital that only opens a sentence, or a bare number, is no name.
+    assert lessons.build_lessons_block(roster.principal.id, "Atlas? never mind, book lunch.") == ""
+    assert lessons._names("Book 2026 travel. Then Q4", sentence_starts=False) == {"q4"}
+
+
 def test_a_lesson_from_someones_own_chat_stays_with_them(roster: SimpleNamespace) -> None:
     """A principal's lesson reaches everyone only when it was learned in a
     shared space (a channel or group thread); one from their own chat, like
