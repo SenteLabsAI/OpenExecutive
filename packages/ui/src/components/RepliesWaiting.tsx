@@ -7,6 +7,7 @@ import {
   answerReplyQuestions,
   dismissReplyCard,
   editReplyText,
+  setReplyRecipients,
   getReplyCards,
   ReplySendError,
   sendReplyCard,
@@ -18,6 +19,7 @@ import {
   questionsLeft,
   relationLabel,
   replyFlagLines,
+  replyToChoice,
   mailboxName,
   safeGmailLink,
   sendLeftNothing,
@@ -140,7 +142,9 @@ export function ReplyCardItem({
   // section reads the cards again until it's settled.
   const unconfirmed = card.status === "executing";
   const relation = relationLabel(card.relation);
-  const warnings = replyFlagLines(card.flags);
+  const choice = replyToChoice(card);
+  // The Reply to choice says who else was on it, so the warning doesn't.
+  const warnings = replyFlagLines(choice ? card.flags.filter((f) => f !== "others_on_thread") : card.flags);
   const received = formatRelativeTime(card.received_at);
   const gmailLink = safeGmailLink(card.gmail_link);
   const mailbox = card.mailbox || mailboxName(card.gmail_link);
@@ -171,6 +175,19 @@ export function ReplyCardItem({
       setEditing(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save your change.");
+    } finally {
+      setStep({ kind: "idle" });
+    }
+  };
+
+  const pickRecipients = async (everyone: boolean) => {
+    if (!choice || everyone === choice.toEveryone) return;
+    setStep({ kind: "busy", label: "Saving…" });
+    setError(null);
+    try {
+      onChanged?.(await setReplyRecipients(card.decision_id, everyone));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't change who it goes to.");
     } finally {
       setStep({ kind: "idle" });
     }
@@ -283,6 +300,37 @@ export function ReplyCardItem({
             {card.they_wrote}
           </p>
         </details>
+      )}
+
+      {choice && !unconfirmed && (
+        <div className="mt-3">
+          <div className={label} id={`reply-to-${card.decision_id}`}>Reply to</div>
+          <div role="radiogroup" aria-labelledby={`reply-to-${card.decision_id}`} className="mt-1.5 flex flex-wrap gap-2">
+            {([false, true] as const).map((everyone) => {
+              const on = everyone === choice.toEveryone;
+              return (
+                <button
+                  key={String(everyone)}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  disabled={busy || confirming || editing !== null}
+                  onClick={() => void pickRecipients(everyone)}
+                  className={`min-h-touch rounded-full border px-4 text-sm disabled:opacity-60 ${
+                    on
+                      ? "border-accent bg-accent/15 font-semibold text-fg"
+                      : "border-line text-fg-muted hover:bg-surface-overlay/60"
+                  }`}
+                >
+                  {everyone ? choice.everyone : choice.sender}
+                </button>
+              );
+            })}
+          </div>
+          {card.relation === "stranger" && !choice.toEveryone && (
+            <p className="mt-1 px-1 text-xs text-fg-subtle">Someone new, so it starts with just them.</p>
+          )}
+        </div>
       )}
 
       <div className="mt-3">

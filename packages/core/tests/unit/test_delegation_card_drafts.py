@@ -207,3 +207,60 @@ def test_one_change_at_a_time(db: Path, owner: Any, models: dict[str, Any]) -> N
         card_drafts._EDITING.discard(card.id)
     _edit(card, mailbox, owner, "Friday works.")
     assert card.id not in card_drafts._EDITING
+
+
+def _group_card(owner: Any) -> tuple[FakeInbox, Any]:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", cc=("ben@northpeak.example",)))
+    _scan(owner, mailbox)
+    return mailbox, inbox.open_cards(owner.id)[0]
+
+
+def _recipients(card: Any, mailbox: FakeInbox, owner: Any, everyone: bool) -> dict[str, Any]:
+    return asyncio.run(card_drafts.set_recipients(
+        _fresh(card), caller=LOCAL, resolver=owner.id, everyone=everyone, gmail=mailbox,
+    ))
+
+
+def test_reply_to_the_sender_only_or_everyone(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _group_card(owner)
+    shown = replies.cards(owner)[0]
+    assert shown.draft_to == [DANA, "ben@northpeak.example"] and shown.reply_others == ["ben@northpeak.example"]
+    words = shown.draft_body
+    changed = _recipients(card, mailbox, owner, False)
+    assert changed["draft_to"] == [DANA] and changed["draft_spec"]["cc"] == []
+    assert changed["draft_body"] == words and changed.get("questions_settled") is not True
+    assert replies.cards(owner)[0].draft_to == [DANA]
+    # What goes is what the card shows, with no second confirm.
+    assert _send(card, mailbox, owner) == "sent-d1"
+    assert mailbox.specs[0].to == [DANA] and mailbox.specs[0].cc == []
+
+
+def test_everyone_again_restores_the_others(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _group_card(owner)
+    _recipients(card, mailbox, owner, False)
+    changed = _recipients(card, mailbox, owner, True)
+    assert changed["draft_to"] == [DANA, "ben@northpeak.example"]
+    assert _send(card, mailbox, owner) == "sent-d1"
+    assert mailbox.specs[0].cc == ["ben@northpeak.example"]
+
+
+def test_in_the_mailbox_the_draft_there_changes_too(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    inbox.set_mailbox_drafts(owner.id, True, updated_by="test")
+    mailbox, card = _group_card(owner)
+    _recipients(card, mailbox, owner, False)
+    assert mailbox.drafts["d1"].message.to == [DANA] and mailbox.drafts["d1"].message.cc == []
+    assert _send(card, mailbox, owner) == "sent-d1"
+
+
+def test_no_choice_without_others(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    assert replies.cards(owner)[0].reply_others == []
+    with pytest.raises(SendRefused) as err:
+        _recipients(card, mailbox, owner, True)
+    assert err.value.code == "no_choice"
+    with pytest.raises(SendRefused) as err:
+        asyncio.run(card_drafts.set_recipients(
+            _fresh(card), caller=LOCAL, resolver=owner.id + 1, everyone=False, gmail=mailbox,
+        ))
+    assert err.value.code == "not_yours"

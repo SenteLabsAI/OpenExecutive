@@ -45,6 +45,8 @@ Routes:
   GET    /delegation/replies      — the reply cards waiting for the caller
                                     (from the database; no Gmail call)
   PUT    /delegation/replies/{id}/text — {text}: change a reply's words
+  PUT    /delegation/replies/{id}/recipients — {everyone}: the sender only,
+         or everyone the email went to
                                     before Send, on its card and in their
                                     Drafts when it is there too. Needs a
                                     caller the API knows is that person, like
@@ -409,6 +411,9 @@ class ReplyCardOut(BaseModel):
     questions_settled: bool = False
     # POST .../answer only: the sentences its rewrite added or changed.
     changed_sentences: list[str] = Field(default_factory=list)
+    # Everyone else the email went to: Reply to: Everyone adds them. Empty
+    # when there is no choice to make.
+    reply_others: list[str] = Field(default_factory=list)
 
 
 class RepliesOut(BaseModel):
@@ -419,6 +424,13 @@ class ReplyTextUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(max_length=20_000)
+
+
+class ReplyRecipientsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # True: everyone the email went to; False: the sender only.
+    everyone: bool
 
 
 class ReplyAnswerIn(BaseModel):
@@ -938,6 +950,40 @@ async def update_delegation_reply_text(request: Request, decision_id: int, body:
         raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
     try:
         await card_drafts.edit(instance, caller=api_caller.caller(request), resolver=person_id, text=body.text)
+    except SendRefused as refused:
+        raise HTTPException(
+            status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},
+        ) from None
+    card = next((c for c in cards(person) if c.decision_id == decision_id), None)
+    if card is None:
+        raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    return ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+
+
+@router.put("/delegation/replies/{decision_id}/recipients", response_model=ReplyCardOut)
+async def update_delegation_reply_recipients(
+    request: Request, decision_id: int, body: ReplyRecipientsUpdate,
+) -> ReplyCardOut:
+    """Send one of the caller's replies to the sender only, or to everyone the
+    email went to: on the card, and in their mailbox's Drafts when it is there
+    too (``delegation.card_drafts.set_recipients``). Only the lists the card
+    was written with; no address comes from the request. Their own cards
+    only; sends nothing."""
+    from openexecutive.delegation import card_drafts
+    from openexecutive.delegation.inbox import DECISION_CLASS
+    from openexecutive.delegation.replies import cards
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    instance = get_decision_instance(decision_id)
+    if instance is None or instance.decision_class != DECISION_CLASS or instance.approver_person_id != person_id:
+        raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
+    try:
+        await card_drafts.set_recipients(
+            instance, caller=api_caller.caller(request), resolver=person_id, everyone=body.everyone,
+        )
     except SendRefused as refused:
         raise HTTPException(
             status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},

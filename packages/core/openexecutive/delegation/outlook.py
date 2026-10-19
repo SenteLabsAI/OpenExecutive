@@ -903,11 +903,15 @@ class DelegateOutlook:
                 return False
         return True
 
-    async def update_draft_text(self, draft_id: str, expected_version: str, text: str) -> str:
+    async def update_draft_text(
+        self, draft_id: str, expected_version: str, text: str, *,
+        to: list[str] | None = None, cc: list[str] | None = None,
+    ) -> str:
         """Replace the words of the draft ``draft_id`` with ``text``, keeping
         who it goes to, the subject and the conversation, when it is still the
         version ``expected_version`` (``draft_version``; If-Match holds it to
-        that version on Microsoft's side too). Returns its new version.
+        that version on Microsoft's side too). With ``to`` it goes to ``to``
+        and ``cc`` instead. Returns its new version.
         Raises ``GmailNotFound`` when it is gone and ``DraftChanged`` when it
         changed meanwhile or is more than plain text. Nothing is sent."""
         if not valid_id(draft_id):
@@ -926,9 +930,13 @@ class DelegateOutlook:
             ):
                 raise DraftChanged("not_plain")
             etag = str(data.get("@odata.etag") or f'W/"{change_key}"')
+            fields: dict[str, Any] = {"body": {"contentType": "text", "content": text}}
+            if to is not None:
+                fields["toRecipients"] = _recipients(to)
+                fields["ccRecipients"] = _recipients(cc or [])
             try:
                 updated = await self._request(
-                    client, "PATCH", path, json_body={"body": {"contentType": "text", "content": text}},
+                    client, "PATCH", path, json_body=fields,
                     if_match=etag,
                 )
             except GmailNotFound as exc:

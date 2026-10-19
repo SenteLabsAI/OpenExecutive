@@ -2039,6 +2039,9 @@ export interface ReplyCard {
   questions_settled?: boolean;
   // Only from answering: the sentences the rewrite added or changed.
   changed_sentences?: string[];
+  // Everyone else the email went to: Reply to: Everyone adds them. Empty or
+  // absent when there is no choice to make.
+  reply_others?: string[];
 }
 
 // One thing a reply leaves you to decide (GET /delegation/replies).
@@ -2344,6 +2347,18 @@ export async function editReplyText(id: number, text: string): Promise<ReplyCard
     body: JSON.stringify({ text }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't save your change.");
+  return (await res.json()) as ReplyCard;
+}
+
+// Send a waiting reply to the sender only, or to everyone the email went
+// to: on its card, and in your mailbox's Drafts when it's there too.
+export async function setReplyRecipients(id: number, everyone: boolean): Promise<ReplyCard> {
+  const res = await fetch(`${API_BASE}/delegation/replies/${id}/recipients`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ everyone }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change who it goes to.");
   return (await res.json()) as ReplyCard;
 }
 

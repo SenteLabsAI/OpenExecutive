@@ -407,6 +407,11 @@ def test_update_draft_text_keeps_every_header_and_only_the_version_it_saw() -> N
     with pytest.raises(DraftChanged) as err:
         asyncio.run(client.update_draft_text("d1", "m8", "No."))
     assert err.value.reason == "changed" and len(puts) == 1
+    # Who it goes to changes only when asked.
+    assert asyncio.run(client.update_draft_text("d1", "m9", "Yes.", to=["dana@northpeak.example"], cc=[])) == "m10"
+    msg = message_from_bytes(base64.urlsafe_b64decode(puts[1]["message"]["raw"]), policy=policy.default)
+    assert msg["To"] == "dana@northpeak.example" and msg["Cc"] is None
+    assert msg["In-Reply-To"] == "<p1@x.example>"
 
 
 @pytest.mark.parametrize(("response", "maybe_done"), [

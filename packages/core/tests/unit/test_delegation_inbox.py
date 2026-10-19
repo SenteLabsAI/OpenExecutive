@@ -144,14 +144,17 @@ class FakeInbox:
         self.specs.append(spec)
         draft_message = MailMessage(
             id=f"dm{n}", thread_id=spec.thread_id or f"new{n}", from_addr=self.email,
-            to=list(spec.to), subject=spec.subject, text=spec.body, labels=["DRAFT"],
+            to=list(spec.to), cc=list(spec.cc), subject=spec.subject, text=spec.body, labels=["DRAFT"],
             received_at=NOW.isoformat(),
         )
         self.add(draft_message)
         self.drafts[f"d{n}"] = DraftInfo(draft_id=f"d{n}", message=draft_message)
         return CreatedDraft(draft_id=f"d{n}", message_id=f"dm{n}", thread_id=draft_message.thread_id)
 
-    async def update_draft_text(self, draft_id: str, expected_version: str, text: str) -> str:
+    async def update_draft_text(
+        self, draft_id: str, expected_version: str, text: str, *,
+        to: list[str] | None = None, cc: list[str] | None = None,
+    ) -> str:
         from openexecutive.delegation.gmail import DraftChanged
 
         self.calls.append(f"update:{draft_id}")
@@ -162,6 +165,9 @@ class FakeInbox:
             raise DraftChanged("changed")
         info.message.id = info.message.id + "-card"
         info.message.text = text
+        if to is not None:
+            info.message.to = list(to)
+            info.message.cc = list(cc or [])
         return info.message.id
 
     # What the owner does in Gmail itself.
@@ -321,6 +327,7 @@ def test_a_question_from_a_contact_gets_a_draft_and_a_private_card(
     assert payload["private"] is True and payload["draft_id"] == "d1"
     assert payload["relation"] == "contact" and "others_on_thread" in payload["flags"]
     assert payload["draft_to"] == [DANA, "ben@northpeak.example"]
+    assert payload["reply_others"] == ["ben@northpeak.example"]
     assert payload["open_questions"] == ["Can the call move to Friday at 10?"]
     assert "Thursday" in payload["they_wrote"]
     assert _ledger(db)["m1"] == ("drafted", None)
@@ -479,6 +486,9 @@ def test_reply_to_all_never_copies_the_person_or_the_executive_and_spares_strang
     by_thread = {spec.thread_id: spec for spec in mailbox.specs}
     assert by_thread["t1"].cc == ["ben@co.example"]
     assert by_thread["t2"].to == [stranger] and by_thread["t2"].cc == []
+    # The person can still add the others on the card.
+    stranger_card = next(c for c in inbox.open_cards(owner.id) if inbox.card_payload(c)["thread_id"] == "t2")
+    assert inbox.card_payload(stranger_card)["reply_others"] == ["ben@co.example"]
 
 
 def test_the_eval_path_counts_recipients_as_the_scan_does(owner: Any, models: dict[str, Any]) -> None:
