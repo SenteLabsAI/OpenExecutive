@@ -886,6 +886,21 @@ def test_a_card_left_from_chat_reads_as_what_it_did(
     )
     turned_down = card("legal", "Legal")
     decision_ledger.mark_resolved(turned_down, decision_ledger.STATUS_REJECTED, db_path=db)
+    # A card on something private to its person (a chat's title) stays off
+    # the team's feed.
+    chat = decision_ledger.create_decision_instance(
+        decision_class="app_action", department="", originating_session_id=None,
+        proposed_payload={
+            "action": "delete_chat", "id": "s1", "value": "",
+            "title": "Private plans", "card": "Delete the chat “Private plans”",
+        },
+        idempotency_key=None, gate_mode="propose",
+        approver_person_id=None, confidence=None, db_path=db,
+    )
+    decision_ledger.mark_resolved(
+        chat, decision_ledger.STATUS_APPROVED_UNCHANGED,
+        final_payload={"did": "Deleted the chat “Private plans”"}, db_path=db,
+    )
 
     items = _make_client().get("/today/activity?limit=100").json()["items"]
     summaries = sorted(i["summary"] for i in items if i["kind"] == "decision_resolved")

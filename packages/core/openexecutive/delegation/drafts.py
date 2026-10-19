@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -296,9 +296,12 @@ async def settle_waiting(
         _seen.pop(row_id, None)
     if not waiting:
         return 0  # no mailbox call on a day with no chat drafts
-    from openexecutive.delegation.gmail import GmailError, gmail_for, valid_id
+    from openexecutive.delegation.gmail import GmailError, gmail_for
+    from openexecutive.delegation.gmail import valid_id as gmail_id
 
     client = gmail if gmail is not None else gmail_for(email)
+    # Outlook ids are longer than Gmail's: ask the client which it takes.
+    valid_id = getattr(client, "valid_id", gmail_id)
     gone = 0
     for row_id, draft_id, created_at, thread_id in waiting:
         if not valid_id(draft_id):
@@ -336,6 +339,8 @@ async def _answered_since(client: Any, thread_id: str, own: str, created_at: str
         saved = datetime.fromisoformat(created_at)
     except ValueError:
         return False
+    if saved.tzinfo is None:
+        saved = saved.replace(tzinfo=UTC)
     thread = await client.get_thread(thread_id)
     for m in getattr(thread, "messages", None) or []:
         if "DRAFT" in m.labels or not mine(m, own):
@@ -345,7 +350,7 @@ async def _answered_since(client: Any, thread_id: str, own: str, created_at: str
         except ValueError:
             continue
         if sent.tzinfo is None:
-            sent = sent.replace(tzinfo=saved.tzinfo)
+            sent = sent.replace(tzinfo=UTC)
         if sent > saved:
             return True
     return False

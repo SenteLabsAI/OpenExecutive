@@ -1101,7 +1101,8 @@ def _payload_headline(payload_json: str | None) -> str | None:
 def _app_action_summary(instance: Any) -> str | None:
     """What a card left from chat (``orchestrator.app_control``) did, in its
     own words ("Deleted the department “Finance”"), or what it would have
-    done ("Turned down: Delete the department “Finance”"). None for any other
+    done ("Turned down: Delete the department “Finance”"). "" for a card on
+    something private to its person (left off the feed); None for any other
     decision class. Its payload's title is only the item's name, so the
     generic "Approved: Finance" read as the Executive approving a decision."""
     from openexecutive.orchestrator.app_control import DECISION_CLASS
@@ -1110,6 +1111,8 @@ def _app_action_summary(instance: Any) -> str | None:
         return None
     final = _payload_dict(instance.final_payload_json)
     proposed = _payload_dict(instance.proposed_payload_json)
+    if not _team_visible_app_action(str(proposed.get("action") or "")):
+        return ""  # names something private (a chat, a file, a memory): left out
     did = final.get("did")
     if isinstance(did, str) and did.strip() and instance.status in _APPROVED_STATUSES:
         return f"{did.strip()} (asked for in chat, approved on its card)"
@@ -1122,6 +1125,14 @@ def _app_action_summary(instance: Any) -> str | None:
 
 
 _APPROVED_STATUSES = frozenset({"approved_unchanged", "approved_with_edit", "executed"})
+
+# Cards whose item the whole team may see by name (``app_control_catalog``);
+# the rest (a chat's title, a file, a memory) stay off this shared feed.
+_TEAM_VISIBLE_APP_ACTIONS = frozenset({"add_department", "rename_department", "delete_department"})
+
+
+def _team_visible_app_action(action_name: str) -> bool:
+    return action_name in _TEAM_VISIBLE_APP_ACTIONS
 
 
 def _payload_dict(payload_json: str | None) -> dict[str, Any]:
@@ -1314,6 +1325,8 @@ def _build_activity(
             continue  # it quotes a teammate's conversation; the audit log keeps who approved it
         label = _DECISION_STATUS_LABEL.get(instance.status, "Resolved")
         app_action = _app_action_summary(instance)
+        if app_action == "":
+            continue
         if app_action is not None:
             items.append(ActivityItem(
                 kind="decision_resolved",
