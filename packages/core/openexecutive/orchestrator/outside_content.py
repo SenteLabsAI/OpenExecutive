@@ -265,9 +265,10 @@ def note_held(label: str) -> None:
 def _reads(tool_name: str, tool_input: Any) -> bool:
     """Whether a call reads: outside content (``source_of``) or the speaker's
     own mail."""
-    from openexecutive.orchestrator.mail_read_tools import MAIL_READ_TOOLS
+    from openexecutive.orchestrator.mail_read_tools import MAIL_READ_TOOLS, SAVE_MY_EMAIL_ATTACHMENT
 
-    if tool_name in {t["name"] for t in MAIL_READ_TOOLS}:
+    # Saving a file from their mail is a step they may have just approved.
+    if tool_name != SAVE_MY_EMAIL_ATTACHMENT and tool_name in {t["name"] for t in MAIL_READ_TOOLS}:
         return True
     try:
         return source_of(tool_name, tool_input) is not None

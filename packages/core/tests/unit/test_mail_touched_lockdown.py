@@ -512,3 +512,59 @@ def test_a_contact_the_speaker_names_is_added_after_reading_mail(
     rounds = [[ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)], adds] if reads_mail else [adds]
     _turn(*rounds, message="Can you add jamie as a contact? jamie@firm.example")
     assert added == ([jamie] if reads_mail else [jamie, stranger, planted])
+
+
+def test_a_go_runs_the_held_step_while_its_mail_read_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chat loop end to end: a step held after a mail read runs on the
+    person's go, in the same round as a mailbox read, which waits a round
+    (outside_content.defers_read) and so doesn't hold it again."""
+    from openexecutive.orchestrator import outside_content
+
+    followups: list[dict[str, Any]] = []
+
+    async def handler(tool_input: dict[str, Any]) -> str:
+        followups.append(tool_input)
+        return json.dumps({"status": "scheduled"})
+
+    monkeypatch.setitem(ex._ALL_SKILL_HANDLERS, "schedule_followup", handler)
+    outside_content._HELD.clear()
+    principal = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
+    people_registry.invalidate()
+    person = people_store.get_person(principal)
+    session = Session(
+        delegation_override=DelegationOverride(enabled=True, gmail=FakeMailbox(), person=person),
+        from_web_chat=True,
+    )
+    followup = {"text": "Chase Dana on the pilot", "when": "tomorrow 9am"}
+    read = {"query": "from:dana"}
+
+    def turn(message: str, *rounds: list[Any]) -> list[Any]:
+        finals = [FinalMsg(uses, "tool_use") for uses in rounds]
+        finals.append(FinalMsg([TextBlock("Done.")], "end_turn"))
+        provider = _TextProvider(finals)
+
+        async def go() -> None:
+            with (
+                patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
+                patch("openexecutive.orchestrator.executive.audit_log", log_event),
+            ):
+                async for _ in ex.Executive().stream_chat(message, session, person_id=principal):
+                    pass
+
+        asyncio.run(go())
+        return provider.calls
+
+    turn(
+        "reply to Dana as me and set a follow-up",
+        [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
+        [ToolUseBlock("tu2", "schedule_followup", followup)],
+    )
+    assert followups == []
+    calls = turn(
+        "go",
+        [ToolUseBlock("tu3", "search_my_email", read), ToolUseBlock("tu4", "schedule_followup", followup)],
+    )
+    assert followups == [followup]
+    results = _tool_results(calls[1])
+    assert "reads wait one round" in json.loads(results["tu3"])["error"]
+    outside_content._HELD.clear()
