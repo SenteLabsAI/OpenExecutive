@@ -57,9 +57,9 @@ const SCREENS: Record<Exclude<PulseView, "overview">, { title: string; descripti
     description: "What you said, in chat and in replies you approved. Only you see these.",
   },
   reflection: {
-    title: "What it got wrong",
+    title: "Learning",
     description:
-      "Turns in your chats that fell short, graded by the Executive itself after each chat, with what you wanted instead.",
+      "How it gets better from your chats: what fell short, what it learned, and whether it would go right today.",
   },
 };
 

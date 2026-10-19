@@ -2208,7 +2208,7 @@ export async function forgetHistoryConversation(id: number): Promise<number> {
   return body.forgotten ?? 0;
 }
 
-// --- Reflection: what it got wrong (memory/chat_review grading) ----------
+// --- Reflection (the Learning screen): memory/chat_review grading --------
 
 export interface ReflectionMiss {
   id: number;
@@ -2289,7 +2289,7 @@ export interface ReflectionState {
 export async function getReflection(signal?: AbortSignal): Promise<ReflectionState | null> {
   const res = await fetch(`${API_BASE}/memories/reflection`, { signal });
   if (res.status === 403 || res.status === 404) return null;
-  if (!res.ok) throw await delegationError(res, "Couldn't load what it got wrong.");
+  if (!res.ok) throw await delegationError(res, "Couldn't load Learning.");
   return res.json();
 }
 

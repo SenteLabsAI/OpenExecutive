@@ -14,9 +14,12 @@ import {
   type ReflectionState,
   type ReflectionWeek,
 } from "@/lib/api";
-import { EmptyState, formatDate } from "./shared";
+import { learningStats } from "@/lib/learning";
 
-// Reflection — what it got wrong. After a chat goes quiet, the conversation
+import { EmptyState, formatDate, formatRunAt } from "./shared";
+
+// Learning (the Reflection screen). At the top, how it learns: four steps and
+// this person's own numbers. After a chat goes quiet, the conversation
 // review grades each turn from the person's own words, the reply and the
 // signals the product recorded (a 👎, a stopped reply, a turn taken back, a
 // claim no tool backed, a failed tool). The misses land here with what the
@@ -28,7 +31,7 @@ import { EmptyState, formatDate } from "./shared";
 // A lesson that doesn't help retires on its own; Forget retires it by hand.
 // At night the Executive replays the misses with today's lessons, in a dry
 // run nobody receives, and a judge says whether each would now go right:
-// that is the number at the top, and the pill on each miss.
+// that is the "would go right today" number, and the pill on each miss.
 // Nothing here notifies anyone: it is a record, opened on purpose.
 
 const EMPTY =
@@ -111,8 +114,8 @@ export default function ReflectionTab() {
 
   return (
     <div className="space-y-4 py-3">
+      <HowItLearns weeks={weeks} liveLessons={live.length} replay={replay} />
       <Trend weeks={weeks} />
-      <WouldGoRight replay={replay} />
       {misses.length === 0 ? (
         <EmptyState message={EMPTY} />
       ) : (
@@ -177,28 +180,141 @@ const RETIRED_LABEL: Record<NonNullable<ReflectionLesson["retired_reason"]>, str
   replay: "stopped: replaying the chats showed it didn't help",
 };
 
-/** "Of the N things that went wrong in the last 30 days, M would go right today." */
-function WouldGoRight({ replay }: { replay: ReflectionReplay }) {
-  if (replay.misses === 0) return null;
-  const ran = replay.last_run_at !== null;
+const HIDE_KEY = "oe.learning.howItLearns.hidden";
+
+const STEPS: { title: string; body: string; when?: string }[] = [
+  {
+    title: "You chat",
+    body: "On the web, your phone or a chat app. Every chat counts. It notices when you correct it or ask again.",
+  },
+  {
+    title: "It looks back",
+    body: "Once the chat goes quiet, it checks each answer. It finishes anything left undone and notes what fell short.",
+    when: "30 min after",
+  },
+  {
+    title: "It keeps a lesson",
+    body: "One line in your own words. It reads it the next time you ask about the same thing.",
+    when: "Same pass",
+  },
+  {
+    title: "It checks itself",
+    body: "Each night it reruns what went wrong, in a dry run nobody receives. A lesson that doesn't help is dropped.",
+    when: "Every night",
+  },
+];
+
+function readHidden(): boolean {
+  try {
+    return window.localStorage.getItem(HIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeHidden(hidden: boolean): void {
+  try {
+    if (hidden) window.localStorage.setItem(HIDE_KEY, "1");
+    else window.localStorage.removeItem(HIDE_KEY);
+  } catch {
+    // Not kept: the card shows again next time.
+  }
+}
+
+/** The four steps of how it learns, with this person's own numbers under them. */
+function HowItLearns({
+  weeks,
+  liveLessons,
+  replay,
+}: {
+  weeks: ReflectionWeek[];
+  liveLessons: number;
+  replay: ReflectionReplay;
+}) {
+  // Mounted only once the screen's data has loaded in the browser, so the
+  // stored choice can be read up front.
+  const [hidden, setHidden] = useState(readHidden);
+  const toggle = () => {
+    writeHidden(!hidden);
+    setHidden(!hidden);
+  };
+  const stats = learningStats(weeks, liveLessons, replay);
+  const lastRun = replay.last_run_at ? formatRunAt(replay.last_run_at).absolute : null;
+
+  if (hidden) {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        className="min-h-[44px] text-sm font-semibold text-accent hover:underline"
+      >
+        How it learns
+      </button>
+    );
+  }
   return (
-    <section className="rounded-xl border border-line bg-surface-panel px-4 py-3">
-      <div className="text-lg font-semibold text-fg">
-        {replay.would_pass} <span className="text-base font-semibold text-fg-muted">of {replay.misses}</span>
+    <section aria-labelledby="how-it-learns" className="rounded-2xl border border-line bg-surface-panel p-4 sm:p-5">
+      <div className="flex items-baseline justify-between gap-3 mb-4">
+        <h2 id="how-it-learns" className="text-lg font-semibold text-fg">
+          How it learns
+        </h2>
+        <button
+          type="button"
+          onClick={toggle}
+          className="min-h-[44px] px-1 text-sm font-semibold text-accent hover:underline"
+        >
+          Hide
+        </button>
       </div>
-      <div className="text-sm text-fg-muted">
-        {ran
-          ? "of the things that went wrong in the last 30 days would go right today."
-          : "of the things that went wrong in the last 30 days have been replayed so far; the first replay runs tonight."}
+      <ol className="grid grid-cols-1 lg:grid-cols-4 gap-3">
+        {STEPS.map((step, i) => (
+          <li
+            key={step.title}
+            className="rounded-xl border border-line bg-surface p-4 grid grid-cols-[2.25rem_1fr] lg:block gap-x-3"
+          >
+            <div className="h-8 w-8 rounded-full bg-accent/15 text-accent font-bold flex items-center justify-center lg:mb-3">
+              {i + 1}
+            </div>
+            <div>
+              <div className="text-base font-semibold text-fg">{step.title}</div>
+              <p className="text-sm text-fg-muted mt-1">{step.body}</p>
+              {step.when && (
+                <span className="inline-block mt-2 rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-semibold text-accent">
+                  {step.when}
+                </span>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+      <dl className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4 border-t border-line pt-4">
+        <Stat value={String(stats.checked)} label="answers checked this week" />
+        <Stat value={String(stats.fellShort)} label="fell short" tone={stats.fellShort > 0 ? "amber" : undefined} />
+        <Stat value={String(stats.lessons)} label={stats.lessons === 1 ? "lesson kept" : "lessons kept"} />
+        <Stat
+          value={stats.wouldGoRight ? `${stats.wouldGoRight.pass} of ${stats.wouldGoRight.of}` : "–"}
+          label={stats.wouldGoRight ? "would go right today" : "nothing to recheck yet"}
+          tone={stats.wouldGoRight && stats.wouldGoRight.pass > 0 ? "green" : undefined}
+        />
+      </dl>
+      <p className="text-sm text-fg-muted mt-3">
+        Chats that read your mail are looked at for you alone.
+        {lastRun ? ` Last checked ${lastRun}.` : " The first nightly check runs once something has gone wrong."}
         {replay.evidence > 0 &&
           ` ${replay.evidence} ${replay.evidence === 1 ? "depends" : "depend"} on what that day's calendar or inbox held, so ${replay.evidence === 1 ? "it is" : "they are"} kept as evidence only.`}
-      </div>
-      <div className="text-xs text-fg-muted mt-1">
-        Each night it replays the misses with everything it has learned since, in a dry run nobody receives, and
-        a judge says whether each would now go right.
-        {ran && ` Last replayed ${formatDate(replay.last_run_at as string)}.`}
-      </div>
+      </p>
     </section>
+  );
+}
+
+function Stat({ value, label, tone }: { value: string; label: string; tone?: "amber" | "green" }) {
+  const color = tone === "amber" ? "text-amber-500" : tone === "green" ? "text-emerald-500" : "text-fg";
+  return (
+    <div>
+      <dt className="sr-only">{label}</dt>
+      <dd className={`text-2xl font-bold tabular-nums leading-tight ${color}`}>{value}</dd>
+      <dd className="text-sm text-fg-muted">{label}</dd>
+    </div>
   );
 }
 

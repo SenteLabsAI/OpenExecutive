@@ -122,7 +122,7 @@ def _caller(request: Request) -> Person:
         elif who.defaults_to_principal and local_login():
             person = find_principal_person()
         else:
-            raise _refuse(403, "sign_in_required", "Sign in to see what it got wrong in your chats.")
+            raise _refuse(403, "sign_in_required", "Sign in to see what it learned from your chats.")
     except HTTPException:
         raise
     except Exception as exc:

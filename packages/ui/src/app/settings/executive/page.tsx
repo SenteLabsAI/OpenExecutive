@@ -15,7 +15,7 @@ const ALWAYS_DOES: { title: string; text: string }[] = [
   { title: "Looks over your day", text: "Spots what's stuck or coming up and tells you." },
   {
     title: "Looks back at its chats",
-    text: "After a chat goes quiet, it fixes what it left undone and grades its own answers. What it got wrong is under Pulse.",
+    text: "After a chat goes quiet, it fixes what it left undone and grades its own answers. What it learned is under Pulse, in Learning.",
   },
   { title: "Research and monitoring", text: "Follows the topics and sources you asked it to watch." },
 ];

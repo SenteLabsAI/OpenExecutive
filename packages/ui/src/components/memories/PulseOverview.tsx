@@ -269,7 +269,7 @@ export function MemoryTiles({ pulse }: { pulse: PulseData }) {
   const [facts, setFacts] = useState<{ active: number; toApprove: number } | null>(null);
   // undefined while loading; null when this viewer has no notes (the tile goes).
   const [notes, setNotes] = useState<number | null | undefined>(undefined);
-  // Likewise for what it got wrong (the conversation review's grades).
+  // Likewise for Learning (the conversation review's grades).
   const [misses, setMisses] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
@@ -346,9 +346,9 @@ export function MemoryTiles({ pulse }: { pulse: PulseData }) {
   if (misses !== null) {
     tiles.push({
       view: "reflection",
-      label: "What it got wrong",
+      label: "Learning",
       count: misses ?? null,
-      detail: "Graded after each chat",
+      detail: "Fell short, and what it learned",
     });
   }
 
