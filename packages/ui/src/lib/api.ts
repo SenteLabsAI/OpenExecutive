@@ -1742,6 +1742,7 @@ export async function pauseExecutive(reason?: string): Promise<ExecutiveStatus> 
     body: JSON.stringify({ reason: reason?.trim() || null }),
   });
   if (!res.ok) throw new Error("Failed to pause the Executive");
+  delegationChanged();
   return res.json();
 }
 
@@ -1749,6 +1750,7 @@ export async function resumeExecutive(): Promise<ExecutiveStatus> {
   const res = await fetch(`${API_BASE}/executive/resume`, { method: "POST" });
   if (res.status === 403) throw new Error("Only the principal can resume the Executive.");
   if (!res.ok) throw new Error("Failed to resume the Executive");
+  delegationChanged();
   return res.json();
 }
 
@@ -2315,6 +2317,7 @@ export async function setDelegationEnabled(enabled: boolean): Promise<Delegation
     body: JSON.stringify({ enabled }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Act as me.");
+  delegationChanged();
   return res.json();
 }
 
@@ -2325,6 +2328,7 @@ export async function setDelegationTeam(enabled: boolean): Promise<DelegationSet
     body: JSON.stringify({ enabled }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Act as me for your team.");
+  delegationChanged();
   return res.json();
 }
 
@@ -2337,6 +2341,7 @@ export async function setInboxWatch(
     body: JSON.stringify(update),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Draft replies to my inbox.");
+  delegationChanged();
   return res.json();
 }
 
@@ -2383,6 +2388,7 @@ export async function answerReplyQuestions(
 export async function removeTrainingLearned(id: number): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/learned/${id}`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't remove that.");
+  delegationChanged();
   return (await res.json()) as DelegationSettings;
 }
 
@@ -2396,6 +2402,7 @@ export async function setTraining(
     body: JSON.stringify(update),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change training.");
+  delegationChanged();
   return (await res.json()) as DelegationSettings;
 }
 
@@ -2432,6 +2439,7 @@ export async function setHandleIt(update: {
     body: JSON.stringify(update),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Handle it for me.");
+  delegationChanged();
   return res.json();
 }
 
@@ -4325,6 +4333,7 @@ export async function updateDepartment(slug: string, patch: DepartmentPatch): Pr
     body: JSON.stringify(patch),
   });
   if (!res.ok) throw await onboardError(res, `Failed to update department: ${res.statusText}`);
+  delegationChanged();
   return res.json();
 }
 
@@ -5544,14 +5553,23 @@ export async function setReach(step: ReachStep): Promise<DelegationSettings> {
     body: JSON.stringify({ step }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change how far it goes.");
+  delegationChanged();
   return res.json();
 }
 
 // ---------------------------------------------------------------------------
-// Delegate → What it may do (GET /what-it-may-do): read-only. What goes out
+// What it does for you (GET /what-it-may-do): read-only. What goes out
 // without asking, as you and as the Executive, and each department's level,
-// each with the setting that decides it.
+// each with the setting that decides it. Shown beside the Delegate tabs
+// (WhatItDoesPanel), which reloads it on DELEGATION_CHANGED.
 // ---------------------------------------------------------------------------
+
+// Fired after a setting the panel reads is saved, so it can show the change.
+export const DELEGATION_CHANGED = "oe:delegation-changed";
+
+function delegationChanged(): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(DELEGATION_CHANGED));
+}
 
 export type MayDoOutcome = "goes" | "waits" | "always_waits" | "drafts" | "off";
 
@@ -5585,7 +5603,7 @@ export interface WhatItMayDo {
 export async function getWhatItMayDo(signal?: AbortSignal): Promise<WhatItMayDo | null> {
   const res = await fetch(`${API_BASE}/what-it-may-do`, { signal });
   if (res.status === 403 || res.status === 404) return null;
-  if (!res.ok) throw new Error("Couldn't load what it may do.");
+  if (!res.ok) throw new Error("Couldn't load what it does for you.");
   return res.json();
 }
 
@@ -5968,6 +5986,7 @@ export async function setTakeTheLead(update: {
     body: JSON.stringify(update),
   });
   if (!res.ok) throw await leadError(res, "Couldn't change Take the lead.");
+  delegationChanged();
   return res.json();
 }
 
@@ -5978,12 +5997,14 @@ export async function addCompanyLeadRule(kind: LeadRuleKind, value: string): Pro
     body: JSON.stringify({ kind, value }),
   });
   if (!res.ok) throw await leadError(res, "Couldn't add the rule.");
+  delegationChanged();
   return res.json();
 }
 
 export async function deleteCompanyLeadRule(id: number): Promise<TakeTheLead> {
   const res = await fetch(`${API_BASE}/take-the-lead/rules/${id}`, { method: "DELETE" });
   if (!res.ok) throw await leadError(res, "Couldn't remove the rule.");
+  delegationChanged();
   return res.json();
 }
 
@@ -5994,12 +6015,14 @@ export async function allowLeadSuggestion(key: string): Promise<TakeTheLead> {
     body: JSON.stringify({ key }),
   });
   if (!res.ok) throw await leadError(res, "Couldn't allow it.");
+  delegationChanged();
   return res.json();
 }
 
 export async function removeLeadLearned(id: number): Promise<TakeTheLead> {
   const res = await fetch(`${API_BASE}/take-the-lead/learned/${id}`, { method: "DELETE" });
   if (!res.ok) throw await leadError(res, "Couldn't remove it.");
+  delegationChanged();
   return res.json();
 }
 
@@ -6084,6 +6107,7 @@ export async function setLeadAsYou(enabled: boolean): Promise<DelegationSettings
     body: JSON.stringify({ enabled }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't change Take the lead as you.");
+  delegationChanged();
   return res.json();
 }
 
@@ -6100,12 +6124,14 @@ export async function addMyLeadRule(kind: LeadRuleKind, value: string): Promise<
     body: JSON.stringify({ kind, value }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't add the rule.");
+  delegationChanged();
   return ((await res.json()) as { rules: LeadRule[] }).rules;
 }
 
 export async function deleteMyLeadRule(id: number): Promise<LeadRule[]> {
   const res = await fetch(`${API_BASE}/delegation/take-the-lead/rules/${id}`, { method: "DELETE" });
   if (!res.ok) throw await delegationError(res, "Couldn't remove the rule.");
+  delegationChanged();
   return ((await res.json()) as { rules: LeadRule[] }).rules;
 }
 

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// Delegate opens on its first tab: what it may do without asking.
+// Delegate opens on its first tab, Act as me.
 export default function DelegatePage() {
-  redirect("/delegate/what-it-may-do");
+  redirect("/delegate/act-as-me");
 }

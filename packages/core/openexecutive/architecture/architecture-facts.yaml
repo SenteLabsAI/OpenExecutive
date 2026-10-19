@@ -11130,10 +11130,16 @@ delegation:
     source), see handle_it; DelegationOut.handle_it is {enabled, mode,
     available, sent_today}; reply cards carry source ("follow_up" or "").
   may_do: |
-    Delegate -> What it may do (delegation.may_do, GET /what-it-may-do) is
-    read-only: one row per thing that can go out without asking, its
+    What it does for you (delegation.may_do, GET /what-it-may-do) is
+    read-only: with the viewer's settings right now, one row per thing that
+    can go out without asking, written as one sentence of what it does, its
     outcome (goes, waits, always_waits, drafts, off) and the setting that
-    decides it. It reads the same settings the gates read, so it cannot say
+    decides it. It sits beside every Delegate tab (DelegatePage ->
+    WhatItDoesPanel: a right-hand column on a wide screen, a bottom sheet on
+    a narrow one), grouped by outcome, and reloads on DELEGATION_CHANGED,
+    which every delegation setter in lib/api.ts fires after a save, marking
+    changed rows for ten seconds. /delegate and /delegate/what-it-may-do
+    open Act as me. It reads the same settings the gates read, so it cannot say
     something they don't do: As you from settings.is_enabled,
     inbox.get_watch, handle_it.get / RULES / leading, training.get /
     learned and the person's rules; As the Executive (principal only) from
@@ -11166,7 +11172,7 @@ delegation:
     sending steps, with In training and Your rules at everything) on
     Delegate -> Handle it for me, which opens only at inbox and says so
     otherwise. Moving Act as me below inbox says Handle it for me stops
-    too. What it may do links act_as_me rows to the first and handle_it
+    too. What it does for you links act_as_me rows to the first and handle_it
     rows to the second.
   surfaces: |
     Settings → Act as me (ActAsMeCard): the Gmail status with the connect

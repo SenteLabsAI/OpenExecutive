@@ -27,7 +27,7 @@ test("the main menu is seven places, team is the default", () => {
     "Chats → /chats",
     "Work → /jobs",
     "Company → /people",
-    "Delegate → /delegate/what-it-may-do",
+    "Delegate → /delegate/act-as-me",
     "Knowledge → /knowledge",
     "Pulse → /memories",
   ]);
@@ -37,7 +37,7 @@ test("the main menu is seven places, team is the default", () => {
 test("solo swaps Company for You, which opens on Goals", () => {
   const solo = links(buildDestinations({ mode: "solo", roleKind: "owner" }));
   assert.equal(solo[3], "You → /goals");
-  assert.equal(solo[4], "Delegate → /delegate/what-it-may-do");
+  assert.equal(solo[4], "Delegate → /delegate/act-as-me");
   assert.equal(solo.length, 7);
 });
 
@@ -58,21 +58,19 @@ test("team hubs: Work and Company tabs", () => {
   );
 });
 
-test("Delegate opens on What it may do, then Act as me, Handle it for me and Take the lead, each a named feature", () => {
+test("Delegate opens on Act as me, then Handle it for me and Take the lead, each a named feature", () => {
   for (const opts of [{}, { mode: "solo", roleKind: "owner" }]) {
     const delegate = buildHubs(opts).find((h) => h.key === "delegate");
     assert.deepEqual(links(delegate.tabs), [
-      "What it may do → /delegate/what-it-may-do",
       "Act as me → /delegate/act-as-me",
       "Handle it for me → /delegate/handle-it",
       "Take the lead → /delegate/take-the-lead",
     ]);
     assert.deepEqual(
       delegate.tabs.map((t) => t.feature),
-      [undefined, "act_as_me", "handle_it", "take_the_lead"],
+      ["act_as_me", "handle_it", "take_the_lead"],
     );
     assert.equal(hubForPath("/delegate/handle-it", opts)?.key, "delegate");
-    assert.equal(hubForPath("/delegate/what-it-may-do", opts)?.key, "delegate");
   }
 });
 

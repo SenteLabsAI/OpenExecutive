@@ -61,7 +61,6 @@ const SEGMENT_LABELS: Record<string, string> = {
   executive: "Your Executive",
   "act-as-me": "Act as me",
   delegate: "Delegate",
-  "what-it-may-do": "What it may do",
   "handle-it": "Handle it for me",
   "take-the-lead": "Take the lead",
   memory: "About you",

@@ -4,7 +4,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { FIRST, MAILS, OPTIONS, TAB_NAMES, beats, sceneFor, sceneKey, type Step, type Tab } from "@/lib/whoSends";
 
-// Delegate → What it may do: "Who writes and who sends". Pick a tab and an
+// What it does for you → Compare: "Who writes and who sends". Pick a tab and an
 // option and its scene plays as numbered steps that stay on screen (or, for
 // Handle it for me, the same five emails marked sent or waiting), under
 // three answers: who writes it, whose name is on it, who presses Send

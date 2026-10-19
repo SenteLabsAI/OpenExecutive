@@ -1,4 +1,4 @@
-"""What it may do (delegation/may_do.py, GET /what-it-may-do): one read-only
+"""What it does for you (delegation/may_do.py, GET /what-it-may-do): one read-only
 answer to what goes out without asking, read from the gates' own settings."""
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def test_each_level_matches_its_rules(
     assert rows["links"].outcome == links
     assert rows["sensitive"].outcome == "always_waits"
     assert may_do.LEVEL_NAMES[mode] in rows["replies_known"].why
-    assert section.notes and "rides on" in section.notes[0]
+    assert section.notes and "needs Draft replies" in section.notes[0]
     assert "a day" in section.footer
 
 
@@ -136,7 +136,7 @@ def test_everything_names_the_lead_and_what_it_rides_on(ids: dict[str, int]) -> 
     assert rows["replies_strangers"].outcome == "goes" and "Everything" in rows["replies_strangers"].why
     assert rows["follow_ups"].outcome == "goes"
     # At Everything a link still waits, whatever the level underneath allowed.
-    assert rows["links"].outcome == "waits" and rows["links"].what == "A reply with a link in it"
+    assert rows["links"].outcome == "waits" and rows["links"].what == "Replies with a link in them."
     assert rows["rules"].items == ("Anyone at acme.com",)
     assert "Everything" in section.notes[0] and "turns Everything off" in section.notes[0]
 
@@ -163,7 +163,7 @@ def test_training_holds_replies_and_counts_what_it_allowed(ids: dict[str, int]) 
     training.allow_sender(pid, "dana@northpeak.example", "Dana Park", decision_id=None)
     rows = _rows(_you(pid))
     # In training Everything doesn't apply: only allowed senders go.
-    assert rows["replies_known"].outcome == "waits" and "1 sender you allowed" in rows["replies_known"].why
+    assert rows["replies_known"].outcome == "waits" and "1 sender you ticked" in rows["replies_known"].why
     assert "links" not in rows
     # Follow-ups aren't in training, so the lead still covers them.
     assert rows["follow_ups"].outcome == "goes" and "Everything" in rows["follow_ups"].why
@@ -209,7 +209,7 @@ def test_ask_first_switches_and_meetings(ids: dict[str, int]) -> None:
     assert rows["meetings"].outcome == "always_waits"
     assert rows["meetings_chat"].outcome == "waits"
     assert rows["rules"].items == ("Words: discount",)
-    assert "Department levels don't hold" in section.footer
+    assert "Department levels don't apply" in section.footer
 
 
 def test_training_waits_until_something_is_allowed() -> None:

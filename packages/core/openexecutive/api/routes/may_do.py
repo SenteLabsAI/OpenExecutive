@@ -1,4 +1,4 @@
-"""Delegate → What it may do (``delegation.may_do``): read-only.
+"""What it does for you, beside each Delegate tab (``delegation.may_do``): read-only.
 
   GET /what-it-may-do — for the signed-in caller: what goes out as them from
                         their own mailbox (when they may have Act as me),

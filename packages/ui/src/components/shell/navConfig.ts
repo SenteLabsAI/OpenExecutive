@@ -165,17 +165,11 @@ const WORK_TABS: NavItem[] = [
   },
 ];
 
-// The Delegate hub's tabs: what it may do without asking (one read-only
-// page over all of them), then what the Executive does as you (Act as me,
-// Handle it for me) and on its own (Take the lead). Each of those is a named
-// feature, so its tab shows the brand label.
+// The Delegate hub's tabs: what the Executive does as you (Act as me,
+// Handle it for me) and on its own (Take the lead). Each is a named feature,
+// so its tab shows the brand label. What it does for you sits beside each
+// tab (DelegatePage).
 const DELEGATE_TABS: NavItem[] = [
-  {
-    href: "/delegate/what-it-may-do",
-    label: "What it may do",
-    icon: "eye",
-    description: "Everything that goes out without asking you, and the setting that allows it.",
-  },
   {
     href: "/delegate/act-as-me",
     label: "Act as me",

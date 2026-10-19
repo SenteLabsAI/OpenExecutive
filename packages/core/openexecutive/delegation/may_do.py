@@ -1,8 +1,10 @@
-"""What it may do: everything that goes out without asking, and why.
+"""What it does for you: everything that goes out without asking, and why.
 
-Delegate → What it may do is read-only. It answers one question for the
-person looking at it: what will the Executive send or change without asking
-anyone, who does it go out as, and which setting allows it. Every answer is
+What it does for you, beside each Delegate tab, is read-only. It answers one
+question for the person looking at it, with their settings right now: what
+will the Executive send or change without asking anyone, who does it go out
+as, and which setting allows it. Each row's ``what`` is one sentence of what
+it does; ``why`` says which setting decides it. Every answer is
 read from the same code the gates use, so the page can't say something the
 gates don't do:
 
@@ -168,11 +170,11 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
 
     # Emails it writes when asked in chat: always a draft.
     rows.append(Row(
-        "chat_drafts", "Emails you ask it to write in chat",
+        "chat_drafts", "Emails you ask for in chat.",
         "drafts" if drafts_on else "off",
         "Drafts only" if drafts_on else "Off",
-        "Write drafts as me is on. They wait in your Drafts; it never sends them."
-        if drafts_on else "Write drafts as me is off: it only ever writes as itself.",
+        "They wait in your Drafts for you to send."
+        if drafts_on else "Write drafts as me is off, so it writes as itself.",
         SETTING_ACT_AS_ME,
     ))
 
@@ -180,118 +182,118 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
         if not watching:
             why = (
                 "Draft replies to my inbox is off." if drafts_on
-                else "Write drafts as me is off, and the inbox replies need it."
+                else "Write drafts as me is off. Replies to your inbox need it."
             )
             return Row(row_id, what, "off", "Off", why, SETTING_ACT_AS_ME)
         if not settings.enabled:
             return Row(
                 row_id, what, "waits", "Waits for you",
-                "Draft replies to my inbox puts each one on a card. Handle it for me is off, so you tap Send.",
+                "Each one waits on a card for you to send. Handle it for me is off.",
                 SETTING_HANDLE_IT,
             )
         if not signing:
             return Row(
                 row_id, what, "waits", "Waits for you",
-                "This server can't tie the switch to you (signed sign-ins are off), so nothing is sent as you.",
+                "Signed sign-ins are off on this server, so nothing goes out as you.",
                 SETTING_HANDLE_IT,
             )
         if replies_trained:
             n = allowed.get(training.REPLIES, 0)
             return Row(
                 row_id, what, "waits", "Waits for you",
-                "Handle it for me is in training. Only replies to the "
-                + (_plural(n, "sender") + " you allowed" if n else "senders you tick to reply to on their own")
-                + " go on their own.",
+                "Handle it for me is in training. "
+                + (f"It answers the {_plural(n, 'sender')} you ticked on its own." if n
+                   else "Tick “on its own next time” on a reply and it answers that sender on its own."),
                 SETTING_HANDLE_IT,
             )
         if lead:
             return Row(
                 row_id, what, "goes", "Goes out",
-                "Handle it for me is set to Everything: it decides, within the limits below.",
+                "Handle it for me is at Everything. It decides, within the limits below.",
                 SETTING_HANDLE_IT,
             )
         if stranger and not rules.strangers:
             return Row(
                 row_id, what, "waits", "Waits for you",
-                f"Handle it for me is set to {level}. Most mail or Everything would send these.",
+                f"Handle it for me is at {level}. Most mail sends these.",
                 SETTING_HANDLE_IT,
             )
         if settings.mode == handle_it.MODE_CAREFUL:
-            why = f"Handle it for me is set to {level}: only short ones, when it's very sure."
+            why = f"Short ones, when it's very sure. Handle it for me is at {level}."
         else:
-            why = f"Handle it for me is set to {level}, when it's sure the email needs only a simple reply."
+            why = f"When the email needs a simple answer. Handle it for me is at {level}."
         return Row(row_id, what, "goes", "Goes out", why, SETTING_HANDLE_IT)
 
-    rows.append(reply_row("replies_known", "Replies to people you know", stranger=False))
-    rows.append(reply_row("replies_strangers", "Replies to people you don't know yet", stranger=True))
+    rows.append(reply_row("replies_known", "Replies to people you know.", stranger=False))
+    rows.append(reply_row("replies_strangers", "Replies to people you don't know yet.", stranger=True))
 
     # Follow-ups on their own unanswered emails.
-    what = "Follow-ups on your emails that went unanswered"
+    what = "Follow-ups when your email goes unanswered."
     if not handling:
         rows.append(Row(
             "follow_ups", what, "off" if not watching else "waits",
             "Off" if not watching else "Waits for you",
             "Draft replies to my inbox is off." if not watching
-            else "Handle it for me is off, so a follow-up waits for you to send it.",
+            else "Each one waits for you to send. Handle it for me is off.",
             SETTING_HANDLE_IT if watching else SETTING_ACT_AS_ME,
         ))
     elif not signing:
         rows.append(Row(
             "follow_ups", what, "waits", "Waits for you",
-            "Signed sign-ins are off on this server, so nothing is sent as you.", SETTING_HANDLE_IT,
+            "Signed sign-ins are off on this server, so nothing goes out as you.", SETTING_HANDLE_IT,
         ))
     elif follow_ups_trained:
         n = allowed.get(training.FOLLOW_UPS, 0)
         rows.append(Row(
             "follow_ups", what, "waits", "Waits for you",
-            "Follow-ups are in training. Only follow-ups to "
-            + (_plural(n, "group") + " of people you allowed" if n else "people you tick to follow up on their own")
-            + " go on their own.",
+            "Handle it for me is in training. "
+            + (f"It follows up on its own with the {_plural(n, 'group')} of people you ticked." if n
+               else "Tick “on its own next time” on a follow-up and it sends those on its own."),
             SETTING_HANDLE_IT,
         ))
     elif follow_lead:
         rows.append(Row(
             "follow_ups", what, "goes", "Goes out",
-            "Handle it for me is set to Everything.", SETTING_HANDLE_IT,
+            "Handle it for me is at Everything.", SETTING_HANDLE_IT,
         ))
     elif not rules.follow_up_to:
         rows.append(Row(
             "follow_ups", what, "waits", "Waits for you",
-            f"Handle it for me is set to {level}: it writes them and you send them.", SETTING_HANDLE_IT,
+            f"It writes them and you send them. Handle it for me is at {level}.", SETTING_HANDLE_IT,
         ))
     else:
         who = "your team, your contacts and anyone you've written to" if "correspondent" in rules.follow_up_to \
             else "your team and your contacts"
         rows.append(Row(
             "follow_ups", what, "goes", "Goes out",
-            f"Handle it for me is set to {level}: follow-ups to {who}.", SETTING_HANDLE_IT,
+            f"To {who}. Handle it for me is at {level}.", SETTING_HANDLE_IT,
         ))
 
     # Links and amounts.
     if sends and not replies_trained:
         if lead:
             rows.append(Row(
-                "links", "A reply with a link in it", "waits", "Waits for you",
-                "Always at Everything: sent as you, a link is the shape a phishing email takes.",
+                "links", "Replies with a link in them.", "waits", "Waits for you",
+                "These wait at Everything, because a link is what a phishing email carries.",
                 SETTING_HANDLE_IT,
             ))
         elif rules.details_confidence is not None:
             rows.append(Row(
-                "links", "A reply with a link or an amount in it", "goes", "Goes out",
-                f"Handle it for me is set to {level}, when it's very sure.", SETTING_HANDLE_IT,
+                "links", "Replies with a link or an amount in them.", "goes", "Goes out",
+                f"When it's very sure. Handle it for me is at {level}.", SETTING_HANDLE_IT,
             ))
         else:
             rows.append(Row(
-                "links", "A reply with a link or an amount in it", "waits", "Waits for you",
-                f"Handle it for me is set to {level}. Most mail sends these when it's very sure.",
+                "links", "Replies with a link or an amount in them.", "waits", "Waits for you",
+                f"Handle it for me is at {level}. Most mail sends these when it's very sure.",
                 SETTING_HANDLE_IT,
             ))
 
     # The topics that always wait.
     if sends:
         rows.append(Row(
-            "sensitive", f"Anything about {_SENSITIVE_WORDS}", "always_waits", "Always waits",
-            "Can't be turned off. It also never writes to anyone the email didn't go to.",
+            "sensitive", f"Anything about {_SENSITIVE_WORDS}.", "always_waits", "Always waits",
+            "This one stays on. Replies go to people already on the email.",
         ))
 
     # Their own rules, which hold only at Everything.
@@ -304,11 +306,11 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
             own, company = [], []
         if own or company:
             shown = [*own, *company] if is_principal else own
-            why = "Your rules and your company's always hold at Everything."
+            why = "These always wait at Everything."
             if company and not is_principal:
                 why += f" Your company has {_plural(len(company), 'rule')}; the owner can see them."
             rows.append(Row(
-                "rules", "Replies matching your rules or your company's", "always_waits", "Waits for you",
+                "rules", "Replies that match your rules or your company's.", "always_waits", "Waits for you",
                 why, SETTING_HANDLE_IT,
                 items=tuple(_rule_label(r.kind, r.value) for r in shown),
             ))
@@ -319,43 +321,42 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
             n = allowed.get(training.ACTIONS, 0)
             why = (
                 "Suggested actions are in training. "
-                + (f"The {_plural(n, 'kind')} you allowed happen on their own."
-                   if n else "Tick the box on a card and that kind happens on its own next time.")
+                + (f"The {_plural(n, 'kind')} you ticked go on their own."
+                   if n else "Tick “on its own next time” on a card and that kind goes on its own.")
             )
             rows.append(Row(
-                "actions", "Messages and meetings it suggests from your mail",
+                "actions", "Messages and invites it suggests from your mail.",
                 "goes" if n and signing else "waits", "Goes out when allowed" if n and signing else "Waits for you",
                 why, SETTING_ACT_AS_ME,
             ))
         elif trained.actions_without_asking:
             rows.append(Row(
-                "actions", "Messages and meetings it suggests from your mail",
+                "actions", "Messages and invites it suggests from your mail.",
                 "goes" if signing else "waits", "Goes out" if signing else "Waits for you",
                 "Suggested actions are On. New contacts, anyone added in the last week, money and links "
-                "still wait for you." if signing
-                else "Signed sign-ins are off on this server, so nothing is sent as you.",
+                "wait for you." if signing
+                else "Signed sign-ins are off on this server, so nothing goes out as you.",
                 SETTING_ACT_AS_ME,
             ))
         else:
             rows.append(Row(
-                "actions", "Messages and meetings it suggests from your mail", "waits", "Waits for you",
-                "Suggested actions are set to Always ask.", SETTING_ACT_AS_ME,
+                "actions", "Messages and invites it suggests from your mail.", "waits", "Waits for you",
+                "Each one waits on a card. Suggested actions are set to Always ask.", SETTING_ACT_AS_ME,
             ))
 
     if lead or follow_lead:
         notes.append(
-            "Handle it for me is set to Everything, which uses Take the lead as you. It rides on Draft replies "
-            "to my inbox and Write drafts as me: turning either off, or putting Handle it for me in training, "
-            "turns Everything off too."
+            "Everything uses Take the lead as you. It needs Draft replies to my inbox and Write drafts as me. "
+            "Turning either off, or putting Handle it for me in training, turns Everything off."
         )
     elif handling:
         notes.append(
-            "Handle it for me rides on Draft replies to my inbox and Write drafts as me: turning either off "
+            "Handle it for me needs Draft replies to my inbox and Write drafts as me. Turning either off "
             "turns Handle it for me off too."
         )
     if handling and not signing:
         notes.append(
-            "Signed sign-ins are off on this server, so nothing is sent as you until they're on."
+            "Signed sign-ins are off on this server, so nothing goes out as you until they're on."
         )
 
     footer = ""
@@ -364,7 +365,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
             from openexecutive.config import get_settings
 
             cap = int(get_settings().delegation_handle_it_max_sends_per_day)
-            footer = f"At most {_plural(cap, 'reply', 'replies')} a day go out on their own, and one a conversation."
+            footer = f"Up to {_plural(cap, 'reply', 'replies')} a day go on their own, one per conversation."
         except Exception:
             footer = ""
     return Section(SECTION_AS_YOU, title, rows=rows, notes=notes, footer=footer)
@@ -408,8 +409,8 @@ def as_the_executive(*, is_principal: bool) -> Section:
     rows: list[Row] = []
     if not lead.enabled:
         rows.append(Row(
-            "lead", "Messages, bookings and workflows it thinks of on its own", "off", "Off",
-            "Take the lead is off. When it looks over your day it tells you what it would do, and you do it.",
+            "lead", "Messages, bookings and workflows it thinks of.", "off", "Off",
+            "Take the lead is off. It tells you what it would do, and you do it.",
             SETTING_TAKE_THE_LEAD,
         ))
         return Section(SECTION_EXECUTIVE, title, rows=rows)
@@ -417,22 +418,22 @@ def as_the_executive(*, is_principal: bool) -> Section:
     if lead.training:
         n = len(learned)
         rows.append(Row(
-            "lead", "Messages, bookings and workflows it thinks of on its own",
+            "lead", "Messages, bookings and workflows it thinks of.",
             "goes" if n else "waits", "Goes out when allowed" if n else "Waits for you",
-            "Take the lead is in training: everything comes to you first. "
-            + (f"The {_plural(n, 'thing')} you allowed happen on their own." if n
-               else "Tick the box on a card and that action happens on its own next time."),
+            "Take the lead is in training, so each one comes to you first. "
+            + (f"The {_plural(n, 'thing')} you ticked go on their own." if n
+               else "Tick “on its own next time” on a card and that goes on its own."),
             SETTING_TAKE_THE_LEAD,
         ))
     else:
         rows.append(Row(
-            "lead", "Messages to your team, and workflows it starts", "goes", "Goes out",
-            "Take the lead is on. Each step a workflow sends is checked again.", SETTING_TAKE_THE_LEAD,
+            "lead", "Messages to your team, and workflows it starts.", "goes", "Goes out",
+            "Take the lead is on. It checks each step a workflow sends.", SETTING_TAKE_THE_LEAD,
         ))
 
     rows.append(Row(
-        "to_you", "Messages only to you", "goes", "Goes out",
-        "Always: you are who it would ask.", SETTING_NONE,
+        "to_you", "Messages to you.", "goes", "Goes out",
+        "You're who it would ask.", SETTING_NONE,
     ))
 
     for kind in take_the_lead.KINDS:
@@ -441,30 +442,30 @@ def as_the_executive(*, is_principal: bool) -> Section:
         if lead.asks_first(kind):
             rows.append(Row(
                 f"kind:{kind}", hint, "waits", "Waits for its approver",
-                f"Always asks first: {label}. It goes to whoever approves that area on People, else you.",
+                f"{label} is on in Always asks first. It goes to whoever approves that area on People, or to you.",
                 SETTING_TAKE_THE_LEAD,
             ))
         elif lead.training:
             rows.append(Row(
                 f"kind:{kind}", hint, "waits", "Waits unless allowed",
-                f"Always asks first: {label} is off, and Take the lead is in training.", SETTING_TAKE_THE_LEAD,
+                f"{label} is off in Always asks first, and Take the lead is in training.", SETTING_TAKE_THE_LEAD,
             ))
         else:
             rows.append(Row(
                 f"kind:{kind}", hint, "goes", "Goes out",
-                f"Always asks first: {label} is off.", SETTING_TAKE_THE_LEAD,
+                f"{label} is off in Always asks first.", SETTING_TAKE_THE_LEAD,
             ))
 
     rows.append(Row(
-        "meetings", "Booking a meeting it thought of", "always_waits", "Waits for its approver",
-        "Always. Always asks first: Meetings asked for in chat covers only meetings someone asks for in chat, "
-        "and it never cancels a meeting on its own.",
+        "meetings", "Meetings it thinks of booking.", "always_waits", "Waits for its approver",
+        "These always wait. Meetings asked for in chat covers the ones someone asks for in chat. "
+        "Cancelling a meeting waits too.",
         SETTING_TAKE_THE_LEAD,
     ))
 
     if rules:
         rows.append(Row(
-            "rules", "Anything matching your company's rules", "always_waits", "Waits for you",
+            "rules", "Anything that matches your company's rules.", "always_waits", "Waits for you",
             "Company rules always hold.", SETTING_TAKE_THE_LEAD,
             items=tuple(_rule_label(r.kind, r.value) for r in rules),
         ))
@@ -472,7 +473,7 @@ def as_the_executive(*, is_principal: bool) -> Section:
     rows.append(_meetings_in_chat())
     return Section(
         SECTION_EXECUTIVE, title, rows=rows,
-        footer="Department levels don't hold what it does here. Always asks first and the company's rules do.",
+        footer="Department levels don't apply here. Always asks first and the company's rules do.",
     )
 
 
@@ -483,7 +484,7 @@ def _meetings_in_chat() -> Row:
     from openexecutive.memory.decision_ledger import get_class_mode
     from openexecutive.memory.workspace_settings import get_workspace
 
-    what = "A meeting you or a teammate ask it to book in chat"
+    what = "Meetings you or a teammate ask it to book in chat."
     try:
         class_mode = get_class_mode("meeting_scheduling")
     except Exception:
@@ -491,12 +492,12 @@ def _meetings_in_chat() -> Row:
     if class_mode != "auto_execute":
         return Row(
             "meetings_chat", what, "waits", "Waits for its approver",
-            "Always asks first: Meetings asked for in chat is on.", SETTING_TAKE_THE_LEAD,
+            "Meetings asked for in chat is on in Always asks first.", SETTING_TAKE_THE_LEAD,
         )
     if get_workspace().mode == "solo":
         return Row(
             "meetings_chat", what, "goes", "Books it",
-            "Always asks first: Meetings asked for in chat is off, so when you ask, it books.", SETTING_TAKE_THE_LEAD,
+            "Meetings asked for in chat is off in Always asks first, so it books when you ask.", SETTING_TAKE_THE_LEAD,
         )
     from openexecutive.departments import registry as dept_registry
 
@@ -509,7 +510,7 @@ def _meetings_in_chat() -> Row:
         )
     return Row(
         "meetings_chat", what, "waits", "Waits for its approver",
-        "Meetings asked for in chat is off in Always asks first, but Operations isn't set to Acts on its own.",
+        "Operations is set to wait for its approver.",
         department_setting("operations"),
     )
 

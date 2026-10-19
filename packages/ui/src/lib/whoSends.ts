@@ -1,4 +1,4 @@
-// The "Who writes and who sends" card on Delegate → What it may do: one
+// The "Who writes and who sends" card in What it does for you: one
 // short scene per option of What it writes as you (Act as me), What it sends
 // on its own (Handle it for me) and Take the lead. Tapping an option plays
 // its scene; it changes no setting. Pure data; a test holds the option
