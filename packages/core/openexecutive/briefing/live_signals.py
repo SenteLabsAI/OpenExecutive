@@ -187,6 +187,8 @@ class LiveSignals:
     # (): read, and nothing left today.
     calendar: tuple[str, ...] | None = None
     # Stable identities for the brief's "unchanged" fingerprint — no times.
+    # The reader's own messages are left out: chatting with the Executive
+    # is not a reason to send a brief.
     keys: dict[str, Any] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
@@ -625,7 +627,6 @@ def gather_live_signals(
             "stuck": sorted(s.split("] ", 1)[-1] for s in stuck),
             "drafts": drafts,
             "conversations": sorted(conversation_keys),
-            "own": sorted(o.split("] ", 1)[-1].lower() for o in own),
             "calendar": calendar_key,
         },
     )

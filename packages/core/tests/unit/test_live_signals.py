@@ -523,3 +523,15 @@ def test_a_name_inside_a_longer_name_is_not_an_impostor() -> None:
     assert _uses_principal_name("Ann Lee (CEO)", ann)
     assert not _uses_principal_name("Joann Lee", ann)
     assert not _uses_principal_name("Ann Leeds", ann)
+
+
+def test_the_readers_own_messages_never_change_the_brief_fingerprint(
+    audit: AuditLogger, roster: SimpleNamespace,
+) -> None:
+    """Chatting with the Executive is not news, so it must not make the
+    morning brief's "unchanged" check send a brief."""
+    before = live_signals.gather_live_signals(_since(), include_private=True)
+    _thread_email(audit, roster.principal, "one more thought", message_id="own1")
+    after = live_signals.gather_live_signals(_since(), include_private=True)
+
+    assert after.own and after.keys == before.keys

@@ -359,7 +359,7 @@ def _the_day(since: datetime, now: datetime) -> tuple[list[str], list[str], dict
         live = gather_live_signals(since, now=now, include_private=True, use_cached_calendar=False)
         # Chat titles add nothing to the chats themselves.
         live_lines = render_live_blocks(replace(live, conversations=(), own=()), window="today")
-        keys.update({k: v for k, v in live.keys.items() if k not in ("conversations", "own") and v})
+        keys.update({k: v for k, v in live.keys.items() if k != "conversations" and v})
     except Exception:
         logger.exception("eod_digest: reading today's mail failed")
     return conversation, live_lines, keys
