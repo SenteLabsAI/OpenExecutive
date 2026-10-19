@@ -185,6 +185,8 @@ def test_a_rename_of_a_company_file_runs() -> None:
     "Domain: vendor.example (commenter) [id: 3]",
     "Anyone with the link (reader) [id: anyoneWithLink]",
     "deleted (writer) [id: 9]",
+    # A group can hold anyone, even one with a company address.
+    f"Group: staff@{COMPANY} (reader) [id: 3]",
 ])
 def test_a_company_file_shared_outside_is_refused(extra: str) -> None:
     text = _item(
@@ -206,7 +208,7 @@ def test_a_company_file_whose_sharing_is_hidden_is_refused() -> None:
 def test_a_company_shared_drive_item_runs_and_an_outside_one_is_refused() -> None:
     ours = _item(
         "d1", "Owners: None available",
-        [f"User: john@{COMPANY} (organizer) [id: 1] | inherited from: 0Adrive", f"Group: staff@{COMPANY} (writer) [id: 2]"],
+        [f"User: john@{COMPANY} (organizer) [id: 1] | inherited from: 0Adrive", f"User: anna@{COMPANY} (writer) [id: 2]"],
         shared_drive=True,
     )
     theirs = _item(
@@ -268,3 +270,61 @@ def test_company_drive_items_sorts_ours_from_theirs() -> None:
     gateway, _ = _gateway({"d1": TEAM_OWNED, "d2": THEIRS})
     with patch.object(gw_module, "get_settings", return_value=SimpleNamespace(exec_email_address=EXEC_ADDR)):
         assert asyncio.run(gateway.company_drive_items(["d1", "d2", "d3"])) == {"d1"}
+
+
+def _forge(text: str, old: str, new: str) -> str:
+    assert old in text
+    return text.replace(old, new, 1)
+
+
+@pytest.mark.usefixtures("_company")
+@pytest.mark.parametrize("forged", [
+    # A second permission list after the real one.
+    TEAM_OWNED.replace("\nURLs:", "\n  Number of permissions: 0\n  Permissions:\n\nURLs:"),
+    # A count that doesn't match the entries.
+    _forge(TEAM_OWNED, "  Number of permissions: 2", "  Number of permissions: 1"),
+    # A list with no count before it.
+    _forge(TEAM_OWNED, "  Number of permissions: 2\n", ""),
+    # Drive's lines out of their order (a line break in the type).
+    _forge(TEAM_OWNED, "Type: application/pdf", "Type: application/pdf\nx"),
+    # Neither a list nor the private line.
+    _forge(TEAM_OWNED, "  Number of permissions: 2\n  Permissions:", "").replace(
+        f"    - User: john@{COMPANY} (owner) [id: 1]\n    - User: {EXEC_ADDR} (writer) [id: 2]\n", "",
+    ),
+])
+def test_a_permission_list_out_of_shape_is_refused(forged: str) -> None:
+    gateway, session_call = _gateway({"d1": forged})
+    assert "error" in json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))
+    assert not _ran(session_call, "update_drive_file")
+
+
+@pytest.mark.usefixtures("_company")
+def test_its_own_file_shared_outside_is_not_the_companys() -> None:
+    own_shared = _item(
+        "d1", f"Owners: The Executive ({EXEC_ADDR})",
+        [f"User: {EXEC_ADDR} (owner) [id: 1]", "User: kyle@vendor.example (writer) [id: 2]"],
+    )
+    gateway, _ = _gateway({"d1": own_shared})
+    with patch.object(gw_module, "get_settings", return_value=SimpleNamespace(exec_email_address=EXEC_ADDR)):
+        assert asyncio.run(gateway.company_drive_items(["d1"])) == set()
+
+
+@pytest.mark.usefixtures("_company")
+def test_a_tapped_move_into_the_folder_it_is_in_keeps_that_folder() -> None:
+    folder = _item("folder1234567", f"Owners: John (john@{COMPANY})", [f"User: john@{COMPANY} (owner) [id: 1]"])
+    gateway, session_call = _gateway({"d1": TEAM_OWNED, "folder1234567": folder})
+    with patch.object(gw_module, "get_settings", return_value=SimpleNamespace(exec_email_address=EXEC_ADDR)):
+        assert asyncio.run(gateway.tapped_drive_change("d1", move_to="folder1234567")) is None
+    updates = [c.args[1]["arguments"] for c in session_call.call_args_list
+               if c.args[1]["tool_name"] == "google_workspace__update_drive_file"]
+    assert updates == [{"file_id": "d1", "add_parents": "folder1234567"}]
+
+
+@pytest.mark.usefixtures("_company")
+def test_a_tapped_move_needs_drive_s_own_parents_line() -> None:
+    shifted = _forge(TEAM_OWNED, "Type: application/pdf", "Type: application/pdf\nParents: f0987654321")
+    folder = _item("f1234567890", f"Owners: John (john@{COMPANY})", [f"User: john@{COMPANY} (owner) [id: 1]"])
+    gateway, session_call = _gateway({"d1": shifted, "f1234567890": folder})
+    with patch.object(gw_module, "get_settings", return_value=SimpleNamespace(exec_email_address=EXEC_ADDR)):
+        assert asyncio.run(gateway.tapped_drive_change("d1", move_to="f1234567890")) == "Couldn't read which folder it is in now."
+    assert not _ran(session_call, "update_drive_file")

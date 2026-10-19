@@ -702,3 +702,33 @@ def test_a_script_renames_the_company_files_it_read() -> None:
     )
     _run([ToolUseBlock("tu1", "run_script", {"script": script})], gateway=gateway)
     assert [c["name"] for c in gateway.calls] == [READ_OURS["name"], RENAME["name"]]
+
+
+EDIT_OURS = {"name": "google_workspace__modify_doc_text", "arguments": {"document_id": OURS, "text": "Paid"}}
+RENAME_WITH_CONTENT = {
+    "name": "google_workspace__update_drive_file", "arguments": {"file_id": OURS, "name": "Bill.pdf", "content": "x"},
+}
+
+
+@pytest.mark.parametrize("write", [EDIT_OURS, RENAME_WITH_CONTENT])
+def test_after_a_company_read_only_a_rename_or_move_goes_through(write: dict[str, Any]) -> None:
+    # The company's files hold words from anyone who can edit them, so
+    # anything but a rename or move still waits for a go.
+    gateway = _CompanyGateway({OURS})
+    provider = _run(
+        [ToolUseBlock("tu1", "call_tool", READ_OURS)],
+        [ToolUseBlock("tu2", "call_tool", write)],
+        gateway=gateway,
+    )
+    assert gateway.calls == [READ_OURS]
+    assert "error" in json.loads(_result(provider, "tu2"))
+
+
+def test_a_script_that_reads_a_company_file_cannot_edit_it() -> None:
+    gateway = _CompanyGateway({OURS})
+    script = (
+        f'google_workspace__get_drive_file_content(file_id="{OURS}")\n'
+        f'google_workspace__modify_doc_text(document_id="{OURS}", text="Paid")'
+    )
+    _run([ToolUseBlock("tu1", "run_script", {"script": script})], gateway=gateway)
+    assert [c["name"] for c in gateway.calls] == [READ_OURS["name"]]

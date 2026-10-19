@@ -726,3 +726,20 @@ def test_a_drive_card_always_waits_for_the_tap(
     assert action_cards.on_its_own_refusal(person, checked, now=datetime.now(UTC)) == "tap_only"
     result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_drive(two="Elm Street.pdf")]})
     assert result["status"] == "waiting_for_approval" and drive.changes == []
+
+
+def test_a_drive_card_with_a_file_drive_cant_name_is_refused(
+    roster: SimpleNamespace, drive: _DriveGateway,
+) -> None:
+    # A card never shows a bare id the person can't check.
+    action = {"kind": "drive_files", "files": [{"file_id": "1unknownFile0009", "name": "x.pdf"}]}
+    error = _propose(_session(FakeMailbox()), {"why": "x", "actions": [action]})["error"]
+    assert "couldn't find 1unknownFile0009" in error
+    assert action_cards.cards(people_store.get_person(roster.principal)) == []
+
+
+def test_a_drive_card_waits_for_drive_to_be_connected(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import mcp_gateway
+
+    monkeypatch.setattr(mcp_gateway, "get_active_gateway", lambda: None)
+    assert "isn't connected" in _propose(_session(FakeMailbox()), {"why": "x", "actions": [_drive(two="x.pdf")]})["error"]

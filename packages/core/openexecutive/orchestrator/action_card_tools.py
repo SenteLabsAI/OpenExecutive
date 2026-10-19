@@ -160,7 +160,9 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
     checked = action_cards.check(tool_input.get("actions"), person, now=datetime.now(UTC))
     if isinstance(checked, str):
         return _error(checked)
-    await action_cards.describe_drive_files(checked)
+    unshown = await action_cards.describe_drive_files(checked)
+    if unshown is not None:
+        return _error(unshown)
     via = (rows_via() or "an AI app") if ai_app else None
     try:
         if len(action_cards.open_cards(person.id)) >= action_cards.OPEN_CARDS_MAX:

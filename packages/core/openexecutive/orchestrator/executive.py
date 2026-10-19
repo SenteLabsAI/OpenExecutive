@@ -2638,7 +2638,9 @@ class Executive:
                 outside_uses = [
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
                     if (read_before_round or tu["id"] not in round_source_ids)
-                    and outside_content.outside_withholds(tu["name"], tu["input"])
+                    and outside_content.outside_withholds(
+                        tu["name"], tu["input"], pending=[source for _, source in round_sources]
+                    )
                 ]
             if outside_uses:
                 skill_tool_uses = [tu for tu in skill_tool_uses if tu not in outside_uses]

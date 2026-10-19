@@ -322,16 +322,18 @@ def _check_drive_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] |
     }
 
 
-async def describe_drive_files(actions: list[dict[str, Any]]) -> None:
+async def describe_drive_files(actions: list[dict[str, Any]]) -> str | None:
     """Put each Drive file's current name, and the folder's, on checked
-    ``drive_files`` actions, for the card to show. Ids stay where a name
-    can't be read. Never raises."""
+    ``drive_files`` actions, for the card to show. A card never shows bare
+    ids: when a name can't be read, why the card can't be made."""
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 
     drive = [a for a in actions if a.get("kind") == "drive_files"]
+    if not drive:
+        return None
     gateway = get_active_gateway()
-    if not drive or gateway is None:
-        return
+    if gateway is None:
+        return "drive_files: Google Drive isn't connected right now."
     for action in drive:
         stored = action["input"]
         ids = [f["file_id"] for f in stored["files"]] + ([stored["move_to"]] if stored["move_to"] else [])
@@ -339,14 +341,18 @@ async def describe_drive_files(actions: list[dict[str, Any]]) -> None:
             names = await gateway.drive_item_names(ids[:DRIVE_FILES_MAX + 1])
         except Exception:
             logger.warning("action_cards: couldn't read the Drive names", exc_info=True)
-            continue
+            return "drive_files: couldn't read the names in Drive right now. Try again."
+        for i in ids:
+            if not names.get(i):
+                return f"drive_files: couldn't find {i} in Drive, so it can't be shown on a card. Check the id."
 
-        shown = {i: _one_line(names.get(i) or i, FILE_NAME_MAX) for i in ids}
+        shown = {i: _one_line(str(names[i]), FILE_NAME_MAX) for i in ids}
         action["text"] = "\n".join(
             f"{shown[f['file_id']]} → {f['name']}" if f["name"] else shown[f["file_id"]] for f in stored["files"]
         )
         if stored["move_to"]:
             action["summary"] = f"{action['summary']}, to {shown[stored['move_to']]}"
+    return None
 
 
 def check(actions: Any, speaker: Any, *, now: datetime) -> list[dict[str, Any]] | str:
@@ -651,7 +657,7 @@ def _result(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-async def _do(action: dict[str, Any], person: Any, *, tapped: bool = True) -> dict[str, str]:
+async def _do(action: dict[str, Any], person: Any, *, tapped: bool = False) -> dict[str, str]:
     """Carry out one stored action, checked again first. Never raises.
     ``tapped``: the person approved this very card, so an invite is booked
     as approved by them; on its own, the meeting gate decides."""
@@ -782,7 +788,7 @@ async def approve(
             raise ApproveRefused(409, "learned_full", "It has learned as much as it can hold. Remove something first.")
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise ApproveRefused(409, "already_handled", "This card was already handled.")
-    results = await _carry_out(person, actions, chosen)
+    results = await _carry_out(person, actions, chosen, tapped=True)
     any_ok = any(r["status"] in ("done", "waiting") for r in results)
     status = (STATUS_APPROVED_UNCHANGED if len(chosen) == len(actions) else STATUS_APPROVED_WITH_EDIT) if any_ok else STATUS_FAILED
     finish_execution(instance.id, status, final_payload={**payload, "results": results})
@@ -797,7 +803,7 @@ async def approve(
 
 
 async def _carry_out(
-    person: Any, actions: list[dict[str, Any]], chosen: set[int], *, tapped: bool = True,
+    person: Any, actions: list[dict[str, Any]], chosen: set[int], *, tapped: bool,
 ) -> list[dict[str, Any]]:
     """Do the ``chosen`` actions for ``person``, once claimed."""
     from contextlib import nullcontext

@@ -2754,8 +2754,8 @@ _GOOGLE_PERMISSION_RE = re.compile(
 class _DriveItem:
     """What the owner lookup says of one Drive item: its owner (None on a
     shared drive), whether it is on a shared drive, and who can open it as
-    ``(kind, address or domain, role)``, kind "user", "domain", "anyone" or
-    "other"."""
+    ``(kind, address or domain, role)``, kind "user", "group", "domain",
+    "anyone" or "other"."""
 
     owner: str | None
     shared_drive: bool
@@ -2772,36 +2772,52 @@ def _parse_drive_item(text: str, item_id: str) -> _DriveItem | None:
     starts = [i for i, line in enumerate(lines) if line.rstrip() == anchor]
     if not starts:
         return None
-    rest = lines[starts[-1] + 1:]
-    owner_lines = [line.rstrip() for line in rest if line.startswith("Owners: ")]
-    if len(owner_lines) != 1:
+    rest = [line.rstrip() for line in lines[starts[-1] + 1:]]
+    # Drive's own lines in their fixed order: a line break in the type or an
+    # owner's display name (chosen by whoever uploaded or owns it) shifts
+    # them, and is refused.
+    if len(rest) < 4 or not (
+        rest[0].startswith("Type: ") and rest[1].startswith("Parents: ")
+        and rest[2].startswith("Owners: ") and rest[3].startswith("Size: ")
+    ):
+        return None
+    if sum(1 for line in rest if line.startswith("Owners: ")) != 1:
         return None
     owner: str | None = None
-    if owner_lines[0] != "Owners: None available":
-        match = _GOOGLE_OWNERS_LINE_RE.fullmatch(owner_lines[0])
+    if rest[2] != "Owners: None available":
+        match = _GOOGLE_OWNERS_LINE_RE.fullmatch(rest[2])
         if match is None:
             return None
         owner = match.group(1).strip().lower()
     shared_drive = any(line.startswith("Shared Drive ID: ") for line in rest)
+    # The permission list: exactly one header, right after its count, then
+    # exactly that many entries and a blank line.
+    headers = [i for i, line in enumerate(rest) if line == "  Permissions:"]
     permissions: list[tuple[str, str, str]] = []
-    listing = False
-    for line in rest:
-        if line.rstrip() == "  Permissions:":
-            listing = True
-            continue
-        if not listing:
-            continue
-        if not line.startswith("    - "):
-            break
-        found = _GOOGLE_PERMISSION_RE.fullmatch(line.rstrip())
-        if found is None:
-            permissions.append(("other", "", ""))
-        elif found.group("addr"):
-            permissions.append(("user", found.group("addr").lower(), found.group("role").lower()))
-        elif found.group("domain"):
-            permissions.append(("domain", found.group("domain").lower(), found.group("role").lower()))
-        else:
-            permissions.append(("anyone", "", found.group("role").lower()))
+    if headers:
+        if len(headers) != 1:
+            return None
+        at = headers[0]
+        count = re.fullmatch(r"  Number of permissions: (\d+)", rest[at - 1]) if at else None
+        if count is None:
+            return None
+        entries = rest[at + 1:at + 1 + int(count.group(1))]
+        if len(entries) != int(count.group(1)) or rest[at + 1 + len(entries):at + 2 + len(entries)] != [""]:
+            return None
+        for line in entries:
+            found = _GOOGLE_PERMISSION_RE.fullmatch(line) if line.startswith("    - ") else None
+            if found is None:
+                permissions.append(("other", "", ""))
+            elif found.group("addr"):
+                # A group can hold anyone, so only a user counts as one of the company's.
+                kind = "user" if found.group("kind") == "User" else "group"
+                permissions.append((kind, found.group("addr").lower(), found.group("role").lower()))
+            elif found.group("domain"):
+                permissions.append(("domain", found.group("domain").lower(), found.group("role").lower()))
+            else:
+                permissions.append(("anyone", "", found.group("role").lower()))
+    elif "  No additional permissions (private file)" not in rest:
+        return None
     return _DriveItem(owner=owner, shared_drive=shared_drive, permissions=tuple(permissions))
 
 
@@ -2820,9 +2836,9 @@ def _company_domains_with(exec_address: str) -> frozenset[str]:
 def _company_item(item: _DriveItem, exec_address: str, domains: frozenset[str]) -> bool:
     """Whether a Drive item is the company's own: owned by the Executive or
     someone on a company domain, or on a shared drive whose every organizer
-    is; and nobody outside the company can open it (every user, group and
-    domain it is shared with is the company's, never "anyone with the
-    link"). A file owned by someone else must show who can open it: the list
+    is; and nobody outside the company can open it (every user and domain
+    it is shared with is the company's; never a group, which can hold
+    anyone, nor "anyone with the link"). A file owned by someone else must show who can open it: the list
     is hidden from a reader, and a hidden list proves nothing."""
 
     def ours(address: str) -> bool:
@@ -2856,9 +2872,8 @@ async def _google_company_items(
         text = await _google_item_text(session, item_id, discover)
         if text is None:
             continue
-        if _google_owner_of(text) == exec_address:
-            out.add(item_id)
-            continue
+        # The Executive's own files too: one it shared outside the company
+        # holds outside words like any other.
         item = _parse_drive_item(text, item_id)
         if item is None:
             continue
@@ -4075,9 +4090,12 @@ class MCPGateway:
             item_lines = (text or "").splitlines()
             anchor = f"ID: {file_id}"
             starts = [i for i, line in enumerate(item_lines) if line.rstrip() == anchor]
-            parents_line = next(
-                (line for line in item_lines[starts[-1] + 1:] if line.startswith("Parents: ")), None,
-            ) if starts else None
+            # Drive's own Parents line, second after the id, in a lookup
+            # whose lines are all where Drive puts them.
+            after = item_lines[starts[-1] + 1:starts[-1] + 3] if starts else []
+            parents_line = after[1].rstrip() if (
+                len(after) == 2 and after[1].startswith("Parents: ") and _parse_drive_item(text or "", file_id)
+            ) else None
             if parents_line is None:
                 return "Couldn't read which folder it is in now."
             parents = [

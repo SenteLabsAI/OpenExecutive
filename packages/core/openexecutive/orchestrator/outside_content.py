@@ -52,13 +52,17 @@ turn, under every usual check, so it trusts the person's go no more than
 before; it only stops a re-read from undoing it. A shared chat, or mail from
 someone not in People, remembers nothing.
 
-The company's own Drive is not outside (``vet_reads``): a Google read
-that names one file, Doc, Sheet, deck or folder by id, when that item is
-owned by someone at the company (or kept on a shared drive only the
-company organizes) and shared with nobody outside it
-(``mcp_gateway._company_item``), marks nothing, so the turn can go on to
-rename, move or file what it read. Searches, mail, calendar, forms and
-anything shared in from outside still mark the turn.
+The company's own Drive (``vet_reads``): a Google read that names one
+file, Doc, Sheet, deck or folder by id, when that item is owned by someone
+at the company (or kept on a shared drive only the company organizes) and
+shared with nobody outside it (``mcp_gateway._company_item``), marks the
+turn ``COMPANY`` instead of ``GATEWAY``. It still holds everything above:
+a company file can hold outside words (a scanned vendor invoice, an
+attachment saved from mail). The one thing it lets through is filing what
+was read: renaming or moving the company's own Drive items
+(``_company_rename``; the gateway still checks the file and the folder it
+goes to). Searches, mail, calendar, forms and anything shared in from
+outside mark the turn as before, and then nothing goes through.
 
 Plain code, no model. State lives in a context variable and on the session,
 set at the start of each turn (``begin_turn``) and closed when it ends
@@ -84,6 +88,8 @@ SYNCED = "synced"
 APP = "app"
 # The turn answers mail from someone not in People (``Session.sender_off_team``).
 SENDER = "sender"
+# A read of one of the company's own Drive items (``vet_reads``).
+COMPANY = "company"
 
 # Shut on such a turn on top of the outside-content hold: a person's own turn
 # keeps these after reading outside content because the person is the one
@@ -504,9 +510,9 @@ def source_of(tool_name: str, tool_input: Any) -> str | None:
     """The outside source a tool use reads, or None when it reads none."""
     if tool_name == "call_tool":
         named = tool_input.get("name") if isinstance(tool_input, dict) else None
-        if not gateway_call_reads(named) or _reads_company_item(tool_input):
+        if not gateway_call_reads(named):
             return None
-        return GATEWAY
+        return COMPANY if _reads_company_item(tool_input) else GATEWAY
     if tool_name in _FETCH_TOOLS:
         return _FETCH_TOOLS[tool_name]
     from openexecutive.orchestrator.extensions import reads_outside
@@ -533,13 +539,49 @@ def answers_off_team_mail() -> bool:
     return state is not None and SENDER in state.sources
 
 
-def outside_withholds(tool_name: str, tool_input: Any) -> bool:
+# The arguments a rename or move of a Drive item takes (``update_drive_file``).
+_RENAME_KEYS = frozenset({"fileid", "name", "addparents", "removeparents"})
+
+
+def _company_rename(tool_input: Any) -> bool:
+    """Whether a ``call_tool`` input only renames and/or moves one Drive
+    item: ``update_drive_file`` with a file id and nothing but a new name
+    and folders. The gateway's own-file check decides whether that item and
+    the folder are the company's own."""
+    if not isinstance(tool_input, dict) or tool_input.get("name") != "google_workspace__update_drive_file":
+        return False
+    arguments = tool_input.get("arguments")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (ValueError, RecursionError):
+            return False
+    if not isinstance(arguments, dict) or not arguments:
+        return False
+    keys = [_norm(k) for k in arguments if isinstance(k, str)]
+    return len(keys) == len(arguments) and "fileid" in keys and set(keys) <= _RENAME_KEYS
+
+
+def _company_only(pending: Any = ()) -> bool:
+    """Whether everything the turn has read (and ``pending``, this round's
+    reads) is the company's own Drive."""
+    state = current()
+    sources = set(state.sources if state is not None else ()) | set(pending or ())
+    return bool(sources) and sources <= {COMPANY}
+
+
+def outside_withholds(tool_name: str, tool_input: Any, *, pending: Any = ()) -> bool:
     """Whether a call to ``tool_name`` is refused once the turn has read
     outside content: what the Act as me lockdown refuses, every
     ``upsert_person`` but for a contact the speaker named, and every gateway
-    call but a read. Fails closed.
+    call but a read. Fails closed. ``pending``: the sources this round reads,
+    not yet marked.
     A turn answering mail from someone not in People may still raise an
-    alert, which is how that mail reaches the principal."""
+    alert, which is how that mail reaches the principal. A turn that read
+    only the company's own Drive may still rename and move Drive items
+    (``_company_rename``)."""
+    if tool_name == "call_tool" and _company_only(pending) and _company_rename(tool_input):
+        return False
     if answers_off_team_mail():
         if tool_name == "create_alert":
             return False
