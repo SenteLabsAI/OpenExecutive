@@ -200,6 +200,24 @@ async def run_triage_eval(scenario: dict) -> dict:
     }
 
 
+async def _start_gateway():
+    """An MCP gateway from the configured mcp_servers.json, made the active
+    one (approval cards and the brief read the active gateway, as in the
+    API); exits when there is no config, since an mcp run without tools would
+    judge nothing real."""
+    from openexecutive.config import get_settings
+    from openexecutive.orchestrator.mcp_gateway import MCPGateway, set_active_gateway
+
+    config_path = get_settings().mcp_servers_config_path
+    if not config_path.exists():
+        sys.exit(f"--mcp needs an MCP config at {config_path} (MCP_SERVERS_CONFIG_PATH)")
+    gateway = MCPGateway()
+    await asyncio.wait_for(gateway.start(config_path), timeout=120)
+    set_active_gateway(gateway)
+    print(f"MCP gateway started from {config_path}")
+    return gateway
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -348,23 +366,34 @@ async def main() -> None:
                 print(f"    → ERROR: {e}")
                 results.append({"id": scenario["id"], "error": str(e), "passed": False})
     else:
-        # "chat" (default) and "mcp" both go through the Executive.
+        # "chat" (default) and "mcp" both go through the Executive; mcp with
+        # a gateway started from the configured mcp_servers.json, as the API
+        # starts it, so its scenarios can reach their tools (without one the
+        # Executive offers no MCP tools at all).
         from openexecutive.orchestrator.executive import Executive
 
-        executive = Executive()
-        for scenario in scenarios:
-            print(f"  [{scenario['id']}] {scenario['description']}")
-            try:
-                result = await run_eval(scenario, executive, None)
-                scores = await judge_response(scenario, result["response"])
-                result["scores"] = scores
-                result["passed"] = scores.get("overall", 0) >= 3.5
-                results.append(result)
-                status = "PASS" if result["passed"] else "FAIL"
-                print(f"    → {status} (overall: {scores.get('overall', 0):.1f}/5)")
-            except Exception as e:
-                print(f"    → ERROR: {e}")
-                results.append({"id": scenario["id"], "error": str(e), "passed": False})
+        gateway = await _start_gateway() if target_kind == "mcp" else None
+        try:
+            executive = Executive(mcp_gateway=gateway)
+            for scenario in scenarios:
+                print(f"  [{scenario['id']}] {scenario['description']}")
+                try:
+                    result = await run_eval(scenario, executive, None)
+                    scores = await judge_response(scenario, result["response"])
+                    result["scores"] = scores
+                    result["passed"] = scores.get("overall", 0) >= 3.5
+                    results.append(result)
+                    status = "PASS" if result["passed"] else "FAIL"
+                    print(f"    → {status} (overall: {scores.get('overall', 0):.1f}/5)")
+                except Exception as e:
+                    print(f"    → ERROR: {e}")
+                    results.append({"id": scenario["id"], "error": str(e), "passed": False})
+        finally:
+            if gateway is not None:
+                from openexecutive.orchestrator.mcp_gateway import set_active_gateway
+
+                set_active_gateway(None)
+                await gateway.close()
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"eval_results_{target_kind}_{timestamp}.json"

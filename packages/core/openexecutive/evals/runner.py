@@ -181,8 +181,9 @@ def _make_run_one(
         return _make_inbox_runner(sem, queue, passed, total, cancel_event)
     if kind == "workflow":
         return _make_workflow_runner(store, sem, queue, passed, total, cancel_event)
-    # chat (default) and mcp both go through Executive.chat
-    return _make_chat_runner(sem, queue, passed, total, cancel_event)
+    # chat (default) and mcp both go through Executive.chat; mcp with the
+    # API's running gateway, so its scenarios can reach their tools.
+    return _make_chat_runner(sem, queue, passed, total, cancel_event, with_mcp=kind == "mcp")
 
 
 def _is_canceled(cancel_event: asyncio.Event | None) -> bool:
@@ -473,15 +474,21 @@ def _make_chat_runner(
     passed: list[int],
     total: int,
     cancel_event: asyncio.Event | None,
+    *,
+    with_mcp: bool = False,
 ) -> RunOne:
     from openexecutive.memory.company_profile import CompanyProfile
     from openexecutive.orchestrator.debug_events import DebugCollector
     from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.session import Session
 
     # Shared Executive — confirmed safe: no mutable instance state on the
     # hot path; chat()/stream_chat() route all per-call state through Session.
-    executive = Executive()
+    # An mcp scenario needs the gateway: without one the Executive offers no
+    # MCP tools, and the scenario would be judged on a turn that can't reach
+    # them.
+    executive = Executive(mcp_gateway=get_active_gateway() if with_mcp else None)
 
     async def run_one(i: int, scenario: dict[str, Any]) -> None:
         if _is_canceled(cancel_event):

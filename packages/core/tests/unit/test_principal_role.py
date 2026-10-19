@@ -924,7 +924,7 @@ def test_chat_runner_puts_the_role_on_the_session(monkeypatch: pytest.MonkeyPatc
     async def fake_judge(_scenario: Any, _response: str) -> dict[str, Any]:
         return {"overall": 5}
 
-    monkeypatch.setattr(Executive, "__init__", lambda self: None)
+    monkeypatch.setattr(Executive, "__init__", lambda self, mcp_gateway=None: None)
     monkeypatch.setattr(Executive, "chat", fake_chat)
     monkeypatch.setattr(runner, "judge_chat", fake_judge)
     queue: asyncio.Queue[Any] = asyncio.Queue()
