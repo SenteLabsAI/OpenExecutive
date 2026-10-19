@@ -312,7 +312,9 @@ def pending_held(session: Any) -> tuple[str, ...]:
         return ()
 
 
-# Held tools with a plainer name than their own (``step_words``).
+# Held steps as a person reads them (``step_words``). Only these names are
+# shown: a gateway tool name is whatever the model asked for, and text read
+# from outside can steer it, so an unknown one gets its app's generic label.
 _STEP_WORDS: dict[str, str] = {
     "upsert_person": "Add or change a contact",
     "read_document": "Open a link",
@@ -326,18 +328,39 @@ _STEP_WORDS: dict[str, str] = {
     "record_decision_outcome": "Record a decision",
     "send_department_message": "Post to a department",
     "send_company_broadcast": "Post to everyone",
+    "google_workspace__send_gmail_message": "Send an email",
+    "google_workspace__draft_gmail_message": "Draft an email",
+    "google_workspace__modify_sheet_values": "Change a sheet",
+    "google_workspace__create_spreadsheet": "Create a sheet",
+    "google_workspace__create_doc": "Create a doc",
+    "google_workspace__modify_doc_text": "Change a doc",
+    "google_workspace__create_event": "Add a calendar event",
+    "google_workspace__modify_event": "Change a calendar event",
+    "google_workspace__delete_event": "Delete a calendar event",
+    "google_workspace__update_drive_file": "Change a Drive file",
+    "google_workspace__create_drive_file": "Create a Drive file",
+    "microsoft_365__send-mail": "Send an email",
+    "microsoft_365__create-calendar-event": "Add a calendar event",
+    "microsoft_365__update-calendar-event": "Change a calendar event",
+    "microsoft_365__delete-calendar-event": "Delete a calendar event",
 }
-_TOOL_PREFIX = re.compile(r"^(?:google_workspace|microsoft_365|[a-z0-9]+)__")
+_APP_STEP_WORDS: dict[str, str] = {
+    "google_workspace": "A Google Workspace step",
+    "microsoft_365": "A Microsoft 365 step",
+}
 
 
 def step_words(label: str) -> str:
-    """A held tool's name as a person reads it: "Modify sheet values" for
-    ``google_workspace__modify_sheet_values``."""
+    """A held step's name as a person reads it (``_STEP_WORDS``), else its
+    app's generic label, else "A connected-app step". Never the raw name:
+    that could carry words planted in what the turn read."""
     label = str(label or "").strip()
     if label in _STEP_WORDS:
         return _STEP_WORDS[label]
-    words = re.sub(r"[_\-]+", " ", _TOOL_PREFIX.sub("", label)).strip()
-    return (words[:1].upper() + words[1:])[:80] if words else "A step"
+    app, sep, _ = label.partition("__")
+    if sep:
+        return _APP_STEP_WORDS.get(app, "A connected-app step")
+    return "A step"
 
 
 # Added to a web chat refusal: the reply gets the buttons, so the person taps

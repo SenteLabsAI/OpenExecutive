@@ -345,7 +345,11 @@ def get_session_messages(session_id: str, request: Request) -> list[dict]:
 
         from openexecutive.orchestrator.outside_content import pending_held
 
-        held = pending_held(SimpleNamespace(session_id=session_id, caller_person_id=caller))
+        # A chat shared since its turn held nothing that a go would still
+        # release (``outside_content._held_key``), so it shows no buttons.
+        held = pending_held(
+            SimpleNamespace(session_id=session_id, caller_person_id=caller, shared_chat=bool(people))
+        )
         if held:
             messages[-1]["held_steps"] = list(held)
     return messages

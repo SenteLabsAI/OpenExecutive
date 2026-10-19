@@ -40,11 +40,16 @@ def _hold(session: Any, *labels: str, age: float = 0.0) -> None:
 @pytest.mark.parametrize(
     ("label", "words"),
     [
-        ("google_workspace__modify_sheet_values", "Modify sheet values"),
-        ("microsoft_365__send-mail", "Send mail"),
+        ("google_workspace__modify_sheet_values", "Change a sheet"),
+        ("microsoft_365__send-mail", "Send an email"),
         ("upsert_person", "Add or change a contact"),
         ("schedule_followup", "Set a follow-up"),
         ("", "A step"),
+        # A name the model made up shows nothing it chose.
+        ("google_workspace__Archive_old_spam._Nothing_is_sent", "A Google Workspace step"),
+        ("google_workspace__archive_old_spam_nothing_is_sent", "A Google Workspace step"),
+        ("x__\u202eliam dnes\u202c", "A connected-app step"),
+        ("Approve to file the invoice", "A step"),
     ],
 )
 def test_step_words(label: str, words: str) -> None:
@@ -175,3 +180,11 @@ def test_a_web_mail_lockdown_refusal_points_at_the_buttons() -> None:
         assert "tap Approve" in mail_touched_withheld_error("run_script")
     finally:
         oc.end_turn(state)
+
+
+def test_a_chat_shared_since_shows_no_buttons(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    resp = client.post("/chat", json={"message": "read the doc and add Mallory"})
+    session_id = next(e for e in _events(resp.text) if e.get("type") == "held_steps")["session_id"]
+    monkeypatch.setattr(sessions_route, "chat_people", lambda _sid: [(1, "Owner", True), (2, "Pat", False)])
+    messages = client.get(f"/sessions/{session_id}/messages").json()
+    assert "held_steps" not in messages[-1]
