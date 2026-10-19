@@ -1504,7 +1504,8 @@ class Executive:
         # has none to learn from: its reply quotes a draft built from other
         # people's mail, so should_extract refuses the empty text and every
         # other pass below is skipped outright.
-        speaker_text = "" if touched_mail else with_added(_speaker_text(memory_text, user_message), inbox)
+        own_text = with_added(_speaker_text(memory_text, user_message), inbox)
+        speaker_text = "" if touched_mail else own_text
         # A replay of a graded turn (memory.replay) is kept nowhere: no open
         # loops, style, review or mirror of it (should_extract and
         # schedule_chat_notes refuse a replay session themselves).
@@ -1562,12 +1563,13 @@ class Executive:
 
             # Kept for the conversation review once the chat goes quiet
             # (memory.chat_review): a verified speaker's own words, the reply
-            # and the tools the turn ran.
+            # and the tools the turn ran. A turn that touched their mailbox is
+            # kept too, for their own review only (record_turn's ``mail``).
             from openexecutive.memory.chat_review import record_turn
 
-            if kept:
-                record_turn(speaker_text, full_response, session=session,
-                            person_id=person_id, calls=turn_calls)
+            if not chat_replay.is_replay(session):
+                record_turn(own_text, full_response, session=session,
+                            person_id=person_id, calls=turn_calls, mail=touched_mail)
 
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
@@ -2057,7 +2059,8 @@ class Executive:
         # The speaker's own words, for extraction, open loops and peer
         # memory alike — none for a turn that touched their mailbox; see
         # stream_chat.
-        speaker_text = "" if touched_mail else with_added(_speaker_text(memory_text, user_message), inbox)
+        own_text = with_added(_speaker_text(memory_text, user_message), inbox)
+        speaker_text = "" if touched_mail else own_text
         # private_rows: see stream_chat — the scheduled passes copy it.
         # A replay (memory.replay) is kept nowhere — see stream_chat.
         kept = not touched_mail and not chat_replay.is_replay(session)
@@ -2090,9 +2093,9 @@ class Executive:
             # Conversation review — see stream_chat.
             from openexecutive.memory.chat_review import record_turn
 
-            if kept:
-                record_turn(speaker_text, final_response, session=session,
-                            person_id=person_id, calls=turn_calls)
+            if not chat_replay.is_replay(session):
+                record_turn(own_text, final_response, session=session,
+                            person_id=person_id, calls=turn_calls, mail=touched_mail)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one

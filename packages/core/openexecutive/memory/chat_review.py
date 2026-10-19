@@ -10,8 +10,11 @@ kept.
 that confirms it is them, or a rostered teammate on their own signed-in web
 chat, Slack or Discord) is recorded here: their own words, the reply, and the
 tools the turn ran. Nothing else is: an email, an unattended run, a turn
-private to the principal, one that touched their own mailbox, or a message
-with an attachment. In team mode that covers the principal and every teammate.
+private to the principal, or a message with an attachment. In team mode that
+covers the principal and every teammate. A chat that read the person's own
+mailbox (Act as me) is kept for their own review only: its misses and lessons
+are shown to them alone, it keeps no fact, and its tools are kept by name
+with no result text (``record_turn``'s ``mail``).
 
 **When.** ``CHAT_REVIEW_QUIET_MINUTES`` (30) after the last recorded turn of a
 conversation, through a ``chat_review`` scheduled action. Only the turns not
@@ -36,13 +39,15 @@ permission to act. What it can't fix goes into the next brief as one line
 
 **Grading (looking back at how it went).** Before the fix loop, the same
 pass grades each turn it reads, from the person's own words, the reply and
-the signals the product recorded: a 👍 or 👎 on the reply (``chat_messages``),
+the signals the product recorded: a 👍 or 👎 on the reply (``chat_messages``,
+or typed as the next message in a chat app),
 a reply they stopped, a turn they took back to ask again
 (``session_rewound``), a claim the reply made that no tool backed
 (``claim_check``), a tool that failed. One forced-tool call on the review
 model says, per turn, ``fine``, ``miss`` or ``unclear``; for a miss, what
 the person wanted instead, backed by a quote of four of their own words from
-that turn or the next ones (code-checked, or the turn is ``unclear``), and
+that turn or the next ones or by a signal other than a 👍 (code-checked, or
+the turn is ``unclear``), and
 whether the miss was about this company (a term, a fact, a preference, a
 specialist) or the product (a tool that failed, a capability it lacks).
 Misses are kept ``MISS_KEEP_DAYS`` (90) instead of 7, and each person's weekly
@@ -237,11 +242,15 @@ def _verified_person(session: Any, person_id: int | None) -> Any:
     return person if teammate is not None and teammate.id == person.id else None
 
 
-def _calls_json(calls: list[tuple[str, str]]) -> str:
-    return json.dumps([
-        {"tool": name, "result": " ".join(str(result).split())[:CALL_RESULT_MAX]}
-        for name, result in calls[:CALLS_MAX]
-    ])
+def _calls_json(calls: list[tuple[str, str]], *, private: bool = False) -> str:
+    """The turn's tools and the start of each result. ``private`` (a chat
+    that read mail) keeps only whether a tool failed, never its output."""
+    def result(text: str) -> str:
+        if private:
+            return "error" if _FAILED_RE.search(str(text)) else ""
+        return " ".join(str(text).split())[:CALL_RESULT_MAX]
+
+    return json.dumps([{"tool": name, "result": result(text)} for name, text in calls[:CALLS_MAX]])
 
 
 def record_turn(
@@ -251,12 +260,21 @@ def record_turn(
     session: Any,
     person_id: int | None,
     calls: list[tuple[str, str]] | None = None,
+    mail: bool = False,
     now: datetime | None = None,
     db_path: Path | None = None,
 ) -> int | None:
     """Keep this turn for the review and schedule one for the conversation.
     Returns the row id, or None when the turn isn't one to review. Never
-    raises."""
+    raises.
+
+    ``mail``: the turn read or drafted in the speaker's own mailbox. Such a
+    turn, and every turn of a conversation that once did
+    (``session_store.mark_mail_private``), is kept for that person's own
+    review only: the Reflection screen shows it to them alone (the chat
+    routes' rule), a lesson from it never reaches anyone else, the review
+    keeps no fact from it, and its tools are kept by name, with no result
+    text, since the results are other people's mail."""
     try:
         if not enabled() or not reply.strip():
             return None
@@ -268,10 +286,7 @@ def record_turn(
         person = _verified_person(session, person_id)
         if person is None or person.id is None:
             return None
-        if _mail_private(session.session_id, db_path):
-            # A conversation that read its owner's own mail stays theirs
-            # alone: nothing from it is kept for the review.
-            return None
+        private = mail or _mail_private(session.session_id, db_path)
         current = now or _now()
         surface = {f: getattr(session, f, None) for f in _SURFACE_FIELDS}
         from openexecutive.audit.context import get_active_turn_id
@@ -283,7 +298,7 @@ def record_turn(
                 "calls, created_at, turn_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (session.session_id, int(person.id), json.dumps(surface),
                  words.strip()[:MESSAGE_MAX], reply.strip()[:REPLY_MAX],
-                 _calls_json(calls or []), current.isoformat(), get_active_turn_id()),
+                 _calls_json(calls or [], private=private), current.isoformat(), get_active_turn_id()),
             )
             # A miss is kept longer than a turn that went fine, so the
             # Reflection screen can show what went wrong this quarter; so is
@@ -787,7 +802,8 @@ was asked.
 
 For a miss, say what the person wanted instead in one or two sentences \
 (wanted), and copy as quote at least four of their exact words, from the THEM \
-lines of that turn or the next ones, that show it. Then the kind: company when \
+lines of that turn or the next ones, that show it (a miss a SIGNAL shows needs \
+no quote when they said nothing about it). Then the kind: company when \
 something only this workspace knows would have fixed it (a term they use, a \
 fact, a preference, which specialist to ask, doing a thing rather than \
 promising it); product when the assistant could not have done it with what it \
@@ -938,8 +954,39 @@ def turn_signals(
         if row["turn_id"] and str(row["turn_id"]) in nudged:
             lines.append("the reply claimed a change no tool made")
         lines.extend(f"tool {name} failed" for name in _failed_calls(row))
+        # A chat app has no 👍/👎 on the reply: the person types it as their
+        # next message instead.
+        typed = _typed_thumb(str(turns[i + 1]["message"])) if i + 1 < len(turns) else None
+        if typed == "down" and not any(line.startswith("thumbs down") for line in lines):
+            lines.append("thumbs down")
+        elif typed == "up" and THUMBS_UP not in lines:
+            lines.append(THUMBS_UP)
         signals[int(row["id"])] = lines
     return signals, message_ids
+
+
+_THUMB_RE = re.compile(r"^(?:thumbs?[ -]?(up|down)|(👍|👎)(?:[\U0001F3FB-\U0001F3FF])?)$", re.IGNORECASE)
+_VOICE_PREFIX = "[Voice note, transcribed]"
+
+
+def _typed_thumb(message: str) -> str | None:
+    """``"up"`` or ``"down"`` when the whole message is a thumbs up or down,
+    typed or said ("Thumbs down.", "👎"), else None."""
+    text = message.strip()
+    if text.startswith(_VOICE_PREFIX):
+        text = text[len(_VOICE_PREFIX):]
+    text = " ".join(text.strip(" \t\n.!").split())
+    m = _THUMB_RE.match(text)
+    if m is None:
+        return None
+    word = (m.group(1) or "").lower()
+    return "up" if word == "up" or m.group(2) == "👍" else "down"
+
+
+def _backed_by_signal(lines: list[str]) -> bool:
+    """Whether the product itself recorded that the turn fell short: any
+    signal but a thumbs up."""
+    return any(line != THUMBS_UP for line in lines)
 
 
 def _render_signals(turns: list[sqlite3.Row], signals: dict[int, list[str]]) -> str:
@@ -951,13 +998,18 @@ def _render_signals(turns: list[sqlite3.Row], signals: dict[int, list[str]]) -> 
 
 
 def accept_grades(
-    payload: dict[str, Any], turns: list[sqlite3.Row]
+    payload: dict[str, Any],
+    turns: list[sqlite3.Row],
+    signals: dict[int, list[str]] | None = None,
 ) -> dict[int, tuple[str, str, str]]:
     """The grades the model gave, by row id, as ``(verdict, kind, wanted)``,
     after the code checks: one grade per shown turn, a known verdict, and a
     miss backed by a quote of four or more of the person's own words from
-    that turn or the ones after it (else the turn is ``unclear`` and
-    ``wanted`` is dropped). A turn the model skipped is ``unclear``."""
+    that turn or the ones after it, or by a signal the product recorded on
+    the turn (``signals``: a thumbs down, a stopped or taken-back reply, a
+    claim no tool made, a failed tool), else the turn is ``unclear`` and
+    ``wanted`` is dropped. A miss always needs ``wanted``. A turn the model
+    skipped is ``unclear``."""
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
     grades: dict[int, tuple[str, str, str]] = {}
@@ -979,7 +1031,9 @@ def accept_grades(
         if verdict == "miss":
             quote = _normalize_for_quote_match(str(g.get("quote") or ""))
             wanted = " ".join(str(g.get("wanted") or "").split())[:WANTED_MAX]
-            if not wanted or len(quote.split()) < _QUOTE_MIN_WORDS or quote not in words_from[i]:
+            quoted = len(quote.split()) >= _QUOTE_MIN_WORDS and quote in words_from[i]
+            backed = quoted or _backed_by_signal((signals or {}).get(int(row["id"])) or [])
+            if not wanted or not backed:
                 verdict, wanted = "unclear", ""
             else:
                 kind = str(g.get("kind") or "company")
@@ -1076,7 +1130,7 @@ async def _grade_turns(
             if getattr(block, "type", "") == "tool_use" and getattr(block, "name", "") == GRADE_TOOL["name"]:
                 payload = block.input if isinstance(block.input, dict) else {}
                 break
-        grades = accept_grades(payload, turns)
+        grades = accept_grades(payload, turns, signals)
         _store_grades(grades, turns, signals, message_ids, db_path=db_path)
         return {rid: v for rid, (v, _k, _w) in grades.items()}
     except Exception:
@@ -1205,14 +1259,19 @@ def forget_miss(row_id: int, *, caller_person_id: int | None, db_path: Path | No
 
 
 def _tools_for(
-    person: Any, *, misses: bool = False
+    person: Any, *, misses: bool = False, mail: bool = False
 ) -> tuple[list[dict[str, Any]], dict[str, Callable[[dict[str, Any]], Awaitable[str]]]]:
+    """The review's tools for ``person``. ``mail``: the chat read their
+    mailbox, so no fact is kept from it (facts are read on everyone's
+    turns, and its replies quote other people's mail)."""
     from openexecutive.delegation.settings import can_delegate
 
     by_name, chat_handlers = _chat_tools()
     names = sorted(by_name)
     if not person.is_principal:
         names = [n for n in names if n not in _PRINCIPAL_ONLY]
+    if mail:
+        names = [n for n in names if n != "remember_fact"]
     tools = [by_name[n] if n in _READ_TOOLS else _with_quote(by_name[n]) for n in names]
     handlers = {n: chat_handlers[n] for n in names}
     tools.append(LEARN_REPLY_STYLE_TOOL)
@@ -1244,7 +1303,9 @@ async def _run_loop(
     settings = _settings()
     model = settings.chat_review_model or settings.routing_model
     misses = misses or set()
-    tools, handlers = _tools_for(person, misses=bool(misses))
+    tools, handlers = _tools_for(
+        person, misses=bool(misses), mail=_mail_private(str(session.session_id), db_path)
+    )
     offered = {t["name"] for t in tools}
     facts = _standing_facts() if person.is_principal else ""
     intro = (

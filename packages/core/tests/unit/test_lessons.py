@@ -142,6 +142,23 @@ def test_a_lesson_from_someones_own_chat_stays_with_them(roster: SimpleNamespace
     assert "board deck" in olivia and "reorg" in olivia and "price list" not in olivia
 
 
+def test_a_lesson_from_a_shared_chat_that_read_mail_stays_with_its_owner(
+    roster: SimpleNamespace, db: Path
+) -> None:
+    """A channel thread that read its owner's mail is theirs alone, so a
+    lesson learned there reaches no one else's turns."""
+    from openexecutive.memory.session_store import create_session, mark_mail_private
+
+    session_id = "slack:channel:C7:ts2"
+    create_session(session_id, "Offers", "2026-10-14T09:00:00+00:00", roster.principal.id, db_path=db)
+    mark_mail_private(session_id, roster.principal.id, db_path=db)
+    lesson, _ = lessons.add_lesson(roster.principal.id, "The board deck means the Q4 board workflow.",
+                                   quote="the board deck is the Q4 board workflow",
+                                   session_id=session_id, turn_row_id=None)
+    assert lesson is not None and lesson["shared"] is False
+    assert "board deck" not in lessons.build_lessons_block(roster.teammate.id, "send me the board deck")
+
+
 def test_the_specialists_get_the_same_lines_under_their_failure_cases(roster: SimpleNamespace) -> None:
     _add(roster.principal.id, "The board deck means the Q4 board workflow.")
     section = lessons.lessons_for_query(roster.principal.id, "update the board deck")

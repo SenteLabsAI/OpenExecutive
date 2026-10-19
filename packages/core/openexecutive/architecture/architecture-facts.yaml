@@ -5089,8 +5089,13 @@ chat:
     Conversation review (memory/chat_review.py). The post-turn block keeps a
     verified speaker's turn (principal on a people_tools-verified surface, or
     a rostered teammate on their own web chat, Slack or Discord; never an
-    email, unattended run, private-to-principal turn, mailbox turn or an
-    attachment) in chat_review_turns: own words, reply, tools run. One
+    email, unattended run, private-to-principal turn or an attachment) in
+    chat_review_turns: own words, reply, tools run. A turn that touched the
+    speaker's mailbox, and every turn of a mail-private conversation, is kept
+    too, for their own review only: tools kept by name with only a failure
+    marker (no result text, the results are other people's mail), no
+    remember_fact in its fix loop, its lessons never shared, and the
+    Reflection screen shows it to its owner alone (_session_access). One
     chat_review __internal__ action per conversation fires 30 minutes after
     the last turn (pushed back while the chat goes on) and runs one small
     tool loop per person (CHAT_REVIEW_MODEL, default ROUTING_MODEL; 5 rounds,
@@ -5109,10 +5114,12 @@ chat:
     forced grade_turns call (actor chat_review_grade): fine, miss (kind
     company = a fact or preference it lacked, product = something it could
     not do) or unclear, with what the person wanted instead and a 4+ word
-    quote that must appear in that or a later turn, else the grade is unclear.
+    quote that must appear in that or a later turn, or a signal other than a
+    thumbs up on the turn, else the grade is unclear.
     The grader reads the signals the product recorded about each turn:
     thumbs up/down and the note (chat_messages.feedback, joined by the saved
-    reply's first 120 characters), stopped replies, a rewind
+    reply's first 120 characters, or typed or said as the whole next message
+    in a chat app, which has no buttons), stopped replies, a rewind
     (session_rewound audit row after the turn), a claim-check nudge
     (claim_check audit row by turn_id) and failed tool calls. Grades land on
     chat_review_turns (verdict, kind, wanted, signals, graded_at, message_id)
@@ -5130,7 +5137,7 @@ chat:
     working-style deny-list plus the lessons' own (information-moving
     verbs, everyone/everything words) without the about-the-writing
     requirement, re-checked on every render. Stored in chat_review_lessons
-    (shared = learned in a channel or group thread); chat_review_lesson_uses
+    (shared = learned in a channel or group thread that never read mail); chat_review_lesson_uses
     records which turn id, and whose, saw which lesson. Reaches a turn by keyword match (two shared content words
     between lesson+quote and the message; no vector index): the Executive's
     turn as a <lessons> user-turn block (build_lessons_block, counted as

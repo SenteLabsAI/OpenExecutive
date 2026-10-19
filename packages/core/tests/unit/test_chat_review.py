@@ -579,13 +579,63 @@ def test_a_deleted_chat_takes_its_turns_with_it(db: Path, roster: SimpleNamespac
     assert _turns(db) == []
 
 
-def test_a_chat_that_read_its_owners_mail_is_not_kept(db: Path, roster: SimpleNamespace) -> None:
+def test_a_chat_that_read_its_owners_mail_is_kept_without_the_mail(db: Path, roster: SimpleNamespace) -> None:
+    """A chat that read the owner's mail is reviewed, but its tools are kept
+    by name only: their results are other people's mail."""
     from openexecutive.memory.session_store import create_session, mark_mail_private
 
     create_session("s-1", "Mail", NOW.isoformat(), roster.principal.id, db_path=db)
     mark_mail_private("s-1", roster.principal.id, db_path=db)
-    assert _record(roster.principal, text=ASK, reply="Your inbox has two from Dana.") is None
-    assert _turns(db) == []
+    calls = [("search_gmail", "From Dana: the counter is 5k over"), ("create_alert", '{"error": "off"}')]
+    assert cr.record_turn(ASK, "Dana came up 5k.", session=_web(roster.principal.id),
+                          person_id=roster.principal.id, calls=calls, now=NOW) is not None
+    # The turn that read the mail itself, before the chat is marked.
+    assert cr.record_turn(AGAIN, "Two from Dana.", session=_web(roster.principal.id, session_id="s-2"),
+                          person_id=roster.principal.id, calls=calls, mail=True, now=NOW) is not None
+    for row in _turns(db):
+        assert json.loads(row["calls"]) == [{"tool": "search_gmail", "result": ""},
+                                            {"tool": "create_alert", "result": "error"}]
+        assert cr._failed_calls(row) == ["create_alert"]
+
+
+def test_a_chat_that_read_mail_keeps_no_fact(roster: SimpleNamespace) -> None:
+    names = {t["name"] for t in cr._tools_for(roster.principal, mail=True)[0]}
+    assert "remember_fact" not in names and "close_open_loop" in names
+    assert "remember_fact" in {t["name"] for t in cr._tools_for(roster.principal)[0]}
+
+
+def test_a_miss_the_product_recorded_needs_no_quote(db: Path, roster: SimpleNamespace,
+                                                    provider: _Provider) -> None:
+    from openexecutive.audit import log_event
+    from openexecutive.audit.context import set_turn
+
+    with set_turn(session_id="s-1", turn_id="turn-1"):
+        _record(roster.principal, text=ASK, reply="I've cancelled it.")
+    log_event("claim_check", "Reply claimed a change no tool made", session_id="s-1", turn_id="turn-1",
+              actor="executive")
+    _record(roster.principal, text=AGAIN, reply="Done.", at=NOW + timedelta(minutes=1))
+    provider.grades = [
+        {"turn": 1, "verdict": "miss", "kind": "company", "wanted": "The alert actually cancelled."},
+        {"turn": 2, "verdict": "miss", "wanted": "Something else."},
+    ]
+    _review(db)
+    first, second = _turns(db)
+    assert first["verdict"] == "miss" and first["wanted"] == "The alert actually cancelled."
+    assert second["verdict"] == "unclear"  # no signal and no quote
+
+
+def test_a_typed_thumbs_down_counts_as_one(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
+    _record(roster.principal, text="Thumbs down.", reply="Sorry about that.", at=NOW + timedelta(minutes=1))
+    _record(roster.principal, text="[Voice note, transcribed]\n👍", reply="Glad it helped.",
+            at=NOW + timedelta(minutes=2))
+    _record(roster.principal, text="thumbs down on the weather", reply="Noted.", at=NOW + timedelta(minutes=3))
+    provider.grades = [{"turn": i, "verdict": "fine"} for i in range(1, 5)]
+    _review(db)
+    content = _grade_content(provider)
+    assert "[1] SIGNALS: thumbs down" in content
+    assert "[2] SIGNALS: thumbs up" in content
+    assert "[3] SIGNALS: none" in content
 
 
 def test_a_miss_outlives_the_week_and_a_fine_turn_does_not(db: Path, roster: SimpleNamespace,

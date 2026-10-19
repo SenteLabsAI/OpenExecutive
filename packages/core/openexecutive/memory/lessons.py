@@ -24,7 +24,8 @@ principal's lessons learned in a shared space (a channel or group thread,
 where everyone read the chat) reach every speaker's turns; one learned in
 the principal's own chat stays with the principal, as a teammate's stays
 with the teammate, so nothing said in someone's own chat is paraphrased
-into another person's turn. The Reflection screen lists each person their
+into another person's turn. A chat that read its owner's mail is theirs
+alone even in a shared space, so its lessons stay theirs too. The Reflection screen lists each person their
 own and the principal the ones from chats they may open.
 
 **What it may say.** The lesson must be the quote's own point: beyond the
@@ -180,13 +181,19 @@ def _normalize(text: str) -> str:
     return _normalize(text)
 
 
-def _shared_space(session_id: str) -> bool:
+def _shared_space(session_id: str, db_path: Path | None = None) -> bool:
     """Whether the chat was a channel or group thread everyone there read
-    (``api.routes.chat._shared_space``). Fails closed: not shared."""
+    (``api.routes.chat._shared_space``) and never read its owner's mail
+    (``session_store.mark_mail_private``: then it is theirs alone, wherever
+    it happened). Fails closed: not shared."""
     try:
         from openexecutive.api.routes.chat import _shared_space
+        from openexecutive.memory.episodic import _resolve_db_path
+        from openexecutive.memory.session_store import session_mail_private
 
-        return bool(_shared_space(str(session_id)))
+        if not _shared_space(str(session_id)):
+            return False
+        return not session_mail_private(str(session_id), db_path=_resolve_db_path(db_path))
     except Exception:
         return False
 
@@ -214,7 +221,7 @@ def add_lesson(
     if rejection:
         return None, rejection
     now = _now().isoformat()
-    shared = _shared_space(session_id)
+    shared = _shared_space(session_id, db_path)
     conn = _connect(db_path)
     try:
         # One writer at a time: two reviews landing together must not both
