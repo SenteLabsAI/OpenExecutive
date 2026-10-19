@@ -469,10 +469,11 @@ async def rewrite(
         ANSWERED_KEY: answered,
         "flags": list(dict.fromkeys([*(old_flags if isinstance(old_flags, list) else []), *flags])),
     }
-    # The card's summary, when it had one and the rewrite brought it up to date.
-    new_gist = written.get("gist")
-    if gist and isinstance(new_gist, str) and new_gist.strip():
-        extra["gist"] = clean_gist(new_gist)
+    # The card's summary, brought up to date by the rewrite; dropped when it
+    # came back without one, so the card never describes the old draft.
+    if gist:
+        new_gist = written.get("gist")
+        extra["gist"] = clean_gist(new_gist) if isinstance(new_gist, str) else ""
     return new_body, extra, changed_sentences(main, new_main)
 
 

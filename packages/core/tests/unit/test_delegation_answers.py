@@ -341,6 +341,21 @@ def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
     assert edited.json()["gist"] == ""
 
 
+def test_a_rewrite_with_no_summary_drops_the_old_one(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    rewriter: list[tuple[str, str]],
+) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch, gist="Dana asks when to talk. Draft says later.")
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    resp = client.post(
+        f"/delegation/replies/{card_id}/answer",
+        json={"answers": [{"question_index": 0, "answer_text": "Friday at 10"}]}, headers=OWNER,
+    )
+    # The draft changed and no new summary came back: the old one would be wrong.
+    assert resp.status_code == 200 and resp.json()["gist"] == ""
+
+
 def test_a_card_drafted_before_the_summary_has_none(
     client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
     rewriter: list[tuple[str, str]],
