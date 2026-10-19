@@ -1135,10 +1135,14 @@ class DelegateGmail:
                 return False
         return True
 
-    async def update_draft_text(self, draft_id: str, expected_version: str, text: str) -> str:
+    async def update_draft_text(
+        self, draft_id: str, expected_version: str, text: str, *,
+        to: list[str] | None = None, cc: list[str] | None = None,
+    ) -> str:
         """Replace the words of the draft ``draft_id`` with ``text``, keeping
         every header (who it goes to, the subject, the thread), when it is
-        still the version ``expected_version``. Returns its new version (the
+        still the version ``expected_version``. With ``to`` it goes to ``to``
+        and ``cc`` instead. Returns its new version (the
         message id Gmail gives the edited draft). Raises ``GmailNotFound``
         when it is gone and ``DraftChanged`` when it changed meanwhile or is
         more than plain text. Nothing is sent."""
@@ -1162,6 +1166,12 @@ class DelegateGmail:
             if not isinstance(msg, EmailMessage) or msg.is_multipart() or msg.get_content_type() != "text/plain":
                 raise DraftChanged("not_plain")
             msg.set_content(text)
+            if to is not None:
+                del msg["To"]
+                del msg["Cc"]
+                msg["To"] = ", ".join(clean_header(a) for a in to)
+                if cc:
+                    msg["Cc"] = ", ".join(clean_header(a) for a in cc)
             message: dict[str, Any] = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")}
             thread_id = current.get("threadId")
             if isinstance(thread_id, str) and valid_id(thread_id):
