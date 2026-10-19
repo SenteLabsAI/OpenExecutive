@@ -78,15 +78,20 @@ Answer through classify_email:
 back — a question for them, something asked of them, a meeting to arrange, an \
 introduction they should acknowledge, a follow-up on something they owe. \
 False for anything sent to many people, anything automatic, and anything that \
-needs no answer.
+needs no answer. Also true when the email answers their own request to meet \
+or talk (in <their_last_email>) without a time being settled, as in "my week \
+is open, I'll check with Sam and circle back": a quick reply offering times \
+moves it along, so it needs one even though the sender says they will come \
+back.
 - kind: question, request, scheduling, introduction, follow_up (it needs a \
 reply), or fyi, thanks, pitch (a cold sales or partnership email), \
 notification, newsletter, phishing (it asks for credentials, payment or a \
 click with urgency or a disguised sender), other.
 - asked_names: the first names of the people the email greets or asks \
 something of by name, exactly as written ("Good morning, Brennan" gives \
-["Brennan"]). Empty when it names nobody. Never include the sender's own \
-name or names that only appear in the signature or a quoted message.
+["Brennan"], and so does an opening line "Good evening, Brennan -"). Empty \
+when it names nobody. Never include the sender's own name or names that only \
+appear in the signature or a quoted message.
 - asked_of_them: true only when the email asks this person themselves: it \
 names or greets them, or they are its only addressee. False when it is \
 addressed to someone else by name ("Brennan: ..."), when it asks a group \
@@ -97,9 +102,9 @@ without naming them, or when they are only copied (Cc).
 wrote in the thread before the email: read the email as an answer to it. \
 When they asked to meet or talk and the email says when the sender is free, \
 or that they are free, without a time being settled, it is scheduling and \
-needs a reply (they can offer times), even when the sender says they will \
-come back with times. When the email settles what they asked and leaves \
-nothing for them to do, it needs no reply.
+needs_reply is true: they can offer times. That holds even when the sender \
+says they will check with someone or come back with times. When the email \
+settles what they asked and leaves nothing for them to do, it needs no reply.
 
 When unsure, say needs_reply false."""
 

@@ -1,0 +1,32 @@
+id: delegation_inbox_014
+domain: delegation
+type: inbox
+description: "Inbox watcher: the person asked a contact for a call, and the contact accepts a time the person offered. Nothing is left open, so no reply is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: correspondent
+  expect: no_draft
+  thread:
+    id: t-reserve-call-settled
+    subject: "RE: Reserve accounts"
+    messages:
+      - from: "Olivia Owner <olivia@fernway.example>"
+        to: ["dana@northpeak.example"]
+        text: |
+          Hi Dana,
+
+          Could we set up a call to discuss the reserve accounts? Tuesday at
+          10am works for me.
+
+          Thanks,
+          Olivia
+      - from: "Dana Park <dana@northpeak.example>"
+        to: ["olivia@fernway.example"]
+        text: |
+          Tuesday at 10am works. I'll send an invite.
+
+          Dana
+quality_criteria:
+  drafts_nothing: true
