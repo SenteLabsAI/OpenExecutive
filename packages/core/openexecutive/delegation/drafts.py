@@ -215,22 +215,23 @@ def count_waiting(person_id: int, since: datetime, *, db_path: Path | None = Non
 
 
 def _waiting(person_id: int, since: datetime, db_path: Path | None) -> list[tuple[int, str]]:
-    return [(row_id, draft_id) for row_id, draft_id, _ in _waiting_rows(person_id, since, db_path)]
+    return [(row[0], row[1]) for row in _waiting_rows(person_id, since, db_path)]
 
 
 def _waiting_rows(
     person_id: int, since: datetime, db_path: Path | None
-) -> list[tuple[int, str, str]]:
+) -> list[tuple[int, str, str, str]]:
+    """``(row id, draft id, created_at, thread id or "")``, newest first."""
     where, params = _waiting_sql(person_id, since)
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            f"SELECT id, draft_id, created_at {where} ORDER BY id DESC LIMIT ?",  # noqa: S608
+            f"SELECT id, draft_id, created_at, thread_id {where} ORDER BY id DESC LIMIT ?",  # noqa: S608
             (*params, _SETTLE_MAX),
         ).fetchall()
     finally:
         conn.close()
-    return [(int(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
+    return [(int(r[0]), str(r[1] or ""), str(r[2] or ""), str(r[3] or "")) for r in rows]
 
 
 def waiting_drafts(
@@ -240,7 +241,7 @@ def waiting_drafts(
     newest first, each with who it goes to and its subject when a settle
     pass has read them (empty until one has)."""
     out = []
-    for row_id, _, created_at in _waiting_rows(person_id, since, db_path):
+    for row_id, _, created_at, _ in _waiting_rows(person_id, since, db_path):
         to, subject = _seen.get(row_id, ((), ""))
         out.append(WaitingDraft(created_at=created_at, to=to, subject=subject))
     return out
@@ -273,13 +274,16 @@ async def settle_waiting(
     ones no longer there (sent or deleted in Gmail or Outlook), so the briefs
     stop calling them waiting. Nothing records a send made in the mailbox
     itself, and the chat drafts have no card for the inbox watcher to settle.
+    A reply draft also stops waiting once they sent their own message in
+    that thread after it was saved: they answered without it, so it is not
+    theirs to review any more (the draft itself stays in their mailbox).
     Reads only; returns how many it marked. Never raises."""
     person_id = getattr(person, "id", None)
     email = str(getattr(person, "email", "") or "").strip().lower()
     if person_id is None or not email:
         return 0
     try:
-        waiting = _waiting(int(person_id), now - SETTLE_WINDOW, db_path)
+        waiting = _waiting_rows(int(person_id), now - SETTLE_WINDOW, db_path)
     except Exception:
         logger.warning("delegation.drafts: couldn't read the waiting drafts", exc_info=True)
         return 0
@@ -289,12 +293,14 @@ async def settle_waiting(
 
     client = gmail if gmail is not None else gmail_for(email)
     gone = 0
-    for row_id, draft_id in waiting:
+    for row_id, draft_id, created_at, thread_id in waiting:
         if not valid_id(draft_id):
             continue  # nothing to look up
         try:
             found = await client.get_draft(draft_id)
-            if found is not None:
+            if found is not None and not (
+                valid_id(thread_id) and await _answered_since(client, thread_id, email, created_at)
+            ):
                 message = getattr(found, "message", None)
                 recipients = [*getattr(message, "to", []), *getattr(message, "cc", [])]
                 to = tuple(str(a) for a in recipients[:5] if a)
@@ -312,3 +318,27 @@ async def settle_waiting(
             logger.warning("delegation.drafts: checking a draft failed", exc_info=True)
             break
     return gone
+
+
+async def _answered_since(client: Any, thread_id: str, own: str, created_at: str) -> bool:
+    """Whether ``own`` sent a message of their own in ``thread_id`` after
+    ``created_at`` (a draft is never one)."""
+    from openexecutive.delegation.threads import mine
+
+    try:
+        saved = datetime.fromisoformat(created_at)
+    except ValueError:
+        return False
+    thread = await client.get_thread(thread_id)
+    for m in getattr(thread, "messages", None) or []:
+        if "DRAFT" in m.labels or not mine(m, own):
+            continue
+        try:
+            sent = datetime.fromisoformat(m.received_at)
+        except ValueError:
+            continue
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=saved.tzinfo)
+        if sent > saved:
+            return True
+    return False

@@ -176,6 +176,40 @@ async def test_a_waiting_draft_is_named_by_who_it_goes_to_and_its_subject() -> N
     assert [(d.to, d.subject) for d in waiting] == [(("dana@example.com",), "Wednesday meeting")]
 
 
+async def test_a_reply_draft_stops_waiting_once_they_answered_in_the_thread() -> None:
+    """They replied in Gmail themselves instead of sending the draft: the
+    draft is still in Drafts, but it is no longer theirs to review."""
+    answered = _record(1, drafts.SOURCE_CHAT, "t1", "d1", when=NOW - timedelta(hours=3))
+    _record(1, drafts.SOURCE_CHAT, "t2", "d2", when=NOW - timedelta(hours=3))
+    after = (NOW - timedelta(hours=1)).isoformat()
+    before = (NOW - timedelta(hours=5)).isoformat()
+
+    def msg(sender: str, labels: list[str], at: str) -> SimpleNamespace:
+        return SimpleNamespace(from_addr=sender, labels=labels, received_at=at)
+
+    threads = {
+        "t1": [msg("dana@example.com", ["INBOX"], before), msg("owner@example.com", ["SENT"], after)],
+        # Only an older send of theirs, a draft and someone else's mail since.
+        "t2": [
+            msg("owner@example.com", ["SENT"], before),
+            msg("owner@example.com", ["DRAFT"], after),
+            msg("dana@example.com", ["INBOX"], after),
+        ],
+    }
+
+    class Box:
+        async def get_draft(self, draft_id: str) -> Any:
+            return SimpleNamespace(draft_id=draft_id, message=None)
+
+        async def get_thread(self, thread_id: str) -> Any:
+            return SimpleNamespace(messages=threads[thread_id])
+
+    assert await drafts.settle_waiting(PERSON, now=NOW, gmail=Box()) == 1
+    left = drafts._waiting(1, NOW - timedelta(days=1), None)
+    assert [draft_id for _, draft_id in left] == ["d2"]
+    assert answered not in drafts._seen
+
+
 async def test_settling_reads_nothing_without_recent_chat_drafts() -> None:
     _record(1, drafts.SOURCE_CHAT, "t1", "old", when=NOW - timedelta(days=3))
     _record(2, drafts.SOURCE_CHAT, "t2", "theirs")

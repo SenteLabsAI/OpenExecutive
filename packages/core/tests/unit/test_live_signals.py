@@ -156,7 +156,7 @@ async def test_a_waiting_draft_is_named_in_stuck(monkeypatch: pytest.MonkeyPatch
     principal = SimpleNamespace(id=1, email="owner@example.com", email_aliases=[])
     monkeypatch.setattr(people_store, "find_principal_person", lambda *a, **k: principal)
     monkeypatch.setattr(drafts, "_seen", {})
-    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d1",
+    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d1",
                   message_id="m1", now=datetime.now(UTC))
 
     class Waiting:
