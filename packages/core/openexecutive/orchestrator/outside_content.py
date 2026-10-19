@@ -181,6 +181,9 @@ class TurnOutside:
     previous: TurnOutside | None = None
     # Set by ``end_turn``: a closed turn holds nothing.
     ended: bool = False
+    # A web chat turn: what it holds gets Approve / Not now buttons under the
+    # reply (``pending_held``), so the refusal points there.
+    web: bool = False
     # Who is speaking, and whether others write into this chat: a hold is
     # remembered for the same speaker, never in a shared chat (``_held_key``).
     speaker: int | None = None
@@ -227,6 +230,7 @@ def begin_turn(
         session_id=getattr(session, "session_id", None),
         speaker=getattr(session, "caller_person_id", None),
         shared=getattr(session, "shared_chat", False) is True,
+        web=getattr(session, "from_web_chat", False) is True,
         previous=_TURN.get(),
     )
     from openexecutive.orchestrator import outside_mode
@@ -285,6 +289,72 @@ def _held_key(session: Any, state: TurnOutside) -> str | None:
     if state.shared or getattr(session, "shared_chat", False) is True or not state.session_id:
         return None
     return f"{state.session_id}|{state.speaker if state.speaker is not None else ''}"
+
+
+def pending_held(session: Any) -> tuple[str, ...]:
+    """What the last turn in ``session``'s conversation held for its speaker
+    and still waits on their go, in plain words (``step_words``). The web
+    chat shows it as Approve / Not now buttons under the reply; Approve sends
+    a go (``GO_RE``) as the person's own next message. Empty in a shared
+    chat, with no conversation, or once it has expired. Never raises."""
+    try:
+        if session is None or getattr(session, "shared_chat", False) is True:
+            return ()
+        session_id = getattr(session, "session_id", None)
+        if not session_id:
+            return ()
+        speaker = getattr(session, "caller_person_id", None)
+        stored = _HELD.get(f"{session_id}|{speaker if speaker is not None else ''}")
+        if stored is None or time.monotonic() - stored[1] >= HELD_TTL_SECONDS:
+            return ()
+        return tuple(dict.fromkeys(step_words(label) for label in stored[0]))
+    except Exception:
+        return ()
+
+
+# Held tools with a plainer name than their own (``step_words``).
+_STEP_WORDS: dict[str, str] = {
+    "upsert_person": "Add or change a contact",
+    "read_document": "Open a link",
+    "run_executive_research": "Search the web",
+    "run_script": "Run a script",
+    "run_python_job": "Run a script",
+    "run_workflow": "Run a workflow",
+    "save_workflow": "Save a workflow",
+    "schedule_followup": "Set a follow-up",
+    "create_goal": "Set a goal",
+    "record_decision_outcome": "Record a decision",
+    "send_department_message": "Post to a department",
+    "send_company_broadcast": "Post to everyone",
+}
+_TOOL_PREFIX = re.compile(r"^(?:google_workspace|microsoft_365|[a-z0-9]+)__")
+
+
+def step_words(label: str) -> str:
+    """A held tool's name as a person reads it: "Modify sheet values" for
+    ``google_workspace__modify_sheet_values``."""
+    label = str(label or "").strip()
+    if label in _STEP_WORDS:
+        return _STEP_WORDS[label]
+    words = re.sub(r"[_\-]+", " ", _TOOL_PREFIX.sub("", label)).strip()
+    return (words[:1].upper() + words[1:])[:80] if words else "A step"
+
+
+# Added to a web chat refusal: the reply gets the buttons, so the person taps
+# rather than types.
+WEB_APPROVE_HINT = (
+    " On this screen your reply gets Approve and Not now buttons for it: tell "
+    "them to tap Approve when they're ready, not to say go."
+)
+
+
+def approve_hint() -> str:
+    """``WEB_APPROVE_HINT`` on a web chat turn whose holds the person can
+    approve; else empty."""
+    state = current()
+    if state is None or not state.web or state.shared or SENDER in state.sources:
+        return ""
+    return WEB_APPROVE_HINT
 
 
 def note_held(label: str) -> None:
@@ -912,6 +982,8 @@ def outside_withheld_error(label: str) -> str:
     else:
         why = REFUSAL
     note_held(label)
+    if why is REFUSAL:
+        why += approve_hint()
     return json.dumps({"error": f"{label} was not run. {why}"})
 
 
