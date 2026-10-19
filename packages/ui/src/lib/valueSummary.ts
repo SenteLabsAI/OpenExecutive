@@ -35,12 +35,33 @@ export function headline(lines: ValueLineLike[], max = 3): string {
   return parts.join(", ");
 }
 
-/** "+3", "−2" or "same" against the period before; "" when both are zero. */
-export function deltaLabel(count: number, previous: number): string {
-  if (count === 0 && previous === 0) return "";
-  const diff = count - previous;
-  if (diff === 0) return "same";
-  return diff > 0 ? `+${diff}` : `−${Math.abs(diff)}`;
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** How the screen names the period shown and the one before it, from the
+ * summary's label ("October 2026", "Week of 12 October"): `current` and
+ * `previous` head the columns, `previousShort` goes before last period's
+ * count on a phone row ("Sep"), and `heading` follows "What it did in". */
+export function periodNames(
+  period: "month" | "week",
+  label: string,
+): { current: string; previous: string; previousShort: string; heading: string } {
+  if (period === "month") {
+    const i = MONTHS.findIndex((m) => label.startsWith(m));
+    if (i >= 0) {
+      const prev = MONTHS[(i + 11) % 12];
+      return { current: MONTHS[i], previous: prev, previousShort: prev.slice(0, 3), heading: MONTHS[i] };
+    }
+    return { current: "This month", previous: "Month before", previousShort: "Month before", heading: label };
+  }
+  return {
+    current: label || "This week",
+    previous: "Week before",
+    previousShort: "Week before",
+    heading: label ? `the ${label.charAt(0).toLowerCase()}${label.slice(1)}` : "this week",
+  };
 }
 
 /** Lines with something in this period or the one before; the rest is noise. */

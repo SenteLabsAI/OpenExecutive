@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import { getValueSummary, type ValueSummary } from "@/lib/api";
-import { deltaLabel, headline, visibleLines } from "@/lib/valueSummary";
+import { headline, periodNames, visibleLines } from "@/lib/valueSummary";
 import { Skeleton } from "./shared";
 
 // What the Executive did for the owner this month (GET /today/value): the
@@ -67,7 +67,8 @@ export function ValueScreen() {
   const [period, setPeriod] = useState<Period>("month");
   const [offset, setOffset] = useState(0);
   const { summary, error } = useValueSummary(period, offset);
-  const before = period === "month" ? "last month" : "last week";
+
+  const names = (s: ValueSummary) => periodNames(s.period, s.label);
 
   function pick(next: Period) {
     setPeriod(next);
@@ -128,26 +129,36 @@ export function ValueScreen() {
             {visibleLines(summary.lines).length === 0 ? (
               <p className="text-[15px] text-fg-muted">Nothing counted for {summary.label}.</p>
             ) : (
-              <table className="w-full text-[15px]">
-                <thead>
-                  <tr className="text-left text-sm text-fg-subtle">
-                    <th className="font-medium pb-2">What it did</th>
-                    <th className="font-medium pb-2 text-right">Count</th>
-                    <th className="font-medium pb-2 text-right">vs {before}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleLines(summary.lines).map((l) => (
-                    <tr key={l.key} className="border-t border-line">
-                      <td className="py-2.5 text-fg">{l.label}</td>
-                      <td className="py-2.5 text-right tabular-nums font-semibold text-fg">{l.count}</td>
-                      <td className="py-2.5 text-right tabular-nums text-fg-muted">
-                        {deltaLabel(l.count, l.previous)}
-                      </td>
+              <>
+                <h2 className="text-sm font-medium text-fg-subtle mb-1 sm:hidden">
+                  What it did in {names(summary).heading}
+                </h2>
+                <table className="w-full text-[15px]">
+                  <thead className="max-sm:sr-only">
+                    <tr className="text-left text-sm text-fg-subtle">
+                      <th className="font-medium pb-2">What it did</th>
+                      <th className="font-medium pb-2 pl-3 text-right">{names(summary).current}</th>
+                      <th className="font-medium pb-2 pl-3 text-right">{names(summary).previous}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {visibleLines(summary.lines).map((l) => (
+                      <tr key={l.key} className="border-t border-line max-sm:first:border-t-0">
+                        <td className="py-3 text-fg">{l.label}</td>
+                        <td className="py-3 pl-3 text-right align-middle">
+                          <span className="block text-2xl leading-tight font-bold tabular-nums text-fg">{l.count}</span>
+                          <span className="block text-sm tabular-nums text-fg-muted sm:hidden">
+                            {names(summary).previousShort} {l.previous}
+                          </span>
+                        </td>
+                        <td className="py-3 pl-3 text-right tabular-nums text-fg-muted max-sm:hidden">
+                          {l.previous}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             )}
           </section>
           {summary.deliverables.length > 0 && (

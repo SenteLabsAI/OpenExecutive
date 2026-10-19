@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deltaLabel, headline, visibleLines } from "../src/lib/valueSummary.ts";
+import { headline, periodNames, visibleLines } from "../src/lib/valueSummary.ts";
 
 const line = (key, count, previous = 0) => ({ key, label: key, count, previous });
 
@@ -16,11 +16,21 @@ test("headline names the first three non-zero lines in order", () => {
   assert.equal(headline([line("reports", 0)]), "");
 });
 
-test("deltaLabel compares with the period before", () => {
-  assert.equal(deltaLabel(5, 2), "+3");
-  assert.equal(deltaLabel(1, 4), "−3");
-  assert.equal(deltaLabel(2, 2), "same");
-  assert.equal(deltaLabel(0, 0), "");
+test("periodNames names the month shown and the one before", () => {
+  assert.deepEqual(periodNames("month", "October 2026"), {
+    current: "October",
+    previous: "September",
+    previousShort: "Sep",
+    heading: "October",
+  });
+  assert.equal(periodNames("month", "January 2027").previous, "December");
+});
+
+test("periodNames names a week against the week before", () => {
+  const names = periodNames("week", "Week of 12 October");
+  assert.equal(names.current, "Week of 12 October");
+  assert.equal(names.previousShort, "Week before");
+  assert.equal(names.heading, "the week of 12 October");
 });
 
 test("visibleLines drops lines that are zero in both periods", () => {
