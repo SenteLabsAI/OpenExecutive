@@ -2599,8 +2599,12 @@ def test_calendar_next_lists_what_is_still_ahead(monkeypatch: pytest.MonkeyPatch
     ]
     monkeypatch.setattr(live_signals, "cached_calendar", lambda _now, _tz: events)
     items = today_route._calendar_next(now)
-    assert [i.title for i in items] == ["Offsite", "In progress", "Next"]
-    assert items[0].all_day and items[0].start is None
+    assert [i.title for i in items] == ["In progress", "Next", "Later"]
+    events.append(CalendarEvent(title="Holiday", start=None, end=None, all_day=True))
+    events.remove(events[-2])  # drop "Later"
+    items = today_route._calendar_next(now)
+    assert [i.title for i in items] == ["In progress", "Next", "Offsite"]
+    assert items[2].all_day and items[2].start is None
 
 
 def test_morning_brief_today_only_serves_todays_non_empty_brief(

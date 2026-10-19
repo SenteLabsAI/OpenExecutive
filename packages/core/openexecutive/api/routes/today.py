@@ -2133,13 +2133,13 @@ _CALENDAR_NEXT_MAX = 3
 
 def _calendar_next(now: datetime) -> list[CalendarNextItem]:
     """The meetings still ahead today from the cached calendar read (never
-    calls out): all-day events, then the one in progress and the next ones."""
+    calls out): the one in progress and the next ones, then all-day events."""
     from openexecutive.briefing.live_signals import cached_calendar
     from openexecutive.memory.workspace_settings import get_user_timezone
 
     try:
         events = cached_calendar(now, get_user_timezone()) or []
-        items = [CalendarNextItem(title=e.title, all_day=True) for e in events if e.all_day]
+        items: list[CalendarNextItem] = []
         timed = sorted(
             (e for e in events if not e.all_day and e.start is not None and e.end is not None),
             key=lambda e: e.start,
@@ -2150,6 +2150,9 @@ def _calendar_next(now: datetime) -> list[CalendarNextItem]:
             if over:
                 continue
             items.append(CalendarNextItem(title=e.title, start=e.start.astimezone(UTC).isoformat()))
+        # All-day events fill what room the meetings leave, so a day of
+        # them never hides the next meeting.
+        items += [CalendarNextItem(title=e.title, all_day=True) for e in events if e.all_day]
     except Exception:
         logger.exception("today: calendar read failed")
         return []
