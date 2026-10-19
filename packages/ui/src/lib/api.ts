@@ -2553,7 +2553,7 @@ export async function sendReplyCard(
 // Dismiss (POST /decisions/{id}/reject) drops it.
 export interface ActionCardAction {
   index: number;
-  // invite, message or add_contact.
+  // invite, message, add_contact or drive_files.
   kind: string;
   summary: string;
   // A message's text as it will be sent, or a meeting's description.
