@@ -512,7 +512,8 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
             return json.dumps({"status": "not_found", "detail": "That thread has no messages."})
         shown = messages[-READ_MESSAGES:]
         first = len(messages) - len(shown) + 1
-        _remember_read(writer, thread.id, (messages or drafts)[0])
+        if messages:  # a thread that is only their draft is not mail they read
+            _remember_read(writer, thread.id, messages[0])
         _note_senders(writer, [_sender(m) for m in shown])
         shown = shown + drafts
         return json.dumps({
