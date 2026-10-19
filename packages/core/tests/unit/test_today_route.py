@@ -2601,3 +2601,30 @@ def test_calendar_next_lists_what_is_still_ahead(monkeypatch: pytest.MonkeyPatch
     items = today_route._calendar_next(now)
     assert [i.title for i in items] == ["Offsite", "In progress", "Next"]
     assert items[0].all_day and items[0].start is None
+
+
+def test_morning_brief_today_only_serves_todays_non_empty_brief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing import brief_state
+
+    def _delivered(at: datetime, text: str = "**Good morning.**") -> None:
+        row = narrative_cache.BriefingNarrative(
+            scope="brief:principal_brief_morning", input_hash="f",
+            narrative_text=text, generated_at=at.isoformat(),
+        )
+        monkeypatch.setattr(brief_state, "last_delivered", lambda _kind: row)
+
+    now = datetime.now(UTC)
+    _delivered(now)
+    item = today_route._morning_brief_today()
+    assert item is not None and item.text == "**Good morning.**"
+
+    _delivered(now - timedelta(days=1, hours=1))
+    assert today_route._morning_brief_today() is None
+
+    _delivered(now, text="  ")
+    assert today_route._morning_brief_today() is None
+
+    monkeypatch.setattr(brief_state, "last_delivered", lambda _kind: None)
+    assert today_route._morning_brief_today() is None
