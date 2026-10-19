@@ -534,12 +534,12 @@ def test_a_roster_email_says_whether_it_got_its_reply(
     signals = live_signals.gather_live_signals(_since(), include_private=True)
 
     by_topic = {line.split(": ", 1)[1].split(" —")[0]: line for line in signals.inbound}
-    assert "] email (the Executive replied) from dana@x.com" in by_topic["Re: LP question"]
-    assert "] email (no reply went out) from dana@x.com" in by_topic["Budget"]
+    assert "] email (the Executive replied) from Dana Lee (dana@x.com)" in by_topic["Re: LP question"]
+    assert "] email (no reply went out) from Dana Lee (dana@x.com)" in by_topic["Budget"]
     for topic in ("Hello", "Timed out"):
         assert "replied" not in by_topic[topic] and "no reply" not in by_topic[topic]
     # A reply landing later changes the brief's fingerprint.
-    assert "dana@x.com|budget|1|no reply went out" in signals.keys["inbound"]
+    assert "dana lee (dana@x.com)|budget|1|no reply went out" in signals.keys["inbound"]
     # The cards are the principal's own: a shared read never carries them.
     shared = live_signals.gather_live_signals(_since(), include_private=False)
     assert not any("replied" in line or "no reply" in line for line in shared.inbound)
@@ -579,3 +579,43 @@ def test_an_own_email_keeps_whether_its_reply_went_out(
     own = live_signals.gather_live_signals(_since(), include_private=True).own
 
     assert own[0].endswith("email (no reply went out): send me the deck")
+
+
+def test_contacts_and_teammates_are_named_not_just_addressed(
+    audit: AuditLogger, roster: SimpleNamespace,
+) -> None:
+    """The header calls people by name instead of guessing one from the
+    address (a contact's "mquinn@" read as "Mquinn")."""
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Mara Quinn", email="mquinn@acme.test", kind="contact")
+    _email(audit, "mquinn@acme.test", "Tax bills", private=True)
+    _email(audit, roster.teammate, "Budget")
+    audit.log("integration_outbound_blocked",
+              "Blocked outbound email to mquinn@acme.test (tool=send_gmail_message field=to)",
+              details={"tool": "send_gmail_message", "field": "to", "address": "mquinn@acme.test"},
+              private=True)
+
+    own = live_signals.gather_live_signals(_since(), include_private=True)
+    shared = live_signals.gather_live_signals(_since(), include_private=False)
+
+    assert "from Mara Quinn (mquinn@acme.test): Tax bills" in "\n".join(own.inbound)
+    assert "email to Mara Quinn (mquinn@acme.test) was held" in "\n".join(own.stuck)
+    # A teammate is named in the shared read too; a contact never reaches it.
+    assert "from Dana Lee (dana@x.com): Budget" in "\n".join(shared.inbound)
+    assert "Mara Quinn" not in "\n".join(shared.inbound + shared.stuck)
+
+
+def test_a_drafts_recipient_is_named_when_they_are_a_contact(roster: SimpleNamespace) -> None:
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Mara Quinn", email="mquinn@acme.test", kind="contact")
+    draft = SimpleNamespace(
+        created_at=datetime.now(UTC).isoformat(),
+        to=["MQuinn@acme.test", "nobody@else.test"],
+        subject="Property tax",
+    )
+
+    line = live_signals.draft_line(draft, UTC)
+
+    assert 'to Mara Quinn (MQuinn@acme.test), nobody@else.test — "Property tax"' in line

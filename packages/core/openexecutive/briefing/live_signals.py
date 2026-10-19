@@ -169,6 +169,25 @@ def _is_roster_sender(address: str) -> bool:
         return False
 
 
+def _named(address: str, include_private: bool) -> str:
+    """``Mara Quinn (mquinn@x.com)`` when the address is someone on the roster
+    (or, with ``include_private``, one of the principal's contacts), so the
+    header calls them by name instead of guessing one from the address.
+    Otherwise the address as given."""
+    from openexecutive.people.store import find_person_by_address
+
+    bare = address.strip()
+    if "@" not in bare or " " in bare:
+        return address
+    try:
+        person = find_person_by_address(bare, include_contacts=include_private)
+    except Exception:
+        logger.exception("live_signals: name lookup failed")
+        return address
+    name = " ".join(str(getattr(person, "full_name", "") or "").split()) if person else ""
+    return f"{name} ({bare})" if name else address
+
+
 @dataclass(frozen=True)
 class LiveSignals:
     """The reader's live world over one window. Empty when nothing moved."""
@@ -254,7 +273,8 @@ def _inbound(
             if sender and key not in stuck_seen:
                 stuck_seen.add(key)
                 stuck.append(
-                    f"[{_local_hhmm(ev.ts, tz, now)}] {sender} is not on the roster, so the "
+                    f"[{_local_hhmm(ev.ts, tz, now)}] {_named(sender, include_private)} is not "
+                    "on the roster, so the "
                     "Executive could not reply to their email — they may be waiting"
                 )
             continue
@@ -320,6 +340,8 @@ def _inbound(
             # Someone else whose display name holds the reader's name: the
             # brief masks that name, so say plainly it isn't them.
             sender = _IMPOSTOR
+        elif channel == "email":
+            sender = _named(sender, include_private)
         total += 1
         group_key = (sender.lower(), re.sub(r"^(re|fwd?):\s*", "", topic.lower()))
         group = groups.get(group_key)
@@ -389,7 +411,8 @@ def _outbound_blocked(
             continue
         seen.add(address.lower())
         out.append(
-            f"[{_local_hhmm(ev.ts, tz, now)}] an email to {address} was held at the outbound "
+            f"[{_local_hhmm(ev.ts, tz, now)}] an email to {_named(address, include_private)} "
+            "was held at the outbound "
             "gate (not on the allow-list) — it did not go out"
         )
     return out
@@ -426,11 +449,13 @@ def _drafts(
 
 
 def draft_line(draft: Any, tz: tzinfo, now: datetime | None = None) -> str:
-    """``[09:07] to dana@example.com — "Q3 numbers"``; the parts not read
-    yet are left out."""
+    """``[09:07] to Dana Lee (dana@example.com) — "Q3 numbers"``; the parts
+    not read yet are left out, and an address no one on the roster or in the
+    contacts has stays bare."""
     line = f"[{_local_hhmm(draft.created_at, tz, now)}]"
     if draft.to:
-        line += f" to {_one_line(', '.join(draft.to), 160)}"
+        # Drafts are private to the principal, so their contacts' names too.
+        line += f" to {_one_line(', '.join(_named(a, True) for a in draft.to), 160)}"
     if draft.subject:
         line += f' — "{_one_line(draft.subject, 120)}"'
     return line
