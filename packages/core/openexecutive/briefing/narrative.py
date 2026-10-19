@@ -73,13 +73,30 @@ READER_NAME_RULE = (
     "'the Executive' write 'I', 'me' or 'my' (e.g. 'You emailed me this "
     "morning and I replied')."
 )
+# Shared by every brief surface that sees the reader's own words: their
+# messages and chats are background. Without it the /today header opened
+# with "you've been messaging me heavily tonight" and made the reader's own
+# complaint (and their thumbs-down) the day's headline.
+OWN_MESSAGES_RULE = (
+    "The reader's own messages and chats with you (THE READER'S OWN "
+    "MESSAGES, THE READER'S CONVERSATIONS, TODAY WITH YOU) are background: "
+    "they show what the reader already knows, decided and asked for. Never "
+    "report them back: never write that the reader messaged, emailed or "
+    "chatted with you, how much, or that they asked, complained, pushed "
+    "back, thanked you or rated an answer, and never open with one. A "
+    "figure or decision in them may be stated as a fact of the day. A "
+    "request of theirs earns a line only while it is still open, written as "
+    "what you are doing about it (e.g. 'I'm setting the offer tracker to "
+    "update itself'), never as their complaint. No filler: leave out "
+    "anything with nothing new to say, such as an empty calendar or a quiet "
+    "inbox."
+)
 READER_RULE = READER_NAME_RULE + (
     " Mail or a chat message from the reader is an ask of you, "
-    "the Executive: say what you did with it, and never list it as something "
-    "they must do or reply to, or as someone waiting on them. An email marked "
-    "(the Executive replied) has had its answer, so its sender is not "
-    "waiting on anyone."
-)
+    "the Executive: never list it as something they must do or reply to, "
+    "or as someone waiting on them. An email marked (the Executive replied) "
+    "has had its answer, so its sender is not waiting on anyone. "
+) + OWN_MESSAGES_RULE
 
 # Shared by every brief surface: what to do with the STANDING FACTS block
 # (memory/facts.py). Without it a fact the reader saved in chat came back as
@@ -246,10 +263,10 @@ BRIEFING_NARRATIVE_SYSTEM = (
     "at-risk departments) render as cards BELOW this header, so do NOT re-list "
     "them — synthesize.\n\n"
     "WHAT'S LIVE COMES FIRST. The context opens with the reader's day as it "
-    "is happening: the NOW line, INBOUND (mail and chat the Executive handled "
-    "today), STUCK (replies that did not get through, drafts waiting), "
-    "CONVERSATIONS and the REST OF TODAY'S CALENDAR. Lead with those. Name the "
-    "people and threads that moved today and what they mean; a reply that "
+    "is happening: the NOW line, INBOUND (mail and chat from other people "
+    "that the Executive handled today), STUCK (replies that did not get "
+    "through, drafts waiting) and the REST OF TODAY'S CALENDAR. Lead with "
+    "those. Name the people and threads that moved today and what they mean; a reply that "
     "did not get through is usually the most urgent thing on the page. Each "
     "proposal carries its age: something raised days ago gets at most one "
     "bullet, and only when something about it moved today. If a department is "
@@ -296,9 +313,9 @@ BRIEFING_NARRATIVE_SOLO_SYSTEM = (
     "week) render as cards BELOW this header, so do NOT re-list them — "
     "synthesize.\n\n"
     "WHAT'S LIVE COMES FIRST. The context opens with their day as it is "
-    "happening: the NOW line, INBOUND (mail and chat handled today), STUCK "
-    "(replies that did not get through, drafts waiting), CONVERSATIONS and the "
-    "REST OF TODAY'S CALENDAR. Lead with those and name who and what moved "
+    "happening: the NOW line, INBOUND (mail and chat from other people "
+    "handled today), STUCK (replies that did not get through, drafts "
+    "waiting) and the REST OF TODAY'S CALENDAR. Lead with those and name who and what moved "
     "today. Each open decision carries its age: something raised days ago "
     "gets at most one bullet, and only when something about it moved today. "
     "Name a slipping goal by what it is; never speculate about an area the "
@@ -830,6 +847,7 @@ __all__ = [
     "GROUNDING_RULE",
     "BRIEFING_NARRATIVE_SYSTEM",
     "DATES_RULE",
+    "OWN_MESSAGES_RULE",
     "QUIET_PRINCIPAL",
     "READER_NAME_RULE",
     "READER_RULE",

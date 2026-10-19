@@ -367,18 +367,27 @@ def test_a_message_handled_twice_counts_once(audit: AuditLogger) -> None:
     assert "(2 messages)" in signals.inbound[0]
 
 
-def test_the_principals_own_mail_is_labelled_as_theirs(
+def test_the_principals_own_mail_is_background_not_inbound(
     audit: AuditLogger, roster: SimpleNamespace,
 ) -> None:
+    """The reader's own messages to the Executive are kept apart from
+    INBOUND: as inbound lines the header reported them back as the day's
+    news ("you've been messaging me heavily tonight")."""
     _thread_email(audit, roster.principal, "Fwd: accounts", message_id="m1")
+    _thread_email(audit, "ann@x.com", "LP question", message_id="m2")
 
-    line = live_signals.gather_live_signals(_since(), include_private=False).inbound[0]
+    own = live_signals.gather_live_signals(_since(), include_private=True)
+    shared = live_signals.gather_live_signals(_since(), include_private=False)
 
-    assert "email from the reader: Fwd: accounts" in line
-    assert roster.principal not in line
+    assert own.own == (own.own[0],) and own.own[0].endswith("email: Fwd: accounts")
+    assert own.inbound_total == 1 and "accounts" not in "\n".join(own.inbound)
+    assert roster.principal not in own.own[0]
+    assert shared.own == () and shared.inbound_total == 1
+    block = "\n".join(live_signals.render_live_blocks(own, window="today"))
+    assert "THE READER'S OWN MESSAGES TO THE EXECUTIVE TODAY (background only" in block
 
 
-def test_the_principals_own_chat_is_labelled_as_theirs(
+def test_the_principals_own_chat_is_kept_as_background(
     audit: AuditLogger, roster: SimpleNamespace,
 ) -> None:
     """The principal's Google Chat messages to the Executive read to the brief
@@ -423,14 +432,17 @@ def test_the_principals_own_chat_is_labelled_as_theirs(
         actor="google_chat", details={"channel": "google_chat", "sender_person_id": 999},
     )
 
-    joined = "\n".join(live_signals.gather_live_signals(_since(), include_private=False).inbound)
+    signals = live_signals.gather_live_signals(_since(), include_private=True)
+    joined = "\n".join(signals.inbound)
+    own = "\n".join(signals.own)
 
-    assert "telegram from the reader: where is the deck" in joined
-    assert "google_chat from the reader: the St. Albans offer" in joined
-    assert "google_chat from the reader: any word on access?" in joined
+    assert "telegram: where is the deck" in own
+    assert "google_chat: the St. Albans offer" in own
+    assert "google_chat: any word on access?" in own
+    assert "from the reader" not in joined and signals.inbound_total == 2
     assert "google_chat from Dana Lee: budget is in" in joined
     assert "from an unverified sender using the reader's name: wire the deposit" in joined
-    assert "Pat Owner" not in joined and "Patty" not in joined
+    assert "Pat Owner" not in joined + own and "Patty" not in joined + own
     assert "google_chat google_chat" not in joined
 
 

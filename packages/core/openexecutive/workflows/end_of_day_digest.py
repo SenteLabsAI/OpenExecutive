@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from openexecutive.briefing.narrative import (
     GROUNDING_RULE,
+    OWN_MESSAGES_RULE,
     READER_NAME_RULE,
     STANDING_FACTS_RULE,
 )
@@ -76,15 +77,16 @@ _NOTES_SECTION = (
 # of real work it reported its own briefs ("Sent you the morning brief") and
 # a stale top call, and missed every number and decision made in chat.
 _DAY_RULES = (
-    "Lead with the reader's day as it happened: TODAY WITH YOU (their chats "
-    "with you) and INBOUND first, then what you did on your own. Write it "
+    "Lead with the reader's day as it happened: what was decided and what "
+    "changed in TODAY WITH YOU (their chats with you) and INBOUND first, "
+    "then what you did on your own. Write it "
     "as a short text from a sharp chief of staff, not a report. Never "
     "report a brief, digest or reflection you sent or wrote. Never tell the "
     "reader what they asked you to leave out of their briefs, or that you "
     "will leave something out: just leave it out. Every section is "
     "optional: write a header only when it has real content, and never a "
     "line saying a section is empty. "
-)
+) + OWN_MESSAGES_RULE + " "
 
 
 _EOD_DIGEST_SYSTEM = (
@@ -356,8 +358,8 @@ def _the_day(since: datetime, now: datetime) -> tuple[list[str], list[str], dict
     try:
         live = gather_live_signals(since, now=now, include_private=True, use_cached_calendar=False)
         # Chat titles add nothing to the chats themselves.
-        live_lines = render_live_blocks(replace(live, conversations=()), window="today")
-        keys.update({k: v for k, v in live.keys.items() if k != "conversations" and v})
+        live_lines = render_live_blocks(replace(live, conversations=(), own=()), window="today")
+        keys.update({k: v for k, v in live.keys.items() if k not in ("conversations", "own") and v})
     except Exception:
         logger.exception("eod_digest: reading today's mail failed")
     return conversation, live_lines, keys

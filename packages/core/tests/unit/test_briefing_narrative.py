@@ -289,3 +289,33 @@ def test_every_brief_uses_standing_facts_quietly() -> None:
         assert STANDING_FACTS_RULE in prompt
     assert "Never mention a standing fact" in STANDING_FACTS_RULE
     assert "never write that it was dropped" in STANDING_FACTS_RULE
+
+
+def test_every_brief_that_sees_the_readers_own_words_treats_them_as_background() -> None:
+    """The /today header led with "you've been messaging me heavily tonight"
+    and made the reader's own complaint the headline: their messages are
+    background, never news, on every surface that sees them."""
+    from openexecutive.briefing.narrative import (
+        BRIEFING_NARRATIVE_SOLO_SYSTEM,
+        BRIEFING_NARRATIVE_SYSTEM,
+        OWN_MESSAGES_RULE,
+        STANDALONE_BRIEF_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SYSTEM,
+    )
+    from openexecutive.workflows.end_of_day_digest import (
+        _EOD_DIGEST_SOLO_SYSTEM,
+        _EOD_DIGEST_SYSTEM,
+    )
+
+    for prompt in (
+        BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM,
+        STANDALONE_BRIEF_SYSTEM, STANDALONE_BRIEF_SOLO_SYSTEM,
+        _EOD_DIGEST_SYSTEM, _EOD_DIGEST_SOLO_SYSTEM,
+    ):
+        assert OWN_MESSAGES_RULE in prompt
+        assert "say what you did with it" not in prompt
+    for header in (BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM):
+        assert "CONVERSATIONS and the REST" not in header
+        assert "from other people" in header
+    assert "Never report them back" in OWN_MESSAGES_RULE
+    assert "No filler" in OWN_MESSAGES_RULE

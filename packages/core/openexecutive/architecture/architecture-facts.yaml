@@ -2493,6 +2493,14 @@ memory:
     does not name. Why: the header had no rule for the block and turned a
     fact saved in chat into its top point ("a standing fact says X, so drop
     it"), applied to an item the fact never named.
+    OWN MESSAGES — the reader's own mail and chat-app messages to the
+    Executive leave INBOUND for a background OWN block (principal scope
+    only), and every brief prompt carries
+    `briefing.narrative.OWN_MESSAGES_RULE`: never report the reader's own
+    messages, chats, complaints or ratings back, state only the figures
+    and decisions in them, and show an open ask as what the Executive is
+    doing. Why: the header opened with "you've been messaging me heavily
+    tonight" and made the reader's own complaint its headline.
     WRITE PATH — chat tools in `orchestrator/fact_tools.py`:
       - `remember_fact(subject, statement, previous_value?, replaces_fact_id?,
         source_quote)` and `forget_fact(fact_id, rationale, source_quote)` —
