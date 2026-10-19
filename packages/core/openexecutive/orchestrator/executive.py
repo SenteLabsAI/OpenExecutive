@@ -3322,7 +3322,7 @@ class Executive:
                             outside_content.mark(source)
                         return text, True
                     if source is not None:
-                        outside_content.mark_read(source, probe_input, text)
+                        await outside_content.mark_read(source, probe_input, text, self._mcp_gateway)
                     _made.append((call_input, text, None))
                     return text, looks_like_error(text)
 
@@ -3525,7 +3525,9 @@ class Executive:
             # results: from the next round on the turn is held.
             for tu, source in round_sources:
                 if tu not in outside_uses and tu not in mail_touched_uses and tu not in withheld_uses:
-                    outside_content.mark_read(source, tu["input"], results_by_id.get(tu["id"], ""))
+                    await outside_content.mark_read(
+                        source, tu["input"], results_by_id.get(tu["id"], ""), self._mcp_gateway
+                    )
 
             current_messages.append({"role": "assistant", "content": response_content})
             # Cap here, at the single point every result reaches the model,

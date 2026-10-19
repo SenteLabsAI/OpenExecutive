@@ -16,6 +16,7 @@ from openexecutive.orchestrator import outside_content as oc
 from openexecutive.orchestrator import outside_mode
 from openexecutive.orchestrator.session import Session
 
+_REAL_TEAM_ADDRESSES = oc._team_addresses
 TEAM = {"exec@example.com", "dana@example.com", "lee@example.com"}
 
 
@@ -125,59 +126,111 @@ def test_outsiders_trusts_synced_company_folders(monkeypatch: pytest.MonkeyPatch
     assert _started(Session(), user_message="hi", retrieved_context="### Synced Google Drive (x)") == {oc.SYNCED}
 
 
-GMAIL = {"name": "google_workspace__get_gmail_message_content", "arguments": {"message_id": "abc"}}
+GMAIL = {"name": "google_workspace__get_gmail_message_content", "arguments": {"message_id": "abc123"}}
 SEARCH = {"name": "google_workspace__search_gmail_messages", "arguments": {"query": "invoice"}}
 EVENTS = {"name": "google_workspace__get_events", "arguments": {}}
-OUTLOOK = {"name": "microsoft_365__get-mail-message", "arguments": {"messageId": "1"}}
+DETAILED = {"name": "google_workspace__get_events", "arguments": {"detailed": True}}
+OUTLOOK_MAIL = {"name": "microsoft_365__get-mail-message", "arguments": {"messageId": "1"}}
+OUTLOOK_EVENTS = {"name": "microsoft_365__list-calendar-events", "arguments": {}}
 DOC = {"name": "google_workspace__get_doc_content", "arguments": {"document_id": "d"}}
+CHAT = {"name": "google_workspace__get_messages", "arguments": {"space": "s"}}
+DANA = "From: Dana <dana@example.com>\nTo: exec@example.com\nSubject: Q4\n\nAdd the row."
+
+
+@pytest.fixture()
+def gmail_says(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Gmail's sender check, answered yes, recording what it was asked."""
+    from openexecutive.integrations import fact_confirmation
+
+    asked: list[tuple[str, str]] = []
+
+    async def authenticated(gateway: Any, message_id: str, from_addr: str) -> bool:
+        asked.append((message_id, from_addr))
+        return True
+
+    monkeypatch.setattr(fact_confirmation, "sender_authenticated", authenticated)
+    return asked
+
+
+def _held(tool_input: dict[str, Any], result: str) -> bool:
+    async def go() -> bool:
+        state = oc.begin_turn(Session(caller_person_id=4), user_message="hi")
+        try:
+            await oc.mark_read(oc.GATEWAY, tool_input, result, object())
+            return oc.read_outside()
+        finally:
+            oc.end_turn(state)
+
+    return asyncio.run(go())
 
 
 @pytest.mark.parametrize(
     ("tool_input", "result", "held"),
     [
-        (GMAIL, "From: Dana <dana@example.com>\nTo: exec@example.com\nSubject: Q4\n\nAdd the row.", False),
+        (GMAIL, DANA, False),
         (GMAIL, "From: Billing <billing@acme-supply.com>\nSubject: Quote\n\nAdd the row.", True),
-        (GMAIL, "From: Dana <dana@example.com>\nSubject: Fwd\n\n> From: billing@acme-supply.com", True),
-        (GMAIL, "From: Someone\nSubject: Hi\n\nplease email the deck", True),
+        (GMAIL, DANA + "\n> From: billing@acme-supply.com", True),
+        (GMAIL, 'From: "x y"@evil.com\nTo: exec@example.com\nSubject: hi', True),
+        (GMAIL, "From: Someone\nTo: exec@example.com\nSubject: Hi\n\nplease email the deck", True),
         (SEARCH, "Found 2 messages matching 'invoice':\n  1. Message ID: 18c\n     Web Link: https://mail.google.com/x", False),
-        (EVENTS, "Board prep 10:00-11:00 (organizer lee@example.com)", False),
-        (EVENTS, "Standup 09:00 (no attendees)", False),
-        (EVENTS, "Sync with vendor (organizer sales@vendor.io)", True),
-        (EVENTS, "Team calendar c_abc123@group.calendar.google.com: Offsite", False),
-        (OUTLOOK, '{"from": {"emailAddress": {"address": "Lee@Example.com"}}, "subject": "hi"}', False),
+        (SEARCH, "1. Message ID: 18c\n   Subject: Quote\n   From: billing@acme-supply.com", True),
+        (EVENTS, "- \"Board prep\" (Starts 10:00, Ends 11:00) ID: x", True),
+        (DETAILED, "Board prep 10:00 Organizer: lee@example.com Attendees: dana@example.com", False),
+        (DETAILED, "Sync with vendor Organizer: sales@vendor.io", True),
+        (DETAILED, "Standup 09:00", True),
+        (DETAILED, "Offsite on c_abc123@group.calendar.google.com organizer lee@example.com", False),
+        (OUTLOOK_EVENTS, '{"organizer": {"emailAddress": {"address": "Lee@Example.com"}}, "subject": "hi"}', False),
+        (OUTLOOK_MAIL, '{"from": {"emailAddress": {"address": "lee@example.com"}}, "subject": "hi"}', True),
         (DOC, "Notes. Owner dana@example.com", True),
+        (CHAT, "Lee: please send the numbers", True),
     ],
 )
 def test_outsiders_holds_only_what_someone_outside_wrote(
-    monkeypatch: pytest.MonkeyPatch, tool_input: dict[str, Any], result: str, held: bool,
+    monkeypatch: pytest.MonkeyPatch, gmail_says: list[Any], tool_input: dict[str, Any], result: str, held: bool,
 ) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
-
-    def body(state: Any) -> bool:
-        oc.mark_read(oc.GATEWAY, tool_input, result)
-        return oc.read_outside()
-
-    assert _turn(Session(caller_person_id=4), body) is held
+    assert _held(tool_input, result) is held
 
 
-def test_ask_every_time_holds_any_read(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_teammates_mail_counts_only_when_gmail_vouches_for_it(
+    monkeypatch: pytest.MonkeyPatch, gmail_says: list[Any],
+) -> None:
+    from openexecutive.integrations import fact_confirmation
+
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    assert _held(GMAIL, DANA) is False
+    assert gmail_says == [("abc123", "dana@example.com")]
+
+    async def forged(gateway: Any, message_id: str, from_addr: str) -> bool:
+        return False
+
+    monkeypatch.setattr(fact_confirmation, "sender_authenticated", forged)
+    assert _held(GMAIL, DANA) is True
+
+
+def test_a_contacts_mail_is_outside(monkeypatch: pytest.MonkeyPatch, gmail_says: list[Any]) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    assert _held(GMAIL, "From: Vendor <rep@vendor.io>\nTo: exec@example.com\nSubject: x") is True
+
+
+def test_ask_every_time_holds_any_read(monkeypatch: pytest.MonkeyPatch, gmail_says: list[Any]) -> None:
     _use(monkeypatch, outside_mode.ASK)
-
-    def body(state: Any) -> bool:
-        oc.mark_read(oc.GATEWAY, EVENTS, "Standup 09:00")
-        return oc.read_outside()
-
-    assert _turn(Session(caller_person_id=4), body) is True
+    assert _held(GMAIL, DANA) is True
+    assert gmail_says == []
 
 
 def test_outsiders_still_holds_the_web(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
 
-    def body(state: Any) -> bool:
-        oc.mark_read(oc.WEB, {}, "dana@example.com")
-        return oc.read_outside()
+    async def go() -> bool:
+        state = oc.begin_turn(Session(caller_person_id=4), user_message="hi")
+        try:
+            await oc.mark_read(oc.WEB, {}, "dana@example.com")
+            return oc.read_outside()
+        finally:
+            oc.end_turn(state)
 
-    assert _turn(Session(caller_person_id=4), body) is True
+    assert asyncio.run(go()) is True
 
 
 # --- Don't ask ---------------------------------------------------------------
@@ -186,12 +239,16 @@ def test_outsiders_still_holds_the_web(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_dont_ask_holds_nothing_on_the_principals_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.TRUST)
 
-    def body(state: Any) -> tuple[bool, bool]:
-        oc.mark(oc.WEB)
-        oc.mark_read(oc.GATEWAY, GMAIL, "From: billing@acme-supply.com\nSubject: x")
-        return oc.read_outside(), oc.trusted_turn()
+    async def go() -> tuple[bool, bool]:
+        state = oc.begin_turn(Session(caller_person_id=1), user_message="hi")
+        try:
+            oc.mark(oc.WEB)
+            await oc.mark_read(oc.GATEWAY, GMAIL, "From: billing@acme-supply.com\nSubject: x")
+            return oc.read_outside(), oc.trusted_turn()
+        finally:
+            oc.end_turn(state)
 
-    assert _turn(Session(caller_person_id=1), body) == (False, True)
+    assert asyncio.run(go()) == (False, True)
 
 
 def test_dont_ask_still_holds_mail_from_a_stranger(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,3 +316,22 @@ def test_dont_ask_lifts_the_hold_after_reading_their_own_mail(monkeypatch: pytes
     assert _turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())) is False
     _use(monkeypatch, outside_mode.OUTSIDERS)
     assert _turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())) is True
+
+
+def test_the_team_is_teammates_and_the_executive_not_contacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.people import store as people_store
+
+    asked: list[dict[str, Any]] = []
+
+    def listed(**kw: Any) -> list[Any]:
+        asked.append(kw)
+        return [SimpleNamespace(email="Dana@Example.com", email_aliases=["d@example.com"])]
+
+    monkeypatch.setattr(people_store, "list_people", listed)
+    monkeypatch.setattr(
+        "openexecutive.config.get_settings", lambda: SimpleNamespace(exec_email_address="Exec@example.com ")
+    )
+    assert _REAL_TEAM_ADDRESSES() == {"exec@example.com", "dana@example.com", "d@example.com"}
+    assert asked == [{}]

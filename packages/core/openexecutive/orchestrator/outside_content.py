@@ -55,8 +55,8 @@ someone not in People, remembers nothing.
 How much a read holds is the owner's setting (``orchestrator.outside_mode``),
 fixed at the start of each turn (``TurnOutside.mode``). Under "Only for
 outsiders" an attachment the speaker sent and a synced company folder mark
-nothing, and a mail or calendar read marks the turn only when what came back
-shows an address that is neither on People nor the Executive's own
+nothing, and neither does a Gmail search's list of ids, a Gmail message Gmail
+authenticated as a teammate's, or a calendar read naming only the team
 (``mark_read``). Under "Don't ask", on the principal's own turn, nothing but
 mail from someone not in People marks it.
 
@@ -67,6 +67,7 @@ nothing is marked or held.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import json
@@ -363,45 +364,48 @@ def mark(source: str) -> None:
     state.sources.add(source)
 
 
-# Mail and calendar reads of the two workspace servers, by their own name: a
-# result whose every address is on People (``mark_read``) is the team's.
-_MAIL_WORDS = ("gmail", "mail", "message", "thread", "inbox")
-_CALENDAR_WORDS = ("calendar", "event", "freebusy", "free_busy")
+# Under "Only for outsiders", the reads whose result can be told to be the
+# team's (``mark_read``), by tool, and what kind they are. Anything else marks.
+# A Gmail message counts only when Gmail authenticated its sender
+# (``fact_confirmation.sender_authenticated``): a From line is the sender's own
+# text. Outlook has no such check here, so its mail always marks.
+_GMAIL_MESSAGE = "google_workspace__get_gmail_message_content"
+_GMAIL_BATCH = "google_workspace__get_gmail_messages_content_batch"
+_GMAIL_SEARCH = "google_workspace__search_gmail_messages"
+_CALENDAR_READS = frozenset({
+    "google_workspace__get_events",
+    "microsoft_365__list-calendar-events",
+    "microsoft_365__get-calendar-event",
+    "microsoft_365__get-calendar-view",
+})
+# At most this many messages a read checks with Gmail; more marks the turn.
+_MAX_CHECKED = 10
 _ADDRESS = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # Calendar ids look like addresses but name no one.
 _CALENDAR_IDS = ("calendar.google.com",)
-# What only a message's own text carries: a mail result naming no address but
-# showing one of these could be a sender hiding who they are.
-_MAIL_TEXT = re.compile(r"subject|body|snippet|preview|content", re.IGNORECASE)
 # Past this many addresses the result is not checked: it counts as outside.
 _MAX_ADDRESSES = 200
+_FROM_LINE = re.compile(r"^\s*From:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 
 
-def _mail_or_calendar(tool_input: Any) -> str | None:
-    """``"mail"`` or ``"calendar"`` for a Google or Microsoft 365 read of
-    either, else None."""
-    named = tool_input.get("name") if isinstance(tool_input, dict) else None
-    if not isinstance(named, str):
-        return None
-    name = named.strip().lower()
-    if not name.startswith(_KNOWN_SERVERS):
-        return None
-    own = re.split(r"__|\.", name)[-1].replace("-", "_")
-    if any(w in own for w in _CALENDAR_WORDS):
-        return "calendar"
-    if any(w in own for w in _MAIL_WORDS):
-        return "mail"
-    return None
+def _arguments(tool_input: Any) -> dict[str, Any]:
+    arguments = tool_input.get("arguments") if isinstance(tool_input, dict) else None
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (ValueError, RecursionError):
+            return {}
+    return arguments if isinstance(arguments, dict) else {}
 
 
 def _team_addresses() -> set[str]:
-    """Everyone on People (contacts included) and the Executive itself,
-    lowercased, by primary address and alias."""
+    """The team (not contacts: their mail is outside text, as for the email
+    poller) and the Executive itself, lowercased, by address and alias."""
     from openexecutive.config import get_settings
     from openexecutive.people.store import list_people
 
     found = {str(get_settings().exec_email_address or "").strip().lower()}
-    for person in list_people(include_contacts=True):
+    for person in list_people():
         for address in [getattr(person, "email", None), *(getattr(person, "email_aliases", None) or [])]:
             if isinstance(address, str) and address.strip():
                 found.add(address.strip().lower())
@@ -409,42 +413,94 @@ def _team_addresses() -> set[str]:
     return found
 
 
-def from_the_team(kind: str, result: Any) -> bool:
-    """Whether a mail or calendar read's ``result`` shows only the team:
-    every address in it is on People or the Executive's own. A result naming
-    nobody is the team's for a calendar, and for mail only when it shows no
-    mail text (a search's ids and links). Never raises: an error is no."""
+def only_team_addresses(result: Any) -> bool:
+    """Whether every address in ``result`` is the team's, there is at least
+    one, and no ``@`` is left that isn't part of one (an address the pattern
+    can't read, a quoted or non-Latin one, counts as a stranger's). Never
+    raises: an error is no."""
     try:
         text = result if isinstance(result, str) else json.dumps(result, default=str)
-        found = {
-            a.lower().rstrip(".") for a in _ADDRESS.findall(text)
-            if not a.lower().rstrip(".").endswith(_CALENDAR_IDS)
-        }
-        if len(found) > _MAX_ADDRESSES:
+        matched = _ADDRESS.findall(text)
+        if len(matched) > _MAX_ADDRESSES or "@" in _ADDRESS.sub("", text):
             return False
-        if not found:
-            # A calendar read naming no one is the person's own events; a
-            # mail read naming no one only when it carries no mail text
-            # either (a search's ids and links).
-            return kind == "calendar" or not _MAIL_TEXT.search(text)
-        return found <= _team_addresses()
+        found = {a.lower().rstrip(".") for a in matched}
+        found = {a for a in found if not a.endswith(_CALENDAR_IDS)}
+        return bool(found) and found <= _team_addresses()
     except Exception:
         return False
 
 
-def mark_read(source: str, tool_input: Any, result: Any) -> None:
+def _ids_only(result: Any) -> bool:
+    """A Gmail search's plain result: ids and links, no message text."""
+    text = result if isinstance(result, str) else ""
+    return bool(text) and "@" not in text and not re.search(r"subject|from:|snippet|body", text, re.IGNORECASE)
+
+
+async def _gmail_authenticated(tool_input: Any, result: Any, gateway: Any) -> bool:
+    """Whether every message a Gmail read returned came from the team, as
+    Gmail itself authenticated it: each id is read raw and its From must pass
+    ``authenticated_by_gmail``. Never raises: an error is no."""
+    from email.utils import parseaddr
+
+    from openexecutive.integrations.fact_confirmation import sender_authenticated
+
+    try:
+        arguments = _arguments(tool_input)
+        if arguments.get("body_format") == "raw":
+            return False
+        ids: Any = (
+            [arguments.get("message_id")] if tool_input.get("name") == _GMAIL_MESSAGE
+            else arguments.get("message_ids")
+        )
+        if not isinstance(ids, list) or not ids or len(ids) > _MAX_CHECKED:
+            return False
+        if not all(isinstance(i, str) and re.fullmatch(r"[A-Za-z0-9_-]{6,100}", i) for i in ids):
+            return False
+        text = result if isinstance(result, str) else ""
+        senders = [parseaddr(line)[1].strip().lower() for line in _FROM_LINE.findall(text)]
+        team = _team_addresses()
+        if len(senders) != len(ids) or not all(s in team for s in senders):
+            return False
+        checks = await asyncio.gather(*(
+            sender_authenticated(gateway, message_id, sender) for message_id, sender in zip(ids, senders, strict=True)
+        ))
+        return all(checks)
+    except Exception:
+        return False
+
+
+async def from_the_team(tool_input: Any, result: Any, gateway: Any) -> bool:
+    """Whether a read's ``result`` is the team's own text: a Gmail search
+    showing only ids and links; a Gmail message read whose every message
+    Gmail authenticated as sent by a teammate, with no other address in it;
+    or a calendar read naming only the team (the person's own events with
+    teammates). Never raises: an error is no."""
+    named = tool_input.get("name") if isinstance(tool_input, dict) else None
+    if named == _GMAIL_SEARCH:
+        return _ids_only(result)
+    if named in (_GMAIL_MESSAGE, _GMAIL_BATCH):
+        return only_team_addresses(result) and await _gmail_authenticated(tool_input, result, gateway)
+    if named in _CALENDAR_READS:
+        if named == "google_workspace__get_events":
+            # The plain listing shows titles but not who made each event.
+            arguments = _arguments(tool_input)
+            if arguments.get("detailed") is not True and not arguments.get("event_id"):
+                return False
+        return only_team_addresses(result)
+    return False
+
+
+async def mark_read(source: str, tool_input: Any, result: Any, gateway: Any = None) -> None:
     """``mark`` for a read whose result is in hand: under "Only for
-    outsiders", a mail or calendar read that shows only the team
-    (``from_the_team``) marks nothing."""
+    outsiders", a read that is the team's own (``from_the_team``) marks
+    nothing."""
     from openexecutive.orchestrator import outside_mode
 
     state = current()
     if state is None:
         return
-    if source == GATEWAY and state.mode != outside_mode.ASK:
-        kind = _mail_or_calendar(tool_input)
-        if kind is not None and from_the_team(kind, result):
-            return
+    if source == GATEWAY and state.mode == outside_mode.OUTSIDERS and await from_the_team(tool_input, result, gateway):
+        return
     mark(source)
 
 

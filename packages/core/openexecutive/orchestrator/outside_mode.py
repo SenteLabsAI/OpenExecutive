@@ -6,11 +6,13 @@ Three settings, one per company:
 - ``ask`` (Ask every time): any read of a connected app, an attachment, a web
   page, a synced folder or a vendor app holds the turn's writes, as before.
 - ``outsiders`` (Only for outsiders, the default): reads whose text came
-  from the team hold nothing. That is an attachment the speaker sent, a
-  synced company folder, and a mail or calendar read where every address in
-  what came back is someone on People or the Executive itself
-  (``outside_content.mark_read``). Web pages, documents fetched by address,
-  vendor apps, and mail or calendar showing anyone else still hold.
+  from the team hold nothing. That is an attachment someone on People sent,
+  a synced company folder, a Gmail search's list of ids, a Gmail message
+  Gmail authenticated as a teammate's (contacts are outside), and a detailed
+  calendar read naming only the team (``outside_content.mark_read``). Web
+  pages, documents fetched by address, vendor apps, Outlook mail, a plain
+  event listing (it doesn't say who made each event) and anything showing
+  anyone else still hold.
 - ``trust`` (Don't ask): on the principal's own turn on an interactive
   surface (``content_trust.principal_only_withheld`` offers them everything),
   no read holds. Anyone else's turn falls back to ``outsiders``.
