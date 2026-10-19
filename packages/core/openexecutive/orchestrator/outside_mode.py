@@ -9,7 +9,7 @@ Three settings, one per company:
   from the team hold nothing. That is an attachment someone on People sent,
   a synced company folder, a Gmail search's list of ids, a Gmail message
   Gmail authenticated as a teammate's (contacts are outside), and a detailed
-  calendar read naming only the team (``outside_content.mark_read``). Web
+  calendar read of events the Executive itself organized, naming only the team (``outside_content.mark_read``). Web
   pages, documents fetched by address, vendor apps, Outlook mail, a plain
   event listing (it doesn't say who made each event) and anything showing
   anyone else still hold.

@@ -25,6 +25,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", db)
     monkeypatch.setattr(oc, "_team_addresses", lambda: set(TEAM))
+    monkeypatch.setattr(oc, "_exec_address", lambda: "exec@example.com")
     return db
 
 
@@ -175,14 +176,18 @@ def _held(tool_input: dict[str, Any], result: str) -> bool:
         (SEARCH, "Found 2 messages matching 'invoice':\n  1. Message ID: 18c\n     Web Link: https://mail.google.com/x", False),
         (SEARCH, "1. Message ID: 18c\n   Subject: Quote\n   From: billing@acme-supply.com", True),
         (EVENTS, "- \"Board prep\" (Starts 10:00, Ends 11:00) ID: x", True),
-        (DETAILED, "- Title: Board prep\n- Description: agenda\n- Organizer: Lee <lee@example.com>\n"
+        (DETAILED, "- Title: Board prep\n- Description: agenda\n- Organizer: Exec <exec@example.com>\n"
                    "- Attendees: dana@example.com", False),
+        (DETAILED, "- Title: Board prep\n- Description: agenda\n- Organizer: Lee <lee@example.com>", True),
         (DETAILED, "- Description: x\n- Organizer: Sales <sales@vendor.io>", True),
         (DETAILED, "- Title: Standup\n- Description: none", True),
         (DETAILED, "- Description: x\n- Creator: <lee@example.com>\n- Organizer: Team <c_abc123@group.calendar.google.com>", True),
         (DETAILED, "- Description: hi\n- Organizer: Lee", True),
         (DETAILED, "1. Board\n  Description: a\n  Organizer: <lee@example.com>\n2. Vendor\n  Description: b\n", True),
-        (OUTLOOK_EVENTS, '{"value": [{"organizer": {"emailAddress": {"address": "Lee@Example.com"}}, "subject": "hi"}]}', False),
+        (DETAILED, "1. A\n  Description: a\n  Organizer: <exec@example.com>\n2. B\n  Description: b\n"
+                   "  Organizer: <exec@example.com>", False),
+        (OUTLOOK_EVENTS, '{"value": [{"organizer": {"emailAddress": {"address": "Exec@Example.com"}}, "subject": "hi"}]}', False),
+        (OUTLOOK_EVENTS, '{"value": [{"organizer": {"emailAddress": {"address": "lee@example.com"}}, "subject": "hi"}]}', True),
         (OUTLOOK_EVENTS, '{"value": [{"subject": "do this", "attendees": [{"emailAddress": {"address": "exec@example.com"}}]}]}', True),
         (OUTLOOK_EVENTS, '{"value": [{"organizer": {"emailAddress": {"address": "rep@vendor.io"}}}]}', True),
         (OUTLOOK_MAIL, '{"from": {"emailAddress": {"address": "lee@example.com"}}, "subject": "hi"}', True),

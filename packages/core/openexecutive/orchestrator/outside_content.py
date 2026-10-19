@@ -473,8 +473,8 @@ async def from_the_team(tool_input: Any, result: Any, gateway: Any) -> bool:
     """Whether a read's ``result`` is the team's own text: a Gmail search
     showing only ids and links; a Gmail message read whose every message
     Gmail authenticated as sent by a teammate, with no other address in it;
-    or a calendar read naming only the team (the person's own events with
-    teammates). Never raises: an error is no."""
+    or a calendar read of events the Executive itself organized, naming only
+    the team. Never raises: an error is no."""
     named = tool_input.get("name") if isinstance(tool_input, dict) else None
     if named == _GMAIL_SEARCH:
         return _ids_only(result)
@@ -491,22 +491,30 @@ async def from_the_team(tool_input: Any, result: Any, gateway: Any) -> bool:
     return False
 
 
+def _exec_address() -> str:
+    from openexecutive.config import get_settings
+
+    return str(get_settings().exec_email_address or "").strip().lower()
+
+
 def _google_organizers_on_team(result: Any) -> bool:
-    """A detailed ``get_events`` result where every event names its
-    organizer, a teammate: each ``Organizer:`` line carries a team address
-    (a calendar id, or a name with no address, is no one's), and there are
-    at least as many as events (``Description:`` lines, one an event).
-    Never raises: an error is no."""
+    """A detailed ``get_events`` result where every event was organized by
+    the Executive itself: each ``Organizer:`` line carries exactly its
+    address (a calendar id, a name with no address, or anyone else is not),
+    and there are at least as many as events (``Description:`` lines, one an
+    event). A teammate's event doesn't count: an invite's organizer is what
+    the mail that brought it says, and mail can be forged. Never raises: an
+    error is no."""
     try:
         text = result if isinstance(result, str) else ""
         organizers = re.findall(r"^\s*-?\s*Organizer:\s*(.*)$", text, re.MULTILINE)
         events = re.findall(r"^\s*-?\s*Description:", text, re.MULTILINE)
         if not organizers or len(organizers) < len(events):
             return False
-        team = _team_addresses()
+        own = _exec_address()
         for line in organizers:
             found = [a.lower().rstrip(".") for a in _ADDRESS.findall(line)]
-            if len(found) != 1 or found[0].endswith(_CALENDAR_IDS) or found[0] not in team:
+            if len(found) != 1 or not own or found[0] != own:
                 return False
         return True
     except Exception:
@@ -515,18 +523,18 @@ def _google_organizers_on_team(result: Any) -> bool:
 
 def _graph_organizers_on_team(result: Any) -> bool:
     """A Microsoft 365 calendar result where every event's
-    ``organizer.emailAddress.address`` is a teammate's: a result trimmed
-    (``select``) to leave the organizer out is no one's. Never raises: an
-    error is no."""
+    ``organizer.emailAddress.address`` is the Executive's own (as for
+    Google): a result trimmed (``select``) to leave the organizer out is no
+    one's. Never raises: an error is no."""
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
         events = parsed.get("value") if isinstance(parsed, dict) and "value" in parsed else [parsed]
         if not isinstance(events, list) or not events:
             return isinstance(events, list)
-        team = _team_addresses()
+        own = _exec_address()
         for event in events:
             address = ((event.get("organizer") or {}).get("emailAddress") or {}).get("address")
-            if not isinstance(address, str) or address.strip().lower() not in team:
+            if not own or not isinstance(address, str) or address.strip().lower() != own:
                 return False
         return True
     except Exception:
