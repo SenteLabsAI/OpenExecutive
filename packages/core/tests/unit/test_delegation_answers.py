@@ -70,6 +70,23 @@ def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     assert draft.gist == "Dana asks which week. Write to ."
 
 
+def test_the_summary_has_no_link_or_address_and_stays_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert gw.clean_gist("See https://evil.example or mail x@evil.example\nnow.") == "See or mail now."
+    assert len(gw.clean_gist("word " * 100)) <= gw.MAX_GIST_CHARS
+
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks."}
+
+    monkeypatch.setattr(gw, "_call_model", fake)
+    draft = asyncio.run(gw.compose(
+        writer_name="Olivia Owner", voice_block="", thread_text="hi", reply_subject="Re: x", intent="reply",
+        recipients=[gw.Recipient(email="dana@northpeak.example")], signature="", exec_name="Open Executive",
+        model="m",
+    ))
+    # No summary from the composer: none on the card.
+    assert draft.gist == ""
+
+
 def test_a_card_made_before_choices_shows_plain_questions() -> None:
     assert answers.questions_for({"open_questions": ["Rate?"]}) == [
         {"text": "Rate?", "choices": [], "source": "", "answer": ""},
