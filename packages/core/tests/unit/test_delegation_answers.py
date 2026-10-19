@@ -54,7 +54,7 @@ def test_old_plain_string_questions_still_parse_with_no_choices() -> None:
 def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
         assert "choices" in system
-        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks.", "gist": "Dana asks\nwhich week.", "open_questions": [
+        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks.", "gist": "Dana asks\nwhich week. Write to ops@x.example.", "open_questions": [
             {"question": "Which week?", "choices": ["This week", "Next week"], "about": "time"},
         ]}
 
@@ -67,7 +67,7 @@ def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     assert draft.open_questions == ["Which week?"]
     assert draft.question_choices[0].choices == ["This week", "Next week"]
     # The card's summary, on one line.
-    assert draft.gist == "Dana asks which week."
+    assert draft.gist == "Dana asks which week. Write to ."
 
 
 def test_a_card_made_before_choices_shows_plain_questions() -> None:
@@ -313,7 +313,7 @@ def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
         calls.append(turn)
         return {
             "body": "Hi Dana,\n\nThanks for the note. Friday at 10 works for me.",
-            "gist": "Dana asks when to talk.\nDraft says Friday at 10.",
+            "gist": "Dana asks when to talk.\nDraft says Friday at 10, see https://evil.example.",
         }
 
     monkeypatch.setattr(answers, "_call_model", fake)
@@ -331,7 +331,14 @@ def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
     assert resp.status_code == 200, resp.text
     # The rewrite sees the summary and brings its draft half up to date, on one line.
     assert "<gist>\nDana asks when to talk. Draft says you'll get back to her.\n</gist>" in calls[0]
-    assert resp.json()["gist"] == "Dana asks when to talk. Draft says Friday at 10."
+    # No link nobody gave, as in the draft.
+    assert resp.json()["gist"] == "Dana asks when to talk. Draft says Friday at 10, see ."
+    # Words changed by hand: the summary no longer says what the draft says.
+    edited = client.put(
+        f"/delegation/replies/{card_id}/text", json={"text": "Hi Dana,\n\nNext week is better."}, headers=OWNER,
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["gist"] == ""
 
 
 def test_a_card_drafted_before_the_summary_has_none(

@@ -218,6 +218,13 @@ def one_line(value: str, cap: int) -> str:
     return " ".join(cleaned.split())[:cap]
 
 
+def clean_gist(value: str) -> str:
+    """The card's summary on one line, with no link or email address: it is
+    written from other people's email, and nobody gave one to show."""
+    text, _ = lint(one_line(value, MAX_GIST_CHARS), allowed_text="", exec_name="")
+    return one_line(text, MAX_GIST_CHARS)
+
+
 def lint(
     body: str, *, allowed_text: str, exec_name: str
 ) -> tuple[str, list[str]]:
@@ -426,5 +433,5 @@ async def compose(
         open_questions=questions,
         flags=flags,
         question_choices=shaped,
-        gist=one_line(str(payload.get("gist") or ""), MAX_GIST_CHARS),
+        gist=clean_gist(str(payload.get("gist") or "")),
     )

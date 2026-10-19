@@ -400,10 +400,9 @@ async def rewrite(
     ``SendRefused``."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import (
-        MAX_GIST_CHARS,
         _drop_name_before_signature,
+        clean_gist,
         lint,
-        one_line,
     )
     from openexecutive.delegation.reply_send import SendRefused
     from openexecutive.delegation.voice import composer_model, get_voice, render_voice_block
@@ -473,7 +472,7 @@ async def rewrite(
     # The card's summary, when it had one and the rewrite brought it up to date.
     new_gist = written.get("gist")
     if gist and isinstance(new_gist, str) and new_gist.strip():
-        extra["gist"] = one_line(new_gist, MAX_GIST_CHARS)
+        extra["gist"] = clean_gist(new_gist)
     return new_body, extra, changed_sentences(main, new_main)
 
 

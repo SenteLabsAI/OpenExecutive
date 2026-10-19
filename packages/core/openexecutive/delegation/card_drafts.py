@@ -292,7 +292,9 @@ async def edit(
             raise SendRefused(409, "busy", "This reply is being saved or sent right now. Try again in a moment.")
         _EDITING.add(instance.id)
         try:
-            extra: dict[str, Any] = {} if recipients is not None else {QUESTIONS_SETTLED: True}
+            # Words changed by hand: the card's summary no longer says what
+            # the draft says, so the card falls back to what they wrote.
+            extra: dict[str, Any] = {} if recipients is not None else {QUESTIONS_SETTLED: True, "gist": ""}
             if rewrite is not None:
                 written, extra = await rewrite(person, payload)
                 words = _check_words(written)
