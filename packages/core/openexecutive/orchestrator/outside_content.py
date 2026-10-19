@@ -500,24 +500,44 @@ def _exec_address() -> str:
     return str(get_settings().exec_email_address or "").strip().lower()
 
 
+# The fields of a detailed Google event, in the order the gateway writes them
+# (``Description``, ``Location``, ``Color ID``, then ``Organizer`` among the
+# rest). A description or location can hold lines that look like these.
+_EVENT_FIELD = re.compile(r"^\s*-?\s*(Description|Location|Color ID|Organizer):\s*(.*)$", re.MULTILINE)
+
+
 def _google_organizers_on_team(result: Any) -> bool:
     """A detailed ``get_events`` result where every event was organized by
-    the Executive itself: each ``Organizer:`` line carries exactly its
-    address (a calendar id, a name with no address, or anyone else is not),
-    and there are at least as many as events (``Description:`` lines, one an
-    event). A teammate's event doesn't count: an invite's organizer is what
-    the mail that brought it says, and mail can be forged. Never raises: an
-    error is no."""
+    the Executive itself. Each event starts at a ``Description:`` line and
+    must hold exactly one ``Location:``, one ``Color ID:`` and, after them,
+    one ``Organizer:`` carrying exactly the Executive's address (a calendar
+    id, a name with no address, or anyone else is not). A forged field line
+    inside a description or location adds a field where there already is
+    one, or comes before the real ones, so it fails. A teammate's event
+    doesn't count: an invite's organizer is what the mail that brought it
+    says, and mail can be forged. Never raises: an error is no."""
     try:
         text = result if isinstance(result, str) else ""
-        organizers = re.findall(r"^\s*-?\s*Organizer:\s*(.*)$", text, re.MULTILINE)
-        events = re.findall(r"^\s*-?\s*Description:", text, re.MULTILINE)
-        if not organizers or len(organizers) < len(events):
-            return False
         own = _exec_address()
-        for line in organizers:
-            found = [a.lower().rstrip(".") for a in _ADDRESS.findall(line)]
-            if len(found) != 1 or not own or found[0] != own:
+        if not own:
+            return False
+        events: list[list[tuple[str, str]]] = []
+        for match in _EVENT_FIELD.finditer(text):
+            label, value = match.group(1), match.group(2)
+            if label == "Description":
+                events.append([])
+            elif not events:
+                return False
+            else:
+                events[-1].append((label, value))
+        if not events:
+            return False
+        for fields in events:
+            labels = [label for label, _ in fields]
+            if labels != ["Location", "Color ID", "Organizer"]:
+                return False
+            found = [a.lower().rstrip(".") for a in _ADDRESS.findall(fields[2][1])]
+            if found != [own]:
                 return False
         return True
     except Exception:
