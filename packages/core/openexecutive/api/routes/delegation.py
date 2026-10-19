@@ -429,6 +429,9 @@ class ReplyCardOut(BaseModel):
     # Everyone else the email went to: Reply to: Everyone adds them. Empty
     # when there is no choice to make.
     reply_others: list[str] = Field(default_factory=list)
+    # What the email asks and what the draft says, in a line or two, for the
+    # card's closed view ("" on a card drafted before it).
+    gist: str = ""
 
 
 class RepliesOut(BaseModel):

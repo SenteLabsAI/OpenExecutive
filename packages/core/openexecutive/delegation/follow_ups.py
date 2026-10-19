@@ -186,6 +186,7 @@ async def _follow_up(
             ),
             in_reply_to=sent.message_id_header or None,
             references=references_header(sent.references, sent.message_id_header),
+            gist=composed.gist,
         )
         held = handle_it.follow_up_refusal(
             person.id, sent, reply, relation=relation, own=own, exec_address=exec_address, now=now,

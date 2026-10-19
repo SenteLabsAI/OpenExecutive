@@ -735,6 +735,8 @@ class Reply:
     # (``delegation.answers.suggest``); shorter than ``open_questions`` when
     # a question has none.
     question_choices: list[dict[str, Any]] = field(default_factory=list)
+    # What the email asks and what the draft says, for the card's closed view.
+    gist: str = ""
 
 
 async def compose_reply(
@@ -819,6 +821,7 @@ async def compose_reply(
         flags=list(dict.fromkeys(flags)),
         in_reply_to=plan["in_reply_to"],
         references=plan["references"],
+        gist=composed.gist,
     )
 
 
@@ -889,6 +892,7 @@ def _card_payload(
         REPLY_OTHERS: [] if follow_up else reply.others,
         "draft_subject": reply.subject,
         "draft_body": reply.body,
+        "gist": reply.gist,
         "open_questions": reply.open_questions,
         # One per question, in order (delegation.answers).
         "question_choices": reply.question_choices,
