@@ -15,6 +15,7 @@ from openexecutive.audit.logger import AuditLogger
 from openexecutive.memory import episodic
 from openexecutive.memory import history as h
 from openexecutive.memory import history_notes as hn
+from openexecutive.people import store as people_store
 
 WHEN = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 BODY = (
@@ -29,6 +30,11 @@ ALLOWED = "\n".join([BODY, "Dana Lee"])
 def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     path = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", path)
+    # The people store keeps its own DB_PATH. Unpatched, the audit row's
+    # owner check (people_tools.audit_row_owner -> find_principal_person)
+    # reads ./episodic_memory.db, a dev database when one is there, and its
+    # principal changes what this test sees.
+    monkeypatch.setattr(people_store, "DB_PATH", path)
     episodic.initialize_db(path)
     monkeypatch.setattr(audit_logger, "_default_logger", AuditLogger(db_path=path))
     yield path
