@@ -76,6 +76,12 @@ ACCEPTED = "accepted"
 DECLINED = "declined"
 
 # Labels that mean the mail service filed it away.
+# A settled card under a message's key lets a new card be made for it only
+# when it was dismissed or lapsed; sent, answered or settled means done.
+# Who an invite is accepted from with no tap and no allowance: their team and
+# contacts, never a sender known only from their Sent mail.
+ON_ITS_OWN_RELATIONS = frozenset({"team", "contact"})
+RENEW_AFTER = frozenset({"rejected", "auto_no_response"})
 _FILED = frozenset({"SPAM", "TRASH"})
 _NO_REPLY_SENDERS = ("noreply", "no-reply", "do-not-reply", "donotreply", "mailer-daemon", "postmaster")
 
@@ -250,10 +256,9 @@ def _live(payload: dict[str, Any], created_at: str, now: datetime) -> bool:
     return start is None or start > now
 
 
-def create_card(key: str, payload: dict[str, Any], *, person_id: int, on_its_own: bool) -> int:
-    """The card for one invite, made once per message (``key``). A card
-    still open under that key is that card; one already settled (answered,
-    dismissed, closed) doesn't stop a new one."""
+def create_card(key: str, payload: dict[str, Any], *, person_id: int, on_its_own: bool) -> int | None:
+    """The card for one invite, made once per message (``key``): see
+    ``create_once``. None when the invite was already answered."""
     return create_once(
         DECISION_CLASS, key, payload, approver_person_id=person_id,
         gate_mode="auto_execute" if on_its_own else "propose",
@@ -263,11 +268,13 @@ def create_card(key: str, payload: dict[str, Any], *, person_id: int, on_its_own
 def create_once(
     decision_class: str, key: str, payload: dict[str, Any], *, approver_person_id: int, gate_mode: str,
     confidence: float | None = None,
-) -> int:
+) -> int | None:
     """Create a card under idempotency ``key``: the open one already under it,
-    if any, else a new one, also when a settled card still holds the key (it
-    is then made under the key with a fresh suffix). One scan per person at a
-    time, so two new cards never race for one message."""
+    if any, else a new one. When a settled card holds the key, a new one is
+    made (under the key with a fresh suffix) only if that card was dismissed
+    or left to lapse: one that was sent, answered or settled in the mailbox
+    means the message is done, and the answer is None. One scan per person
+    at a time, so two new cards never race for one message."""
     from openexecutive.memory.decision_ledger import create_decision_instance, get_live_by_idem
 
     def make(idem: str) -> int:
@@ -283,7 +290,22 @@ def create_once(
         existing = get_live_by_idem(key)
         if existing is not None:
             return existing.id
+    if _last_status(key) not in RENEW_AFTER:
+        return None
     return make(f"{key}:{uuid.uuid4().hex[:12]}")
+
+
+def _last_status(key: str) -> str | None:
+    """The status of the newest card under ``key`` (or its suffixed ones)."""
+    from openexecutive.memory.decision_ledger import _db_path, _get_conn
+
+    with _get_conn(_db_path()) as conn:
+        row = conn.execute(
+            "SELECT status FROM decision_instances WHERE idempotency_key = ? "
+            "OR substr(idempotency_key, 1, ?) = ? ORDER BY id DESC LIMIT 1",
+            (key, len(key) + 1, f"{key}:"),
+        ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def cards(person: Any, *, now: datetime | None = None) -> list[InviteCard]:
@@ -419,6 +441,10 @@ def _refusal(
     if trained:
         if training.allowed_inviter(person_id, sender) is None:
             return "invite_training"
+    elif relation not in ON_ITS_OWN_RELATIONS:
+        # Someone they have only written to (which a reply sent on its own
+        # can make anyone) gets a card, unless they allowed that sender.
+        return "level"
     elif not lead and settings.level(handle_it.kind_for(relation)) != handle_it.LEVEL_HANDLE:
         return "level"
     if not handle_it.signing_ok():
@@ -490,7 +516,7 @@ async def consider(
             skip("invite_not_found")
             return
         organizer = parseaddr(event.organizer)[1].strip().lower() if event.organizer else ""
-        if organizer and organizer != message.from_addr:
+        if organizer != message.from_addr:
             skip("invite_not_organizer")
             return
         if event.response in ("accepted", "declined", "organizer"):
@@ -533,6 +559,10 @@ async def consider(
     decision_id = create_card(
         f"{DECISION_CLASS}:{person.id}:{message.id}", payload, person_id=person.id, on_its_own=held is None,
     )
+    if decision_id is None:
+        _set_outcome(person.id, message.id, SKIPPED, reason="already_answered")
+        result.skipped += 1
+        return
     _set_outcome(person.id, message.id, CARDED, decision_id=decision_id)
     result.invites += 1
     _audit("delegation_invite_carded", f"Left a meeting invite for person {person.id}", {

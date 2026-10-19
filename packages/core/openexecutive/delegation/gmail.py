@@ -197,6 +197,10 @@ class CalendarWriteNotGranted(GmailError):
     ``Calendars.Read``). Connecting again with ``--calendar`` adds it."""
 
 
+class GmailChanged(GmailError):
+    """The item changed since it was read (an ``If-Match`` didn't match)."""
+
+
 class GmailAuthError(GmailError):
     """Google refused the credential: revoked, expired, or missing a scope."""
 
@@ -985,15 +989,19 @@ class DelegateGmail:
         params: Any = None,
         json_body: dict[str, Any] | None = None,
         base: str = GMAIL_BASE,
+        if_match: str | None = None,
     ) -> dict[str, Any]:
         token = await self._access_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        if if_match:
+            headers["If-Match"] = if_match
         try:
             resp = await client.request(
                 method,
                 f"{base}{path}",
                 params=params,
                 json=json_body,
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
             )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             # Never reached Google: nothing was done.
@@ -1009,6 +1017,8 @@ class DelegateGmail:
             raise GmailRateLimited(f"gmail {method} returned {resp.status_code}")
         if resp.status_code == 404:
             raise GmailNotFound(f"gmail {method} returned 404")
+        if resp.status_code == 412:
+            raise GmailChanged(f"gmail {method} returned 412")
         if resp.status_code >= 500:
             raise GmailError(f"gmail {method} returned {resp.status_code}", maybe_done=True)
         if resp.status_code >= 400:
@@ -1409,9 +1419,11 @@ class DelegateGmail:
         """Answer the invite to ``event_id`` on their primary calendar, as
         them: their own attendee entry's answer becomes accepted or declined,
         and Google tells the organizer (``sendUpdates=all``). Nothing else on
-        the event changes. Called only by ``delegation.invites``, on the
-        person's tap or under Handle it for me (accept only). Answering twice
-        is the same as once. Raises ``CalendarWriteNotGranted`` for a
+        the event changes: the write carries the event's ``etag``, so a change
+        made since it was read (a guest added, another answer) is read again
+        rather than overwritten, once. Called only by ``delegation.invites``,
+        on the person's tap or under Handle it for me (accept only).
+        Answering twice is the same as once. Raises ``CalendarWriteNotGranted`` for a
         read-only sign-in, ``GmailNotFound`` when the event or their place on
         it is gone."""
         if not _EVENT_ID_RE.fullmatch(event_id or ""):
@@ -1422,20 +1434,28 @@ class DelegateGmail:
                 raise CalendarWriteNotGranted("calendar.events not granted")
             path = f"/events/{event_id}"
             try:
-                event = await self._request(client, "GET", path, base=CALENDAR_BASE)
-                attendees = [dict(a) for a in event.get("attendees") or [] if isinstance(a, dict)]
-                mine = next((a for a in attendees if a.get("self") is True), None)
-                if mine is None:
-                    mine = next(
-                        (a for a in attendees if normalize_email(str(a.get("email") or "")) == self.email), None,
-                    )
-                if mine is None:
-                    raise GmailNotFound("not an attendee")
-                mine["responseStatus"] = "accepted" if accept else "declined"
-                await self._request(
-                    client, "PATCH", path, params={"sendUpdates": "all"},
-                    json_body={"attendees": attendees}, base=CALENDAR_BASE,
-                )
+                for attempt in range(2):
+                    event = await self._request(client, "GET", path, base=CALENDAR_BASE)
+                    attendees = [dict(a) for a in event.get("attendees") or [] if isinstance(a, dict)]
+                    mine = next((a for a in attendees if a.get("self") is True), None)
+                    if mine is None:
+                        mine = next(
+                            (a for a in attendees if normalize_email(str(a.get("email") or "")) == self.email),
+                            None,
+                        )
+                    if mine is None:
+                        raise GmailNotFound("not an attendee")
+                    mine["responseStatus"] = "accepted" if accept else "declined"
+                    try:
+                        await self._request(
+                            client, "PATCH", path, params={"sendUpdates": "all"},
+                            json_body={"attendees": attendees}, base=CALENDAR_BASE,
+                            if_match=str(event.get("etag") or "") or None,
+                        )
+                        return
+                    except GmailChanged:
+                        if attempt:
+                            raise
             except GmailAuthError as exc:
                 if str(exc) != "forbidden":
                     raise

@@ -1335,11 +1335,11 @@ def _create_card(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
     verdict: Any, on_its_own: bool = False, handle_it_reason: str | None = None, source: str | None = None,
     kept: dict[str, Any] | None = None,
-) -> int:
+) -> int | None:
     """The card for this reply, made once per message (its idempotency key):
-    a second call for the same message finds the open one the first made,
-    and a card already settled under that key (dismissed, sent, closed)
-    doesn't stop a new one (``invites.create_once``). A card Handle it for me
+    a second call for the same message finds the open one the first made, a
+    card dismissed or lapsed under that key doesn't stop a new one, and one
+    sent or settled in the mailbox means None (``invites.create_once``). A card Handle it for me
     will send is ``auto_execute``; every other is ``propose``."""
     from openexecutive.delegation.invites import create_once
 

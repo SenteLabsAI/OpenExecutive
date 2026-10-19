@@ -811,6 +811,29 @@ def test_answering_changes_only_their_own_answer_and_tells_the_organizer() -> No
         asyncio.run(client.answer_invite("ev1/../../other", accept=True))
 
 
+def test_answering_writes_against_the_event_it_read_and_reads_again_once_if_it_changed() -> None:
+    gm._TOKENS.clear()
+    reads = iter(["\"v1\"", "\"v2\""])
+    seen: list[httpx.Request] = []
+    scope = " ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": "ev1", "etag": next(reads), "attendees": [
+                {"email": EMAIL, "self": True, "responseStatus": "needsAction"}]})
+        if request.headers.get("If-Match") == '"v1"':
+            return httpx.Response(412, json={"error": {"code": 412}})
+        return httpx.Response(200, json={})
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    asyncio.run(client.answer_invite("ev1", accept=True))
+    patches = [r.headers.get("If-Match") for r in seen if r.method == "PATCH"]
+    assert patches == ['"v1"', '"v2"']
+
+
 def test_a_read_only_sign_in_reads_but_cannot_answer() -> None:
     gm._TOKENS.clear()
     seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]))

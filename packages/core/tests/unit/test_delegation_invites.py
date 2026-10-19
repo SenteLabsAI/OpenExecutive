@@ -205,6 +205,21 @@ def test_handle_it_accepts_with_no_clash_and_says_so(db: Path, person: Any, mode
     assert invites.cards(person) == []
 
 
+def test_handle_it_leaves_a_card_for_someone_they_have_only_written_to(
+    person: Any, models: dict[str, Any],
+) -> None:
+    """A sender known only from their Sent mail is no contact: an invite from
+    them waits on a tap, whatever the level."""
+    _on(person)
+    pat = "pat@elsewhere.example"
+    mailbox = _mailbox(_invite(sender=pat, name="Pat"), event=_event(organizer=pat))
+    mailbox.written_to.add(pat)
+    result = _scan(person, mailbox)
+    assert result.handled == 0 and mailbox.answers == []
+    (card,) = invites.cards(person)
+    assert card.relation == "correspondent" and card.status == "proposed"
+
+
 @pytest.mark.parametrize(("arrange", "reason"), [
     (lambda m: setattr(m, "busy", [_event("x", title="Standup")]), "clash"),
     (lambda m: setattr(m, "write_granted", False), "calendar_write"),
@@ -344,7 +359,7 @@ def test_dismiss_answers_nothing(
     assert _ledger(db)["i1"][0] == inbox.DISMISSED and invites.cards(person) == []
 
 
-# ── a settled card never blocks a new one (reply cards too) ───────────────────
+# ── a dismissed card doesn't block a new one; a sent one does (reply cards too) ─
 
 
 @pytest.mark.parametrize("decision_class", [invites.DECISION_CLASS, inbox.DECISION_CLASS])
@@ -358,6 +373,15 @@ def test_a_settled_card_under_the_key_doesnt_block_a_new_one(db: Path, decision_
     with sqlite3.connect(db) as conn:
         keys = [r[0] for r in conn.execute("SELECT idempotency_key FROM decision_instances ORDER BY id")]
     assert keys[0] == key and keys[1].startswith(f"{key}:")
+
+
+@pytest.mark.parametrize("decision_class", [invites.DECISION_CLASS, inbox.DECISION_CLASS])
+@pytest.mark.parametrize("status", ["executed", "approved_unchanged", "closed_externally"])
+def test_a_sent_or_settled_card_means_no_second_card(db: Path, decision_class: str, status: str) -> None:
+    key = f"{decision_class}:1:m1"
+    first = invites.create_once(decision_class, key, {"n": 1}, approver_person_id=1, gate_mode="propose")
+    assert first is not None and ledger.mark_resolved(first, status)
+    assert invites.create_once(decision_class, key, {"n": 2}, approver_person_id=1, gate_mode="propose") is None
 
 
 def test_today_says_what_it_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
