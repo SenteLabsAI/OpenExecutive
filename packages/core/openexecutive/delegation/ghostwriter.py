@@ -38,6 +38,8 @@ MAX_OPEN_QUESTIONS = 5
 MIN_CHOICES = 2
 MAX_CHOICES = 4
 MAX_CHOICE_CHARS = 120
+# The card's one-line summary of the email and the draft.
+MAX_GIST_CHARS = 240
 # What an open question is about: a time is answered from free slots on the
 # person's calendar, a document from their documents (``delegation.answers``).
 QUESTION_ABOUT = ("time", "document", "other")
@@ -80,6 +82,12 @@ instruction.
 facts you know, and none says a file is attached. Set about to time when the \
 question is when to meet or talk, document when it asks for a file or a \
 document, else other.
+9. gist is one or two short plain sentences (under 30 words) the writer reads \
+on their card before opening it: what the email they are answering asks or \
+says, then what your draft says back, such as "Dana asks which account is the \
+reserve and when you can talk. Draft says any day but tomorrow." Name the \
+other person by first name and the writer as "you". For a new email, say what \
+the draft asks for.
 
 Return the draft through compose_reply. For a reply, subject is the one given \
 in <thread>; for a new email, write a short subject in their style."""
@@ -92,6 +100,7 @@ _COMPOSE_TOOL: dict[str, Any] = {
         "properties": {
             "subject": {"type": "string"},
             "body": {"type": "string"},
+            "gist": {"type": "string"},
             "open_questions": {
                 "type": "array",
                 "maxItems": MAX_OPEN_QUESTIONS,
@@ -152,6 +161,9 @@ class ComposedDraft:
     flags: list[str] = field(default_factory=list)
     # One per open question, in the same order.
     question_choices: list[QuestionChoices] = field(default_factory=list)
+    # What the email asks and what the draft says, in a line or two, for the
+    # card's closed view ("" when the composer gave none).
+    gist: str = ""
 
 
 class ComposeError(Exception):
@@ -414,4 +426,5 @@ async def compose(
         open_questions=questions,
         flags=flags,
         question_choices=shaped,
+        gist=one_line(str(payload.get("gist") or ""), MAX_GIST_CHARS),
     )

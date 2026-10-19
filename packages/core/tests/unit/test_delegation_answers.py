@@ -54,7 +54,7 @@ def test_old_plain_string_questions_still_parse_with_no_choices() -> None:
 def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
         assert "choices" in system
-        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks.", "open_questions": [
+        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks.", "gist": "Dana asks\nwhich week.", "open_questions": [
             {"question": "Which week?", "choices": ["This week", "Next week"], "about": "time"},
         ]}
 
@@ -66,6 +66,8 @@ def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     ))
     assert draft.open_questions == ["Which week?"]
     assert draft.question_choices[0].choices == ["This week", "Next week"]
+    # The card's summary, on one line.
+    assert draft.gist == "Dana asks which week."
 
 
 def test_a_card_made_before_choices_shows_plain_questions() -> None:
@@ -198,6 +200,7 @@ def test_a_scan_with_read_my_calendar_on_offers_free_slots(
 
 def _card(
     owner_id: int, monkeypatch: pytest.MonkeyPatch, *, mailbox: FakeInbox | None = None, calendar_on: bool = False,
+    gist: str = "",
 ) -> tuple[FakeInbox, int]:
     from openexecutive.delegation import inbox_classifier as ic
     from openexecutive.delegation.settings import set_enabled
@@ -212,6 +215,7 @@ def _card(
             "open_questions": [
                 {"question": "When should we talk?", "choices": ["Friday at 10", "Next week"], "about": "time"},
             ],
+            **({"gist": gist} if gist else {}),
         }
 
     monkeypatch.setattr(ic, "_call_model", classifier)
@@ -297,6 +301,53 @@ def test_a_typed_answer_is_a_note_to_work_in_with_the_choices_offered(
     assert client.post(url, json=tapped, headers=OWNER).status_code == 200
     _, turn = rewriter[-1]
     assert "Question: When should we talk?\nAnswer: Next week" in turn and "They typed" not in turn
+
+
+def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    calls: list[str] = []
+    answers._ANSWERED.clear()
+
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        calls.append(turn)
+        return {
+            "body": "Hi Dana,\n\nThanks for the note. Friday at 10 works for me.",
+            "gist": "Dana asks when to talk.\nDraft says Friday at 10.",
+        }
+
+    monkeypatch.setattr(answers, "_call_model", fake)
+    mailbox, card_id = _card(
+        ids["principal"], monkeypatch, gist="Dana asks when to talk. Draft says you'll get back to her.",
+    )
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    shown = client.get("/delegation/replies", headers=OWNER).json()["cards"][0]
+    assert shown["gist"] == "Dana asks when to talk. Draft says you'll get back to her."
+    resp = client.post(
+        f"/delegation/replies/{card_id}/answer",
+        json={"answers": [{"question_index": 0, "answer_text": "Friday at 10"}]}, headers=OWNER,
+    )
+    assert resp.status_code == 200, resp.text
+    # The rewrite sees the summary and brings its draft half up to date, on one line.
+    assert "<gist>\nDana asks when to talk. Draft says you'll get back to her.\n</gist>" in calls[0]
+    assert resp.json()["gist"] == "Dana asks when to talk. Draft says Friday at 10."
+
+
+def test_a_card_drafted_before_the_summary_has_none(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    rewriter: list[tuple[str, str]],
+) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    assert client.get("/delegation/replies", headers=OWNER).json()["cards"][0]["gist"] == ""
+    resp = client.post(
+        f"/delegation/replies/{card_id}/answer",
+        json={"answers": [{"question_index": 0, "answer_text": "Friday at 10"}]}, headers=OWNER,
+    )
+    assert resp.status_code == 200 and resp.json()["gist"] == ""
+    assert "<gist>" not in rewriter[0][1]
 
 
 def test_answering_refuses_a_bad_question_a_failed_rewrite_and_too_many(

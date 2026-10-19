@@ -15,6 +15,8 @@ import {
 } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/relativeTime";
 import {
+  cardGist,
+  toDecideLabel,
   highlightPieces,
   questionsLeft,
   relationLabel,
@@ -33,8 +35,11 @@ import NextTimeTick from "@/components/NextTimeTick";
 
 // Home: the replies the Executive wrote as you for mail that needs you
 // (Delegate → Act as me → Draft replies to my inbox), shown as cards in
-// "Needs you". Each card shows who wrote, what they wrote, the draft, what it
-// leaves you to decide and anything to check. The reply waits on the card
+// "Needs you". Each card starts closed: who wrote, the Executive's line or
+// two on what they asked and what the draft says, what's left to decide and
+// one main button. Open, it shows what's left to decide, the draft, what
+// they wrote, and under More the Reply to choice, the answered questions and
+// why it waited. The reply waits on the card
 // alone unless you chose to keep replies in your Drafts too. Edit changes its
 // words right on the card (and in your Drafts when it's there:
 // PUT /delegation/replies/{id}/text). "Decide before sending" offers short
@@ -129,6 +134,8 @@ export function ReplyCardItem({
   const [step, setStep] = useState<Step>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [fullDraft, setFullDraft] = useState(false);
+  // Closed until tapped: the summary, what's left to decide, one main button.
+  const [open, setOpen] = useState(false);
   // Edit: the draft's words in a box on the card, until Save or Cancel.
   const [editing, setEditing] = useState<string | null>(null);
   // Drafts in training: keep what you sent as an example when you changed it first.
@@ -265,75 +272,217 @@ export function ReplyCardItem({
   const confirming = step.kind === "ask" || step.kind === "confirm";
   const clampDraft = draftIsLong(card.draft_body) && !fullDraft && !confirming;
   const label = "text-xs font-semibold uppercase tracking-wide text-fg-muted";
+  // Closed, the card is its summary, what's left to decide and one main
+  // button; it opens on a tap, and stays open while you edit or confirm.
+  const expanded = open || confirming || editing !== null || typing !== null;
+  const gist = cardGist(card);
+  const toDecide = toDecideLabel(left);
+  const replyToNow = choice ? (choice.toEveryone ? choice.everyone : choice.sender) : "";
+  const tappable = questions.some((q) => q.choices.length > 0);
+  // Open, the questions still open come first; the answered ones, Reply to
+  // and why it waited fold under More.
+  const openQuestions = questions.map((q, i) => ({ q, i })).filter(({ q }) => !(q.choices.length > 0 && q.answer));
+  const answeredQuestions = questions.map((q, i) => ({ q, i })).filter(({ q }) => q.choices.length > 0 && q.answer);
+  const moreParts = [
+    choice && !unconfirmed ? `Reply to: ${replyToNow}` : "",
+    answeredQuestions.length === 1 ? "1 answered" : answeredQuestions.length > 1 ? `${answeredQuestions.length} answered` : "",
+    card.waited_because ? "Why it waited" : "",
+  ].filter(Boolean);
+  const nextTimeTick = (className: string) => card.can_allow ? (
+    <NextTimeTick
+      className={className}
+      checked={nextTime}
+      disabled={busy}
+      onChange={setNextTime}
+      label={followUp ? "Follow up with them on its own next time" : `Reply to ${firstName} on its own next time`}
+      help="You can undo this in Handle it for me."
+    />
+  ) : null;
+  const askToSend = () => {
+    setOpen(true);
+    setStep({ kind: "ask", recipients: card.draft_to, allow: Boolean(card.can_allow) && nextTime });
+  };
+  // Asking before Send shows the "next time" tick too (a closed card's Send
+  // comes straight here), so what it says is read as it is now.
+  const allowNow = step.kind === "ask" ? Boolean(card.can_allow) && nextTime : confirming && step.allow;
+  const dismissButton = (
+    // Dismiss is its own button, set apart on the right, so it's never
+    // hunted for in a menu next to Send.
+    <Button variant="ghost" className="ml-auto" onClick={() => void dismiss()} disabled={busy}>
+      Dismiss
+    </Button>
+  );
+
+  const renderQuestion = ({ q, i }: { q: (typeof questions)[number]; i: number }) => (
+    <li key={i} className="text-sm text-fg">
+      <div className="break-words">
+        {q.answer && <span className="mr-1 text-accent" aria-label="Answered">✓</span>}
+        {q.text}
+      </div>
+      {q.source && <div className="mt-0.5 text-xs text-fg-subtle break-words">{q.source}</div>}
+      {q.answer && (
+        <div className="mt-0.5 text-xs text-fg-muted break-words">Your answer: {q.answer}</div>
+      )}
+      {q.choices.length > 0 && editing === null && !unconfirmed && (
+        <div className="mt-1.5 flex flex-wrap gap-2">
+          {q.choices.map((c) => (
+            <button
+              key={c}
+              type="button"
+              disabled={busy}
+              aria-pressed={q.answer === c}
+              onClick={() => void answer(i, c)}
+              className={`min-h-10 max-w-full rounded-full border px-3.5 py-1.5 text-left text-sm break-words transition-colors cursor-pointer disabled:opacity-50 ${
+                q.answer === c
+                  ? "border-accent bg-accent/10 text-fg"
+                  : "border-line bg-surface text-fg-muted hover:border-line-strong hover:text-fg"
+              }`}
+            >
+              {c}
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled={busy}
+            aria-expanded={typing?.index === i}
+            onClick={() => setTyping(typing?.index === i ? null : { index: i, text: "" })}
+            className="min-h-10 rounded-full border border-dashed border-line px-3.5 py-1.5 text-sm text-fg-muted hover:border-line-strong hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
+          >
+            Something else…
+          </button>
+        </div>
+      )}
+      {typing?.index === i && (
+        <form
+          className="mt-2 flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void answer(i, typing.text);
+          }}
+        >
+          <input
+            type="text"
+            aria-label={`Your answer: ${q.text}`}
+            value={typing.text}
+            maxLength={500}
+            autoFocus
+            disabled={busy}
+            onChange={(e) => setTyping({ index: i, text: e.target.value })}
+            className="min-h-10 min-w-0 flex-1 basis-48 rounded-xl border border-line-strong bg-surface px-3 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
+          />
+          <Button type="submit" variant="secondary" disabled={busy || !typing.text.trim()}>
+            Use this
+          </Button>
+        </form>
+      )}
+    </li>
+  );
+
   return (
     <article
       className={`rounded-2xl border bg-surface-elevated p-4 sm:p-5 ${
-        emphasized ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
+        emphasized || expanded ? "border-accent/60 ring-1 ring-accent/25 shadow-sm" : "border-line"
       }`}
     >
-      <div className="mb-2 flex items-center gap-2">
-        <span className="inline-flex items-center rounded-lg bg-surface-overlay px-2 py-0.5 text-[13px] font-medium text-fg-muted">
-          {followUp ? "Follow-up waiting" : "Reply waiting"}
+      <button
+        type="button"
+        aria-expanded={expanded}
+        disabled={busy || (expanded && (confirming || editing !== null || typing !== null))}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full cursor-pointer items-start gap-3 text-left disabled:cursor-default"
+      >
+        <span className="block min-w-0 flex-1">
+          <span className="mb-2 flex items-center gap-2">
+            <span className="inline-flex items-center rounded-lg bg-surface-overlay px-2 py-0.5 text-[13px] font-medium text-fg-muted">
+              {followUp ? "Follow-up waiting" : "Reply waiting"}
+            </span>
+            <FeatureName feature="act_as_me" className="text-[12px]" />
+            {received && <span className="text-sm text-fg-subtle tabular-nums">{received}</span>}
+          </span>
+          <span className="block text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+            {card.subject || "(no subject)"}
+          </span>
+          <span className="mt-1 block text-sm text-fg-muted break-words">
+            {followUp ? `Nobody answered your email to ${who}` : senderShort(card)}
+            {[relation, card.sender_verified ? "" : "Address not verified"]
+              .filter(Boolean)
+              .map((part) => ` · ${part}`)
+              .join("")}
+          </span>
+          {/* Plain text: the summary is written from a stranger's email too. */}
+          {gist && <span className="mt-2 block text-[15px] leading-snug text-fg break-words">{gist}</span>}
         </span>
-        <FeatureName feature="act_as_me" className="text-[12px]" />
-        {received && <span className="text-sm text-fg-subtle tabular-nums">{received}</span>}
-      </div>
-      <div className="text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
-        {card.subject || "(no subject)"}
-      </div>
-      <div className="mt-1 text-sm text-fg-muted break-words">
-        {followUp ? `Nobody answered your email to ${who}` : senderShort(card)}
-        {[relation, card.sender_verified ? "" : "Address not verified"]
-          .filter(Boolean)
-          .map((part) => ` · ${part}`)
-          .join("")}
-      </div>
+        <span className="flex shrink-0 items-center gap-1 pt-0.5 text-sm text-fg-muted">
+          <span className="hidden sm:inline">{expanded ? "Close" : "Open"}</span>
+          <span aria-hidden="true">{expanded ? "▴" : "▾"}</span>
+        </span>
+      </button>
 
-      {card.they_wrote && (
-        <details className="mt-3 group">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-fg-muted hover:bg-surface-overlay/60">
-            <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span>
-            {followUp ? "What you wrote" : "What they wrote"}
-          </summary>
-          {!followUp && (
-            <p className="mt-1.5 px-1 text-xs text-fg-subtle break-words">From: {senderLine(card)}</p>
+      {!expanded ? (
+        <>
+          {(toDecide || replyToNow || warnings.length > 0) && !unconfirmed && (
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              {toDecide && (
+                <span className="rounded-full border border-accent/60 px-2.5 py-0.5 text-[13px] text-accent">{toDecide}</span>
+              )}
+              {replyToNow && (
+                <span className="rounded-full border border-line-strong px-2.5 py-0.5 text-[13px] text-fg-muted">{replyToNow}</span>
+              )}
+              {warnings.length > 0 && (
+                <span className="rounded-full border border-amber-500/50 px-2.5 py-0.5 text-[13px] text-amber-700 dark:text-amber-300">
+                  ⚠ Check before sending
+                </span>
+              )}
+            </div>
           )}
-          {/* Plain text: what a stranger wrote is never rendered as markup. */}
-          <p className="mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg-muted">
-            {card.they_wrote}
-          </p>
-        </details>
-      )}
-
-      {choice && !unconfirmed && (
-        <div className="mt-3">
-          <div className={label} id={`reply-to-${card.decision_id}`}>Reply to</div>
-          <div role="radiogroup" aria-labelledby={`reply-to-${card.decision_id}`} className="mt-1.5 flex flex-wrap gap-2">
-            {([false, true] as const).map((everyone) => {
-              const on = everyone === choice.toEveryone;
-              return (
-                <button
-                  key={String(everyone)}
-                  type="button"
-                  role="radio"
-                  aria-checked={on}
-                  disabled={busy || confirming || editing !== null}
-                  onClick={() => void pickRecipients(everyone)}
-                  className={`min-h-touch rounded-full border px-4 text-sm disabled:opacity-60 ${
-                    on
-                      ? "border-accent bg-accent/15 font-semibold text-fg"
-                      : "border-line text-fg-muted hover:bg-surface-overlay/60"
-                  }`}
-                >
-                  {everyone ? choice.everyone : choice.sender}
-                </button>
-              );
-            })}
+          {unconfirmed ? (
+            <p className="mt-3 text-sm text-fg-muted">
+              {mailbox} hasn&apos;t confirmed this was sent. Check your Sent folder in {mailbox}; this card
+              updates on its own within a few minutes.
+            </p>
+          ) : (
+            <>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {left > 0 ? (
+                  <Button variant="primary" onClick={() => setOpen(true)} disabled={busy}>
+                    Review
+                  </Button>
+                ) : (
+                  <>
+                    <Button variant="primary" onClick={askToSend} disabled={busy}>
+                      Send
+                    </Button>
+                    <Button variant="secondary" onClick={() => setOpen(true)} disabled={busy}>
+                      Review
+                    </Button>
+                  </>
+                )}
+                {dismissButton}
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
+      {tappable ? (
+        openQuestions.length > 0 && (
+          <div className="mt-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
+            <ul className="mt-1.5 space-y-3">{openQuestions.map(renderQuestion)}</ul>
           </div>
-          {card.relation === "stranger" && !choice.toEveryone && (
-            <p className="mt-1 px-1 text-xs text-fg-subtle">Someone new, so it starts with just them.</p>
-          )}
+        )
+      ) : card.open_questions.length > 0 && (
+        <div className="mt-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
+          <ul className="mt-1 list-disc pl-5 space-y-0.5 text-sm text-fg">
+            {card.open_questions.map((q, i) => (
+              <li key={i} className="break-words">{q}</li>
+            ))}
+          </ul>
         </div>
+      )}
+      {busy && step.label === "Writing it in…" && (
+        <p className="mt-2 text-xs text-fg-subtle" aria-live="polite">Writing it into your reply…</p>
       )}
 
       <div className="mt-3">
@@ -398,92 +547,70 @@ export function ReplyCardItem({
         )}
       </div>
 
-      {card.waited_because && (
-        <p className="mt-3 text-xs text-fg-subtle break-words">Why it waited for you: {card.waited_because}</p>
+      {card.they_wrote && (
+        <details className="mt-3 group">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-fg-muted hover:bg-surface-overlay/60">
+            <span aria-hidden="true" className="inline-block transition-transform group-open:rotate-90">▸</span>
+            {followUp ? "What you wrote" : "What they wrote"}
+          </summary>
+          {!followUp && (
+            <p className="mt-1.5 px-1 text-xs text-fg-subtle break-words">From: {senderLine(card)}</p>
+          )}
+          {/* Plain text: what a stranger wrote is never rendered as markup. */}
+          <p className="mt-1.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg-muted">
+            {card.they_wrote}
+          </p>
+        </details>
       )}
 
-      {questions.some((q) => q.choices.length > 0) ? (
-        <div className="mt-3">
-          <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
-          <ul className="mt-1.5 space-y-3">
-            {questions.map((q, i) => (
-              <li key={i} className="text-sm text-fg">
-                <div className="break-words">
-                  {q.answer && <span className="mr-1 text-accent" aria-label="Answered">✓</span>}
-                  {q.text}
-                </div>
-                {q.source && <div className="mt-0.5 text-xs text-fg-subtle break-words">{q.source}</div>}
-                {q.answer && (
-                  <div className="mt-0.5 text-xs text-fg-muted break-words">Your answer: {q.answer}</div>
-                )}
-                {q.choices.length > 0 && editing === null && !unconfirmed && (
-                  <div className="mt-1.5 flex flex-wrap gap-2">
-                    {q.choices.map((choice) => (
+      {moreParts.length > 0 && (
+        <details className="mt-2 group/more">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-xl border border-line px-3 text-sm font-medium text-fg-muted hover:bg-surface-overlay/60">
+            <span aria-hidden="true" className="inline-block transition-transform group-open/more:rotate-90">▸</span>
+            <span className="min-w-0 break-words">More: {moreParts.join(" · ")}</span>
+          </summary>
+          <div className="px-1">
+            {choice && !unconfirmed && (
+              <div className="mt-3">
+                <div className={label} id={`reply-to-${card.decision_id}`}>Reply to</div>
+                <div role="radiogroup" aria-labelledby={`reply-to-${card.decision_id}`} className="mt-1.5 flex flex-wrap gap-2">
+                  {([false, true] as const).map((everyone) => {
+                    const on = everyone === choice.toEveryone;
+                    return (
                       <button
-                        key={choice}
+                        key={String(everyone)}
                         type="button"
-                        disabled={busy}
-                        aria-pressed={q.answer === choice}
-                        onClick={() => void answer(i, choice)}
-                        className={`min-h-10 max-w-full rounded-full border px-3.5 py-1.5 text-left text-sm break-words transition-colors cursor-pointer disabled:opacity-50 ${
-                          q.answer === choice
-                            ? "border-accent bg-accent/10 text-fg"
-                            : "border-line bg-surface text-fg-muted hover:border-line-strong hover:text-fg"
+                        role="radio"
+                        aria-checked={on}
+                        disabled={busy || confirming || editing !== null}
+                        onClick={() => void pickRecipients(everyone)}
+                        className={`min-h-touch rounded-full border px-4 text-sm disabled:opacity-60 ${
+                          on
+                            ? "border-accent bg-accent/15 font-semibold text-fg"
+                            : "border-line text-fg-muted hover:bg-surface-overlay/60"
                         }`}
                       >
-                        {choice}
+                        {everyone ? choice.everyone : choice.sender}
                       </button>
-                    ))}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      aria-expanded={typing?.index === i}
-                      onClick={() => setTyping(typing?.index === i ? null : { index: i, text: "" })}
-                      className="min-h-10 rounded-full border border-dashed border-line px-3.5 py-1.5 text-sm text-fg-muted hover:border-line-strong hover:text-fg transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      Something else…
-                    </button>
-                  </div>
+                    );
+                  })}
+                </div>
+                {card.relation === "stranger" && !choice.toEveryone && (
+                  <p className="mt-1 px-1 text-xs text-fg-subtle">Someone new, so it starts with just them.</p>
                 )}
-                {typing?.index === i && (
-                  <form
-                    className="mt-2 flex flex-wrap items-center gap-2"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void answer(i, typing.text);
-                    }}
-                  >
-                    <input
-                      type="text"
-                      aria-label={`Your answer: ${q.text}`}
-                      value={typing.text}
-                      maxLength={500}
-                      autoFocus
-                      disabled={busy}
-                      onChange={(e) => setTyping({ index: i, text: e.target.value })}
-                      className="min-h-10 min-w-0 flex-1 basis-48 rounded-xl border border-line-strong bg-surface px-3 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50"
-                    />
-                    <Button type="submit" variant="secondary" disabled={busy || !typing.text.trim()}>
-                      Use this
-                    </Button>
-                  </form>
-                )}
-              </li>
-            ))}
-          </ul>
-          {busy && step.label === "Writing it in…" && (
-            <p className="mt-2 text-xs text-fg-subtle" aria-live="polite">Writing it into your reply…</p>
-          )}
-        </div>
-      ) : card.open_questions.length > 0 && (
-        <div className="mt-3">
-          <div className="text-xs font-semibold uppercase tracking-wide text-accent">Decide before sending</div>
-          <ul className="mt-1 list-disc pl-5 space-y-0.5 text-sm text-fg">
-            {card.open_questions.map((q, i) => (
-              <li key={i} className="break-words">{q}</li>
-            ))}
-          </ul>
-        </div>
+              </div>
+            )}
+            {answeredQuestions.length > 0 && (
+              <div className="mt-3">
+                <div className={label}>Decided</div>
+                <ul className="mt-1.5 space-y-3">{answeredQuestions.map(renderQuestion)}</ul>
+              </div>
+            )}
+            {card.waited_because && (
+              <p className="mt-3 text-xs text-fg-subtle break-words">Why it waited for you: {card.waited_because}</p>
+            )}
+          </div>
+        </details>
       )}
 
       {warnings.length > 0 && (
@@ -505,7 +632,8 @@ export function ReplyCardItem({
             <p className="text-sm text-amber-700 dark:text-amber-300">{step.message}</p>
           )}
           <p className="text-sm text-fg">{sendQuestion(step.recipients, mailbox, inMailbox)}</p>
-          {step.allow && (
+          {step.kind === "ask" && nextTimeTick("mt-2")}
+          {allowNow && (
             <p className="mt-2 text-sm text-fg">
               From now on, {followUp ? "follow-ups" : "replies"} to {who} go on their own while Handle it for me is
               on. Topics that always wait, links and new people still wait for you.
@@ -530,7 +658,7 @@ export function ReplyCardItem({
                   step.kind === "confirm"
                     ? { recipients: step.recipients, thread_moved_on: step.threadMovedOn || undefined }
                     : { recipients: step.recipients },
-                  step.allow,
+                  allowNow,
                 )
               }
             >
@@ -550,20 +678,11 @@ export function ReplyCardItem({
               : `Answer the ${left} questions above to send, or tap Edit to write it yourself.`}
           </p>
         )}
-        {card.can_allow && (
-          <NextTimeTick
-            className={left > 0 ? "mt-2" : "mt-4"}
-            checked={nextTime}
-            disabled={busy}
-            onChange={setNextTime}
-            label={followUp ? "Follow up with them on its own next time" : `Reply to ${firstName} on its own next time`}
-            help="You can undo this in Handle it for me."
-          />
-        )}
+        {nextTimeTick(left > 0 ? "mt-2" : "mt-4")}
         <div className={`${left > 0 || card.can_allow ? "mt-2" : "mt-4"} flex flex-wrap items-center gap-2`}>
           <Button
             variant="primary"
-            onClick={() => setStep({ kind: "ask", recipients: card.draft_to, allow: Boolean(card.can_allow) && nextTime })}
+            onClick={askToSend}
             disabled={busy || left > 0}
           >
             {busy ? step.label : "Send"}
@@ -588,12 +707,10 @@ export function ReplyCardItem({
               Open in {mailbox}
             </a>
           )}
-          {/* Dismiss is its own button, set apart on the right, so it's never
-              hunted for in a menu next to Send. */}
-          <Button variant="ghost" className="ml-auto" onClick={() => void dismiss()} disabled={busy}>
-            Dismiss
-          </Button>
+          {dismissButton}
         </div>
+        </>
+      )}
         </>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
