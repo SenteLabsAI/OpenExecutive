@@ -622,6 +622,20 @@ def test_update_draft_text_changes_only_the_version_it_saw() -> None:
     assert graph.messages["d1"]["body"]["content"] == "Friday at 10 works."
 
 
+
+def test_update_draft_text_can_change_who_it_goes_to() -> None:
+    graph = FakeGraph()
+    graph.messages["d1"] = _msg("d1", isDraft=True)
+    client = graph.client()
+    asyncio.run(client.update_draft_text(
+        "d1", ol.draft_version("d1", "ck1"), "Hi", to=["dana@x.example"], cc=["ben@x.example"],
+    ))
+    patch = next(r for r in graph.graph_calls() if r.method == "PATCH")
+    sent = json.loads(patch.content)
+    assert sent["toRecipients"] == [{"emailAddress": {"address": "dana@x.example"}}]
+    assert sent["ccRecipients"] == [{"emailAddress": {"address": "ben@x.example"}}]
+
+
 @pytest.mark.parametrize("fields", [
     {"hasAttachments": True},
     {"body": {"contentType": "html", "content": "<p>Hi</p>"}},

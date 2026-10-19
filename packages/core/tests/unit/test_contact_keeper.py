@@ -334,6 +334,36 @@ def test_a_one_word_contact_gets_the_fuller_name_the_principal_wrote(owner: int)
     assert people_store.get_person(pid).full_name == "Marco Diaz"
 
 
+def test_a_name_filled_in_earlier_in_the_run_is_not_written_twice(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def role(message: Any, *, model: str | None = None) -> str:
+        return ""
+
+    monkeypatch.setattr(keeper, "read_role", role)
+    pid = people_store.upsert_person(full_name="Marco", email=MARCO, kind="contact")
+    box = FakeMailbox()
+    box.sent = [_sent([MARCO], names={MARCO: "Marco Diaz"})]
+    box.latest = {MARCO: MailMessage(
+        id="in1", thread_id="t", from_addr=MARCO, from_name="Marco Diaz", text="Thanks", sender_authenticated=True,
+    )}
+    assert _run(box).updated == 1
+    assert people_store.get_person(pid).full_name == "Marco Diaz"
+    assert len([c for c in changes.list_changes() if c.field == "full_name"]) == 1
+
+
+def test_turning_it_off_mid_run_holds_the_rest(owner: int) -> None:
+    box = FakeMailbox()
+    box.sent = [_sent([MARCO], names={MARCO: "Marco Diaz"}, days_ago=d) for d in (1, 2)]
+    real = box.list_events
+
+    async def switched_off(*a: Any, **kw: Any) -> Any:
+        changes.set_mode("off")
+        return await real(*a, **kw)
+
+    box.list_events = switched_off  # type: ignore[method-assign]
+    assert _run(box).added == 0
+    assert _contact(MARCO) is None
+
+
 # --- the routes ------------------------------------------------------------
 
 

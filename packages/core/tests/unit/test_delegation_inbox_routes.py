@@ -112,13 +112,13 @@ def test_check_now_needs_the_switch_on(client: TestClient, ids: dict[str, int], 
     assert client.post("/delegation/inbox/check", headers=OWNER).json()["detail"]["code"] == "in_progress"
 
 
-def _card(owner_id: int, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeInbox, int]:
+def _card(owner_id: int, monkeypatch: pytest.MonkeyPatch, *, cc: tuple[str, ...] = ()) -> tuple[FakeInbox, int]:
     """One card, made the way the watcher makes it."""
     from openexecutive.delegation import ghostwriter as gw
     from openexecutive.delegation import inbox_classifier as ic
 
     async def classifier(model: str, turn: str) -> dict[str, Any]:
-        return {"needs_reply": True, "kind": "question", "confidence": 0.9}
+        return {"needs_reply": True, "kind": "question", "confidence": 0.9, "asked_of_them": True}
 
     async def composer(model: str, system: str, turn: str) -> dict[str, Any]:
         return {"subject": "Re: Thursday call", "body": "Hi Dana,\n\nI'll get back to you.\n\nOlivia"}
@@ -129,7 +129,7 @@ def _card(owner_id: int, monkeypatch: pytest.MonkeyPatch) -> tuple[FakeInbox, in
     inbox.set_watch(owner_id, True, updated_by="t", now=datetime(2026, 9, 29, tzinfo=UTC))
     inbox.set_mailbox_drafts(owner_id, True, updated_by="t")
     mailbox = FakeInbox()
-    mailbox.add(_msg("m1", "t1"))
+    mailbox.add(_msg("m1", "t1", cc=cc))
     person = people_store.get_person(owner_id)
     asyncio.run(inbox.scan_person(person, gmail=mailbox, now=NOW))
     return mailbox, inbox.open_cards(owner_id)[0].id
@@ -258,3 +258,25 @@ def test_changing_a_replys_words_on_its_card(
     assert mailbox.drafts["d1"].message.text == "Friday at 10 works."
     assert client.put(url, json={"text": "x" * 20_001}, headers=OWNER).status_code == 422
     assert client.put("/delegation/replies/9999/text", json={"text": "Hi"}, headers=OWNER).status_code == 404
+
+
+def test_choosing_who_a_reply_goes_to(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch, cc=("ben@northpeak.example",))
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    url = f"/delegation/replies/{card_id}/recipients"
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    sender = _msg("m1", "t1").from_addr
+    # New to them: it starts with the sender alone, and they can add the others.
+    card = client.get("/delegation/replies", headers=OWNER).json()["cards"][0]
+    assert card["reply_others"] == ["ben@northpeak.example"] and card["draft_to"] == [sender]
+    assert client.put(url, json={"everyone": True}, headers=TEAMMATE).status_code == 403
+    resp = client.put(url, json={"everyone": True}, headers=OWNER)
+    assert resp.status_code == 200 and resp.json()["draft_to"] == [sender, "ben@northpeak.example"]
+    assert mailbox.drafts["d1"].message.cc == ["ben@northpeak.example"]
+    # Only the card's own lists: no address comes from the request.
+    assert client.put(url, json={"everyone": True, "to": ["x@evil.example"]}, headers=OWNER).status_code == 422
+    resp = client.put(url, json={"everyone": False}, headers=OWNER)
+    assert resp.json()["draft_to"] == [sender] and mailbox.drafts["d1"].message.cc == []
+    assert client.put("/delegation/replies/9999/recipients", json={"everyone": True}, headers=OWNER).status_code == 404

@@ -47,8 +47,9 @@ also went to others is drafted for only when the person is in To and it asks
 them themselves, not someone else by name or the group at large
 (``inbox_classifier.wants_draft``). The reply goes to everyone the email went to
 (reply to all, never the person's own addresses or the Executive); a
-stranger's holding reply goes to the sender alone. The card flags
-``others_on_thread``.
+stranger's holding reply starts with the sender alone. The card flags
+``others_on_thread`` and lets the person choose: the sender only, or
+everyone (``card_drafts.set_recipients``).
 
 **Limits.** Per scan 5 drafts; per day ``DELEGATION_INBOX_MAX_DRAFTS_PER_DAY``
 within the shared daily limit (``delegation.caps``), 200 classifications, 2
@@ -94,6 +95,8 @@ DECISION_CLASS = "delegation_reply"
 # A card whose draft follows up the person's own unanswered email
 # (delegation.follow_ups) rather than answering someone else's.
 FOLLOW_UP_SOURCE = "follow_up"
+# Card payload key: everyone else the email went to, for the Reply to choice.
+REPLY_OTHERS = "reply_others"
 
 GRACE = timedelta(minutes=10)
 STALE = timedelta(days=3)
@@ -721,6 +724,9 @@ class Reply:
     references: str | None
     # Everyone else the email went to, on a group email (reply to all).
     cc: list[str] = field(default_factory=list)
+    # Everyone else the email went to, whether or not ``cc`` holds them: who
+    # the card's Reply to choice adds for "Everyone" (``card_drafts.set_recipients``).
+    others: list[str] = field(default_factory=list)
     # What the person can tap to answer each open question, in order
     # (``delegation.answers.suggest``); shorter than ``open_questions`` when
     # a question has none.
@@ -754,16 +760,18 @@ async def compose_reply(
     exec_address = (get_settings().exec_email_address or "").strip().lower()
     # Everyone else the email went to, never the person's own addresses or
     # the Executive (Send refuses a draft addressed to it), filtered before
-    # trimming so the room goes to real recipients.
-    cc: list[str] = []
-    if relation != "stranger":
-        cc = [
-            a for a in dict.fromkeys([*message.to, *message.cc])
-            if a not in own and a != exec_address and a != message.from_addr
-        ]
-        if len(cc) > MAX_RECIPIENTS - 1:
-            cc = cc[: MAX_RECIPIENTS - 1]
+    # trimming so the room goes to real recipients. A stranger's reply starts
+    # with the sender alone (anyone can be put on a stranger's email); the
+    # card lets the person add the others themselves.
+    others = [
+        a for a in dict.fromkeys([*message.to, *message.cc])
+        if a not in own and a != exec_address and a != message.from_addr
+    ]
+    if len(others) > MAX_RECIPIENTS - 1:
+        others = others[: MAX_RECIPIENTS - 1]
+        if relation != "stranger":
             plan["flags"].append("cc_trimmed")
+    cc = [] if relation == "stranger" else list(others)
     relation_text = {
         "team": "on their team",
         "contact": "one of their contacts",
@@ -800,6 +808,7 @@ async def compose_reply(
         question_choices=choices,
         to=plan["to"],
         cc=cc,
+        others=others,
         subject=composed.subject,
         body=composed.body,
         open_questions=questions,
@@ -872,6 +881,8 @@ def _card_payload(
         "they_wrote": sender_new_text(message.text or "")[:_THEY_WROTE_CHARS],
         # Everyone it goes to: Send checks the draft against this list.
         "draft_to": [*reply.to, *reply.cc],
+        # Who Reply to: Everyone adds (``card_drafts.set_recipients``).
+        REPLY_OTHERS: [] if follow_up else reply.others,
         "draft_subject": reply.subject,
         "draft_body": reply.body,
         "open_questions": reply.open_questions,

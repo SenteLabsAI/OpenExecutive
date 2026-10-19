@@ -21,7 +21,7 @@ const FLAG_TEXT: Record<string, string> = {
   send_failed: "Sending didn't go through last time, so nothing was sent. Try again, or send it from Gmail.",
   sender_unverified: "Gmail couldn't confirm this came from that address. Check it before you reply.",
   thread_moved_on: "A newer message arrived in this thread after the draft was written.",
-  others_on_thread: "Others were on this email. The draft goes to the sender only.",
+  others_on_thread: "Others were on this email.",
   executive_on_thread: "The Executive was on this email too.",
   reply_to_ignored: "The email asked for replies to go elsewhere. The draft goes to the sender.",
   mailing_list: "This came through a mailing list.",
@@ -39,6 +39,26 @@ const FLAG_ORDER = Object.keys(FLAG_TEXT);
 export function replyFlagLines(flags: readonly string[]): string[] {
   const seen = new Set(flags);
   return FLAG_ORDER.filter((f) => seen.has(f)).map((f) => FLAG_TEXT[f]);
+}
+
+/** The Reply to choice on a card: the sender's button and the everyone
+ * button, with which is picked now. Null when there is no choice (a
+ * follow-up, or nobody else was on the email). */
+export function replyToChoice(card: {
+  from_name: string;
+  from_email: string;
+  draft_to: readonly string[];
+  reply_others?: readonly string[];
+  source?: string;
+}): { sender: string; everyone: string; toEveryone: boolean } | null {
+  const others = card.reply_others ?? [];
+  if (card.source === "follow_up" || others.length === 0) return null;
+  const first = card.from_name.trim().split(/\s+/)[0] || card.from_email;
+  return {
+    sender: `${first} only`,
+    everyone: `Everyone (${others.length + 1})`,
+    toEveryone: card.draft_to.length > 1,
+  };
 }
 
 /** "Dana Park <dana@…>" as the card's From line; the address alone when

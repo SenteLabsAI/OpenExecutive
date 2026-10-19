@@ -334,9 +334,13 @@ def _propose(
     email: str, full_name: str, person_id: int | None = None, old: str = "", new: str = "", evidence: int = 0,
 ) -> None:
     """Make the change (``on``) or keep it as a suggestion (``ask``), and
-    record it either way."""
-    if changes.open_suggestion(email, field_name):
+    record it either way. The switch is read again here, so turning it
+    off (or to Ask me first) mid-run holds what is left."""
+    current = changes.get_mode()
+    if current == "off" or changes.open_suggestion(email, field_name):
         return
+    if current == "ask":
+        mode = "ask"
     draft = changes.ContactChange(
         id=0, person_id=person_id, action=action, field=field_name, email=email, full_name=full_name,
         old_value=old, new_value=new, reason=reason, evidence=evidence,
@@ -589,6 +593,7 @@ def _names_written(client: Any, address: str, seen: dict[str, Seen]) -> list[str
 async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime, result: RunResult) -> None:
     """Roles (and a fuller name) from the contacts' own newest mail."""
     from openexecutive.delegation.gmail import GmailAuthError, GmailRateLimited
+    from openexecutive.people import store as people_store
 
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     budget = min(SIGNATURE_READS_PER_RUN, SIGNATURE_READS_PER_DAY - changes.reads_since(day_start))
@@ -616,6 +621,8 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
             continue
         if changes.norm(getattr(message, "from_addr", "")) != address:
             continue
+        # As it stands now: an earlier step of this run may have changed it.
+        person = people_store.get_person(int(person.id or 0)) or person
         name = clean_name(getattr(message, "from_name", ""))
         if name and _is_fuller(person.full_name, name) and not changes.is_blocked(address, "full_name", name):
             _propose(

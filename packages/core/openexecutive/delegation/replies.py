@@ -57,6 +57,9 @@ class ReplyCard:
     questions: list[dict[str, Any]] = field(default_factory=list)
     # Changed by hand on the card: what is left open no longer holds Send.
     questions_settled: bool = False
+    # Everyone else the email went to: the card's Reply to choice adds them
+    # (delegation.card_drafts.set_recipients). Empty: no choice to make.
+    reply_others: list[str] = field(default_factory=list)
 
 
 def _strings(value: Any) -> list[str]:
@@ -70,7 +73,7 @@ def cards(person: Any) -> list[ReplyCard]:
     from openexecutive.delegation.card_drafts import QUESTIONS_SETTLED
     from openexecutive.delegation.gmail import credential_provider, mailbox_link
     from openexecutive.delegation.handle_it import REASONS
-    from openexecutive.delegation.inbox import card_payload, ledger_flags, open_cards
+    from openexecutive.delegation.inbox import REPLY_OTHERS, card_payload, ledger_flags, open_cards
 
     open_ = open_cards(person.id)
     payloads = [(c, card_payload(c)) for c in open_]
@@ -114,6 +117,7 @@ def cards(person: Any) -> list[ReplyCard]:
             mailbox=mailbox,
             questions=questions_for(payload),
             questions_settled=payload.get(QUESTIONS_SETTLED) is True,
+            reply_others=[] if payload.get("source") == "follow_up" else _strings(payload.get(REPLY_OTHERS)),
         ))
     return out
 

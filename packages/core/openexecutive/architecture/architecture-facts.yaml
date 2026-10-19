@@ -10877,7 +10877,12 @@ delegation:
     reply_all on, minus the person's own addresses and the Executive; a
     stranger's holding reply has reply_all off; Reply-To ignored; draft_to
     lists everyone and Send checks it); the card is
-    flagged others_on_thread when anyone else was addressed,
+    flagged others_on_thread when anyone else was addressed, and then
+    offers Reply to: the sender only, or everyone (reply_others, the list
+    fixed when the card was written; PUT /delegation/replies/{id}/recipients
+    {everyone}, card_drafts.set_recipients, rewrites draft_to, draft_spec and
+    the mailbox draft's To/Cc, never an address from the request; a stranger's
+    card starts on the sender only),
     executive_on_thread when the Executive was, and sender_unverified when
     Gmail's SPF/DKIM/DMARC results don't vouch for the From address
     (fact_confirmation.headers_authenticated). A sincere "are you an AI?"
@@ -11086,7 +11091,10 @@ delegation:
     and, when it is in their Drafts, there too, only while that draft is still
     the version the card last saw (409 draft_changed / draft_not_plain /
     caller_signing_required, 422 empty / too_long); it sends nothing, and a
-    change by hand sets questions_settled. POST
+    change by hand sets questions_settled. PUT
+    /delegation/replies/{id}/recipients {everyone} sends it to the sender
+    only or to everyone the email went to (409 no_choice when nobody else
+    was on it), with the same checks. POST
     /delegation/replies/{id}/answer {answers: [{question_index,
     answer_text}]} (delegation.answers) answers what the reply left open:
     one composer-model call (REWRITE_PROMPT + the person's voice block, no
