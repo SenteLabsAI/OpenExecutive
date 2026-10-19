@@ -11,13 +11,15 @@ import {
   type HandledReply,
   type HandleIt,
 } from "@/lib/api";
+import { handledLine } from "@/lib/inviteCards";
 import { sentTodayLine } from "@/lib/reach";
 import { formatAgo } from "@/lib/setupStatus";
 
 // Handle it for me, its own tab under Delegate: replies the inbox watcher
 // sends from your mailbox on its own. Plain code decides each one
 // (delegation/handle_it.py). This tab holds What it sends on its own
-// (SendsCard) and what it sent in the last week (GET /delegation/handled).
+// (SendsCard) and what it sent in the last week (GET /delegation/handled),
+// meeting invites it accepted on its own included.
 export type DelegationLoad = {
   settings: DelegationSettings | null;
   state: "loading" | "hidden" | "ready" | "error";
@@ -91,10 +93,8 @@ function HandleItSection({ handleIt }: { handleIt: HandleIt }) {
           {handled.map((h) => (
             <li key={h.decision_id} className="rounded-md border border-border px-3 py-2 text-sm">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <span className="min-w-0 font-medium">
-                  {h.source === "follow_up" ? "Followed up with" : "Replied to"} {h.to_name || h.to_email}:{" "}
-                  {h.subject}
-                </span>
+                {/* A reply names who it went to; an accepted invite says so. */}
+                <span className="min-w-0 font-medium">{handledLine(h)}</span>
                 <span className="text-xs text-fg-muted">{formatAgo(h.sent_at)}</span>
               </div>
               {h.open_questions.length > 0 && (

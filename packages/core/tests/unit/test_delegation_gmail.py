@@ -28,6 +28,7 @@ from openexecutive.delegation.gmail import (
     GmailCredential,
     GmailError,
     GmailNotConfigured,
+    MailMessage,
     build_raw,
     email_key,
     gmail_link,
@@ -346,7 +347,10 @@ def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
         # Checks an id's shape (Gmail's and Outlook's differ); no call.
         "valid_id",
         # Read my calendar (delegation.calendar): read-only.
-        "list_events", "calendar_granted",
+        "list_events", "calendar_granted", "calendar_write_granted", "find_invite",
+        # Answer a meeting invite as them (delegation.invites): their own
+        # attendee answer on one event, nothing else.
+        "answer_invite",
         # A contact's newest mail, for their signature (people.contact_keeper): read-only.
         "latest_from",
     }
@@ -719,7 +723,8 @@ def test_a_refused_calendar_read_is_not_granted_not_a_reconnect() -> None:
 def test_the_script_asks_for_the_calendar_only_with_the_flag() -> None:
     script = _script()
     payload = script.credential_payload(EMAIL, "r", "c", "s", scopes=[*script.SCOPES, script.CALENDAR_SCOPE])
-    assert payload["scopes"][-1] == gm.SCOPE_CALENDAR
+    # calendar.events: reads, and answers invites (delegation.invites).
+    assert payload["scopes"][-1] == gm.SCOPE_CALENDAR_EVENTS
     assert script.credential_payload(EMAIL, "r", "c", "s")["scopes"] == list(gm.SCOPES)
 
 
@@ -733,3 +738,88 @@ def test_each_recipient_keeps_the_name_it_was_written_with() -> None:
     assert message.names == {
         "priya.shah@northwind.example": "Shah, Priya", "bare@x.example": "", "marco@fabrikam.example": "Marco Diaz",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Meeting invites (delegation.invites)
+# --------------------------------------------------------------------------- #
+
+_ICS = (
+    "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:UTC\r\nEND:VTIMEZONE\r\n"
+    "BEGIN:VEVENT\r\nUID:abc123-very-long-uid-that-is-folded@\r\n google.com\r\nSUMMARY:Pilot review\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n"
+)
+
+
+def test_an_invite_keeps_its_method_and_uid_and_nothing_else() -> None:
+    assert gm.ics_invite(_ICS) == ("REQUEST", "abc123-very-long-uid-that-is-folded@google.com")
+    assert gm.ics_invite("BEGIN:VCALENDAR\nMETHOD:CANCEL\nBEGIN:VEVENT\nUID:x1\nEND:VEVENT") == ("CANCEL", "x1")
+    assert gm.ics_invite("not a calendar") == ("", "")
+    invite = _message({"From": "dana@northpeak.example"}, plain="Invitation")
+    invite["payload"]["parts"].append({"mimeType": "text/calendar", "body": {"data": _b64(_ICS)}})
+    parsed = parse_message(invite)
+    assert (parsed.invite_method, parsed.invite_uid) == ("REQUEST", "abc123-very-long-uid-that-is-folded@google.com")
+
+
+def _invite_google(scope: str, *, items: list[dict[str, Any]] | None = None, event: dict[str, Any] | None = None,
+                   status: int = 200) -> tuple[list[httpx.Request], DelegateGmail]:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if status != 200:
+            return httpx.Response(status, json={"error": {"code": status, "errors": [{"reason": "forbidden"}]}})
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json={"items": items or []})
+        return httpx.Response(200, json=event or {})
+
+    return seen, DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+
+
+def test_an_invite_is_found_on_their_calendar_by_its_uid() -> None:
+    gm._TOKENS.clear()
+    item = {"id": "ev1", "summary": "Pilot review", "start": {"dateTime": "2026-10-14T16:00:00Z"},
+            "end": {"dateTime": "2026-10-14T16:30:00Z"}, "organizer": {"email": "dana@northpeak.example"},
+            "attendees": [{"email": EMAIL, "self": True, "responseStatus": "needsAction"}]}
+    seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]), items=[item])
+    message = MailMessage(id="m1", thread_id="t1", calendar_invite=True, invite_method="REQUEST", invite_uid="u1@x")
+    event = asyncio.run(client.find_invite(message))
+    assert event is not None and (event.id, event.response) == ("ev1", "needs_action")
+    assert seen[-1].url.path == "/calendar/v3/calendars/primary/events" and seen[-1].url.params["iCalUID"] == "u1@x"
+    # A cancellation or someone's answer is never a request to answer.
+    cancelled = MailMessage(id="m2", thread_id="t1", calendar_invite=True, invite_method="CANCEL", invite_uid="u1@x")
+    assert asyncio.run(client.find_invite(cancelled)) is None
+
+
+def test_answering_changes_only_their_own_answer_and_tells_the_organizer() -> None:
+    gm._TOKENS.clear()
+    event = {"id": "ev1", "attendees": [
+        {"email": "dana@northpeak.example", "organizer": True, "responseStatus": "accepted"},
+        {"email": EMAIL, "self": True, "responseStatus": "needsAction"},
+        {"email": "ben@co.example", "responseStatus": "tentative"},
+    ]}
+    seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]), event=event)
+    asyncio.run(client.answer_invite("ev1", accept=False))
+    patch = next(r for r in seen if r.method == "PATCH")
+    assert patch.url.path == "/calendar/v3/calendars/primary/events/ev1" and patch.url.params["sendUpdates"] == "all"
+    body = json.loads(patch.content)
+    assert list(body) == ["attendees"]
+    assert [a["responseStatus"] for a in body["attendees"]] == ["accepted", "declined", "tentative"]
+    with pytest.raises(GmailError):
+        asyncio.run(client.answer_invite("ev1/../../other", accept=True))
+
+
+def test_a_read_only_sign_in_reads_but_cannot_answer() -> None:
+    gm._TOKENS.clear()
+    seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]))
+    assert asyncio.run(client.calendar_granted()) is True
+    assert asyncio.run(client.calendar_write_granted()) is False
+    with pytest.raises(gm.CalendarWriteNotGranted):
+        asyncio.run(client.answer_invite("ev1", accept=True))
+    assert all(r.url.host == "oauth2.googleapis.com" for r in seen)
+    gm._TOKENS.clear()
+    _seen, events_scope = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]))
+    assert asyncio.run(events_scope.calendar_granted()) is True  # calendar.events reads too
+    assert asyncio.run(events_scope.calendar_write_granted()) is True

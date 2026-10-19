@@ -2253,7 +2253,7 @@ def _sent_as_caller(request: Request) -> list[ActivityItem]:
     return [
         ActivityItem(
             kind="sent_as_you",
-            summary=(
+            summary=h.summary if h.source == "invite" and h.summary else (
                 f"{'Followed up with' if h.source == 'follow_up' else 'Replied to'} "
                 f"{h.to_name or h.to_email}: {h.subject}"
             ),

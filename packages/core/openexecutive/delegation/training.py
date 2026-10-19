@@ -9,7 +9,10 @@ card on the Act as me page:
   it sends that reply on the person's tap, as Send does, and from then on
   replies to that same sender may go on their own while Handle it for me is
   on, under the dial's limits and every check Handle it always makes
-  (``handle_it.refusal``), strangers included.
+  (``handle_it.refusal``), strangers included. A meeting invite card
+  (``delegation.invites``) adds the same tick, "Accept from them on its own
+  next time": from then on invites from that sender with no clash are
+  accepted on their own while Handle it for me is on.
 - **Follow-ups** (``follow_ups``): every follow-up waits; Send + allow on a
   follow-up card lets follow-ups to exactly those people go on their own.
 - **Suggested actions** (``actions``): an action card from someone's mail
@@ -64,6 +67,7 @@ SWITCHES: tuple[str, ...] = (*SETTINGS, ACTIONS_ON)
 # What each kind of key teaches, by the action in it.
 _SETTING_OF_ACTION = {
     "reply": REPLIES, "follow_up": FOLLOW_UPS, "message": ACTIONS, "invite": ACTIONS, "style": DRAFTS,
+    "invite_from": REPLIES,
 }
 
 # The longest example kept, after the quoted thread is dropped.
@@ -170,6 +174,10 @@ def reply_key(person_id: int, sender: str) -> str:
     return f"{_prefix(person_id)}|reply|{_email(sender)}"
 
 
+def inviter_key(person_id: int, sender: str) -> str:
+    return f"{_prefix(person_id)}|invite_from|{_email(sender)}"
+
+
 def follow_up_key(person_id: int, recipients: list[str]) -> str:
     going = sorted({_email(a) for a in recipients if _email(a)})
     return f"{_prefix(person_id)}|follow_up|{','.join(going)}"
@@ -261,6 +269,13 @@ def allowed_sender(person_id: int, sender: str, *, db_path: Path | None = None) 
     return _find(person_id, reply_key(person_id, sender), db_path=db_path)
 
 
+def allowed_inviter(person_id: int, sender: str, *, db_path: Path | None = None) -> Allowed | None:
+    """The allowance for accepting ``sender``'s meeting invites on their own."""
+    if not _email(sender):
+        return None
+    return _find(person_id, inviter_key(person_id, sender), db_path=db_path)
+
+
 def allowed_follow_up(person_id: int, recipients: list[str], *, db_path: Path | None = None) -> Allowed | None:
     """The allowance for ``person_id``'s follow-ups to exactly ``recipients``."""
     if not any(_email(a) for a in recipients):
@@ -324,6 +339,16 @@ def allow_sender(
     """Let replies to ``sender`` go on their own for ``person_id``. Raises
     ``take_the_lead.RuleError`` when their list is full."""
     return _allow(person_id, reply_key(person_id, sender), reply_label(name, sender),
+                  decision_id=decision_id, db_path=db_path)
+
+
+def allow_inviter(
+    person_id: int, sender: str, name: str, *, decision_id: int | None, db_path: Path | None = None,
+) -> Allowed:
+    """Let ``sender``'s meeting invites be accepted on their own for
+    ``person_id`` (when nothing clashes). Raises ``take_the_lead.RuleError``
+    when their list is full."""
+    return _allow(person_id, inviter_key(person_id, sender), f"Accept invites from {_who(name, sender)}",
                   decision_id=decision_id, db_path=db_path)
 
 

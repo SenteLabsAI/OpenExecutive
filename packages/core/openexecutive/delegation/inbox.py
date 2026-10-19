@@ -27,7 +27,8 @@ still need a look, settled ones passed over first. Each is recorded once in
 - it is from the person or one of their send-as addresses, from the
   Executive, or one of this package's own drafts;
 - it is automatic, bulk, a bounce or a calendar invite, or from a mailing
-  list;
+  list (with Read my calendar on, an invite goes to ``delegation.invites``
+  instead: a card to accept or decline it, from someone the person knows);
 - the person is not in To or Cc, or it has more than 10 recipients;
 - the person replied last, or a draft already sits in the thread.
 
@@ -180,8 +181,11 @@ class ScanResult:
     deferred: int = 0
     failed: int = 0
     closed: int = 0
-    # Replies sent on their own under Handle it for me (delegation.handle_it).
+    # Replies sent on their own under Handle it for me (delegation.handle_it),
+    # and invites accepted on their own (delegation.invites).
     handled: int = 0
+    # Meeting invite cards made (delegation.invites).
+    invites: int = 0
 
     def counts(self) -> dict[str, Any]:
         return asdict(self)
@@ -1050,13 +1054,16 @@ async def _scan(person: Any, client: Any, watch: InboxWatch, now: datetime) -> S
     email = (person.email or "").strip().lower()
     own = {email, *await client.send_as_addresses()}
     exec_address = (get_settings().exec_email_address or "").strip().lower()
+    from openexecutive.delegation import invites
+
     result = ScanResult("ok")
     result.closed = await reconcile(person, client, now=now, own=own)
+    result.closed += invites.reconcile(person.id, now=now)
     cards = open_cards(person.id)
     if len(cards) >= OPEN_CARDS_MAX:
         result.status = "backlog_full"
         return result
-    carded = {str(card_payload(c).get("thread_id") or "") for c in cards}
+    carded = {str(card_payload(c).get("thread_id") or "") for c in cards} | invites.carded_threads(person.id)
     since = _parse(watch.watch_since) or now
     listed = await client.inbox_message_ids(after=since, max_results=SCAN_LIST)
     # The newest message of each thread that still needs a look, newest
@@ -1121,7 +1128,7 @@ async def _consider(
     Once claimed, a message is finished or left for a later scan
     (``_retry_later``); a Gmail failure is raised for the scan to back off."""
     from openexecutive.config import get_settings
-    from openexecutive.delegation import caps, card_drafts, drafts, handle_it
+    from openexecutive.delegation import caps, card_drafts, drafts, handle_it, invites
     from openexecutive.delegation import disclosure as ai_disclosure
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
@@ -1140,6 +1147,15 @@ async def _consider(
     received = _parse(message.received_at)
     if received is not None and now - received < GRACE:
         return False  # not yet: mail they answer straight away never gets a card
+    if message.calendar_invite and invites.watching(person.id):
+        # A meeting invite: a card to accept or decline it (Read my calendar on).
+        reason = invites.skip_reason(message, own=own, exec_address=exec_address, watch_since=since, now=now)
+        if reason is not None:
+            if _claim(person.id, message, relation="", outcome=SKIPPED, reason=reason, now=now):
+                result.skipped += 1
+            return False
+        await invites.consider(person, client, message, thread, now=now, result=result)
+        return False
     reason = skip_reason(message, thread, own=own, exec_address=exec_address, watch_since=since, now=now)
     if reason is not None:
         if _claim(person.id, message, relation="", outcome=SKIPPED, reason=reason, now=now):
@@ -1319,30 +1335,25 @@ def _create_card(
     person: Any, message: Any, thread: Any, reply: Reply, draft: Any, *, relation: str, handled_as: str,
     verdict: Any, on_its_own: bool = False, handle_it_reason: str | None = None, source: str | None = None,
     kept: dict[str, Any] | None = None,
-) -> int | None:
+) -> int:
     """The card for this reply, made once per message (its idempotency key):
-    a second call for the same message finds the one the first made. A card
-    Handle it for me will send is ``auto_execute``; every other is ``propose``."""
-    from openexecutive.memory.decision_ledger import create_decision_instance, get_live_by_idem
+    a second call for the same message finds the open one the first made,
+    and a card already settled under that key (dismissed, sent, closed)
+    doesn't stop a new one (``invites.create_once``). A card Handle it for me
+    will send is ``auto_execute``; every other is ``propose``."""
+    from openexecutive.delegation.invites import create_once
 
-    key = f"{DECISION_CLASS}:{person.id}:{message.id}"
-    try:
-        return create_decision_instance(
-            decision_class=DECISION_CLASS,
-            department="",
-            originating_session_id=None,
-            proposed_payload=_card_payload(
-                person, message, thread, reply, draft, relation=relation, handled_as=handled_as, verdict=verdict,
-                handle_it_reason=handle_it_reason, source=source,
-            ) | (kept or {}),
-            idempotency_key=key,
-            gate_mode="auto_execute" if on_its_own else "propose",
-            approver_person_id=person.id,
-            confidence=verdict.confidence,
-        )
-    except sqlite3.IntegrityError:
-        existing = get_live_by_idem(key)
-        return existing.id if existing is not None else None
+    return create_once(
+        DECISION_CLASS,
+        f"{DECISION_CLASS}:{person.id}:{message.id}",
+        _card_payload(
+            person, message, thread, reply, draft, relation=relation, handled_as=handled_as, verdict=verdict,
+            handle_it_reason=handle_it_reason, source=source,
+        ) | (kept or {}),
+        approver_person_id=person.id,
+        gate_mode="auto_execute" if on_its_own else "propose",
+        confidence=verdict.confidence,
+    )
 
 
 # --------------------------------------------------------------------------- #

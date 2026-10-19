@@ -10352,16 +10352,20 @@ delegation:
     Eval: delegation_014.
   calendar: |
     Read my calendar (delegation.calendar, table delegation_calendar, one
-    row per person, absent/unreadable = off). Read-only, on the Act as me
-    sign-in: Google calendar.readonly, Microsoft Calendars.Read, added by
-    connect-own-gmail.py / connect-own-outlook.py --calendar. Optional
+    row per person, absent/unreadable = off). On the Act as me sign-in:
+    Google calendar.events, Microsoft Calendars.ReadWrite, added by
+    connect-own-gmail.py / connect-own-outlook.py --calendar; the only
+    write is answering a meeting invite (see invites). A sign-in minted
+    earlier with calendar.readonly / Calendars.Read keeps reading
+    (CALENDAR_READ_SCOPES, CALENDAR_SCOPES) and its invite cards say to
+    connect again (calendar_write_granted False). Optional
     scopes: the token refresh still requires only the mail ones; the
     clients keep the scope string the refresh returns (_GRANTED) and
     list_events raises CalendarNotGranted (a GmailError, not an auth error)
     before calling when it is missing, or on a 403. An Outlook refresh asks
-    for Calendars.Read too only when the credential file's scopes list it
-    (_refresh_scope); a mail-only one never asks, so its refresh can't fail
-    on it. PUT /delegation/calendar
+    for Calendars.ReadWrite (or Calendars.Read for an older file) only when
+    the credential file's scopes list it (_refresh_scope); a mail-only one
+    never asks, so its refresh can't fail on it. PUT /delegation/calendar
     {enabled}: on needs Act as me on, gmail_status connected and a one-hour
     list_events that works (409 act_as_me_off / calendar_not_granted, 503
     calendar_error); off always works; Act as me off turns it off;
@@ -10375,6 +10379,57 @@ delegation:
     calendarView, cancelled and working-location left out, one-line fields,
     data-not-instructions note. Nothing kept. The Act as me addendum names
     it and says reading the calendar counts as reading their mail.
+  invites: |
+    Meeting invites (delegation.invites), only with Read my calendar on
+    (watching = calendar.enabled); off, an invite is skipped "automatic" as
+    before. In inbox._consider, a message with calendar_invite goes to
+    invites.skip_reason (the watcher's rules less the reply-writing ones:
+    a calendar service's Sender header is not "automatic", no recipient
+    cap, no you_replied/draft_exists) then invites.consider. No model call.
+    Sender: inbox.relation_of + handling_relation; a stranger or an
+    unverified known sender is skipped invite_stranger / invite_unverified.
+    Event: mailbox find_invite (Gmail: the invite's iCalendar UID from its
+    text/calendar part, gmail.ics_invite, or its attached .ics, then
+    events.list?iCalUID= on the primary calendar; Outlook: GET
+    /messages/{id}?$expand=microsoft.graph.eventMessage/event, only
+    meetingMessageType meetingRequest). Skipped with reasons
+    invite_not_found, invite_not_organizer (organizer != From),
+    invite_answered, invite_past, invite_calendar_not_granted. A calendar
+    GmailError (not auth / rate limit) is retried later without backing off
+    the mail scan. Clashes (invites.clashes): calendar.events_for over the
+    meeting's window, other events' start/end only (never titles), the
+    meeting itself and declined / all-day events left out; None when
+    unreadable (clash_checked False). Card: delegation_invite decision,
+    approver_only, never an alert, payload private + event_id, title, start,
+    end, clashes, can_answer (calendar_write_granted is not False),
+    connect_command when it can't; idempotency key
+    delegation_invite:<person>:<message_id> via invites.create_once, which
+    also fixes reply cards: an open card under the key is that card, a
+    settled one gets a new card under key:<uuid>. Ledger outcome
+    invite_card, then accepted / declined / dismissed / expired. GET
+    /delegation/invites lists them (no calendar call). Approve =
+    invites.answer: caller_refusal (403 not_yours / 409
+    caller_signing_required), Act as me + Read my calendar on, live (start
+    ahead, under CARD_TTL 7 days), gmail_status connected,
+    claim_for_execution, mailbox.answer_invite(event_id, accept) — Gmail GET
+    event, set the self attendee's responseStatus, PATCH attendees with
+    sendUpdates=all; Outlook POST /events/{id}/accept|decline
+    {sendResponse: true}. CalendarWriteNotGranted -> release, can_answer
+    False on the card, 409 calendar_write_needed; GmailNotFound -> failed,
+    409 gone; other GmailError -> release, 502 calendar_error (answering is
+    idempotent). Reject answers nothing. On its own (invites.refusal, plain
+    code): Handle it for me on; relation in KNOWN_RELATIONS; Replies in
+    training -> training.allowed_inviter (key
+    act_as_me|person:<id>|invite_from|<address>, setting replies), else
+    Take the lead as you or the dial's level; signing_ok; clash None ->
+    calendar_unread, any clash -> clash; can_answer; not sensitive(title);
+    lead rules; handle_it.count_refusal (daily limit, once a day per
+    thread). Then gate auto_execute, claim, answer_invite(accept=True),
+    finish executed, record_handled; any failure releases and hands the
+    card back. Never declines on its own. handle_it.handled includes them
+    (source invite, summary "Accepted <first>'s <title>, <when>"), so GET
+    /delegation/handled and Today's sent_as_you show them. Audit, private:
+    delegation_invite_carded / _answered / _handled / _dismissed.
   forward_and_remind: |
     ghostwrite_email takes forward (a thread id) with to: a draft forwarding
     the thread's latest non-draft message, intent the note above it (the
@@ -10533,7 +10588,10 @@ delegation:
     registered with the MCP gateway. Methods profile_email, search_threads
     (metadata only), list_message_ids, get_thread, get_message, list_sent,
     send_as_signature, send_as_addresses, create_draft, get_draft (None on
-    a 404) and delete_draft (False on a 404), and ONE send method, send_draft:
+    a 404) and delete_draft (False on a 404); on the calendar list_events,
+    calendar_granted, calendar_write_granted, find_invite (reads) and
+    answer_invite (the person's own attendee answer on one event,
+    sendUpdates=all; delegation.invites only); and ONE send method, send_draft:
     an existing draft by its id — POST drafts/send with the body {"id": ...}
     and nothing else, never messages.send — called only by
     delegation.reply_send (unit tests pin the method set, the one endpoint,

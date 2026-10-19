@@ -70,6 +70,11 @@ class ApproveBody(BaseModel):
     were shown) and ``thread_moved_on: true``; and Send + allow in training:
     ``allow: true``, with ``example: true`` to keep an edited draft as an
     example (``delegation.training``).
+
+    For a meeting invite card (``delegation_invite``): ``answer``, ``accept``
+    (the default) or ``decline``, answered in the person's own calendar; and
+    ``allow: true`` with accept, in training, to accept that sender's
+    invites on their own from now on (``delegation.invites``).
     """
     edits: dict[str, Any] | None = None
 
@@ -703,6 +708,44 @@ _DELEGATED_ACTIONS = DecisionClassSpec(
     after_reject=_actions_dismissed,
 )
 
+async def _answer_invite(
+    instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
+) -> DecisionInstance:
+    """Accept or decline a meeting invite in its person's own calendar, on
+    their tap (``delegation.invites``, which checks the caller and the card
+    again first). ``edits.answer``: accept (the default) or decline."""
+    from openexecutive.delegation.invites import AnswerRefused, answer
+
+    edits = body.edits or {}
+    try:
+        await answer(
+            instance, caller=api_caller.caller(request), resolver=resolver,
+            answer=edits.get("answer", "accept"), allow=edits.get("allow") is True,
+        )
+    except AnswerRefused as refused:
+        raise HTTPException(
+            status_code=refused.status, detail={"code": refused.code, "message": refused.message},
+        ) from None
+    return _refresh(instance.id)
+
+
+async def _invite_dismissed(instance: DecisionInstance) -> None:
+    from openexecutive.delegation.invites import dismissed
+
+    await dismissed(instance)
+
+
+# A meeting invite from someone the person knows (delegation.invites): theirs
+# alone, like a reply card, and never an alert. Dismiss answers nothing.
+_DELEGATED_INVITE = DecisionClassSpec(
+    name="delegation_invite",
+    principal_only=False,
+    approver_only=True,
+    alert_source=None,
+    approve=_answer_invite,
+    after_reject=_invite_dismissed,
+)
+
 async def _carry_out_department_action(
     instance: DecisionInstance, body: ApproveBody, request: Request, resolver: int | None
 ) -> DecisionInstance:
@@ -847,7 +890,7 @@ DECISION_CLASSES: dict[str, DecisionClassSpec] = {
     spec.name: spec
     for spec in (
         _MEETING_BOOKING, _DELEGATED_REPLY, _TAKE_THE_LEAD, _DELEGATED_ACTIONS, _DEPARTMENT_ACTION,
-        _APP_ACTION,
+        _APP_ACTION, _DELEGATED_INVITE,
     )
 }
 

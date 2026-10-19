@@ -5,9 +5,12 @@ Act as me lets the Executive write drafts as you, in your own Gmail — never
 from its own account, and never through the MCP gateway the model can reach.
 This mints the credential it uses: a browser sign-in as you, asking only for
 Gmail read + compose (drafts), and writes one file named from a hash of your
-address. With --calendar it also asks to read your calendar (read-only), for
-Read my calendar under Act as me; run it again with --calendar to add that
-to a sign-in you made without it.
+address. With --calendar it also asks for your calendar's events
+(calendar.events), for Read my calendar under Act as me: it reads your
+calendar, and answers a meeting invite as you when you tap Accept or Decline
+on its card (or accepts one on its own under Handle it for me). Run it again
+with --calendar to add that to a sign-in you made without it, or made with
+read-only calendar access before invites could be answered.
 
 Run it where you can open a browser, with the Executive's Google OAuth client
 exported (the same Desktop client scripts/mint-google-token.py uses):
@@ -38,7 +41,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
 ]
-CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 CREDENTIAL_VERSION = 1
@@ -96,7 +99,7 @@ def _profile_email(access_token: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--email", required=True, help="Your own Gmail address (as on your People entry)")
-    parser.add_argument("--calendar", action="store_true", help="Also allow reading your calendar (Read my calendar)")
+    parser.add_argument("--calendar", action="store_true", help="Also allow your calendar: read it, and answer invites you accept or decline (Read my calendar)")
     args = parser.parse_args()
     scopes = [*SCOPES, CALENDAR_SCOPE] if args.calendar else SCOPES
     email = args.email.strip().lower()
@@ -119,7 +122,7 @@ def main() -> int:
         },
         scopes=scopes,
     )
-    calendar = " and read-only access to your calendar" if args.calendar else ""
+    calendar = " and access to your calendar's events (read, and answer invites)" if args.calendar else ""
     print(f"Opening a browser: sign in as {email} and allow read + draft access to Gmail{calendar}.")
     creds = flow.run_local_server(port=0, prompt="consent", access_type="offline", login_hint=email)
     if not creds.refresh_token:

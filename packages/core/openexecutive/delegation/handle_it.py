@@ -53,6 +53,12 @@ with the reason recorded.
 Never sent on its own whatever the setting: anything with an attachment (the
 watcher's drafts have none), a new recipient, or a sensitive topic.
 
+**Meeting invites.** It also accepts a meeting invite on its own
+(``delegation.invites``, never a decline) from someone the person knows,
+when nothing on their calendar clashes and their sign-in can answer
+invites; it counts against the same daily limit and once-a-day-per-thread
+rule (``count_refusal``), and is listed with the replies (``handled``).
+
 **After.** A reply sent on its own is a ``delegation_reply`` decision in
 status ``executed`` with ``gate_mode`` ``auto_execute``; ``handled`` lists the
 person's recent ones (``GET /delegation/handled``), theirs alone, with the
@@ -178,6 +184,11 @@ REASONS: dict[str, str] = {
     # In training (delegation.training).
     "training": "Replies are in training, and you haven't allowed replies to them yet.",
     "follow_up_training": "Follow-ups are in training, and you haven't allowed follow-ups to them yet.",
+    # Meeting invites (delegation.invites).
+    "clash": "It clashes with something already on your calendar.",
+    "calendar_unread": "It couldn't check your calendar for clashes, so it asked instead.",
+    "calendar_write": "Your calendar sign-in can't answer invites yet. Connect it again under Read my calendar.",
+    "invite_training": "Replies are in training, and you haven't let it accept their invites on its own yet.",
 }
 
 # Take the lead as you lifts the setting's limits, but not this ceiling.
@@ -584,6 +595,9 @@ class HandledReply:
     open_questions: list[str]
     thread_id: str
     source: str = ""
+    # One line saying what it did, for an accepted invite: "Accepted Dana's
+    # Pilot review, Wed 21 Oct, 14:30".
+    summary: str = ""
 
 
 def handled(person_id: int, *, days: int = 7, limit: int = 50) -> list[HandledReply]:
@@ -615,5 +629,8 @@ def handled(person_id: int, *, days: int = 7, limit: int = 50) -> list[HandledRe
             thread_id=str(payload.get("thread_id") or ""),
             source="follow_up" if payload.get("source") == "follow_up" else "",
         ))
+    from openexecutive.delegation import invites
+
+    out.extend(invites.handled(person_id, since=since, limit=limit))
     out.sort(key=lambda h: h.sent_at, reverse=True)
     return out[:limit]

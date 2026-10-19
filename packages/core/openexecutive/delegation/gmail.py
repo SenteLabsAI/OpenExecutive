@@ -13,9 +13,12 @@ named from a hash of the address and written by
 {refresh_token, client_id, client_secret, token_uri}}``. It is never in
 ``WORKSPACE_MCP_CREDENTIALS_DIR`` — workspace-mcp picks a credential there by
 address, which would hand the model this mailbox. Scopes: ``gmail.readonly``
-and ``gmail.compose``, and ``calendar.readonly`` when they connected with
+and ``gmail.compose``, and a calendar scope when they connected with
 ``--calendar`` for Read my calendar (``delegation.calendar``; ``list_events``
-refuses with ``CalendarNotGranted`` without it).
+refuses with ``CalendarNotGranted`` without it): ``calendar.events`` now,
+which also lets it answer a meeting invite as them (``answer_invite``,
+``delegation.invites``); a sign-in made with ``calendar.readonly`` before
+keeps reading, and ``answer_invite`` refuses with ``CalendarWriteNotGranted``.
 
 **One way to send.** It reads mail and saves or deletes drafts. The only
 send is ``send_draft``: an existing draft, by its id, exactly as it is in
@@ -67,6 +70,13 @@ SCOPE_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 SCOPES: tuple[str, ...] = (SCOPE_READONLY, SCOPE_COMPOSE)
 # Read my calendar (delegation.calendar): optional, so a mail-only sign-in still works.
 SCOPE_CALENDAR = "https://www.googleapis.com/auth/calendar.readonly"
+# What --calendar asks for now: reads, and answers a meeting invite as them
+# (delegation.invites). Either scope reads; only this one (or the full
+# calendar scope) answers.
+SCOPE_CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+_SCOPE_CALENDAR_FULL = "https://www.googleapis.com/auth/calendar"
+CALENDAR_READ_SCOPES = frozenset({SCOPE_CALENDAR, SCOPE_CALENDAR_EVENTS, _SCOPE_CALENDAR_FULL})
+CALENDAR_WRITE_SCOPES = frozenset({SCOPE_CALENDAR_EVENTS, _SCOPE_CALENDAR_FULL})
 CALENDAR_BASE = "https://www.googleapis.com/calendar/v3/calendars/primary"
 CREDENTIAL_VERSION = 1
 PROVIDER = "google"
@@ -121,6 +131,8 @@ STATUS_MESSAGES: dict[str, str] = {
 
 # Gmail ids are short hex strings; anything else never reaches a URL path.
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Google Calendar event ids: base32hex, with an instance's "_" suffix.
+_EVENT_ID_RE = re.compile(r"[A-Za-z0-9_]{1,1024}")
 # A forward's attached files, at most (Gmail's own message limit is 25 MB).
 FORWARD_MAX_FILES = 10
 FORWARD_MAX_BYTES = 20 * 1024 * 1024
@@ -177,6 +189,12 @@ class DraftChanged(GmailError):
 class CalendarNotGranted(GmailError):
     """Their saved sign-in doesn't let the Executive read their calendar:
     they connected without it (``--calendar``), or took it back."""
+
+
+class CalendarWriteNotGranted(GmailError):
+    """Their saved sign-in reads their calendar but can't answer an invite:
+    it was made with read-only access (``calendar.readonly``,
+    ``Calendars.Read``). Connecting again with ``--calendar`` adds it."""
 
 
 class GmailAuthError(GmailError):
@@ -311,6 +329,12 @@ class MailMessage:
     # sender's own mail app put it ("" for none). Names a contact the
     # person writes to (``people.contact_keeper``).
     names: dict[str, str] = field(default_factory=dict)
+    # A calendar invite's own iCalendar method (REQUEST, CANCEL, REPLY, ...)
+    # and event UID, from its text/calendar part ("" when it has none, or
+    # it is only attached as a file). Outlook leaves them empty: Graph
+    # names the event itself (``find_invite``).
+    invite_method: str = ""
+    invite_uid: str = ""
 
 
 @dataclass
@@ -600,6 +624,47 @@ _BULK_PRECEDENCE = frozenset({"bulk", "junk", "list", "auto_reply"})
 # Set by out-of-office and other auto-responders.
 _AUTOREPLY_HEADERS = ("x-autoreply", "x-autorespond", "x-autoresponder")
 _CALENDAR_TYPES = frozenset({"text/calendar", "application/ics"})
+_ICS_UID_MAX = 1024
+
+
+def ics_invite(text: str) -> tuple[str, str]:
+    """An iCalendar text's method and its first event's UID, ``("", "")``
+    when it has neither. Only these two are read: nothing else in the file
+    (its title, its description) is used from here."""
+    unfolded = re.sub(r"\r?\n[ \t]", "", text or "")
+    method = uid = ""
+    in_event = False
+    for line in unfolded.splitlines():
+        name, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = name.split(";", 1)[0].strip().upper()
+        if key == "BEGIN" and value.strip().upper() == "VEVENT":
+            in_event = True
+        elif key == "END" and value.strip().upper() == "VEVENT":
+            if uid:
+                break
+            in_event = False
+        elif key == "METHOD" and not in_event and not method:
+            method = value.strip().upper()[:20]
+        elif key == "UID" and in_event and not uid:
+            candidate = value.strip()
+            if 0 < len(candidate) <= _ICS_UID_MAX and candidate.isprintable():
+                uid = candidate
+    return method, uid
+
+
+def _invite_part(payload: dict[str, Any]) -> tuple[str, str]:
+    """The method and UID of the message's inline text/calendar part."""
+    stack = [payload]
+    while stack:
+        part = stack.pop(0)
+        if str(part.get("mimeType") or "").lower() in _CALENDAR_TYPES:
+            found = ics_invite(_part_text(part))
+            if found[1]:
+                return found
+        stack.extend(p for p in part.get("parts") or [] if isinstance(p, dict))
+    return "", ""
 
 
 def _header_message(payload: dict[str, Any]) -> Message:
@@ -677,6 +742,7 @@ def parse_message(raw: dict[str, Any]) -> MailMessage:
     types = _part_types(payload)
     local_part = normalize_email(from_addr).partition("@")[0]
     attachments = _attachments(payload)
+    invite_method, invite_uid = _invite_part(payload) if types & _CALENDAR_TYPES else ("", "")
     return MailMessage(
         id=str(raw.get("id") or ""),
         thread_id=str(raw.get("threadId") or ""),
@@ -704,6 +770,8 @@ def parse_message(raw: dict[str, Any]) -> MailMessage:
         attachments=attachments,
         has_attachments=bool(attachments),
         names=_names(headers.get("to", ""), headers.get("cc", "")),
+        invite_method=invite_method,
+        invite_uid=invite_uid,
     )
 
 
@@ -1244,21 +1312,32 @@ class DelegateGmail:
         )
 
 
+    async def _granted_scopes(self, client: httpx.AsyncClient) -> str:
+        await self._access_token(client)
+        return _GRANTED.get(_token_key(self._cred()), "")
+
     async def calendar_granted(self) -> bool | None:
-        """Whether their saved sign-in includes ``calendar.readonly``; None
-        when Google didn't say which scopes it carries."""
+        """Whether their saved sign-in reads their calendar
+        (``calendar.readonly`` or ``calendar.events``); None when Google
+        didn't say which scopes it carries."""
         async with self._client() as client:
-            await self._access_token(client)
-        granted = _GRANTED.get(_token_key(self._cred()), "")
-        return SCOPE_CALENDAR in granted.split() if granted else None
+            granted = await self._granted_scopes(client)
+        return bool(CALENDAR_READ_SCOPES & set(granted.split())) if granted else None
+
+    async def calendar_write_granted(self) -> bool | None:
+        """Whether their saved sign-in can answer a meeting invite
+        (``calendar.events``); None when Google didn't say."""
+        async with self._client() as client:
+            granted = await self._granted_scopes(client)
+        return bool(CALENDAR_WRITE_SCOPES & set(granted.split())) if granted else None
 
     async def list_events(self, start: datetime, end: datetime, *, max_results: int = MAX_EVENTS) -> list[CalendarEvent]:
         """The events on their primary calendar between ``start`` and ``end``,
-        recurring ones expanded, in order. Read-only (``calendar.readonly``)."""
+        recurring ones expanded, in order. A read (``calendar.readonly`` or
+        ``calendar.events``)."""
         async with self._client() as client:
-            await self._access_token(client)
-            granted = _GRANTED.get(_token_key(self._cred()), "")
-            if granted and SCOPE_CALENDAR not in granted.split():
+            granted = await self._granted_scopes(client)
+            if granted and not CALENDAR_READ_SCOPES & set(granted.split()):
                 raise CalendarNotGranted("calendar.readonly not granted")
             params = {
                 "timeMin": start.astimezone(UTC).isoformat().replace("+00:00", "Z"),
@@ -1274,13 +1353,95 @@ class DelegateGmail:
                     raise
                 # With the scope granted, a refusal is the project's (the API
                 # not enabled, a quota), and reconnecting wouldn't fix it.
-                if SCOPE_CALENDAR in granted.split():
+                if CALENDAR_READ_SCOPES & set(granted.split()):
                     raise GmailError("calendar read refused with the scope granted") from exc
                 raise CalendarNotGranted("calendar read refused") from exc
         items_raw = data.get("items")
         items: list[Any] = items_raw if isinstance(items_raw, list) else []
         events = [parse_google_event(item) for item in items if isinstance(item, dict)]
         return [e for e in events if e is not None]
+
+    async def _invite_uid(self, message: MailMessage) -> tuple[str, str]:
+        """The invite's method and UID: from its inline part, else from its
+        attached .ics file."""
+        if message.invite_uid:
+            return message.invite_method, message.invite_uid
+        for attachment in message.attachments:
+            if attachment.mime_type in _CALENDAR_TYPES or attachment.name.lower().endswith(".ics"):
+                _meta, data = await self.attachment_bytes(message.id, attachment.index)
+                found = ics_invite(data[:200_000].decode("utf-8", errors="replace"))
+                if found[1]:
+                    return found
+        return "", ""
+
+    async def find_invite(self, message: MailMessage) -> CalendarEvent | None:
+        """The event a meeting invite ``message`` asks them to, as it is on
+        their own primary calendar (found by its iCalendar UID), or None:
+        not a request (a cancellation, someone's answer), or not on their
+        calendar. A read."""
+        method, uid = await self._invite_uid(message)
+        if not uid or method not in ("", "REQUEST"):
+            return None
+        async with self._client() as client:
+            granted = await self._granted_scopes(client)
+            if granted and not CALENDAR_READ_SCOPES & set(granted.split()):
+                raise CalendarNotGranted("calendar.readonly not granted")
+            try:
+                data = await self._request(
+                    client, "GET", "/events", params={"iCalUID": uid, "maxResults": "5"}, base=CALENDAR_BASE,
+                )
+            except GmailAuthError as exc:
+                if str(exc) != "forbidden":
+                    raise
+                if CALENDAR_READ_SCOPES & set(granted.split()):
+                    raise GmailError("calendar read refused with the scope granted") from exc
+                raise CalendarNotGranted("calendar read refused") from exc
+        items_raw = data.get("items")
+        items: list[Any] = items_raw if isinstance(items_raw, list) else []
+        for item in items:
+            if isinstance(item, dict) and _EVENT_ID_RE.fullmatch(str(item.get("id") or "")):
+                event = parse_google_event(item)
+                if event is not None:
+                    return event
+        return None
+
+    async def answer_invite(self, event_id: str, *, accept: bool) -> None:
+        """Answer the invite to ``event_id`` on their primary calendar, as
+        them: their own attendee entry's answer becomes accepted or declined,
+        and Google tells the organizer (``sendUpdates=all``). Nothing else on
+        the event changes. Called only by ``delegation.invites``, on the
+        person's tap or under Handle it for me (accept only). Answering twice
+        is the same as once. Raises ``CalendarWriteNotGranted`` for a
+        read-only sign-in, ``GmailNotFound`` when the event or their place on
+        it is gone."""
+        if not _EVENT_ID_RE.fullmatch(event_id or ""):
+            raise GmailError("invalid event id")
+        async with self._client() as client:
+            granted = await self._granted_scopes(client)
+            if granted and not CALENDAR_WRITE_SCOPES & set(granted.split()):
+                raise CalendarWriteNotGranted("calendar.events not granted")
+            path = f"/events/{event_id}"
+            try:
+                event = await self._request(client, "GET", path, base=CALENDAR_BASE)
+                attendees = [dict(a) for a in event.get("attendees") or [] if isinstance(a, dict)]
+                mine = next((a for a in attendees if a.get("self") is True), None)
+                if mine is None:
+                    mine = next(
+                        (a for a in attendees if normalize_email(str(a.get("email") or "")) == self.email), None,
+                    )
+                if mine is None:
+                    raise GmailNotFound("not an attendee")
+                mine["responseStatus"] = "accepted" if accept else "declined"
+                await self._request(
+                    client, "PATCH", path, params={"sendUpdates": "all"},
+                    json_body={"attendees": attendees}, base=CALENDAR_BASE,
+                )
+            except GmailAuthError as exc:
+                if str(exc) != "forbidden":
+                    raise
+                if CALENDAR_WRITE_SCOPES & set(granted.split()):
+                    raise GmailError("calendar write refused with the scope granted") from exc
+                raise CalendarWriteNotGranted("calendar write refused") from exc
 
 
 def gmail_for(email: str) -> Any:

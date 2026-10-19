@@ -14,7 +14,10 @@ as me: ``{"version": 1, "provider": "microsoft", "email": ..., "account":
 "work" | "personal", "microsoft": {refresh_token, client_id, tenant}}``
 (no client secret: the sign-in is a public client's). ``scripts/connect-own-outlook.py``
 writes it. Delegated scopes: ``User.Read``, ``Mail.ReadWrite`` and
-``Mail.Send``, plus ``offline_access``. Microsoft rotates the refresh token on
+``Mail.Send``, plus ``offline_access``; with ``--calendar``,
+``Calendars.ReadWrite`` (reads, and answers a meeting invite as them:
+``answer_invite``), or ``Calendars.Read`` on a sign-in made before, which
+keeps reading. Microsoft rotates the refresh token on
 use; the new one is written back into the same file, keeping every other key.
 
 **One way to send.** It reads mail and saves or deletes drafts. The only send
@@ -66,6 +69,7 @@ from openexecutive.delegation.gmail import (
     MAX_EVENTS,
     CalendarEvent,
     CalendarNotGranted,
+    CalendarWriteNotGranted,
     CreatedDraft,
     DraftChanged,
     DraftInfo,
@@ -98,6 +102,8 @@ REQUEST_SCOPE = " ".join(["offline_access", *(GRAPH_RESOURCE + s for s in GRAPH_
 # Read my calendar (delegation.calendar): optional, granted when they connected
 # with --calendar. Microsoft's token lists every Graph scope they consented to.
 CALENDAR_SCOPES: frozenset[str] = frozenset({"calendars.read", "calendars.readwrite"})
+# Answering a meeting invite (delegation.invites) needs this one.
+CALENDAR_WRITE_SCOPE = "calendars.readwrite"
 # The tenant every personal Microsoft account (Outlook.com, Hotmail) is in.
 CONSUMER_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
 CREDENTIAL_VERSION = 1
@@ -130,6 +136,10 @@ _TOKENS: dict[str, tuple[str, float]] = {}
 # The scopes Microsoft said each of those tokens carries ("" when it didn't say).
 _GRANTED: dict[str, str] = {}
 _EVENT_SELECT = "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,responseStatus,showAs"
+_UTC_PREFER = 'outlook.timezone="UTC", IdType="ImmutableId"'
+# The invites Graph files as a request to answer (an eventMessage's
+# meetingMessageType); a cancellation or an answer is not one.
+_MEETING_REQUEST = "meetingRequest"
 
 
 @dataclass(frozen=True)
@@ -206,10 +216,13 @@ def load_credential(email: str, *, directory: Path | None = None) -> OutlookCred
 def _refresh_scope(cred: OutlookCredential) -> str:
     """The scopes a refresh asks for: the mail ones, plus the calendar one
     only when the credential was minted with it (asking a mail-only one for
-    it would fail the refresh, and mail with it)."""
-    if "calendars.read" not in cred.scopes:
-        return REQUEST_SCOPE
-    return f"{REQUEST_SCOPE} {GRAPH_RESOURCE}Calendars.Read"
+    it would fail the refresh, and mail with it): ``Calendars.ReadWrite``,
+    or ``Calendars.Read`` for a sign-in made before invites were answered."""
+    if CALENDAR_WRITE_SCOPE in cred.scopes:
+        return f"{REQUEST_SCOPE} {GRAPH_RESOURCE}Calendars.ReadWrite"
+    if "calendars.read" in cred.scopes:
+        return f"{REQUEST_SCOPE} {GRAPH_RESOURCE}Calendars.Read"
+    return REQUEST_SCOPE
 
 
 def _store_rotated(email: str, old: str, new: str, directory: Path | None) -> None:
@@ -690,6 +703,67 @@ class DelegateOutlook:
         zone = start.tzinfo or UTC
         events = [parse_event(item, zone) for item in items if isinstance(item, dict)]
         return [e for e in events if e is not None]
+
+    async def calendar_write_granted(self) -> bool | None:
+        """Whether their saved sign-in can answer a meeting invite
+        (``Calendars.ReadWrite``); None when Microsoft didn't say."""
+        async with self._client() as client:
+            await self._access_token(client)
+        granted = _GRANTED.get(_token_key(self._cred()), "")
+        return CALENDAR_WRITE_SCOPE in _granted(granted) if granted else None
+
+    async def find_invite(self, message: MailMessage) -> CalendarEvent | None:
+        """The event a meeting invite ``message`` asks them to (Graph's
+        ``eventMessage.event``, on their own calendar), or None: not a
+        request (a cancellation, someone's answer), or no event. A read."""
+        if not valid_id(message.id):
+            raise GmailError("invalid message id")
+        async with self._client() as client:
+            await self._access_token(client)
+            granted = _GRANTED.get(_token_key(self._cred()), "")
+            if granted and not CALENDAR_SCOPES & _granted(granted):
+                raise CalendarNotGranted("Calendars.Read not granted")
+            try:
+                data = await self._request(
+                    client, "GET", f"/messages/{quote(message.id, safe='')}",
+                    params={"$expand": "microsoft.graph.eventMessage/event"}, prefer=_UTC_PREFER,
+                )
+            except GmailAuthError as exc:
+                if str(exc) == "forbidden":
+                    raise CalendarNotGranted("calendar read refused") from exc
+                raise
+        if str(data.get("meetingMessageType") or "") != _MEETING_REQUEST:
+            return None
+        raw = data.get("event")
+        if not isinstance(raw, dict) or not valid_id(raw.get("id")):
+            return None
+        return parse_event(raw)
+
+    async def answer_invite(self, event_id: str, *, accept: bool) -> None:
+        """Answer the invite to ``event_id`` as them: Graph's event accept
+        or decline, telling the organizer (``sendResponse``). Called only by
+        ``delegation.invites``, on the person's tap or under Handle it for
+        me (accept only). Raises ``CalendarWriteNotGranted`` for a read-only
+        sign-in, ``GmailNotFound`` when the event is gone."""
+        if not valid_id(event_id):
+            raise GmailError("invalid event id")
+        async with self._client() as client:
+            await self._access_token(client)
+            granted = _GRANTED.get(_token_key(self._cred()), "")
+            if granted and CALENDAR_WRITE_SCOPE not in _granted(granted):
+                raise CalendarWriteNotGranted("Calendars.ReadWrite not granted")
+            answer = "accept" if accept else "decline"
+            try:
+                await self._request(
+                    client, "POST", f"/events/{quote(event_id, safe='')}/{answer}",
+                    json_body={"sendResponse": True},
+                )
+            except GmailAuthError as exc:
+                if str(exc) != "forbidden":
+                    raise
+                if granted and CALENDAR_WRITE_SCOPE in _granted(granted):
+                    raise GmailError("calendar write refused with the scope granted") from exc
+                raise CalendarWriteNotGranted("calendar write refused") from exc
 
     async def profile_email(self) -> str:
         """The address of the mailbox the credential opens, from the directory."""

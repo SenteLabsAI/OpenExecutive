@@ -85,9 +85,16 @@ Routes:
   GET|POST /delegation/take-the-lead/rules, DELETE …/rules/{id}
                                   — the caller's own rules for it (removing
                                     one needs the same provable caller)
+  GET    /delegation/invites      — the meeting invite cards waiting for the
+                                    caller (delegation.invites; from the
+                                    database, no calendar call). Accept and
+                                    Decline are POST /decisions/{id}/approve
+                                    with edits.answer
   GET    /delegation/handled      — the caller's replies sent on its own in
                                     the last 7 days, with the questions each
-                                    left for them
+                                    left for them, and the invites it
+                                    accepted on its own (source "invite",
+                                    with a one-line summary)
   GET    /delegation/voice        — "How I write"
   POST   /delegation/voice/learn  — learn it from the caller's sent mail (409
                                     in_progress / locked / too_soon /
@@ -327,8 +334,12 @@ class HandledReplyOut(BaseModel):
     body: str
     open_questions: list[str]
     gmail_link: str
-    # "follow_up" for a follow-up to the caller's own unanswered email.
+    # "follow_up" for a follow-up to the caller's own unanswered email;
+    # "invite" for a meeting invite it accepted on its own.
     source: str = ""
+    # What it did, in one line, for an invite: "Accepted Dana's Pilot
+    # review, Wed 21 Oct, 14:30".
+    summary: str = ""
 
 
 class HandledOut(BaseModel):
@@ -457,6 +468,37 @@ class CardActionOut(BaseModel):
     summary: str
     # A message's text as it will be sent, or a meeting's description.
     text: str
+
+
+class InviteCardOut(BaseModel):
+    decision_id: int
+    status: str
+    created_at: str
+    from_name: str
+    from_email: str
+    relation: str
+    title: str
+    # When, as the caller reads it: "Wed 21 Oct, 14:30–15:00".
+    when: str
+    start: str
+    end: str
+    all_day: bool
+    # Busy times on their calendar that overlap it ("14:00–14:30"); times only.
+    clashes: list[str]
+    # False: their calendar couldn't be read for clashes.
+    clash_checked: bool
+    # False: their sign-in reads the calendar but can't answer invites, so the
+    # card says to connect again (connect_command) instead of offering Accept.
+    can_answer: bool
+    # In training: the "Accept from them on its own next time" tick.
+    can_allow: bool
+    # Why Handle it for me left it for them, in words ("" when it was off).
+    waited_because: str
+    connect_command: str
+
+
+class InviteCardsOut(BaseModel):
+    cards: list[InviteCardOut]
 
 
 class ActionCardOut(BaseModel):
@@ -1057,6 +1099,22 @@ def get_delegation_actions(request: Request) -> ActionCardsOut:
     ])
 
 
+@router.get("/delegation/invites", response_model=InviteCardsOut)
+def get_delegation_invites(request: Request) -> InviteCardsOut:
+    """The meeting invite cards waiting for the caller to accept or decline.
+    Their own only: everyone else gets the 403 every route here gives."""
+    from openexecutive.delegation.invites import cards
+
+    person = _caller(request)
+    _person_id(person)
+    try:
+        found = cards(person)
+    except Exception as exc:
+        logger.exception("delegation: reading the invite cards failed")
+        raise _refuse(503, "unavailable", "Couldn't read the invites waiting for you.") from exc
+    return InviteCardsOut(cards=[InviteCardOut(**asdict(card)) for card in found])
+
+
 def _set_handle_it(person_id: int, *, enabled: bool | None, mode: str | None) -> None:
     from openexecutive.delegation import handle_it
 
@@ -1429,6 +1487,7 @@ def get_delegation_handled(request: Request) -> HandledOut:
             subject=h.subject, body=h.body, open_questions=h.open_questions,
             gmail_link=mailbox_link(email, thread_id=h.thread_id) if email and h.thread_id else "",
             source=h.source,
+            summary=h.summary,
         )
         for h in found
     ])

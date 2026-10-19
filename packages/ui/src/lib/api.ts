@@ -1992,8 +1992,11 @@ export interface HandledReply {
   body: string;
   open_questions: string[];
   gmail_link: string;
-  // "follow_up": a follow-up to your own unanswered email.
+  // "follow_up": a follow-up to your own unanswered email; "invite": a
+  // meeting invite it accepted on its own.
   source?: string;
+  // One line for an invite: "Accepted Dana's Pilot review, Wed 21 Oct, 14:30".
+  summary?: string;
 }
 
 // One reply the inbox watcher drafted: a `delegation_reply` decision, yours
@@ -2572,6 +2575,65 @@ export async function approveActionCard(id: number, only: number[], allow = fals
   } catch {
     return [];
   }
+}
+
+// A meeting invite from someone you know (Act as me, with Read my calendar
+// on), yours alone. Accept and Decline answer it in your own calendar
+// (POST /decisions/{id}/approve with edits.answer); Dismiss
+// (POST /decisions/{id}/reject) answers nothing.
+export interface InviteCard {
+  decision_id: number;
+  status: string;
+  created_at: string;
+  from_name: string;
+  from_email: string;
+  relation: string;
+  title: string;
+  // "Wed 21 Oct, 14:30–15:00", in your time zone.
+  when: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  // Busy times on your calendar that overlap it; times only.
+  clashes: string[];
+  clash_checked: boolean;
+  // false: your calendar sign-in can read but not answer invites yet.
+  can_answer: boolean;
+  // Replies in training: the "Accept from them on its own next time" tick.
+  can_allow: boolean;
+  // Why Handle it for me left it for you ("" when it was off).
+  waited_because: string;
+  connect_command: string;
+}
+
+// null when this viewer has none to see (403) or the backend predates them (404).
+export async function getInviteCards(signal?: AbortSignal): Promise<InviteCard[] | null> {
+  const res = await fetch(`${API_BASE}/delegation/invites`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't load the invites waiting for you.");
+  const body = (await res.json()) as { cards: InviteCard[] };
+  return body.cards;
+}
+
+// Accept or decline an invite in your own calendar. `allow` (accept, Replies
+// in training): their invites are accepted on their own from now on.
+export async function answerInviteCard(id: number, answer: "accept" | "decline", allow = false): Promise<void> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits: allow ? { answer, allow: true } : { answer } }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't answer that invite.");
+}
+
+export async function dismissInviteCard(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/decisions/${id}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "" }),
+  });
+  if (res.status === 404 || res.status === 409) return; // already gone or answered
+  if (!res.ok) throw await delegationError(res, "Couldn't dismiss that invite.");
 }
 
 export async function dismissActionCard(id: number): Promise<void> {

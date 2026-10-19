@@ -1,11 +1,15 @@
 """Act as me: Read my calendar.
 
 A person who has Act as me can also let the Executive read their own
-calendar, read-only: ``calendar.readonly`` on Google, ``Calendars.Read`` on
+calendar: ``calendar.events`` on Google, ``Calendars.ReadWrite`` on
 Microsoft, granted on the same per-person sign-in as their mailbox when they
 connect it with ``--calendar`` (``scripts/connect-own-gmail.py``,
-``scripts/connect-own-outlook.py``). A sign-in made without it keeps working
-for mail; only the calendar read says to connect again.
+``scripts/connect-own-outlook.py``). The only change it ever makes there is
+answering a meeting invite, on the person's tap or accepted on its own under
+Handle it for me (``delegation.invites``). A sign-in made before with
+read-only access (``calendar.readonly``, ``Calendars.Read``) keeps reading;
+its invite cards say to connect again. A sign-in made without it keeps
+working for mail; only the calendar read says to connect again.
 
 **The switch.** One row per person in ``delegation_calendar``; absent,
 unreadable or off all mean off. Only they turn it on (``PUT
@@ -19,6 +23,7 @@ is anyone's words. And the first week's private brief lists today's meetings
 (``briefing.first_week``). And a reply card whose open question is when to
 meet offers their next free slots (``delegation.answers.free_slots``): only
 the busy times are used, in code, and no event's title reaches a model.
+And an invite card's clashes (``delegation.invites.clashes``), the same way.
 Nothing is kept: each read asks the calendar again.
 """
 from __future__ import annotations

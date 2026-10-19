@@ -9,12 +9,14 @@ type the code, from any browser), asking only for your profile and mail
 (read, write drafts, and send the drafts you approve), and writes one file
 named from a hash of your address. A person has one mailbox for Act as me:
 this replaces a Gmail file for the same address. With --calendar it also
-asks to read your calendar (Calendars.Read), for Read my calendar.
+asks for your calendar (Calendars.ReadWrite), for Read my calendar: it reads
+your calendar, and answers a meeting invite as you when you tap Accept or
+Decline on its card (or accepts one on its own under Handle it for me).
 
 It uses the Executive's own Entra app (the one the Microsoft 365 setup in
 .env.example registers; "Allow public client flows" must be on). Its delegated
 Microsoft Graph permissions must include User.Read, Mail.ReadWrite, Mail.Send
-and offline_access (and Calendars.Read for --calendar). A personal Microsoft account needs an app that accepts
+and offline_access (and Calendars.ReadWrite for --calendar). A personal Microsoft account needs an app that accepts
 personal accounts, with MS365_MCP_TENANT_ID=common or consumers.
 
     export MS365_MCP_CLIENT_ID=...
@@ -48,7 +50,7 @@ from typing import Any
 LOGIN_BASE = "https://login.microsoftonline.com"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName"
 GRAPH_SCOPES = ("User.Read", "Mail.ReadWrite", "Mail.Send")
-CALENDAR_SCOPE = "Calendars.Read"
+CALENDAR_SCOPE = "Calendars.ReadWrite"
 
 
 def scope_for(graph_scopes: tuple[str, ...]) -> str:
@@ -162,7 +164,7 @@ def _sign_in(tenant: str, client_id: str, scope: str = SCOPE) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--email", required=True, help="Your own Outlook address (as on your People entry)")
-    parser.add_argument("--calendar", action="store_true", help="Also allow reading your calendar (Read my calendar)")
+    parser.add_argument("--calendar", action="store_true", help="Also allow your calendar: read it, and answer invites you accept or decline (Read my calendar)")
     args = parser.parse_args()
     graph_scopes = (*GRAPH_SCOPES, CALENDAR_SCOPE) if args.calendar else GRAPH_SCOPES
     email = args.email.strip().lower()
@@ -176,7 +178,7 @@ def main() -> int:
     if not TENANT_RE.fullmatch(tenant):
         sys.exit("error: MS365_MCP_TENANT_ID must be a tenant id, common, organizations or consumers")
 
-    calendar = ", and read-only access to your calendar" if args.calendar else ""
+    calendar = ", and your calendar (read it, and answer invites)" if args.calendar else ""
     print(f"Sign in as {email} and allow read, draft and send access to your mail{calendar}.")
     token = _sign_in(tenant, client_id, scope_for(graph_scopes))
     refresh_token = str(token.get("refresh_token") or "")

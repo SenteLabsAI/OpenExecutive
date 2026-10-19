@@ -800,7 +800,9 @@ def test_the_refresh_asks_for_the_calendar_only_when_it_was_granted(tmp_path: Pa
     script.write_credential(tmp_path, EMAIL, payload)
     with_calendar = load_credential(EMAIL, directory=tmp_path)
     assert with_calendar is not None
-    assert unquote(_refresh_form(with_calendar)["scope"]).endswith("https://graph.microsoft.com/Calendars.Read")
+    # --calendar asks for Calendars.ReadWrite now (it answers invites), and
+    # the refresh keeps asking for it.
+    assert unquote(_refresh_form(with_calendar)["scope"]).endswith("https://graph.microsoft.com/Calendars.ReadWrite")
     _write(tmp_path)
     mail_only = load_credential(EMAIL, directory=tmp_path)
     assert mail_only is not None and "Calendars" not in unquote(_refresh_form(mail_only)["scope"])
@@ -916,3 +918,81 @@ def test_each_recipient_keeps_the_name_it_was_written_with() -> None:
     raw = _msg("m1", toRecipients=[{"emailAddress": {"name": "Priya Shah", "address": "Priya@N.example"}}],
                ccRecipients=[{"emailAddress": {"address": "bare@x.example"}}])
     assert ol.parse_message(raw, SENT_FOLDER, EMAIL).names == {"priya@n.example": "Priya Shah", "bare@x.example": ""}
+
+
+# --------------------------------------------------------------------------- #
+# Meeting invites (delegation.invites)
+# --------------------------------------------------------------------------- #
+
+
+def _invite_graph(scope: str, message: dict[str, Any] | None = None) -> tuple[list[httpx.Request], DelegateOutlook]:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "login.microsoftonline.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if request.method == "POST":
+            return httpx.Response(202)
+        return httpx.Response(200, json=message or {})
+
+    cred = OutlookCredential(email=EMAIL, refresh_token="r1", client_id="cid", tenant="common")
+    return seen, DelegateOutlook(EMAIL, credential=cred, transport=httpx.MockTransport(handler))
+
+
+def test_an_outlook_invite_is_its_own_event() -> None:
+    from openexecutive.delegation.gmail import MailMessage
+
+    ol._TOKENS.clear()
+    message = {
+        "id": "m1", "meetingMessageType": "meetingRequest",
+        "event": {"id": "ev1", "subject": "Pilot review", "isAllDay": False,
+                  "start": {"dateTime": "2026-10-14T16:00:00.0000000", "timeZone": "UTC"},
+                  "end": {"dateTime": "2026-10-14T16:30:00.0000000", "timeZone": "UTC"},
+                  "organizer": {"emailAddress": {"name": "Dana", "address": "dana@northpeak.example"}},
+                  "responseStatus": {"response": "notResponded"}},
+    }
+    seen, client = _invite_graph(f"{_MAIL} https://graph.microsoft.com/Calendars.ReadWrite", message)
+    event = asyncio.run(client.find_invite(MailMessage(id="m1", thread_id="c1", calendar_invite=True)))
+    assert event is not None and (event.id, event.response) == ("ev1", "needs_action")
+    assert event.start == "2026-10-14T16:00:00+00:00"
+    call = seen[-1]
+    assert call.url.path == "/v1.0/me/messages/m1" and "eventMessage/event" in call.url.params["$expand"]
+    ol._TOKENS.clear()
+    _seen, cancelled = _invite_graph(_MAIL + " https://graph.microsoft.com/Calendars.ReadWrite",
+                                     {**message, "meetingMessageType": "meetingCancelled"})
+    assert asyncio.run(cancelled.find_invite(MailMessage(id="m1", thread_id="c1"))) is None
+
+
+def test_an_outlook_answer_is_graphs_accept_or_decline() -> None:
+    ol._TOKENS.clear()
+    seen, client = _invite_graph(f"{_MAIL} https://graph.microsoft.com/Calendars.ReadWrite")
+    assert asyncio.run(client.calendar_write_granted()) is True
+    asyncio.run(client.answer_invite("ev1", accept=True))
+    asyncio.run(client.answer_invite("ev1", accept=False))
+    posts = [r for r in seen if r.method == "POST" and r.url.host == "graph.microsoft.com"]
+    assert [r.url.path for r in posts] == ["/v1.0/me/events/ev1/accept", "/v1.0/me/events/ev1/decline"]
+    assert all(json.loads(r.content) == {"sendResponse": True} for r in posts)
+
+
+def test_an_outlook_read_only_sign_in_cannot_answer() -> None:
+    from openexecutive.delegation.gmail import CalendarWriteNotGranted
+
+    ol._TOKENS.clear()
+    seen, client = _invite_graph(f"{_MAIL} https://graph.microsoft.com/Calendars.Read")
+    assert asyncio.run(client.calendar_granted()) is True
+    assert asyncio.run(client.calendar_write_granted()) is False
+    with pytest.raises(CalendarWriteNotGranted):
+        asyncio.run(client.answer_invite("ev1", accept=True))
+    assert all(r.url.host == "login.microsoftonline.com" for r in seen)
+
+
+def test_an_older_read_only_credential_keeps_asking_for_read(tmp_path: Path) -> None:
+    script = _script()
+    payload = script.credential_payload(
+        EMAIL, "r1", "cid", "common", personal=False, graph_scopes=(*script.GRAPH_SCOPES, "Calendars.Read"),
+    )
+    script.write_credential(tmp_path, EMAIL, payload)
+    older = load_credential(EMAIL, directory=tmp_path)
+    assert older is not None
+    assert unquote(_refresh_form(older)["scope"]).endswith("https://graph.microsoft.com/Calendars.Read")

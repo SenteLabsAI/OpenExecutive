@@ -322,12 +322,16 @@ has no Outlook address of its own on file is matched by that sign-in address,
 so use it on the People page and with `--email`.
 
 **Read my calendar (optional).** Run either script with `--calendar` to also
-grant read-only access to the person's own calendar (`calendar.readonly` on
-Google, which the OAuth client's consent screen must list; the delegated
-`Calendars.Read` permission on the Microsoft app). Then turn on **Read my
+grant access to the person's own calendar (`calendar.events` on Google, which
+the OAuth client's consent screen must list; the delegated
+`Calendars.ReadWrite` permission on the Microsoft app). Then turn on **Read my
 calendar** in Delegate → Act as me. The Executive reads events fresh each time
-and keeps nothing; a credential minted without `--calendar` keeps working for
-mail, and the switch says to reconnect with the flag.
+and keeps nothing. The one change it makes there is answering a meeting
+invite: Accept or Decline on an invite card on Home, or an accept on its own
+under Handle it for me. A credential minted without `--calendar` keeps working
+for mail, and the switch says to reconnect with the flag; one minted earlier
+with read-only calendar access (`calendar.readonly`, `Calendars.Read`) keeps
+reading, and its invite cards say to connect again to answer.
 
 ```bash
 MS365_MCP_CLIENT_ID=<app id> uv run python scripts/connect-own-outlook.py --email you@example.com
