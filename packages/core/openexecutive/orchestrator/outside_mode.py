@@ -22,6 +22,11 @@ held from the start, a shared chat or another AI app's turn is ``ask``,
 mail and messages still go only to people on People, and someone added to
 People this turn is reached no earlier than the next one.
 
+What "Only for outsiders" trusts rests on Gmail's sender authentication and
+on the Executive's own address: a company whose domain doesn't enforce DMARC
+(``p=reject`` or ``quarantine``) leaves room for an invite forged as the
+Executive's own event to pass as the team's. Choose "Ask every time" there.
+
 Stored in the episodic database (``TABLE``, one row). Plain code, never
 raises: an unreadable store is ``ask``, a missing row is ``DEFAULT``.
 """
