@@ -185,10 +185,13 @@ def _set_here(person: Any, field_name: str) -> bool:
 class Seen:
     emailed: int = 0
     met: int = 0
+    # As the principal wrote them (To/Cc display names, guest lists).
     names: list[str] = field(default_factory=list)
+    # A contact's own address: read for a fuller name, never added again.
+    known: bool = False
 
-    def name(self) -> str:
-        for raw in self.names:
+    def name(self, address: str = "") -> str:
+        for raw in [*self.names, name_from_address(address)]:
             cleaned = clean_name(raw)
             if cleaned:
                 return cleaned
@@ -206,21 +209,31 @@ def _skip(address: str, own: set[str], known: set[str]) -> bool:
         return True
 
 
-async def gather(client: Any, *, own: set[str], known: set[str], now: datetime) -> dict[str, Seen]:
+async def gather(
+    client: Any, *, own: set[str], known: set[str], now: datetime, watch: frozenset[str] = frozenset(),
+) -> dict[str, Seen]:
     """Who the principal emailed and met, by address. Calendar trouble (not
-    granted, or failing) leaves the meetings out."""
+    granted, or failing) leaves the meetings out. Addresses in ``watch``
+    (contacts' own) are kept with ``known`` set, for how their name was
+    written. Mail Handle it for me sent is not the principal writing."""
     from openexecutive.delegation.gmail import GmailAuthError, GmailRateLimited
 
     seen: dict[str, Seen] = {}
     since = now - LOOKBACK
     for message in await client.list_sent(limit=SENT_TO_READ):
         when = _sent_at(message)
-        if when is None or when < since or message.mailing_list or message.bulk or message.auto_generated:
+        if (
+            when is None or when < since or message.mailing_list or message.bulk or message.auto_generated
+            or getattr(message, "ghostwritten", False)
+        ):
             continue
         to = list(dict.fromkeys([*message.to, *message.cc]))
         if not to or len(to) > MAX_RECIPIENTS:
             continue
         for address in to:
+            if address in watch:
+                seen.setdefault(address, Seen(known=True)).names.append(getattr(message, "names", {}).get(address, ""))
+                continue
             if _skip(address, own, known):
                 continue
             entry = seen.setdefault(address, Seen())
@@ -240,13 +253,14 @@ async def gather(client: Any, *, own: set[str], known: set[str], now: datetime) 
         if not guests or len(guests) > MAX_RECIPIENTS:
             continue
         for name, address in guests:
+            if address in watch:
+                seen.setdefault(address, Seen(known=True)).names.append(name)
+                continue
             if not address or _skip(address, own, known):
                 continue
             entry = seen.setdefault(address, Seen())
             entry.met += 1
             entry.names.append(name)
-    for address, entry in seen.items():
-        entry.names.append(name_from_address(address))
     return seen
 
 
@@ -279,6 +293,8 @@ def apply_change(change: changes.ContactChange) -> int | None:
             person_id = int(person.id or 0)
             if change.field == "email_alias":
                 if people_store.find_person_by_address(change.new_value, include_contacts=True) is not None:
+                    return None
+                if _archived_address(change.new_value) or changes.is_blocked(change.new_value, "contact"):
                     return None
                 people_store.add_person_email(person_id, change.new_value, source="contact_keeper")
             elif change.field == "full_name":
@@ -497,22 +513,30 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
     own.add(changes.norm(get_settings().exec_email_address))
     everyone = people_store.list_people(include_archived=True, include_contacts=True)
     known = {changes.norm(a) for p in everyone for a in [p.email, *p.email_aliases] if a}
-    seen = await gather(client, own=own, known=known, now=now)
     contacts = [p for p in everyone if p.kind == "contact" and not p.archived and p.id is not None]
+    watch = frozenset(
+        changes.norm(a) for p in contacts if len(p.full_name.split()) == 1 for a in [p.email, *p.email_aliases] if a
+    )
+    seen = await gather(client, own=own, known=known, now=now, watch=watch)
 
-    # A second address for a contact they already have, mailed under their
-    # exact full name.
+    # A second address for a contact they already have, mailed at least
+    # EMAILED_MIN times under their exact full name as the principal wrote
+    # it. Always a suggestion, whatever the switch: an address on someone
+    # they have is where mail to them may go, so one reply to a lookalike
+    # must not attach it.
     by_name = {p.full_name.casefold(): p for p in contacts if len(p.full_name.split()) >= 2}
     aliased: set[str] = set()
     for address, entry in seen.items():
-        if not entry.emailed:
+        if entry.known or entry.emailed < EMAILED_MIN:
+            continue
+        if changes.is_blocked(address, "contact") or _archived_address(address):
             continue
         for raw in entry.names:
             person = by_name.get(clean_name(raw).casefold()) if clean_name(raw) else None
             if person is None or changes.is_blocked(address, "email_alias", address):
                 continue
             _propose(
-                mode, result, action="update", field_name="email_alias", reason="emailed", email=address,
+                "ask", result, action="update", field_name="email_alias", reason="emailed", email=address,
                 full_name=person.full_name, person_id=person.id, new=address, evidence=entry.emailed,
             )
             aliased.add(address)
@@ -520,14 +544,14 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
 
     # New contacts: the most emailed and met first.
     ranked = sorted(
-        ((a, e) for a, e in seen.items() if a not in aliased and (e.emailed >= EMAILED_MIN or e.met)),
+        ((a, e) for a, e in seen.items() if not e.known and a not in aliased and (e.emailed >= EMAILED_MIN or e.met)),
         key=lambda item: (item[1].emailed + 2 * item[1].met), reverse=True,
     )
     adds = 0
     for address, entry in ranked:
         if adds >= ADDS_PER_RUN:
             break
-        name = entry.name()
+        name = entry.name(address)
         if not name or changes.is_blocked(address, "contact"):
             continue
         reason: changes.Reason = "emailed" if entry.emailed >= EMAILED_MIN else "met"

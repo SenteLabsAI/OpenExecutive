@@ -4347,10 +4347,14 @@ people:
     log_event of counts, no names.
     Why headers only: names and addresses come from To/Cc and guest lists,
     never a mail's text, so a mail cannot write the roster. Adds need two
-    sent mails in 60 days (no lists, bulk, auto mail, over 10 recipients) or
+    sent mails in 60 days (no lists, bulk, auto mail, ghostwritten Handle it
+    sends, over 10 recipients) or
     a meeting they organised or accepted (at most 10 guests); own, exec,
     known (archived too), role, no-reply and company-domain addresses are
-    skipped. Updates: an alias under a contact's exact two-word name, a
+    skipped. Updates: an alias under a contact's exact two-word name as the
+    To line wrote it, twice, always a suggestion whatever the mode (an alias
+    is an egress address, so one reply to a lookalike must not attach it;
+    blocked or archived addresses never are), a
     fuller name for a one-word one, and a role read from the contact's
     newest authenticated mail (latest_from) by one forced-tool call, kept
     only when every word is in the mail and it holds no link, address or

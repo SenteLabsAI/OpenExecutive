@@ -275,15 +275,63 @@ def test_an_unauthenticated_sender_changes_nothing(owner: int, monkeypatch: pyte
     assert people_store.get_person(pid).full_name == "Leo"
 
 
-def test_an_address_mailed_under_a_contacts_full_name_becomes_theirs(owner: int) -> None:
+def test_an_address_mailed_under_a_contacts_full_name_is_suggested_as_theirs(owner: int) -> None:
     pid = people_store.upsert_person(full_name="Priya Shah", email=PRIYA, kind="contact", role="Partner")
     box = FakeMailbox()
-    box.sent = [_sent(["priya@home.example"], names={"priya@home.example": "Priya Shah"})]
-    assert _run(box).updated == 1
-    assert people_store.get_person(pid).email_aliases == ["priya@home.example"]
+    box.sent = [
+        _sent(["priya@home.example"], names={"priya@home.example": "Priya Shah"}, days_ago=d) for d in (1, 2)
+    ]
+    # Asked first even with the switch on: mail to Priya may go there.
+    assert _run(box).suggested == 1
+    assert people_store.get_person(pid).email_aliases == []
     change = next(c for c in changes.list_changes() if c.field == "email_alias")
+    changes.accept(change.id)
+    assert people_store.get_person(pid).email_aliases == ["priya@home.example"]
     changes.undo(change.id)
     assert people_store.get_person(pid).email_aliases == []
+
+
+def test_one_reply_to_a_lookalike_attaches_nothing(owner: int) -> None:
+    pid = people_store.upsert_person(full_name="Priya Shah", email=PRIYA, kind="contact")
+    box = FakeMailbox()
+    box.sent = [
+        _sent(["priya.shah@mail.example"], names={"priya.shah@mail.example": "Priya Shah"}),
+        # Only the address reads as her name: not how the principal wrote it.
+        _sent(["priya.shah@free.example"], days_ago=2),
+        _sent(["priya.shah@free.example"], days_ago=3),
+    ]
+    _run(box)
+    assert people_store.get_person(pid).email_aliases == []
+    assert not any(c.field == "email_alias" for c in changes.list_changes())
+
+
+def test_an_undone_address_is_not_attached_to_someone_else(owner: int) -> None:
+    people_store.upsert_person(full_name="Priya Shah", email=PRIYA, kind="contact")
+    changes.block("priya@home.example", "contact")
+    box = FakeMailbox()
+    box.sent = [
+        _sent(["priya@home.example"], names={"priya@home.example": "Priya Shah"}, days_ago=d) for d in (1, 2)
+    ]
+    _run(box)
+    assert not any(c.field == "email_alias" for c in changes.list_changes())
+
+
+def test_mail_handle_it_sent_does_not_count_as_emailed(owner: int) -> None:
+    box = FakeMailbox()
+    sent = [_sent([MARCO], names={MARCO: "Marco Diaz"}, days_ago=d) for d in (1, 2)]
+    for message in sent:
+        message.ghostwritten = True
+    box.sent = sent
+    assert _run(box).added == 0
+    assert _contact(MARCO) is None
+
+
+def test_a_one_word_contact_gets_the_fuller_name_the_principal_wrote(owner: int) -> None:
+    pid = people_store.upsert_person(full_name="Marco", email=MARCO, kind="contact")
+    box = FakeMailbox()
+    box.sent = [_sent([MARCO], names={MARCO: "Marco Diaz"})]
+    assert _run(box).updated == 1
+    assert people_store.get_person(pid).full_name == "Marco Diaz"
 
 
 # --- the routes ------------------------------------------------------------
