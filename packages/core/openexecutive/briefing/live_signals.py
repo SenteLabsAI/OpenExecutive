@@ -306,7 +306,12 @@ def _inbound(
             topic = _one_line(text, 100)
         if is_own:
             if include_private and len(own) < _OWN_MAX:
-                own.append(f"[{_local_hhmm(ev.ts, tz, now)}] {channel or 'message'}: {topic}")
+                # The reply status goes ahead of the quoted text, so an ask
+                # whose reply never went out still reads as open.
+                status = f" ({reply})" if reply else ""
+                own.append(
+                    f"[{_local_hhmm(ev.ts, tz, now)}] {channel or 'message'}{status}: {topic}"
+                )
             continue
         if sender.lower() == "the reader" or _uses_principal_name(sender, principal_person):
             # Someone else whose display name holds the reader's name: the

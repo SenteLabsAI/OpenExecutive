@@ -535,3 +535,18 @@ def test_the_readers_own_messages_never_change_the_brief_fingerprint(
     after = live_signals.gather_live_signals(_since(), include_private=True)
 
     assert after.own and after.keys == before.keys
+
+
+def test_an_own_email_keeps_whether_its_reply_went_out(
+    audit: AuditLogger, roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule shows an ask only while it is open, so the line must still
+    say when the Executive's reply never went out."""
+    from openexecutive.integrations import unanswered_mail
+
+    monkeypatch.setattr(unanswered_mail, "open_thread_keys", lambda: {"t9"})
+    _thread_email(audit, roster.principal, "send me the deck", message_id="m1", thread_id="t9")
+
+    own = live_signals.gather_live_signals(_since(), include_private=True).own
+
+    assert own[0].endswith("email (no reply went out): send me the deck")
