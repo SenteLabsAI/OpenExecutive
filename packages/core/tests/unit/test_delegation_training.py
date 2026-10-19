@@ -343,5 +343,7 @@ def test_widening_needs_a_provable_caller(client: TestClient, owner: Any, monkey
     # Holding more back is fine without signed sign-ins...
     assert client.put("/delegation/training", json={"replies": True, "actions": False}, headers=HEADERS).status_code == 200
     # ...letting more go is not.
-    for body in ({"replies": False}, {"actions": True}, {"drafts": True}):
+    for body in ({"replies": False}, {"actions": True}, {"drafts": True}, {"actions_on": True}):
         assert client.put("/delegation/training", json=body, headers=HEADERS).status_code == 409
+    # Taking Suggested actions out of training or On is narrowing too.
+    assert client.put("/delegation/training", json={"actions_on": False}, headers=HEADERS).status_code == 200

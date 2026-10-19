@@ -1150,7 +1150,8 @@ async def update_delegation_training(request: Request, body: TrainingUpdate) -> 
     # leaves the other.
     if changes.get(training.ACTIONS_ON) is True:
         changes[training.ACTIONS] = False
-    elif changes.get(training.ACTIONS) is True:
+    elif training.ACTIONS in changes:
+        # Out of training without asking for On is Always ask, never On.
         changes[training.ACTIONS_ON] = False
     narrowing = all(
         (v is True and k in (training.REPLIES, training.FOLLOW_UPS))
