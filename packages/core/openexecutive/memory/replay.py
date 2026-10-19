@@ -405,6 +405,17 @@ async def replay_case(
     person = get_person(int(row["person_id"]))
     if person is None or person.id is None or person.archived:
         return None
+    # A chat that read mail is its person's alone: so is every audit row the
+    # replay writes about it (the judge's notes quote the chat).
+    with chat_review._own_rows(chat_review.mail_private_turns([row], db_path=db_path), int(person.id)):
+        return await _replay_case(row, why, person, executive=executive, now=now,
+                                  new_lessons=new_lessons, db_path=db_path)
+
+
+async def _replay_case(
+    row: sqlite3.Row, why: str, person: Any, *, executive: Any, now: datetime,
+    new_lessons: list[dict[str, Any]], db_path: Path | None,
+) -> dict[str, Any]:
     protect = why == WHY_PROTECT
     reached = [lesson["id"] for lesson in lessons.lessons_for(int(person.id), str(row["message"]), db_path=db_path)]
     try:

@@ -5094,8 +5094,10 @@ chat:
     speaker's mailbox, and every turn of a mail-private conversation, is kept
     too, for their own review only: tools kept by name with only a failure
     marker (no result text, the results are other people's mail), no
-    remember_fact in its fix loop, its lessons never shared, and the
-    Reflection screen shows it to its owner alone (_session_access). One
+    remember_fact in its fix loop, its lessons never shared, the Reflection
+    screen shows it to its owner alone (_session_access), and the review and
+    replay passes over it write every audit row as that person's own
+    (chat_review_turns.mail, mail_private_turns, rows_for_person). One
     chat_review __internal__ action per conversation fires 30 minutes after
     the last turn (pushed back while the chat goes on) and runs one small
     tool loop per person (CHAT_REVIEW_MODEL, default ROUTING_MODEL; 5 rounds,

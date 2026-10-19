@@ -211,9 +211,11 @@ def add_lesson(
     session_id: str,
     turn_row_id: int | None,
     db_path: Path | None = None,
+    private: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Keep one lesson; ``(lesson, None)`` when stored, ``(None, reason)``
     when not. The caller has checked ``quote`` against the person's words.
+    ``private``: learned from a chat that read mail, so never shared.
     A duplicate of a live lesson is refused; past ``MAX_ACTIVE`` live
     lessons the oldest retires to make room."""
     clean = _normalize(text)
@@ -221,7 +223,7 @@ def add_lesson(
     if rejection:
         return None, rejection
     now = _now().isoformat()
-    shared = _shared_space(session_id, db_path)
+    shared = not private and _shared_space(session_id, db_path)
     conn = _connect(db_path)
     try:
         # One writer at a time: two reviews landing together must not both

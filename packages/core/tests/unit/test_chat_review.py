@@ -598,6 +598,23 @@ def test_a_chat_that_read_its_owners_mail_is_kept_without_the_mail(db: Path, ros
         assert cr._failed_calls(row) == ["create_alert"]
 
 
+def test_the_review_of_a_chat_that_read_mail_writes_only_its_persons_rows(
+    db: Path, roster: SimpleNamespace, provider: _Provider
+) -> None:
+    from openexecutive.memory.session_store import create_session
+
+    create_session("s-1", "Offer", NOW.isoformat(), roster.teammate.id, db_path=db)
+    cr.record_turn(ASK, "Dana came up 5k.", session=_web(roster.teammate.id), person_id=roster.teammate.id,
+                   calls=[], mail=True, now=NOW)
+    provider.grades = [{"turn": 1, "verdict": "fine"}]
+    _review(db)
+    [row] = _turns(db)
+    assert row["mail"] == 1
+    events = audit_logger.get_audit_logger().query(event_type="chat_review", all_owners=True)
+    review = [e for e in events if "conversation review for person" in e.summary]
+    assert review and all(e.private and e.private_to_person == roster.teammate.id for e in review)
+
+
 def test_a_chat_that_read_mail_keeps_no_fact(roster: SimpleNamespace) -> None:
     names = {t["name"] for t in cr._tools_for(roster.principal, mail=True)[0]}
     assert "remember_fact" not in names and "close_open_loop" in names

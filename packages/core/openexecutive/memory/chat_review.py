@@ -174,6 +174,8 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
         ("closed_at", "TEXT"),
         ("replay_count", "INTEGER NOT NULL DEFAULT 0"),
         ("replay_notes", "TEXT"),
+        # The turn read mail, or its chat once did: its person's alone.
+        ("mail", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if col not in present:
             try:
@@ -295,10 +297,11 @@ def record_turn(
         try:
             cur = conn.execute(
                 f"INSERT INTO {TURNS_TABLE} (session_id, person_id, surface, message, reply, "  # noqa: S608
-                "calls, created_at, turn_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "calls, created_at, turn_id, mail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (session.session_id, int(person.id), json.dumps(surface),
                  words.strip()[:MESSAGE_MAX], reply.strip()[:REPLY_MAX],
-                 _calls_json(calls or [], private=private), current.isoformat(), get_active_turn_id()),
+                 _calls_json(calls or [], private=private), current.isoformat(), get_active_turn_id(),
+                 1 if private else 0),
             )
             # A miss is kept longer than a turn that went fine, so the
             # Reflection screen can show what went wrong this quarter; so is
@@ -364,6 +367,16 @@ def _mail_private(session_id: str, db_path: Path | None) -> bool:
     except Exception:
         logger.warning("chat_review: couldn't tell whether the chat is mail-private", exc_info=True)
         return True
+
+
+def mail_private_turns(turns: list[sqlite3.Row], *, db_path: Path | None = None) -> bool:
+    """Whether these turns are their person's alone: one read mail when it
+    was kept (``mail``), or their chat has read mail since. Then everything
+    the review and the replay write about them (audit rows included) is
+    that person's own (``audit.context.rows_for_person``)."""
+    if any(int(r["mail"] or 0) for r in turns):
+        return True
+    return any(_mail_private(str(sid), db_path) for sid in {str(r["session_id"]) for r in turns})
 
 
 def forget_session(session_id: str, *, db_path: Path | None = None) -> None:
@@ -677,6 +690,15 @@ def _chat_tools() -> tuple[dict[str, dict[str, Any]], dict[str, Callable[[dict[s
     return {d["name"]: d for d in defs}, handlers
 
 
+def _own_rows(active: bool, person_id: int) -> Any:
+    """``rows_for_person`` when ``active``, else nothing."""
+    import contextlib
+
+    from openexecutive.audit.context import rows_for_person
+
+    return rows_for_person(person_id) if active else contextlib.nullcontext()
+
+
 def _with_quote(tool: dict[str, Any]) -> dict[str, Any]:
     """``tool`` with a required ``source_quote`` (kept when it has one)."""
     schema = dict(tool.get("input_schema") or {"type": "object", "properties": {}})
@@ -749,7 +771,8 @@ async def _review_person(
         surface = json.loads(turns[-1]["surface"] or "{}")
         session = _rebuild_session(session_id, person, surface if isinstance(surface, dict) else {})
         words = "\n\n".join(str(r["message"]) for r in turns)
-        with set_turn(session_id=session_id, turn_id=f"chat-review-{turns[-1]['id']}"):
+        mail = mail_private_turns(turns, db_path=db_path)
+        with set_turn(session_id=session_id, turn_id=f"chat-review-{turns[-1]['id']}"), _own_rows(mail, person_id):
             from openexecutive.orchestrator.schedule_tools import set_session
 
             with set_session(session):
@@ -763,15 +786,15 @@ async def _review_person(
                 graded = await _grade_turns(session_id, person, turns, db_path=db_path)
                 missed = {i for i, row in enumerate(turns, 1) if graded.get(int(row["id"])) == "miss"}
                 done = await asyncio.wait_for(
-                    _run_loop(session, person, turns, words, misses=missed, db_path=db_path),
+                    _run_loop(session, person, turns, words, misses=missed, mail=mail, db_path=db_path),
                     timeout=_TIMEOUT_S,
                 )
-        misses = sum(1 for v in graded.values() if v == "miss")
-        _audit(session_id,
-               f"conversation review for person {person_id}: {len(done)} change(s), "
-               f"{misses} miss(es) in {len(graded)} graded turn(s)",
-               {"op": "chat_review", "person_id": person_id, "turns": len(turns),
-                "changes": done, "graded": len(graded), "misses": misses})
+            misses = sum(1 for v in graded.values() if v == "miss")
+            _audit(session_id,
+                   f"conversation review for person {person_id}: {len(done)} change(s), "
+                   f"{misses} miss(es) in {len(graded)} graded turn(s)",
+                   {"op": "chat_review", "person_id": person_id, "turns": len(turns),
+                    "changes": done, "graded": len(graded), "misses": misses})
     except Exception as exc:
         logger.exception("chat_review: pass failed")
         _audit(session_id, f"FAILED({type(exc).__name__}) conversation review",
@@ -1291,6 +1314,7 @@ async def _run_loop(
     words: str,
     *,
     misses: set[int] | None = None,
+    mail: bool = False,
     db_path: Path | None = None,
 ) -> list[str]:
     """The tool loop; the names of the changes that went through. ``misses``
@@ -1303,9 +1327,7 @@ async def _run_loop(
     settings = _settings()
     model = settings.chat_review_model or settings.routing_model
     misses = misses or set()
-    tools, handlers = _tools_for(
-        person, misses=bool(misses), mail=_mail_private(str(session.session_id), db_path)
-    )
+    tools, handlers = _tools_for(person, misses=bool(misses), mail=mail)
     offered = {t["name"] for t in tools}
     facts = _standing_facts() if person.is_principal else ""
     intro = (
@@ -1462,6 +1484,7 @@ async def _apply(
         lesson, reason = await asyncio.to_thread(
             lessons.add_lesson, int(person.id), str(tool_input.get("lesson") or ""),
             quote=quote, session_id=str(session.session_id), turn_row_id=row_id, db_path=db_path,
+            private=mail_private_turns(list(turns or []), db_path=db_path),
         )
         return json.dumps({"status": "kept", "lesson": lesson["text"]} if lesson else {"status": "refused", "detail": reason})
     if name == "learn_reply_style":

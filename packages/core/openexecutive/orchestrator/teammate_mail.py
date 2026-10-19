@@ -579,12 +579,16 @@ def _keep_private(session: Any, sides: _Sides) -> None:
     if sides.reader_id is None or sides.reader_is_principal or not session_id:
         return
     from openexecutive.delegation.settings import history_len
+    from openexecutive.memory.replay import is_replay
     from openexecutive.memory.session_store import mark_mail_private
 
-    try:
-        mark_mail_private(str(session_id), sides.reader_id, history_len=history_len(session))
-    except Exception:
-        logger.exception("teammate_mail: couldn't mark the conversation private")
+    # A replay (memory.replay) keeps no conversation: marking one would leave
+    # an empty chat in the teammate's list.
+    if not is_replay(session):
+        try:
+            mark_mail_private(str(session_id), sides.reader_id, history_len=history_len(session))
+        except Exception:
+            logger.exception("teammate_mail: couldn't mark the conversation private")
     # The rest of this turn's rows, its answer included, are theirs too.
     from openexecutive.delegation.settings import turn_delegation
 
