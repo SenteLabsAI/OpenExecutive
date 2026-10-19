@@ -273,6 +273,32 @@ def test_answering_rewrites_the_draft_and_marks_the_question(
     assert "Question: When should we talk?\nAnswer: Friday at 10" in turn
 
 
+def test_a_typed_answer_is_a_note_to_work_in_with_the_choices_offered(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    rewriter: list[tuple[str, str]],
+) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    url = f"/delegation/replies/{card_id}/answer"
+    typed = {"answers": [{"question_index": 0, "answer_text": "any day except tomorrow"}]}
+    resp = client.post(url, json=typed, headers=OWNER)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["questions"][0]["answer"] == "any day except tomorrow"
+    _, turn = rewriter[-1]
+    assert (
+        "Question: When should we talk?\nChoices offered: Friday at 10; Next week\n"
+        "They typed: any day except tomorrow"
+    ) in turn
+    assert "<today>" in turn
+    assert "They typed" in answers.REWRITE_PROMPT
+    # A tapped choice is an answer as it stands.
+    tapped = {"answers": [{"question_index": 0, "answer_text": "Next week"}]}
+    assert client.post(url, json=tapped, headers=OWNER).status_code == 200
+    _, turn = rewriter[-1]
+    assert "Question: When should we talk?\nAnswer: Next week" in turn and "They typed" not in turn
+
+
 def test_answering_refuses_a_bad_question_a_failed_rewrite_and_too_many(
     client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
     rewriter: list[tuple[str, str]],
