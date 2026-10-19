@@ -694,7 +694,13 @@ def render_live_blocks(signals: LiveSignals, *, window: str) -> list[str]:
                     if signals.draft_lines else ""
                 )
             )
-            parts.extend(f"  - {line}" for line in signals.draft_lines)
+            if signals.draft_lines:
+                from openexecutive.orchestrator.content_trust import wrap_untrusted
+
+                # A reply draft's subject is the sender's own ("Re: …").
+                parts.append(wrap_untrusted(
+                    "\n".join(f"- {line}" for line in signals.draft_lines), source="email",
+                ))
         parts.append("")
     background = "background only: what the reader already said and asked, never news"
     if signals.own:

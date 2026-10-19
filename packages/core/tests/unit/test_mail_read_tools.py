@@ -289,6 +289,14 @@ def test_a_draft_reads_as_their_draft_not_sent(roster: SimpleNamespace) -> None:
     assert "Yours —" not in result["thread"]
 
 
+def test_a_draft_never_pushes_a_message_out_of_the_window(roster: SimpleNamespace) -> None:
+    messages = [_msg(i, DANA, f"Message {i}") for i in range(1, mr.READ_MESSAGES + 1)]
+    messages.append(_msg(99, OWNER, "My unsent reply", labels=["DRAFT"]))
+    result = _read(_thread_session(*messages), {"thread_id": "t1"})
+    assert result["messages_in_thread"] == mr.READ_MESSAGES and result["drafts_shown"] == 1
+    assert "Message 1\n" in result["thread"] and "My unsent reply" in result["thread"]
+
+
 def test_a_bad_thread_id_is_refused(roster: SimpleNamespace) -> None:
     assert "thread_id" in _read(_session(Mailbox()), {})["error"]
     assert "isn't a thread id" in _read(_session(Mailbox()), {"thread_id": "../drafts"})["error"]

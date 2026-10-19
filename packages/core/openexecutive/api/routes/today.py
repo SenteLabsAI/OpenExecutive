@@ -1114,7 +1114,10 @@ def _app_action_summary(instance: Any) -> str | None:
     if isinstance(did, str) and did.strip() and instance.status in _APPROVED_STATUSES:
         return f"{did.strip()} (asked for in chat, approved on its card)"
     card = final.get("card") or proposed.get("card") or proposed.get("title") or "a change from chat"
-    verb = {"rejected": "Turned down", "failed": "Didn't go through"}.get(instance.status, "Not done")
+    if instance.status in _APPROVED_STATUSES:
+        verb = "Done"
+    else:
+        verb = {"rejected": "Turned down", "failed": "Didn't go through"}.get(instance.status, "Not done")
     return f"{verb}: {str(card).strip()}"
 
 

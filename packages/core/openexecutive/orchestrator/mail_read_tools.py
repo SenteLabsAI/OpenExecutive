@@ -51,6 +51,8 @@ SEARCH_MY_EMAIL = "search_my_email"
 READ_MY_EMAIL = "read_my_email"
 MY_EMAIL_AWAITING_REPLY = "my_email_awaiting_reply"
 READ_MY_EMAIL_ATTACHMENT = "read_my_email_attachment"
+# Their unsent drafts shown after a thread's messages, newest last.
+_DRAFTS_SHOWN = 2
 MY_EMAIL_READ_BEFORE = "my_email_read_before"
 MY_CALENDAR = "my_calendar"
 SAVE_MY_EMAIL_ATTACHMENT = "save_my_email_attachment"
@@ -501,20 +503,24 @@ async def handle_read_my_email(tool_input: dict[str, Any]) -> str:
 
     async def read(writer: Any) -> str:
         thread = await writer.mailbox.get_thread(thread_id)
-        # Drafts included, marked as not sent: a thread that is only a draft
-        # (a new email saved for them) must not read as empty.
-        messages = list(thread.messages)
-        if not messages:
+        messages = [m for m in thread.messages if "DRAFT" not in m.labels]
+        # Their drafts in it come after the last messages, marked not sent, so
+        # a thread that is only a draft (a new email saved for them) does not
+        # read as empty and a draft never pushes a real message out.
+        drafts = [m for m in thread.messages if "DRAFT" in m.labels][-_DRAFTS_SHOWN:]
+        if not messages and not drafts:
             return json.dumps({"status": "not_found", "detail": "That thread has no messages."})
         shown = messages[-READ_MESSAGES:]
         first = len(messages) - len(shown) + 1
-        _remember_read(writer, thread.id, messages[0])
-        _note_senders(writer, [_sender(m) for m in shown if "DRAFT" not in m.labels])
+        _remember_read(writer, thread.id, (messages or drafts)[0])
+        _note_senders(writer, [_sender(m) for m in shown])
+        shown = shown + drafts
         return json.dumps({
             "status": "ok",
             "thread_id": thread.id,
-            "subject": one_line(messages[0].subject, 200),
+            "subject": one_line((messages or drafts)[0].subject, 200),
             "messages_in_thread": len(messages),
+            "drafts_shown": len(drafts),
             "shown_from": first,
             "thread": _render_thread(shown, first, writer.email),
             "attachments": await _attachment_list(writer.mailbox, shown, first),

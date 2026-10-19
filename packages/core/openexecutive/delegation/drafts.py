@@ -49,7 +49,9 @@ class WaitingDraft:
 
 
 # Row id -> (to, subject) as the last ``settle_waiting`` read them from the
-# mailbox. In memory only: the table keeps no address or subject.
+# mailbox. In memory only: the table keeps no address or subject. The
+# scheduler that settles runs in the API process that reads it; after a
+# restart, drafts read without details until the next pass.
 _seen: dict[int, tuple[tuple[str, ...], str]] = {}
 
 
@@ -287,6 +289,11 @@ async def settle_waiting(
     except Exception:
         logger.warning("delegation.drafts: couldn't read the waiting drafts", exc_info=True)
         return 0
+    # Keep details only for the rows still waiting (one aged out, or closed
+    # some other way, is dropped).
+    current = {row[0] for row in waiting}
+    for row_id in [r for r in _seen if r not in current]:
+        _seen.pop(row_id, None)
     if not waiting:
         return 0  # no mailbox call on a day with no chat drafts
     from openexecutive.delegation.gmail import GmailError, gmail_for, valid_id
