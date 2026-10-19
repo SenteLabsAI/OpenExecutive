@@ -50,9 +50,10 @@ export function periodNames(
 ): { current: string; previous: string; previousShort: string; heading: string } {
   if (period === "month") {
     const i = MONTHS.findIndex((m) => label.startsWith(m));
-    if (i >= 0) {
-      const prev = MONTHS[(i + 11) % 12];
-      return { current: MONTHS[i], previous: prev, previousShort: prev.slice(0, 3), heading: MONTHS[i] };
+    const month = MONTHS[i];
+    const prev = MONTHS[(i + 11) % 12];
+    if (month && prev) {
+      return { current: month, previous: prev, previousShort: prev.slice(0, 3), heading: month };
     }
     return { current: "This month", previous: "Month before", previousShort: "Month before", heading: label };
   }
