@@ -207,7 +207,23 @@ async def test_a_reply_draft_stops_waiting_once_they_answered_in_the_thread() ->
     assert await drafts.settle_waiting(PERSON, now=NOW, gmail=Box()) == 1
     left = drafts._waiting(1, NOW - timedelta(days=1), None)
     assert [draft_id for _, draft_id in left] == ["d2"]
-    assert answered not in drafts._seen
+    assert (1, answered) not in drafts._seen
+
+
+async def test_one_persons_pass_keeps_anothers_details() -> None:
+    _record(1, drafts.SOURCE_CHAT, None, "d1")
+    _record(2, drafts.SOURCE_CHAT, None, "d2")
+
+    class Box:
+        async def get_draft(self, draft_id: str) -> Any:
+            message = SimpleNamespace(to=["dana@example.com"], cc=[], subject=f"About {draft_id}")
+            return SimpleNamespace(draft_id=draft_id, message=message)
+
+    await drafts.settle_waiting(PERSON, now=NOW, gmail=Box())
+    await drafts.settle_waiting(SimpleNamespace(id=2, email="ben@example.com"), now=NOW, gmail=Box())
+    day = NOW.replace(hour=0)
+    assert [d.subject for d in drafts.waiting_drafts(1, day)] == ["About d1"]
+    assert [d.subject for d in drafts.waiting_drafts(2, day)] == ["About d2"]
 
 
 async def test_settling_reads_nothing_without_recent_chat_drafts() -> None:

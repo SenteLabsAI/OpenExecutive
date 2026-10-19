@@ -48,11 +48,11 @@ class WaitingDraft:
     subject: str = ""
 
 
-# Row id -> (to, subject) as the last ``settle_waiting`` read them from the
+# (person id, row id) -> (to, subject) as the last ``settle_waiting`` read them from the
 # mailbox. In memory only: the table keeps no address or subject. The
 # scheduler that settles runs in the API process that reads it; after a
 # restart, drafts read without details until the next pass.
-_seen: dict[int, tuple[tuple[str, ...], str]] = {}
+_seen: dict[tuple[int, int], tuple[tuple[str, ...], str]] = {}
 
 
 def _db(db_path: Path | None) -> Path:
@@ -244,7 +244,7 @@ def waiting_drafts(
     pass has read them (empty until one has)."""
     out = []
     for row_id, _, created_at, _ in _waiting_rows(person_id, since, db_path):
-        to, subject = _seen.get(row_id, ((), ""))
+        to, subject = _seen.get((person_id, row_id), ((), ""))
         out.append(WaitingDraft(created_at=created_at, to=to, subject=subject))
     return out
 
@@ -291,9 +291,10 @@ async def settle_waiting(
         return 0
     # Keep details only for the rows still waiting (one aged out, or closed
     # some other way, is dropped).
-    current = {row[0] for row in waiting}
-    for row_id in [r for r in _seen if r not in current]:
-        _seen.pop(row_id, None)
+    pid = int(person_id)
+    current = {(pid, row[0]) for row in waiting}
+    for key in [k for k in _seen if k[0] == pid and k not in current]:
+        _seen.pop(key, None)
     if not waiting:
         return 0  # no mailbox call on a day with no chat drafts
     from openexecutive.delegation.gmail import GmailError, gmail_for
@@ -314,9 +315,9 @@ async def settle_waiting(
                 message = getattr(found, "message", None)
                 recipients = [*getattr(message, "to", []), *getattr(message, "cc", [])]
                 to = tuple(str(a) for a in recipients[:5] if a)
-                _seen[row_id] = (to, str(getattr(message, "subject", "") or ""))
+                _seen[(pid, row_id)] = (to, str(getattr(message, "subject", "") or ""))
                 continue
-            _seen.pop(row_id, None)
+            _seen.pop((pid, row_id), None)
             mark_gone(row_id, now, db_path=db_path)
             gone += 1
         except GmailError as exc:

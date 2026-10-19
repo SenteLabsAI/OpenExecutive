@@ -552,7 +552,7 @@ def test_waiting_drafts_reach_the_principals_own_turn_only(
     monkeypatch.setattr(ctx, "format_open_alerts_for_prompt", lambda **_kw: "")
     row = drafts.record(1, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d1",
                         message_id="m1", now=datetime.now(UTC))
-    monkeypatch.setattr(drafts, "_seen", {row: (("dana@example.com",), "Pilot pricing")})
+    monkeypatch.setattr(drafts, "_seen", {(1, row): (("dana@example.com",), "Pilot pricing")})
 
     block = ctx.render_and_trust(_FakeSession())
 
