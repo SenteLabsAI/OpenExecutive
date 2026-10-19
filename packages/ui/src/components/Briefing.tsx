@@ -669,12 +669,21 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const [rightNowBaseline, setRightNowBaseline] = useState<{ at: Date | null } | null>(null);
   const seenWrittenRef = useRef<string | null>(null);
   const shownWrittenAt = today?.narrative ? today.narrative_generated_at ?? null : null;
+  // A header that lands while the tab is in the background isn't a look:
+  // it's recorded once the page is in view again.
+  const [pageVisible, setPageVisible] = useState(true);
   useEffect(() => {
-    if (!today || !shownWrittenAt || seenWrittenRef.current === shownWrittenAt) return;
+    const onChange = () => setPageVisible(document.visibilityState === "visible");
+    onChange();
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+  useEffect(() => {
+    if (!pageVisible || !today || !shownWrittenAt || seenWrittenRef.current === shownWrittenAt) return;
     setRightNowBaseline((b) => b ?? { at: seenBaseline(today.narrative_seen_at, new Date()) });
     seenWrittenRef.current = shownWrittenAt;
     void markTodaySeen().catch(() => { /* best-effort */ });
-  }, [today, shownWrittenAt]);
+  }, [today, shownWrittenAt, pageVisible]);
   // The first week: the first-week card takes the page's top slot, so the
   // day isn't called quiet and the summary line points at it.
   const firstWeekCard = today?.first_week_card ?? null;
