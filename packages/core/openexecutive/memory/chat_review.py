@@ -1360,7 +1360,7 @@ async def _run_loop(
             elif name in _READ_TOOLS:
                 out = await handlers[name](tool_input)
             elif name == "remember_fact" and _fact_key(tool_input) and _fact_key(tool_input) in facts_saved:
-                out = json.dumps({"status": "noop", "detail": "already saved in this review"})
+                out = json.dumps({"status": "noop", "detail": "a fact under this subject was already saved in this review; a different fact needs its own subject"})
             elif changes >= MAX_CHANGES:
                 out = json.dumps({"status": "refused", "detail": "change limit for this review reached"})
             else:

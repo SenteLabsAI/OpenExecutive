@@ -260,7 +260,7 @@ def test_a_fact_is_saved_once_a_review(db: Path, roster: SimpleNamespace, provid
     _review(db)
     first, second = _tool_results(provider)
     assert first["status"] == "ok"
-    assert second == {"status": "noop", "detail": "already saved in this review"}
+    assert second["status"] == "noop" and "already saved" in second["detail"]
 
 
 def test_a_change_without_their_words_is_refused(db: Path, roster: SimpleNamespace,

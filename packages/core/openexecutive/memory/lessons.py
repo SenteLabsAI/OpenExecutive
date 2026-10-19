@@ -14,10 +14,10 @@ The Executive's own turn gets the matching lessons as a ``<lessons>`` block
 (``build_lessons_block``); each specialist call gets them under the
 ``<failure_cases>`` block it already reads (``lessons_for_query``). A lesson
 matches a message when they share two content words (the lesson's text and
-the quote it came from, against the message), or one name: a word written
-with a capital or a digit, mid-sentence in the message ("Atlas", "R2"),
-since a lesson about what a name means shares only that word with the
-question it answers. A short list of short lines
+the quote it came from, against the message), or the name the lesson
+defines ("Atlas means ...", "your name is R2") written as a name
+mid-sentence in the message, since a lesson about what a name means shares
+only that word with the question it answers. A short list of short lines
 needs no vector index, and the match is what makes the counters below mean
 something. The block says the current request wins and nothing in it
 authorizes an action, as the style block does.
@@ -76,7 +76,7 @@ MAX_PER_TURN = 6
 MAX_NEW_WORDS = 2
 RETIRE_AFTER_SHOWN = 5
 # Two shared content words: one common word ("report") matches too much.
-# One shared name is enough (``_names``).
+# The name a lesson defines is enough (``_defined_names``).
 _MATCH_WORDS = 2
 
 # Beyond the style rules' deny-list (which has the acting verbs and the
@@ -399,11 +399,18 @@ def _content_words(text: str) -> set[str]:
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9']*")
+# A lesson that says what a name means: "Atlas means ...", "R2 is ...",
+# "... is called Atlas", "your name is R2".
+_NAME = r"([A-Z][A-Za-z0-9']*|[A-Za-z]*\d[A-Za-z0-9']*)"
+_DEFINED_RES = (
+    re.compile(_NAME + r"\s+(?:is|means|stands for|refers to)\b"),
+    re.compile(r"\b(?:called|call it|named|name is|known as)\s+" + _NAME),
+)
 
 
 def _names(text: str, *, sentence_starts: bool = True) -> set[str]:
     """The name-like words in ``text``, casefolded: written with a capital
-    or a digit ("Atlas", "R2", "Q4"), not a stopword or a bare number.
+    or a digit ("Atlas", "R2"), not a stopword or a bare number.
     ``sentence_starts=False`` skips a word that opens a sentence, where a
     capital says nothing."""
     out: set[str] = set()
@@ -419,14 +426,26 @@ def _names(text: str, *, sentence_starts: bool = True) -> set[str]:
     return out
 
 
+def _defined_names(text: str) -> set[str]:
+    """The names ``text`` says the meaning of: a lesson about what a name
+    means ("Atlas means the Dallas warehouse move") shares only that word
+    with the question it answers. A name it merely mentions ("Pipeline
+    reports go to Sam") is not one."""
+    found: set[str] = set()
+    for pattern in _DEFINED_RES:
+        for m in pattern.finditer(text):
+            found |= _names(m.group(1))
+    return found
+
+
 def _matches(lesson: dict[str, Any], message: str) -> bool:
     """Whether ``lesson`` reaches a turn about ``message``: two shared
-    content words, or one shared name (a lesson about what "Atlas" or "R2"
-    means shares only that word with the question it answers)."""
+    content words, or the name the lesson defines, written as a name
+    mid-sentence in the message."""
     own = _content_words(lesson["text"]) | _content_words(lesson["quote"])
     if len(own & _content_words(message)) >= _MATCH_WORDS:
         return True
-    names = _names(lesson["text"]) | _names(lesson["quote"])
+    names = _defined_names(lesson["text"]) | _defined_names(lesson["quote"])
     return bool(names & _names(message, sentence_starts=False))
 
 

@@ -5141,8 +5141,9 @@ chat:
     requirement, re-checked on every render. Stored in chat_review_lessons
     (shared = learned in a channel or group thread that never read mail); chat_review_lesson_uses
     records which turn id, and whose, saw which lesson. Reaches a turn by keyword match (two shared content words
-    between lesson+quote and the message, or one shared name with a capital or
-    digit mid-sentence, like Atlas or R2; no vector index): the Executive's
+    between lesson+quote and the message, or the name the lesson defines, like
+    "Atlas means ..." or "your name is R2", written mid-sentence in the message;
+    no vector index): the Executive's
     turn as a <lessons> user-turn block (build_lessons_block, counted as
     shown against the active turn id), each specialist call under its
     <failure_cases> block (router._lessons_for_call). A lesson reaches its

@@ -127,13 +127,16 @@ def test_a_lesson_reaches_the_turns_it_matches(roster: SimpleNamespace) -> None:
 def test_one_shared_name_is_enough(roster: SimpleNamespace) -> None:
     _add(roster.principal.id, "Atlas means the Dallas warehouse move.",
          quote="Atlas always means the Dallas warehouse move")
-    _add(roster.principal.id, "Answer to R2 as your name.", quote="your name is R2 from now on")
+    _add(roster.principal.id, "Your name is R2.", quote="your name is R2 from now on")
     block = lessons.build_lessons_block(roster.principal.id, "Give me a two-line update on Atlas for the board.")
     assert "Atlas means the Dallas warehouse move." in block and "R2" not in block
-    assert "Answer to R2" in lessons.build_lessons_block(roster.principal.id, "Hey, are you R2?")
+    assert "Your name is R2." in lessons.build_lessons_block(roster.principal.id, "Hey, are you R2?")
     # A capital that only opens a sentence, or a bare number, is no name.
     assert lessons.build_lessons_block(roster.principal.id, "Atlas? never mind, book lunch.") == ""
     assert lessons._names("Book 2026 travel. Then Q4", sentence_starts=False) == {"q4"}
+    # A name the lesson only mentions is not enough on its own.
+    _add(roster.principal.id, "Pipeline reports go to Sam on Fridays.", quote="pipeline reports go to Sam on Fridays")
+    assert "Pipeline reports" not in lessons.build_lessons_block(roster.principal.id, "Can you check the Pipeline view?")
 
 
 def test_a_lesson_from_someones_own_chat_stays_with_them(roster: SimpleNamespace) -> None:
