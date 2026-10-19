@@ -217,13 +217,13 @@ def test_a_scan_with_read_my_calendar_on_offers_free_slots(
 
 def _card(
     owner_id: int, monkeypatch: pytest.MonkeyPatch, *, mailbox: FakeInbox | None = None, calendar_on: bool = False,
-    gist: str = "",
+    gist: str = "", cc: tuple[str, ...] = (),
 ) -> tuple[FakeInbox, int]:
     from openexecutive.delegation import inbox_classifier as ic
     from openexecutive.delegation.settings import set_enabled
 
     async def classifier(model: str, turn: str) -> dict[str, Any]:
-        return {"needs_reply": True, "kind": "question", "confidence": 0.9}
+        return {"needs_reply": True, "kind": "question", "asked_of_them": True, "confidence": 0.9}
 
     async def composer(model: str, system: str, turn: str) -> dict[str, Any]:
         return {
@@ -243,7 +243,7 @@ def _card(
     inbox.set_watch(owner_id, True, updated_by="t", now=datetime(2026, 9, 29, tzinfo=UTC))
     inbox.set_mailbox_drafts(owner_id, True, updated_by="t")
     box = mailbox or FakeInbox()
-    box.add(_msg("m1", "t1"))
+    box.add(_msg("m1", "t1", cc=cc))
     asyncio.run(inbox.scan_person(people_store.get_person(owner_id), gmail=box, now=NOW))
     return box, inbox.open_cards(owner_id)[0].id
 
@@ -356,6 +356,23 @@ def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
     )
     assert edited.status_code == 200, edited.text
     assert edited.json()["gist"] == ""
+
+
+def test_who_it_goes_to_keeps_the_summary_and_a_hand_edit_drops_it(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    mailbox, card_id = _card(
+        ids["principal"], monkeypatch, gist="Dana asks when to talk. Draft says later.", cc=("li@northpeak.example",),
+    )
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    moved = client.put(f"/delegation/replies/{card_id}/recipients", json={"everyone": False}, headers=OWNER)
+    assert moved.status_code == 200, moved.text
+    # The words didn't change, so neither does the summary.
+    assert moved.json()["gist"] == "Dana asks when to talk. Draft says later."
+    edited = client.put(f"/delegation/replies/{card_id}/text", json={"text": "Hi Dana,\n\nFriday."}, headers=OWNER)
+    assert edited.status_code == 200 and edited.json()["gist"] == ""
+    assert inbox.card_payload(inbox.open_cards(ids["principal"])[0])["gist"] == ""
 
 
 def test_a_rewrite_with_no_summary_drops_the_old_one(
