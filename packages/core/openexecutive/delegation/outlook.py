@@ -104,6 +104,9 @@ CREDENTIAL_VERSION = 1
 
 # A named MAPI property in our own namespace: "the Executive wrote this draft".
 GHOSTWRITTEN_PROPERTY = "String {3f0a7c52-8d1e-4b6a-9e2f-5c4d7b8a1e60} Name OEGhostwritten"
+# Graph takes a file of up to 3 MB in one request; larger ones need an upload
+# session, so a draft leaves them off (``CreatedDraft.skipped_attachments``).
+OUTLOOK_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
 
 _PREFER = 'outlook.body-content-type="text", IdType="ImmutableId"'
 _SELECT = (
@@ -966,12 +969,48 @@ class DelegateOutlook:
                 data = await self._request(client, "POST", "/messages", json_body=fields)
             else:
                 data = await self._reply_draft(client, spec, fields)
-        draft_id = str(data.get("id") or "")
+            draft_id = str(data.get("id") or "")
+            skipped = 0
+            if spec.attachments and spec.forward is None:
+                data, skipped = await self._attach(client, draft_id, data, spec.attachments)
         return CreatedDraft(
             draft_id=draft_id,
             message_id=draft_version(draft_id, str(data.get("changeKey") or "")),
             thread_id=str(data.get("conversationId") or spec.thread_id or ""),
+            skipped_attachments=skipped,
         )
+
+    async def _attach(
+        self, client: httpx.AsyncClient, draft_id: str, data: dict[str, Any], files: list[tuple[str, str, bytes]],
+    ) -> tuple[dict[str, Any], int]:
+        """Put ``files`` on the new draft ``draft_id`` (Graph's one-request
+        upload, ``OUTLOOK_ATTACHMENT_MAX_BYTES`` a file; larger ones are left
+        off and counted). Returns the draft as it is afterwards (its
+        ``changeKey`` moved) and how many were left off. A failed upload
+        removes the draft, so no half-made one is left in their Drafts."""
+        if not valid_id(draft_id):
+            raise GmailError("graph returned no draft")
+        path = f"/messages/{quote(draft_id, safe='')}"
+        skipped = 0
+        try:
+            for name, mime, content in files:
+                if len(content) > OUTLOOK_ATTACHMENT_MAX_BYTES:
+                    skipped += 1
+                    continue
+                await self._request(client, "POST", f"{path}/attachments", json_body={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": clean_header(name) or "attachment",
+                    "contentType": mime or "application/octet-stream",
+                    "contentBytes": base64.b64encode(content).decode("ascii"),
+                })
+            after = await self._get(client, path, {"$select": "id,changeKey,conversationId"})
+        except GmailError:
+            try:
+                await self._request(client, "DELETE", path)
+            except GmailError:
+                logger.warning("delegation.outlook: couldn't remove a draft whose files failed")
+            raise
+        return {**data, **after}, skipped
 
     async def _forward_draft(self, client: httpx.AsyncClient, spec: DraftSpec, fields: dict[str, Any]) -> dict[str, Any]:
         """A forward made with Graph's ``createForward``, which keeps the

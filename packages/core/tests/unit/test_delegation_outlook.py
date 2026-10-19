@@ -825,3 +825,59 @@ def test_an_outlook_all_day_event_keeps_its_day_east_and_west_of_utc() -> None:
     assert day("2026-10-14T04:00:00.0000000", "2026-10-15T04:00:00.0000000", "America/New_York") == (
         "2026-10-14", "2026-10-15",
     )
+
+
+def _new_draft_graph() -> tuple[list[httpx.Request], Any]:
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "login.microsoftonline.com":
+            return FakeGraph().handle(request)
+        seen.append(request)
+        path = unquote(request.url.path)
+        if request.method == "POST" and path == "/v1.0/me/messages":
+            return httpx.Response(201, json={"id": "new1", "changeKey": "k1", "conversationId": "c9"})
+        if request.method == "POST" and path == "/v1.0/me/messages/new1/attachments":
+            return httpx.Response(201, json={"id": "a1"})
+        if request.method == "GET" and path == "/v1.0/me/messages/new1":
+            return httpx.Response(200, json={"id": "new1", "changeKey": "k3", "conversationId": "c9"})
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(400)
+
+    return seen, handle
+
+
+def test_a_new_draft_carries_its_files_and_leaves_off_one_too_large() -> None:
+    seen, handle = _new_draft_graph()
+    client = DelegateOutlook(EMAIL, credential=OutlookCredential(EMAIL, "r1", "cid", "common"),
+                             transport=httpx.MockTransport(handle))
+    big = b"x" * (ol.OUTLOOK_ATTACHMENT_MAX_BYTES + 1)
+    created = asyncio.run(client.create_draft(DraftSpec(
+        to=["dana@northpeak.example"], subject="Bills", body="Attached.",
+        attachments=[("bill.pdf", "application/pdf", b"%PDF-1"), ("huge.pdf", "application/pdf", big)],
+    )))
+    uploads = [r for r in seen if r.url.path.endswith("/attachments")]
+    assert len(uploads) == 1
+    body = json.loads(uploads[0].content)
+    assert body["name"] == "bill.pdf" and base64.b64decode(body["contentBytes"]) == b"%PDF-1"
+    # The version moved with the upload, so a later edit compares the right one.
+    assert created.message_id == "new1.k3" and created.skipped_attachments == 1
+
+
+def test_a_draft_whose_file_fails_is_removed() -> None:
+    seen, handle = _new_draft_graph()
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/attachments"):
+            seen.append(request)
+            return httpx.Response(500, json={"error": {"code": "x"}})
+        return handle(request)
+
+    client = DelegateOutlook(EMAIL, credential=OutlookCredential(EMAIL, "r1", "cid", "common"),
+                             transport=httpx.MockTransport(failing))
+    with pytest.raises(GmailError):
+        asyncio.run(client.create_draft(DraftSpec(
+            to=["a@b.example"], subject="x", body="y", attachments=[("a.pdf", "application/pdf", b"1")],
+        )))
+    assert any(r.method == "DELETE" and r.url.path.endswith("/messages/new1") for r in seen)

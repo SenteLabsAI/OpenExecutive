@@ -349,5 +349,9 @@ def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "
 def mail_touched_withheld_error(label: str) -> str:
     """The JSON error tool_result for a refused call (``label`` is the tool,
     or for call_tool the tool it asked for)."""
+    from openexecutive.orchestrator import outside_content
+
     why = CONTACT_REFUSAL if label == "upsert_person" else REFUSAL
+    # Remembered for their next message, so their go runs it before a read.
+    outside_content.note_held(label)
     return json.dumps({"error": f"{label} was not run. {why}"})

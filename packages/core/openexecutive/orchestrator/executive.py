@@ -2518,6 +2518,21 @@ class Executive:
                     replayed = reading_budget.replay(tu)
                     if replayed is not None:
                         group_results[tu["id"]] = replayed
+            # The person just said go to what the last turn held: the first
+            # round that reads runs its other calls without those reads, so a
+            # re-read doesn't hold the approved steps again
+            # (orchestrator.outside_content.defers_read).
+            deferred = [
+                tu for tu in tool_uses
+                if tu["id"] not in group_results and outside_content.defers_read(tu["name"], tu["input"])
+            ]
+            if deferred:
+                for tu in deferred:
+                    named = tu["input"].get("name") if isinstance(tu["input"], dict) else None
+                    label = named[:200] if tu["name"] == "call_tool" and isinstance(named, str) and named else tu["name"]
+                    group_results[tu["id"]] = outside_content.go_first_error(label)
+                outside_content.go_first_round_done()
+                logger.info("go_first: deferred %d read(s) until the held steps ran", len(deferred))
             dispatch_uses = [tu for tu in tool_uses if tu["id"] not in group_results]
 
             specialist_tool_uses = [tu for tu in dispatch_uses if tu["name"] == "consult_specialist"]
@@ -2589,7 +2604,7 @@ class Executive:
             mail_touched_uses: list[dict[str, Any]] = []
             if pinned_delegation is not None and (
                 pinned_delegation.read_mail
-                or any(tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in tool_uses)
+                or any(tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in dispatch_uses)
             ):
                 mail_touched_uses = [
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]

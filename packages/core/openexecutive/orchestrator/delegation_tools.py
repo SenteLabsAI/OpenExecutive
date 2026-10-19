@@ -69,7 +69,9 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
         "only a draft). To forward an email, pass `forward` (its "
         "thread_id: its latest message is forwarded, with its files, unless "
         "`forward_message_id` names an earlier one) and `to`; "
-        "`intent` is the note above it. Afterwards tell them the draft is waiting in "
+        "`intent` is the note above it. To attach Google Drive files to a new "
+        "email or a reply, pass their Drive file ids in `drive_files`: the files go "
+        "onto the draft as they are, without you reading them. Afterwards tell them the draft is waiting in "
         "their Drafts, show the preview, and pass on any open questions — "
         "never say it was sent."
     ),
@@ -113,6 +115,15 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "description": (
                     "The thread_id of an email to FORWARD (its latest message, with "
                     "its files), with `to`. `intent` is the note above it."
+                ),
+            },
+            "drive_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Google Drive file ids to attach to a new email or a reply "
+                    "(not a forward), e.g. the ids a Drive folder listing gave. "
+                    "At most 10."
                 ),
             },
             "forward_message_id": {
@@ -474,6 +485,11 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     plan = _plan(writer, thread, tool_input, roster)
     if isinstance(plan, str):
         return plan, False
+    attached = await _drive_files(tool_input)
+    if isinstance(attached, str):
+        return attached, False
+    if attached.skipped:
+        plan["flags"].append("attachments_left_off")
     recipients = [*plan["to"], *plan["cc"]]
     stored = get_voice(writer.person.id)
     from openexecutive.memory.history_drafts import notes_for_draft
@@ -504,8 +520,26 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
         in_reply_to=plan["in_reply_to"],
         references=plan["references"],
         from_name=" ".join(names),
+        attachments=attached.files,
     ))
-    return _drafted(writer, thread, plan, composed, draft), True
+    if getattr(draft, "skipped_attachments", 0) and "attachments_left_off" not in plan["flags"]:
+        plan["flags"].append("attachments_left_off")
+    return _drafted(writer, thread, plan, composed, draft, attached=[n for n, _, _ in attached.files]), True
+
+
+async def _drive_files(tool_input: dict[str, Any]) -> Any:
+    """The Drive files ``drive_files`` names (``drive_attach.DriveFiles``,
+    empty when none), or the error to return."""
+    from openexecutive.delegation.saved_files import viewer_person_id
+    from openexecutive.orchestrator.drive_attach import AttachError, DriveFiles, fetch
+
+    ids = tool_input.get("drive_files")
+    if not ids:
+        return DriveFiles()
+    try:
+        return await fetch(list(ids), viewer_person_id())
+    except AttachError as exc:
+        return _error(f"{exc}, so no draft was made. Tell them, and offer the draft without the files.")
 
 
 def _record(person_id: int, thread: Any, draft: Any) -> None:
@@ -527,7 +561,9 @@ def _record(person_id: int, thread: Any, draft: Any) -> None:
         logger.warning("ghostwrite: couldn't record the draft", exc_info=True)
 
 
-def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, draft: Any) -> str:
+def _drafted(
+    writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, draft: Any, *, attached: list[str] | None = None,
+) -> str:
     """Audit a saved draft (metadata only) and return what the model sees."""
     from openexecutive.delegation.gmail import mailbox_link
 
@@ -541,6 +577,7 @@ def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, 
         "draft_id": draft.draft_id,
         "reply": thread is not None,
         "recipients": len(plan["to"]) + len(plan["cc"]),
+        "files": len(attached or []),
         "flags": flags,
     })
     link = mailbox_link(
@@ -557,6 +594,14 @@ def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, 
         "cc": plan["cc"],
         "subject": composed.subject,
         "preview": composed.body[:_PREVIEW_CHARS],
+        **({"attached": attached} if attached else {}),
+        **(
+            {"check_attachments": (
+                "This turn read content from outside the team before choosing these files: "
+                "name each attached file to them so they check it before they send."
+            )}
+            if attached and _read_outside() else {}
+        ),
         "flags": flags,
         "open_questions": questions,
         **(
@@ -574,6 +619,12 @@ def _drafted(writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, 
     })
 
 
+def _read_outside() -> bool:
+    from openexecutive.orchestrator import outside_content
+
+    return outside_content.read_outside()
+
+
 async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
     from openexecutive.config import get_settings
     from openexecutive.delegation.ghostwriter import ComposeError
@@ -587,6 +638,20 @@ async def handle_ghostwrite_email(tool_input: dict[str, Any]) -> str:
         return _error("Pass `intent`: what the email should say.")
     if len(intent) > MAX_INTENT_CHARS:
         return _error(f"`intent` is too long (at most {MAX_INTENT_CHARS} characters).")
+    if tool_input.get("drive_files") is not None:
+        from openexecutive.orchestrator.drive_attach import valid_ids
+
+        if tool_input.get("forward"):
+            return _error("`drive_files` goes on a new email or a reply, not a forward.")
+        if not getattr(writer.person, "is_principal", False):
+            return _error(
+                "Only the owner can have Drive files attached. Ask them to attach the files "
+                "themselves, and offer the draft without them."
+            )
+        ids = valid_ids(tool_input.get("drive_files"))
+        if isinstance(ids, str):
+            return _error(ids)
+        tool_input = {**tool_input, "drive_files": ids}
     refused = _reserve_draft(writer.pinned, writer.person.id, get_settings().delegation_max_drafts_per_day)
     if refused is not None:
         return refused

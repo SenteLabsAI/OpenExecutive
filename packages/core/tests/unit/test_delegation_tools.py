@@ -557,3 +557,91 @@ def test_the_writers_notes_for_every_recipient_reach_the_composer(
     # Everyone the draft goes to, To and Cc alike.
     assert asked == [(_owner().id, [DANA, "sam@northpeak.example"])]
     assert '<writer_noted>\n[2026-09-28] promised: "we can start Oct 12"\n</writer_noted>' in composer[-1]
+
+
+# --------------------------------------------------------------------------- #
+# Drive files
+# --------------------------------------------------------------------------- #
+
+DRIVE_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+
+
+def test_drive_files_go_onto_a_new_draft(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import drive_attach
+
+    asked: list[tuple[list[str], int | None]] = []
+
+    async def fetch(ids: list[str], viewer: int | None) -> drive_attach.DriveFiles:
+        asked.append((ids, viewer))
+        return drive_attach.DriveFiles(files=[("bill.pdf", "application/pdf", b"%PDF")], skipped=1)
+
+    monkeypatch.setattr(drive_attach, "fetch", fetch)
+    mailbox = FakeMailbox()
+    result = _run(_session(mailbox, "email dana the bills"), {
+        "intent": "Here are the bills.", "to": [DANA], "drive_files": [DRIVE_ID, DRIVE_ID],
+    })
+    assert result["status"] == "drafted"
+    assert result["attached"] == ["bill.pdf"]
+    assert "attachments_left_off" in result["flags"]
+    assert mailbox.drafts[0].attachments == [("bill.pdf", "application/pdf", b"%PDF")]
+    # Deduplicated, and fetched for the speaker (whose saved files they may use).
+    assert asked == [([DRIVE_ID], roster.principal)]
+
+
+def test_a_drive_file_that_cannot_be_fetched_makes_no_draft(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import drive_attach
+
+    async def fetch(ids: list[str], viewer: int | None) -> drive_attach.DriveFiles:
+        raise drive_attach.AttachError("Google Drive isn't connected")
+
+    monkeypatch.setattr(drive_attach, "fetch", fetch)
+    mailbox = FakeMailbox()
+    result = _run(_session(mailbox), {"intent": "x", "to": [DANA], "drive_files": [DRIVE_ID]})
+    assert "isn't connected" in result["error"] and "no draft" in result["error"]
+    assert mailbox.drafts == []
+
+
+def test_drive_files_are_checked_before_the_mailbox_opens(roster: SimpleNamespace) -> None:
+    session = _session(FakeMailbox())
+    bad = _run(session, {"intent": "x", "to": [DANA], "drive_files": ["../../etc/passwd"]})
+    assert "Not a Drive file id" in bad["error"]
+    on_forward = _run(session, {"intent": "x", "to": [DANA], "forward": "t1", "drive_files": [DRIVE_ID]})
+    assert "not a forward" in on_forward["error"]
+    assert session.turn_delegation.touched_mail is False
+
+
+def test_a_team_member_gets_no_drive_files(roster: SimpleNamespace) -> None:
+    """They come from the Executive's own Drive, which can hold much a team
+    member can't open themselves."""
+    person = people_store.get_person(roster.teammate)
+    assert person is not None
+    mailbox = FakeMailbox(opened=TEAM)
+    session = Session(delegation_override=DelegationOverride(enabled=True, gmail=mailbox, person=person))
+    assert pin_turn_delegation(session, "email dana the bills").offered
+    result = _run(session, {"intent": "x", "to": [DANA], "drive_files": [DRIVE_ID]})
+    assert "Only the owner" in result["error"]
+    assert mailbox.drafts == []
+
+
+def test_files_chosen_after_an_outside_read_are_named_for_a_check(
+    roster: SimpleNamespace, composer: list[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import drive_attach
+    from openexecutive.orchestrator import outside_content as oc
+
+    async def fetch(ids: list[str], viewer: int | None) -> drive_attach.DriveFiles:
+        return drive_attach.DriveFiles(files=[("bill.pdf", "application/pdf", b"%PDF")])
+
+    monkeypatch.setattr(drive_attach, "fetch", fetch)
+    session = _session(FakeMailbox(), "email dana the bills")
+    state = oc.begin_turn(session, user_message="email dana the bills")
+    oc.mark(oc.GATEWAY)
+    try:
+        result = _run(session, {"intent": "Bills.", "to": [DANA], "drive_files": [DRIVE_ID]})
+    finally:
+        oc.end_turn(state)
+    assert "name each attached file" in result["check_attachments"]

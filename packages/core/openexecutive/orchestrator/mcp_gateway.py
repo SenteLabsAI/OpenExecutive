@@ -1074,7 +1074,13 @@ def _roster_ack_admits(tool: str, arguments: dict[str, Any]) -> bool:
 # call is always a different object, so it can never pass as one. Every
 # other gate (acting account, URL fetch, sheet formulas, the Drive / OneDrive
 # share gates, own-drive writes) still runs on them as on any call.
+# ``ghostwrite_email``'s ``drive_files`` (``orchestrator.drive_attach``)
+# sizes and downloads the Drive files it attaches the same way: the file id is
+# the model's choice, checked there against the saved files and folders, and
+# the bytes go onto the principal's draft without reaching the model.
 _CODE_BUILT_TOOLS = frozenset({
+    "google_workspace__get_drive_file_permissions",
+    "google_workspace__get_drive_file_download_url",
     "google_workspace__create_drive_folder",
     "google_workspace__create_drive_file",
     "google_workspace__manage_drive_access",

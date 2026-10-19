@@ -519,3 +519,112 @@ def test_upsert_person_holds_a_new_person_and_a_new_address_only(monkeypatch: py
 
     assert asyncio.run(readdress()) == {existing}
 
+
+
+# --- the person's go to what a turn held -----------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_held_steps() -> Iterator[None]:
+    oc._HELD.clear()
+    yield
+    oc._HELD.clear()
+
+
+def _any_result(provider: ScriptedProvider, use_id: str) -> str:
+    """A tool result anywhere in the turn (the loop appends to one list)."""
+    for message in provider.calls[-1]["messages"]:
+        for block in message["content"] if isinstance(message.get("content"), list) else []:
+            if isinstance(block, dict) and block.get("tool_use_id") == use_id:
+                return str(block["content"])
+    raise AssertionError(f"no result for {use_id}")
+
+
+def _held_contact_turn(session: Session, gateway: _Gateway) -> None:
+    """A turn that read a doc, then had adding the contact held."""
+    _run(
+        [ToolUseBlock("tu1", "call_tool", READ_DOC)],
+        [ToolUseBlock("tu2", "upsert_person", CONTACT)],
+        gateway=gateway, session=session, message="read the doc and add Mallory",
+    )
+
+
+def test_a_go_runs_the_held_step_before_a_new_read(upserts: list[dict[str, Any]]) -> None:
+    session, gateway = Session(), _Gateway()
+    _held_contact_turn(session, gateway)
+    assert upserts == []
+    assert oc._HELD[f"{session.session_id}|"][0] == ("upsert_person",)
+    # Their go: the model reads again and adds the contact in one round. The
+    # read waits, so the contact is added; the read runs in the next round.
+    provider = _run(
+        [ToolUseBlock("tu3", "call_tool", READ_DOC), ToolUseBlock("tu4", "upsert_person", CONTACT)],
+        [ToolUseBlock("tu5", "call_tool", READ_DOC)],
+        gateway=gateway, session=session, message="Go, and add him",
+    )
+    assert upserts == [CONTACT]
+    deferred = json.loads(_any_result(provider, "tu3"))["error"]
+    assert "reads wait one round" in deferred
+    # It names nothing the last turn held, so it can't nudge a planted call.
+    assert "upsert_person" not in deferred
+    assert gateway.calls == [READ_DOC, READ_DOC]
+    # Spent: nothing is remembered for a third turn.
+    assert f"{session.session_id}|" not in oc._HELD
+
+
+def test_only_a_go_defers_a_read(upserts: list[dict[str, Any]]) -> None:
+    session, gateway = Session(), _Gateway()
+    _held_contact_turn(session, gateway)
+    _run([ToolUseBlock("tu3", "call_tool", READ_DOC)], gateway=gateway, session=session,
+         message="what else is in that doc?")
+    assert gateway.calls == [READ_DOC, READ_DOC]
+    assert f"{session.session_id}|" not in oc._HELD
+
+
+def test_a_stale_hold_defers_nothing(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+    session, gateway = Session(), _Gateway()
+    _held_contact_turn(session, gateway)
+    names, at = oc._HELD[f"{session.session_id}|"]
+    oc._HELD[f"{session.session_id}|"] = (names, at - oc.HELD_TTL_SECONDS - 1)
+    state = oc.begin_turn(session, user_message="go")
+    try:
+        assert state.go_first == ()
+        assert oc.defers_read("call_tool", READ_DOC) is False
+    finally:
+        oc.end_turn(state)
+
+
+def test_mail_from_outside_people_remembers_no_hold() -> None:
+    session = Session(sender_off_team=True)
+    state = oc.begin_turn(session, user_message="add me as a contact")
+    try:
+        oc.outside_withheld_error("upsert_person")
+    finally:
+        oc.end_turn(state)
+    assert f"{session.session_id}|" not in oc._HELD
+
+
+def test_a_shared_chat_remembers_no_hold(upserts: list[dict[str, Any]]) -> None:
+    session, gateway = Session(shared_chat=True), _Gateway()
+    _held_contact_turn(session, gateway)
+    assert oc._HELD == {}
+
+
+def test_a_hold_is_the_speakers_own(upserts: list[dict[str, Any]]) -> None:
+    session, gateway = Session(caller_person_id=1), _Gateway()
+    _held_contact_turn(session, gateway)
+    session.caller_person_id = 2
+    state = oc.begin_turn(session, user_message="go")
+    try:
+        assert state.go_first == ()
+    finally:
+        oc.end_turn(state)
+
+
+@pytest.mark.parametrize(("message", "go"), [
+    ("go", True), ("Go.", True), ("Go. Pull all seven scans", True), ("Go, and add him", True),
+    ("Yes, do it", True), ("ok", True), ("yes please", True), ("Go ahead and send it", True),
+    ("Ok, so what did they want?", False), ("Confirm the meeting time with Bob", False),
+    ("Approve my leave request", False), ("goals for Q3?", False), ("what's in the folder now?", False),
+])
+def test_what_counts_as_a_go(message: str, go: bool) -> None:
+    assert bool(oc.GO_RE.match(message)) is go

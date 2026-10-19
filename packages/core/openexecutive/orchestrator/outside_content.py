@@ -41,6 +41,16 @@ account) in this turn can't be emailed, messaged, invited or shared with
 until the next turn (``added_this_turn``): every send and share check trusts
 the roster, so a contact planted and used in one turn would pass them.
 
+What a turn held, it remembers for the conversation's next turn by the
+same speaker (``note_held``, kept in this process for ``HELD_TTL_SECONDS``).
+When that next message is a go ("go", "yes, do it", "Go. Pull the scans",
+``GO_RE``), the turn's first round that reads anything has those reads
+refused once (``defers_read``), so the steps the person just approved run
+before a new read holds them again. It runs only what the model calls in that
+turn, under every usual check, so it trusts the person's go no more than
+before; it only stops a re-read from undoing it. A shared chat, or mail from
+someone not in People, remembers nothing.
+
 Plain code, no model. State lives in a context variable and on the session,
 set at the start of each turn (``begin_turn``) and closed when it ends
 (``end_turn``); with no turn open (the email poller, a brief, a test)
@@ -52,6 +62,7 @@ import contextlib
 import contextvars
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -84,6 +95,24 @@ SYNCED_HEADINGS: tuple[str, ...] = (
     "### Synced OneDrive",
     "### Synced Confluence wiki",
 )
+
+# The person's next message saying go to what a turn held (``begin_turn``):
+# the whole message is a short yes ("ok", "yes please", "go ahead"), or it
+# opens with go / do it / go ahead / proceed as its own sentence or clause
+# ("Go. Pull the scans", "Go, and add him"). "Ok, so what did they want?" is
+# not one: an ok that opens a question approves nothing.
+_YES = r"(?:go(?: ahead)?|yes|yep|yeah|ok|okay|sure|do it|proceed|confirm(?:ed)?|approved?|please do)"
+GO_RE = re.compile(
+    rf"^\W*(?:{_YES}(?:[\s,.!]+(?:please|thanks?|thank you|go ahead|do it|go))*[\s.!]*$"
+    r"|(?:go(?: ahead)?|do it|proceed)(?:\s*[.,!;:-]|\s+and\b))",
+    re.IGNORECASE,
+)
+# How long what a turn held waits for the person's go, and for how many
+# conversations at most (oldest dropped first).
+HELD_TTL_SECONDS = 3600
+_HELD_MAX = 500
+# Held tool names, by conversation: (names, when held).
+_HELD: dict[str, tuple[tuple[str, ...], float]] = {}
 
 # Tools whose result is text from outside: a file on disk or the open web.
 _FETCH_TOOLS: dict[str, str] = {
@@ -129,6 +158,17 @@ class TurnOutside:
     previous: TurnOutside | None = None
     # Set by ``end_turn``: a closed turn holds nothing.
     ended: bool = False
+    # Who is speaking, and whether others write into this chat: a hold is
+    # remembered for the same speaker, never in a shared chat (``_held_key``).
+    speaker: int | None = None
+    shared: bool = False
+    # Tools refused this turn for what it read (``note_held``), kept for the
+    # conversation's next turn.
+    held: list[str] = field(default_factory=list)
+    # What the previous turn held, when this message says go: the first round
+    # that reads defers its reads until those have been made (``defers_read``).
+    go_first: tuple[str, ...] = ()
+    go_first_done: bool = False
 
     @property
     def read(self) -> bool:
@@ -154,13 +194,28 @@ def begin_turn(
     the retrieved context when it quotes a synced folder. So does the whole
     turn when it answers mail from someone not in People
     (``Session.sender_off_team``)."""
-    state = TurnOutside(session_id=getattr(session, "session_id", None), previous=_TURN.get())
+    state = TurnOutside(
+        session_id=getattr(session, "session_id", None),
+        speaker=getattr(session, "caller_person_id", None),
+        shared=getattr(session, "shared_chat", False) is True,
+        previous=_TURN.get(),
+    )
     if getattr(session, "sender_off_team", False) is True:
         state.sources.add(SENDER)
     if attachment_blocks or _ATTACHMENT_MARK.search(user_message or ""):
         state.sources.add(ATTACHMENT)
     if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS):
         state.sources.add(SYNCED)
+    key = _held_key(session, state)
+    if key:
+        stored = _HELD.pop(key, None)
+        if (
+            stored is not None
+            and SENDER not in state.sources
+            and time.monotonic() - stored[1] < HELD_TTL_SECONDS
+            and GO_RE.match(user_message or "")
+        ):
+            state.go_first = stored[0]
     _TURN.set(state)
     # Also on the session: the web chat route resumes the executive's
     # generator in a fresh task per step, each with a copy of the route's
@@ -180,6 +235,73 @@ def end_turn(state: TurnOutside) -> None:
     state.ended = True
     if _TURN.get() is state:
         _TURN.set(state.previous)
+    key = _held_key(None, state)
+    if state.held and key:
+        _HELD.pop(key, None)
+        while len(_HELD) >= _HELD_MAX:
+            _HELD.pop(next(iter(_HELD)))
+        _HELD[key] = (tuple(dict.fromkeys(state.held)), time.monotonic())
+
+
+def _held_key(session: Any, state: TurnOutside) -> str | None:
+    """Where a turn's holds are kept: its conversation and speaker. None in a
+    shared chat (someone else's yes must not release them) or with no
+    conversation."""
+    if state.shared or getattr(session, "shared_chat", False) is True or not state.session_id:
+        return None
+    return f"{state.session_id}|{state.speaker if state.speaker is not None else ''}"
+
+
+def note_held(label: str) -> None:
+    """Remember that the turn in progress refused ``label`` for what it read,
+    for the conversation's next turn. Not on a turn answering mail from
+    someone not in People: no next message of theirs approves anything."""
+    state = current()
+    if state is None or SENDER in state.sources or not label:
+        return
+    state.held.append(str(label)[:200])
+
+
+def _reads(tool_name: str, tool_input: Any) -> bool:
+    """Whether a call reads: outside content (``source_of``) or the speaker's
+    own mail."""
+    from openexecutive.orchestrator.mail_read_tools import MAIL_READ_TOOLS
+
+    if tool_name in {t["name"] for t in MAIL_READ_TOOLS}:
+        return True
+    try:
+        return source_of(tool_name, tool_input) is not None
+    except Exception:
+        return True
+
+
+def defers_read(tool_name: str, tool_input: Any) -> bool:
+    """Whether this call is refused for now: the person just said go to what
+    the previous turn held, and this is a read in the first round that
+    reads, which would hold those steps again. Never raises."""
+    state = current()
+    if state is None or not state.go_first or state.go_first_done:
+        return False
+    return _reads(tool_name, tool_input)
+
+
+def go_first_round_done() -> None:
+    """The turn's first round with a deferred read is over: reads run from
+    the next round on, whether or not the held steps were made."""
+    state = current()
+    if state is not None:
+        state.go_first_done = True
+
+
+def go_first_error(label: str) -> str:
+    """The JSON error for a read deferred by ``defers_read``. It names no
+    held tool and asks for nothing: it only says why the read waits."""
+    return json.dumps({"error": (
+        f"{label} was not run yet: reads wait one round. Your last turn held steps "
+        "until the person asked again, and this message answers that. Do what it asks "
+        "of what your last reply proposed before reading; a read first would hold it "
+        "again. You can read in the next round."
+    )})
 
 
 def current() -> TurnOutside | None:
@@ -368,6 +490,7 @@ def outside_withheld_error(label: str) -> str:
     """The JSON error tool_result for a call refused after an outside read
     (``label`` is the tool, or for call_tool the tool it asked for)."""
     why = SENDER_REFUSAL if answers_off_team_mail() else REFUSAL
+    note_held(label)
     return json.dumps({"error": f"{label} was not run. {why}"})
 
 
