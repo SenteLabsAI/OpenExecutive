@@ -34,7 +34,7 @@ export default function HandleItPage() {
               onSettings={load.setSettings}
               jobs={["replies", "follow_ups"]}
               title="Who it's allowed to handle"
-              description="People you allowed with Send + allow. Remove one and it asks you again."
+              description="People you ticked to handle on their own. Remove one and it asks you again."
             />
           )}
           {disclosure?.enabled && (

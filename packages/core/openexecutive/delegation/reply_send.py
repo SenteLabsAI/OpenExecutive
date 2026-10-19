@@ -277,7 +277,7 @@ async def _send_checked(
             if key is None:
                 raise SendRefused(
                     422, "cant_allow",
-                    "Send + allow is for replies and follow-ups while they're in training.",
+                    "Sending on its own next time is for replies and follow-ups while they're in training.",
                 )
             if not training.room_for(person.id, key):
                 raise SendRefused(

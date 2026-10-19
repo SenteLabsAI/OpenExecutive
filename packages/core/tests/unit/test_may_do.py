@@ -91,6 +91,14 @@ def test_drafts_and_the_inbox_without_handle_it_wait_for_a_tap(ids: dict[str, in
     assert rows["actions"].outcome == "waits"
 
 
+def test_suggested_actions_on_go_out(ids: dict[str, int]) -> None:
+    pid = ids["principal"]
+    set_enabled(pid, True, updated_by="t")
+    training.set_(pid, {training.ACTIONS_ON: True}, updated_by="t")
+    row = _rows(_you(pid))["actions"]
+    assert row.outcome == "goes" and "Suggested actions are On" in row.why
+
+
 @pytest.mark.parametrize(("mode", "known", "strangers", "follow_ups", "links"), [
     ("careful", "goes", "waits", "waits", "waits"),
     ("balanced", "goes", "waits", "goes", "waits"),

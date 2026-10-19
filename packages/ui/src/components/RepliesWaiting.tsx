@@ -27,6 +27,7 @@ import {
   draftIsLong,
 } from "@/lib/replyCards";
 import FeatureName from "@/components/FeatureName";
+import NextTimeTick from "@/components/NextTimeTick";
 
 // Home: the replies the Executive wrote as you for mail that needs you
 // (Delegate → Act as me → Draft replies to my inbox), shown as cards in
@@ -102,8 +103,8 @@ export const REPLIES_WAITING_TIP =
 
 // What the row is doing: idle, asking before sending (first or second
 // time), or waiting on the backend.
-// `allow`: Send + allow, in training (replies to them, or follow-ups to
-// these people, go on their own after).
+// `allow`: Send with the "on its own next time" tick, in training (replies
+// to them, or follow-ups to these people, go on their own after).
 type Step =
   | { kind: "idle" }
   | { kind: "ask"; recipients: string[]; allow: boolean }
@@ -148,6 +149,8 @@ export function ReplyCardItem({
   const inMailbox = card.in_mailbox !== false;
   const who = card.from_name.trim() || card.from_email;
   const followUp = card.source === "follow_up";
+  const firstName = card.from_name.trim().split(/\s+/)[0] || card.from_email;
+  const [nextTime, setNextTime] = useState(false);
 
   const dismiss = async () => {
     setStep({ kind: "busy", label: "Dismissing…" });
@@ -499,23 +502,24 @@ export function ReplyCardItem({
               : `Answer the ${left} questions above to send, or tap Edit to write it yourself.`}
           </p>
         )}
-        <div className={`${left > 0 ? "mt-2" : "mt-4"} flex flex-wrap items-center gap-2`}>
+        {card.can_allow && (
+          <NextTimeTick
+            className={left > 0 ? "mt-2" : "mt-4"}
+            checked={nextTime}
+            disabled={busy}
+            onChange={setNextTime}
+            label={followUp ? "Follow up with them on its own next time" : `Reply to ${firstName} on its own next time`}
+            help="You can undo this in Handle it for me."
+          />
+        )}
+        <div className={`${left > 0 || card.can_allow ? "mt-2" : "mt-4"} flex flex-wrap items-center gap-2`}>
           <Button
             variant="primary"
-            onClick={() => setStep({ kind: "ask", recipients: card.draft_to, allow: false })}
+            onClick={() => setStep({ kind: "ask", recipients: card.draft_to, allow: Boolean(card.can_allow) && nextTime })}
             disabled={busy || left > 0}
           >
             {busy ? step.label : "Send"}
           </Button>
-          {card.can_allow && (
-            <Button
-              variant="secondary"
-              onClick={() => setStep({ kind: "ask", recipients: card.draft_to, allow: true })}
-              disabled={busy || left > 0}
-            >
-              Send + allow
-            </Button>
-          )}
           <Button
             variant="secondary"
             onClick={() => {

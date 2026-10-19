@@ -227,7 +227,7 @@ export default function ProposalCard({
     );
   }
   // A Take the lead card from training is answered on its own card too:
-  // Approve, Approve + allow, Edit and Decline (LeadTrainingCard).
+  // Approve (with the "on its own next time" tick), Edit and Decline (LeadTrainingCard).
   if (isLeadTraining(proposal)) {
     return <LeadTrainingCard proposal={proposal} emphasized={emphasized} onResolved={() => onDismiss?.(proposal)} />;
   }

@@ -141,8 +141,7 @@ export default function TakeTheLeadCard() {
           <div>
             <h3 className="text-[15px] font-semibold text-fg">What it&apos;s learned</h3>
             <p className="mt-1 text-sm text-fg-muted">
-              In training it does these on its own. Use Approve + allow on a card, or Send + allow on an Act as me
-              reply, to add one.
+              In training it does these on its own. Tick &ldquo;on its own next time&rdquo; on a card to add one.
             </p>
             {lead.learned.length === 0 && lead.suggested.length === 0 ? (
               <p className="mt-3 text-sm text-fg-muted">Nothing yet.</p>

@@ -314,7 +314,7 @@ def test_the_switches_and_the_list_through_the_api(client: TestClient, owner: An
     resp = client.put("/delegation/training", json={"replies": True, "drafts": True}, headers=HEADERS)
     assert resp.status_code == 200
     body = resp.json()["training"]
-    assert body == {"replies": True, "follow_ups": False, "actions": False, "drafts": True, "learned": []}
+    assert body == {"replies": True, "follow_ups": False, "actions": False, "drafts": True, "actions_on": False, "learned": []}
     assert resp.json()["handle_it"]["lead"] is False
     assert not take_the_lead.get(take_the_lead.person_scope(owner.id)).enabled
     allowed = training.allow_sender(owner.id, DANA, "Dana Park", decision_id=None)

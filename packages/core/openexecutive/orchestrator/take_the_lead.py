@@ -1404,7 +1404,7 @@ def hold(
             severity="medium",
             headline=f"The Executive wants to: {shown}"[:160],
             body=f"{shown}\n\nIt waited because {hit.reason}."
-            + (f" Approve + allow lets it do this from now on: {grant[1]}." if grant is not None else ""),
+            + (f" Tick Do this on its own next time to let it do this from now on: {grant[1]}." if grant is not None else ""),
             suggested_action=shown,
             topic_tags=[
                 decision_instance_tag(decision_id),

@@ -1,13 +1,15 @@
 "use client";
 
 // A Take the lead card from training: something the Executive wanted to do on
-// its own that you haven't allowed yet. Approve does it once; Approve + allow
-// also lets it do this (the same action with the same person) from now on;
+// its own that you haven't allowed yet. Approve does it once; with "Do this on
+// its own next time" ticked it also lets it do this (the same action with the
+// same person) from now on;
 // Edit changes it first, and with "Do it like this next time" ticked keeps
 // the edit as an example and allows it. Answered here, never through chat.
 
 import { useEffect, useState } from "react";
 
+import NextTimeTick from "@/components/NextTimeTick";
 import Button from "@/components/ui/Button";
 import {
   approveLeadCard,
@@ -41,6 +43,7 @@ export default function LeadTrainingCard({
   const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const [learn, setLearn] = useState(true);
+  const [nextTime, setNextTime] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -166,19 +169,24 @@ export default function LeadTrainingCard({
         </div>
       ) : (
         <>
+          {allowLabel && (
+            <NextTimeTick
+              className="mt-3"
+              checked={nextTime}
+              disabled={busy}
+              onChange={setNextTime}
+              label="Do this on its own next time"
+              help={`From now on: ${allowLabel}. You can undo this in Take the lead.`}
+            />
+          )}
           <div className="mt-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-            <Button variant="primary" disabled={busy} onClick={() => void run(() => approveLeadCard(decisionId, {}))}>
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() => void run(() => approveLeadCard(decisionId, allowLabel && nextTime ? { allow: true } : {}))}
+            >
               Approve
             </Button>
-            {allowLabel && (
-              <Button
-                variant="secondary"
-                disabled={busy}
-                onClick={() => void run(() => approveLeadCard(decisionId, { allow: true }))}
-              >
-                Approve + allow
-              </Button>
-            )}
             {(card?.fields.length ?? 0) > 0 && (
               <Button variant="secondary" disabled={busy} onClick={() => setEditing(true)}>
                 Edit
@@ -188,11 +196,6 @@ export default function LeadTrainingCard({
               Decline
             </Button>
           </div>
-          {allowLabel && (
-            <p className="mt-2 text-[13px] leading-snug text-fg-muted">
-              Approve + allow: from now on it does this without asking: {allowLabel}.
-            </p>
-          )}
         </>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}

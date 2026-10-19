@@ -200,7 +200,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
             return Row(
                 row_id, what, "waits", "Waits for you",
                 "Handle it for me is in training. Only replies to the "
-                + (_plural(n, "sender") + " you allowed with Send + allow" if n else "senders you allow with Send + allow")
+                + (_plural(n, "sender") + " you allowed" if n else "senders you tick to reply to on their own")
                 + " go on their own.",
                 SETTING_HANDLE_IT,
             )
@@ -245,7 +245,7 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
         rows.append(Row(
             "follow_ups", what, "waits", "Waits for you",
             "Follow-ups are in training. Only follow-ups to "
-            + (_plural(n, "group") + " of people you allowed" if n else "people you allow with Send + allow")
+            + (_plural(n, "group") + " of people you allowed" if n else "people you tick to follow up on their own")
             + " go on their own.",
             SETTING_HANDLE_IT,
         ))
@@ -319,13 +319,22 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
             n = allowed.get(training.ACTIONS, 0)
             why = (
                 "Suggested actions are in training. "
-                + (f"The {_plural(n, 'kind')} you allowed with Approve + allow happen on their own."
-                   if n else "What you allow with Approve + allow happens on its own next time.")
+                + (f"The {_plural(n, 'kind')} you allowed happen on their own."
+                   if n else "Tick the box on a card and that kind happens on its own next time.")
             )
             rows.append(Row(
                 "actions", "Messages and meetings it suggests from your mail",
                 "goes" if n and signing else "waits", "Goes out when allowed" if n and signing else "Waits for you",
                 why, SETTING_ACT_AS_ME,
+            ))
+        elif trained.actions_without_asking:
+            rows.append(Row(
+                "actions", "Messages and meetings it suggests from your mail",
+                "goes" if signing else "waits", "Goes out" if signing else "Waits for you",
+                "Suggested actions are On. New contacts, anyone added in the last week, money and links "
+                "still wait for you." if signing
+                else "Signed sign-ins are off on this server, so nothing is sent as you.",
+                SETTING_ACT_AS_ME,
             ))
         else:
             rows.append(Row(
@@ -412,7 +421,7 @@ def as_the_executive(*, is_principal: bool) -> Section:
             "goes" if n else "waits", "Goes out when allowed" if n else "Waits for you",
             "Take the lead is in training: everything comes to you first. "
             + (f"The {_plural(n, 'thing')} you allowed happen on their own." if n
-               else "Approve + allow on a card lets that action happen on its own next time."),
+               else "Tick the box on a card and that action happens on its own next time."),
             SETTING_TAKE_THE_LEAD,
         ))
     else:

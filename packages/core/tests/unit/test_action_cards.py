@@ -538,3 +538,100 @@ def test_a_card_held_at_the_last_check_waits_as_an_ordinary_card(
     assert asyncio.run(action_cards.run_on_its_own(decision_id, person)) is None
     card = get_decision_instance(decision_id)
     assert card is not None and card.status == "proposed" and card.gate_mode == "propose" and sends == []
+
+
+# --------------------------------------------------------------------------- #
+# On: carried out with no allow, reaching nobody new
+# --------------------------------------------------------------------------- #
+
+
+def _settle(*person_ids: int, days: int = 30) -> None:
+    """Make these roster entries ``days`` old."""
+    import sqlite3
+
+    when = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(str(people_store.DB_PATH))
+    try:
+        conn.executemany("UPDATE people SET created_at = ? WHERE id = ?", [(when, p) for p in person_ids])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def actions_on(roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    from openexecutive.delegation import handle_it, training
+
+    set_enabled(roster.principal, True, updated_by="t")
+    training.set_(roster.principal, {training.ACTIONS_ON: True}, updated_by="t")
+    monkeypatch.setattr(handle_it, "signing_ok", lambda: True)
+    _settle(roster.principal, roster.teammate, roster.contact)
+    return roster
+
+
+def test_on_carries_out_a_card_with_no_allow(
+    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_on
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate)]})
+    assert result["status"] == "done_on_its_own"
+    assert [i["text"] for _, i, _ in sends] == ["Can you check the pilot dates?"]
+    # Nothing is learned under On.
+    assert training.learned(roster.principal) == []
+
+
+@pytest.mark.parametrize(("action", "reason"), [
+    ("contact", "new_contact"),
+    ("newcomer", "new_person"),
+    ("sensitive", "sensitive"),
+    ("link", "link"),
+    ("amount", "amount"),
+])
+def test_what_still_waits_when_on(
+    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any], action: str, reason: str,
+) -> None:
+    roster = actions_on
+    newcomer = people_store.upsert_person(full_name="Nia New", email="nia@co.example")
+    _settle(newcomer, days=2)
+    proposed = {
+        "contact": {"kind": "add_contact", "full_name": "Sam Lee", "email": "sam@northpeak.example"},
+        "newcomer": _message(newcomer),
+        "sensitive": _message(roster.teammate, "Can you check the contract terms?"),
+        "link": _message(roster.teammate, "See https://files.example.com/x"),
+        "amount": _message(roster.teammate, "Is $400 right?"),
+    }[action]
+    person = people_store.get_person(roster.principal)
+    checked = action_cards.check([proposed], person, now=datetime.now(UTC))
+    assert not isinstance(checked, str)
+    assert action_cards.on_its_own_refusal(person, checked, now=datetime.now(UTC)) == reason
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [proposed]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+
+
+def test_in_training_wins_over_on(
+    actions_on: SimpleNamespace, sends: list[Any], signed: dict[str, Any],
+) -> None:
+    from openexecutive.delegation import training
+
+    roster = actions_on
+    training.set_(roster.principal, {training.ACTIONS: True}, updated_by="t")
+    assert not training.get(roster.principal).actions_without_asking
+    result = _propose(_session(FakeMailbox()), {"why": "y", "actions": [_message(roster.teammate)]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+
+
+def test_the_route_picks_one_of_ask_training_or_on(
+    roster: SimpleNamespace, client: TestClient, signed: dict[str, Any],
+) -> None:
+    set_enabled(roster.principal, True, updated_by="t")
+    olivia = {"x-caller-email": OWNER}
+    on = client.put("/delegation/training", json={"actions_on": True}, headers=olivia).json()["training"]
+    assert (on["actions"], on["actions_on"]) == (False, True)
+    trained = client.put("/delegation/training", json={"actions": True}, headers=olivia).json()["training"]
+    assert (trained["actions"], trained["actions_on"]) == (True, False)
+    on = client.put("/delegation/training", json={"actions_on": True}, headers=olivia).json()["training"]
+    assert (on["actions"], on["actions_on"]) == (False, True)
+    ask = client.put("/delegation/training", json={"actions_on": False}, headers=olivia).json()["training"]
+    assert (ask["actions"], ask["actions_on"]) == (False, False)

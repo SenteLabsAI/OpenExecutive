@@ -1942,6 +1942,8 @@ export interface Training {
   follow_ups: boolean;
   actions: boolean;
   drafts: boolean;
+  // Suggested actions On: carried out with no tick (false while in training).
+  actions_on?: boolean;
   learned: TrainingLearned[];
 }
 
@@ -2370,7 +2372,9 @@ export async function removeTrainingLearned(id: number): Promise<DelegationSetti
 }
 
 // Put Act as me's settings in or out of training.
-export async function setTraining(update: Partial<Record<TrainingSetting, boolean>>): Promise<DelegationSettings> {
+export async function setTraining(
+  update: Partial<Record<TrainingSetting | "actions_on", boolean>>,
+): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/training`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

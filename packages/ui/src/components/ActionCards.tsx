@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import NextTimeTick from "@/components/NextTimeTick";
 import ChatAppActionCard from "@/components/ChatAppActionCard";
 import ChatMeetingCard from "@/components/ChatMeetingCard";
 import FeatureName from "@/components/FeatureName";
@@ -88,7 +89,9 @@ export function ActionCardItem({
       return next;
     });
 
-  // `allow`: Approve + allow, with Suggested actions in training.
+  // `nextTime`: the "on its own next time" tick, with Suggested actions in
+  // training: Approve then also allows the same kind with the same people.
+  const [nextTime, setNextTime] = useState(false);
   const [allowed, setAllowed] = useState(false);
   const approve = async (allow = false) => {
     setBusy("Doing it…");
@@ -185,19 +188,30 @@ export function ActionCardItem({
           </Button>
         </div>
       ) : (
+        <>
+        {card.can_allow && (
+          <NextTimeTick
+            className="mt-4"
+            checked={nextTime}
+            disabled={busy !== null}
+            onChange={setNextTime}
+            label={ticked.size > 1 ? "Do these on their own next time" : "Do this on its own next time"}
+            help="Same kind, same people. You can undo this in Act as me."
+          />
+        )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button variant="primary" onClick={() => void approve()} disabled={busy !== null || ticked.size === 0}>
+          <Button
+            variant="primary"
+            onClick={() => void approve(Boolean(card.can_allow) && nextTime)}
+            disabled={busy !== null || ticked.size === 0}
+          >
             {busy ?? (ticked.size === card.actions.length ? "Approve" : `Approve ${ticked.size}`)}
           </Button>
-          {card.can_allow && busy === null && (
-            <Button variant="secondary" onClick={() => void approve(true)} disabled={ticked.size === 0}>
-              Approve + allow
-            </Button>
-          )}
           <Button variant="ghost" className="ml-auto" onClick={() => void dismiss()} disabled={busy !== null}>
             Dismiss
           </Button>
         </div>
+        </>
       )}
       {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
     </article>

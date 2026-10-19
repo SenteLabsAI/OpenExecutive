@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
 import LeadRulesEditor from "@/components/settings/LeadRulesEditor";
+import ModePicker from "@/components/settings/ModePicker";
 import SettingsCard from "@/components/settings/SettingsCard";
 import Button from "@/components/ui/Button";
 import {
@@ -274,7 +275,12 @@ export function WritesCard({
   );
 }
 
-// Delegate → Handle it for me: what it sends as you on its own.
+// Delegate → Handle it for me: what it sends as you on its own. Off, In
+// training (only the people you ticked on a card go on their own) or On
+// (the step below decides). The steps show under On only: in training the
+// server lets nothing else go (handle_it.refusal), whatever the step.
+type SendMode = "off" | "training" | "on";
+
 export function SendsCard({
   settings,
   onSettings,
@@ -289,33 +295,26 @@ export function SendsCard({
   const connected = settings.gmail?.status === "connected";
   const writesInbox = writeOf(settings) === "inbox";
   const current = sendOf(settings);
-  const training = Boolean(settings.training?.replies);
-  const followUpsTraining = Boolean(settings.training?.follow_ups);
+  const training = Boolean(settings.training?.replies || settings.training?.follow_ups);
+  const mode: SendMode = current === "off" ? "off" : training ? "training" : "on";
   const canSend = Boolean(settings.handle_it?.available);
   const noSigning = canSend ? null : "Needs signed sign-ins on this server.";
+  // Where On starts from Off: the step it was last at, never Everything.
+  const lastStep = (settings.handle_it?.mode ?? "balanced") as SendStep;
 
   const steps: Step<SendStep>[] = [
-    { value: "off", label: "Off", line: "Every reply waits for you to send." },
     ...HANDLE_IT_MODES.map((m) => ({
       value: m.mode as SendStep,
       label: m.label,
       line: `${m.replies} Follow-ups: ${m.followUps}`,
-      reason: noSigning,
     })),
     ...(settings.handle_it?.lead_available
-      ? [
-          {
-            value: "everything" as SendStep,
-            label: "Everything",
-            line: LEAD_LINE,
-            reason: noSigning ?? (training || followUpsTraining ? "Opens up once it's out of training." : null),
-          },
-        ]
+      ? [{ value: "everything" as SendStep, label: "Everything", line: LEAD_LINE }]
       : []),
   ];
   const order = steps.map((s) => s.value);
 
-  const pick = (to: SendStep) => {
+  const pickStep = (to: SendStep) => {
     if (to === current) return;
     if (order.indexOf(to) < order.indexOf(current)) {
       setConfirming(to);
@@ -324,11 +323,38 @@ export function SendsCard({
     void save(() => setReach(reachForSend(to)));
   };
 
+  const pickMode = (to: SendMode) => {
+    setConfirming(null);
+    if (to === "off") {
+      setConfirming("off");
+      return;
+    }
+    if (to === "training") {
+      // Into training first, so nothing goes on its own on the way.
+      void save(async () => {
+        const next = await setTraining({ replies: true, follow_ups: true });
+        return current === "off" ? setReach(reachForSend(lastStep)) : next;
+      });
+      return;
+    }
+    void save(async () => {
+      const next = await setTraining({ replies: false, follow_ups: false });
+      return current === "off" ? setReach(reachForSend(lastStep)) : next;
+    });
+  };
+
   const stops = (to: SendStep): string => {
     if (to === "off") return "It stops sending replies and follow-ups on its own. Every reply waits for you.";
     if (current === "everything") return "It goes back to sending only what this level allows.";
     return "It sends less on its own: only what this level allows.";
   };
+
+  const modeLine =
+    mode === "off"
+      ? "Every reply waits for you to send."
+      : mode === "training"
+        ? "Every reply and follow-up comes to you first. Tick “on its own next time” on a card and it answers that person on its own from then on."
+        : "It sends what the step below allows.";
 
   return (
     <div id={SENDS_ANCHOR} className="scroll-mt-24">
@@ -357,10 +383,25 @@ export function SendsCard({
           </div>
         ) : (
           <>
-            <StepList name="sends" labelledBy="sends-label" steps={steps} current={current} busy={busy} onPick={pick} />
+            <ModePicker<SendMode>
+              labelledBy="sends-label"
+              value={mode}
+              disabled={busy}
+              options={[
+                { value: "off", label: "Off" },
+                { value: "training", label: "In training", disabled: !canSend },
+                { value: "on", label: "On", disabled: !canSend },
+              ]}
+              onPick={pickMode}
+            />
+            <p className="mt-3 text-sm text-fg-muted leading-relaxed">{noSigning && mode === "off" ? noSigning : modeLine}</p>
             {confirming && (
               <ConfirmDown
-                text={`Move to ${steps.find((s) => s.value === confirming)?.label}? ${stops(confirming)}`}
+                text={
+                  confirming === "off"
+                    ? `Turn Handle it for me off? ${stops("off")}`
+                    : `Move to ${steps.find((s) => s.value === confirming)?.label}? ${stops(confirming)}`
+                }
                 busy={busy}
                 onConfirm={() =>
                   void save(() => setReach(reachForSend(confirming))).then((ok) => ok && setConfirming(null))
@@ -368,38 +409,26 @@ export function SendsCard({
                 onCancel={() => setConfirming(null)}
               />
             )}
-            {/* Shown at Off too, so it can be in training before the first
-                move to a step that sends: training stays across moves. */}
-            <div className="mt-5 flex flex-col gap-3 border-t border-line pt-4">
-              <Check
-                checked={training}
-                disabled={busy || current === "everything"}
-                onChange={(train) => void save(() => setTraining({ replies: train, follow_ups: train }))}
-                label="In training"
-                help={
-                  current === "everything"
-                    ? "Move to Most mail or below to train it."
-                    : current === "off"
-                      ? "Tick this before moving up, and every reply comes to you first until you allow that person."
-                      : "Every reply comes to you first. Tap Send + allow and it handles that person on its own from then on, within this step."
-                }
-              />
-              {(training || followUpsTraining) && (
-                <Check
-                  className="ml-8"
-                  checked={followUpsTraining}
-                  disabled={busy}
-                  onChange={(train) => void save(() => setTraining({ follow_ups: train }))}
-                  label="Train follow-ups too"
-                  help="Untick to let follow-ups go out at this step while replies stay in training."
+            {mode === "on" && (
+              <div className="mt-5 border-t border-line pt-4">
+                <h3 id="sends-steps-label" className="mb-3 text-[15px] font-semibold text-fg">
+                  How much it sends
+                </h3>
+                <StepList
+                  name="sends"
+                  labelledBy="sends-steps-label"
+                  steps={steps}
+                  current={current}
+                  busy={busy}
+                  onPick={pickStep}
                 />
-              )}
-              <p className="text-sm text-fg-muted">
-                Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to
-                anyone the email didn&apos;t go to.
-              </p>
-            </div>
-            {current === "everything" && <YourRules />}
+              </div>
+            )}
+            <p className="mt-5 border-t border-line pt-4 text-sm text-fg-muted">
+              Money, contracts, legal, hiring, the press and passwords always wait for you, and it never writes to
+              anyone the email didn&apos;t go to.
+            </p>
+            {current === "everything" && mode === "on" && <YourRules />}
           </>
         )}
         {error && <p className="mt-3 text-sm text-red-500">{error}</p>}

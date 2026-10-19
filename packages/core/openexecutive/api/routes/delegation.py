@@ -66,14 +66,15 @@ Routes:
                                     turning it on needs Draft replies to my
                                     inbox on (409). Turning the inbox watcher
                                     off turns it off too
-  PUT    /delegation/training     — {replies?, follow_ups?, actions?, drafts?}:
-                                    put Act as me's settings in or out of
-                                    training (delegation.training). Needs a
+  PUT    /delegation/training     — {replies?, follow_ups?, actions?, drafts?,
+                                    actions_on?}: put Act as me's settings in
+                                    or out of training, or Suggested actions
+                                    On (delegation.training). Needs a
                                     caller the API knows is that person, but
                                     for a change that only holds more back
   DELETE /delegation/learned/{id} — forget one thing it learned in training
-                                    (Send + allow, Approve + allow, an
-                                    example). The caller's own only
+                                    (the "on its own next time" tick on a
+                                    card, or an example). The caller's own only
   PUT    /delegation/take-the-lead — {enabled}: Take the lead as you, the
                                     owner's alone for now: Handle it for
                                     me's setting gives way to the added rules
@@ -219,6 +220,8 @@ class TrainingOut(BaseModel):
     follow_ups: bool
     actions: bool
     drafts: bool
+    # Suggested actions On: carried out with no allow (false while in training).
+    actions_on: bool = False
     # The caller's own, newest first.
     learned: list[LearnedOut] = []
 
@@ -230,6 +233,7 @@ class TrainingUpdate(BaseModel):
     follow_ups: bool | None = None
     actions: bool | None = None
     drafts: bool | None = None
+    actions_on: bool | None = None
 
 
 class HandleItOut(BaseModel):
@@ -715,7 +719,7 @@ def _training_out(person_id: int) -> TrainingOut:
         learned = []
     return TrainingOut(
         replies=switches.replies, follow_ups=switches.follow_ups, actions=switches.actions,
-        drafts=switches.drafts, learned=learned,
+        drafts=switches.drafts, actions_on=switches.actions_without_asking, learned=learned,
     )
 
 
@@ -1133,16 +1137,24 @@ async def update_delegation_disclosure(request: Request, body: DisclosureUpdate)
 
 @router.put("/delegation/training", response_model=DelegationOut)
 async def update_delegation_training(request: Request, body: TrainingUpdate) -> DelegationOut:
-    """Put Act as me's settings in or out of training. Putting Replies or
-    Follow-ups in only holds more back, and taking Suggested actions out
-    stops cards being carried out on their own, so those need no signed
-    sign-in; anything else does. Putting Replies or Follow-ups in turns Take
+    """Put Act as me's settings in or out of training, or Suggested actions
+    On (``actions_on``: carried out with no allow). Putting Replies or
+    Follow-ups in only holds more back, and taking Suggested actions out of
+    training or On stops cards being carried out on their own, so those need
+    no signed sign-in; anything else does. Putting Replies or Follow-ups in turns Take
     the lead as you off: in training only what the person allowed goes."""
     from openexecutive.delegation import training
 
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    # Suggested actions is one of Always ask, In training or On: picking one
+    # leaves the other.
+    if changes.get(training.ACTIONS_ON) is True:
+        changes[training.ACTIONS] = False
+    elif changes.get(training.ACTIONS) is True:
+        changes[training.ACTIONS_ON] = False
     narrowing = all(
-        (v is True and k in (training.REPLIES, training.FOLLOW_UPS)) or (v is False and k == training.ACTIONS)
+        (v is True and k in (training.REPLIES, training.FOLLOW_UPS))
+        or (v is False and k in (training.ACTIONS, training.ACTIONS_ON))
         for k, v in changes.items()
     )
     person = _signed_caller(request, narrowing=narrowing)

@@ -17,6 +17,12 @@ card on the Act as me page:
   whose every action is one they allowed (a message to that person, a meeting
   with exactly those people) is carried out at once, under the checks in
   ``action_cards.on_its_own_refusal``. A new contact always waits.
+- **Suggested actions, On** (``actions_on``, a switch of its own and not a
+  setting in training): an action card is carried out at once, no tap and no
+  allow needed, under the same checks plus two more
+  (``action_cards.on_its_own_refusal``): a new contact, or anyone whose
+  roster entry is under a week old, always waits. In training wins when both
+  are set.
 - **Drafts** (``drafts``): nothing is sent. When they change a reply's draft
   in their mailbox before tapping Send and tick "Do it like this next time",
   what they sent is kept as an example the ghostwriter follows when it next
@@ -50,6 +56,10 @@ FOLLOW_UPS = "follow_ups"
 ACTIONS = "actions"
 DRAFTS = "drafts"
 SETTINGS: tuple[str, ...] = (REPLIES, FOLLOW_UPS, ACTIONS, DRAFTS)
+# Suggested actions On: carried out with no allow. Stored with the settings,
+# but nothing is learned under it.
+ACTIONS_ON = "actions_on"
+SWITCHES: tuple[str, ...] = (*SETTINGS, ACTIONS_ON)
 
 # What each kind of key teaches, by the action in it.
 _SETTING_OF_ACTION = {
@@ -67,9 +77,15 @@ class Training:
     follow_ups: bool = False
     actions: bool = False
     drafts: bool = False
+    actions_on: bool = False
 
     def on(self, setting: str) -> bool:
-        return bool(getattr(self, setting, False)) if setting in SETTINGS else False
+        return bool(getattr(self, setting, False)) if setting in SWITCHES else False
+
+    @property
+    def actions_without_asking(self) -> bool:
+        """Suggested actions set to On: out of training, carried out with no allow."""
+        return self.actions_on and not self.actions
 
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +110,8 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
 def get(person_id: int, *, db_path: Path | None = None) -> Training:
     """Which of ``person_id``'s settings are in training. Never raises:
     unreadable is in training for Replies and Follow-ups (they wait) and not
-    for Suggested actions (they wait too) or Drafts (nothing kept)."""
+    for Suggested actions (they wait too) or Drafts (nothing kept), and
+    Suggested actions is not On."""
     try:
         conn = _connect(db_path)
         try:
@@ -107,20 +124,20 @@ def get(person_id: int, *, db_path: Path | None = None) -> Training:
     except Exception:
         logger.warning("delegation.training: couldn't read the switches", exc_info=True)
         return Training(person_id=person_id, replies=True, follow_ups=True)
-    on = {setting for setting, enabled in rows if enabled and setting in SETTINGS}
-    return Training(person_id=person_id, **{s: s in on for s in SETTINGS})
+    on = {setting for setting, enabled in rows if enabled and setting in SWITCHES}
+    return Training(person_id=person_id, **{s: s in on for s in SWITCHES})
 
 
 def set_(
     person_id: int, changes: dict[str, bool], *, updated_by: str, db_path: Path | None = None,
 ) -> Training:
-    """Turn settings in or out of training (callers authorize first). An
-    unknown setting is ignored."""
+    """Turn settings in or out of training, or Suggested actions On or off
+    (callers authorize first). An unknown setting is ignored."""
     now = datetime.now(UTC).isoformat()
     conn = _connect(db_path)
     try:
         for setting, enabled in changes.items():
-            if setting not in SETTINGS:
+            if setting not in SWITCHES:
                 continue
             conn.execute(
                 f"INSERT INTO {TRAINING_TABLE} (person_id, setting, enabled, updated_at, updated_by) "  # noqa: S608
