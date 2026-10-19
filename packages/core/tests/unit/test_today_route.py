@@ -2568,6 +2568,17 @@ def test_today_seen_round_trips_in_a_teammates_scope(
     assert seen
     assert c.get("/today", headers=me).json()["narrative_seen_at"] == seen
 
+    # The owner's look lands in the owner's own scope, apart from Sam's.
+    owner = {"x-caller-email": "p@co.com"}
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=narrative_cache.DEFAULT_SCOPE, input_hash="x",
+        narrative_text=_RIGHT_NOW_HEADER, generated_at=narrative_cache.utc_now_iso(),
+    ), db_path=db)
+    assert c.get("/today", headers=owner).json()["narrative_seen_at"] is None
+    owner_seen = c.post("/today/seen", headers=owner).json()["seen_at"]
+    assert c.get("/today", headers=owner).json()["narrative_seen_at"] == owner_seen
+    assert c.get("/today", headers=me).json()["narrative_seen_at"] == seen
+
 
 def test_an_unrostered_look_is_not_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

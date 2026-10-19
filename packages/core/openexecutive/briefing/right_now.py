@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _BULLET_RE = re.compile(r"^\s*[-*•]\s+(.*\S)\s*$")
 _MOVE_RE = re.compile(r"^\s*\*\*\s*Move today:?\s*\*\*:?\s*(.*\S)?\s*$", re.IGNORECASE)
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-_KEY_STRIP_RE = re.compile(r"[^a-z0-9]+")
+_KEY_STRIP_RE = re.compile(r"[\W_]+")
 # A point with no bold subject is keyed by its opening words.
 _KEY_FALLBACK_CHARS = 60
 
@@ -75,10 +75,10 @@ def split_narrative(text: str | None) -> NarrativeParts:
 
 def point_key(point: str) -> str:
     """Stable key for a point across rewrites: its bold subject, else its
-    opening words, lowercased with punctuation dropped."""
+    opening words, casefolded with punctuation dropped (any script)."""
     bold = _BOLD_RE.search(point)
     basis = bold.group(1) if bold else point[:_KEY_FALLBACK_CHARS]
-    return _KEY_STRIP_RE.sub(" ", basis.lower()).strip()
+    return _KEY_STRIP_RE.sub(" ", basis.casefold()).strip()
 
 
 def initialize_db() -> None:

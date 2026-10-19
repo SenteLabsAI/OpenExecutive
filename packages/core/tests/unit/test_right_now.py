@@ -46,6 +46,8 @@ def test_point_key_follows_the_bold_subject_across_rewording() -> None:
     a = right_now.point_key("**Lakeside renewal** — they want a price by 4.")
     b = right_now.point_key("**Lakeside Renewal:** still waiting on your price.")
     assert a == b == "lakeside renewal"
+    assert right_now.point_key("**Résumé review** — due.") == "résumé review"
+    assert right_now.point_key("**東京支社** — 新しい") == "東京支社"
 
 
 def test_a_point_keeps_its_first_time_across_rewrites() -> None:
