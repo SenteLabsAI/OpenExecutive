@@ -858,6 +858,43 @@ def test_activity_includes_decisions_and_advice(
     assert "advice_given" in kinds
 
 
+def test_a_card_left_from_chat_reads_as_what_it_did(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delete approved on its chat card reads as the delete, not as
+    "Approved: Finance" (which the brief turned into "I approved the
+    pending department decisions")."""
+    db = tmp_path / "act_app.db"
+    _setup_isolated_db(db, monkeypatch)
+
+    def card(key: str, title: str) -> int:
+        return decision_ledger.create_decision_instance(
+            decision_class="app_action", department="",
+            originating_session_id=None,
+            proposed_payload={
+                "action": "delete_department", "id": key, "value": "",
+                "title": title, "card": f"Delete the department “{title}”",
+            },
+            idempotency_key=None, gate_mode="propose",
+            approver_person_id=None, confidence=None, db_path=db,
+        )
+
+    done = card("finance", "Finance")
+    decision_ledger.mark_resolved(
+        done, decision_ledger.STATUS_APPROVED_UNCHANGED,
+        final_payload={"did": "Deleted the department “Finance”"}, db_path=db,
+    )
+    turned_down = card("legal", "Legal")
+    decision_ledger.mark_resolved(turned_down, decision_ledger.STATUS_REJECTED, db_path=db)
+
+    items = _make_client().get("/today/activity?limit=100").json()["items"]
+    summaries = sorted(i["summary"] for i in items if i["kind"] == "decision_resolved")
+    assert summaries == [
+        "Deleted the department “Finance” (asked for in chat, approved on its card)",
+        "Turned down: Delete the department “Legal”",
+    ]
+
+
 def test_activity_includes_workflow_initiative_decision_alert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

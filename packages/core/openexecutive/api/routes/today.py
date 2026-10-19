@@ -1098,6 +1098,37 @@ def _payload_headline(payload_json: str | None) -> str | None:
     return None
 
 
+def _app_action_summary(instance: Any) -> str | None:
+    """What a card left from chat (``orchestrator.app_control``) did, in its
+    own words ("Deleted the department “Finance”"), or what it would have
+    done ("Turned down: Delete the department “Finance”"). None for any other
+    decision class. Its payload's title is only the item's name, so the
+    generic "Approved: Finance" read as the Executive approving a decision."""
+    from openexecutive.orchestrator.app_control import DECISION_CLASS
+
+    if instance.decision_class != DECISION_CLASS:
+        return None
+    final = _payload_dict(instance.final_payload_json)
+    proposed = _payload_dict(instance.proposed_payload_json)
+    did = final.get("did")
+    if isinstance(did, str) and did.strip() and instance.status in _APPROVED_STATUSES:
+        return f"{did.strip()} (asked for in chat, approved on its card)"
+    card = final.get("card") or proposed.get("card") or proposed.get("title") or "a change from chat"
+    verb = {"rejected": "Turned down", "failed": "Didn't go through"}.get(instance.status, "Not done")
+    return f"{verb}: {str(card).strip()}"
+
+
+_APPROVED_STATUSES = frozenset({"approved_unchanged", "approved_with_edit", "executed"})
+
+
+def _payload_dict(payload_json: str | None) -> dict[str, Any]:
+    try:
+        data = json.loads(payload_json or "")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 # The Executive's own daily rhythm runs. Each lands as a dated
 # "workflow_done: Executive Reflection 2026-09-28" row every day: fine on the
 # rail, but noise to the header and the briefs (and the dated title moved the
@@ -1279,6 +1310,17 @@ def _build_activity(
         if instance.decision_class == DEPARTMENT_ACTION_CLASS:
             continue  # it quotes a teammate's conversation; the audit log keeps who approved it
         label = _DECISION_STATUS_LABEL.get(instance.status, "Resolved")
+        app_action = _app_action_summary(instance)
+        if app_action is not None:
+            items.append(ActivityItem(
+                kind="decision_resolved",
+                summary=app_action,
+                actor="Executive",
+                target=None,
+                department=instance.department or None,
+                at=instance.resolved_at or instance.created_at,
+            ))
+            continue
         detail = (
             _payload_headline(instance.final_payload_json)
             or _payload_headline(instance.proposed_payload_json)
