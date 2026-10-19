@@ -247,12 +247,59 @@ async def test_an_audio_file_is_read_as_a_files_words(settings, server) -> None:
     assert '<untrusted_content source="attachment"' in text
 
 
-def test_the_reply_opens_with_what_was_heard() -> None:
-    assert attachments.with_heard("On it.", ["move my call"]) == 'Heard: "move my call"\n\nOn it.'
-    assert attachments.with_heard("On it.", []) == "On it."
-    assert attachments.with_heard("", ["x"]) == ""
-    long = attachments.with_heard("ok", ["word " * 100])
-    assert long.startswith('Heard: "word') and "…" in long.split("\n")[0]
+def test_a_voice_note_reply_is_just_the_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The chat app shows the reply as the answer alone, with no line
+    repeating what the voice note was heard as."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from openexecutive.integrations import telegram_bot
+
+    async def fake_transcribe(data: bytes, filename: str, content_type: str) -> str:
+        return "move my call to Friday"
+
+    monkeypatch.setattr(transcription, "transcribe", fake_transcribe)
+    seen: dict[str, Any] = {}
+
+    async def fake_chat(**kw: Any) -> str:
+        seen.update(kw)
+        return "Moved it to Friday at 10."
+
+    executive = MagicMock()
+    executive.chat = fake_chat
+    sent = AsyncMock(return_value=None)
+    profile = SimpleNamespace(is_empty=lambda: True)
+    with (
+        patch("openexecutive.integrations.conversations.conversation_for", return_value="telegram:-7"),
+        patch("openexecutive.integrations.conversations.title_after_turn"),
+        patch("openexecutive.people.store.find_person_by_telegram_chat_id", return_value=None),
+        patch("openexecutive.people.store.find_principal_person", return_value=None),
+        patch("openexecutive.alerts.pipeline.schedule_chat_message_evaluation"),
+        patch("openexecutive.knowledge.retriever.retrieve", return_value=""),
+        patch("openexecutive.memory.episodic.format_for_prompt", return_value=""),
+        patch("openexecutive.memory.session_store.load_messages", return_value=[]),
+        patch("openexecutive.memory.session_store.create_session"),
+        patch("openexecutive.memory.session_store.save_message"),
+        patch("openexecutive.memory.session_store.update_session_timestamp"),
+        patch("openexecutive.onboarding.profile_builder.load_or_create_profile", return_value=profile),
+        patch("openexecutive.integrations.channel_context.attach_briefing_context", return_value=None),
+        patch("openexecutive.integrations.channel_cards.shows_cards", return_value=False),
+        patch("openexecutive.orchestrator.executive.Executive", return_value=executive),
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=None),
+        patch.object(telegram_bot, "_get_telegram_file_bytes", new=AsyncMock(return_value=("v.ogg", b"OggS"))),
+        patch.object(telegram_bot, "send_message", new=sent),
+        patch("openexecutive.audit.log_event"),
+    ):
+        asyncio.run(telegram_bot._process_and_reply.__wrapped__(
+            message_text="", sender_name="Dana", chat_id=-7, message_id=3, token="t",
+            attachment_file_ids=[("V1", "voice.ogg", "audio/ogg", True)],
+        ))
+
+    assert "move my call to Friday" in seen["user_message"]
+    [call] = sent.await_args_list
+    reply = call.args[2]
+    assert reply.startswith("Moved it to Friday at 10.")
+    assert "Heard" not in reply and "move my call" not in reply
 
 
 def test_telegram_voice_notes_are_read_as_audio() -> None:

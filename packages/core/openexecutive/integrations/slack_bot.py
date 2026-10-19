@@ -1039,11 +1039,10 @@ async def create_slack_app():
 
                 # No unfurls: Slack would fetch a link in the reply on its own,
                 # and a reply can quote mail a sender wrote to carry data out in one.
-                from openexecutive.integrations.attachments import with_heard
                 from openexecutive.orchestrator.disclosure import with_chat_line
 
                 await say(
-                    text=with_chat_line(with_heard(response, heard), f"slack:{session_id}"),
+                    text=with_chat_line(response, f"slack:{session_id}"),
                     thread_ts=thread_ts, unfurl_links=False, unfurl_media=False,
                 )
 

@@ -2340,9 +2340,8 @@ knowledge:
       attachments) only a voice note the sender recorded there (Telegram
       voice / video_note, a Discord voice message, a Slack clip with
       subtype slack_audio; AttachmentItem.voice_note) becomes their own
-      words ("[Voice note, transcribed]"; senders are roster-gated), and the
-      reply opens with Heard: "…" (attachments.with_heard) so a mishearing
-      shows. Any other audio (a Telegram audio file, an uploaded recording,
+      words ("[Voice note, transcribed]"; senders are roster-gated). The
+      reply is the answer alone, with no echo of what was heard. Any other audio (a Telegram audio file, an uploaded recording,
       anything on Google Chat) may hold someone else's voice, so its words
       are attachment text, untrusted-wrapped like a document's.
       The web chat mic records in the browser and posts to

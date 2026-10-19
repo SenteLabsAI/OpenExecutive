@@ -17,8 +17,7 @@ Docs:     .pdf, .docx, .doc, .xlsx, .xlsm, .txt, .md, .rst, .csv
           (a scanned PDF is converted by ``knowledge.pdf_reader``)
 Audio:    voice notes (ogg, m4a, mp3, webm, wav, …), transcribed by
           ``providers.transcription`` into the sender's words. The caller
-          passes a ``heard`` list to collect what was heard, and starts
-          its reply with ``with_heard``.
+          may pass a ``heard`` list to collect what was heard.
 
 Limits
 ------
@@ -318,23 +317,6 @@ def format_attached_text(
     from openexecutive.orchestrator.content_trust import wrap_untrusted
 
     return wrap_untrusted(f"{label}\n{text.strip()}", source="attachment", author=filename)
-
-
-_HEARD_CHARS = 280
-
-
-def with_heard(reply: str, heard: list[str] | None) -> str:
-    """``reply`` opened with what each voice note was heard as, so a
-    misheard word is easy to spot."""
-    if not heard or not reply.strip():
-        return reply
-    lines = []
-    for words in heard:
-        words = " ".join(words.split())
-        if len(words) > _HEARD_CHARS:
-            words = words[:_HEARD_CHARS].rstrip() + "…"
-        lines.append(f'Heard: "{words}"')
-    return "\n".join(lines) + "\n\n" + reply
 
 
 async def _voice_note_text(

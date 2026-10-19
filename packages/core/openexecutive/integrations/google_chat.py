@@ -184,7 +184,6 @@ async def _read_attachments(
     attachments: list[dict],
     service_account_file: str | None,
     service_account_email: str | None,
-    heard: list[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """Read a message's attachments the way the other chat channels do:
     documents to text (a scanned PDF converted), images to vision blocks.
@@ -223,7 +222,7 @@ async def _read_attachments(
             continue
         try:
             text, image_blocks = await build_attachment_output(
-                name, data, str(att.get("contentType") or ""), heard=heard
+                name, data, str(att.get("contentType") or "")
             )
         except Exception:
             logger.exception("Google Chat: attachment processing failed for %s", name)
@@ -331,10 +330,9 @@ async def _process_and_reply(
 
         chat_message = message_text
         image_blocks: list[dict] = []
-        heard: list[str] = []
         if attachments and _sender_on_roster(sender_email):
             att_text, image_blocks = await _read_attachments(
-                attachments, service_account_file, service_account_email, heard
+                attachments, service_account_file, service_account_email
             )
             if att_text:
                 # Before the words, as the other chat channels inline it.
@@ -354,11 +352,10 @@ async def _process_and_reply(
             channel_context_block=build_channel_context_block("google_chat"),
             attachment_blocks=image_blocks or None,
         )
-        from openexecutive.integrations.attachments import with_heard
         from openexecutive.orchestrator.disclosure import with_chat_line
 
         await asyncio.to_thread(
-            send_reply, space_name, thread_name, with_chat_line(with_heard(response, heard), session_id),
+            send_reply, space_name, thread_name, with_chat_line(response, session_id),
             service_account_file, service_account_email,
         )
     except Exception:

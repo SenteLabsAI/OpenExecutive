@@ -693,7 +693,6 @@ async def _handle_message(
     gate_eligible: bool = False,
     bot_display_name: str | None = None,
     attachment_blocks: list[dict] | None = None,
-    heard: list[str] | None = None,
     attachment_count: int = 0,
     co_present_discord_user_ids: list[str] | None = None,
     response_router: Callable[[str], Awaitable[MentionRouteResult]] | None = None,
@@ -708,9 +707,6 @@ async def _handle_message(
     `attachment_blocks` is a list of Anthropic image content blocks assembled
     by process_attachments(). Text-extracted document content is expected to
     already be prepended to `text` by the caller.
-
-    `heard` is what the message's voice notes were heard as; the reply
-    opens with it (``attachments.with_heard``).
 
     `attachment_count` is how many files the message carried, recorded in the
     audit row. It is passed separately from `attachment_blocks` because the
@@ -1020,10 +1016,9 @@ async def _handle_message(
             # to silently no-op than to spam the channel with an error
             # message that itself confuses users.
             if response.strip():
-                from openexecutive.integrations.attachments import with_heard
                 from openexecutive.orchestrator.disclosure import with_chat_line
 
-                reply = with_chat_line(with_heard(response, heard), f"discord:{session_id}")
+                reply = with_chat_line(response, f"discord:{session_id}")
                 for chunk in _split_message(reply):
                     await effective_send_fn(chunk)
             else:
@@ -1508,7 +1503,6 @@ def create_discord_bot():
         # appeared in it. Not extracting an unrostered sender's file is the
         # point, and `attachments` below records that one was sent.
         att_image_blocks: list[dict] = []
-        heard: list[str] = []
         if message.attachments and _is_rostered(discord_user_id):
             try:
                 from openexecutive.integrations.attachments import (
@@ -1525,7 +1519,7 @@ def create_discord_bot():
                         voice_note=a.is_voice_message(),
                     )
                     for a in message.attachments
-                ], heard=heard)
+                ])
                 if att_text:
                     cleaned = (f"{att_text}\n\n{cleaned}").strip() if cleaned else att_text
             except Exception:
@@ -1609,7 +1603,6 @@ def create_discord_bot():
             gate_eligible=gate_eligible,
             bot_display_name=getattr(bot.user, "display_name", None) if bot.user else None,
             attachment_blocks=att_image_blocks or None,
-            heard=heard or None,
             co_present_discord_user_ids=co_present_discord_user_ids or None,
             response_router=response_router,
         )

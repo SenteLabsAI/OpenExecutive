@@ -353,7 +353,6 @@ async def _process_and_reply(
     # Process file / photo attachments before entering the chat lock so that
     # slow downloads don't hold the lock while the chat serialises.
     att_image_blocks: list[dict] = []
-    heard: list[str] = []
     if attachment_file_ids:
         try:
             from openexecutive.integrations.attachments import build_attachment_output
@@ -366,7 +365,7 @@ async def _process_and_reply(
                     # Telegram requires a separate getFile API call rather than
                     # a direct URL download.
                     att_text, img_blocks = await build_attachment_output(
-                        filename, data, content_type, heard=heard, voice_note=voice_note
+                        filename, data, content_type, voice_note=voice_note
                     )
                     if att_text:
                         message_text = (
@@ -479,11 +478,10 @@ async def _process_and_reply(
                 person_id=person_id,
                 cards=cards if cards_here else None,
             )
-            from openexecutive.integrations.attachments import with_heard
             from openexecutive.orchestrator.disclosure import with_chat_line
 
             await send_message(
-                token, chat_id, with_chat_line(with_heard(response, heard), f"telegram:{session_id}")
+                token, chat_id, with_chat_line(response, f"telegram:{session_id}")
             )
             if cards:
                 await _send_cards(token, chat_id, cards)
