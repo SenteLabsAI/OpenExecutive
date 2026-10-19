@@ -827,11 +827,13 @@ async def reply_for(
     reply is wanted). The evals run this; a scan runs the same two steps with
     its limits in between."""
     from openexecutive.delegation.ghostwriter import ComposeError
-    from openexecutive.delegation.inbox_classifier import classify, wants_draft
+    from openexecutive.delegation.inbox_classifier import classify, their_last_words, wants_draft
 
     relation = handling_relation(relation, message)
     addressed = addressed_for(person, message, own)
-    verdict = await classify(message, relation=relation, addressed=addressed)
+    verdict = await classify(
+        message, relation=relation, addressed=addressed, earlier=their_last_words(thread, message, own)
+    )
     if verdict is None or not wants_draft(verdict, relation, addressed):
         return verdict, None
     try:
@@ -1112,7 +1114,12 @@ async def _consider(
     from openexecutive.delegation import disclosure as ai_disclosure
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
-    from openexecutive.delegation.inbox_classifier import addressing, classify, wants_draft
+    from openexecutive.delegation.inbox_classifier import (
+        addressing,
+        classify,
+        their_last_words,
+        wants_draft,
+    )
 
     email = (person.email or "").strip().lower()
     thread = await client.get_thread(thread_id)
@@ -1139,7 +1146,9 @@ async def _consider(
     if not _claim(person.id, message, relation=relation, outcome=PROCESSING, now=now):
         return False
     asked = addressing(message, name=person.full_name or "", own=own, exec_address=exec_address)
-    verdict = await classify(message, relation=relation, addressed=asked)
+    verdict = await classify(
+        message, relation=relation, addressed=asked, earlier=their_last_words(thread, message, own)
+    )
     _set_outcome(person.id, message.id, PROCESSING, classified=1)
     if verdict is None:
         # The call failed or answered nonsense: that may pass.

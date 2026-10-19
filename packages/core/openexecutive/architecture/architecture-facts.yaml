@@ -10773,7 +10773,14 @@ delegation:
     lines — From, the sender's relation (and "address not verified"), the
     recipient count, the subject — and the sender's own new words
     (sender_new_text, at most 3000 characters), every line scrubbed, inside
-    one <email> block marked as data. No other tools, context or memory.
+    one <email> block marked as data, after the person's own last email in
+    the thread (their_last_words: only mail their own mailbox sent, SENT
+    label, at most 1500 characters) in a <their_last_email> block, so a reply
+    to their own ask reads as one. Real miss it fixes: they asked a contact
+    for a call, the contact wrote back "my week is open, I'll circle back
+    with times", and with only the new words it was filed fyi. Now a reply
+    that says when someone is free without settling a time is scheduling.
+    No other tools, context or memory.
     Code decides: a draft only when needs_reply, kind is question, request,
     scheduling, introduction or follow_up, and confidence clears 0.6 (team
     or contact), 0.7 (someone the person has written to, found by a Gmail

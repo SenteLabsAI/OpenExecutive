@@ -19,7 +19,10 @@ the model's ``asked_of_them`` decides: a question to the group in general is
 not theirs. One that merely copies the person is never drafted for.
 
 The model sees a few header lines and the sender's own new words (quoted
-replies stripped, at most 3000 characters), as data in a labelled block. It
+replies stripped, at most 3000 characters), as data in a labelled block, and
+the person's own last email in the thread before it (``their_last_words``),
+so a reply to something they asked reads as one: "my week is open" answers
+their request for a call. It
 has no tools but this one, no company context and no memory, so the email can
 ask for anything and there is nothing here to do it with. The prompt is a
 constant, and short enough that it is not cached.
@@ -34,6 +37,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MAX_BODY_CHARS = 3000
+# Of the person's own last email in the thread: enough for what they asked.
+MAX_EARLIER_CHARS = 1500
 _MAX_TOKENS = 200
 
 KINDS: tuple[str, ...] = (
@@ -87,6 +92,14 @@ names or greets them, or they are its only addressee. False when it is \
 addressed to someone else by name ("Brennan: ..."), when it asks a group \
 without naming them, or when they are only copied (Cc).
 - confidence: how sure you are that needs_reply and kind are right, from 0 to 1.
+
+<their_last_email>, when there is one, is what this person themselves last \
+wrote in the thread before the email: read the email as an answer to it. \
+When they asked to meet or talk and the email says when the sender is free, \
+or that they are free, without a time being settled, it is scheduling and \
+needs a reply (they can offer times), even when the sender says they will \
+come back with times. When the email settles what they asked and leaves \
+nothing for them to do, it needs no reply.
 
 When unsure, say needs_reply false."""
 
@@ -175,9 +188,27 @@ def wants_draft(verdict: Verdict, relation: str, addressed: Addressing | None = 
     return verdict.asked_of_them
 
 
-def render_email(message: Any, *, relation: str, addressed: Addressing | None = None) -> str:
+def their_last_words(thread: Any, message: Any, own: set[str]) -> str:
+    """What the person last wrote in ``thread`` before ``message``: only mail
+    their own mailbox sent, its new words alone. "" when they wrote none."""
+    from openexecutive.delegation.threads import mine
+    from openexecutive.integrations.email_poller import sender_new_text
+
+    messages = list(getattr(thread, "messages", None) or [])
+    ids = [getattr(m, "id", None) for m in messages]
+    before = messages[: ids.index(message.id)] if message.id in ids else messages
+    for m in reversed(before):
+        if any(mine(m, address) for address in own):
+            return sender_new_text(getattr(m, "text", "") or "")[:MAX_EARLIER_CHARS].strip()
+    return ""
+
+
+def render_email(
+    message: Any, *, relation: str, addressed: Addressing | None = None, earlier: str = ""
+) -> str:
     """The user turn: a few header lines and the sender's own new words, as
-    data in one ``<email>`` block."""
+    data in one ``<email>`` block, after the person's own ``earlier`` words
+    in a ``<their_last_email>`` block when they wrote any."""
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.integrations.email_poller import sender_new_text
     from openexecutive.utils.prompt_blocks import no_tags, scrub_block_line
@@ -203,7 +234,11 @@ def render_email(message: Any, *, relation: str, addressed: Addressing | None = 
     lines = [scrub_block_line(line, "</email>") for line in [*header, "", *body.splitlines()]]
     # The text can't open or close a tag, in any spelling.
     text = no_tags("\n".join(lines)).strip()
-    return f"<email>\n{text}\n</email>"
+    turn = f"<email>\n{text}\n</email>"
+    if earlier.strip():
+        theirs = no_tags("\n".join(scrub_block_line(line, "</their_last_email>") for line in earlier.splitlines()))
+        turn = f"<their_last_email>\n{theirs.strip()}\n</their_last_email>\n\n{turn}"
+    return turn
 
 
 async def _call_model(model: str, turn: str) -> dict[str, Any]:
@@ -233,13 +268,17 @@ def classifier_model() -> str:
 
 
 async def classify(
-    message: Any, *, relation: str, addressed: Addressing | None = None, model: str | None = None
+    message: Any, *, relation: str, addressed: Addressing | None = None, earlier: str = "",
+    model: str | None = None,
 ) -> Verdict | None:
     """The verdict on ``message``, or None when there is none to trust (the
-    call failed or returned something malformed). Never raises."""
+    call failed or returned something malformed). ``earlier`` is the
+    person's own last email in the thread (``their_last_words``). Never
+    raises."""
     try:
         payload = await _call_model(
-            model or classifier_model(), render_email(message, relation=relation, addressed=addressed)
+            model or classifier_model(),
+            render_email(message, relation=relation, addressed=addressed, earlier=earlier),
         )
     except Exception:
         logger.warning("delegation.inbox: classifying an email failed", exc_info=True)
