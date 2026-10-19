@@ -5,6 +5,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useState
 
 import Icon from "@/components/Icon";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
+import { PersonContactChanges } from "@/components/people/ContactChanges";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button from "@/components/ui/Button";
@@ -16,6 +17,7 @@ import {
   archivePerson,
   assignOpenLoop,
   closeOpenLoop,
+  getContactChanges,
   getPeopleViewer,
   getPerson,
   getPersonOpenLoops,
@@ -25,6 +27,7 @@ import {
   savePersonWorkingStyle,
   updatePerson,
   type AvailabilityWindow,
+  type ContactChange,
   type OpenLoop,
   type OutreachStat,
   type Person,
@@ -584,6 +587,17 @@ export default function PersonDetailPage() {
       .finally(() => setLoading(false));
   }, [personId]);
 
+  // What the Executive changed about this contact (the principal's alone).
+  const [contactChanges, setContactChanges] = useState<ContactChange[]>([]);
+  useEffect(() => {
+    if (isNaN(personId) || !viewerIsPrincipal) return;
+    getContactChanges(personId).then((d) => setContactChanges(d.changes), () => setContactChanges([]));
+  }, [personId, viewerIsPrincipal]);
+  function reloadAfterUndo() {
+    getContactChanges(personId).then((d) => setContactChanges(d.changes), () => setContactChanges([]));
+    getPerson(personId).then((p) => { setPerson(p); resetForm(p); }, () => {});
+  }
+
   // The breadcrumb names the person rather than the id in the URL.
   usePageCrumb(person?.full_name);
 
@@ -825,6 +839,9 @@ export default function PersonDetailPage() {
               <div {...(tabs.length > 1 ? sectionPanelProps(tabsId, activeTab) : {})}>
               {activeTab === "overview" && (
                 <>
+              {contact && viewerIsPrincipal && !editing && contactChanges.length > 0 && (
+                <PersonContactChanges changes={contactChanges} onChanged={reloadAfterUndo} />
+              )}
               {/* Core fields */}
               <section className="rounded-2xl border border-line bg-surface-elevated px-5">
                 {editing ? (

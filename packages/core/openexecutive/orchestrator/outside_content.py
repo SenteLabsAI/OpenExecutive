@@ -11,8 +11,9 @@ the owner's full tool set. Wrapping it as untrusted is only a hint to the
 model, so once a turn has read any of it (``TurnOutside.read``), for the rest
 of that turn the tools the Act as me lockdown withholds stay shut
 (``delegation.lockdown``: links, scripts, workflows, posts to everyone,
-roster and authority changes), and so do ``upsert_person`` and every gateway
-call but a read (``outside_allows_mcp_call``): no mail, Docs, Sheets, Drive
+roster and authority changes), and so do ``upsert_person`` (but for a
+contact the speaker named, at an address they typed:
+``lockdown.speaker_named_contact``) and every gateway call but a read (``outside_allows_mcp_call``): no mail, Docs, Sheets, Drive
 or calendar write. Like the Act as me lockdown, it lasts for the turn and no
 longer: a later turn's history holds the person's words and the Executive's
 replies, never what a tool returned, so their next message is them asking
@@ -425,7 +426,8 @@ def answers_off_team_mail() -> bool:
 def outside_withholds(tool_name: str, tool_input: Any) -> bool:
     """Whether a call to ``tool_name`` is refused once the turn has read
     outside content: what the Act as me lockdown refuses, every
-    ``upsert_person``, and every gateway call but a read. Fails closed.
+    ``upsert_person`` but for a contact the speaker named, and every gateway
+    call but a read. Fails closed.
     A turn answering mail from someone not in People may still raise an
     alert, which is how that mail reaches the principal."""
     if answers_off_team_mail():
@@ -434,7 +436,14 @@ def outside_withholds(tool_name: str, tool_input: Any) -> bool:
         if tool_name in SENDER_WITHHELD_TOOLS:
             return True
     if tool_name == "upsert_person":
-        return True
+        # A contact the speaker named, at an address they typed: the rule
+        # after a read of their own mail. Never on a turn answering mail from
+        # someone not in People, whose words are not the principal's.
+        if answers_off_team_mail():
+            return True
+        from openexecutive.delegation.lockdown import speaker_named_contact
+
+        return not speaker_named_contact(tool_input)
     if tool_name == "call_tool":
         return not outside_allows_mcp_call(tool_input)
     from openexecutive.delegation.lockdown import mail_touched_withholds
@@ -487,10 +496,26 @@ ADDED_REFUSAL = (
 )
 
 
+# A contact refused after an outside read: the speaker didn't name them, or
+# the address isn't one they typed. A card takes one tap instead.
+CONTACT_REFUSAL = (
+    "This turn read content from outside the team, so a contact is only added "
+    "here when the user named the person in this message and typed the address "
+    "themselves. Put it on an approval card instead (propose_actions, kind "
+    "add_contact, with the name and address) so they can add them with one tap, "
+    "and tell them it is waiting. Do not retry upsert_person in this turn."
+)
+
+
 def outside_withheld_error(label: str) -> str:
     """The JSON error tool_result for a call refused after an outside read
     (``label`` is the tool, or for call_tool the tool it asked for)."""
-    why = SENDER_REFUSAL if answers_off_team_mail() else REFUSAL
+    if answers_off_team_mail():
+        why = SENDER_REFUSAL
+    elif label == "upsert_person":
+        why = CONTACT_REFUSAL
+    else:
+        why = REFUSAL
     note_held(label)
     return json.dumps({"error": f"{label} was not run. {why}"})
 

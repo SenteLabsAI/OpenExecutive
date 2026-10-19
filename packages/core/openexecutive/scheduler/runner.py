@@ -143,6 +143,19 @@ def _maybe_scan_inbox(now: datetime) -> bool:
         return False
 
 
+def _maybe_keep_contacts(now: datetime) -> bool:
+    """Keep the principal's contacts up to date (people/contact_keeper.py),
+    throttled there. A hook here, like the inbox watcher, rather than a
+    scheduled_actions row everyone could see. Never raises."""
+    try:
+        from openexecutive.people.contact_keeper import maybe_run
+
+        return maybe_run(now)
+    except Exception:
+        logger.exception("scheduler: contact keeper failed to start")
+        return False
+
+
 def _maybe_remind_notes(now: datetime) -> bool:
     """Always in the loop's due-today reminders (memory/history_reminders.py),
     throttled there. A hook here, like the inbox watcher, rather than a
@@ -355,6 +368,7 @@ async def run_scheduler(
                 continue
             _maybe_refresh_narrative(now)
             _maybe_scan_inbox(now)
+            _maybe_keep_contacts(now)
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
             _maybe_release_held(now)

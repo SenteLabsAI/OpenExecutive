@@ -264,6 +264,16 @@ def _addresses(entries: object) -> list[str]:
     return [a for _, a in (_address(e) for e in entries) if "@" in a]
 
 
+def _names(*lists: object) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for entries in lists:
+        for entry in entries if isinstance(entries, list) else []:
+            name, address = _address(entry)
+            if "@" in address:
+                out.setdefault(address, clean_header(name))
+    return out
+
+
 def _who(entry: object) -> str:
     name, address = _address(entry)
     name = clean_header(name)
@@ -444,6 +454,7 @@ def parse_message(raw: dict[str, Any], sent_folder: str = "", own: str = "") -> 
         calendar_invite="eventmessage" in kind,
         sender_authenticated=(not draft) and exchange_authenticated(message, from_addr),
         has_attachments=raw.get("hasAttachments") is True,
+        names=_names(raw.get("toRecipients"), raw.get("ccRecipients")),
     )
 
 
@@ -800,6 +811,26 @@ class DelegateOutlook:
                 "$search": f'"to:{target}"', "$top": 1, "$select": "id",
             })
         return bool(data.get("value"))
+
+    async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
+        """The newest mail ``address`` sent the person in the last ``days``,
+        or None. Graph wants the ordered property first in the filter."""
+        target = normalize_email(address)
+        if not _EMAIL_RE.fullmatch(target):
+            return None
+        since = (datetime.now(UTC) - timedelta(days=int(days))).strftime("%Y-%m-%dT%H:%M:%SZ")
+        odata_quoted = target.replace("'", "''")  # an address may hold a quote (o'neil@)
+        async with self._client() as client:
+            await self._sent_folder_id(client)
+            data = await self._get(client, "/mailFolders/inbox/messages", {
+                "$filter": f"receivedDateTime ge {since} and from/emailAddress/address eq '{odata_quoted}'",
+                "$orderby": "receivedDateTime desc",
+                "$top": 1,
+                "$select": _SELECT,
+                "$expand": _EXPAND,
+            })
+        found = [m for m in data.get("value") or [] if isinstance(m, dict)]
+        return self._parse(found[0]) if found else None
 
     async def get_message(self, message_id: str) -> MailMessage:
         if not valid_id(message_id):

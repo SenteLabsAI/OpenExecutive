@@ -881,3 +881,24 @@ def test_a_draft_whose_file_fails_is_removed() -> None:
             to=["a@b.example"], subject="x", body="y", attachments=[("a.pdf", "application/pdf", b"1")],
         )))
     assert any(r.method == "DELETE" and r.url.path.endswith("/messages/new1") for r in seen)
+
+
+def test_latest_from_asks_for_one_senders_newest_inbox_mail() -> None:
+    graph = FakeGraph()
+    graph.listing = [_msg("in1", sender="o'neil@x.example")]
+    found = asyncio.run(graph.client().latest_from("O'Neil@x.example"))
+    assert found is not None and found.id == "in1"
+    call = graph.graph_calls()[-1]
+    assert call.url.path == "/v1.0/me/mailFolders/inbox/messages"
+    flt = call.url.params["$filter"]
+    assert flt.startswith("receivedDateTime ge ") and flt.endswith("from/emailAddress/address eq 'o''neil@x.example'")
+    assert call.url.params["$orderby"] == "receivedDateTime desc"
+    graph.listing = []
+    assert asyncio.run(graph.client().latest_from("dana@northpeak.example")) is None
+    assert asyncio.run(graph.client().latest_from("not an address")) is None
+
+
+def test_each_recipient_keeps_the_name_it_was_written_with() -> None:
+    raw = _msg("m1", toRecipients=[{"emailAddress": {"name": "Priya Shah", "address": "Priya@N.example"}}],
+               ccRecipients=[{"emailAddress": {"address": "bare@x.example"}}])
+    assert ol.parse_message(raw, SENT_FOLDER, EMAIL).names == {"priya@n.example": "Priya Shah", "bare@x.example": ""}

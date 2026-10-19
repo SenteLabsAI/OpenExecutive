@@ -5,6 +5,7 @@ import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 
 
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
+import { ContactChangesCard, ContactKeeperSwitch } from "@/components/people/ContactChanges";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import Button from "@/components/ui/Button";
 import { useChatDirectory, useSlackEmailMatch } from "@/components/ui/ChatPicker";
@@ -13,12 +14,15 @@ import SidePanel from "@/components/ui/SidePanel";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   createPerson,
+  getContactChanges,
   getPeopleViewer,
   listPeople,
+  type ContactChanges,
   type PageFormField,
   type Person,
   type PersonKind,
 } from "@/lib/api";
+import { newlyAdded } from "@/lib/contactChanges";
 import {
   defaultKindForTab,
   defaultPeopleTab,
@@ -63,7 +67,7 @@ function channelLabel(channel: string): string {
   return channel === "any" ? "Where they last talked" : channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
-function PersonCard({ person, today }: { person: Person; today: string }) {
+function PersonCard({ person, today, isNew = false }: { person: Person; today: string; isNew?: boolean }) {
   const contact = isContact(person);
   const status = personCardStatus(person, today);
   return (
@@ -82,6 +86,11 @@ function PersonCard({ person, today }: { person: Person; today: string }) {
           {person.is_principal && (
             <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent">
               Principal
+            </span>
+          )}
+          {isNew && (
+            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium border border-emerald-500/40 text-emerald-500">
+              New
             </span>
           )}
         </div>
@@ -583,8 +592,26 @@ export default function PeoplePage() {
       .finally(() => setLoading(false));
   }
 
+  // What the Executive changed in the contacts: the principal's alone.
+  const [contactChanges, setContactChanges] = useState<ContactChanges | null>(null);
+  const loadContactChanges = useCallback((next?: ContactChanges) => {
+    if (next) {
+      setContactChanges(next);
+      return;
+    }
+    getContactChanges().then(setContactChanges, () => setContactChanges(null));
+    listPeople({ includeContacts: true }).then(setPeople, () => {});
+  }, []);
+
+  useEffect(() => {
+    if (viewerIsPrincipal) getContactChanges().then(setContactChanges, () => setContactChanges(null));
+  }, [viewerIsPrincipal]);
+
   useEffect(() => {
     refresh();
+    // Done for you's contacts line opens the Contacts tab (?tab=contacts).
+    const linked = new URLSearchParams(window.location.search).get("tab");
+    if (linked === "team" || linked === "contacts") setTab(linked);
     getPeopleViewer()
       .then((v) => setViewerIsPrincipal(v.is_principal))
       .catch(() => setViewerIsPrincipal(false))
@@ -592,6 +619,7 @@ export default function PeoplePage() {
   }, []);
 
   const shown = peopleForTab(people, activeTab, mode);
+  const fresh = activeTab === "contacts" && contactChanges ? newlyAdded(contactChanges.changes) : new Set<number>();
   const hidden = activeTab === "team" ? hiddenTeamCount(people, mode) : 0;
   const copy = TAB_COPY[activeTab];
   const tabsId = useId();
@@ -651,6 +679,12 @@ export default function PeoplePage() {
               {error}
             </div>
           )}
+          {activeTab === "contacts" && contactChanges && (
+            <>
+              <ContactChangesCard data={contactChanges} onChanged={loadContactChanges} />
+              <ContactKeeperSwitch data={contactChanges} onChanged={loadContactChanges} />
+            </>
+          )}
           {!loading && !error && shown.length === 0 && (
             <div className="rounded-2xl border border-line bg-surface-elevated p-10 text-center">
               <p className="text-fg-muted text-[15px] mb-5">{copy.empty}</p>
@@ -662,7 +696,7 @@ export default function PeoplePage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {shown.map((person) => (
-              <PersonCard key={person.id} person={person} today={today} />
+              <PersonCard key={person.id} person={person} today={today} isNew={fresh.has(person.id)} />
             ))}
           </div>
 

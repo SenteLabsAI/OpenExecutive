@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getActivity, getHistory, getReflection, listStandingFacts, type ActivityItem } from "@/lib/api";
 import Icon from "@/components/Icon";
 import { upcomingLabel, whenLabel, type MemoryView } from "@/lib/pulseView";
-import { SUMMARY_KINDS, activityLine, writeUpHref } from "./CadenceSection";
+import { SUMMARY_KINDS, activityLine, writeUpHref, writeUpLabel } from "./CadenceSection";
 import type { PulseData } from "./PulseHeader";
 import { Skeleton, metaFor } from "./shared";
 import { MonthCountLine } from "./ValueSection";
@@ -55,6 +55,7 @@ function PreviewRow({
   detail,
   chip,
   href,
+  linkLabel = "Read it",
 }: {
   when: string;
   upcoming: boolean;
@@ -63,6 +64,7 @@ function PreviewRow({
   chip?: string;
   /** A finished run's write-up: "Read it" after the detail. */
   href?: string | null;
+  linkLabel?: string;
 }) {
   return (
     <li className="flex items-start gap-3 py-3 border-t border-line first:border-t-0">
@@ -89,7 +91,7 @@ function PreviewRow({
               <>
                 {detail && " "}
                 <Link href={href} className="font-semibold text-accent hover:underline whitespace-nowrap">
-                  Read it
+                  {linkLabel}
                 </Link>
               </>
             )}
@@ -199,7 +201,7 @@ export function DoneForYou() {
             // A plain "action" has nothing to add beyond its summary.
             // A finished run says what came of it (and links its write-up).
             const detail =
-              it.kind === "workflow_done"
+              it.kind === "workflow_done" || it.kind === "contacts_kept"
                 ? (it.detail ?? undefined)
                 : it.kind === "action"
                 ? undefined
@@ -214,6 +216,7 @@ export function DoneForYou() {
                 title={it.summary || detail || capitalise(verb)}
                 detail={it.summary ? detail : undefined}
                 href={writeUpHref(it)}
+                linkLabel={writeUpLabel(it)}
               />
             );
           })}

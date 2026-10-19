@@ -307,6 +307,10 @@ class MailMessage:
     # (``list_attachments``).
     attachments: list[MailAttachment] = field(default_factory=list)
     has_attachments: bool = False
+    # The display name each To / Cc address was written with, as the
+    # sender's own mail app put it ("" for none). Names a contact the
+    # person writes to (``people.contact_keeper``).
+    names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -571,6 +575,15 @@ def _addresses(value: str) -> list[str]:
     return [normalize_email(addr) for _, addr in getaddresses([value]) if "@" in addr]
 
 
+def _names(*values: str) -> dict[str, str]:
+    """Each address in the ``values`` headers with the name written next to it."""
+    out: dict[str, str] = {}
+    for name, addr in getaddresses(list(values)):
+        if "@" in addr:
+            out.setdefault(normalize_email(addr), clean_header(name))
+    return out
+
+
 def _hide_tokens(text: str) -> str:
     """``text`` with the Executive's one-time answer tokens hidden. The
     owner's own mailbox holds the roster and standing-fact confirmation
@@ -690,6 +703,7 @@ def parse_message(raw: dict[str, Any]) -> MailMessage:
         sender_authenticated=headers_authenticated(header_msg, normalize_email(from_addr)),
         attachments=attachments,
         has_attachments=bool(attachments),
+        names=_names(headers.get("to", ""), headers.get("cc", "")),
     )
 
 
@@ -1048,6 +1062,15 @@ class DelegateGmail:
         if not _EMAIL_RE.fullmatch(target):
             return False
         return bool(await self.list_message_ids(f"in:sent to:{target}", max_results=1))
+
+    async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
+        """The newest mail ``address`` sent the person in the last ``days``,
+        or None."""
+        target = normalize_email(address)
+        if not _EMAIL_RE.fullmatch(target):
+            return None
+        found = await self.list_message_ids(f"from:{target} -in:chats newer_than:{int(days)}d", max_results=1)
+        return await self.get_message(found[0][0]) if found else None
 
     async def get_message(self, message_id: str) -> MailMessage:
         if not valid_id(message_id):
