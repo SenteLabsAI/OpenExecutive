@@ -136,7 +136,7 @@ function Section({ section, changed }: { section: MayDoSection; changed: Set<str
             </h3>
             <ul className="space-y-1.5">
               {rows.map((row) => (
-                <Row key={row.id} row={row} changed={changed.has(row.id)} />
+                <Row key={row.id} row={row} changed={changed.has(`${section.key}:${row.id}`)} />
               ))}
             </ul>
           </section>
@@ -166,7 +166,7 @@ export default function WhatItDoes() {
           const now = new Set<string>();
           found?.sections.forEach((s) =>
             s.rows.forEach((r) => {
-              if (before.get(`${s.key}:${r.id}`) !== rowKey(r)) now.add(r.id);
+              if (before.get(`${s.key}:${r.id}`) !== rowKey(r)) now.add(`${s.key}:${r.id}`);
             }),
           );
           if (now.size > 0) {
