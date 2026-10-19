@@ -2075,6 +2075,9 @@ export interface ReplyCard {
   // Everyone else the email went to: Reply to: Everyone adds them. Empty or
   // absent when there is no choice to make.
   reply_others?: string[];
+  // What the email asks and what the draft says, in a line or two, for the
+  // card's closed view; empty or absent on a card drafted before it.
+  gist?: string;
 }
 
 // One thing a reply leaves you to decide (GET /delegation/replies).

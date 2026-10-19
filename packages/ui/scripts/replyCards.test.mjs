@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  cardGist,
+  toDecideLabel,
   highlightPieces,
   questionsLeft,
   isMailboxLink,
@@ -128,4 +130,18 @@ test("replyToChoice offers the sender alone or everyone, and nothing without oth
   });
   assert.equal(all.sender, "dana@x.example only");
   assert.equal(all.toEveryone, true);
+});
+
+test("cardGist shows the summary, or the start of what they wrote on an older card", () => {
+  assert.equal(cardGist({ gist: " Dana asks when to talk. ", they_wrote: "Hi" }), "Dana asks when to talk.");
+  assert.equal(cardGist({ they_wrote: "Hi Olivia,\n\n  Can we talk Thursday?" }), "Hi Olivia, Can we talk Thursday?");
+  const long = cardGist({ gist: "", they_wrote: "word ".repeat(60) });
+  assert.ok(long.endsWith("word…") && long.length <= 161);
+  assert.equal(cardGist({ they_wrote: "" }), "");
+});
+
+test("toDecideLabel counts what's left, and is empty when nothing is", () => {
+  assert.equal(toDecideLabel(1), "1 to decide");
+  assert.equal(toDecideLabel(3), "3 to decide");
+  assert.equal(toDecideLabel(0), "");
 });

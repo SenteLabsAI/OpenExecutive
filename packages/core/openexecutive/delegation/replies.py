@@ -60,6 +60,10 @@ class ReplyCard:
     # Everyone else the email went to: the card's Reply to choice adds them
     # (delegation.card_drafts.set_recipients). Empty: no choice to make.
     reply_others: list[str] = field(default_factory=list)
+    # What the email asks and what the draft says, in a line or two, for the
+    # card's closed view; "" on a card drafted before it (the card falls back
+    # to the start of what they wrote).
+    gist: str = ""
 
 
 def _strings(value: Any) -> list[str]:
@@ -118,6 +122,7 @@ def cards(person: Any) -> list[ReplyCard]:
             questions=questions_for(payload),
             questions_settled=payload.get(QUESTIONS_SETTLED) is True,
             reply_others=[] if payload.get("source") == "follow_up" else _strings(payload.get(REPLY_OTHERS)),
+            gist=str(payload.get("gist") or ""),
         ))
     return out
 

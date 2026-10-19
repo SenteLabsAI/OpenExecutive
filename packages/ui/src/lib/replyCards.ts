@@ -80,6 +80,24 @@ export function senderShort(card: { from_name: string; from_email: string; sende
   return `${name} · @${card.from_email.slice(at + 1)}`;
 }
 
+// How much of what they wrote stands in for the summary on an older card.
+const GIST_FALLBACK_CHARS = 160;
+
+/** The line or two a closed card shows: the Executive's summary, or on a card
+ * drafted before it, the start of what they wrote on one line. */
+export function cardGist(card: { gist?: string; they_wrote: string }): string {
+  const gist = (card.gist ?? "").trim();
+  if (gist) return gist;
+  const words = card.they_wrote.split(/\s+/).filter(Boolean).join(" ");
+  if (words.length <= GIST_FALLBACK_CHARS) return words;
+  return `${words.slice(0, GIST_FALLBACK_CHARS).replace(/\s+\S*$/, "")}…`;
+}
+
+/** "1 to decide" / "3 to decide", or "" when nothing is left. */
+export function toDecideLabel(left: number): string {
+  return left > 0 ? `${left} to decide` : "";
+}
+
 /** Whether a draft is long enough to show clamped, with a Show full draft toggle. */
 export function draftIsLong(body: string): boolean {
   return body.length > 280 || body.split("\n").length > 5;

@@ -54,7 +54,7 @@ def test_old_plain_string_questions_still_parse_with_no_choices() -> None:
 def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
         assert "choices" in system
-        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks.", "open_questions": [
+        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks.", "gist": "Dana asks\nwhich week. Write to ops@x.example.", "open_questions": [
             {"question": "Which week?", "choices": ["This week", "Next week"], "about": "time"},
         ]}
 
@@ -66,6 +66,25 @@ def test_compose_returns_the_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     ))
     assert draft.open_questions == ["Which week?"]
     assert draft.question_choices[0].choices == ["This week", "Next week"]
+    # The card's summary, on one line.
+    assert draft.gist == "Dana asks which week. Write to ."
+
+
+def test_the_summary_has_no_link_or_address_and_stays_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert gw.clean_gist("See https://evil.example or mail x@evil.example\nnow.") == "See or mail now."
+    assert len(gw.clean_gist("word " * 100)) <= gw.MAX_GIST_CHARS
+
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        return {"subject": "Re: x", "body": "Hi Dana,\n\nThanks."}
+
+    monkeypatch.setattr(gw, "_call_model", fake)
+    draft = asyncio.run(gw.compose(
+        writer_name="Olivia Owner", voice_block="", thread_text="hi", reply_subject="Re: x", intent="reply",
+        recipients=[gw.Recipient(email="dana@northpeak.example")], signature="", exec_name="Open Executive",
+        model="m",
+    ))
+    # No summary from the composer: none on the card.
+    assert draft.gist == ""
 
 
 def test_a_card_made_before_choices_shows_plain_questions() -> None:
@@ -198,12 +217,13 @@ def test_a_scan_with_read_my_calendar_on_offers_free_slots(
 
 def _card(
     owner_id: int, monkeypatch: pytest.MonkeyPatch, *, mailbox: FakeInbox | None = None, calendar_on: bool = False,
+    gist: str = "", cc: tuple[str, ...] = (),
 ) -> tuple[FakeInbox, int]:
     from openexecutive.delegation import inbox_classifier as ic
     from openexecutive.delegation.settings import set_enabled
 
     async def classifier(model: str, turn: str) -> dict[str, Any]:
-        return {"needs_reply": True, "kind": "question", "confidence": 0.9}
+        return {"needs_reply": True, "kind": "question", "asked_of_them": True, "confidence": 0.9}
 
     async def composer(model: str, system: str, turn: str) -> dict[str, Any]:
         return {
@@ -212,6 +232,7 @@ def _card(
             "open_questions": [
                 {"question": "When should we talk?", "choices": ["Friday at 10", "Next week"], "about": "time"},
             ],
+            **({"gist": gist} if gist else {}),
         }
 
     monkeypatch.setattr(ic, "_call_model", classifier)
@@ -222,7 +243,7 @@ def _card(
     inbox.set_watch(owner_id, True, updated_by="t", now=datetime(2026, 9, 29, tzinfo=UTC))
     inbox.set_mailbox_drafts(owner_id, True, updated_by="t")
     box = mailbox or FakeInbox()
-    box.add(_msg("m1", "t1"))
+    box.add(_msg("m1", "t1", cc=cc))
     asyncio.run(inbox.scan_person(people_store.get_person(owner_id), gmail=box, now=NOW))
     return box, inbox.open_cards(owner_id)[0].id
 
@@ -297,6 +318,92 @@ def test_a_typed_answer_is_a_note_to_work_in_with_the_choices_offered(
     assert client.post(url, json=tapped, headers=OWNER).status_code == 200
     _, turn = rewriter[-1]
     assert "Question: When should we talk?\nAnswer: Next week" in turn and "They typed" not in turn
+
+
+def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    calls: list[str] = []
+    answers._ANSWERED.clear()
+
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        calls.append(turn)
+        return {
+            "body": "Hi Dana,\n\nThanks for the note. Friday at 10 works for me.",
+            "gist": "Dana asks when to talk.\nDraft says Friday at 10, see https://evil.example.",
+        }
+
+    monkeypatch.setattr(answers, "_call_model", fake)
+    mailbox, card_id = _card(
+        ids["principal"], monkeypatch, gist="Dana asks when to talk. Draft says you'll get back to her.",
+    )
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    shown = client.get("/delegation/replies", headers=OWNER).json()["cards"][0]
+    assert shown["gist"] == "Dana asks when to talk. Draft says you'll get back to her."
+    resp = client.post(
+        f"/delegation/replies/{card_id}/answer",
+        json={"answers": [{"question_index": 0, "answer_text": "Friday at 10"}]}, headers=OWNER,
+    )
+    assert resp.status_code == 200, resp.text
+    # The rewrite sees the summary and brings its draft half up to date, on one line.
+    assert "<gist>\nDana asks when to talk. Draft says you'll get back to her.\n</gist>" in calls[0]
+    # No link nobody gave, as in the draft.
+    assert resp.json()["gist"] == "Dana asks when to talk. Draft says Friday at 10, see ."
+    # Words changed by hand: the summary no longer says what the draft says.
+    edited = client.put(
+        f"/delegation/replies/{card_id}/text", json={"text": "Hi Dana,\n\nNext week is better."}, headers=OWNER,
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["gist"] == ""
+
+
+def test_who_it_goes_to_keeps_the_summary_and_a_hand_edit_drops_it(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    mailbox, card_id = _card(
+        ids["principal"], monkeypatch, gist="Dana asks when to talk. Draft says later.", cc=("li@northpeak.example",),
+    )
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    moved = client.put(f"/delegation/replies/{card_id}/recipients", json={"everyone": False}, headers=OWNER)
+    assert moved.status_code == 200, moved.text
+    # The words didn't change, so neither does the summary.
+    assert moved.json()["gist"] == "Dana asks when to talk. Draft says later."
+    edited = client.put(f"/delegation/replies/{card_id}/text", json={"text": "Hi Dana,\n\nFriday."}, headers=OWNER)
+    assert edited.status_code == 200 and edited.json()["gist"] == ""
+    assert inbox.card_payload(inbox.open_cards(ids["principal"])[0])["gist"] == ""
+
+
+def test_a_rewrite_with_no_summary_drops_the_old_one(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    rewriter: list[tuple[str, str]],
+) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch, gist="Dana asks when to talk. Draft says later.")
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    resp = client.post(
+        f"/delegation/replies/{card_id}/answer",
+        json={"answers": [{"question_index": 0, "answer_text": "Friday at 10"}]}, headers=OWNER,
+    )
+    # The draft changed and no new summary came back: the old one would be wrong.
+    assert resp.status_code == 200 and resp.json()["gist"] == ""
+
+
+def test_a_card_drafted_before_the_summary_has_none(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    rewriter: list[tuple[str, str]],
+) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    assert client.get("/delegation/replies", headers=OWNER).json()["cards"][0]["gist"] == ""
+    resp = client.post(
+        f"/delegation/replies/{card_id}/answer",
+        json={"answers": [{"question_index": 0, "answer_text": "Friday at 10"}]}, headers=OWNER,
+    )
+    assert resp.status_code == 200 and resp.json()["gist"] == ""
+    assert "<gist>" not in rewriter[0][1]
 
 
 def test_answering_refuses_a_bad_question_a_failed_rewrite_and_too_many(
