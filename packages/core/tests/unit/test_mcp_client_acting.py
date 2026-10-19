@@ -240,6 +240,17 @@ def _ai_propose(person_id: int, tool_input: dict[str, Any], app: str | None = "C
     return json.loads(asyncio.run(go()))
 
 
+def test_suggested_actions_on_leaves_an_ai_app_card_to_handle_it(
+    act_as_me: SimpleNamespace, sends: list[Any]
+) -> None:
+    """On is for cards from their mail: another AI app's still follows Handle it for me."""
+    from openexecutive.delegation import training
+
+    training.set_(act_as_me.principal, {training.ACTIONS_ON: True}, updated_by="t")
+    result = _ai_propose(act_as_me.principal, {"why": "x", "actions": [_message(act_as_me.teammate)]})
+    assert result["status"] == "waiting_for_approval" and sends == []
+
+
 def test_a_card_waits_when_handle_it_is_off(act_as_me: SimpleNamespace, sends: list[Any]) -> None:
     result = _ai_propose(act_as_me.principal, {"why": "x", "actions": [_message(act_as_me.teammate)]})
     assert result["status"] == "waiting_for_approval" and sends == []

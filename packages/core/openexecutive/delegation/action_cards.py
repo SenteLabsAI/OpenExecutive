@@ -51,15 +51,15 @@ waits on its card (``_known_people_refusal``).
 **From another AI app.** A card proposed on a turn another AI app asked to
 act (``Session.mcp_client_may_act``) follows the person's mode instead
 (``follow_handle_it``, kept on the card so the check at run time is the
-same): with Suggested actions not in training or On, it is carried out on its own
+same), On or not: with Suggested actions not in training, it is carried out on its own
 when their Handle it for me is on at a setting that covers people they know
 (every setting does; everyone on a card is on their roster), and the same
 plain-code checks find nothing against it, with a message no longer than
 that setting's replies. A new contact always waits, and so does a card to
 anyone whose roster entry is under ``SETTLED_AFTER`` old (``_settled``), so
 someone added or planted lately is never reached without a tap. An invite is
-never booked as approved by them: the meeting gate decides. In training or
-On, the rules above apply. The card, and every row about it, names the app (``via``).
+never booked as approved by them: the meeting gate decides. In training, the
+rule above applies. The card, and every row about it, names the app (``via``).
 """
 from __future__ import annotations
 
@@ -400,7 +400,7 @@ def on_its_own_refusal(
     """Why a card of ``actions`` may not be carried out on its own (a short
     code), or None when it may. ``follow_handle_it``: a card from another AI
     app, which follows the person's Handle it for me unless Suggested actions
-    is in training or On. Plain code only; never raises (an error refuses)."""
+    is in training (On doesn't change it). Plain code only; never raises (an error refuses)."""
     try:
         return _on_its_own_refusal(person, actions, now, follow_handle_it=follow_handle_it)
     except Exception:
@@ -488,8 +488,9 @@ def _on_its_own_refusal(
         return "training_off"
     switches = training.get(person.id)
     in_training = switches.actions
-    on = switches.actions_without_asking
-    by_mode = follow_handle_it and not in_training and not on
+    # A card from another AI app follows Handle it for me, On or not.
+    by_mode = follow_handle_it and not in_training
+    on = switches.actions_without_asking and not follow_handle_it
     if not by_mode and not in_training and not on:
         return "training_off"
     if not can_delegate(person) or not is_enabled(person.id):
