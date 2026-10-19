@@ -3,7 +3,7 @@
 import { useCallback, useState, type ReactNode } from "react";
 
 import FeatureName, { type Feature } from "@/components/FeatureName";
-import { WhatItDoesAside, WhatItDoesSheet, useWhatItDoesOpen } from "@/components/delegate/WhatItDoesPanel";
+import { WhatItDoesAside, WhatItDoesSheet, useIsWide, useWhatItDoesOpen } from "@/components/delegate/WhatItDoesPanel";
 
 // The frame of each Delegate tab: the feature's brand label as the title, a
 // line under it, and the page's cards, with What it does for you beside them
@@ -19,6 +19,7 @@ export default function DelegatePage({
   children: ReactNode;
 }) {
   const [open, setOpen] = useWhatItDoesOpen();
+  const wide = useIsWide();
   const [sheet, setSheet] = useState(false);
   const closeSheet = useCallback(() => setSheet(false), []);
   const button =
@@ -44,8 +45,8 @@ export default function DelegatePage({
           <div className="mt-6 space-y-5">{children}</div>
         </div>
       </main>
-      {open && <WhatItDoesAside onClose={() => setOpen(false)} />}
-      {sheet && <WhatItDoesSheet onClose={closeSheet} />}
+      {wide && open && <WhatItDoesAside onClose={() => setOpen(false)} />}
+      {!wide && sheet && <WhatItDoesSheet onClose={closeSheet} />}
     </div>
   );
 }

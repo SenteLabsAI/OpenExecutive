@@ -7,12 +7,12 @@ import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
 import {
   DELEGATION_CHANGED,
   getWhatItMayDo,
-  type MayDoOutcome,
   type MayDoRow,
   type MayDoSection,
   type WhatItMayDo,
 } from "@/lib/api";
 import { SENDS_HREF, WRITES_HREF } from "@/lib/reach";
+import { GROUP_OF, GROUP_ORDER, changedRows, groupTitle, rowId, snapshot, type Group } from "@/lib/whatItDoes";
 
 // What it does for you: read-only, beside the Delegate tabs
 // (WhatItDoesPanel). With the viewer's settings right now, what goes out on
@@ -27,18 +27,6 @@ const TAB_LABELS: Record<MayDoSection["key"], string> = {
   departments: "Departments",
 };
 
-type Group = "goes" | "asks" | "drafts" | "off";
-
-const GROUP_OF: Record<MayDoOutcome, Group> = {
-  goes: "goes",
-  waits: "asks",
-  always_waits: "asks",
-  drafts: "drafts",
-  off: "off",
-};
-
-const GROUP_ORDER: Group[] = ["goes", "asks", "drafts", "off"];
-
 const GROUP_DOT: Record<Group, string> = {
   goes: "bg-emerald-500",
   asks: "bg-amber-500",
@@ -46,21 +34,8 @@ const GROUP_DOT: Record<Group, string> = {
   off: "bg-fg-subtle/60",
 };
 
-function groupTitle(group: Group, section: MayDoSection["key"]): string {
-  if (group === "goes") {
-    return section === "as_you" ? "Sends on its own" : section === "departments" ? "Acts on its own" : "Does on its own";
-  }
-  if (group === "asks") return section === "departments" ? "Waits for an approver" : "Asks first";
-  if (group === "drafts") return "Writes for you to send";
-  return "Off";
-}
-
 // How long a changed row stays marked.
 const CHANGED_MS = 10_000;
-
-function rowKey(row: MayDoRow): string {
-  return `${row.outcome}|${row.what}|${row.why}`;
-}
 
 function settingHref(setting: string): { href: string; label: string } | null {
   if (setting === "act_as_me") return { href: WRITES_HREF, label: "Act as me" };
@@ -136,7 +111,7 @@ function Section({ section, changed }: { section: MayDoSection; changed: Set<str
             </h3>
             <ul className="space-y-1.5">
               {rows.map((row) => (
-                <Row key={row.id} row={row} changed={changed.has(`${section.key}:${row.id}`)} />
+                <Row key={row.id} row={row} changed={changed.has(rowId(section.key, row))} />
               ))}
             </ul>
           </section>
@@ -156,44 +131,41 @@ export default function WhatItDoes() {
   const clear = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idBase = useId();
 
-  const load = useCallback((signal?: AbortSignal) => {
-    getWhatItMayDo(signal)
+  const request = useRef<AbortController | null>(null);
+
+  // One load at a time: a newer save aborts the older request, so a late
+  // answer can't put stale rows back.
+  const load = useCallback(() => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    getWhatItMayDo(controller.signal)
       .then((found) => {
-        const rows = new Map<string, string>();
-        found?.sections.forEach((s) => s.rows.forEach((r) => rows.set(`${s.key}:${r.id}`, rowKey(r))));
-        const before = seen.current;
-        if (before) {
-          const now = new Set<string>();
-          found?.sections.forEach((s) =>
-            s.rows.forEach((r) => {
-              if (before.get(`${s.key}:${r.id}`) !== rowKey(r)) now.add(`${s.key}:${r.id}`);
-            }),
-          );
-          if (now.size > 0) {
-            setChanged(now);
-            if (clear.current) clearTimeout(clear.current);
-            clear.current = setTimeout(() => setChanged(new Set()), CHANGED_MS);
-          }
+        if (controller.signal.aborted) return;
+        const rows = snapshot(found);
+        const now = changedRows(seen.current, rows);
+        if (now.size > 0) {
+          setChanged(now);
+          if (clear.current) clearTimeout(clear.current);
+          clear.current = setTimeout(() => setChanged(new Set()), CHANGED_MS);
         }
         seen.current = rows;
         setData(found);
         setState(found ? "ready" : "hidden");
       })
       .catch((err) => {
-        if (signal?.aborted) return;
+        if (controller.signal.aborted) return;
         console.warn("What it does for you:", err);
         setState("error");
       });
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    load(controller.signal);
-    const reload = () => load();
-    window.addEventListener(DELEGATION_CHANGED, reload);
+    load();
+    window.addEventListener(DELEGATION_CHANGED, load);
     return () => {
-      controller.abort();
-      window.removeEventListener(DELEGATION_CHANGED, reload);
+      request.current?.abort();
+      window.removeEventListener(DELEGATION_CHANGED, load);
       if (clear.current) clearTimeout(clear.current);
     };
   }, [load]);

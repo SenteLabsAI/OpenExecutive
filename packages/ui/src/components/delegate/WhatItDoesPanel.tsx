@@ -49,6 +49,22 @@ export function useWhatItDoesOpen(): [boolean, (open: boolean) => void] {
   return [!closed, (open: boolean) => writeClosed(!open)];
 }
 
+// Wide enough for the column (Tailwind's lg). Only one of the column and the
+// sheet is ever mounted, and the sheet closes when the screen widens.
+const WIDE = "(min-width: 1024px)";
+
+export function useIsWide(): boolean {
+  return useSyncExternalStore(
+    (fn) => {
+      const query = window.matchMedia(WIDE);
+      query.addEventListener("change", fn);
+      return () => query.removeEventListener("change", fn);
+    },
+    () => window.matchMedia(WIDE).matches,
+    () => false,
+  );
+}
+
 function Body() {
   return (
     <>
@@ -91,7 +107,7 @@ export function WhatItDoesAside({ onClose }: { onClose: () => void }) {
   return (
     <aside
       aria-label="What it does for you"
-      className="hidden lg:flex w-[400px] flex-none flex-col min-h-0 border-l border-line bg-surface-base"
+      className="flex w-[400px] flex-none flex-col min-h-0 border-l border-line bg-surface-base"
     >
       <div className="px-5 pt-6 pb-3">
         <Header onClose={onClose} />
@@ -118,7 +134,7 @@ export function WhatItDoesSheet({ onClose }: { onClose: () => void }) {
     };
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end lg:hidden">
+    <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div aria-hidden="true" className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
         role="dialog"
