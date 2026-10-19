@@ -1031,6 +1031,17 @@ def _emit_cache_event(
     )
 
 
+def _round_separator(tail: str, text: str) -> str:
+    """What goes between the text already streamed (its last characters,
+    ``tail``) and a new round's first ``text``: a paragraph break, less what
+    either already has."""
+    if tail.endswith("\n\n") or text.startswith("\n\n"):
+        return ""
+    if tail.endswith("\n") or text.startswith("\n"):
+        return "\n"
+    return "\n\n"
+
+
 class Executive:
     """The Executive orchestrator — the single voice the user always interacts with.
 
@@ -2312,6 +2323,11 @@ class Executive:
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
         last_full_text = ""
+        # The end of the text this turn has streamed so far, across rounds:
+        # a round's text after an earlier round's (the model's words before a
+        # tool call, then its answer) starts a new paragraph, so the two
+        # never run together ("...stock.Yes. ITEM-1...").
+        streamed_tail = ""
         specialists_consulted: list[str] = []
         # What this turn's tool results have put in the prompt so far: every
         # one is re-sent on each later call.
@@ -2390,7 +2406,13 @@ class Executive:
                         and hasattr(event.delta, "type")
                         and event.delta.type == "text_delta"
                     ):
+                        if not full_text and streamed_tail and event.delta.text:
+                            separator = _round_separator(streamed_tail, event.delta.text)
+                            if separator:
+                                yield separator
+                                streamed_tail = separator
                         full_text += event.delta.text
+                        streamed_tail = (streamed_tail + event.delta.text)[-2:]
                         yield event.delta.text
 
                 final_msg = await stream.get_final_message()

@@ -5425,6 +5425,18 @@ chat:
     `stream_chat`, the committee draft pass, and the non-streaming `.chat()`
     wrapper that every channel adapter uses.
 
+    Text across rounds: every consumer (the SSE route, `stream_chat`'s
+    full_response, `.chat()`, the UI) joins the text deltas as they come, so
+    the agent loop itself starts each round's text with a paragraph break
+    after the text streamed before it (`_round_separator`, from the last two
+    characters streamed: two newlines, less any newline either side already
+    has).
+    Words the model writes before a tool call were running into its answer
+    ("...Check actual stock.Yes. ITEM-1...", seen in evals against a live
+    install, 2026-10-19).
+    Decided with the owner: keep every round's text, never drop it, since an
+    answer written before a final tool call would otherwise be lost.
+
     Rendered in `packages/ui/src/components/Chat.tsx` with precedence
     committeePhase > activity label > nothing, and in
     `components/askoe/AskOEPanel.tsx`, where it fills the streaming
