@@ -436,8 +436,8 @@ async def rewrite(
     raw = written.get("body")
     if not isinstance(raw, str) or not raw.strip():
         raise SendRefused(502, "rewrite_failed", "Couldn't write that into your reply. Try again, or tap Edit.")
-    allowed = "\n".join([body, *(p.answer for p in pairs), *(c for p in pairs for c in p.offered),
-                         stored.profile.signature, *recipients])
+    # Not the choices offered: the person picked none of them.
+    allowed = "\n".join([body, *(p.answer for p in pairs), stored.profile.signature, *recipients])
     new_main, flags = lint(raw.replace("\r", ""), allowed_text=allowed, exec_name=get_settings().exec_display_name)
     if not new_main:
         raise SendRefused(502, "rewrite_failed", "Couldn't write that into your reply. Try again, or tap Edit.")
