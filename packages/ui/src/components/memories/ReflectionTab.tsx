@@ -179,7 +179,10 @@ export default function ReflectionTab() {
   const live = lessons.filter((l) => l.retired_at === null);
   const retired = lessons.filter((l) => l.retired_at !== null);
   const kinds = groupByKind(misses);
-  const shownMisses = category === "all" ? misses : misses.filter((m) => m.kind === category);
+  // A chip whose misses are all gone (forgotten, or a refresh) falls back to
+  // All, so the other kind stays in reach.
+  const cat: Category = category !== "all" && !kinds.some((g) => g.kind === category) ? "all" : category;
+  const shownMisses = cat === "all" ? misses : misses.filter((m) => m.kind === cat);
   const shownIds = view === "misses" ? shownMisses.map((m) => m.id) : live.map((l) => l.id);
   const quick = view === "misses" ? fixedMissIds(shownMisses) : unhelpfulLessonIds(live);
   const allSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
@@ -220,9 +223,9 @@ export default function ReflectionTab() {
                 key={c}
                 type="button"
                 onClick={() => pick({ category: c })}
-                aria-pressed={category === c}
+                aria-pressed={cat === c}
                 className={`h-10 text-sm px-3.5 rounded-xl border transition-colors ${
-                  category === c
+                  cat === c
                     ? "bg-accent/10 text-accent border-accent/30"
                     : "bg-surface-overlay/40 text-fg-muted border-line hover:text-fg"
                 }`}
@@ -264,9 +267,9 @@ export default function ReflectionTab() {
               </div>
             )}
             {view === "misses" &&
-              (category === "all" ? kinds : [{ kind: category as MissKind, items: shownMisses }]).map((g) => (
+              (cat === "all" ? kinds : [{ kind: cat, items: shownMisses }]).map((g) => (
                 <div key={g.kind} className="pb-2">
-                  {category === "all" && <GroupHeading title={KIND_LABEL[g.kind]} count={g.items.length} />}
+                  {cat === "all" && <GroupHeading title={KIND_LABEL[g.kind]} count={g.items.length} />}
                   {g.items.map((m, i) => (
                     <MissRow
                       key={m.id}
@@ -333,30 +336,34 @@ export default function ReflectionTab() {
         )}
       </Card>
 
-      {selected.size > 0 && (
-        <div
-          role="region"
-          aria-label="Selection"
-          className="sticky bottom-4 z-10 flex items-center gap-2 rounded-2xl border border-line-strong bg-surface-overlay py-2 pl-5 pr-2 shadow-lg"
-        >
-          <span className="flex-1 text-[15px] font-semibold text-fg">{selected.size} selected</span>
-          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
-            Cancel
-          </Button>
-          <Button variant="danger" size="sm" onClick={forgetSelected}>
-            {view === "misses" ? `Forget ${selected.size}` : `Stop saying ${selected.size}`}
-          </Button>
-        </div>
-      )}
-      {toast && selected.size === 0 && (
-        <div
-          role="status"
-          className="sticky bottom-4 z-10 flex w-fit max-w-full items-center gap-2 rounded-2xl border border-line-strong bg-surface-overlay py-1.5 pl-5 pr-1.5 shadow-lg"
-        >
-          <span className="text-sm text-fg">{toast}</span>
-          <Button variant="ghost" size="sm" className="!text-accent" onClick={undo}>
-            Undo
-          </Button>
+      {(selected.size > 0 || toast) && (
+        <div className="sticky bottom-4 z-10 flex flex-col items-start gap-2">
+          {toast && (
+            <div
+              role="status"
+              className="flex max-w-full items-center gap-2 rounded-2xl border border-line-strong bg-surface-overlay py-1.5 pl-5 pr-1.5 shadow-lg"
+            >
+              <span className="text-sm text-fg">{toast}</span>
+              <Button variant="ghost" size="sm" className="!text-accent" onClick={undo}>
+                Undo
+              </Button>
+            </div>
+          )}
+          {selected.size > 0 && (
+            <div
+              role="region"
+              aria-label="Selection"
+              className="flex w-full items-center gap-2 rounded-2xl border border-line-strong bg-surface-overlay py-2 pl-5 pr-2 shadow-lg"
+            >
+              <span className="flex-1 text-[15px] font-semibold text-fg">{selected.size} selected</span>
+              <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+                Cancel
+              </Button>
+              <Button variant="danger" size="sm" onClick={forgetSelected}>
+                {view === "misses" ? `Forget ${selected.size}` : `Stop saying ${selected.size}`}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
