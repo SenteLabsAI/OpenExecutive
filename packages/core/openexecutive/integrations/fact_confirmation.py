@@ -85,6 +85,15 @@ _GMAIL_AUTHSERV = "mx.google.com"
 # Gmail's DMARC resinfo once its comment is stripped, e.g.
 # "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com".
 _DMARC_PASS = re.compile(r"dmarc=pass\s+header\.from=([^\s;]+)")
+_DMARC_NONE = re.compile(r"dmarc=none(?:\s+header\.from=([^\s;]+))?")
+# Gmail's DKIM resinfo once its comment is stripped, e.g.
+# "dkim=pass header.i=@example.com header.s=sel header.b=AbCd1234".
+_DKIM_PASS = re.compile(
+    r"dkim=pass\s+header\.(?:i|d)=@?(?:[a-z0-9._+-]*@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)"
+    r"(?:\s+header\.s=[a-z0-9._-]+)?(?:\s+header\.b=[a-z0-9+/=_-]+)?"
+)
+# Google Workspace's default DKIM key domain: "<domain, dots as hyphens>.<date>.gappssmtp.com".
+_GAPPS_KEY = re.compile(r"([a-z0-9-]+)\.[0-9]{8}\.gappssmtp\.com")
 # Marks of an automatic reply (an out-of-office, a vacation responder) in the
 # raw headers. The printed headers the poller reads carry only Precedence and
 # the List-* ones, so an Exchange out-of-office — Auto-Submitted only — would
@@ -157,6 +166,9 @@ def headers_authenticated(headers: Message, from_addr: str) -> bool:
         return False
     if raw_from.strip().lower() != address or not results:
         return False
+    if _relayed_by_a_list(headers):
+        # A list or group resends whoever posted under its own signature.
+        return False
     newest = _strip_quotes_and_comments(" ".join(str(results[0]).split()).lower())
     if newest is None:
         return False
@@ -166,14 +178,68 @@ def headers_authenticated(headers: Message, from_addr: str) -> bool:
     # Gmail writes one dmarc= verdict and nothing else in it; it may be
     # followed by its own dara= resinfo (mail sent from Gmail / Workspace).
     # A second verdict, or extra text in it, is sender text Gmail echoed.
-    # Residual: when Gmail writes NO verdict (a From domain without DMARC)
-    # and echoes an unsanitised ``;dmarc=pass header.from=...`` elsewhere
-    # (a HELO on null-sender mail), that echo would read as the verdict.
-    verdicts = [c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")]
-    if len(verdicts) != 1:
+    # A HELO Gmail echoes (null-sender mail, a bounce) is sender text that
+    # could read as a verdict or a signature of its own, so it proves nothing.
+    if "smtp.helo=" in rest:
         return False
+    resinfo = [c.strip() for c in rest.split(";") if c.strip()]
+    domain = address.rsplit("@", 1)[1]
+    if any("+bnc" in c for c in resinfo if "smtp.mailfrom=" in c):
+        return False  # a Google Group's bounce address: resent mail.
+    verdicts = [c for c in resinfo if c.startswith("dmarc=")]
+    if len(verdicts) > 1:
+        return False
+    none = _DMARC_NONE.fullmatch(verdicts[0]) if verdicts else None
+    if not verdicts or (none is not None and none.group(1) in (None, domain)):
+        # The domain publishes no DMARC record: Gmail wrote no verdict, or "none".
+        return _dkim_aligned(resinfo, domain)
     verdict = _DMARC_PASS.fullmatch(verdicts[0])
-    return verdict is not None and verdict.group(1) == address.rsplit("@", 1)[1]
+    return verdict is not None and verdict.group(1) == domain
+
+
+def _dkim_aligned(resinfo: list[str], domain: str) -> bool:
+    """For a From domain that publishes no DMARC record, so Gmail wrote no
+    verdict (or ``dmarc=none``): whether a DKIM signature Gmail verified
+    belongs to ``domain`` itself (the DKIM half of what DMARC checks, with
+    strict alignment), or is the key Google Workspace signs with for a
+    domain that set up no DKIM key of its own
+    (``thebrand-com.20250101.gappssmtp.com`` for ``thebrand.com``), which
+    Google signs for that Workspace's own users and for what its own groups
+    resend; group mail is refused before this.
+
+    SPF is left out: a domain that lists Google's servers lets anyone sending
+    through Google pass it."""
+    for c in resinfo:
+        match = _DKIM_PASS.fullmatch(c)
+        if match is None:
+            continue
+        signer = match.group(1)
+        if signer == domain or _gapps_key_domain(signer) == domain:
+            return True
+    return False
+
+
+def _relayed_by_a_list(headers: Message) -> bool:
+    """Whether a mailing list or group resent the message: its own headers,
+    which only make the check fail, so a sender gains nothing adding them."""
+    try:
+        names = {str(k).lower() for k in headers}
+    except Exception:  # noqa: BLE001 - unreadable counts as relayed.
+        return True
+    return bool(names & {"list-id", "x-google-group-id", "mailing-list"})
+
+
+def _gapps_key_domain(signer: str) -> str | None:
+    """The domain a Google Workspace default DKIM key stands for, or None.
+    Only a two-label domain without hyphens is read back: ``a-b-com`` could
+    be ``a-b.com`` or ``a.b.com``, so any other could be someone else's."""
+    match = _GAPPS_KEY.fullmatch(signer)
+    if match is None:
+        return None
+    labels = match.group(1).split("-")
+    if len(labels) != 2 or not all(labels):
+        return None
+    return ".".join(labels)
 
 
 def automatic_reply(raw: str) -> bool:
@@ -181,7 +247,11 @@ def automatic_reply(raw: str) -> bool:
     than ``no``, an out-of-office header, a bulk / auto-reply ``Precedence``,
     or an out-of-office subject. An unreadable message counts as automatic:
     nobody can be shown to have written it."""
-    headers = _raw_headers(raw)
+    return automatic_headers(_raw_headers(raw))
+
+
+def automatic_headers(headers: Message | None) -> bool:
+    """``automatic_reply`` over a message's parsed headers (None: unreadable)."""
     if headers is None:
         return True
     try:
@@ -229,9 +299,44 @@ async def read_raw(gateway: Any, message_id: str) -> str:
 
 
 async def sender_authenticated(gateway: Any, message_id: str, from_addr: str) -> bool:
-    """Whether Gmail authenticated the sender of message ``message_id``
-    (``authenticated_by_gmail`` on ``read_raw``). False on any failure."""
+    """Whether the Executive's mailbox authenticated the sender of message
+    ``message_id``: Gmail's stamp on ``read_raw`` (``authenticated_by_gmail``),
+    or on Outlook, Exchange's on the message's headers
+    (``delegation.outlook.exchange_authenticated``). False on any failure."""
+    from openexecutive.integrations.workspace.registry import get_mail_provider
+
+    if get_mail_provider().name == "microsoft":
+        headers = await read_outlook_headers(gateway, message_id)
+        if headers is None:
+            return False
+        from openexecutive.delegation.outlook import exchange_authenticated
+
+        return exchange_authenticated(headers, from_addr)
     return authenticated_by_gmail(await read_raw(gateway, message_id), from_addr)
+
+
+async def read_outlook_headers(gateway: Any, message_id: str) -> Message | None:
+    """Message ``message_id`` in the Executive's Outlook mailbox, as its
+    internet headers (Graph's ``internetMessageHeaders``, in the order the
+    message carries them). None on any failure. Never raises."""
+    from openexecutive.delegation.outlook import _header_list, _header_message
+    from openexecutive.integrations.workspace.microsoft import _PREFIX
+
+    if gateway is None or not message_id:
+        return None
+    try:
+        raw = await gateway.call_tool({
+            "name": _PREFIX + "get-mail-message",
+            "arguments": {"messageId": message_id, "select": "id,internetMessageHeaders"},
+        })
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:  # noqa: BLE001 - read as nothing, which fails closed.
+        logger.warning("fact_confirmation: reading message %s headers failed", message_id, exc_info=True)
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("internetMessageHeaders"), list):
+        return None
+    headers = _header_message(_header_list(parsed))
+    return headers if headers.get_all("From") else None
 
 
 def _audit(summary: str, details: dict[str, Any]) -> None:
@@ -388,21 +493,30 @@ async def try_email_fact_confirmation(
     # Only after a live token matched: a forged mail without one never makes
     # the Executive email the principal, or fetch anything.
     printed_auto = _auto_or_bulk_headers(raw)
-    raw_mime = "" if printed_auto else await read_raw(gateway, message_id)
-    if not printed_auto and not authenticated_by_gmail(raw_mime, from_addr):
+    from openexecutive.integrations.workspace.registry import get_mail_provider
+
+    if get_mail_provider().name == "microsoft":
+        from openexecutive.delegation.outlook import exchange_authenticated
+
+        headers = None if printed_auto else await read_outlook_headers(gateway, message_id)
+        authenticated = headers is not None and exchange_authenticated(headers, from_addr)
+    else:
+        headers = None if printed_auto else _raw_headers(await read_raw(gateway, message_id))
+        authenticated = headers is not None and headers_authenticated(headers, from_addr)
+    if not printed_auto and not authenticated:
         _audit(
             "A reply to a fact confirmation was not authenticated",
             {"message_id": message_id, "confirmation_id": conf.id, "status": "refused_unauthenticated"},
         )
         await _reply(principal, (
             "A reply to one of my confirmation emails claimed to be from you, but "
-            "I couldn't confirm it came from your mail server (Gmail's DMARC check "
-            "didn't pass, or I couldn't read it), so I didn't act on it. The change is still waiting; if it was "
+            "I couldn't confirm it came from your mail server (the mailbox's "
+            "sender check didn't pass, or I couldn't read it), so I didn't act on it. The change is still waiting; if it was "
             "you, reply again from your own mailbox.\n\n"
             f"  {conf.summary}"
         ))
         return True
-    if printed_auto or automatic_reply(raw_mime):
+    if printed_auto or automatic_headers(headers):
         # An out-of-office or vacation reply echoes the token and may say
         # "confirm" ("I'll confirm on my return"); nobody answered. Consumed
         # quietly: no reply (it would bounce between two responders), no

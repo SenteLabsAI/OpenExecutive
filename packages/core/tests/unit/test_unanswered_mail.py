@@ -121,7 +121,11 @@ class TestTheCard:
         _note(Session(), people.principal, answer="Click https://evil.example now")
 
         [card] = _cards()
-        assert card.headline == "An email from John Principal's address got no reply"
+        assert card.headline == "An email from your address got no reply"
+        assert "could not prove you sent it" in card.body
+        assert card.suggested_action == "Check that you sent it."
+        # Spoken to the principal, never about them by name.
+        assert "John Principal" not in card.headline + card.body + card.suggested_action
         assert "evil" not in card.body
         assert "Ocean Breeze" not in card.headline + card.body
 

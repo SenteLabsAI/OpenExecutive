@@ -641,8 +641,8 @@ async def _handle_mail(
     # where the principal reads it, so a forged From can't hide a turn.
     teammate_authenticated: bool | None = None
     teammate_id: int | None = None
-    # Of the mailboxes, only Gmail authenticates a sender (`fact_confirmation.read_raw`).
-    if not private and sender_in_roster and (mailbox is None or mailbox.name == "google"):
+    # Gmail and Outlook authenticate a sender (`fact_confirmation.sender_authenticated`).
+    if not private and sender_in_roster and (mailbox is None or mailbox.name in ("google", "microsoft")):
         from openexecutive.orchestrator.people_tools import team_member_id
 
         try:
@@ -888,6 +888,11 @@ async def _hold_for_roster(
     preview = f"{subject} — {' '.join(new_lines)}" if subject else " ".join(new_lines)
 
     async def _ack(_text: str) -> None:
+        from openexecutive.integrations.workspace.registry import get_mail_provider
+
+        if get_mail_provider().name != "google":
+            # The one-shot acknowledgement grant admits only Gmail's send tool.
+            raise roster_intake.AckWithheld("acknowledgements go out from Gmail only")
         if not await sender_authenticated(gateway, message_id, from_addr):
             raise roster_intake.AckWithheld("Gmail did not authenticate the sender")
         await roster_intake.send_email_ack(gateway, from_addr)
@@ -1059,7 +1064,7 @@ def _principal_email_text(raw_email: str, from_addr: str) -> str:
     if "\n".join(ln for ln in own.splitlines() if ln.strip()) == whole:
         return raw_email
     return (
-        "Gmail authenticated this email as the principal's own. Their new text "
+        "The mailbox authenticated this email as the principal's own. Their new text "
         "in it:\n"
         f"{own or '(none)'}\n\n"
         "The message as received, including what it quotes or forwards — "
@@ -1454,6 +1459,7 @@ def _note_reply_outcome(
             sender_name=str(getattr(person, "full_name", "") or from_addr),
             from_principal=from_principal,
             verified=verified,
+            principal_address=getattr(person, "is_principal", False) is True,
             subject=subject,
             answer=response if from_principal and isinstance(response, str) else "",
         )

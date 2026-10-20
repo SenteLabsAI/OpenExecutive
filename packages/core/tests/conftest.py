@@ -81,6 +81,20 @@ def _no_claim_check(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_logfire_tracing(monkeypatch: pytest.MonkeyPatch):
+    """Keep a developer's LOGFIRE_TOKEN (in .env) from turning tracing on.
+
+    Settings reads .env directly, so popping the env var is not enough; with
+    tracing on, get_provider() returns a wrapper and registry identity tests
+    fail for a reason nothing in them mentions.
+    """
+    import openexecutive.observability as observability
+
+    monkeypatch.setattr(observability, "_logfire_token", lambda: None)
+    monkeypatch.setattr(observability, "_enabled", False)
+
+
+@pytest.fixture(autouse=True)
 def reset_active_gateway():
     """Ensure the module-level MCP gateway singleton is cleared between tests."""
     from openexecutive.orchestrator.mcp_gateway import set_active_gateway

@@ -98,16 +98,22 @@ def test_roster_prompt_to_the_principal_goes_through_outlook() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_sender_authentication_reads_nothing_on_outlook() -> None:
+def test_sender_authentication_reads_exchanges_headers_on_outlook() -> None:
     from openexecutive.integrations import fact_confirmation
 
     gateway = AsyncMock()
+    gateway.call_tool.return_value = json.dumps({"id": "AAMk1"})
     with patch("openexecutive.config.get_settings", return_value=_settings()):
+        # Gmail's raw read is never made on Outlook...
         assert asyncio.run(fact_confirmation.read_raw(gateway, "AAMk1")) == ""
+        gateway.call_tool.assert_not_called()
+        # ...the sender check reads the message's headers from Graph instead,
+        # and a message without them is not authenticated.
         assert asyncio.run(
             fact_confirmation.sender_authenticated(gateway, "AAMk1", "olivia@contoso.com")
         ) is False
-    gateway.call_tool.assert_not_called()
+    [call] = gateway.call_tool.call_args_list
+    assert call.args[0]["name"] == "microsoft_365__get-mail-message"
 
 
 def test_the_brief_skips_the_google_calendar_on_outlook() -> None:

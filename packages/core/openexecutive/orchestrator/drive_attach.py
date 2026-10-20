@@ -23,8 +23,8 @@ fixed here, and nothing a file holds reaches the model:
   saves go to (``delegation.saved_files``), are refused for anyone else, as
   the gateway refuses a model's call naming them, before and again after the
   download. Fails closed when that record can't be read.
-- **How much:** the forward caps (``gmail.FORWARD_MAX_FILES`` files,
-  ``gmail.FORWARD_MAX_BYTES`` in all); files past them are left off and
+- **How much:** ``MAX_FILES`` files and the forward cap's
+  ``gmail.FORWARD_MAX_BYTES`` in all; files past them are left off and
   counted.
 
 It only fills a draft the person reviews in their own mailbox before they
@@ -44,6 +44,9 @@ SERVER = "google_workspace"
 DOWNLOAD_TOOL = "google_workspace__get_drive_file_download_url"
 INFO_TOOL = "google_workspace__get_drive_file_permissions"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+# Files on one draft: a folder of scans is often more than a forward's ten,
+# and the bytes stay under the forward cap.
+MAX_FILES = 15
 # workspace-mcp's own lines come after the Drive name it echoes, so each is
 # anchored to its line and the last one is the real one.
 _SAVED_RE = re.compile(r"^\s*(?:\U0001F4CE\s*)?Saved to:\s*(/.+?)\s*$", re.MULTILINE)
@@ -70,8 +73,6 @@ class DriveFiles:
 
 def valid_ids(raw: Any) -> list[str] | str:
     """The ``drive_files`` ids, deduplicated, or why they are refused."""
-    from openexecutive.delegation.gmail import FORWARD_MAX_FILES
-
     items = raw if isinstance(raw, list) else [raw]
     ids = [str(i).strip() for i in items if isinstance(i, str) and i.strip()]
     if not ids:
@@ -80,8 +81,8 @@ def valid_ids(raw: Any) -> list[str] | str:
     if bad:
         return f"Not a Drive file id: {', '.join(i[:60] for i in bad[:3])}."
     ids = list(dict.fromkeys(ids))
-    if len(ids) > FORWARD_MAX_FILES:
-        return f"At most {FORWARD_MAX_FILES} files on one draft."
+    if len(ids) > MAX_FILES:
+        return f"At most {MAX_FILES} files on one draft."
     return ids
 
 
@@ -149,7 +150,7 @@ async def fetch(file_ids: list[str], viewer: int | None) -> DriveFiles:
     Google account, for ``viewer`` (``saved_files.viewer_person_id``).
     Raises ``AttachError`` when Drive isn't connected, a file is someone
     else's saved file, or one can't be fetched."""
-    from openexecutive.delegation.gmail import FORWARD_MAX_BYTES, FORWARD_MAX_FILES
+    from openexecutive.delegation.gmail import FORWARD_MAX_BYTES
     from openexecutive.orchestrator.mail_file_save import _exec_account
     from openexecutive.orchestrator.mcp_gateway import (
         gateway_reconnect_needed,
@@ -166,7 +167,7 @@ async def fetch(file_ids: list[str], viewer: int | None) -> DriveFiles:
     total = 0
     for index, file_id in enumerate(file_ids, 1):
         declared = await _declared_size(gateway, account, file_id)
-        if len(out.files) >= FORWARD_MAX_FILES or (declared is not None and total + declared > FORWARD_MAX_BYTES):
+        if len(out.files) >= MAX_FILES or (declared is not None and total + declared > FORWARD_MAX_BYTES):
             out.skipped += 1
             continue
         name, mime, path = await _download(gateway, account, file_id, index)

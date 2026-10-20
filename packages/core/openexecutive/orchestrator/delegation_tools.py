@@ -123,7 +123,7 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "description": (
                     "Google Drive file ids to attach to a new email or a reply "
                     "(not a forward), e.g. the ids a Drive folder listing gave. "
-                    "At most 10."
+                    "At most 15."
                 ),
             },
             "forward_message_id": {

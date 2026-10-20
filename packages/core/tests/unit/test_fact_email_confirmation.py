@@ -350,7 +350,7 @@ def test_a_reply_gmail_did_not_authenticate_is_refused(
     assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.list_facts(include_inactive=True) == [] and facts.pending_confirmation_count() == 1
     [warning] = _sent(gateway)
-    assert "DMARC check" in warning["body"] and warning["to"] == OWNER
+    assert "sender check" in warning["body"] and warning["to"] == OWNER
 
 
 @pytest.mark.parametrize(
@@ -392,7 +392,7 @@ def test_a_failed_raw_read_refuses_and_tells_the_principal(
     mailbox = SimpleNamespace(call_tool=AsyncMock(side_effect=RuntimeError("gmail down")))
     assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.pending_confirmation_count() == 1
-    assert "DMARC check" in _sent(gateway)[0]["body"]
+    assert "sender check" in _sent(gateway)[0]["body"]
 
 
 def test_a_made_up_reference_does_nothing_and_sends_nothing(gateway: AsyncMock) -> None:
@@ -581,6 +581,109 @@ def test_real_gmail_stamps_still_pass(stamp: str) -> None:
     assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is True
 
 
+# A Workspace domain with no DMARC record and no DKIM key of its own: Gmail
+# writes no dmarc= verdict, and signs with Google's default key.
+_NO_DMARC_WORKSPACE = (
+    "Authentication-Results: mx.google.com;\r\n       dkim=pass "
+    "header.i=@northwind-test.20251104.gappssmtp.com header.s=20251104 header.b=UaLJG3Ri;"
+    "\r\n       spf=pass (google.com: domain of owner@northwind.test designates "
+    "209.85.220.41 as permitted sender) smtp.mailfrom=owner@northwind.test;"
+    "\r\n       dara=neutral header.i=@northwind.test"
+)
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        _NO_DMARC_WORKSPACE,
+        # The domain's own DKIM key, still no DMARC record.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=google header.b=AbCd; spf=pass smtp.mailfrom=owner@northwind.test",
+        # dmarc=none for the From domain.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd; dmarc=none header.from=northwind.test",
+    ],
+    ids=["workspace-default-key", "own-dkim-key", "dmarc-none"],
+)
+def test_a_domain_without_dmarc_passes_on_its_own_dkim(stamp: str) -> None:
+    assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is True
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["List-Id: <all.northwind.test>", "X-Google-Group-Id: 123456", "Mailing-list: list all@northwind.test"],
+)
+def test_mail_a_group_resent_is_not_proven(extra: str) -> None:
+    """An open group in the principal's own Workspace resends an outsider's
+    forged From under the Workspace's own signature."""
+    assert fc.authenticated_by_gmail(_raw_mime(_NO_DMARC_WORKSPACE, extra), OWNER) is False
+    assert fc.authenticated_by_gmail(_raw_mime(GMAIL_PASS, extra), OWNER) is False
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        # SPF alone: any Google sender passes a domain that lists Google's servers.
+        "Authentication-Results: mx.google.com; spf=pass (google.com: domain of "
+        "owner@northwind.test designates 209.85.220.41 as permitted sender) "
+        "smtp.mailfrom=owner@northwind.test",
+        # Someone else's DKIM key.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@attacker.test "
+        "header.s=s1 header.b=AbCd; spf=pass smtp.mailfrom=owner@northwind.test",
+        # Another Workspace's default key.
+        "Authentication-Results: mx.google.com; dkim=pass "
+        "header.i=@attacker-test.20251104.gappssmtp.com header.s=20251104 header.b=AbCd",
+        # A Google Group's bounce address: the group resent it.
+        "Authentication-Results: mx.google.com; dkim=pass "
+        "header.i=@northwind-test.20251104.gappssmtp.com header.s=20251104 header.b=AbCd; "
+        "spf=pass smtp.mailfrom=all+bncbcxyz@northwind.test; dmarc=none header.from=northwind.test",
+        # Signed by a parent: strict alignment only.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@test "
+        "header.s=s1 header.b=AbCd",
+        # dmarc=none for some other domain.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd; dmarc=none header.from=attacker.test",
+        # A HELO echo carrying a DMARC pass.
+        "Authentication-Results: mx.google.com; spf=neutral smtp.helo=x;dmarc=pass "
+        "header.from=northwind.test",
+        # A failed signature naming the domain.
+        "Authentication-Results: mx.google.com; dkim=fail header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd",
+        # A DMARC verdict other than none still decides.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd; dmarc=fail (p=NONE) header.from=northwind.test",
+        # A HELO echo could carry a signature of its own.
+        "Authentication-Results: mx.google.com; spf=pass smtp.helo=x;dkim=pass "
+        "header.i=@northwind.test",
+        # A signature merely mentioned inside a comment or quoted value.
+        "Authentication-Results: mx.google.com; spf=pass (x;dkim=pass "
+        "header.i=@northwind.test) smtp.mailfrom=attacker.test",
+        'Authentication-Results: mx.google.com; spf=pass smtp.mailfrom="x;dkim=pass '
+        'header.i=@northwind.test "@attacker.test',
+    ],
+    ids=["spf-only", "other-key", "other-workspace", "group-bounce", "parent-key",
+         "dmarc-none-other-domain", "helo-echo-dmarc", "dkim-fail", "dmarc-fail",
+         "helo-echo", "in-comment", "in-quotes"],
+)
+def test_a_domain_without_dmarc_needs_its_own_signature(stamp: str) -> None:
+    assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is False
+
+
+@pytest.mark.parametrize(
+    ("signer", "domain"),
+    [
+        ("northwind-test.20251104.gappssmtp.com", "northwind.test"),
+        # Ambiguous: "a-b.com" or "a.b.com", so neither.
+        ("north-wind-test.20251104.gappssmtp.com", None),
+        ("northwind.20251104.gappssmtp.com", None),
+        ("northwind-test.gappssmtp.com", None),
+        ("northwind-test.20251104.gappssmtp.com.attacker.test", None),
+    ],
+)
+def test_the_workspace_key_is_read_back_only_when_unambiguous(signer: str, domain: str | None) -> None:
+    assert fc._gapps_key_domain(signer) == domain
+
+
 def test_a_subject_imitating_the_raw_separator_cannot_supply_the_headers() -> None:
     """Everything above the separator is sender-written header values; a
     Subject reading "--- RAW MIME ---" must not move where the raw message
@@ -703,3 +806,39 @@ def test_a_failed_principal_lookup_leaves_the_email_turn_unauthenticated_not_los
     session = captured["session"]
     assert session.email_from == OWNER and session.email_authenticated is False
     assert mailbox.call_tool.await_count == 0
+
+
+class _Outlook:
+    name = "microsoft"
+
+
+def _outlook_gateway(headers: list[dict[str, str]] | None) -> AsyncMock:
+    gw = AsyncMock()
+    gw.call_tool.return_value = json.dumps(
+        {"id": "m1", **({"internetMessageHeaders": headers} if headers is not None else {})}
+    )
+    return gw
+
+
+_EXCHANGE_PASS = (
+    "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=northwind.test; dkim=pass (signature was verified) "
+    "header.d=northwind.test;dmarc=pass action=none header.from=northwind.test;compauth=pass reason=100"
+)
+
+
+def test_an_outlook_mailbox_reads_exchanges_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.integrations.workspace import registry
+
+    monkeypatch.setattr(registry, "get_mail_provider", lambda: _Outlook())
+    good = [{"name": "From", "value": f"Olivia <{OWNER}>"}, {"name": "Authentication-Results", "value": _EXCHANGE_PASS}]
+    gw = _outlook_gateway(good)
+    assert asyncio.run(fc.sender_authenticated(gw, "m1", OWNER)) is True
+    call = gw.call_tool.await_args.args[0]
+    assert call["name"] == "microsoft_365__get-mail-message"
+    assert "internetMessageHeaders" in call["arguments"]["select"]
+    # No headers, another sender, or a failed read: not authenticated.
+    assert asyncio.run(fc.sender_authenticated(_outlook_gateway(None), "m1", OWNER)) is False
+    assert asyncio.run(fc.sender_authenticated(_outlook_gateway(good), "m1", "mallory@northwind.test")) is False
+    broken = AsyncMock()
+    broken.call_tool.side_effect = RuntimeError("down")
+    assert asyncio.run(fc.sender_authenticated(broken, "m1", OWNER)) is False

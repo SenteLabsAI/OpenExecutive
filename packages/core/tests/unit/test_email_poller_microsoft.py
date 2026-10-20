@@ -58,6 +58,7 @@ def _run(raw: str) -> tuple[AsyncMock, AsyncMock, AsyncMock]:
     gateway.call_tool = AsyncMock(return_value=raw)
     with (
         patch.object(poller, "get_settings", return_value=_settings()),
+        patch("openexecutive.config.get_settings", return_value=_settings()),
         patch.object(poller, "_run_executive", new=AsyncMock()) as run_exec,
         patch.object(poller, "_mark_read", new=AsyncMock()) as mark_read,
     ):
@@ -74,7 +75,8 @@ def test_known_sender_routes_to_executive_with_outlook_reply_block() -> None:
     run_exec, mark_read, gateway = _run(_graph_message("alice@contoso.com", "Alice"))
     assert run_exec.await_count == 1
     assert mark_read.await_count == 1
-    assert gateway.call_tool.call_args.args[0]["name"] == "microsoft_365__get-mail-message"
+    # The fetch, then the sender check's header read: both from the Outlook mailbox.
+    assert {c.args[0]["name"] for c in gateway.call_tool.call_args_list} == {"microsoft_365__get-mail-message"}
     args = run_exec.await_args.args
     rendered, message_id, thread_id, from_addr, session_id = args[1], args[2], args[3], args[4], args[5]
     assert message_id == "AAMk1"

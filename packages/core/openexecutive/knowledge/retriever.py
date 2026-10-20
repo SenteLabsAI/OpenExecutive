@@ -17,6 +17,7 @@ from openexecutive.knowledge.review_store import (
     ReviewStore,
 )
 from openexecutive.knowledge.store import ChromaDBStore
+from openexecutive.observability import traced
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,7 @@ def _with_general(domains: list[str] | None) -> list[str] | None:
     return domains if GENERAL_DOMAIN in domains else [*domains, GENERAL_DOMAIN]
 
 
+@traced("knowledge retrieve")
 def retrieve(
     query: str,
     domain_filter: list[str] | None = None,

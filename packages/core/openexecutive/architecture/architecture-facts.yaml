@@ -16,6 +16,33 @@ system:
   stack:
     backend: Python 3.11+ · FastAPI · Anthropic Claude SDK · ChromaDB · SQLite
     frontend: Next.js 15 · React 19 · TailwindCSS · Mermaid.js
+  observability: |
+    Opt-in request tracing via Pydantic Logfire (openexecutive.observability).
+    Off unless LOGFIRE_TOKEN is set; then create_app() calls
+    configure_tracing(app), which instruments FastAPI and get_provider()
+    wraps every backend (anthropic / openrouter / local) in a tracing
+    decorator. Spans: one per HTTP request, "specialist {name}" around
+    router.route_to_specialist, "knowledge retrieve" around
+    knowledge.retriever.retrieve, and "messages.create|stream {model}" per
+    LLM call carrying gen_ai.usage.{input,output}_tokens and
+    gen_ai.usage.cache_{read,creation}.input_tokens, so latency and
+    prompt-cache hit rate are visible per turn. Invariant: no user content
+    leaves the process — Logfire's own Anthropic / httpx instrumentation is
+    deliberately NOT used (the former records message bodies on scrubber-safe
+    keys; the latter records full URLs, and the Telegram bot token sits in the
+    request path), the FastAPI argument mapper is replaced so endpoint bodies
+    are dropped, a server_request_hook rewrites the request URL to its route
+    template (path params such as /documents/{filename} never leave; query
+    string, host, client IP and user agent are blanked), exceptions are
+    recorded by type only via an exception_callback (SDK 4xx bodies echo the
+    request), and incoming traceparent / baggage are ignored
+    (distributed_tracing=False, add_baggage_to_attributes=False) so
+    unauthenticated callers cannot write into the project. LLM spans are
+    started without attaching context, because /chat pumps the streaming
+    generator from fresh tasks and an attached context could not be detached
+    across them. Tests are
+    isolated by an autouse conftest fixture so a developer's .env token never
+    turns tracing on in the suite.
   models:
     default: claude-sonnet-5-5
     deep_reasoning: claude-sonnet-5-5
@@ -2664,14 +2691,34 @@ memory:
         fake `dmarc=pass`), then exactly one dmarc= verdict must remain,
         reading exactly `dmarc=pass header.from=<domain>` (Gmail may follow
         it with its own `dara=` resinfo for Gmail / Workspace senders, so
-        its position is not checked). Fails closed (absent header,
-        dmarc=none, temperror, unbalanced quotes or comments, two verdicts,
-        extra text in the verdict, read failure). Residual: when Gmail
-        writes NO verdict (a From domain without DMARC) and echoes an
-        unsanitised `;dmarc=pass header.from=...` elsewhere (a HELO on
-        null-sender mail), the echo would read as the verdict — unverified
-        whether Gmail echoes it; bounded by the ack caps. Anyone else: no second read, never
-        authenticated.
+        its position is not checked). A From domain with no DMARC record
+        (no verdict, or dmarc=none for that domain) passes only on a DKIM
+        signature Gmail verified for exactly that domain (`_dkim_aligned`,
+        strict alignment), or Google Workspace's default key for it
+        (`<domain-with-hyphens>.<date>.gappssmtp.com`, read back only for a
+        two-label domain without hyphens, since `a-b-com` is ambiguous).
+        SPF alone never counts (a domain listing Google's servers passes
+        anyone sending through Google). On every branch, mail a list or
+        group resent (List-Id, X-Google-Group-Id, Mailing-List, or a Groups
+        `+bnc` envelope) is never proven: an open group in the domain's own
+        Workspace resends an outsider's forged From under the Workspace's
+        signature. A stamp echoing `smtp.helo=` (sender text) proves nothing
+        either. Fails closed (absent header, temperror,
+        dmarc=fail, no aligned DKIM, unbalanced quotes or comments, two
+        verdicts, extra text in the verdict, read failure). On an Outlook
+        mailbox the same check reads Exchange's stamp instead: Graph's
+        internetMessageHeaders for the message (get-mail-message), then
+        delegation.outlook.exchange_authenticated (topmost header with EOP's
+        compauth=, dmarc=pass for the From domain, or for dmarc=none /
+        bestguesspass a DKIM pass with header.d = that domain; Microsoft
+        365's default onmicrosoft.com key never counts, as it names the
+        tenant, not the domain; list-resent mail never passes; a smtp.helo=
+        echo or a second dkim= verdict never passes). It assumes Exchange
+        Online stamps every message into the mailbox: a tenant whose mail
+        arrives through an on-premises server or another gateway without
+        EOP's stamp gets no real proof (compauth= only checks the shape). Outlook
+        still sends no roster acknowledgement (the grant is Gmail's).
+        Anyone else: no second read, never authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY
         address (exact; no alias / domain rule), authenticated, and not
         private_to_principal (forwarded mail and contacts stay refused).
@@ -10514,7 +10561,7 @@ delegation:
     the note as comment and only recipients and the ghostwritten property
     in message; the body is never patched.
     drive_files (a new email or a reply, never a forward; the principal
-    only): up to 10 Google Drive file ids. orchestrator.drive_attach sizes
+    only): up to 15 Google Drive file ids (drive_attach.MAX_FILES). orchestrator.drive_attach sizes
     each with a code-built google_workspace__get_drive_file_permissions and
     downloads it with a code-built google_workspace__get_drive_file_download_url
     (both in mcp_gateway._CODE_BUILT_TOOLS) as the Executive's account. The
