@@ -882,10 +882,10 @@ def own_echoes(text: str) -> list[str]:
 # Only list wording: "no longer open" or "needs no action" can sit beside a
 # real ask in the same bullet, and a matching bullet is dropped whole.
 _SETTLED_RE = re.compile(
-    r"\b(?:stays?|staying|kept|keeps?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
+    r"\b(?:stays?|staying|kept|keeps?)\s+off\s+(?:the\s+|your\s+)?(?:(?:active|current|open|priority|watch|to-do|todo)\s+)?"
     r"(?:list|board|radar)\b"
-    r"|\bno\s+longer\s+on\s+(?:the|your)\s+(?:[\w-]+\s+)?list\b"
-    r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b",
+    r"|\bno\s+longer\s+on\s+(?:the|your)\s+(?:(?:active|current|open|priority|watch|to-do|todo)\s+)?list\b"
+    r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:(?:active|current|open|priority|watch|to-do|todo)\s+)?list\b",
     re.IGNORECASE,
 )
 

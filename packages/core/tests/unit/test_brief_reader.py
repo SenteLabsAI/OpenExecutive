@@ -424,3 +424,15 @@ async def test_a_settled_bullet_with_an_ask_sends_no_rewrite(
 
     assert text == "**Lease signed.**\n" + ask
     assert len(provider.calls) == 1
+
+
+def test_only_a_tracking_list_counts_as_settled() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points, settled_mentions
+
+    for line in (
+        "- **Offsite** — Dana was kept off the guest list.",
+        "- **Vendor** — stays off the mailing list.",
+    ):
+        assert settled_mentions(line) == []
+        assert drop_settled_points(line) == line
+    assert settled_mentions("It stays off the priority list.") == ["stays off the priority list"]
