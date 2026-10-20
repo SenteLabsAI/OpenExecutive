@@ -1385,12 +1385,14 @@ def _offered(provider: _ScriptedStreams) -> list[str]:
 def test_every_withheld_name_is_a_real_tool() -> None:
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
+    from openexecutive.orchestrator.parallel_search import TOOL_NAMES
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
     from openexecutive.workflows.step_script import LIST_SAVED_TOOLS_TOOL, RUN_SCRIPT_TOOL
 
     # run_script and list_saved_tools are dispatched beside the gateway's
     # meta-tools (step_script).
-    gateway_side = MCP_TOOL_NAMES | {RUN_SCRIPT_TOOL, LIST_SAVED_TOOLS_TOOL}
+    # Client web tools are assembled per turn beside the skill registry.
+    gateway_side = MCP_TOOL_NAMES | {RUN_SCRIPT_TOOL, LIST_SAVED_TOOLS_TOOL} | TOOL_NAMES
     names = {t["name"] for t in _ALL_SKILL_TOOLS} | gateway_side
     assert names >= PRIVATE_TURN_WITHHELD_TOOLS
     assert set(_ALL_SKILL_HANDLERS) | gateway_side >= PRIVATE_TURN_WITHHELD_TOOLS
@@ -1864,17 +1866,26 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
     offered = _offered(provider)
     # A teammate's turn: everything but the principal-only tools.
     assert set(offered) >= PRIVATE_TURN_WITHHELD_TOOLS - PRINCIPAL_ONLY_TOOLS
+    from openexecutive.orchestrator.web_search_tool import (
+        build_web_fetch_tool,
+        build_web_search_tool,
+    )
     from openexecutive.workflows.step_script import (
         CHAT_TOOL_DEFINITION,
         LIST_SAVED_TOOLS_DEFINITION,
     )
 
+    web_tools = [
+        tool for tool in (build_web_search_tool(), build_web_fetch_tool())
+        if tool is not None and "input_schema" in tool
+    ]
     assert offered == sorted(
         t["name"]
         for t in [
             *SPECIALIST_TOOLS,
             *_ALL_SKILL_TOOLS,
             *MCP_TOOLS,
+            *web_tools,
             CHAT_TOOL_DEFINITION,
             LIST_SAVED_TOOLS_DEFINITION,
         ]

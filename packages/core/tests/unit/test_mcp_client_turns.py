@@ -174,9 +174,11 @@ def test_the_withheld_set_starts_from_the_private_and_unattended_sets() -> None:
 def test_every_withheld_name_is_a_real_tool() -> None:
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
+    from openexecutive.orchestrator.parallel_search import TOOL_NAMES
     from openexecutive.workflows.step_script import LIST_SAVED_TOOLS_TOOL, RUN_SCRIPT_TOOL
 
-    gateway_side = MCP_TOOL_NAMES | {RUN_SCRIPT_TOOL, LIST_SAVED_TOOLS_TOOL}
+    # Client web tools are assembled per turn beside the skill registry.
+    gateway_side = MCP_TOOL_NAMES | {RUN_SCRIPT_TOOL, LIST_SAVED_TOOLS_TOOL} | TOOL_NAMES
     assert {t["name"] for t in _ALL_SKILL_TOOLS} | gateway_side >= MCP_CLIENT_WITHHELD_TOOLS
     assert set(_ALL_SKILL_HANDLERS) | gateway_side >= MCP_CLIENT_WITHHELD_TOOLS
 
