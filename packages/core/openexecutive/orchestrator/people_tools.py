@@ -886,7 +886,9 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
             "kind": p.kind,
             "email": p.email,
             "email_aliases": p.email_aliases,
-            **({"details": [d.model_dump() for d in p.details]} if p.details else {}),
+            # Phone numbers and addresses on the principal's own turn only,
+            # like the notes: never on a stranger's or a teammate's turn.
+            **({"details": [d.model_dump() for d in p.details]} if p.details and include_contacts else {}),
             "preferred_channel": p.preferred_channel,
             "department_slugs": p.department_slugs,
             "authority_scope": [s.value for s in p.authority_scope],

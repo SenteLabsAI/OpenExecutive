@@ -17,6 +17,7 @@ import re
 PHONE_MAX = 40
 URL_MAX = 200
 ADDRESS_MAX = 160
+ADDRESS_WORDS = 14
 
 PHONE_KINDS = frozenset({"phone", "mobile"})
 # Profile sites a "social" link may be on (LinkedIn has its own kind).
@@ -92,7 +93,7 @@ def clean_address(raw: str | None) -> str:
     if not text or len(text) > ADDRESS_MAX or _BANNED.search(text):
         return ""
     words = _WORD.findall(text)
-    if len(words) < 3 or not any(c.isdigit() for c in text) or not any(c.isalpha() for c in text):
+    if not 3 <= len(words) <= ADDRESS_WORDS or not any(c.isdigit() for c in text) or not any(c.isalpha() for c in text):
         return ""
     return text
 
