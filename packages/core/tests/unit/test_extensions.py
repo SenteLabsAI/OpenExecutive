@@ -327,8 +327,14 @@ def test_only_a_tool_registered_for_it_is_asked_on_a_turn_with_no_known_caller()
     assert json.loads(_results(provider, 1)["tu-1"])["status"] == "made"
     _, _, offered = _run(_session(caller_person_id=None), [])
     assert "open_tool" not in offered[0]
-    # Still never on an unattended or private turn.
-    for kwargs in ({"unattended": True}, {"private_to_principal": True}):
+    # Still never on an unattended, private, AI-app or replay turn.
+    for kwargs in (
+        {"unattended": True},
+        {"private_to_principal": True},
+        {"from_mcp_client": True},
+        {"from_mcp_client": True, "mcp_client_may_act": True},
+        {"replay": True},
+    ):
         _, _, offered = _run(_session(caller_person_id=None, origin_channel="kiosk", **kwargs), [])
         assert "open_tool" not in offered[0]
 
