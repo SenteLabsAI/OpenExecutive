@@ -270,6 +270,9 @@ def test_own_echoes_find_their_chats_and_asks_reported_back() -> None:
     assert own_echoes("Dana wrote in your Google Chat space that the lease is signed.") == []
     assert own_echoes("Your customer conversations with Acme went well.") == []
     assert own_echoes("Your team's chat channel and your sales conversations are quiet.") == []
+    assert own_echoes("After your conversation with the board, our conversation rate dropped.") == []
+    assert own_echoes("Your chat with Dana settled it.") == []
+    assert own_echoes("As our conversation showed, it moved.") == ["our conversation"]
     assert own_echoes("**You're clear today.** I'm muting the duplicate alerts.") == []
 
 

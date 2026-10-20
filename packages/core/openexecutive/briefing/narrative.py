@@ -857,7 +857,7 @@ async def synthesize_briefing_narrative(
 _OWN_ECHO_RE = re.compile(
     r"\byou\s+(?:asked|wanted|told|reminded)\s+me\b"
     r"|\byou\s+asked\s+(?:for|about)\b"
-    r"|\b(?:our|your)\s+(?:chats?|conversations?)\b"
+    r"|\b(?:(?:our|your)\s+chats?|our\s+conversations?)\b(?!\s+(?:rates?\b|with\s+(?!me\b)))"
     r"|\b(?:chats?|conversations?)\s+with\s+me\b"
     r"|\bthe\s+\d{1,2}:\d{2}\s*(?:[ap]\.?m\.?\s+)?(?:[\w-]+\s+){0,3}?(?:chats?|conversations?)\b",
     re.IGNORECASE,
