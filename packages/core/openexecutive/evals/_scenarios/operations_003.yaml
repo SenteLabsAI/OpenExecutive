@@ -1,0 +1,16 @@
+id: operations_003
+domain: operations
+description: "Principal asks for today's date and a deadline relative to it; the Executive must take the date from the turn's <current_time> rather than guess it or say it cannot know"
+company_context:
+  stage: "Seed"
+  industry: "Wholesale distribution"
+  headcount: 12
+query: "What's today's date? And if a supplier gives us net 30 from today, which date is the payment due, and what weekday is that?"
+expected_topics:
+  - current_date
+  - payment_terms
+quality_criteria:
+  states_a_specific_current_date_and_weekday: true
+  due_date_is_thirty_days_after_the_stated_date: true
+  weekday_matches_the_due_date: true
+  does_not_say_it_cannot_know_the_date: true

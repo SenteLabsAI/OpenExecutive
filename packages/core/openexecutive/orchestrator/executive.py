@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from openexecutive.audit import bind_turn, clear_turn, private_rows, set_turn
@@ -715,6 +716,26 @@ def _drive_memory_block(session: Session, person_id: int | None) -> str:
         return ""
 
 
+def _current_time_block(now: datetime | None = None) -> str:
+    """Render the body of a <current_time> hint: when this turn is, in the
+    workspace's timezone (``get_user_timezone``, as the briefs use).
+
+    Without it a chat turn carries no date at all, so the model guesses one,
+    for instance from the newest record a tool returned, and "yesterday",
+    "this week" or "overdue" resolve against the wrong day.
+    """
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    zone = get_user_timezone()
+    local = (now or datetime.now(UTC)).astimezone(zone)
+    offset = local.strftime("%z")
+    return (
+        f"{local:%A} {local.day} {local:%B %Y}, {local:%H:%M} "
+        f"({getattr(zone, 'key', None) or local.tzname()}, UTC{offset[:3]}:{offset[3:]}). "
+        "Resolve today, yesterday, this week, this month and other relative dates against this."
+    )
+
+
 def _build_current_speaker_block(person_id: int | None) -> str | None:
     """Render the body of a <current_speaker> hint naming who is in the room.
 
@@ -1109,6 +1130,12 @@ class Executive:
 
         user_content_parts: list[dict[str, Any]] = []
 
+        # When this turn is, so relative dates resolve against today rather
+        # than a guess. Changes every turn, so the user turn, never a cached
+        # system block.
+        user_content_parts.append(
+            {"type": "text", "text": f"<current_time>\n{_current_time_block()}\n</current_time>"}
+        )
         # Name the human in the room first so the model never offers to loop
         # in / DM the person it is replying to. Lives in the user turn (never
         # the cached system block) since the speaker varies per request.
