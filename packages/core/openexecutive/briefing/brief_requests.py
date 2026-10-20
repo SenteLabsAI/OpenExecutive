@@ -24,7 +24,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -220,3 +220,31 @@ def render_parts(
     raise_block = "\n".join([RAISE_HEADER, *(f"- {r.text}" for r in to_raise)]) if to_raise else ""
     leave_block = "\n".join([LEAVE_OUT_HEADER, *(f"- {r.text}" for r in leave_out)]) if leave_out else ""
     return raise_block, leave_block
+
+
+def raise_split(
+    tz: tzinfo, *, now: datetime | None = None, db_path: Path | None = None
+) -> tuple[list[str], list[str], str]:
+    """``(raised_today, raised_before, leave_out_block)`` for Right now: the
+    principal's raise lines split by whether they were saved on the local
+    day ``tz`` gives, and the leave-out block as :func:`render_parts` renders
+    it. One read of the store. Never raises."""
+    from openexecutive.alerts.lifecycle import parse_aware
+
+    owner = _principal_id()
+    if owner is None:
+        return [], [], ""
+    when = now or _now()
+    rows = [r for r in active(now=when, db_path=db_path) if r.person_id == owner]
+    today_local = when.astimezone(tz).date()
+    fresh: list[str] = []
+    older: list[str] = []
+    for r in rows:
+        if r.kind != KIND_RAISE:
+            continue
+        created = parse_aware(r.created_at)
+        is_fresh = created is not None and created.astimezone(tz).date() == today_local
+        (fresh if is_fresh else older).append(r.text)
+    leave_out = [r for r in rows if r.kind == KIND_LEAVE_OUT]
+    leave_block = "\n".join([LEAVE_OUT_HEADER, *(f"- {r.text}" for r in leave_out)]) if leave_out else ""
+    return fresh, older, leave_block

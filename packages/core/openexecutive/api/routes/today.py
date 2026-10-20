@@ -1812,15 +1812,7 @@ def _header_context(
     raise_older: list[str] = []
     leave_out = ""
     if own:
-        _raise_block, leave_out = brief_requests.render_parts()
-        owner = brief_requests._principal_id()
-        today_local = datetime.now(UTC).astimezone(tz).date()
-        for r in brief_requests.active():
-            if r.person_id != owner or r.kind != brief_requests.KIND_RAISE:
-                continue
-            created = _parse_aware(r.created_at)
-            fresh = created is not None and created.astimezone(tz).date() == today_local
-            (raise_lines if fresh else raise_older).append(r.text)
+        raise_lines, raise_older, leave_out = brief_requests.raise_split(tz)
     standing_facts = render_facts_for_prompt()
 
     def render(activity: list[dict[str, Any]]) -> HeaderContext:

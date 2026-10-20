@@ -154,6 +154,10 @@ def build_narrative_input_hash(
     prompts over what can be the very same context, so a solo key carries the
     mode and never matches a team one. Team keys leave it out, so they are
     unchanged from before solo mode existed and no team cache is invalidated.
+
+    The brief model (:func:`narrative.brief_model`) is folded in for every
+    context the model writes, so switching the Executive's model rewrites the
+    header on the next view instead of serving the old model's text.
     """
     if not isinstance(rendered_context, str):
         # This used to take the `today_data` dict. A dict is JSON-serialisable,
@@ -171,6 +175,12 @@ def build_narrative_input_hash(
     }
     if mode != "team":
         payload["mode"] = mode
+    if rendered_context not in (QUIET_CONTEXT, NOTHING_MOVED_CONTEXT):
+        # The model writes the text, so a new Executive model in the Council
+        # re-keys every written header. The fixed lines involve no model.
+        from openexecutive.briefing.narrative import brief_model
+
+        payload["model"] = brief_model()
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 

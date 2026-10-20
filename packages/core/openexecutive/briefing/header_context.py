@@ -34,6 +34,7 @@ from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.alerts.lifecycle import parse_aware
+from openexecutive.briefing.narrative import QUIET_PRINCIPAL, QUIET_VIEWER
 from openexecutive.briefing.reader import Reader, mask, reader_line
 
 if TYPE_CHECKING:
@@ -290,7 +291,9 @@ def keep_cited_points(text: str, tags: frozenset[str] | set[str]) -> str:
     """``text`` with every bullet that cites no known tag dropped, the tags
     stripped everywhere, and at most ``MAX_POINTS`` bullets kept. A bullet
     the model wrapped onto indented lines is judged and dropped whole. When
-    the draft had points and none survives, the whole draft goes: ""."""
+    no point survives (or the draft had none), the whole draft goes: "",
+    since an opener or Move today with no cited point under it is
+    ungrounded. The fixed quiet line is the one draft kept without one."""
     # Group each bullet with its indented continuation lines.
     blocks: list[tuple[bool, list[str]]] = []
     for raw in text.splitlines():
@@ -310,10 +313,12 @@ def keep_cited_points(text: str, tags: frozenset[str] | set[str]) -> str:
                 continue
             kept += 1
         out.extend(_TAG_RE.sub("", ln).rstrip() for ln in lines)
-    if kept == 0 and any(is_bullet for is_bullet, _ in blocks):
-        # Every point was uncited: the opener and Move today were written
-        # over them, so none of it stands. The caller writes its fixed line.
-        return ""
+    if kept == 0:
+        # No cited point: an opener or Move today has nothing under it, so
+        # none of it stands, unless the draft is just the fixed quiet line.
+        # The caller writes its fixed line.
+        draft = text.strip()
+        return draft if draft in (QUIET_PRINCIPAL, QUIET_VIEWER) else ""
     return "\n".join(out).strip()
 
 

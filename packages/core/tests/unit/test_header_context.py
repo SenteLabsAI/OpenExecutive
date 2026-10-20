@@ -211,10 +211,8 @@ def test_numbered_points_are_held_to_the_same_rule() -> None:
 def test_a_draft_whose_points_all_go_is_dropped_whole() -> None:
     text = "**Big day.**\n- **A** — x.\n- **B** — y. [M9]\n**Move today:** Do A."
     assert keep_cited_points(text, {"M1"}) == ""
-    # A draft with no points at all is a valid read and stays.
-    assert keep_cited_points("**Calm so far.**\n**Move today:** Prep the 4:00.", {"M1"}) == (
-        "**Calm so far.**\n**Move today:** Prep the 4:00."
-    )
+    # No points at all: the opener and Move today cite nothing, so they go too.
+    assert keep_cited_points("**Dana approved the budget.**\n**Move today:** Sign it.", {"M1"}) == ""
 
 
 def test_quiet_line_passes_through() -> None:
@@ -342,3 +340,42 @@ def test_a_meetings_only_day_is_quiet_without_a_model_call(monkeypatch: pytest.M
         narrative_cache.COMPANY_SCOPE, reader=None,
     )
     assert ctx == narrative_cache.QUIET_CONTEXT
+
+
+def test_a_new_executive_model_rekeys_written_headers(isolated_overrides: Path) -> None:
+    from openexecutive.briefing import narrative_cache
+
+    before = narrative_cache.build_narrative_input_hash("PERIOD: x\n[M1] y", scope="company")
+    quiet = narrative_cache.build_narrative_input_hash(narrative_cache.QUIET_CONTEXT, scope="company")
+    ov_mod.set_override(
+        ov_mod.EXECUTIVE_AGENT_ID, model="claude-opus-5-5", model_set=True, db_path=isolated_overrides,
+    )
+    ov_mod.invalidate_cache()
+    assert narrative_cache.build_narrative_input_hash("PERIOD: x\n[M1] y", scope="company") != before
+    # The fixed lines involve no model, so they keep their key.
+    assert narrative_cache.build_narrative_input_hash(narrative_cache.QUIET_CONTEXT, scope="company") == quiet
+
+
+def test_raise_split_puts_todays_lines_apart_from_older_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import brief_requests
+
+    db = tmp_path / "br.db"
+    monkeypatch.setattr(brief_requests, "_principal_id", lambda: 7)
+    now = datetime(2026, 10, 20, 15, 0, tzinfo=UTC)
+    rows = [
+        brief_requests.BriefRequest(1, brief_requests.KIND_RAISE, "Book the venue", 7,
+                                    now.isoformat(), (now + timedelta(days=1)).isoformat()),
+        brief_requests.BriefRequest(2, brief_requests.KIND_RAISE, "Send the deck", 7,
+                                    (now - timedelta(days=1)).isoformat(), now.isoformat()),
+        brief_requests.BriefRequest(3, brief_requests.KIND_RAISE, "Not mine", 8,
+                                    now.isoformat(), now.isoformat()),
+        brief_requests.BriefRequest(4, brief_requests.KIND_LEAVE_OUT, "golf", 7,
+                                    now.isoformat(), now.isoformat()),
+    ]
+    monkeypatch.setattr(brief_requests, "active", lambda **_kw: rows)
+    fresh, older, leave = brief_requests.raise_split(UTC, now=now, db_path=db)
+    assert fresh == ["Book the venue"]
+    assert older == ["Send the deck"]
+    assert leave.endswith("- golf")

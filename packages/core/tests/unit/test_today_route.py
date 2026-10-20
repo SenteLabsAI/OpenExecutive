@@ -150,7 +150,7 @@ def test_morning_brief_alias_returns_same_body(
     _seed_live_action_alert(episodic.DB_PATH)
 
     async def _synth(**_kw: object) -> str:
-        return "**Bottom line:** the budget needs you."
+        return "- **Bottom line:** the budget needs you. [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
 
@@ -161,7 +161,7 @@ def test_morning_brief_alias_returns_same_body(
     client.get("/today")
     today = client.get("/today").json()
     legacy = client.get("/morning-brief").json()
-    assert today["narrative"] == "**Bottom line:** the budget needs you."
+    assert today["narrative"] == "- **Bottom line:** the budget needs you."
     assert today == legacy
 
 
@@ -1131,7 +1131,7 @@ def test_narrative_regenerated_in_background(
     _seed_live_action_alert(db)
 
     async def _synth(**_kwargs: object) -> str:
-        return "**What changed:** nothing dramatic."
+        return "- **What changed:** nothing dramatic. [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
 
@@ -1140,9 +1140,9 @@ def test_narrative_regenerated_in_background(
     assert first["narrative"] is None  # cold at response-build time
     # Background task ran during the TestClient call → cache now populated.
     cached = narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db)
-    assert cached is not None and cached.narrative_text == "**What changed:** nothing dramatic."
+    assert cached is not None and cached.narrative_text == "- **What changed:** nothing dramatic."
     # Second request serves it.
-    assert c.get("/today").json()["narrative"] == "**What changed:** nothing dramatic."
+    assert c.get("/today").json()["narrative"] == "- **What changed:** nothing dramatic."
 
 
 def test_fresh_cache_does_not_trigger_regen(
@@ -1370,7 +1370,7 @@ def test_narrative_personalized_per_viewer(
                 p["headline"] for p in today_data.get("proposals", [])  # type: ignore[union-attr]
             ],
         })
-        return f"brief-for-{viewer['name']}" if viewer else "brief-for-principal"  # type: ignore[index]
+        return f"brief-for-{viewer['name']}" if viewer else "- brief-for-principal [M1]"  # type: ignore[index]
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
 
@@ -1382,7 +1382,7 @@ def test_narrative_personalized_per_viewer(
     p_narr = c.get("/today", headers={"x-caller-email": "rufus@x.com"}).json()["narrative"]
     d_narr = c.get("/today", headers={"x-caller-email": "dan@x.com"}).json()["narrative"]
 
-    assert p_narr == "brief-for-principal"
+    assert p_narr == "- brief-for-principal"
     assert d_narr == "brief-for-Sam Rivera"
     assert p_narr != d_narr  # no cross-user leak
 
@@ -1407,14 +1407,14 @@ def test_unrostered_viewer_gets_whole_company_narrative(
     _seed_live_action_alert(db)  # non-quiet board, so the synthesizer runs
 
     async def _synth(**kw: object) -> str:
-        return "principal-brief" if kw.get("viewer") is None else "teammate-brief"
+        return "- principal-brief [M1]" if kw.get("viewer") is None else "teammate-brief"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
 
     c = _make_client()
     c.get("/today", headers={"x-caller-email": "stranger@x.com"})
     n = c.get("/today", headers={"x-caller-email": "stranger@x.com"}).json()["narrative"]
-    assert n == "principal-brief"
+    assert n == "- principal-brief"
     # Structurally: the fallback writes the COMPANY_SCOPE key — never the
     # principal's own row and never "person:None".
     assert narrative_cache.get("company", db_path=db) is not None
@@ -2035,13 +2035,13 @@ def test_live_board_still_synthesizes(
 
     async def _synth(**_kw: object) -> str:
         calls["n"] += 1
-        return "**Bottom line:** the budget needs you."
+        return "- **Bottom line:** the budget needs you. [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
 
     c = _make_client()
     c.get("/today")
-    assert c.get("/today").json()["narrative"] == "**Bottom line:** the budget needs you."
+    assert c.get("/today").json()["narrative"] == "- **Bottom line:** the budget needs you."
     assert calls["n"] == 1
 
 
@@ -2114,7 +2114,7 @@ def test_alert_raises_never_reach_the_synthesizer(
             str(a.get("summary", "")) for a in activity  # type: ignore[union-attr]
         ]
         seen["kinds"] = [str(a.get("kind", "")) for a in activity]  # type: ignore[union-attr]
-        return "**Bottom line:** the budget needs you."
+        return "- **Bottom line:** the budget needs you. [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
 
@@ -2189,7 +2189,7 @@ def _capture_contexts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     async def _synth(**kw: object) -> str:
         contexts.append(str(kw.get("rendered_context") or ""))
-        return "live header"
+        return "- live header [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
     return contexts
@@ -2210,7 +2210,7 @@ def test_inbound_today_makes_a_quiet_board_speak(
     assert len(contexts) == 1
     assert "MOVED TODAY" in contexts[0] and "vendor renewal terms" in contexts[0]
     assert "NOW:" in contexts[0]
-    assert c.get("/today").json()["narrative"] == "live header"
+    assert c.get("/today").json()["narrative"] == "- live header"
 
 
 def test_private_inbound_only_in_the_principals_own_scope(
@@ -2248,7 +2248,7 @@ def test_response_says_how_old_the_header_is_and_whether_it_is_refreshing(
     first = c.get("/today").json()
     assert first["narrative"] is None and first["narrative_stale"] is True
     second = c.get("/today").json()
-    assert second["narrative"] == "live header"
+    assert second["narrative"] == "- live header"
     assert second["narrative_stale"] is False
     assert second["narrative_generated_at"]
 
@@ -2289,7 +2289,7 @@ async def test_regen_is_serialized_per_scope(
     async def _slow(**_kw: object) -> str:
         calls["n"] += 1
         await release.wait()
-        return "once"
+        return "- once [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _slow)
     first = asyncio.create_task(today_route._regen_briefing_narrative(None, "company"))
@@ -2299,7 +2299,7 @@ async def test_regen_is_serialized_per_scope(
     await first
     assert calls["n"] == 1
     cached = narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db)
-    assert cached is not None and cached.narrative_text == "once"
+    assert cached is not None and cached.narrative_text == "- once"
 
 
 async def test_scheduler_refresh_regenerates_only_when_the_key_moved(
@@ -2405,7 +2405,7 @@ async def test_a_trigger_during_a_regen_gets_one_more_pass(
         contexts.append(str(kw.get("rendered_context")))
         if len(contexts) == 1:
             await release.wait()
-        return f"pass {len(contexts)}"
+        return f"- pass {len(contexts)} [M1]"
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
     first = asyncio.create_task(today_route._regen_briefing_narrative(None, "company"))
@@ -2418,7 +2418,7 @@ async def test_a_trigger_during_a_regen_gets_one_more_pass(
     assert len(contexts) == 2
     assert "arrived mid-run" not in contexts[0] and "arrived mid-run" in contexts[1]
     cached = narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db)
-    assert cached is not None and cached.narrative_text == "pass 2"
+    assert cached is not None and cached.narrative_text == "- pass 2"
 
 
 def test_a_failed_regen_backs_off_instead_of_retrying_every_view(
