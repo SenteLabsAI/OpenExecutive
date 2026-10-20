@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeferredForget, fixedMissIds, groupByKind, isoWeek, learningStats, toggleAll, unhelpfulLessonIds } from "../src/lib/learning.ts";
+import { DeferredForget, fixedMissIds, groupByTopic, isoWeek, learningStats, missTopic, toggleAll, unhelpfulLessonIds } from "../src/lib/learning.ts";
 
 test("isoWeek matches Python's isocalendar, across a year end", () => {
   assert.equal(isoWeek(new Date("2026-10-19T09:00:00Z")), "2026-W43");
@@ -31,18 +31,26 @@ test("a quiet week and no misses read as zero and nothing to check", () => {
   assert.equal(stats.wouldGoRight, null);
 });
 
-test("misses group by kind in a fixed order, and an empty kind is left out", () => {
+test("misses group by cause in a fixed order, falling back to their kind", () => {
   const misses = [
-    { id: 1, kind: "product" },
-    { id: 2, kind: "company" },
-    { id: 3, kind: "product" },
+    { id: 1, kind: "product", cause: "tool" },
+    { id: 2, kind: "company", cause: "term" },
+    { id: 3, kind: "product", cause: null },
+    { id: 4, kind: "company" },
+    { id: 5, kind: "company", cause: "fact" },
+    { id: 6, kind: "company", cause: "term" },
   ];
   assert.deepEqual(
-    groupByKind(misses).map((g) => [g.kind, g.items.map((m) => m.id)]),
-    [["company", [2]], ["product", [1, 3]]],
+    groupByTopic(misses).map((g) => [g.topic, g.items.map((m) => m.id)]),
+    [["term", [2, 6]], ["fact", [5]], ["company", [4]], ["tool", [1]], ["product", [3]]],
   );
-  assert.deepEqual(groupByKind([{ id: 4, kind: "company" }]).map((g) => g.kind), ["company"]);
-  assert.deepEqual(groupByKind([]), []);
+  assert.deepEqual(groupByTopic([]), []);
+});
+
+test("a cause that doesn't belong to the miss's kind files it under the kind", () => {
+  assert.equal(missTopic({ kind: "company", cause: "tool" }), "company");
+  assert.equal(missTopic({ kind: "product", cause: "cant" }), "cant");
+  assert.equal(missTopic({ kind: "product", cause: "" }), "product");
 });
 
 test("the quick picks: misses that would go right today, lessons that aren't helping", () => {

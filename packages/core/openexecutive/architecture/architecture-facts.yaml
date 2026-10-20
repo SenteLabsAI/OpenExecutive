@@ -5263,7 +5263,9 @@ chat:
     Before the fixes, the same review grades every unreviewed turn with one
     forced grade_turns call (actor chat_review_grade): fine, miss (kind
     company = a fact or preference it lacked, product = something it could
-    not do) or unclear, with what the person wanted instead and a 4+ word
+    not do, plus a finer cause: term, fact, preference, specialist or do_it
+    for company, tool or cant for product, stored empty when missing or
+    from the other kind) or unclear, with what the person wanted instead and a 4+ word
     quote that must appear in that or a later turn, or a signal other than a
     thumbs up on the turn, else the grade is unclear.
     The grader reads the signals the product recorded about each turn:
@@ -5272,7 +5274,7 @@ chat:
     in a chat app, which has no buttons), stopped replies, a rewind
     (session_rewound audit row after the turn), a claim-check nudge
     (claim_check audit row by turn_id) and failed tool calls. Grades land on
-    chat_review_turns (verdict, kind, wanted, signals, graded_at, message_id)
+    chat_review_turns (verdict, kind, cause, wanted, signals, graded_at, message_id)
     and per-person weekly counts in chat_review_weeks; misses are kept 90
     days, other rows 7. A failed grade never stops the fixes. GET/DELETE
     /memories/reflection (api/routes/reflection.py) serves them to the Pulse

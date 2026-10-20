@@ -159,7 +159,7 @@ def test_grading_marks_a_thumbs_up_fine_turn_kept(roster: SimpleNamespace) -> No
         turns = conn.execute(f"SELECT * FROM {cr.TURNS_TABLE} WHERE id = ?", (rid,)).fetchall()  # noqa: S608
     finally:
         conn.close()
-    cr._store_grades({rid: ("fine", "", "")}, turns, {rid: [cr.THUMBS_UP]}, {}, db_path=None)
+    cr._store_grades({rid: ("fine", "", "", "")}, turns, {rid: [cr.THUMBS_UP]}, {}, db_path=None)
     assert int(_row(rid)["kept"]) == 1
 
 

@@ -19,11 +19,11 @@ import {
 import {
   DeferredForget,
   fixedMissIds,
-  groupByKind,
+  groupByTopic,
   learningStats,
   toggleAll,
   unhelpfulLessonIds,
-  type MissKind,
+  type MissTopic,
 } from "@/lib/learning";
 
 import { EmptyState, STAT_VALUE_TONE, formatDate, formatRunAt, type StatTone } from "./shared";
@@ -48,13 +48,20 @@ import { EmptyState, STAT_VALUE_TONE, formatDate, formatRunAt, type StatTone } f
 // Nothing here notifies anyone: it is a record, opened on purpose.
 
 type View = "misses" | "lessons";
-type Category = "all" | MissKind;
+type Category = "all" | MissTopic;
 
 const EMPTY =
   "Nothing yet. After a chat goes quiet, the Executive grades its own answers; the ones that fell short show up here.";
 
-const KIND_LABEL: Record<MissKind, string> = {
+const TOPIC_LABEL: Record<MissTopic, string> = {
+  term: "Words you use",
+  fact: "Facts",
+  preference: "How you like it",
+  specialist: "Who to ask",
+  do_it: "Do it, don't promise it",
   company: "Something to learn",
+  tool: "A tool failed",
+  cant: "Can't do it yet",
   product: "Couldn't do it",
 };
 
@@ -170,11 +177,11 @@ export default function ReflectionTab() {
   const lessons = state.lessons.filter((l) => !hidden.has(`l:${l.id}`));
   const live = lessons.filter((l) => l.retired_at === null);
   const retired = lessons.filter((l) => l.retired_at !== null);
-  const kinds = groupByKind(misses);
+  const topics = groupByTopic(misses);
   // A chip whose misses are all gone (forgotten, or a refresh) falls back to
-  // All, so the other kind stays in reach.
-  const cat: Category = category !== "all" && !kinds.some((g) => g.kind === category) ? "all" : category;
-  const shownMisses = cat === "all" ? misses : misses.filter((m) => m.kind === cat);
+  // All, so the other topics stay in reach.
+  const cat: Category = category !== "all" && !topics.some((g) => g.topic === category) ? "all" : category;
+  const shownMisses = cat === "all" ? misses : (topics.find((g) => g.topic === cat)?.items ?? []);
   const shownIds = view === "misses" ? shownMisses.map((m) => m.id) : live.map((l) => l.id);
   const quick = view === "misses" ? fixedMissIds(shownMisses) : unhelpfulLessonIds(live);
   const allSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
@@ -208,9 +215,9 @@ export default function ReflectionTab() {
             { id: "lessons", label: "What it learned", count: live.length },
           ]}
         />
-        {view === "misses" && kinds.length > 1 && (
+        {view === "misses" && topics.length > 1 && (
           <div role="group" aria-label="Category" className="flex flex-wrap gap-2">
-            {(["all", ...kinds.map((g) => g.kind)] as Category[]).map((c) => (
+            {(["all", ...topics.map((g) => g.topic)] as Category[]).map((c) => (
               <button
                 key={c}
                 type="button"
@@ -222,7 +229,7 @@ export default function ReflectionTab() {
                     : "bg-surface-overlay/40 text-fg-muted border-line hover:text-fg"
                 }`}
               >
-                {c === "all" ? "All" : KIND_LABEL[c]}
+                {c === "all" ? "All" : TOPIC_LABEL[c]}
               </button>
             ))}
           </div>
@@ -259,9 +266,9 @@ export default function ReflectionTab() {
               </div>
             )}
             {view === "misses" &&
-              (cat === "all" ? kinds : [{ kind: cat, items: shownMisses }]).map((g) => (
-                <div key={g.kind} className="pb-2">
-                  {cat === "all" && <GroupHeading title={KIND_LABEL[g.kind]} count={g.items.length} />}
+              (cat === "all" ? topics : [{ topic: cat, items: shownMisses }]).map((g) => (
+                <div key={g.topic} className="pb-2">
+                  {cat === "all" && <GroupHeading title={TOPIC_LABEL[g.topic]} count={g.items.length} />}
                   {g.items.map((m, i) => (
                     <MissRow
                       key={m.id}

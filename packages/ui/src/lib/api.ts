@@ -2280,6 +2280,10 @@ export interface ReflectionMiss {
   /** `company`: something only this workspace knows would have fixed it;
    * `product`: it couldn't have done it with what it has. */
   kind: "company" | "product";
+  /** The finer reason within the kind: `term`, `fact`, `preference`,
+   * `specialist`, `do_it` (company) or `tool`, `cant` (product); null on a
+   * miss graded before causes, or when the grader gave none. */
+  cause: string | null;
   signals: string[];
   /** How its nightly replays went: "open" until one passes, "closed" (it
    * would go right today), "evidence" (depends on what that day held). */

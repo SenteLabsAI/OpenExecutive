@@ -49,11 +49,41 @@ export function learningStats(
 /** What `memory/chat_review` says would have fixed a miss. */
 export type MissKind = "company" | "product";
 
-export const MISS_KINDS: MissKind[] = ["company", "product"];
+/** The finer reason within a kind (`CAUSES` in `memory/chat_review`). */
+export type MissCause = "term" | "fact" | "preference" | "specialist" | "do_it" | "tool" | "cant";
 
-/** The two kinds in order, each with its misses, leaving out an empty one. */
-export function groupByKind<T extends { kind: MissKind }>(misses: T[]): { kind: MissKind; items: T[] }[] {
-  return MISS_KINDS.map((kind) => ({ kind, items: misses.filter((m) => m.kind === kind) })).filter(
+/** What a miss is filed under: its cause, or its kind when the grade that
+ * made it predates causes or gave none. */
+export type MissTopic = MissCause | MissKind;
+
+/** The order the topics show in: each kind's causes, then the kind itself
+ * for the misses without one. */
+export const MISS_TOPICS: MissTopic[] = [
+  "term",
+  "fact",
+  "preference",
+  "specialist",
+  "do_it",
+  "company",
+  "tool",
+  "cant",
+  "product",
+];
+
+const KIND_CAUSES: Record<MissKind, readonly string[]> = {
+  company: ["term", "fact", "preference", "specialist", "do_it"],
+  product: ["tool", "cant"],
+};
+
+export function missTopic(m: { kind: MissKind; cause?: string | null }): MissTopic {
+  return m.cause && KIND_CAUSES[m.kind].includes(m.cause) ? (m.cause as MissCause) : m.kind;
+}
+
+/** The topics in order, each with its misses, leaving out an empty one. */
+export function groupByTopic<T extends { kind: MissKind; cause?: string | null }>(
+  misses: T[],
+): { topic: MissTopic; items: T[] }[] {
+  return MISS_TOPICS.map((topic) => ({ topic, items: misses.filter((m) => missTopic(m) === topic) })).filter(
     (g) => g.items.length > 0,
   );
 }
