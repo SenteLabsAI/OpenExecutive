@@ -193,6 +193,15 @@ def test_numbered_points_are_held_to_the_same_rule() -> None:
     assert keep_cited_points(text, {"M1"}) == "**Lead.**\n2. **Budget** — moved.\n**Move today:** Go."
 
 
+def test_a_draft_whose_points_all_go_is_dropped_whole() -> None:
+    text = "**Big day.**\n- **A** — x.\n- **B** — y. [M9]\n**Move today:** Do A."
+    assert keep_cited_points(text, {"M1"}) == ""
+    # A draft with no points at all is a valid read and stays.
+    assert keep_cited_points("**Calm so far.**\n**Move today:** Prep the 4:00.", {"M1"}) == (
+        "**Calm so far.**\n**Move today:** Prep the 4:00."
+    )
+
+
 def test_quiet_line_passes_through() -> None:
     assert keep_cited_points("Quiet right now — nothing pressing.", set()) == (
         "Quiet right now — nothing pressing."

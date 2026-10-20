@@ -275,7 +275,8 @@ def tags_in(context: str) -> frozenset[str]:
 def keep_cited_points(text: str, tags: frozenset[str] | set[str]) -> str:
     """``text`` with every bullet that cites no known tag dropped, the tags
     stripped everywhere, and at most ``MAX_POINTS`` bullets kept. A bullet
-    the model wrapped onto indented lines is judged and dropped whole."""
+    the model wrapped onto indented lines is judged and dropped whole. When
+    the draft had points and none survives, the whole draft goes: ""."""
     # Group each bullet with its indented continuation lines.
     blocks: list[tuple[bool, list[str]]] = []
     for raw in text.splitlines():
@@ -295,6 +296,10 @@ def keep_cited_points(text: str, tags: frozenset[str] | set[str]) -> str:
                 continue
             kept += 1
         out.extend(_TAG_RE.sub("", ln).rstrip() for ln in lines)
+    if kept == 0 and any(is_bullet for is_bullet, _ in blocks):
+        # Every point was uncited: the opener and Move today were written
+        # over them, so none of it stands. The caller writes its fixed line.
+        return ""
     return "\n".join(out).strip()
 
 
