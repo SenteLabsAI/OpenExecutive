@@ -4370,6 +4370,21 @@ people:
     recorded with reason asked so it has an Undo. Routes /contacts/* answer
     caller_is_principal only (404 otherwise). /today/activity gives the
     principal one contacts_kept row per day with changes.
+    people.contact_notes keeps what the Executive remembers about each
+    contact (contact_notes, one row per person): last emailed, last heard
+    from (newest authenticated mail, read only when the note is rewritten),
+    last met, next meeting and its title, counts, and a note of at most 400
+    characters with up to 6 topics. Why the principal's own words only: the
+    note is written by one forced-tool call (ROUTING_MODEL) from their own
+    sent mail to the contact (sender_new_text, no quoted mail, no
+    ghostwritten sends) and the titles of meetings they organised, so a
+    contact's mail cannot write it, and it can be read in chat like the
+    principal's own sent mail. Rewritten only when the set of those
+    messages and meetings changes (activity_key), capped 5 per pass and 20 a
+    day; notes or topics with a link, address, tag or instruction word are
+    dropped. Read on the principal's own turn by list_people and
+    ask_about_person (contacts_reachable_now), and by GET
+    /contacts/{person_id}/note (principal only). archive_person deletes it.
   aliases: |
     A Person has one PRIMARY address (`Person.email`, the one they sign in
     with) and up to 10 ALIASES (`Person.email_aliases`, table

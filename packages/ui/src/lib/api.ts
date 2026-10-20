@@ -4629,6 +4629,30 @@ export function getContactChanges(personId?: number): Promise<ContactChanges> {
   return contactsCall(`/changes${personId !== undefined ? `?person_id=${personId}` : ""}`);
 }
 
+// What the Executive remembers about one contact (people/contact_notes.py),
+// from the principal's own mail and meetings. null when nothing yet.
+export interface ContactNote {
+  person_id: number;
+  note: string;
+  topics: string[];
+  last_emailed_at: string | null;
+  last_heard_at: string | null;
+  last_met_at: string | null;
+  next_meeting_at: string | null;
+  next_meeting_title: string;
+  emailed_count: number;
+  met_count: number;
+  note_written_at: string | null;
+  updated_at: string;
+}
+
+export async function getContactNote(personId: number): Promise<ContactNote | null> {
+  const res = await fetch(`${API_BASE}/contacts/${personId}/note`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Request failed: ${res.statusText}`);
+  return res.json();
+}
+
 export function setContactKeeperMode(mode: ContactKeeperMode): Promise<ContactChanges> {
   return contactsCall("/keeper", {
     method: "PUT",

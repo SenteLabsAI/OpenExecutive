@@ -41,6 +41,12 @@ or a ``first.last`` address).
 A signature can change a role, never who gets mail. Names and addresses come
 from mail headers and guest lists only, never from a message's text.
 
+**What it remembers.** For every contact, when the principal last emailed,
+heard from and met them, their next meeting, and a short note on what they
+deal with each other about (``people.contact_notes``), written only from the
+principal's own sent mail and the meetings they organized. The Executive
+reads it on the principal's own turns, to suggest who to ask.
+
 **Mode.** ``on`` makes the change and records it; ``ask`` records it as a
 suggestion the principal adds or dismisses. Either way it is listed in
 "Changes I made" (``contact_changes``) with Undo.
@@ -97,6 +103,7 @@ class RunResult:
     added: int = 0
     suggested: int = 0
     updated: int = 0
+    notes: int = 0
     counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -187,8 +194,14 @@ class Seen:
     met: int = 0
     # As the principal wrote them (To/Cc display names, guest lists).
     names: list[str] = field(default_factory=list)
-    # A contact's own address: read for a fuller name, never added again.
+    # A contact's own address: read for a fuller name and what the principal
+    # deals with them about (``contact_notes``), never added again.
     known: bool = False
+    # A contact's only: the principal's own mail to them, newest first, as
+    # (message id, when, subject, what they wrote), and meetings with them,
+    # as (event id, start, title when the principal organized it, else "").
+    sent: list[tuple[str, str, str, str]] = field(default_factory=list)
+    meetings: list[tuple[str, str, str]] = field(default_factory=list)
 
     def name(self, address: str = "") -> str:
         for raw in [*self.names, name_from_address(address)]:
@@ -215,8 +228,10 @@ async def gather(
     """Who the principal emailed and met, by address. Calendar trouble (not
     granted, or failing) leaves the meetings out. Addresses in ``watch``
     (contacts' own) are kept with ``known`` set, for how their name was
-    written. Mail Handle it for me sent is not the principal writing."""
+    written, and with what the principal wrote them and when they met.
+    Mail Handle it for me sent is not the principal writing."""
     from openexecutive.delegation.gmail import GmailAuthError, GmailRateLimited
+    from openexecutive.integrations.email_poller import sender_new_text
 
     seen: dict[str, Seen] = {}
     since = now - LOOKBACK
@@ -232,7 +247,12 @@ async def gather(
             continue
         for address in to:
             if address in watch:
-                seen.setdefault(address, Seen(known=True)).names.append(getattr(message, "names", {}).get(address, ""))
+                entry = seen.setdefault(address, Seen(known=True))
+                entry.names.append(getattr(message, "names", {}).get(address, ""))
+                entry.sent.append((
+                    str(message.id), when.isoformat(), str(message.subject or ""),
+                    sender_new_text(str(message.text or "")),
+                ))
                 continue
             if _skip(address, own, known):
                 continue
@@ -254,7 +274,11 @@ async def gather(
             continue
         for name, address in guests:
             if address in watch:
-                seen.setdefault(address, Seen(known=True)).names.append(name)
+                entry = seen.setdefault(address, Seen(known=True))
+                entry.names.append(name)
+                entry.meetings.append(
+                    (str(event.id), str(event.start), event.title if event.response == "organizer" else ""),
+                )
                 continue
             if not address or _skip(address, own, known):
                 continue
@@ -518,9 +542,7 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
     everyone = people_store.list_people(include_archived=True, include_contacts=True)
     known = {changes.norm(a) for p in everyone for a in [p.email, *p.email_aliases] if a}
     contacts = [p for p in everyone if p.kind == "contact" and not p.archived and p.id is not None]
-    watch = frozenset(
-        changes.norm(a) for p in contacts if len(p.full_name.split()) == 1 for a in [p.email, *p.email_aliases] if a
-    )
+    watch = frozenset(changes.norm(a) for p in contacts for a in [p.email, *p.email_aliases] if a)
     seen = await gather(client, own=own, known=known, now=now, watch=watch)
 
     # A second address for a contact they already have, mailed at least
@@ -582,6 +604,7 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
                 break
 
     await _read_roles(client, mode, contacts, now, result)
+    await _refresh_notes(client, contacts, seen, now, result)
     return result
 
 
@@ -636,6 +659,95 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
             mode, result, action="update", field_name="role", reason="signature", email=address,
             full_name=person.full_name, person_id=person.id, old=person.role, new=role,
         )
+
+
+# --------------------------------------------------------------------------- #
+# What the Executive remembers about each contact
+# --------------------------------------------------------------------------- #
+
+
+def _when(value: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+async def _refresh_notes(
+    client: Any, contacts: list[Any], seen: dict[str, Seen], now: datetime, result: RunResult,
+) -> None:
+    """Dates and counts for every contact, and a new note for those with new
+    sent mail or meetings (``contact_notes``). The note is written from the
+    principal's own words only: their sent mail and the meetings they set up."""
+    from openexecutive.delegation.gmail import GmailAuthError, GmailRateLimited
+    from openexecutive.people import contact_notes as notes
+
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    budget = min(notes.NOTES_PER_RUN, notes.NOTES_PER_DAY - notes.notes_written_since(day_start))
+    # Most recently in touch first: their note matters most.
+    rows: list[tuple[Any, list[tuple[str, str, str, str]], list[tuple[str, str, str]]]] = []
+    for person in contacts:
+        mail_by_id: dict[str, tuple[str, str, str, str]] = {}
+        meetings_by_id: dict[str, tuple[str, str, str]] = {}
+        for address in {changes.norm(a) for a in [person.email, *person.email_aliases] if a}:
+            entry = seen.get(address)
+            if entry is None:
+                continue
+            mail_by_id.update({m[0]: m for m in entry.sent})
+            meetings_by_id.update({m[0]: m for m in entry.meetings})
+        rows.append((
+            person,
+            sorted(mail_by_id.values(), key=lambda m: m[1], reverse=True),
+            sorted(meetings_by_id.values(), key=lambda m: m[1], reverse=True),
+        ))
+    rows.sort(key=lambda r: max([m[1] for m in r[1]] + [m[1] for m in r[2]] + [""]), reverse=True)
+    for person, sent, meetings in rows:
+        person_id = int(person.id)
+        past = [m for m in meetings if (_when(m[1]) or now) <= now]
+        ahead = sorted((m for m in meetings if (_when(m[1]) or now) > now), key=lambda m: m[1])
+        try:
+            notes.put_activity(
+                person_id,
+                last_emailed_at=sent[0][1] if sent else None,
+                last_met_at=past[0][1] if past else None,
+                next_meeting_at=ahead[0][1] if ahead else None,
+                next_meeting_title=ahead[0][2] if ahead else "",
+                emailed_count=len(sent), met_count=len(past),
+            )
+        except Exception:
+            logger.warning("contact_keeper: couldn't keep a contact's activity", exc_info=True)
+            continue
+        key = notes.key_for((m[0] for m in sent), (m[0] for m in meetings))
+        written = [(when, subject, text) for _id, when, subject, text in sent if text.strip()]
+        titled = [(when, title) for _id, when, title in meetings if title]
+        if not written and not titled:
+            continue
+        if budget <= 0 or key == notes.activity_key(person_id):
+            continue
+        budget -= 1
+        heard_at: str | None = None
+        try:
+            latest = await client.latest_from(changes.norm(person.email), days=int(LOOKBACK.days))
+        except (GmailAuthError, GmailRateLimited):
+            raise
+        except Exception:
+            latest = None
+        if latest is not None and getattr(latest, "sender_authenticated", False) is True:
+            moment = _sent_at(latest)
+            heard_at = moment.isoformat() if moment is not None else None
+        if heard_at is not None:
+            notes.put_activity(
+                person_id, last_emailed_at=None, last_met_at=None,
+                next_meeting_at=ahead[0][1] if ahead else None, next_meeting_title=ahead[0][2] if ahead else "",
+                emailed_count=len(sent), met_count=len(past), last_heard_at=heard_at,
+            )
+        made = await notes.write_note(person.full_name, written, titled)
+        if made is None:
+            continue
+        note, topics = made
+        notes.put_note(person_id, note, topics, key)
+        result.notes += 1
 
 
 # --------------------------------------------------------------------------- #

@@ -909,6 +909,12 @@ def archive_person(person_id: int, db_path: Path | None = None) -> bool:
             delete_profile(person_id)
         except Exception:
             logger.warning("archive_person: dropping working style failed", exc_info=True)
+        try:
+            from openexecutive.people.contact_notes import forget
+
+            forget(person_id)
+        except Exception:
+            logger.warning("archive_person: dropping the contact note failed", exc_info=True)
     return archived
 
 

@@ -7,6 +7,8 @@
 - ``POST /contacts/changes/{id}/accept`` / ``/dismiss`` — Add / Not now on a
   suggestion.
 - ``POST /contacts/changes/seen`` — Got it: clears the card.
+- ``GET /contacts/{person_id}/note`` — what the Executive remembers about one
+  contact (``people.contact_notes``): 404 when it has nothing yet.
 
 Contacts are the principal's alone, so every route answers only a caller
 that resolves to the principal (``people.caller_is_principal``): 404 for
@@ -19,6 +21,7 @@ from pydantic import BaseModel
 
 from openexecutive.api.routes.people import caller_is_principal
 from openexecutive.people import contact_changes as changes
+from openexecutive.people import contact_notes
 
 router = APIRouter()
 
@@ -89,3 +92,15 @@ def post_contact_change_accept(change_id: int, request: Request) -> changes.Cont
 @router.post("/contacts/changes/{change_id}/dismiss", response_model=changes.ContactChange)
 def post_contact_change_dismiss(change_id: int, request: Request) -> changes.ContactChange:
     return _decide(change_id, request, "dismiss")
+
+
+@router.get("/contacts/{person_id}/note", response_model=contact_notes.ContactNote)
+def get_contact_note(person_id: int, request: Request) -> contact_notes.ContactNote:
+    _require_principal(request)
+    from openexecutive.people import store as people_store
+
+    person = people_store.get_person(person_id)
+    note = contact_notes.get(person_id) if person is not None and person.kind == "contact" else None
+    if note is None or person is None or person.archived:
+        raise HTTPException(status_code=404, detail="Not found")
+    return note

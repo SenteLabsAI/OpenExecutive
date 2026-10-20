@@ -15,8 +15,16 @@ import {
   type ContactChange,
   type ContactChanges as ContactChangesData,
   type ContactKeeperMode,
+  type ContactNote,
 } from "@/lib/api";
-import { addedByLine, cardChanges, changeLine, changeReason, keeperBlocked } from "@/lib/contactChanges";
+import {
+  addedByLine,
+  cardChanges,
+  changeLine,
+  changeReason,
+  contactActivityLines,
+  keeperBlocked,
+} from "@/lib/contactChanges";
 
 const TAG_CLS = {
   Added: "bg-emerald-500/15 text-emerald-500",
@@ -185,6 +193,37 @@ export function PersonContactChanges({
           </button>
         </div>
       ))}
+    </section>
+  );
+}
+
+/** On a contact's own page: what the Executive remembers about them, from
+ * your own mail and meetings. Nothing when it knows nothing yet. */
+export function PersonContactNote({ note }: { note: ContactNote | null }) {
+  if (!note) return null;
+  const lines = contactActivityLines(note, shortDate);
+  if (!note.note && note.topics.length === 0 && lines.length === 0) return null;
+  return (
+    <section className="rounded-2xl border border-line bg-surface-elevated px-5 py-4 mb-4" aria-label="What I remember">
+      <div className="text-[12px] font-bold uppercase tracking-wide text-fg-subtle">What I remember</div>
+      {note.note && <p className="text-[15px] text-fg mt-1.5 break-words">{note.note}</p>}
+      {note.topics.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5 mt-2.5" aria-label="Good to ask about">
+          {note.topics.map((t) => (
+            <li key={t} className="rounded-full border border-line px-2.5 py-0.5 text-[13px] text-fg-muted">
+              {t}
+            </li>
+          ))}
+        </ul>
+      )}
+      {lines.length > 0 && (
+        <ul className="mt-2.5 space-y-0.5 text-[13px] text-fg-subtle">
+          {lines.map((l) => (
+            <li key={l}>{l}</li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2.5 text-[12px] text-fg-subtle">From your own emails and meetings. Only you see this.</p>
     </section>
   );
 }

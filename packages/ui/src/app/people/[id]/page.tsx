@@ -5,7 +5,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useState
 
 import Icon from "@/components/Icon";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
-import { PersonContactChanges } from "@/components/people/ContactChanges";
+import { PersonContactChanges, PersonContactNote } from "@/components/people/ContactChanges";
 import { TeamModeOffer } from "@/components/people/TeamModeOffer";
 import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button from "@/components/ui/Button";
@@ -18,6 +18,7 @@ import {
   assignOpenLoop,
   closeOpenLoop,
   getContactChanges,
+  getContactNote,
   getPeopleViewer,
   getPerson,
   getPersonOpenLoops,
@@ -28,6 +29,7 @@ import {
   updatePerson,
   type AvailabilityWindow,
   type ContactChange,
+  type ContactNote,
   type OpenLoop,
   type OutreachStat,
   type Person,
@@ -593,6 +595,12 @@ export default function PersonDetailPage() {
     if (isNaN(personId) || !viewerIsPrincipal) return;
     getContactChanges(personId).then((d) => setContactChanges(d.changes), () => setContactChanges([]));
   }, [personId, viewerIsPrincipal]);
+  // What the Executive remembers about this contact (the principal's alone).
+  const [contactNote, setContactNote] = useState<ContactNote | null>(null);
+  useEffect(() => {
+    if (isNaN(personId) || !viewerIsPrincipal) return;
+    getContactNote(personId).then(setContactNote, () => setContactNote(null));
+  }, [personId, viewerIsPrincipal]);
   function reloadAfterUndo() {
     getContactChanges(personId).then((d) => setContactChanges(d.changes), () => setContactChanges([]));
     getPerson(personId).then((p) => { setPerson(p); resetForm(p); }, () => {});
@@ -842,6 +850,7 @@ export default function PersonDetailPage() {
               {contact && viewerIsPrincipal && !editing && contactChanges.length > 0 && (
                 <PersonContactChanges changes={contactChanges} onChanged={reloadAfterUndo} />
               )}
+              {contact && viewerIsPrincipal && !editing && <PersonContactNote note={contactNote} />}
               {/* Core fields */}
               <section className="rounded-2xl border border-line bg-surface-elevated px-5">
                 {editing ? (

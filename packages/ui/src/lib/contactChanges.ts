@@ -2,7 +2,7 @@
 // "Changes I made" on Contacts and the lines on a person's page.
 // Plain functions, so scripts/contactChanges.test.mjs can check the wording.
 
-import type { ContactChange } from "./api";
+import type { ContactChange, ContactNote } from "./api";
 
 export interface ChangeLine {
   tag: "Added" | "Updated" | "Suggested";
@@ -75,4 +75,21 @@ export function addedByLine(changes: ContactChange[], when: (iso: string) => str
   const add = changes.find((c) => c.action === "add" && c.status === "applied" && c.reason !== "asked");
   if (!add) return null;
   return `Added by me on ${when(add.created_at)}. ${changeReason(add)}`;
+}
+
+/** When you were last in touch with a contact, one fact per line, newest
+ * kinds first. Empty when nothing is known. */
+export function contactActivityLines(note: ContactNote, day: (iso: string) => string): string[] {
+  const out: string[] = [];
+  if (note.next_meeting_at) {
+    const title = note.next_meeting_title ? `: ${note.next_meeting_title}` : "";
+    out.push(`Next meeting ${day(note.next_meeting_at)}${title}`);
+  }
+  if (note.last_emailed_at) {
+    const count = note.emailed_count > 1 ? ` (${note.emailed_count} emails in 60 days)` : "";
+    out.push(`You last emailed them ${day(note.last_emailed_at)}${count}`);
+  }
+  if (note.last_heard_at) out.push(`They last wrote to you ${day(note.last_heard_at)}`);
+  if (note.last_met_at) out.push(`You last met ${day(note.last_met_at)}`);
+  return out;
 }
