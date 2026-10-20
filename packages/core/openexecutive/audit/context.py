@@ -103,3 +103,143 @@ def set_turn(
     finally:
         _audit_session_id.set(prior_session)
         _audit_turn_id.set(prior_turn)
+
+
+# Rows kept private to the principal by the stretch of work that writes them,
+# not only by the session bound when they are written
+# (`people_tools.audit_row_private_to_principal` reads both):
+# - `private_rows`: every row. The email poller holds it for the whole
+#   handling of a mail from one of the principal's contacts or a mail they
+#   forwarded, because some of its rows (the knowledge retrieval, for one)
+#   are written before the turn binds its private session.
+# - `principal_turn_rows`: rows that name one of the principal's contacts,
+#   as on the principal's own verified turn. A chat adapter holds it from
+#   knowing the principal sent the message until its handling ends, for the
+#   rows written before the turn binds its session (the inbound row, the
+#   knowledge retrieval, alert triage).
+# A task or an `asyncio.to_thread` call started inside inherits the scope
+# (both copy the context), so a background pass stays private too; a bare
+# `threading.Thread` would not. Neither scope changes who the turn may reach:
+# that stays with the bound session. Unattended work started inside (a resumed
+# workflow run, a scheduled action) clears both with `unscoped_audit_rows`.
+_rows_private: ContextVar[bool] = ContextVar("audit_rows_private", default=False)
+# Whose rows these are, for work done in one person's own mailbox (Act as me:
+# the inbox watcher, a reply's Send, their settings). Every row written
+# inside ``rows_for_person`` is private, and the logger marks it theirs
+# alone (``private_to_person``) when they are not the principal, so not even
+# the principal reads it.
+_rows_owner: ContextVar[int | None] = ContextVar("audit_rows_owner", default=None)
+_rows_on_principal_turn: ContextVar[bool] = ContextVar(
+    "audit_rows_on_principal_turn", default=False
+)
+# Which AI app asked for the work, for a turn another app asked over Open
+# Executive's own MCP server and allowed to act (``Session.mcp_client_may_act``).
+# Every row written inside ``rows_via`` carries it as ``details["via"]``, so
+# the record shows the change came from that app, not from Open Executive.
+_rows_via: ContextVar[str | None] = ContextVar("audit_rows_via", default=None)
+
+
+def rows_private() -> bool:
+    """Whether every audit row written now is private to the principal."""
+    return _rows_private.get()
+
+
+def rows_owner() -> int | None:
+    """The person every audit row written now belongs to, or None."""
+    return _rows_owner.get()
+
+
+def rows_on_principal_turn() -> bool:
+    """Whether audit rows written now are on the principal's own turn."""
+    return _rows_on_principal_turn.get()
+
+
+def rows_via() -> str | None:
+    """The AI app every audit row written now came from, or None."""
+    return _rows_via.get()
+
+
+@contextlib.contextmanager
+def via_app(name: str | None) -> Iterator[None]:
+    """Mark every audit row written inside the block as asked for by the AI
+    app ``name`` (``details["via"]``). None or empty marks nothing; an inner
+    block never changes an outer one's app. Save/restore, as in
+    ``set_turn``."""
+    prior = _rows_via.get()
+    if prior is None and name:
+        _rows_via.set(name)
+    try:
+        yield
+    finally:
+        _rows_via.set(prior)
+
+
+@contextlib.contextmanager
+def private_rows(active: bool = True) -> Iterator[None]:
+    """Keep every audit row written inside the block private to the principal
+    when ``active``. An inner block never lifts an outer one. Save/restore, as
+    in ``set_turn``."""
+    prior = _rows_private.get()
+    _rows_private.set(prior or bool(active))
+    try:
+        yield
+    finally:
+        _rows_private.set(prior)
+
+
+@contextlib.contextmanager
+def rows_for_person(person_id: int | None) -> Iterator[None]:
+    """Keep every audit row written inside the block private, and the
+    person's own (``rows_owner``), for work in ``person_id``'s own mailbox.
+    None only makes the rows private. An inner block never changes an outer
+    one's owner. Save/restore, as in ``set_turn``."""
+    prior_private = _rows_private.get()
+    prior_owner = _rows_owner.get()
+    _rows_private.set(True)
+    if prior_owner is None:
+        _rows_owner.set(person_id)
+    try:
+        yield
+    finally:
+        _rows_private.set(prior_private)
+        _rows_owner.set(prior_owner)
+
+
+@contextlib.contextmanager
+def principal_turn_rows(active: bool = True) -> Iterator[None]:
+    """Treat audit rows written inside the block as on the principal's own
+    verified turn when ``active``: one that names a contact is private. An
+    inner block never lifts an outer one. Save/restore, as in ``set_turn``."""
+    prior = _rows_on_principal_turn.get()
+    _rows_on_principal_turn.set(prior or bool(active))
+    try:
+        yield
+    finally:
+        _rows_on_principal_turn.set(prior)
+
+
+@contextlib.contextmanager
+def unscoped_audit_rows() -> Iterator[None]:
+    """Clear the scopes above for the block, and put them back after.
+
+    For unattended work started from inside a scoped stretch — a workflow
+    run a chat reply resumes, a scheduled action: it copies the caller's
+    context but is not part of that turn, so its rows must follow its own
+    rule. Inherited, the principal's scope would hide every row of the run
+    that names a contact, and whoever started the run would notice the gap.
+    Save/restore, as in ``set_turn``."""
+    prior_private = _rows_private.get()
+    prior_principal = _rows_on_principal_turn.get()
+    prior_owner = _rows_owner.get()
+    prior_via = _rows_via.get()
+    _rows_private.set(False)
+    _rows_on_principal_turn.set(False)
+    _rows_owner.set(None)
+    _rows_via.set(None)
+    try:
+        yield
+    finally:
+        _rows_private.set(prior_private)
+        _rows_on_principal_turn.set(prior_principal)
+        _rows_owner.set(prior_owner)
+        _rows_via.set(prior_via)

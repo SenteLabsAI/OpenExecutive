@@ -1,0 +1,28 @@
+id: artifacts_003
+domain: artifacts
+description: "Principal asks to send an existing artifact to a teammate; Executive shares it with message_person(artifact_id=...) instead of pasting the document into the DM."
+company_context:
+  stage: "Series A"
+  industry: "B2B SaaS"
+  headcount: 45
+  arr: 3500000
+# Exercises artifact delivery: the Executive finds the artifact
+# (list_artifacts), resolves the teammate (lookup_person), and shares it with
+# message_person(person_id, text, artifact_id) so the DM carries the title and
+# a link, rather than dumping the full document into chat. With Google
+# Workspace connected it may instead email the file as an attachment
+# ({"artifact_id": ...}). `expected_tool_calls` is documentation for now
+# (matches mcp_tool_call_001.yaml convention).
+query: "Send Dana the pricing comparison spreadsheet you made yesterday — she needs it before the vendor call."
+expected_tool_calls:
+  - list_artifacts
+  - lookup_person
+  - message_person
+expected_topics:
+  - identifies_pricing_spreadsheet
+  - shares_with_dana
+  - confirms_sent
+quality_criteria:
+  shares_link_not_full_document: true
+  does_not_ask_for_artifact_id: true
+  brief: true

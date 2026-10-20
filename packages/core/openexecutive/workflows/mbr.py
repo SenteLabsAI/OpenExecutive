@@ -23,6 +23,7 @@ from openexecutive.workflows.base import (
     WorkflowSection,
     WorkflowStepDef,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
 _MBR_EXAMPLE_FINANCIALS = (
     "- Revenue: $1.42M vs. $1.50M plan (-5%). MoM +6%. ARR ended at $4.1M.\n"
@@ -115,6 +116,7 @@ class MBRWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 3
+    playbooks = ("monthly-business-review",)
 
     def input_model(self) -> type[BaseModel]:
         return MBRInput
@@ -172,6 +174,7 @@ class MBRWorkflow(Workflow):
 
         yield WorkflowEvent(type="step_start", step_id="context", step_title="Load context")
         ctx.profile = load_or_create_profile()
+        ctx.playbook = load_playbook("monthly-business-review")
         ctx.rag = retrieve(
             query=f"monthly business review operating metrics {ctx.inputs.month_label}",
             specialist_name="coo",
@@ -294,6 +297,7 @@ class _MBRContext:
     def __init__(self, inputs: MBRInput) -> None:
         self.inputs = inputs
         self.profile: CompanyProfile | None = None
+        self.playbook: str = ""
         self.rag: str = ""
         self.financial_summary: str = ""
         self.kpi_narrative: str = ""
@@ -341,6 +345,9 @@ def _build_financial_summary_prompt(ctx: _MBRContext) -> str:
         "it's correcting.\n\n"
         "Do not invent numbers. Use placeholders like '[need from FP&A]' "
         "where a figure is implied but not provided."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Follow the part of this MBR playbook that covers this section (structure, tone, discipline)",
     )
 
 
@@ -363,6 +370,9 @@ def _build_kpi_prompt(ctx: _MBRContext) -> str:
         "tells us whether our diagnosis was right.\n\n"
         "Discipline: cite the actual numbers from the inputs. No "
         "fabrication. If a KPI's direction is ambiguous, say so."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Follow the part of this MBR playbook that covers this section (structure, tone, discipline)",
     )
 
 
@@ -382,6 +392,9 @@ def _build_function_prompt(ctx: _MBRContext) -> str:
         "Cover only functions named in the inputs. Do not invent activity. "
         "If the inputs are thin for a function, keep that function's "
         "section thin — don't pad."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Follow the part of this MBR playbook that covers this section (structure, tone, discipline)",
     )
 
 

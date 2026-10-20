@@ -23,12 +23,25 @@ def _isolate_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_persona_includes_exec_email_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "ceo.test@example.com")
-    blocks = build_system_blocks()
+    blocks = build_system_blocks(mcp_servers=("google_workspace",))
     persona_text = blocks[0]["text"]
     assert "ceo.test@example.com" in persona_text
     assert "## Your Identity" in persona_text
-    assert "Never ask the user which address to send from" in persona_text
+    assert "never ask the user which address to send from" in persona_text
     assert "This mailbox belongs to you" in persona_text
+
+
+def test_google_account_guidance_only_when_google_is_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "ceo.test@example.com")
+    persona_text = build_system_blocks()[0]["text"]
+    # Name and address stay; the Google how-to does not, and nothing claims
+    # Gmail or Drive access that isn't there.
+    assert "This mailbox belongs to you" in persona_text
+    assert "which address to send from" not in persona_text
+    assert "When using Gmail" not in persona_text
+    assert "Google Workspace: not connected" in persona_text
 
 
 def test_persona_uses_default_when_no_override() -> None:
@@ -152,3 +165,44 @@ def test_persona_follow_up_loop_is_bounded() -> None:
     """
     assert "A correction is not a deflection." in EXECUTIVE_PERSONA_PROMPT
     assert 'An explicit "drop it" ends it.' in EXECUTIVE_PERSONA_PROMPT
+
+
+def test_persona_instructions_appended_inside_block_zero() -> None:
+    plain = build_system_blocks()[0]["text"]
+    with_instr = build_system_blocks(persona_instructions="Sign off as Ada.")[0]["text"]
+    assert "<additional_instructions>\nSign off as Ada.\n</additional_instructions>" in with_instr
+    # The identity addendum still comes after the admin's text, so the
+    # instructions can't push it out of the persona.
+    assert with_instr.index("Sign off as Ada.") < with_instr.index("## Your Identity")
+    assert plain != with_instr
+
+
+def test_blank_persona_instructions_keep_block_zero_byte_identical() -> None:
+    plain = build_system_blocks()[0]["text"]
+    assert build_system_blocks(persona_instructions=None)[0]["text"] == plain
+    assert build_system_blocks(persona_instructions="  ")[0]["text"] == plain
+    # Stable across calls with the same instructions, so the cache stays warm.
+    a = build_system_blocks(persona_instructions="X")[0]["text"]
+    b = build_system_blocks(persona_instructions="X")[0]["text"]
+    assert a == b
+
+
+def test_tool_building_guidance_follows_the_chat_scripts_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.prompts.executive_persona import TOOL_BUILDING_ADDENDUM
+
+    on = build_system_blocks(mcp_enabled=True)[0]["text"]
+    assert TOOL_BUILDING_ADDENDUM in on
+    # The same text on every build: block 0 stays cacheable.
+    assert build_system_blocks(mcp_enabled=True)[0]["text"] == on
+    assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=False)[0]["text"]
+    monkeypatch.setenv("CHAT_SCRIPTS", "false")
+    assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=True)[0]["text"]
+
+
+def test_no_tool_building_guidance_without_the_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.prompts.executive_persona import TOOL_BUILDING_ADDENDUM
+
+    monkeypatch.setattr("openexecutive.workflows.step_script.available", lambda: False)
+    assert TOOL_BUILDING_ADDENDUM not in build_system_blocks(mcp_enabled=True)[0]["text"]

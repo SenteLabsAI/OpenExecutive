@@ -23,6 +23,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # eslint-config-next's react, import and jsx-a11y plugins cap at ESLint 9,
+    # so `npm run lint` (run in CI) fails on 10. Keep dependabot on 9.x until
+    # those plugins support 10.
+    ignore:
+      - dependency-name: "eslint"
+        versions: [">=10"]
     groups:
       npm-dependencies:
         patterns:

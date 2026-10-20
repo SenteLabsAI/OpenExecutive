@@ -4,7 +4,9 @@ Mirrors the structure of slack_bot.py. In production the bot is embedded in
 the FastAPI lifespan (api/main.py) so it shares the same /data volume as the
 API. `run_discord_bot()` / `python -m openexecutive.integrations.discord_bot`
 is a standalone dev entry point — useful for iterating on bot-only changes
-without restarting the API. Both rely on `create_discord_bot()` returning a
+without restarting the API. Run it only while the API is stopped or has no
+DISCORD_BOT_TOKEN: the lifespan starts its own bot whenever the token is set,
+and two gateway connections on one token reply to every message twice. Both rely on `create_discord_bot()` returning a
 `commands.Bot` whose `.start()` / `.close()` work in any event loop.
 
 Supported interactions:
@@ -22,7 +24,9 @@ import re
 import unicodedata
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from openexecutive.orchestrator.people_tools import audit_rows_on_senders_turn
 
 if TYPE_CHECKING:
     pass
@@ -575,6 +579,104 @@ def _is_rostered(discord_user_id: str) -> bool:
         return False
 
 
+async def _hold_unknown_sender(
+    *,
+    text: str,
+    discord_user_id: str,
+    discord_channel: str,
+    message_id: str,
+    thread_id: str | None,
+    is_dm: bool,
+    session_id: str,
+    session_title: str,
+    author_display_name: str | None,
+    send_ack: Callable[[str], Awaitable[Any]] | None,
+) -> None:
+    """Hold a message from a Discord user off the roster for the principal to
+    confirm (``integrations.roster_intake``) and tell them, privately, that it
+    arrived: in the DM, or by DM for a channel mention (a reply in the
+    channel would tell everyone there who is not on the roster). One of the
+    principal's contacts gets nothing: contacts have no chat access.
+    ``send_ack`` None sends no acknowledgement at all."""
+    from openexecutive.integrations import roster_intake
+    from openexecutive.people.store import find_person_by_discord_id
+
+    if await asyncio.to_thread(find_person_by_discord_id, discord_user_id, include_contacts=True):
+        return
+
+    async def _ack_by_dm(ack_text: str) -> None:
+        await send_dm(discord_user_id, ack_text)
+
+    await roster_intake.intake(
+        "discord", discord_user_id,
+        external_id=message_id,
+        payload={
+            "text": text,
+            "discord_user_id": discord_user_id,
+            "discord_channel": discord_channel,
+            "message_id": message_id,
+            "thread_id": thread_id,
+            "is_dm": is_dm,
+            "session_id": session_id,
+            "session_title": session_title,
+            "author_display_name": author_display_name,
+        },
+        preview=text,
+        display_name=author_display_name or "",
+        send_ack=send_ack if send_ack is not None else (_ack_by_dm if not is_dm else None),
+    )
+
+
+async def _replay_held(message: Any, _request: Any) -> bool:
+    """Replay a message held while its sender was off the roster."""
+    p = message.payload
+    user_id = str(p.get("discord_user_id") or "")
+    text = str(p.get("text") or "")
+    if not user_id or not text:
+        return False
+    is_dm = bool(p.get("is_dm"))
+    channel = str(p.get("discord_channel") or "")
+
+    async def _send(reply: str) -> None:
+        if is_dm or not channel:
+            await send_dm(user_id, reply)
+        else:
+            await send_channel_message(channel, reply)
+
+    await _handle_message(
+        text=text,
+        discord_user_id=user_id,
+        discord_channel=channel,
+        message_id=str(p.get("message_id") or ""),
+        thread_id=p.get("thread_id"),
+        send_fn=_send,
+        is_dm=is_dm,
+        session_id=str(p.get("session_id") or f"discord:dm:{user_id}"),
+        session_title=str(p.get("session_title") or "Discord"),
+        author_display_name=p.get("author_display_name"),
+    )
+    return True
+
+
+async def _already_acknowledged(_text: str) -> None:
+    """The /ask reply already told the sender (ephemerally, within Discord's
+    3 seconds): claim the acknowledgement window without a second message."""
+
+
+def _find_discord_sender(discord_user_id: str) -> object:
+    from openexecutive.people.store import find_person_by_discord_id
+
+    return find_person_by_discord_id(discord_user_id)
+
+
+# The rows this handler writes before the turn binds its session (the inbound
+# row, the knowledge retrieval, alert triage) are private when the principal
+# sent the message and they name one of their contacts.
+@audit_rows_on_senders_turn(
+    "discord",
+    sender_ref=lambda args: str(args["discord_user_id"] or ""),
+    find_sender=_find_discord_sender,
+)
 async def _handle_message(
     text: str,
     discord_user_id: str,
@@ -621,6 +723,12 @@ async def _handle_message(
     plain-channel @mention auto-thread path.
     """
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.integrations.conversations import conversation_for
+
+    # A DM or a person's mentions in one channel is one endless stream; it is
+    # cut into conversations after a quiet gap or a "new chat"
+    # (memory.conversations). Threads come back unchanged.
+    session_id = await asyncio.to_thread(conversation_for, session_id)
 
     audit_log(
         "integration_inbound",
@@ -658,6 +766,34 @@ async def _handle_message(
                 "outcome": "rejected_unknown_sender",
             },
         )
+        # Someone off the roster writing to the bot directly (a DM or a
+        # mention — not a thread the bot merely follows): hold it for the
+        # principal to confirm and tell them it arrived.
+        if discord_user_id and not gate_eligible:
+            await _hold_unknown_sender(
+                text=text,
+                discord_user_id=discord_user_id,
+                discord_channel=discord_channel,
+                message_id=message_id,
+                thread_id=thread_id,
+                is_dm=is_dm,
+                session_id=session_id,
+                session_title=session_title,
+                author_display_name=author_display_name,
+                send_ack=send_fn if is_dm else None,
+            )
+        return
+
+    # "new chat" (or /new) starts a fresh conversation instead of a turn.
+    from openexecutive.integrations.conversations import (
+        is_new_conversation_command,
+        start_fresh,
+    )
+    from openexecutive.memory.conversation_ids import is_rolling
+
+    if not attachment_count and is_rolling(session_id) and is_new_conversation_command(text):
+        reply = await asyncio.to_thread(start_fresh, session_id, sender_person.id)
+        await send_fn(reply)
         return
 
     # WaitForHuman inbound resolver — check before alert triage.
@@ -680,17 +816,15 @@ async def _handle_message(
 
     # Fork into alerts triage pipeline.
     try:
-        from openexecutive.alerts.models import AlertEvent
-        from openexecutive.alerts.pipeline import schedule_evaluation
+        from openexecutive.alerts.pipeline import schedule_chat_message_evaluation
 
-        schedule_evaluation(
-            AlertEvent(
-                source="discord",
-                external_id=message_id,
-                channel=discord_channel,
-                user=discord_user_id,
-                body=text,
-            )
+        schedule_chat_message_evaluation(
+            source="discord",
+            external_id=message_id,
+            channel=discord_channel,
+            body=text,
+            sender=sender_person,
+            fallback_name=discord_user_id,
         )
     except Exception:
         logger.exception("Failed to schedule alert evaluation for Discord message")
@@ -795,7 +929,7 @@ async def _handle_message(
             if is_dm and discord_user_id:
                 session.seen_channel_refs.add(("discord_dm", discord_user_id))
 
-            retrieved_context = retrieve(query=text)
+            retrieved_context = retrieve(query=text, max_chars=get_settings().knowledge_chat_max_chars)
             episodic_context = format_for_prompt(session_id=session_id)
 
             # Sender was already resolved at the roster gate above; reuse it
@@ -882,7 +1016,10 @@ async def _handle_message(
             # to silently no-op than to spam the channel with an error
             # message that itself confuses users.
             if response.strip():
-                for chunk in _split_message(response):
+                from openexecutive.orchestrator.disclosure import with_chat_line
+
+                reply = with_chat_line(response, f"discord:{session_id}")
+                for chunk in _split_message(reply):
                     await effective_send_fn(chunk)
             else:
                 logger.info(
@@ -926,6 +1063,10 @@ async def _handle_message(
             logger.exception(
                 "Discord: failed to persist turn for session %s", session_id
             )
+        else:
+            from openexecutive.integrations.conversations import title_after_turn
+
+            title_after_turn(session_id, text, response)
 
         # Promoted-thread double-write: when the router opened a brand-
         # new bot-owned thread for this reply, also persist the turn
@@ -1018,6 +1159,10 @@ def create_discord_bot():
 
     bot = commands.Bot(command_prefix="!", intents=intents)
 
+    from openexecutive.integrations.roster_intake import register_replayer
+
+    register_replayer("discord", _replay_held)
+
     # ------------------------------------------------------------------ #
     # Slash commands
     # ------------------------------------------------------------------ #
@@ -1042,16 +1187,38 @@ def create_discord_bot():
                     "outcome": "rejected_unknown_sender",
                 },
             )
-            await interaction.response.send_message(
-                "You don't appear in the People roster — ask the admin to add you.",
-                ephemeral=True,
-            )
+            from openexecutive.integrations.roster_intake import ACK_TEXT
+
+            # One of the principal's contacts: nothing is held for them, so
+            # promise nothing (contacts have no chat access).
+            if find_person_by_discord_id(str(interaction.user.id), include_contacts=True):
+                await interaction.response.send_message(
+                    "You don't appear in the People roster — ask the admin to add you.",
+                    ephemeral=True,
+                )
+                return
+            # Answer the interaction first (Discord allows 3 seconds), only
+            # to the sender; then hold the prompt for the principal.
+            await interaction.response.send_message(ACK_TEXT, ephemeral=True)
+            if prompt.strip():
+                await _hold_unknown_sender(
+                    text=prompt.strip(),
+                    discord_user_id=str(interaction.user.id),
+                    discord_channel=str(interaction.channel_id),
+                    message_id=str(interaction.id),
+                    thread_id=None,
+                    is_dm=isinstance(interaction.channel, discord.DMChannel),
+                    session_id=f"discord:dm:{interaction.user.id}",
+                    session_title=f"Discord DM ({interaction.user.display_name})",
+                    author_display_name=getattr(interaction.user, "display_name", None),
+                    send_ack=_already_acknowledged,
+                )
             return
 
         await interaction.response.defer(thinking=True)
 
         async def send_fn(text: str) -> None:
-            await interaction.followup.send(text)
+            await interaction.followup.send(text, suppress_embeds=True)
 
         cleaned = prompt.strip()
         if not cleaned:
@@ -1203,13 +1370,15 @@ def create_discord_bot():
             # Reply in the same channel — for DMs that's the DM, for thread
             # continuations that's the existing thread. Do NOT call
             # message.create_thread() inside a thread; Discord rejects it.
+            # suppress_embeds: Discord would fetch a link in the reply on its
+            # own, and a reply can quote mail a sender wrote to carry data out.
             async def send_fn(text: str) -> None:
-                await message.channel.send(text)
+                await message.channel.send(text, suppress_embeds=True)
         elif mode == CLASSIFY_MENTION:
             # @mention inside an existing (human-owned) thread — reply inline,
             # don't try to spawn a sub-thread (Discord rejects nested threads).
             async def send_fn(text: str) -> None:
-                await message.channel.send(text)
+                await message.channel.send(text, suppress_embeds=True)
         elif mode == CLASSIFY_MENTION_CHANNEL:
             # @mention in a plain TextChannel. Defer the thread-vs-inline
             # decision until after the reply is generated — see the
@@ -1218,7 +1387,7 @@ def create_discord_bot():
             # executive.chat raised); the router replaces it before any
             # successful reply chunks are sent.
             async def send_fn(text: str) -> None:
-                await message.reply(text)
+                await message.reply(text, suppress_embeds=True)
 
             threshold_chars = settings.discord_mention_thread_threshold_chars
             reply_mode = settings.discord_mention_reply_mode
@@ -1249,7 +1418,7 @@ def create_discord_bot():
 
                 if not promote:
                     async def inline_send(text: str) -> None:
-                        await message.reply(text)
+                        await message.reply(text, suppress_embeds=True)
                     return MentionRouteResult(send_fn=inline_send)
 
                 # Promote: create a brand-new bot-owned thread and route
@@ -1267,7 +1436,7 @@ def create_discord_bot():
                         discord_channel,
                     )
                     async def inline_fallback(text: str) -> None:
-                        await message.reply(text)
+                        await message.reply(text, suppress_embeds=True)
                     return MentionRouteResult(send_fn=inline_fallback)
 
                 # Post a one-line pointer in the channel so people not
@@ -1294,7 +1463,7 @@ def create_discord_bot():
                         )
 
                 async def thread_send(text: str) -> None:
-                    await new_thread.send(text)
+                    await new_thread.send(text, suppress_embeds=True)
 
                 return MentionRouteResult(
                     send_fn=thread_send,
@@ -1307,7 +1476,7 @@ def create_discord_bot():
             # Defensive — _classify_inbound returned an unknown mode. Reply
             # inline so the user still gets an answer; no thread.
             async def send_fn(text: str) -> None:
-                await message.reply(text)
+                await message.reply(text, suppress_embeds=True)
 
         session_id = _compute_session_id(
             mode=mode,
@@ -1347,6 +1516,7 @@ def create_discord_bot():
                         filename=a.filename,
                         content_type=a.content_type or "",
                         size=a.size,
+                        voice_note=a.is_voice_message(),
                     )
                     for a in message.attachments
                 ])
@@ -1442,6 +1612,9 @@ def create_discord_bot():
     return bot
 
 
+_SUPPRESS_EMBEDS = 1 << 2
+
+
 async def send_dm(discord_user_id: str, text: str) -> str | None:
     """Send a Discord direct message to a specific user.
 
@@ -1488,7 +1661,8 @@ async def send_dm(discord_user_id: str, text: str) -> str | None:
             resp = await client.post(
                 f"https://discord.com/api/v10/channels/{channel_id}/messages",
                 headers=headers,
-                json={"content": chunk},
+                # SUPPRESS_EMBEDS: Discord would fetch a link in the text for its preview.
+                json={"content": chunk, "flags": _SUPPRESS_EMBEDS},
             )
             resp.raise_for_status()
             try:

@@ -306,6 +306,135 @@ async def test_empty_existing_profile_is_not_prepended(
     assert provider.calls[0]["messages"][0]["content"] == "We sell industrial tools."
 
 
+def _set_mode(monkeypatch: pytest.MonkeyPatch, mode: str, **role: Any) -> None:
+    from openexecutive.memory import workspace_settings as ws
+
+    monkeypatch.setattr(
+        ws, "get_workspace", lambda *a, **k: ws.WorkspaceSettings(mode=mode, **role)
+    )
+
+
+@pytest.mark.asyncio
+async def test_solo_hint_goes_in_the_first_user_turn_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Solo mode steers the draft (one person, no departments) from the user
+    turn: the cached system block stays the one constant for both modes."""
+    _set_mode(monkeypatch, "solo")
+    provider = _ScriptedProvider(
+        [
+            _tool_response(iv.ASK_TOOL_NAME, {"question": "What do you charge?"}),
+            _tool_response(iv.EMIT_TOOL_NAME, _draft_dict()),
+        ]
+    )
+    _install(monkeypatch, provider)
+
+    transcript = _opening()
+    await iv.advance(transcript, existing_profile=CompanyProfile(name="Acme Widgets"))
+    transcript += [
+        iv.Turn(role="assistant", text="What do you charge?"),
+        iv.Turn(role="user", text="$40 an hour."),
+    ]
+    await iv.advance(transcript, questions_asked=1)
+
+    for call in provider.calls:
+        assert call["system"][0]["text"] == ONBOARDING_INTERVIEWER_SYSTEM
+        first, *rest = call["messages"]
+        assert first["content"].startswith(iv.SOLO_HINT)
+        assert first["content"].endswith("We sell industrial tools.")
+        assert all(iv.SOLO_HINT not in m["content"] for m in rest)
+    # The re-run context still rides along, after the hint.
+    assert "Acme Widgets" in provider.calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    ("role_kind", "expected"),
+    [
+        (None, "SOLO_HINT"),
+        ("other", "SOLO_HINT"),
+        ("owner", "owner"),
+        ("in_house", "in_house"),
+        ("independent", "independent"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_solo_hint_follows_the_role_kind(
+    monkeypatch: pytest.MonkeyPatch, role_kind: str | None, expected: str
+) -> None:
+    """The role step's kind picks one static hint; the principal's own words
+    (title, remit…) never reach the prompt, and the system block is the same
+    constant whatever the kind."""
+    _set_mode(
+        monkeypatch, "solo", role_kind=role_kind,
+        role_title="Director of Operations SECRET-TITLE", remit="Carrier contracts SECRET-REMIT",
+    )
+    provider = _ScriptedProvider([_tool_response(iv.EMIT_TOOL_NAME, _draft_dict())])
+    _install(monkeypatch, provider)
+    await iv.advance(_opening())
+
+    call = provider.calls[0]
+    hint = iv.SOLO_HINT if expected == "SOLO_HINT" else iv.SOLO_ROLE_HINTS[expected]
+    assert call["system"][0]["text"] == ONBOARDING_INTERVIEWER_SYSTEM
+    assert call["messages"][0]["content"] == f"{hint}\n\n---\n\nWe sell industrial tools."
+    assert "SECRET" not in str(call)
+
+
+def test_solo_hints_are_role_neutral_where_they_should_be() -> None:
+    """Only the owner hint asks about cash and runway; the neutral and the
+    in-house hints ask about the role; every hint keeps the one-person,
+    no-departments draft rule."""
+    neutral = iv.SOLO_HINT.lower()
+    assert "run the business alone" not in neutral
+    assert "cash" not in neutral and "runway" not in neutral
+    for word in ("own business", "organisation", "independently", "role", "ask"):
+        assert word in neutral, word
+
+    owner = iv.SOLO_ROLE_HINTS["owner"].lower()
+    for word in ("offer", "customers", "pricing", "cash and runway", "top goals"):
+        assert word in owner, word
+
+    in_house = iv.SOLO_ROLE_HINTS["in_house"].lower()
+    assert "employer" in in_house
+    for word in ("report to", "measured on", "team", "responsible for", "top goals"):
+        assert word in in_house, word
+
+    independent = iv.SOLO_ROLE_HINTS["independent"].lower()
+    for word in ("practice", "clients", "top goals"):
+        assert word in independent, word
+
+    for hint in (iv.SOLO_HINT, *iv.SOLO_ROLE_HINTS.values()):
+        assert "exactly one person, with is_principal true" in hint
+        assert "`departments` must be empty" in hint
+        assert "{" not in hint and "}" not in hint, "static constant: no template slots"
+
+
+def test_solo_hint_falls_back_to_neutral() -> None:
+    assert iv.solo_hint(None) == iv.SOLO_HINT
+    assert iv.solo_hint("other") == iv.SOLO_HINT
+    assert iv.solo_hint("in_house") == iv.SOLO_ROLE_HINTS["in_house"]
+
+
+@pytest.mark.asyncio
+async def test_team_mode_sends_no_solo_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stored role is ignored in team mode.
+    _set_mode(monkeypatch, "team", role_kind="in_house")
+    provider = _ScriptedProvider([_tool_response(iv.EMIT_TOOL_NAME, _draft_dict())])
+    _install(monkeypatch, provider)
+    await iv.advance(_opening())
+    assert provider.calls[0]["messages"][0]["content"] == "We sell industrial tools."
+
+
+def test_a_principal_only_draft_with_no_departments_is_valid() -> None:
+    """What the solo hint asks for must pass the commit's own validation."""
+    draft = iv.CompanyDraft.model_validate(
+        _draft_dict(
+            people=[{"full_name": "Dana Reyes", "role": "Founder", "is_principal": True}],
+            departments=[],
+        )
+    )
+    assert iv.validate_draft(draft) == []
+
+
 @pytest.mark.asyncio
 async def test_people_draft_drops_contact_fields(
     monkeypatch: pytest.MonkeyPatch,
@@ -596,3 +725,90 @@ async def test_transcript_never_ends_on_an_assistant_turn(
     roles = [m["role"] for m in provider.calls[0]["messages"]]
     assert roles[-1] == "user", f"trailing assistant prefill: {roles}"
     assert all(a != b for a, b in zip(roles, roles[1:]))
+
+
+@pytest.mark.asyncio
+async def test_null_hint_keeps_the_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _ScriptedProvider(
+        [_tool_response(iv.ASK_TOOL_NAME, {"question": "Who runs ops?", "hint": None})]
+    )
+    _install(monkeypatch, provider)
+    got = await iv.advance(_opening(), questions_asked=0)
+    assert isinstance(got, iv.Question) and got.question == "Who runs ops?" and got.hint == ""
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_prose_reply_is_retried_once_then_still_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prose = SimpleNamespace(content=[SimpleNamespace(type="text", text="Who runs ops?")])
+    provider = _ScriptedProvider(
+        [prose, _tool_response(iv.ASK_TOOL_NAME, {"question": "Who runs ops?"})]
+    )
+    _install(monkeypatch, provider)
+    got = await iv.advance(_opening(), questions_asked=0)
+    assert isinstance(got, iv.Question)
+    assert len(provider.calls) == 2
+    # The retry nudges the model and keeps roles alternating.
+    roles = [m["role"] for m in provider.calls[1]["messages"]]
+    assert roles == ["user", "assistant", "user"]
+
+
+@pytest.mark.asyncio
+async def test_prose_twice_becomes_the_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    prose = SimpleNamespace(content=[SimpleNamespace(type="text", text="Who are your customers?")])
+    provider = _ScriptedProvider([prose, prose])
+    _install(monkeypatch, provider)
+    got = await iv.advance(_opening(), questions_asked=0)
+    assert isinstance(got, iv.Question) and got.question == "Who are your customers?"
+
+
+@pytest.mark.asyncio
+async def test_no_tool_and_no_text_still_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    empty = SimpleNamespace(content=[])
+    provider = _ScriptedProvider([empty, empty])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)
+
+
+@pytest.mark.asyncio
+async def test_long_prose_is_not_shown_as_a_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    long = SimpleNamespace(content=[SimpleNamespace(type="text", text="x" * 1001)])
+    provider = _ScriptedProvider([long, long])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)
+
+
+@pytest.mark.asyncio
+async def test_prose_twice_while_drafting_still_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    prose = SimpleNamespace(content=[SimpleNamespace(type="text", text="Who runs ops?")])
+    provider = _ScriptedProvider([prose, prose])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0, force_draft=True)
+
+
+@pytest.mark.asyncio
+async def test_short_prose_that_asks_nothing_is_not_a_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = SimpleNamespace(content=[SimpleNamespace(type="text", text="I have enough to draft.")])
+    provider = _ScriptedProvider([note, note])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)
+
+
+@pytest.mark.asyncio
+async def test_prose_with_a_mid_text_question_mark_is_not_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Is that right? Anyway, I would draft: Northwind, 12 staff."
+    note = SimpleNamespace(content=[SimpleNamespace(type="text", text=text)])
+    provider = _ScriptedProvider([note, note])
+    _install(monkeypatch, provider)
+    with pytest.raises(iv.InterviewError):
+        await iv.advance(_opening(), questions_asked=0)

@@ -8,112 +8,49 @@ import {
   listAdvice,
   listDecisions,
   listInitiatives,
-  listPeopleMemory,
   updateAdvice,
   updateDecision,
   updateInitiative,
   type Advice,
   type Decision,
   type Initiative,
-  type PeopleMemory,
-  type PersonMemory,
 } from "@/lib/api";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
+import CorrectionsTab from "./CorrectionsTab";
+import HistoryTab from "./HistoryTab";
+import ReflectionTab from "./ReflectionTab";
+import type { MemoryView } from "@/lib/pulseView";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
-type MemoryTab = "decisions" | "initiatives" | "advice" | "people";
-
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
-const PEOPLE_EMPTY =
-  "Nothing learned about anyone yet — peer memory fills in as people talk with the Executive.";
-const PEOPLE_UNAVAILABLE = "Peer memory is unavailable right now.";
+
+// Counts are shown on the Pulse overview's tiles, not here.
+const ignoreCount = () => {};
 
 // ---------------------------------------------------------------------------
-// Section shell — the "what it knows" half of the Pulse page.
+// One memory list, on its own screen behind a Pulse tile.
 // ---------------------------------------------------------------------------
 
-export default function MemorySection() {
-  const [tab, setTab] = useState<MemoryTab>("decisions");
-  // Each tab reports its row count so the tab labels can carry a live badge.
-  // All three tabs stay mounted (inactive ones hidden) so every count loads up
-  // front; a tab's own edit/delete re-runs its refresh, which reports the new
-  // length back here, keeping that tab's badge correct.
-  const [counts, setCounts] = useState<Record<MemoryTab, number | null>>({
-    decisions: null,
-    initiatives: null,
-    advice: null,
-    people: null,
-  });
-  // Peer memory is optional: until its status is known the People tab shows
-  // (so the bar does not jump on installs that have it); once the backend says
-  // "disabled" the tab goes away for good.
-  const [peopleEnabled, setPeopleEnabled] = useState<boolean | null>(null);
-  // Stable per-tab callbacks — these are passed to the (always-mounted) tabs as
-  // `onCount`, which lives in each tab's `refresh` useCallback deps. They MUST
-  // keep a constant identity across renders, or the tab's refresh→useEffect
-  // chain would re-fire every render and loop forever. (Do NOT inline a
-  // `setCount(tab)` factory here.)
-  const onCountDecisions = useCallback((n: number) => setCounts((c) => ({ ...c, decisions: n })), []);
-  const onCountInitiatives = useCallback((n: number) => setCounts((c) => ({ ...c, initiatives: n })), []);
-  const onCountAdvice = useCallback((n: number) => setCounts((c) => ({ ...c, advice: n })), []);
-  const onCountPeople = useCallback(
-    (n: number | null) => setCounts((c) => ({ ...c, people: n })),
-    [],
-  );
-  const onPeopleStatus = useCallback(
-    (s: PeopleMemory["status"]) => setPeopleEnabled(s !== "disabled"),
-    [],
-  );
-
-  useEffect(() => {
-    if (peopleEnabled === false && tab === "people") setTab("decisions");
-  }, [peopleEnabled, tab]);
-
-  const tabs: MemoryTab[] =
-    peopleEnabled === false
-      ? ["decisions", "initiatives", "advice"]
-      : ["decisions", "initiatives", "advice", "people"];
+export default function MemoryList({ view }: { view: MemoryView }) {
+  // History (Always in the loop) is the signed-in person's own notes; someone
+  // with none to see (not signed in, not on the roster) gets a plain message.
+  const [historyAvailable, setHistoryAvailable] = useState(true);
+  const onHistoryAvailable = useCallback((available: boolean) => setHistoryAvailable(available), []);
 
   return (
-    <div className="rounded-xl border border-line bg-surface-elevated p-4">
-      <div className="mb-3">
-        <div className="flex gap-1 p-1 bg-surface-overlay/60 rounded-xl w-fit border border-line-strong/50">
-          {tabs.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize ${
-                tab === t
-                  ? "bg-surface-input text-fg shadow-sm"
-                  : "text-fg-muted hover:text-fg"
-              }`}
-            >
-              {t}
-              {counts[t] != null && (
-                <span className="ml-1.5 text-xs font-normal tabular-nums text-fg-subtle">
-                  {counts[t]}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* One scroll region shared by all (always-mounted) tabs, mirroring
-          the Recent activity card — the list scrolls instead of growing. */}
-      <div className="max-h-[32rem] overflow-y-auto pr-1">
-        <div className={tab === "decisions" ? "" : "hidden"}>
-          <DecisionsTab onCount={onCountDecisions} />
-        </div>
-        <div className={tab === "initiatives" ? "" : "hidden"}>
-          <InitiativesTab onCount={onCountInitiatives} />
-        </div>
-        <div className={tab === "advice" ? "" : "hidden"}>
-          <AdviceTab onCount={onCountAdvice} />
-        </div>
-        <div className={tab === "people" ? "" : "hidden"}>
-          <PeopleTab onCount={onCountPeople} onStatus={onPeopleStatus} />
-        </div>
-      </div>
+    <div className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5 py-1">
+      {view === "decisions" && <DecisionsTab onCount={ignoreCount} />}
+      {view === "initiatives" && <InitiativesTab onCount={ignoreCount} />}
+      {view === "advice" && <AdviceTab onCount={ignoreCount} />}
+      {view === "corrections" && <CorrectionsTab onCount={ignoreCount} />}
+      {view === "reflection" && <ReflectionTab />}
+      {view === "history" &&
+        (historyAvailable ? (
+          <HistoryTab onCount={ignoreCount} onAvailable={onHistoryAvailable} />
+        ) : (
+          <EmptyState message="There are no notes for you here. They're kept for people on the People list, once they're signed in." />
+        ))}
     </div>
   );
 }
@@ -153,7 +90,7 @@ function DecisionsTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -214,17 +151,21 @@ function DecisionRow({
   }, [editing, decision]);
 
   return (
-    <div className="group py-3 hover:bg-surface-overlay/30 transition-colors">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <span className="px-2 py-0.5 rounded bg-surface-overlay text-fg font-medium">{editing ? domain : decision.domain}</span>
+    <div className="py-3.5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2 text-sm text-fg-muted">
+          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? domain : decision.domain}</span>
           <span>{formatDate(decision.timestamp)}</span>
         </div>
         {!editing && (
-          <div className="flex gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onClick={onEdit} className="text-xs text-fg-muted hover:text-fg">Edit</button>
-            <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-300">Delete</button>
-          </div>
+          <OverflowMenu
+            size="sm"
+            label="Memory actions"
+            items={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Delete", danger: true, onSelect: onDelete },
+            ]}
+          />
         )}
       </div>
       {editing ? (
@@ -232,7 +173,7 @@ function DecisionRow({
           <select
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
@@ -241,45 +182,42 @@ function DecisionRow({
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
             placeholder="Summary"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <textarea
             value={rationale}
             onChange={(e) => setRationale(e.target.value)}
             placeholder="Rationale"
             rows={2}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <input
             type="text"
             value={outcome}
             onChange={(e) => setOutcome(e.target.value)}
             placeholder="Outcome"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <input
             type="text"
             value={tags}
             onChange={(e) => setTags(e.target.value)}
             placeholder="Tags"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded text-fg-muted hover:text-fg">Cancel</button>
-            <button
-              onClick={() => onSave({ domain, summary, rationale, outcome, tags })}
-              className="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
+            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
+            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ domain, summary, rationale, outcome, tags })}>
               Save
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-sm text-fg line-clamp-2" title={decision.summary}>{decision.summary}</div>
-          {decision.rationale && <div className="text-xs text-fg-muted line-clamp-2" title={`Rationale: ${decision.rationale}`}><span className="text-fg-muted">Rationale: </span>{decision.rationale}</div>}
-          {decision.outcome && <div className="text-xs text-fg-muted line-clamp-2" title={`Outcome: ${decision.outcome}`}><span className="text-fg-muted">Outcome: </span>{decision.outcome}</div>}
-          {decision.tags && <div className="text-xs text-fg-muted truncate" title={`Tags: ${decision.tags}`}>Tags: {decision.tags}</div>}
+          <div className="text-[15px] font-medium text-fg line-clamp-2" title={decision.summary}>{decision.summary}</div>
+          {decision.rationale && <div className="text-sm text-fg-muted line-clamp-2" title={`Rationale: ${decision.rationale}`}><span className="text-fg-muted">Rationale: </span>{decision.rationale}</div>}
+          {decision.outcome && <div className="text-sm text-fg-muted line-clamp-2" title={`Outcome: ${decision.outcome}`}><span className="text-fg-muted">Outcome: </span>{decision.outcome}</div>}
+          {decision.tags && <div className="text-sm text-fg-subtle truncate" title={`Tags: ${decision.tags}`}>Tags: {decision.tags}</div>}
         </div>
       )}
     </div>
@@ -321,7 +259,7 @@ function InitiativesTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -378,17 +316,21 @@ function InitiativeRow({
   }, [editing, initiative]);
 
   return (
-    <div className="group py-3 hover:bg-surface-overlay/30 transition-colors">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <span className="px-2 py-0.5 rounded bg-surface-overlay text-fg font-medium capitalize">{editing ? status : initiative.status}</span>
+    <div className="py-3.5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2 text-sm text-fg-muted">
+          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? status : initiative.status}</span>
           <span>updated {formatDate(initiative.updated_at)}</span>
         </div>
         {!editing && (
-          <div className="flex gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onClick={onEdit} className="text-xs text-fg-muted hover:text-fg">Edit</button>
-            <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-300">Delete</button>
-          </div>
+          <OverflowMenu
+            size="sm"
+            label="Memory actions"
+            items={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Delete", danger: true, onSelect: onDelete },
+            ]}
+          />
         )}
       </div>
       {editing ? (
@@ -398,12 +340,12 @@ function InitiativeRow({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Title"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -412,22 +354,19 @@ function InitiativeRow({
             onChange={(e) => setSummary(e.target.value)}
             placeholder="Summary"
             rows={2}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded text-fg-muted hover:text-fg">Cancel</button>
-            <button
-              onClick={() => onSave({ title, status, summary })}
-              className="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
+            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
+            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ title, status, summary })}>
               Save
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-sm text-fg font-medium line-clamp-2" title={initiative.title}>{initiative.title}</div>
-          {initiative.summary && <div className="text-xs text-fg-muted line-clamp-2" title={initiative.summary}>{initiative.summary}</div>}
+          <div className="text-[15px] text-fg font-semibold line-clamp-2" title={initiative.title}>{initiative.title}</div>
+          {initiative.summary && <div className="text-sm text-fg-muted line-clamp-2" title={initiative.summary}>{initiative.summary}</div>}
         </div>
       )}
     </div>
@@ -469,7 +408,7 @@ function AdviceTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
+  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -526,17 +465,21 @@ function AdviceRow({
   }, [editing, advice]);
 
   return (
-    <div className="group py-3 hover:bg-surface-overlay/30 transition-colors">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <span className="px-2 py-0.5 rounded bg-surface-overlay text-fg font-medium">{editing ? domain : advice.domain}</span>
+    <div className="py-3.5">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2 text-sm text-fg-muted">
+          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? domain : advice.domain}</span>
           <span>{formatDate(advice.timestamp)}</span>
         </div>
         {!editing && (
-          <div className="flex gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button onClick={onEdit} className="text-xs text-fg-muted hover:text-fg">Edit</button>
-            <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-300">Delete</button>
-          </div>
+          <OverflowMenu
+            size="sm"
+            label="Memory actions"
+            items={[
+              { label: "Edit", onSelect: onEdit },
+              { label: "Delete", danger: true, onSelect: onDelete },
+            ]}
+          />
         )}
       </div>
       {editing ? (
@@ -544,7 +487,7 @@ function AdviceRow({
           <select
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           >
             {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
@@ -553,130 +496,28 @@ function AdviceRow({
             value={querySummary}
             onChange={(e) => setQuerySummary(e.target.value)}
             placeholder="What the user asked"
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <textarea
             value={adviceSummary}
             onChange={(e) => setAdviceSummary(e.target.value)}
             placeholder="Advice given"
             rows={3}
-            className="w-full bg-surface border border-line rounded px-2 py-1.5 text-sm text-fg"
+            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
           />
           <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="text-xs px-3 py-1.5 rounded text-fg-muted hover:text-fg">Cancel</button>
-            <button
-              onClick={() => onSave({ domain, query_summary: querySummary, advice_summary: adviceSummary })}
-              className="text-xs px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-            >
+            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
+            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ domain, query_summary: querySummary, advice_summary: adviceSummary })}>
               Save
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <div className="space-y-1">
-          <div className="text-xs text-fg-muted line-clamp-2" title={`Q: ${advice.query_summary}`}>Q: {advice.query_summary}</div>
-          <div className="text-sm text-fg line-clamp-2" title={advice.advice_summary}>{advice.advice_summary}</div>
+          <div className="text-sm text-fg-muted line-clamp-2" title={`Q: ${advice.query_summary}`}>Q: {advice.query_summary}</div>
+          <div className="text-[15px] text-fg line-clamp-2" title={advice.advice_summary}>{advice.advice_summary}</div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// People — peer memory. What the Executive has learned about each person,
-// derived server-side from their conversations. Read-only: unlike the three
-// lists above this is not the Executive's own record to edit, and the header
-// counts its notes alongside them.
-// ---------------------------------------------------------------------------
-
-function PeopleTab({
-  onCount,
-  onStatus,
-}: {
-  onCount: (n: number | null) => void;
-  onStatus: (s: PeopleMemory["status"]) => void;
-}) {
-  const [data, setData] = useState<PeopleMemory | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setFailed(false);
-    try {
-      const res = await listPeopleMemory();
-      setData(res);
-      onStatus(res.status);
-      // The badge counts people, not notes (the header carries the notes).
-      // Unavailable is not zero: leave the badge blank rather than claim 0.
-      onCount(res.status === "ok" ? res.people.length : null);
-    } catch {
-      // Unlike the other tabs, an error here must not masquerade as "nothing
-      // known": the read crosses to another service.
-      setFailed(true);
-      onCount(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [onCount, onStatus]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  if (loading) return <div className="text-fg-muted text-sm">Loading…</div>;
-  if (failed || !data || data.status === "error") {
-    return <div className="text-fg-muted text-sm">{PEOPLE_UNAVAILABLE}</div>;
-  }
-  if (data.status === "disabled") return null;
-  if (data.people.length === 0) return <EmptyState message={PEOPLE_EMPTY} />;
-
-  return (
-    <div className="divide-y divide-line">
-      {data.people.map((p) => (
-        <PersonMemoryRow key={p.person_id} item={p} />
-      ))}
-    </div>
-  );
-}
-
-function PersonMemoryRow({ item }: { item: PersonMemory }) {
-  const notes = `${item.conclusion_count} ${item.conclusion_count === 1 ? "note" : "notes"}`;
-  const learned = item.last_observed_at ? ` · learned ${formatDate(item.last_observed_at)}` : "";
-  const nothingYet = !item.error && item.conclusion_count === 0 && item.card.length === 0;
-  return (
-    <div className="py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-sm font-semibold text-fg flex items-center gap-2">
-          {item.full_name}
-          {item.is_principal && (
-            <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/20 text-violet-300 border-violet-500/30">
-              Principal
-            </span>
-          )}
-          {/* The notes below name people by their bare peer id; this is the key. */}
-          <span className="text-[10px] font-normal text-fg-subtle">peer {item.person_id}</span>
-        </div>
-        <div className="text-xs text-fg-muted tabular-nums shrink-0">
-          {item.error ? "couldn't read" : `${notes}${learned}`}
-        </div>
-      </div>
-      {item.card.length > 0 && (
-        <div className="mt-1 text-xs text-fg-muted">{item.card.join(" · ")}</div>
-      )}
-      {item.recent.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {item.recent.map((c, i) => (
-            <li key={`${c.created_at}-${i}`} className="text-sm text-fg-muted flex gap-2">
-              <span className="text-[10px] text-fg-subtle tabular-nums shrink-0 pt-0.5">
-                {formatDate(c.created_at)}
-              </span>
-              <span>{c.content}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {nothingYet && <div className="mt-1 text-xs text-fg-subtle">Nothing learned yet.</div>}
     </div>
   );
 }

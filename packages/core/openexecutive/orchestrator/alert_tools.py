@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
+import uuid
+from collections.abc import Iterator
 from typing import Any
+
+from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
 
@@ -54,19 +59,137 @@ CREATE_ALERT_TOOL: dict[str, Any] = {
 }
 
 
+def _routable_person(person_id: int) -> bool:
+    """False only for one of the principal's contacts: they cannot sign in to
+    see a routed alert, and routing is what alert review chases. Any other id
+    routes as before (the pipeline resolves it)."""
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(person_id)
+    except Exception:
+        return True
+    return person is None or person.kind == "team"
+
+
+# Who created the saved workflow whose step is raising an alert now
+# (``workflows.action_step``). A workflow runs with no chat turn — from the
+# Jobs page or on its cadence — so its creator stands in for the speaker.
+_workflow_owner: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "create_alert_workflow_owner", default=None
+)
+
+
+@contextlib.contextmanager
+def raised_for_workflow_owner(person_id: int | None) -> Iterator[None]:
+    """Run the block as a step of a workflow ``person_id`` created."""
+    token = _workflow_owner.set(person_id)
+    try:
+        yield
+    finally:
+        _workflow_owner.reset(token)
+
+
+def team_member_speaker(session: Any) -> Person | None:
+    """The team member (not the owner) whose turn this is, or None. Their
+    alerts are labelled as theirs and never broadcast company-wide, and they
+    may dismiss only the alerts assigned to them (``schedule_tools``)."""
+    from openexecutive.orchestrator import department_gate
+
+    return department_gate.speaker(session)
+
+
+def _team_member_raising(session: Any) -> Person | None:
+    """The team member an alert raised now comes from: the speaker, else the
+    creator of the workflow raising it, unless that is the principal. A
+    creator the roster can't place still counts as a team member."""
+    speaker = team_member_speaker(session)
+    if speaker is not None:
+        return speaker
+    owner_id = _workflow_owner.get()
+    if owner_id is None:
+        return None
+    try:
+        from openexecutive.people.store import get_person
+
+        owner = get_person(owner_id)
+    except Exception:
+        logger.warning("create_alert: couldn't read the workflow's creator", exc_info=True)
+        owner = None
+    if owner is None:
+        return Person(id=owner_id, full_name="", kind="team")
+    return None if owner.is_principal else owner
+
+
+def _origin_for(speaker: Person | None, tool_input: dict[str, Any]) -> tuple[str, str, str, str]:
+    """(source, external_id, from, raised_by) for the alert. A team member's
+    own words decide none of the first three: an alert they raise names them
+    and claims no source or message id a real alert could arrive with."""
+    if speaker is None:
+        return (
+            str(tool_input.get("source") or "unknown"),
+            str(tool_input.get("external_id") or ""),
+            str(tool_input.get("from_address") or ""),
+            "",
+        )
+    from openexecutive.alerts.models import TEAM_RAISED_SOURCE
+
+    name = (speaker.full_name or "").strip() or "a team member"
+    return TEAM_RAISED_SOURCE, uuid.uuid4().hex, speaker.email or name, name
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
     from openexecutive.audit import log_event as audit_log
+    from openexecutive.orchestrator.schedule_tools import current_session
 
+    # A turn about the principal's private mail raises a private alert (the
+    # pipeline routes it to the principal whatever was asked below), and its
+    # audit rows — which name the sender and quote the body — are the
+    # principal's alone to read.
+    private = getattr(current_session.get(), "private_to_principal", False) is True
+    # A turn answering mail from someone not in People: the alert is for the
+    # principal alone, routed to no one else, and names the mail's real
+    # sender rather than whatever the mail asked it to say
+    # (orchestrator.outside_content.SENDER).
+    from openexecutive.orchestrator.outside_content import answers_off_team_mail
+
+    if answers_off_team_mail():
+        private = True
+        sender = getattr(current_session.get(), "email_from", "") or ""
+        tool_input = {
+            **{k: v for k, v in tool_input.items() if k not in ("department", "assigned_to_person_id")},
+            "source": "email",
+            "from_address": sender,
+        }
+    # A script or saved workflow calls this without the tool schema's checks,
+    # so a missing field gets an answer the caller can act on, not a KeyError.
+    missing = [k for k in ("subject", "body") if not str(tool_input.get(k) or "").strip()]
+    if missing:
+        logger.warning("create_alert: missing %s", ", ".join(missing))
+        return json.dumps({"error": (
+            f"create_alert needs {' and '.join(missing)}: pass a short 'subject' "
+            "headline and a 'body' saying what needs attention"
+        )})
+    source, external_id, from_address = (
+        str(tool_input.get("source") or "unknown"),
+        str(tool_input.get("external_id") or ""),
+        str(tool_input.get("from_address") or ""),
+    )
     try:
-        event = AlertEvent(
-            source=tool_input.get("source", "unknown"),
-            external_id=tool_input.get("external_id", ""),
-            subject=tool_input["subject"],
-            body=tool_input["body"],
-            **{"from": tool_input.get("from_address", "")},
+        source, external_id, from_address, raised_by = _origin_for(
+            _team_member_raising(current_session.get()), tool_input,
         )
+        event = AlertEvent.model_validate({
+            "source": source,
+            "external_id": external_id,
+            "subject": tool_input["subject"],
+            "body": tool_input["body"],
+            "from": from_address,
+            "raised_by": raised_by,
+            "user": raised_by or None,
+        })
         # Carry department and person routing hints via the channel field
         # (AlertEvent.channel is a free-text tag used by the pipeline).
         dept = str(tool_input.get("department") or "").strip()
@@ -75,8 +198,12 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             event.channel = f"department:{dept}"
         if person_id_raw is not None:
             with contextlib.suppress(TypeError, ValueError):
-                event.routed_to_person_id = int(person_id_raw)
-                event.user = f"person:{int(person_id_raw)}"
+                routed_id = int(person_id_raw)
+                if _routable_person(routed_id):
+                    event.routed_to_person_id = routed_id
+                    event.user = f"person:{routed_id}"
+        if private:
+            event.private = True
         schedule_evaluation(event)
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
         audit_log(
@@ -84,11 +211,13 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             f"Alert: {str(tool_input['subject'])[:200]}",
             actor="executive",
             details={
-                "source": tool_input.get("source", "unknown"),
-                "external_id": tool_input.get("external_id", ""),
-                "from": tool_input.get("from_address", ""),
+                "source": source,
+                "external_id": external_id,
+                "from": from_address,
+                "raised_by": raised_by,
                 "body_preview": str(tool_input.get("body", ""))[:300],
             },
+            private=event.private,
         )
         return json.dumps({"status": "alert_scheduled", "subject": tool_input["subject"]})
     except Exception as exc:
@@ -98,10 +227,11 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             f"Alert FAILED: {str(tool_input.get('subject', ''))[:160]} — {exc}",
             actor="executive",
             details={
-                "source": tool_input.get("source", "unknown"),
-                "external_id": tool_input.get("external_id", ""),
+                "source": source,
+                "external_id": external_id,
                 "error": str(exc)[:300],
                 "ok": False,
             },
+            private=private,
         )
         return json.dumps({"error": str(exc)})

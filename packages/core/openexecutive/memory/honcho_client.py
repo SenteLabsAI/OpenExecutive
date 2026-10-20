@@ -1288,8 +1288,9 @@ def _block_safe_line(line: str) -> str:
     closing tag. Control and format characters go (the newline is handled by
     the caller), and a literal closing tag is defanged so the block cannot
     be ended early."""
-    cleaned = "".join(ch for ch in line if unicodedata.category(ch) not in ("Cc", "Cf"))
-    return cleaned.replace(_PEER_MEMORY_CLOSE, "<\\/peer_memory>").strip()
+    from openexecutive.utils.prompt_blocks import scrub_block_line
+
+    return scrub_block_line(line, _PEER_MEMORY_CLOSE)
 
 
 def _render_peer_context(card: list[str], representation: str, *, max_chars: int) -> str:
@@ -1447,11 +1448,15 @@ def sync_turn(
     own retention is best-effort and we don't want a sync error to
     surface after the user already has their answer.
 
-    ``user_message`` is recorded as the person's own words, so the
-    ``<outbound_reply_context>`` block inbound hydration prepends for the
-    LLM turn is stripped first. Left in, Honcho's deriver attributes the
-    Executive's own DM to the person who replied to it ("<person> created
-    the tracker", "<person>'s email is the Executive's").
+    ``user_message`` is recorded as the person's own words, so callers pass
+    what the person actually wrote rather than the framed prompt the LLM saw
+    (see ``memory_text`` on ``Executive.stream_chat``): an inbound email's
+    headers, a briefing card's body or an attachment's extracted text
+    recorded here teach Honcho that the person did what the Executive did.
+    The ``<outbound_reply_context>`` block inbound hydration prepends for the
+    LLM turn is still stripped here as a backstop. Left in, Honcho's deriver
+    attributes the Executive's own DM to the person who replied to it
+    ("<person> created the tracker", "<person>'s email is the Executive's").
     """
     if person_id is None:
         _emit_peer_memory(op="sync_turn", person_id=None, outcome="no_person")
@@ -2285,6 +2290,14 @@ def _safe_lines(text: Any) -> list[str]:
     return [line for line in lines if line]
 
 
+def _to_conclusion(c: Any) -> PersonConclusion:
+    """One Honcho conclusion as the page shows it, every line scrubbed."""
+    return PersonConclusion(
+        content=" ".join(_safe_lines(c.content)),
+        created_at=_block_safe_line(_iso(c.created_at)),
+    )
+
+
 async def _person_memory(person: Any, peer: Any, *, recent: int) -> PersonMemory:
     """One person's view: the self-conclusions (observer == observed == the
     peer, the same scope the per-turn prefetch reads) newest first, their
@@ -2309,13 +2322,7 @@ async def _person_memory(person: Any, peer: Any, *, recent: int) -> PersonMemory
     total = getattr(page, "total", None)
     if total is None:
         total = len(items)
-    conclusions = [
-        PersonConclusion(
-            content=" ".join(_safe_lines(c.content)),
-            created_at=_block_safe_line(_iso(c.created_at)),
-        )
-        for c in items
-    ]
+    conclusions = [_to_conclusion(c) for c in items]
     # Split and scrub before the identity test: a control character ahead of
     # ``IDENTITY:``, or an identity claim on the second line of one card
     # element, would otherwise pass the test and reach the page.
@@ -2349,6 +2356,27 @@ def _person_memory_failed(person: Any, exc: BaseException) -> PersonMemory:
     )
 
 
+async def _matched_peers(client: Any, roster: dict[int, Any]) -> list[tuple[Any, Any]]:
+    """(person, peer) for every rostered person the workspace listing holds.
+
+    Keyed by person: the page walk can yield a peer twice if the listing
+    shifts under it, and a person must appear once. Only a peer id spelled
+    exactly as OE writes it (``str(person_id)``) matches — ``int()`` would
+    also accept "007" or non-ASCII digits, and a stray id must skip one peer,
+    never fail the listing."""
+    found: dict[int, tuple[Any, Any]] = {}
+    async for peer in await client.aio.peers():
+        peer_id = str(getattr(peer, "id", ""))
+        if not (peer_id.isascii() and peer_id.isdigit()):
+            continue
+        person_id = int(peer_id)
+        if str(person_id) == peer_id and person_id in roster and person_id not in found:
+            found[person_id] = (roster[person_id], peer)
+            if len(found) == len(roster):
+                break
+    return list(found.values())
+
+
 async def people_overview(*, recent: int) -> PeopleMemory:
     """What peer memory knows about each rostered person.
 
@@ -2376,24 +2404,10 @@ async def people_overview(*, recent: int) -> PeopleMemory:
 
     roster = {p.id: p for p in registry.list_people() if p.id is not None}
 
-    async def _matched_peers() -> list[tuple[Any, Any]]:
-        # Keyed by person: the page walk can yield a peer twice if the
-        # listing shifts under it, and a person must appear once. Only a
-        # peer id spelled exactly as OE writes it (``str(person_id)``)
-        # matches — ``int()`` would also accept "007" or non-ASCII digits,
-        # and a stray id must skip one peer, never fail the listing.
-        found: dict[int, tuple[Any, Any]] = {}
-        async for peer in await client.aio.peers():
-            peer_id = str(getattr(peer, "id", ""))
-            if not (peer_id.isascii() and peer_id.isdigit()):
-                continue
-            person_id = int(peer_id)
-            if str(person_id) == peer_id and person_id in roster and person_id not in found:
-                found[person_id] = (roster[person_id], peer)
-        return list(found.values())
-
     try:
-        matched = await asyncio.wait_for(_matched_peers(), timeout=_OVERVIEW_LISTING_TIMEOUT_S)
+        matched = await asyncio.wait_for(
+            _matched_peers(client, roster), timeout=_OVERVIEW_LISTING_TIMEOUT_S
+        )
     except Exception as exc:
         logger.warning("Honcho peers listing failed: %s", type(exc).__name__)
         return _overview_error(type(exc).__name__, started=started)
@@ -2427,3 +2441,102 @@ async def people_overview(*, recent: int) -> PeopleMemory:
         details={"people": len(people), "conclusions": total, "errors": errors},
     )
     return PeopleMemory(status="ok", people=people, conclusion_total=total)
+
+
+# Honcho's list routes cap a page at 100 items.
+PERSON_CONCLUSIONS_MAX_PAGE = 100
+
+
+class PersonConclusionsPage(BaseModel):
+    status: Literal["ok", "disabled", "error"]
+    person_id: int
+    items: list[PersonConclusion]
+    """Newest first, continuing where the previous page stopped."""
+    page: int
+    size: int
+    total: int | None
+    """The server's total when it reports one."""
+    has_more: bool
+
+
+async def person_conclusions(person_id: int, *, page: int, size: int) -> PersonConclusionsPage | None:
+    """One page of everything peer memory has concluded about one person,
+    newest first — the About you card's "show all" reads it page by page.
+
+    ``None`` when the person is not an active rostered person or has no peer
+    yet (the route answers 404). The peer is found through the workspace
+    listing, as in ``people_overview``, never ``client.aio.peer(id)``: that
+    is a get-or-create and a read must not mint peers. Same clocks as the
+    overview, same scrub, one ``peer_memory`` audit row, ``op=conclusions``.
+    """
+    from openexecutive.people import registry
+
+    def _empty(status: Literal["disabled", "error"]) -> PersonConclusionsPage:
+        return PersonConclusionsPage(
+            status=status, person_id=person_id, items=[], page=page, size=size,
+            total=None, has_more=False,
+        )
+
+    settings = get_settings()
+    if not settings.honcho_enabled:
+        _emit_peer_memory(op="conclusions", person_id=person_id, outcome="disabled")
+        return _empty("disabled")
+
+    started = time.monotonic()
+
+    def _failed(error_type: str) -> PersonConclusionsPage:
+        _emit_peer_memory(
+            op="conclusions",
+            person_id=person_id,
+            outcome="error",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            details={"error_type": error_type},
+        )
+        return _empty("error")
+
+    client = await _get_client()
+    if client is None:
+        return _failed("ClientConstructionFailed")
+
+    person = registry.get_person(person_id)
+    if person is None:
+        return None
+    try:
+        matched = await asyncio.wait_for(
+            _matched_peers(client, {person_id: person}), timeout=_OVERVIEW_LISTING_TIMEOUT_S
+        )
+        if not matched:
+            return None
+        _, peer = matched[0]
+        # reverse=False is the server's newest-first default; see
+        # `_person_memory` for why reverse=True would be the wrong page.
+        result = await asyncio.wait_for(
+            peer.conclusions.aio.list(page=page, size=size, reverse=False),
+            timeout=base_prefetch_timeout_s(settings.honcho_prefetch_timeout_s),
+        )
+        # Inside the try: a malformed page is an error status, not a bare 500.
+        items = sorted(result.items, key=lambda c: _as_instant(c.created_at), reverse=True)
+        conclusions = [_to_conclusion(c) for c in items]
+        raw_total = getattr(result, "total", None)
+        total = None if raw_total is None else int(raw_total)
+    except Exception as exc:
+        logger.warning("Honcho conclusions read failed: %s", type(exc).__name__)
+        return _failed(type(exc).__name__)
+
+    has_more = page * size < total if total is not None else len(items) == size
+    _emit_peer_memory(
+        op="conclusions",
+        person_id=person_id,
+        outcome="ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+        details={"page": page, "size": size, "items": len(items)},
+    )
+    return PersonConclusionsPage(
+        status="ok",
+        person_id=person_id,
+        items=conclusions,
+        page=page,
+        size=size,
+        total=total,
+        has_more=has_more,
+    )

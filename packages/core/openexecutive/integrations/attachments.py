@@ -13,7 +13,11 @@ background task so they surface in future RAG retrieval sessions.
 Supported file types
 ---------------------
 Images:   image/png, image/jpeg, image/gif, image/webp
-Docs:     .pdf, .docx, .doc, .txt, .md, .rst, .csv
+Docs:     .pdf, .docx, .doc, .xlsx, .xlsm, .txt, .md, .rst, .csv
+          (a scanned PDF is converted by ``knowledge.pdf_reader``)
+Audio:    voice notes (ogg, m4a, mp3, webm, wav, …), transcribed by
+          ``providers.transcription`` into the sender's words. The caller
+          may pass a ``heard`` list to collect what was heard.
 
 Limits
 ------
@@ -39,7 +43,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
 _MAX_EXTRACTED_CHARS = 40_000
-_EXTRACTABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".txt", ".md", ".rst", ".csv"})
+_EXTRACTABLE_SUFFIXES = frozenset(
+    {".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".txt", ".md", ".rst", ".csv"}
+)
 _SUPPORTED_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 # Strong refs so background ingest tasks aren't GC'd before they complete.
@@ -59,6 +65,9 @@ class AttachmentItem:
     content_type: str = ""
     size: int = 0
     headers: dict[str, str] = field(default_factory=dict)
+    # Recorded in the chat app by the sender, so their own speech. Any other
+    # audio (a recorded call, a forwarded clip) is read as a file's words.
+    voice_note: bool = False
 
 
 # ------------------------------------------------------------------ #
@@ -119,19 +128,32 @@ def _suffix_from_filename(filename: str) -> str:
     return Path(filename).suffix.lower()
 
 
-def _extract_text(data: bytes, filename: str) -> str:
-    """Write *data* to a temp file and call the shared extractor.
+async def _extract_text(
+    data: bytes, filename: str, *, inbound: bool = True
+) -> tuple[str, str, bool]:
+    """Extract the text of one document attachment.
 
-    Returns extracted text (may be empty if extraction fails or yields nothing).
+    Returns ``(text, note, converted)``. ``text`` may be empty if extraction
+    fails or yields nothing; ``note`` then says why when that is known (a
+    scanned PDF OCR could not read). ``converted`` is True when the text was
+    read off page images (``knowledge.pdf_reader``) rather than a text layer.
     """
     suffix = _suffix_from_filename(filename)
     if suffix == ".csv":
         # CSV isn't in extract_text_from_file — just decode as UTF-8 text.
         try:
-            return data.decode("utf-8", errors="replace")
+            return data.decode("utf-8", errors="replace"), "", False
         except Exception:
             logger.exception("attachments: CSV decode failed for %s", filename)
-            return ""
+            return "", "", False
+
+    if suffix == ".pdf":
+        # A scanned PDF has no text layer; read_pdf_text converts it (Claude
+        # when reached directly, local OCR otherwise) and never raises.
+        from openexecutive.knowledge.pdf_reader import read_pdf_text
+
+        result = await read_pdf_text(data, filename=filename, inbound=inbound)
+        return result.text, result.note, result.converted
 
     try:
         from openexecutive.knowledge.loader import extract_text_from_file
@@ -141,28 +163,30 @@ def _extract_text(data: bytes, filename: str) -> str:
             tmp_path = Path(tmp.name)
 
         try:
-            return extract_text_from_file(tmp_path)
+            return await asyncio.to_thread(extract_text_from_file, tmp_path), "", False
         finally:
             tmp_path.unlink(missing_ok=True)
     except Exception:
         logger.exception("attachments: text extraction failed for %s", filename)
-        return ""
+        return "", "", False
 
 
-def _schedule_ingest(data: bytes, filename: str) -> None:
-    """Fire-and-forget ChromaDB ingest of *data* into the attachment collection.
+def _schedule_ingest(text: str, filename: str) -> None:
+    """Fire-and-forget ChromaDB ingest of *text* into the attachment collection.
+
+    Takes the text already extracted for the turn rather than the raw bytes,
+    so a scanned PDF is converted once, not again for the index.
 
     Uses the same strong-ref pattern as ``_thread_rename_tasks`` in
     discord_bot to prevent GC cancellation mid-flight.
     """
     async def _run() -> None:
-        suffix = _suffix_from_filename(filename)
         try:
             from openexecutive.config import get_settings
             from openexecutive.knowledge.loader import (
                 ATTACHMENT_DOMAIN,
                 ATTACHMENT_SOURCE_PREFIX,
-                ingest_file,
+                ingest_text,
             )
             from openexecutive.knowledge.store import ChromaDBStore
 
@@ -173,52 +197,45 @@ def _schedule_ingest(data: bytes, filename: str) -> None:
             # off the data volume and gone with the container. It happened
             # to work in local dev only because CWD is the repo root there.
             store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(data)
-                tmp_path = Path(tmp.name)
-
-            try:
-                # `source_name` is the real attachment name: `tmp_path` is a
-                # random staging name, and indexing under it both duplicates
-                # on every re-send and leaves chunks no API call can delete.
-                #
-                # It is PREFIXED, and stripped to a bare name, because an
-                # attachment name is chosen by whoever sent the message and
-                # the name is the chunk-id namespace: unprefixed, an inbound
-                # "strategy-2026.md" would upsert over the curated company
-                # document of that name. The prefix separates inbound content
-                # from curated uploads, and makes provenance visible in the
-                # `[filename]` citation. It does NOT separate senders from
-                # each other — ids are md5 of the prefixed name alone, so two
-                # senders' "notes.md" still collide. Harmless while nothing
-                # reads this collection; it is the first thing to fix if
-                # anything ever does.
-                #
-                # Isolation is the COLLECTION. These rows go to
-                # ATTACHMENT_COLLECTION, which `retriever.retrieve` never
-                # queries, so an attachment cannot resurface as company
-                # knowledge in a later, unrelated turn.
-                #
-                # What this replaced, so nobody reinstates it: the rows used
-                # to land in COMPANY_COLLECTION under a non-specialist domain,
-                # which excluded them from nothing — an unfiltered retrieval
-                # has no `where` clause at all. See knowledge.general_catch_all
-                # in architecture-facts.yaml.
-                count = await ingest_file(
-                    tmp_path,
-                    store,
-                    domain=ATTACHMENT_DOMAIN,
-                    collection=ChromaDBStore.ATTACHMENT_COLLECTION,
-                    source_name=f"{ATTACHMENT_SOURCE_PREFIX}{Path(filename).name}",
-                    extra_metadata={"type": "attachment"},
-                )
-                logger.info(
-                    "attachments: indexed %d chunks from %s into ChromaDB",
-                    count,
-                    filename,
-                )
-            finally:
-                tmp_path.unlink(missing_ok=True)
+            # `source_name` is the real attachment name, never a random
+            # staging name: indexing under one both duplicates on every
+            # re-send and leaves chunks no API call can delete.
+            #
+            # It is PREFIXED, and stripped to a bare name, because an
+            # attachment name is chosen by whoever sent the message and
+            # the name is the chunk-id namespace: unprefixed, an inbound
+            # "strategy-2026.md" would upsert over the curated company
+            # document of that name. The prefix separates inbound content
+            # from curated uploads, and makes provenance visible in the
+            # `[filename]` citation. It does NOT separate senders from
+            # each other — ids are md5 of the prefixed name alone, so two
+            # senders' "notes.md" still collide. Harmless while nothing
+            # reads this collection; it is the first thing to fix if
+            # anything ever does.
+            #
+            # Isolation is the COLLECTION. These rows go to
+            # ATTACHMENT_COLLECTION, which `retriever.retrieve` never
+            # queries, so an attachment cannot resurface as company
+            # knowledge in a later, unrelated turn.
+            #
+            # What this replaced, so nobody reinstates it: the rows used
+            # to land in COMPANY_COLLECTION under a non-specialist domain,
+            # which excluded them from nothing — an unfiltered retrieval
+            # has no `where` clause at all. See knowledge.general_catch_all
+            # in architecture-facts.yaml.
+            count = await ingest_text(
+                text,
+                store,
+                domain=ATTACHMENT_DOMAIN,
+                collection=ChromaDBStore.ATTACHMENT_COLLECTION,
+                source_name=f"{ATTACHMENT_SOURCE_PREFIX}{Path(filename).name}",
+                extra_metadata={"type": "attachment"},
+            )
+            logger.info(
+                "attachments: indexed %d chunks from %s into ChromaDB",
+                count,
+                filename,
+            )
         except Exception:
             logger.exception("attachments: background ingest failed for %s", filename)
 
@@ -239,7 +256,23 @@ def _schedule_ingest(data: bytes, filename: str) -> None:
 # Per-attachment routing
 # ------------------------------------------------------------------ #
 
-def _build_image_block(data: bytes, content_type: str) -> dict[str, Any]:
+def sniff_image_type(data: bytes) -> str | None:
+    """The image type the bytes themselves say, or None if they aren't one
+    the model takes. The model API refuses an image whose bytes don't match
+    its declared type, so a misnamed file must not go by its name."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def build_image_block(data: bytes, content_type: str) -> dict[str, Any]:
+    """An Anthropic vision content block for one image."""
     return {
         "type": "image",
         "source": {
@@ -250,15 +283,92 @@ def _build_image_block(data: bytes, content_type: str) -> dict[str, Any]:
     }
 
 
-def build_attachment_output(
+def format_attached_text(
+    filename: str,
+    text: str,
+    *,
+    converted: bool = False,
+    note: str = "",
+    max_chars: int = _MAX_EXTRACTED_CHARS,
+) -> str:
+    """A document's text as the Executive sees it inlined in a message:
+    ``[Attached: <name>]`` (the label other passes key on — see
+    ``attunement.open_loops``), notes on conversion or truncation, then the
+    text with runs of whitespace collapsed — all inside an
+    ``<untrusted_content>`` block (``orchestrator.content_trust``). A file's
+    words are never the speaker's, whoever shared it: the block says so to
+    the model, and the extractor reads only what lies outside it."""
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars]
+
+    # Collapse control chars / excessive whitespace so the injected block
+    # doesn't confuse the model with raw PDF artefacts.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    label = f"[Attached: {filename}]"
+    if converted:
+        label += " (converted from scanned pages)"
+    if truncated:
+        label += f" (truncated to {max_chars} chars)"
+    if note:
+        label += f" ({note})"
+    from openexecutive.orchestrator.content_trust import wrap_untrusted
+
+    return wrap_untrusted(f"{label}\n{text.strip()}", source="attachment", author=filename)
+
+
+async def _voice_note_text(
+    data: bytes, filename: str, content_type: str, heard: list[str] | None
+) -> str:
+    """A voice note as the turn sees it: the sender's own words, labelled
+    as transcribed, or a line saying it could not be heard."""
+    from openexecutive.providers import transcription
+
+    try:
+        words = await transcription.transcribe(data, filename, content_type)
+    except transcription.TranscriptionError as exc:
+        return transcription.failure_line(str(exc))
+    if not words:
+        return "(A voice note had no words in it.)"
+    if heard is not None:
+        heard.append(words)
+    return f"[Voice note, transcribed]\n{words}"
+
+
+async def _audio_file_text(data: bytes, filename: str, content_type: str) -> str:
+    """An audio file's words, wrapped like a document's: someone else may
+    be speaking in it, so they are never the sender's instructions."""
+    from openexecutive.providers import transcription
+
+    try:
+        words = await transcription.transcribe(data, filename, content_type)
+    except transcription.TranscriptionError as exc:
+        return f"(Could not transcribe {filename}: {exc})"
+    if not words:
+        return f"(Attached {filename}: no words in it)"
+    return format_attached_text(filename, words, note="transcribed")
+
+
+async def build_attachment_output(
     filename: str,
     data: bytes,
     content_type: str,
+    *,
+    inbound: bool = True,
+    heard: list[str] | None = None,
+    voice_note: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Route one attachment to the right handler.
 
     Returns ``(extra_text, image_blocks)``.  Both may be empty — callers
-    concatenate results across all attachments.
+    concatenate results across all attachments. ``inbound`` (the default:
+    a file a channel delivered) meters a scanned PDF's conversion by the
+    inbound page budget; the web upload route, where the signed-in user
+    sends it, passes False. ``voice_note`` marks audio the sender recorded
+    in the chat app: its words are theirs and are added to ``heard``. Other
+    audio is transcribed into attachment text.
     """
     # Normalise content_type — some servers omit it or add parameters.
     # All normalization (non-standard aliases, suffix inference) happens once
@@ -270,28 +380,24 @@ def build_attachment_output(
     if not ct and suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
         ct = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix.lstrip('.')}"
 
+    from openexecutive.providers.transcription import is_audio
+
+    if is_audio(filename, ct):
+        if voice_note:
+            return await _voice_note_text(data, filename, ct, heard), []
+        return await _audio_file_text(data, filename, ct), []
+
     if ct in _SUPPORTED_IMAGE_TYPES:
-        return "", [_build_image_block(data, ct)]
+        sniffed = sniff_image_type(data)
+        if sniffed is None:
+            return f"(Could not read {filename}: not a PNG, JPG, GIF or WebP image)", []
+        return "", [build_image_block(data, sniffed)]
 
     if suffix in _EXTRACTABLE_SUFFIXES:
-        text = _extract_text(data, filename)
+        text, note, converted = await _extract_text(data, filename, inbound=inbound)
         if not text.strip():
-            return f"(Attached {filename}: could not extract any text)", []
-
-        truncated = False
-        if len(text) > _MAX_EXTRACTED_CHARS:
-            text = text[:_MAX_EXTRACTED_CHARS]
-            truncated = True
-
-        # Collapse control chars / excessive whitespace so the injected block
-        # doesn't confuse the model with raw PDF artefacts.
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-
-        label = f"[Attached: {filename}]"
-        if truncated:
-            label += f" (truncated to {_MAX_EXTRACTED_CHARS} chars)"
-        extra_text = f"{label}\n{text.strip()}"
+            return f"(Attached {filename}: {note or 'could not extract any text'})", []
+        extra_text = format_attached_text(filename, text, converted=converted, note=note)
 
         # Security note: extracted text is injected verbatim into the LLM
         # context. A malicious document could contain prompt-injection payloads.
@@ -299,10 +405,11 @@ def build_attachment_output(
         # untrusted content; no currently deployed mitigation exists here.
         # The Executive's system prompt and tool-call gating are the primary
         # defences; treat attachment sources the same as other untrusted inputs.
-        _schedule_ingest(data, filename)
+        # The full text is indexed, not the prompt-truncated copy.
+        _schedule_ingest(text, filename)
         return extra_text, []
 
-    return f"(Could not read {filename}: unsupported type — supported: PDF, DOCX, TXT, MD, PNG, JPG, GIF, WebP)", []
+    return f"(Could not read {filename}: unsupported type — supported: PDF, DOCX, XLSX, TXT, MD, CSV, PNG, JPG, GIF, WebP, voice notes)", []
 
 
 # ------------------------------------------------------------------ #
@@ -312,12 +419,15 @@ def build_attachment_output(
 async def process_attachments(
     items: list[AttachmentItem],
     max_bytes: int = _DEFAULT_MAX_BYTES,
+    *,
+    heard: list[str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Download and process a list of attachments.
 
     Returns ``(extra_text, image_blocks)``.  Items that fail to download
     or process are skipped with a log message — a single bad attachment
-    must not prevent the user from getting a response.
+    must not prevent the user from getting a response. Voice notes' words
+    are added to ``heard``.
     """
     all_text_parts: list[str] = []
     all_image_blocks: list[dict[str, Any]] = []
@@ -341,7 +451,10 @@ async def process_attachments(
             continue
 
         try:
-            extra_text, image_blocks = build_attachment_output(item.filename, data, item.content_type)
+            extra_text, image_blocks = await build_attachment_output(
+                item.filename, data, item.content_type, heard=heard,
+                voice_note=item.voice_note,
+            )
         except Exception:
             logger.exception("attachments: processing failed for %s", item.filename)
             all_text_parts.append(f"(Could not process {item.filename})")

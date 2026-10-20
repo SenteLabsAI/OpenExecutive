@@ -4,7 +4,7 @@ An open-source AI system that acts as your company's virtual executive team — 
 
 ## What It Does
 
-Open Executive provides a single coherent executive voice backed by eight specialist AI agents:
+Open Executive provides a single coherent executive voice backed by nine specialist AI agents:
 
 - **Chief Strategy Officer** — competitive analysis, M&A, market positioning, OKRs
 - **Chief Financial Officer** — financial modeling, fundraising, unit economics, cash flow
@@ -13,6 +13,7 @@ Open Executive provides a single coherent executive voice backed by eight specia
 - **Chief Operating Officer** — process design, vendor management, operational scaling
 - **Chief Marketing Officer** — GTM strategy, brand, communications, PR
 - **Chief Product Officer** — roadmap, prioritization, product strategy
+- **Head of Sales** — pipeline and qualification, founder-led sales, pricing conversations, proposals, forecasting
 - **Board Communications Director** — board decks, investor relations, governance
 
 All responses come from one consistent executive voice. The internal agent architecture is never exposed to the user.
@@ -90,7 +91,7 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 1. Create `packages/core/openexecutive/agents/your_agent.py` extending `BaseAgent`
 2. Add a system prompt in `packages/core/openexecutive/prompts/domain_prompts.py`
 3. Register the tool in `packages/core/openexecutive/orchestrator/router.py`
-4. Add eval scenarios in `evals/scenarios/`
+4. Add eval scenarios in `packages/core/openexecutive/evals/_scenarios/`
 5. Submit a PR with the agent, prompt, and at least 2 eval scenarios
 
 ## Development

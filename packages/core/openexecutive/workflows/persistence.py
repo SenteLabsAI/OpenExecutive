@@ -23,6 +23,13 @@ Three more columns, same idempotent ALTER:
   resume_claim      TEXT    — fencing token for the live claim; a worker's
                               terminal write is refused once it is superseded
 
+Ownership
+---------
+  owner_person_id   INTEGER — the person who started the run by hand (in
+                              their chat, or with Run on the Jobs page); its
+                              history and output are theirs alone. NULL is a
+                              scheduled or system run, shared with the team.
+
 New status values beyond running/done/error:
   awaiting_human — paused, waiting for a human reply
   resolved       — human replied, resolution stored in resolution_json.
@@ -38,7 +45,7 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openexecutive.memory.episodic import DB_PATH, _get_conn
 
@@ -89,6 +96,8 @@ def initialize_runs_db(db_path: Path | None = None) -> None:
             # so a worker wrongly declared dead cannot overwrite the one that
             # replaced it.
             ("resume_claim", "TEXT"),
+            # Who started the run by hand; NULL = a team run (module doc).
+            ("owner_person_id", "INTEGER"),
         ):
             if col not in existing:
                 try:
@@ -104,18 +113,58 @@ def create_run(
     title: str,
     inputs: dict[str, Any],
     db_path: Path | None = None,
+    owner_person_id: int | None = None,
 ) -> None:
+    """Record a new run. ``owner_person_id`` is who started it by hand (the
+    run is then theirs alone); leave it None for a scheduled or system run."""
     initialize_runs_db(db_path)  # _resolve happens inside
     now = datetime.now(UTC).isoformat()
     with _get_conn(_resolve(db_path)) as conn:
         conn.execute(
             """
             INSERT INTO workflow_runs
-                (run_id, workflow_name, title, status, inputs, created_at, updated_at)
-            VALUES (?, ?, ?, 'running', ?, ?, ?)
+                (run_id, workflow_name, title, status, inputs, created_at, updated_at,
+                 owner_person_id)
+            VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
             """,
-            (run_id, workflow_name, title, json.dumps(inputs), now, now),
+            (run_id, workflow_name, title, json.dumps(inputs), now, now, owner_person_id),
         )
+
+
+def run_visible_to(run: dict[str, Any], person_id: int | None) -> bool:
+    """Whether ``person_id`` may see ``run``: a team run (no owner) anyone
+    may; one someone started only they may, and the person it is waiting on
+    to answer it. Not even the principal sees a teammate's own run."""
+    owner = run.get("owner_person_id")
+    if owner is None:
+        return True
+    return person_id is not None and person_id in (owner, run.get("awaiting_person_id"))
+
+
+def _visible_clause(person_id: int | None) -> tuple[str, list[Any]]:
+    """`run_visible_to` as SQL."""
+    if person_id is None:
+        return "owner_person_id IS NULL", []
+    return (
+        "(owner_person_id IS NULL OR owner_person_id = ? OR awaiting_person_id = ?)",
+        [person_id, person_id],
+    )
+
+
+# Stored in place of an artifact that drew on what is private to the
+# principal (a run reports it as `private_to_principal` on its `result`
+# event). A team run's history is readable by everyone signed in to the
+# workspace (`run_visible_to`); the
+# principal got the full text where it was delivered to them.
+PRIVATE_RUN_ARTIFACT = (
+    "(Delivered to the principal. It drew on what is private to them, so its "
+    "text is not kept in the shared run history.)"
+)
+
+
+def stored_artifact(artifact: str, *, private_to_principal: bool) -> str:
+    """What a run's history keeps for ``artifact``."""
+    return PRIVATE_RUN_ARTIFACT if private_to_principal and artifact else artifact
 
 
 def complete_run(
@@ -163,21 +212,36 @@ def get_run(run_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
     return out
 
 
+# How much of each artifact `list_runs(with_body=True)` reads.
+BODY_CHARS = 20_000
+
+
 def list_runs(
     workflow_name: str | None = None,
     limit: int = 100,
     db_path: Path | None = None,
     status: str | None = None,
+    *,
+    visible_to: int | None | Literal["all"] = "all",
+    with_body: bool = False,
 ) -> list[dict[str, Any]]:
     """Recent runs, newest-updated first. `workflow_name` and `status` are
     optional SQL filters — pushing `status` into the query (rather than letting
     callers filter the returned page) ensures a `status='done'` caller isn't
     starved when the most-recent `limit` rows are dominated by running/awaiting
-    runs."""
+    runs. `visible_to` keeps only the runs that person may see
+    (`run_visible_to`; None = nobody on the roster: team runs only); the
+    default "all" is for the server's own reads, never a person's.
+    `with_body` adds each run's `inputs` (parsed) and the start of its
+    `artifact` (`BODY_CHARS`), enough to say what came of it."""
     if not _resolve(db_path).exists():
         return []
     clauses: list[str] = []
     params: list[Any] = []
+    if visible_to != "all":
+        clause, clause_params = _visible_clause(visible_to)
+        clauses.append(clause)
+        params.extend(clause_params)
     if workflow_name:
         clauses.append("workflow_name = ?")
         params.append(workflow_name)
@@ -188,19 +252,30 @@ def list_runs(
     params.append(limit)
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
-            "SELECT run_id, workflow_name, title, status, created_at, updated_at "
-            f"FROM workflow_runs {where}ORDER BY updated_at DESC LIMIT ?",
+            "SELECT run_id, workflow_name, title, status, created_at, updated_at"
+            + (f", inputs, substr(artifact, 1, {BODY_CHARS}) AS artifact " if with_body else " ")
+            + f"FROM workflow_runs {where}ORDER BY updated_at DESC LIMIT ?",
             params,
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    if with_body:
+        for run in out:
+            try:
+                run["inputs"] = json.loads(run["inputs"]) if run["inputs"] else {}
+            except json.JSONDecodeError:
+                run["inputs"] = {}
+    return out
 
 
 def list_artifact_runs(
     limit: int = 200,
     db_path: Path | None = None,
     archived: bool = False,
+    *,
+    visible_to: int | None,
 ) -> list[dict[str, Any]]:
-    """Completed runs that produced an artifact, newest first.
+    """Completed runs that produced an artifact, newest first, that
+    `visible_to` may see (`run_visible_to`).
 
     Powers the Executive Artifacts section. Mirrors `list_runs` — the heavy
     `artifact` body is intentionally excluded from the list query (fetch it
@@ -218,15 +293,16 @@ def list_artifact_runs(
     archived_clause = (
         "AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL"
     )
+    visible, params = _visible_clause(visible_to)
     with _get_conn(_resolve(db_path)) as conn:
         rows = conn.execute(
             "SELECT run_id, workflow_name, title, status, created_at, updated_at, "
-            "archived_at "
+            "archived_at, owner_person_id "
             "FROM workflow_runs "
             "WHERE artifact IS NOT NULL AND artifact != '' AND status = 'done' "
-            f"{archived_clause} "
+            f"{archived_clause} AND {visible} "
             "ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+            (*params, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -468,6 +544,33 @@ def claim_run_for_resume(run_id: str, db_path: Path | None = None) -> str | None
         return token if cur.rowcount > 0 else None
 
 
+def touch_resume_claim(run_id: str, claim: str, db_path: Path | None = None) -> bool:
+    """Heartbeat a live resume: bump ``resumed_at`` while ``claim`` still holds.
+
+    The stale sweep measures a claim's age from ``resumed_at``. A resume that
+    runs workflow ``action`` steps can legitimately outlast any fixed window
+    (tool calls, several steps), and a requeue while it is still alive would
+    replay its external side effects on a second worker. The resumer calls this
+    as events flow, so a live worker never looks dead. Returns False once the
+    claim has been superseded — the caller must stop acting.
+    """
+    if not _resolve(db_path).exists():
+        return False
+    now = datetime.now(UTC).isoformat()
+    with _get_conn(_resolve(db_path)) as conn:
+        cur = conn.execute(
+            """
+            UPDATE workflow_runs
+               SET resumed_at = ?
+             WHERE run_id = ?
+               AND resume_claim = ?
+               AND status = 'running'
+            """,
+            (now, run_id, claim),
+        )
+        return cur.rowcount > 0
+
+
 def finish_resumed_run(
     run_id: str,
     claim: str,
@@ -592,8 +695,18 @@ def list_exhausted_resuming_runs(
     return [r[0] for r in rows]
 
 
-def requeue_run_for_resume(run_id: str, db_path: Path | None = None) -> bool:
+def requeue_run_for_resume(
+    run_id: str,
+    db_path: Path | None = None,
+    *,
+    stale_before: datetime | None = None,
+) -> bool:
     """running -> resolved, so the next tick re-claims it. Guarded, idempotent.
+
+    ``stale_before`` re-checks staleness in the same UPDATE: the sweep reads
+    stale ids and then requeues them, and a live worker's heartbeat
+    (``touch_resume_claim``) can land in between. With the cutoff in the
+    WHERE clause, a fresh heartbeat wins and the run is left alone.
 
     `resume_attempts` is NOT reset here — it is the bound that stops a run
     which reliably kills its worker from being retried forever. It IS reset by
@@ -603,17 +716,21 @@ def requeue_run_for_resume(run_id: str, db_path: Path | None = None) -> bool:
     if not _resolve(db_path).exists():
         return False
     now = datetime.now(UTC).isoformat()
+    sql = (
+        "UPDATE workflow_runs SET status = 'resolved', resumed_at = NULL, "
+        # Breaking the claim is the point: the worker we just declared
+        # dead may in fact be alive, and this is what stops its late
+        # write from landing on the replacement's work.
+        "resume_claim = NULL, updated_at = ? "
+        "WHERE run_id = ? AND status = 'running' "
+        "AND resume_state_json IS NOT NULL"
+    )
+    params: list[str] = [now, run_id]
+    if stale_before is not None:
+        sql += " AND resumed_at IS NOT NULL AND resumed_at < ?"
+        params.append(stale_before.isoformat())
     with _get_conn(_resolve(db_path)) as conn:
-        cur = conn.execute(
-            "UPDATE workflow_runs SET status = 'resolved', resumed_at = NULL, "
-            # Breaking the claim is the point: the worker we just declared
-            # dead may in fact be alive, and this is what stops its late
-            # write from landing on the replacement's work.
-            "resume_claim = NULL, updated_at = ? "
-            "WHERE run_id = ? AND status = 'running' "
-            "AND resume_state_json IS NOT NULL",
-            (now, run_id),
-        )
+        cur = conn.execute(sql, params)
         return cur.rowcount > 0
 
 

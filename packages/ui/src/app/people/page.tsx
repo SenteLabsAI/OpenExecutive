@@ -1,10 +1,40 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
-import { createPerson, listPeople, type PageFormField, type Person } from "@/lib/api";
+import { ChatAppPickers } from "@/components/people/ChatAppPickers";
+import { ContactChangesCard, ContactKeeperSwitch } from "@/components/people/ContactChanges";
+import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import Button from "@/components/ui/Button";
+import { useChatDirectory, useSlackEmailMatch } from "@/components/ui/ChatPicker";
+import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
+import SidePanel from "@/components/ui/SidePanel";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import {
+  createPerson,
+  getContactChanges,
+  getPeopleViewer,
+  listPeople,
+  type ContactChanges,
+  type PageFormField,
+  type Person,
+  type PersonKind,
+} from "@/lib/api";
+import { newlyAdded } from "@/lib/contactChanges";
+import {
+  defaultKindForTab,
+  defaultPeopleTab,
+  effectiveKind,
+  hiddenTeamCount,
+  isContact,
+  peopleForTab,
+  personCardStatus,
+  shouldOfferTeamMode,
+  tabsFor,
+  type PeopleTab,
+} from "@/lib/peopleKinds";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -19,60 +49,60 @@ const ALL_SCOPES = [
   { value: "customer_credit", label: "Credit", hint: "Receives proposals involving credit or debt." },
   { value: "legal_sign", label: "Legal", hint: "Receives proposals with legal implications." },
   { value: "board_comms", label: "Board", hint: "Receives proposals before board communications." },
-  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the founder." },
+  { value: "meeting_scheduling", label: "Meetings", hint: "Receives meetings the Executive wants to book." },
+  { value: "wildcard", label: "All (wildcard)", hint: "Receives anything no one else is scoped for — usually the principal." },
 ];
 
 const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
+const KINDS: PersonKind[] = ["team", "contact"];
 
 // ---------------------------------------------------------------------------
-// PersonCard (unchanged from read-only)
+// PersonCard — name, role, channel and one status. Approval scopes are on
+// the person's own page.
 // ---------------------------------------------------------------------------
 
-function ScopePill({ scope }: { scope: string }) {
-  const entry = ALL_SCOPES.find((s) => s.value === scope);
-  const label = entry?.label ?? scope;
-  const isStar = scope === "wildcard";
-  return (
-    <span
-      className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium ${
-        isStar
-          ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/30"
-          : "bg-surface-input/40 text-fg-muted border-line"
-      }`}
-    >
-      {label}
-    </span>
-  );
+const TONE_DOT = { ok: "bg-emerald-500", warn: "bg-amber-500", muted: "bg-fg-subtle" } as const;
+
+function channelLabel(channel: string): string {
+  return channel === "any" ? "Where they last talked" : channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
-function PersonCard({ person }: { person: Person }) {
+function PersonCard({ person, today, isNew = false }: { person: Person; today: string; isNew?: boolean }) {
+  const contact = isContact(person);
+  const status = personCardStatus(person, today);
   return (
     <Link
       href={`/people/${person.id}`}
-      className="block rounded-xl border border-line bg-surface-elevated hover:bg-surface-overlay transition-colors p-4 group"
+      className="flex items-start gap-4 rounded-2xl border border-line bg-surface-elevated hover:bg-surface-hover hover:border-line-strong transition-colors p-5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
     >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div>
-          <div className="text-sm font-semibold text-fg group-hover:text-indigo-300 transition-colors flex items-center gap-2">
-            {person.full_name}
-            {person.is_principal && (
-              <span className="inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium bg-violet-500/20 text-violet-300 border-violet-500/30">
-                Principal
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-fg-muted mt-0.5">{person.role || "—"}</div>
-        </div>
-        <div className="flex-shrink-0 text-xs text-fg-muted capitalize">{person.preferred_channel}</div>
+      <div className="w-11 h-11 rounded-full bg-accent/10 text-accent flex items-center justify-center flex-shrink-0 text-base font-semibold">
+        {person.full_name.charAt(0).toUpperCase()}
       </div>
-      <div className="text-xs text-fg-muted mb-2">SLA: {person.response_sla_hours}h</div>
-      {person.authority_scope.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {person.authority_scope.map((s) => (
-            <ScopePill key={s} scope={s} />
-          ))}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate">
+            {person.full_name}
+          </span>
+          {person.is_principal && (
+            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent">
+              Principal
+            </span>
+          )}
+          {isNew && (
+            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium border border-emerald-500/40 text-emerald-500">
+              New
+            </span>
+          )}
         </div>
-      )}
+        <div className="text-[15px] text-fg-muted mt-0.5 truncate">{person.role || "—"}</div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-fg-muted">
+          {!contact && <span>{channelLabel(person.preferred_channel)}</span>}
+          <span className="inline-flex items-center gap-1.5">
+            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${TONE_DOT[status.tone]}`} />
+            {status.label}
+          </span>
+        </div>
+      </div>
     </Link>
   );
 }
@@ -82,6 +112,9 @@ function PersonCard({ person }: { person: Person }) {
 // ---------------------------------------------------------------------------
 
 interface AddPersonModalProps {
+  initialKind: PersonKind;
+  /** Contacts are the principal's alone: nobody else is offered the choice. */
+  canAddContacts: boolean;
   onCreated: (p: Person) => void;
   onClose: () => void;
 }
@@ -89,6 +122,7 @@ interface AddPersonModalProps {
 const BLANK_FORM = {
   full_name: "",
   role: "",
+  kind: "team" as PersonKind,
   is_principal: false,
   email: "",
   slack_user_id: "",
@@ -98,6 +132,11 @@ const BLANK_FORM = {
   response_sla_hours: "24",
   authority_scope: [] as string[],
 };
+
+const INPUT_CLS =
+  "w-full h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent";
+const LABEL_CLS = "text-sm text-fg-muted flex flex-col gap-1.5";
+const HINT_CLS = "text-[13px] text-fg-subtle mt-1";
 
 function DisclosureSection({
   label,
@@ -116,28 +155,72 @@ function DisclosureSection({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex items-center justify-between w-full py-1.5 text-xs font-medium text-fg-muted hover:text-fg transition-colors"
+        className="flex items-center justify-between w-full min-h-11 py-2 text-[15px] font-medium text-fg hover:text-accent transition-colors"
       >
         <span>{label}</span>
-        <span aria-hidden="true" className="text-fg-subtle text-[10px]">{open ? "▲" : "▼"}</span>
+        <span aria-hidden="true" className="text-fg-subtle text-xs">{open ? "▲" : "▼"}</span>
       </button>
-      {open && <div className="pt-2 space-y-3">{children}</div>}
+      {open && <div className="pt-2 pb-1 space-y-4">{children}</div>}
+    </div>
+  );
+}
+
+// The approval scopes as toggles, each with what it routes to the person.
+function ScopePicker({ selected, onToggle }: { selected: string[]; onToggle: (value: string) => void }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {ALL_SCOPES.map(({ value, label, hint }) => {
+        const active = selected.includes(value);
+        return (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onToggle(value)}
+            className={`px-3.5 py-2.5 rounded-xl border text-left transition-colors ${
+              active
+                ? "bg-accent/10 border-accent/60 text-fg"
+                : "bg-surface-elevated border-line text-fg-muted hover:border-line-strong"
+            }`}
+          >
+            <div className="text-[15px] font-medium">{label}</div>
+            <div className="text-[13px] leading-snug mt-0.5 text-fg-muted">{hint}</div>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
 const SCOPE_VALUES = ALL_SCOPES.map((s) => s.value);
 
-function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
-  const [form, setForm] = useState(BLANK_FORM);
+function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: AddPersonModalProps) {
+  const [form, setForm] = useState({ ...BLANK_FORM, kind: canAddContacts ? initialKind : "team" });
+  const kind = effectiveKind(form.kind, form.is_principal);
+  const contact = kind === "contact";
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showContact, setShowContact] = useState(false);
   const [showAuthority, setShowAuthority] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Slack, Discord and Telegram by name. Slack suggests whoever has the
+  // email typed above, and opens the fold to show it until it is toggled.
+  const chatDirectory = useChatDirectory("people");
+  const slackMatch = useSlackEmailMatch(form.email, !!chatDirectory?.slack.configured);
+  const [contactToggled, setContactToggled] = useState(false);
+  const contactOpen = showContact || (!contactToggled && !!slackMatch);
+  const setChatId = useCallback(
+    (field: "slack_user_id" | "discord_user_id" | "telegram_chat_id", id: string) =>
+      setForm((f) => (f[field] === id ? f : { ...f, [field]: id })),
+    [],
+  );
+
   useEffect(() => {
-    nameRef.current?.focus();
+    // After the panel has taken focus on open, so it remembers the button
+    // that opened it (and returns focus there on close).
+    const id = requestAnimationFrame(() => nameRef.current?.focus());
+    return () => cancelAnimationFrame(id);
   }, []);
 
   // Registered with Ask OE for the modal's lifetime — closing the modal
@@ -146,10 +229,20 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
     formId: "add_person",
     title: "Add person",
     description:
-      "Adds a human the Executive coordinates with. Authority scopes determine which proposals route to them for approval.",
+      "Adds a human the Executive coordinates with — a team member (can sign in, approve and be chased) or a contact (someone outside the team the Executive emails only when you ask). Authority scopes determine which proposals route to a team member for approval.",
     getFields: (): PageFormField[] => [
       { name: "full_name", label: "Full name", type: "text", value: form.full_name, required: true },
-      { name: "role", label: "Role", type: "text", value: form.role },
+      ...(canAddContacts
+        ? [{
+            name: "kind",
+            label: "Team member or contact",
+            type: "select" as const,
+            options: KINDS,
+            value: form.kind,
+            description: "team: works with you. contact: a client, contractor or advisor outside the team, private to you.",
+          }]
+        : []),
+      { name: "role", label: contact ? "Role and company" : "Role", type: "text", value: form.role },
       {
         name: "is_principal",
         label: "This is me — Primary",
@@ -191,6 +284,10 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
             if (typeof raw !== "boolean") skipped.push(key);
             else { next.is_principal = raw; applied.push(key); }
             break;
+          case "kind":
+            if (canAddContacts && (raw === "team" || raw === "contact")) { next.kind = raw; applied.push(key); }
+            else skipped.push(key);
+            break;
           case "preferred_channel":
             if (typeof raw === "string" && CHANNELS.includes(raw)) {
               next.preferred_channel = raw;
@@ -221,7 +318,7 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
       }
       setForm(next);
       // Open the disclosures so the suggested values are visible to review.
-      if (applied.some((k) => ["email", "slack_user_id", "discord_user_id", "telegram_chat_id", "preferred_channel", "response_sla_hours"].includes(k))) {
+      if (applied.some((k) => ["slack_user_id", "discord_user_id", "telegram_chat_id", "preferred_channel", "response_sla_hours"].includes(k))) {
         setShowContact(true);
       }
       if (applied.includes("authority_scope")) setShowAuthority(true);
@@ -253,6 +350,7 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
       const person = await createPerson({
         full_name: form.full_name.trim(),
         role: form.role.trim(),
+        kind,
         is_principal: form.is_principal,
         email: form.email.trim() || null,
         slack_user_id: form.slack_user_id.trim() || null,
@@ -260,7 +358,8 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
         discord_user_id: form.discord_user_id.trim() || null,
         preferred_channel: form.preferred_channel,
         response_sla_hours: Number(form.response_sla_hours) || 24,
-        authority_scope: form.authority_scope,
+        // A contact approves nothing; don't send scopes picked before switching.
+        authority_scope: contact ? [] : form.authority_scope,
       });
       onCreated(person);
     } catch (e) {
@@ -270,38 +369,90 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
     }
   }
 
+  const title = contact ? "Add contact" : "Add person";
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={saving ? undefined : onClose}>
-      <div
-        className="w-full max-w-lg bg-surface border border-line rounded-2xl shadow-2xl p-6 mx-4 max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="text-base font-semibold text-fg mb-4">Add person</h2>
+    <SidePanel
+      open
+      onClose={saving ? () => {} : onClose}
+      title={title}
+      footer={
+        <div className="flex gap-2">
+          <Button
+            variant="primary"
+            disabled={saving || !form.full_name.trim()}
+            onClick={submit}
+            className="flex-1"
+          >
+            {saving ? "Creating…" : title}
+          </Button>
+          <Button disabled={saving} onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      }
+    >
+        <div className="space-y-4">
+          {canAddContacts && !form.is_principal && (
+            <div role="radiogroup" aria-label="Team member or contact" className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {KINDS.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="radio"
+                  aria-checked={form.kind === k}
+                  onClick={() => { setForm((f) => ({ ...f, kind: k })); clearSuggested("kind"); }}
+                  className={`px-4 py-3 rounded-xl border text-left transition-colors ${
+                    form.kind === k
+                      ? "bg-accent/10 border-accent/60 text-fg"
+                      : "bg-surface-elevated border-line text-fg-muted hover:border-line-strong"
+                  } ${suggestedCls("kind")}`}
+                >
+                  <div className="text-[15px] font-semibold">{k === "team" ? "Team member" : "Contact"}</div>
+                  <div className="text-sm leading-snug mt-1 text-fg-muted">
+                    {k === "team"
+                      ? "Works with you: can sign in, message the Executive and approve."
+                      : "Outside the team and private to you: emailed or invited only when you ask."}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
 
-        <div className="space-y-3">
           {/* Always-visible: the 10-second path */}
-          <label className="text-xs text-fg-muted flex flex-col gap-1">
+          <label className={LABEL_CLS}>
             Full name *
             <input
               ref={nameRef}
               value={form.full_name}
               onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, full_name: v })); clearSuggested("full_name"); }}
-              className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("full_name")}`}
+              className={`${INPUT_CLS} ${suggestedCls("full_name")}`}
               placeholder="Sarah Chen"
             />
           </label>
 
-          <label className="text-xs text-fg-muted flex flex-col gap-1">
-            Role
+          <label className={LABEL_CLS}>
+            {contact ? "Role and company" : "Role"}
             <input
               value={form.role}
               onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, role: v })); clearSuggested("role"); }}
-              className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("role")}`}
-              placeholder="CFO (fractional)"
+              className={`${INPUT_CLS} ${suggestedCls("role")}`}
+              placeholder={contact ? "Head of Procurement, Acme" : "CFO (fractional)"}
             />
           </label>
 
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+          <label className={LABEL_CLS}>
+            Email
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, email: v })); clearSuggested("email"); }}
+              className={`${INPUT_CLS} ${suggestedCls("email")}`}
+              placeholder={contact ? "jordan@acme.example" : "sarah@example.com"}
+            />
+          </label>
+
+          {!contact && (
+          <label className="flex items-start gap-3 cursor-pointer select-none rounded-xl border border-line px-4 py-3">
             <input
               type="checkbox"
               checked={form.is_principal}
@@ -310,152 +461,88 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
                 setForm((f) => ({ ...f, is_principal: checked }));
                 if (checked) setShowAuthority(true);
               }}
-              className="w-4 h-4 rounded accent-indigo-500"
+              className="mt-0.5 w-5 h-5 rounded accent-indigo-500 flex-shrink-0"
             />
-            <span className="text-sm text-fg">This is me — Primary</span>
-            <span className="text-xs text-fg-muted">— marks you as the primary decision-maker</span>
+            <span>
+              <span className="block text-[15px] font-medium text-fg">This is me — Primary</span>
+              <span className="block text-sm text-fg-muted">Marks you as the primary decision-maker.</span>
+            </span>
           </label>
+          )}
 
           {/* Contact & routing */}
           <DisclosureSection
-            label="Contact & routing"
-            open={showContact}
-            onToggle={() => setShowContact((v) => !v)}
+            label={contact ? "Chat apps" : "Contact & routing"}
+            open={contactOpen}
+            onToggle={() => {
+              setContactToggled(true);
+              setShowContact(!contactOpen);
+            }}
           >
-            <div className="grid grid-cols-2 gap-3">
+            {!contact && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="text-xs text-fg-muted flex flex-col gap-1">
+                <label className={LABEL_CLS}>
                   Preferred channel
                   <select
                     value={form.preferred_channel}
                     onChange={(e) => setForm((f) => ({ ...f, preferred_channel: e.target.value }))}
-                    className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                    className={INPUT_CLS}
                   >
                     {CHANNELS.map((c) => (
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
                 </label>
-                <p className="text-[10px] text-fg-muted mt-1">
-                  Proposals routed to this person are sent via {form.preferred_channel === "any" ? "any available channel" : form.preferred_channel}.
+                <p className={HINT_CLS}>
+                  Proposals routed to this person are sent via {form.preferred_channel === "any" ? "the app they last talked in, then any other" : form.preferred_channel}.
                 </p>
               </div>
               <div>
-                <label className="text-xs text-fg-muted flex flex-col gap-1">
+                <label className={LABEL_CLS}>
                   Expected reply within
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <input
                       type="number"
                       min={1}
                       value={form.response_sla_hours}
                       onChange={(e) => setForm((f) => ({ ...f, response_sla_hours: e.target.value }))}
-                      className="flex-1 px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
+                      className={`${INPUT_CLS} flex-1 min-w-0`}
                     />
-                    <span className="text-xs text-fg-muted flex-shrink-0">hours</span>
+                    <span className="text-sm text-fg-muted flex-shrink-0">hours</span>
                   </div>
                 </label>
-                <p className="text-[10px] text-fg-muted mt-1">
-                  Items overdue in Today after {form.response_sla_hours || 24}h with no reply.
+                <p className={HINT_CLS}>
+                  Items show as overdue on Home after {form.response_sla_hours || 24}h with no reply.
                 </p>
               </div>
             </div>
+            )}
 
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
-              Email
-              <input
-                value={form.email}
-                onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, email: v })); clearSuggested("email"); }}
-                className={`px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500 ${suggestedCls("email")}`}
-                placeholder="sarah@example.com"
-              />
-            </label>
-
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
-              Slack user ID
-              <input
-                value={form.slack_user_id}
-                onChange={(e) => setForm((f) => ({ ...f, slack_user_id: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                placeholder="U01ABC123"
-              />
-            </label>
-
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
-              Discord user ID
-              <input
-                value={form.discord_user_id}
-                onChange={(e) => setForm((f) => ({ ...f, discord_user_id: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                placeholder="123456789012345678"
-              />
-              <span className="text-[10px] text-fg-muted">
-                Right-click your Discord username and &quot;Copy User ID&quot; (developer mode required).
-              </span>
-            </label>
-
-            <label className="text-xs text-fg-muted flex flex-col gap-1">
-              Telegram chat ID
-              <input
-                value={form.telegram_chat_id}
-                onChange={(e) => setForm((f) => ({ ...f, telegram_chat_id: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-surface-input border border-line text-sm focus:outline-none focus:border-indigo-500"
-                placeholder="123456789"
-              />
-            </label>
+            <ChatAppPickers
+              ids={form}
+              onChange={setChatId}
+              directory={chatDirectory}
+              slackMatch={slackMatch}
+            />
           </DisclosureSection>
 
-          {/* Approval authority */}
+          {/* Approval authority — a contact approves nothing */}
+          {!contact && (
           <DisclosureSection
             label="Approval authority"
             open={showAuthority}
             onToggle={() => setShowAuthority((v) => !v)}
           >
-            <div className="text-[10px] text-fg-muted mb-1.5">What this person approves</div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {ALL_SCOPES.map(({ value, label, hint }) => {
-                const active = form.authority_scope.includes(value);
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => toggleScope(value)}
-                    title={hint}
-                    className={`px-2 py-1.5 rounded-lg border text-xs transition-colors text-left ${
-                      active
-                        ? "bg-indigo-600/30 border-indigo-500/50 text-indigo-300"
-                        : "bg-surface-input border-line text-fg-muted hover:border-indigo-500/40"
-                    }`}
-                  >
-                    <div className="font-medium">{label}</div>
-                    <div className="text-[9px] leading-tight mt-0.5 opacity-70 line-clamp-2">{hint}</div>
-                  </button>
-                );
-              })}
-            </div>
+            <div className="text-sm text-fg-muted">What this person approves</div>
+            <ScopePicker selected={form.authority_scope} onToggle={toggleScope} />
           </DisclosureSection>
+          )}
 
         </div>
 
-        {err && <p className="text-xs text-rose-300 mt-3">{err}</p>}
-
-        <div className="flex gap-2 mt-5">
-          <button
-            disabled={saving || !form.full_name.trim()}
-            onClick={submit}
-            className="flex-1 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 font-medium"
-          >
-            {saving ? "Creating…" : "Add person"}
-          </button>
-          <button
-            disabled={saving}
-            onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg border border-line hover:bg-surface-overlay disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+        {err && <p className="text-sm text-rose-500 mt-4">{err}</p>}
+    </SidePanel>
   );
 }
 
@@ -463,72 +550,162 @@ function AddPersonModal({ onCreated, onClose }: AddPersonModalProps) {
 // Page
 // ---------------------------------------------------------------------------
 
+const TAB_COPY: Record<PeopleTab, { label: string; blurb: string; empty: string; add: string }> = {
+  team: {
+    label: "Team",
+    blurb: "People who work with you. They can sign in, message the Executive and approve what their authority covers.",
+    empty: "No team members yet.",
+    add: "Add person",
+  },
+  contacts: {
+    label: "Contacts",
+    blurb: "Clients, contractors and advisors outside the team — private to you. The Executive emails or invites them only when you ask it to; they can't sign in or message it, and nobody else on the team sees them.",
+    empty: "No contacts yet.",
+    add: "Add contact",
+  },
+};
+
 export default function PeoplePage() {
+  const { mode, loading: workspaceLoading } = useWorkspace();
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [tab, setTab] = useState<PeopleTab | null>(null);
+  const [offerFor, setOfferFor] = useState<string | null>(null);
+  // Contacts are private to the principal. Until the viewer is known (or if
+  // the check fails) nobody is offered them; the API enforces it regardless.
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
+  const [viewerLoading, setViewerLoading] = useState(true);
+
+  const tabs = tabsFor(viewerIsPrincipal);
+  // Open on the mode's default tab once the mode is known; a tab the user
+  // picked is kept from then on (and never one this viewer is not offered).
+  const activeTab: PeopleTab =
+    tab !== null && tabs.includes(tab) ? tab : defaultPeopleTab(mode, viewerIsPrincipal);
 
   function refresh() {
     setLoading(true);
-    listPeople()
+    listPeople({ includeContacts: true })
       .then(setPeople)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }
 
-  useEffect(() => { refresh(); }, []);
+  // What the Executive changed in the contacts: the principal's alone.
+  const [contactChanges, setContactChanges] = useState<ContactChanges | null>(null);
+  const loadContactChanges = useCallback((next?: ContactChanges) => {
+    if (next) {
+      setContactChanges(next);
+      return;
+    }
+    getContactChanges().then(setContactChanges, () => setContactChanges(null));
+    listPeople({ includeContacts: true }).then(setPeople, () => {});
+  }, []);
+
+  useEffect(() => {
+    if (viewerIsPrincipal) getContactChanges().then(setContactChanges, () => setContactChanges(null));
+  }, [viewerIsPrincipal]);
+
+  useEffect(() => {
+    refresh();
+    // Done for you's contacts line opens the Contacts tab (?tab=contacts).
+    const linked = new URLSearchParams(window.location.search).get("tab");
+    if (linked === "team" || linked === "contacts") setTab(linked);
+    getPeopleViewer()
+      .then((v) => setViewerIsPrincipal(v.is_principal))
+      .catch(() => setViewerIsPrincipal(false))
+      .finally(() => setViewerLoading(false));
+  }, []);
+
+  const shown = peopleForTab(people, activeTab, mode);
+  const fresh = activeTab === "contacts" && contactChanges ? newlyAdded(contactChanges.changes) : new Set<number>();
+  const hidden = activeTab === "team" ? hiddenTeamCount(people, mode) : 0;
+  const copy = TAB_COPY[activeTab];
+  const tabsId = useId();
+  // Local date (YYYY-MM-DD) for "on leave until", sampled once per mount.
+  const [today] = useState(() => new Date().toLocaleDateString("en-CA"));
 
   return (
     <div className="flex flex-col h-full bg-surface">
       {showAdd && (
         <AddPersonModal
+          initialKind={defaultKindForTab(activeTab)}
+          canAddContacts={viewerIsPrincipal}
           onCreated={(p) => {
             setPeople((prev) => [...prev, p]);
             setShowAdd(false);
+            // Show the new row where it lives.
+            setTab(isContact(p) ? "contacts" : "team");
+            if (shouldOfferTeamMode(mode, p.kind ?? "team", p.is_principal)) setOfferFor(p.full_name);
           }}
           onClose={() => setShowAdd(false)}
         />
       )}
+      {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-5xl mx-auto px-6 py-6">
-          <div className="flex items-baseline justify-between mb-6">
-            <div>
-              <h1 className="text-xl font-semibold text-fg">People</h1>
-              <p className="text-sm text-fg-muted mt-0.5">
-                Humans the Executive coordinates with. Authority scopes determine who approves what.
-              </p>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-6">
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">People</h1>
+              <p className="text-[15px] text-fg-muted mt-2 max-w-2xl">{copy.blurb}</p>
             </div>
-            <button
-              onClick={() => setShowAdd(true)}
-              className="flex-shrink-0 px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium"
-            >
-              + Add person
-            </button>
+            <Button variant="primary" onClick={() => setShowAdd(true)} className="flex-shrink-0 self-start">
+              {copy.add}
+            </Button>
           </div>
 
-          {loading && <p className="text-fg-muted text-sm">Loading…</p>}
+          {tabs.length > 1 && (
+            <div className="mb-6">
+              <SectionTabs
+                idBase={tabsId}
+                label="Team or contacts"
+                active={activeTab}
+                onChange={setTab}
+                disabled={(workspaceLoading || viewerLoading) && tab === null}
+                tabs={tabs.map((t) => ({
+                  id: t,
+                  label: TAB_COPY[t].label,
+                  count: loading ? undefined : peopleForTab(people, t, mode).length,
+                }))}
+              />
+            </div>
+          )}
+
+          <div {...(tabs.length > 1 ? sectionPanelProps(tabsId, activeTab) : {})}>
+          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
           {error && (
-            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm mb-4">
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}
             </div>
           )}
-          {!loading && !error && people.length === 0 && (
-            <div className="rounded-xl border border-line bg-surface-elevated p-8 text-center">
-              <p className="text-fg-muted text-sm mb-3">No people configured yet.</p>
-              <button
-                onClick={() => setShowAdd(true)}
-                className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
-              >
-                Add your first person →
-              </button>
+          {activeTab === "contacts" && contactChanges && (
+            <>
+              <ContactChangesCard data={contactChanges} onChanged={loadContactChanges} />
+              <ContactKeeperSwitch data={contactChanges} onChanged={loadContactChanges} />
+            </>
+          )}
+          {!loading && !error && shown.length === 0 && (
+            <div className="rounded-2xl border border-line bg-surface-elevated p-10 text-center">
+              <p className="text-fg-muted text-[15px] mb-5">{copy.empty}</p>
+              <Button variant="primary" onClick={() => setShowAdd(true)}>
+                {activeTab === "contacts" ? "Add your first contact" : "Add your first person"}
+              </Button>
             </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {people.map((person) => (
-              <PersonCard key={person.id} person={person} />
+            {shown.map((person) => (
+              <PersonCard key={person.id} person={person} today={today} isNew={fresh.has(person.id)} />
             ))}
+          </div>
+
+          {hidden > 0 && (
+            <p className="text-sm text-fg-muted mt-5">
+              {hidden === 1 ? "1 other team member is" : `${hidden} other team members are`} hidden while you
+              use Open Executive just for yourself. Switch to team mode in Settings to see them.
+            </p>
+          )}
           </div>
         </div>
       </main>

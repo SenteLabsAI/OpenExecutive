@@ -70,6 +70,10 @@ _RESUME_STALE_AFTER = timedelta(minutes=90)
 # Bound on those requeues, so a run that reliably kills its worker stops
 # rather than looping forever.
 _MAX_RESUME_ATTEMPTS = 3
+# A live resume refreshes its claim (``touch_resume_claim``) at most this
+# often while events flow — each action-step tool call emits one — so a long
+# but healthy run never ages past _RESUME_STALE_AFTER and is never replayed.
+_RESUME_HEARTBEAT_EVERY = timedelta(minutes=1)
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +134,12 @@ async def apply_resolution(
     # someone is sitting in Slack having just approved it. The kick shares the
     # atomic claim with the poll loop, so this is a latency optimisation, not
     # a second execution path: if it never runs, `_tick` picks the run up.
+    # Under an operator pause the decision is recorded but the run does not
+    # move; the poll loop resumes it after the executive is resumed.
+    from openexecutive.scheduler.pause import is_paused
+
     run = _wf_persistence.get_run(run_id, db_path=db_path)
-    if run and run.get("resume_state_json"):
+    if run and run.get("resume_state_json") and not is_paused():
         _kick_resume(run_id, db_path=db_path)
 
     return True
@@ -242,16 +250,28 @@ def _kick_resume(run_id: str, db_path: Path | None = None) -> None:
         return
 
     async def _run() -> None:
-        try:
-            claim = _wf_persistence.claim_run_for_resume(run_id, db_path=db_path)
-            if claim is None:
-                return
-            row = _load_resumable_row(run_id, db_path=db_path)
-            if row is not None:
-                await _execute_resume(row, claim, db_path=db_path)
-        except Exception:
-            logger.exception("resumer: kicked resume failed for run_id=%s", run_id)
-            _abandon_resume(run_id, "resume failed unexpectedly", db_path=db_path)
+        from openexecutive.audit.context import unscoped_audit_rows
+        from openexecutive.orchestrator.schedule_tools import set_session
+
+        # The task copies the caller's context, which on an inbound handler
+        # holds that person's live chat session. A resumed run is unattended —
+        # the poll loop runs it with no session — so run it the same way here,
+        # or it would act with the approver's identity (e.g. reach the
+        # principal's contacts because the principal answered on Slack). The
+        # handler's audit scope goes too: inherited, the principal's scope
+        # would hide every row of the run that names a contact from whoever
+        # started it, and so tell them that name is a contact.
+        with set_session(None), unscoped_audit_rows():
+            try:
+                claim = _wf_persistence.claim_run_for_resume(run_id, db_path=db_path)
+                if claim is None:
+                    return
+                row = _load_resumable_row(run_id, db_path=db_path)
+                if row is not None:
+                    await _execute_resume(row, claim, db_path=db_path)
+            except Exception:
+                logger.exception("resumer: kicked resume failed for run_id=%s", run_id)
+                _abandon_resume(run_id, "resume failed unexpectedly", db_path=db_path)
 
     task = loop.create_task(_run())
     _KICK_TASKS.add(task)
@@ -287,7 +307,9 @@ async def _process_resumable(now: datetime, db_path: Path | None = None) -> int:
     for stale_id in _wf_persistence.list_stale_resuming_runs(
         cutoff, _MAX_RESUME_ATTEMPTS, db_path=db_path
     ):
-        if _wf_persistence.requeue_run_for_resume(stale_id, db_path=db_path):
+        if _wf_persistence.requeue_run_for_resume(
+            stale_id, db_path=db_path, stale_before=cutoff
+        ):
             logger.warning(
                 "resumer: run %s was claimed for resume but never finished — requeued",
                 stale_id,
@@ -336,6 +358,25 @@ async def _process_resumable(now: datetime, db_path: Path | None = None) -> int:
 async def _execute_resume(
     row: dict, claim: str, db_path: Path | None = None
 ) -> bool:
+    """`_drive_resume`, as the work of the person who started the run: what
+    its steps read and draft is theirs (`artifact_records.pinned_viewer`),
+    and nobody's for a team run, so no one's documents reach the run's
+    history that someone else may read."""
+    from openexecutive.orchestrator.artifact_records import (
+        NOBODY,
+        pinned_viewer,
+        viewer_for_person,
+    )
+
+    run = _wf_persistence.get_run(row["run_id"], db_path=db_path) or {}
+    owner = run.get("owner_person_id")
+    with pinned_viewer(viewer_for_person(owner) if owner is not None else NOBODY):
+        return await _drive_resume(row, claim, db_path=db_path)
+
+
+async def _drive_resume(
+    row: dict, claim: str, db_path: Path | None = None
+) -> bool:
     """Drive one claimed run's remaining steps to a terminal state.
 
     `claim` is the fencing token from `claim_run_for_resume`; every write here
@@ -347,6 +388,7 @@ async def _execute_resume(
     "executed N" count means completions, not merely claims.
     """
     import contextlib
+    import sqlite3
 
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
@@ -408,6 +450,7 @@ async def _execute_resume(
     store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
     artifact = ""
     last_error = ""
+    last_heartbeat = datetime.now(UTC)
     # No handler here: a crash propagates to the caller, which routes it
     # through `_abandon_resume` — the one failure path both entry points share.
     async for event in workflow.resume(
@@ -418,6 +461,9 @@ async def _execute_resume(
             # other runners use: that flips running -> awaiting_human,
             # stores the fresh payload, and clears gate 1's resolution so
             # this run is not immediately re-claimed on its old answer.
+            # A scheduled run still owes its artifact to its recipient.
+            if event.resume_state is not None and state.deliver_to_person_id is not None:
+                event.resume_state.deliver_to_person_id = state.deliver_to_person_id
             try:
                 await checkpoint_gate(
                     run_id=run_id,
@@ -447,6 +493,25 @@ async def _execute_resume(
                 },
             )
             return False
+        now = datetime.now(UTC)
+        if now - last_heartbeat >= _RESUME_HEARTBEAT_EVERY:
+            last_heartbeat = now
+            try:
+                still_ours = _wf_persistence.touch_resume_claim(run_id, claim, db_path=db_path)
+            except sqlite3.OperationalError:
+                # A busy shared DB is not a lost claim — keep working; the next
+                # heartbeat (one interval later) retries. Only a definite
+                # False means superseded.
+                logger.warning("resumer: database busy on heartbeat for run %s", run_id)
+                still_ours = True
+            if not still_ours:
+                # Superseded: another worker owns this run now. Stop before the
+                # next step acts again (action steps have external effects).
+                logger.warning(
+                    "resumer: run %s lost its claim mid-resume — stopping this worker",
+                    run_id,
+                )
+                return False
         if event.type == "artifact" and event.content:
             artifact = event.content
         elif event.type == "error" and event.message:
@@ -487,7 +552,21 @@ async def _execute_resume(
         },
     )
     logger.info("resumer: run %s resumed -> %s", run_id, outcome)
+    if artifact and state.deliver_to_person_id is not None:
+        await _deliver_artifact(run_id, state.deliver_to_person_id, artifact)
     return True
+
+
+async def _deliver_artifact(run_id: str, person_id: int, artifact: str) -> None:
+    """DM a resumed scheduled run's artifact — the delivery the scheduler
+    would have made had the run not paused. Best effort: the run is already
+    stored as done, and a failed send must not change that."""
+    try:
+        from openexecutive.orchestrator.schedule_tools import handle_message_person
+
+        await handle_message_person({"person_id": person_id, "text": artifact})
+    except Exception:
+        logger.exception("resumer: run %s artifact delivery failed (run still done)", run_id)
 
 
 def _resolution_from_row(row: dict, run_id: str) -> WaitForHumanResolution:
@@ -661,8 +740,46 @@ async def run_resumer(poll_interval_seconds: int = 60) -> None:
 
     An async startup sweep runs first to apply the full on_timeout policy for
     any runs that expired while the server was down, before the first tick.
+    While the executive is paused (scheduler/pause.py) nothing runs — not the
+    startup sweep, not timeouts, not resumes — until the first unpaused
+    iteration, which then catches up on everything held.
     """
+    from openexecutive.scheduler.pause import is_paused
+
     logger.info("resumer started (poll_interval=%ds)", poll_interval_seconds)
+    # The startup sweeps act (timeout policies, resumed runs), so under an
+    # operator pause they wait for the first unpaused iteration.
+    startup_done = False
+    holding_for_pause = False
+    while True:
+        try:
+            if is_paused():
+                if not holding_for_pause:
+                    logger.warning(
+                        "resumer: executive paused — holding workflow timeouts and resumes"
+                    )
+                    holding_for_pause = True
+            else:
+                if holding_for_pause:
+                    logger.info("resumer: executive resumed")
+                    holding_for_pause = False
+                if not startup_done:
+                    startup_done = True
+                    await _startup_sweep()
+                await _tick(datetime.now(UTC))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("resumer tick failed")
+        try:
+            await asyncio.sleep(poll_interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("resumer cancelled — exiting")
+            raise
+
+
+async def _startup_sweep() -> None:
+    """Catch up on what happened while the server was down (or paused)."""
     swept = await sweep_stale_awaiting()
     if swept:
         logger.info("resumer: startup sweep processed %d stale run(s)", swept)
@@ -674,19 +791,6 @@ async def run_resumer(poll_interval_seconds: int = 60) -> None:
             logger.info("resumer: startup resumed %d run(s)", resumed)
     except Exception:
         logger.exception("resumer: startup resume sweep failed")
-    while True:
-        try:
-            now = datetime.now(UTC)
-            await _tick(now)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("resumer tick failed")
-        try:
-            await asyncio.sleep(poll_interval_seconds)
-        except asyncio.CancelledError:
-            logger.info("resumer cancelled — exiting")
-            raise
 
 
 async def _tick(now: datetime) -> None:

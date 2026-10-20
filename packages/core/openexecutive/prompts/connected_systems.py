@@ -1,0 +1,268 @@
+"""What the Executive is connected to, told to the model in cached block 0.
+
+Without this the model learns what is connected only by calling
+``search_tools``, an uncached proxy whose results are gone by the next turn
+(prior turns replay as plain text), so it rediscovers the Google tools on most
+turns and, when a search comes back empty, tells the user it can't see their
+Gmail. ``render_connected_systems`` states what is on and pins the exact
+Google tool names it uses constantly, so those are called directly.
+
+Every input is fixed for the process (the MCP servers the gateway started
+with, the integration settings in the environment) and the output is sorted,
+so block 0's 1h cache stays warm.
+"""
+from __future__ import annotations
+
+import re
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openexecutive.config import Settings
+
+GOOGLE_SERVER = "google_workspace"
+
+# Server names are operator-written JSON keys rendered into the prompt; only
+# plain identifiers are shown (a `_comment` key is config, not a server).
+_SERVER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+# The Google Workspace tools the Executive reaches for on most turns, by
+# service, as workspace-mcp 2.1.0 (pinned in docker/Dockerfile) names them.
+# A new workspace-mcp can rename tools: re-check this list when bumping the
+# pin. Apps Script tools stay out, since the gateway refuses them. Listing a
+# name here never widens access: every call still runs the gateway's gates
+# and a private turn's allow-list (schedule_tools.PRIVATE_TURN_MCP_TOOLS).
+GOOGLE_TOOL_MANIFEST: dict[str, tuple[str, ...]] = {
+    "Gmail": (
+        "google_workspace__search_gmail_messages",
+        "google_workspace__get_gmail_message_content",
+        "google_workspace__get_gmail_thread_content",
+        "google_workspace__get_gmail_attachment_content",
+        "google_workspace__draft_gmail_message",
+        "google_workspace__send_gmail_message",
+    ),
+    "Calendar": (
+        "google_workspace__list_calendars",
+        "google_workspace__get_events",
+        "google_workspace__query_freebusy",
+        "google_workspace__manage_event",
+    ),
+    "Drive": (
+        "google_workspace__search_drive_files",
+        "google_workspace__get_drive_file_content",
+        "google_workspace__list_drive_items",
+        "google_workspace__create_drive_file",
+    ),
+    "Docs": (
+        "google_workspace__search_docs",
+        "google_workspace__get_doc_content",
+        "google_workspace__list_docs_in_folder",
+        "google_workspace__create_doc",
+    ),
+    "Sheets": (
+        "google_workspace__read_sheet_values",
+        "google_workspace__list_spreadsheets",
+        "google_workspace__get_spreadsheet_info",
+        "google_workspace__list_sheet_tables",
+        "google_workspace__modify_sheet_values",
+        "google_workspace__create_spreadsheet",
+    ),
+}
+
+PINNED_GOOGLE_TOOLS: frozenset[str] = frozenset(
+    name for names in GOOGLE_TOOL_MANIFEST.values() for name in names
+)
+
+# Which workspace-mcp service module each manifest heading comes from, so a
+# `WORKSPACE_MCP_TOOLS` subset can be matched against it. These are the names
+# `--tools` accepts (workspace-mcp's `SERVICE_MODULES`), not display names.
+GOOGLE_SERVICE_OF: dict[str, str] = {
+    "Gmail": "gmail",
+    "Calendar": "calendar",
+    "Drive": "drive",
+    "Docs": "docs",
+    "Sheets": "sheets",
+}
+
+# Pinned tools that workspace-mcp's `core` tier does NOT include, read from
+# `core/tool_tiers.yaml` in the pinned 2.1.0. Tiers are cumulative, so
+# `extended` and `complete` carry all 24 and only `core` needs subtracting.
+# Re-check when bumping the pin, exactly as for the manifest above.
+GOOGLE_TOOLS_ABOVE_CORE: frozenset[str] = frozenset({
+    "google_workspace__draft_gmail_message",
+    "google_workspace__get_gmail_attachment_content",
+    "google_workspace__get_gmail_thread_content",
+    "google_workspace__get_spreadsheet_info",
+    "google_workspace__list_docs_in_folder",
+    "google_workspace__list_drive_items",
+    "google_workspace__list_sheet_tables",
+    "google_workspace__list_spreadsheets",
+    "google_workspace__query_freebusy",
+    "google_workspace__search_docs",
+})
+
+
+def google_tool_manifest(settings: Settings) -> dict[str, tuple[str, ...]]:
+    """``GOOGLE_TOOL_MANIFEST`` narrowed to what workspace-mcp actually loaded.
+
+    The manifest is a static list of 24 names, but the child imports only the
+    service modules `WORKSPACE_MCP_TOOLS` names and registers only the tools in
+    `WORKSPACE_MCP_TOOL_TIER`. Advertising the unfiltered list tells the model a
+    tool is "already available, no `search_tools` needed" when it is not in the
+    index at all — it then calls it, gets extensible-mcp's "has not been
+    discovered via search_tools" refusal, and has no way to reconcile that with
+    its own instructions.
+
+    Both inputs are process-constant, so the result is too and block 0 stays
+    cacheable. A heading with nothing left is dropped rather than rendered empty.
+    """
+    services = settings.workspace_mcp_service_list
+    core_only = settings.workspace_mcp_tier == "core"
+    out: dict[str, tuple[str, ...]] = {}
+    for heading, names in GOOGLE_TOOL_MANIFEST.items():
+        if services is not None and GOOGLE_SERVICE_OF[heading] not in services:
+            continue
+        kept = tuple(n for n in names if not (core_only and n in GOOGLE_TOOLS_ABOVE_CORE))
+        if kept:
+            out[heading] = kept
+    return out
+
+
+def pinned_google_tools(settings: Settings) -> frozenset[str]:
+    """The pinned names worth probing and advertising on this install.
+
+    One source of truth shared by the prompt and `prime_pinned_tools`, so the
+    gateway never probes for a tool the prompt does not claim, and vice versa.
+    """
+    return frozenset(
+        name for names in google_tool_manifest(settings).values() for name in names
+    )
+
+
+def _on(flag: bool) -> str:
+    return "on" if flag else "off"
+
+
+def render_connected_systems(
+    *,
+    mcp_servers: Sequence[str],
+    settings: Settings,
+    needs_reconnect: Sequence[str] = (),
+) -> str:
+    """The ``## Connected Systems`` section of block 0.
+
+    ``mcp_servers`` is what the running gateway was configured with (empty
+    when MCP is off or the gateway failed to start, so a Google server that
+    never came up is never described as connected). ``needs_reconnect`` is
+    the servers whose sign-in has died (``MCPGateway.needs_reconnect``): a
+    Google server in it is described as needing a reconnect, not as
+    connected, so the model stops promising mail it cannot read. The block
+    is re-rendered, and re-cached once, when that set changes. Act as me is
+    named by a constant line that points at ``DELEGATION_ADDENDUM``, which
+    block 0 carries only while it is on.
+    """
+    servers = sorted({s for s in mcp_servers if _SERVER_NAME_RE.fullmatch(s)})
+    google = GOOGLE_SERVER in servers
+    google_dead = google and GOOGLE_SERVER in set(needs_reconnect)
+    others = [s for s in servers if s != GOOGLE_SERVER]
+    email = settings.exec_email_address
+
+    lines = [
+        "\n\n## Connected Systems\n",
+        "This is what is connected right now. Answer \"what can you do?\" or "
+        "\"can you see my email?\" from this list; do not call `search_tools` "
+        "to find out.\n",
+    ]
+
+    if google_dead:
+        lines.append(
+            f"- **Google Workspace: needs reconnecting.** Your sign-in as {email} "
+            "has expired or was revoked, so you cannot read or send email, see "
+            "calendars, or open Drive, Docs or Sheets files until the owner "
+            "connects Google again (Settings → Status). If asked, say so plainly "
+            "and do not call the Google tools: every call fails with the same "
+            "authorization error until then."
+        )
+    elif google:
+        manifest = google_tool_manifest(settings)
+        # Derived, never hardcoded: naming all five while a subset is loaded is
+        # the whole bug. Ordered as the manifest is, so the text is stable.
+        loaded = [s for s in GOOGLE_TOOL_MANIFEST if s in manifest]
+        services = (
+            " and ".join(filter(None, [", ".join(loaded[:-1]), loaded[-1]]))
+            if loaded
+            else "no services"
+        )
+        lines.append(
+            f"- **Google Workspace: connected** as your own account ({email}) — "
+            f"{services}. Act from your own account: "
+            "never ask the user which address to send from — always send, create "
+            "events, and own documents from your own account. If you need the "
+            "user's email or a third party's, ask for that specifically by name. "
+            "You see your own mailbox, calendar and files, plus whatever others "
+            "have shared with you; the user's personal inbox is theirs, not yours."
+        )
+        lines.append(
+            "  Call these tools directly with `call_tool` — they are already "
+            "available, no `search_tools` needed. Use `search_tools` only for "
+            "something not listed here."
+        )
+        for service in sorted(manifest):
+            names = ", ".join(f"`{n}`" for n in manifest[service])
+            lines.append(f"  - {service}: {names}")
+    else:
+        lines.append(
+            "- **Google Workspace: not connected.** You cannot read or send email, "
+            "see calendars, or open Drive, Docs or Sheets files. If asked, say so "
+            "plainly and point the user to the setup page (Settings → Status) rather "
+            "than implying access."
+        )
+
+    if others:
+        lines.append(
+            "- **Other tool servers:** "
+            + ", ".join(f"`{s}`" for s in others)
+            + ". Find their tools with `search_tools`."
+        )
+
+    channels = [
+        ("Slack", bool(settings.slack_bot_token)),
+        ("Discord", bool(settings.discord_bot_token)),
+        ("Telegram", bool(settings.telegram_bot_token)),
+        ("Google Chat", bool(settings.google_chat_project_number)),
+    ]
+    lines.append(
+        "- **Messaging channels:** "
+        + ", ".join(f"{name} {_on(flag)}" for name, flag in channels)
+        + ". Reach people only on a channel that is on, through your own "
+        "messaging tools."
+    )
+    if settings.notion_sync_enabled:
+        lines.append(
+            "- **Notion: synced into your knowledge base.** You read it through "
+            "retrieval, not live; you cannot edit Notion."
+        )
+    elif not any("notion" in s.lower() for s in others):
+        # A Notion MCP server, when configured, is listed with the others.
+        lines.append("- **Notion:** not connected.")
+    if settings.confluence_sync_enabled:
+        # Settings-derived and constant per deployment, so block 0 stays
+        # cacheable. Without the sync, a Confluence MCP server (if any) is
+        # listed with the others.
+        lines.append(
+            "- **Confluence: synced into your knowledge base.** You read the synced "
+            "spaces through retrieval, not live; to open a page live or change it "
+            "you need a Confluence tool server listed above."
+        )
+    # Constant either way, so switching Act as me changes block 0 only by
+    # DELEGATION_ADDENDUM itself.
+    lines.append(
+        "- **Act as me:** on only if a *Writing as Someone* section follows "
+        "below; without it, it is off and you cannot write email as anyone but "
+        "yourself."
+    )
+    lines.append(
+        "\nEvery send, share and invite still passes the usual checks; a refused "
+        "call means that action is not allowed, not that the system is down."
+    )
+    return "\n".join(lines)

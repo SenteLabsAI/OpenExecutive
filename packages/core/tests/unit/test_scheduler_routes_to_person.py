@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from openexecutive.alerts import approvals
 from openexecutive.alerts import store as alert_store
+from openexecutive.audit import logger as audit_logger_module
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
 from openexecutive.departments.models import AuthorityLevel
@@ -17,6 +19,9 @@ from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.people.models import AuthorityScope, AvailabilityWindow
 from openexecutive.scheduler.runner import _execute_action
+from openexecutive.workflows import persistence as wf_persistence
+from openexecutive.workflows.base import WorkflowEvent
+from openexecutive.workflows.department_check_in import DepartmentCheckInWorkflow
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +31,14 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(people_store, "DB_PATH", db)
     monkeypatch.setattr(episodic, "DB_PATH", db)
     monkeypatch.setattr(alert_store, "DB_PATH", db)
+    monkeypatch.setattr(wf_persistence, "DB_PATH", db)
+    # Dispatch writes a "delivered" audit row; keep it out of the default
+    # ./episodic_memory.db, where it leaks into other modules' assertions.
+    # Goal writes audit too (via the Honcho mirror), and the check-in skip
+    # rule reads the log — both go to a per-test audit DB.
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    audit_log = audit_logger_module.AuditLogger(tmp_path / "audit.db")
+    monkeypatch.setattr(audit_logger_module, "get_audit_logger", lambda: audit_log)
 
     dept_registry.invalidate()
     people_registry.invalidate()
@@ -34,6 +47,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     people_store.initialize_db(db)
     alert_store.initialize_db(db)
     episodic.initialize_db(db)
+    wf_persistence.initialize_runs_db(db)
 
     yield
 
@@ -101,6 +115,9 @@ def test_propose_only_creates_alert_no_dispatch() -> None:
     assert len(alerts) == 1
     assert alerts[0].routed_to_person_id == approver_id
     assert "department:finance" in alerts[0].topic_tags
+    # Approving the card queues this exact action (POST /alerts/{id}/approve).
+    assert approvals.held_action_id(alerts[0].id) == action.id
+    assert alerts[0].source == "authority_gate"
     # The "If you approve:" line is now a concrete executive action,
     # not the old circular "Review and approve or reject this action."
     assert alerts[0].suggested_action.startswith("Send this")
@@ -119,12 +136,17 @@ def test_propose_only_creates_alert_no_dispatch() -> None:
 def test_propose_only_outside_window_reschedules() -> None:
     dept_store.seed_default_departments()
     dept_store.update_department("finance", authority_level=AuthorityLevel.PROPOSE_ONLY)
-    # Approver with WILDCARD — gate finds them. They're only available Sundays.
+    # Approver with WILDCARD — gate finds them. They're only available one day a week.
     approver_id = people_store.upsert_person(full_name="Sarah", slack_user_id="U_CFO")
     people_store.set_authority_scope(approver_id, [AuthorityScope.WILDCARD])
-    # Available only on Sundays 09-10 UTC; today is Tuesday (weekday 1).
+    # Available only tomorrow 09-10 UTC, so the approver is outside the window
+    # whatever the clock says. _execute_action reads datetime.now(UTC) itself,
+    # so a fixed weekday made this fail for the hour it happened to name.
+    tomorrow = (_now().weekday() + 1) % 7
     people_store.set_availability(approver_id, [
-        AvailabilityWindow(weekdays=[6], start_local="09:00", end_local="10:00", timezone="UTC")
+        AvailabilityWindow(
+            weekdays=[tomorrow], start_local="09:00", end_local="10:00", timezone="UTC"
+        )
     ])
     dept_registry.invalidate()
     people_registry.invalidate()
@@ -195,10 +217,10 @@ def test_auto_execute_dispatches() -> None:
 
 
 # ---------------------------------------------------------------------------
-# escalate → alert created AND dispatch proceeds
+# escalate → urgent alert created, nothing dispatched until someone approves
 # ---------------------------------------------------------------------------
 
-def test_escalate_creates_alert_and_dispatches() -> None:
+def test_escalate_creates_urgent_alert_and_holds() -> None:
     dept_store.seed_default_departments()
     dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
     principal_id = people_store.upsert_person(
@@ -213,29 +235,191 @@ def test_escalate_creates_alert_and_dispatches() -> None:
     with patch(
         "openexecutive.orchestrator.executive.Executive.chat",
         new_callable=AsyncMock,
-    ) as mock_chat, patch(
-        "openexecutive.onboarding.profile_builder.load_or_create_profile",
-        return_value=MagicMock(is_empty=lambda: True),
-    ), patch(
-        "openexecutive.knowledge.retriever.retrieve",
-        return_value="",
-    ), patch(
-        "openexecutive.memory.episodic.format_for_prompt",
-        return_value="",
-    ):
+    ) as mock_chat:
         asyncio.run(_execute_action(action, gateway=None))
 
-    # Alert should have been created (escalate creates a proposal alert).
+    # Nothing is sent: "Escalates to a person" promises the specialist will not act.
+    mock_chat.assert_not_called()
+
+    # An urgent card went to the approver instead.
     alerts = alert_store.list_alerts()
     assert len(alerts) == 1
+    assert alerts[0].headline.startswith("[ESCALATION]")
+    assert alerts[0].severity == "high"  # ranks above routine proposals
+    assert alerts[0].routed_to_person_id == principal_id
     assert "department:legal" in alerts[0].topic_tags
-    # Escalation phrasing is the concrete action with an urgency tail, not the
-    # old "Escalated ... action — review immediately." meta-instruction.
+    assert approvals.held_action_id(alerts[0].id) == action.id
+    # Escalation phrasing is the concrete action with an urgency tail — what
+    # approving the card will do, not something already done.
     assert alerts[0].suggested_action.startswith("Send this")
     assert alerts[0].suggested_action.endswith("right away.")
 
-    # Dispatch should also have happened.
-    mock_chat.assert_called_once()
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "done"
+
+
+def test_escalate_is_not_deferred_to_approver_window() -> None:
+    """Unlike propose, an escalation reaches the approver now, even off-hours."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    approver_id = people_store.upsert_person(full_name="Sarah", slack_user_id="U_GC")
+    people_store.set_authority_scope(approver_id, [AuthorityScope.WILDCARD])
+    # Available only tomorrow 09-10 UTC, so the approver is reliably off-hours
+    # now; an escalation must still not be rescheduled to their next window.
+    tomorrow = (_now().weekday() + 1) % 7
+    people_store.set_availability(approver_id, [
+        AvailabilityWindow(
+            weekdays=[tomorrow], start_local="09:00", end_local="10:00", timezone="UTC"
+        )
+    ])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    action = _make_action(department="legal")
+
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_not_called()
+    alerts = alert_store.list_alerts()
+    assert len(alerts) == 1
+    assert alerts[0].routed_to_person_id == approver_id
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "done"  # not rescheduled back to pending
+
+
+def test_escalate_with_nobody_to_ask_files_an_unrouted_card() -> None:
+    """No approver and no principal: the held action must still reach the
+    Briefing (which lists unrouted cards), never vanish with a log line."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    action = _make_action(department="legal")
+
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_not_called()
+    alerts = alert_store.list_alerts()
+    assert len(alerts) == 1
+    assert alerts[0].headline.startswith("[ESCALATION]")
+    assert alerts[0].routed_to_person_id is None
+    assert not any(t.startswith("person:") for t in alerts[0].topic_tags)
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "done"
+
+
+def _escalate(intent_text: str, channel_ref: str = "U123") -> None:
+    episodic.insert_scheduled_action(
+        run_at=(_now() - timedelta(seconds=10)).isoformat(),
+        channel="slack_dm",
+        channel_ref=channel_ref,
+        intent_text=intent_text,
+        department="legal",
+    )
+    (action,) = episodic.claim_due_actions(_now())
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+    mock_chat.assert_not_called()
+
+
+def test_escalations_sharing_an_opening_are_separate_cards() -> None:
+    """With nothing sent before approval, the card is the action's only trace:
+    two escalations whose first 60 characters match must not dedup."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+    opening = "Send the NDA redline follow-up to Acme's counsel regarding section "
+
+    _escalate(opening + "4")
+    _escalate(opening + "7")
+    _escalate(opening + "7")  # an identical repeat folds into the open card
+
+    bodies = sorted(a.body for a in alert_store.list_alerts())
+    assert bodies == [opening + "4", opening + "7"]
+
+
+def test_same_text_for_different_recipients_is_two_cards() -> None:
+    """Who an action goes to lives outside its intent text, so it must be part
+    of the dedup — else the second recipient's action merges into the first
+    card and is marked done with no trace."""
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    _escalate("Send the weekly status reminder", channel_ref="U1")
+    _escalate("Send the weekly status reminder", channel_ref="U2")
+
+    assert len(alert_store.list_alerts()) == 2
+
+
+def test_repeat_escalation_after_its_card_was_handled_gets_a_new_card() -> None:
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    _escalate("Department check-in: Legal")
+    (first,) = alert_store.list_alerts()
+    alert_store.set_status(first.id, "ack")  # the principal approved it
+
+    _escalate("Department check-in: Legal")  # next time: must not be swallowed
+
+    cards = alert_store.list_alerts()
+    assert len(cards) == 2
+    assert sorted(c.status for c in cards) == ["ack", "unread"]
+
+
+def test_escalation_is_retried_not_marked_done_when_its_card_cannot_be_filed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()
+    dept_store.update_department("legal", authority_level=AuthorityLevel.ESCALATE)
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+
+    def _store_down(**_kwargs: object) -> int:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(alert_store, "insert_alert", _store_down)
+    action = _make_action(department="legal")
+
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_not_called()
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status == "pending"  # rescheduled with backoff, not lost
+    assert updated.attempts == 1
+    assert "escalation card could not be filed" in updated.last_error
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +445,362 @@ def test_no_department_bypasses_gate() -> None:
         asyncio.run(_execute_action(action, gateway=None))
 
     mock_chat.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# dept_cadence — not gated; the check-in runs, is skipped when idle, and
+# always chains its next occurrence
+# ---------------------------------------------------------------------------
+
+
+class _NoStore:
+    def __init__(self, **_kwargs: object) -> None: ...
+
+
+def _check_in_calls(monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> list[str]:
+    """Stub the check-in workflow (and the vector store it is handed)."""
+    calls: list[str] = []
+
+    async def _run(self: DepartmentCheckInWorkflow, inputs, store):  # type: ignore[no-untyped-def]
+        calls.append(inputs.department_slug)
+        if fail:
+            yield WorkflowEvent(type="error", message="specialist unavailable")
+            return
+        yield WorkflowEvent(type="artifact", content="# Finance — Check-In Report")
+
+    monkeypatch.setattr(DepartmentCheckInWorkflow, "run", _run)
+    monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", _NoStore)
+    return calls
+
+
+def _cadence_action(slug: str = "finance", *, attempts: int | None = None) -> episodic.ScheduledAction:
+    episodic.insert_scheduled_action(
+        run_at=(_now() - timedelta(seconds=10)).isoformat(),
+        channel="__internal__",
+        channel_ref=slug,
+        intent_text=f"Department check-in: {slug}",
+        department=slug,
+        kind="dept_cadence",
+    )
+    (action,) = episodic.claim_due_actions(_now())
+    if attempts is not None:
+        with episodic._get_conn(episodic.DB_PATH) as conn:
+            conn.execute(
+                "UPDATE scheduled_actions SET attempts = ? WHERE id = ?", (attempts, action.id),
+            )
+    return action
+
+
+def _pending_cadences(slug: str = "finance") -> list[episodic.ScheduledAction]:
+    return [
+        a for a in episodic.list_scheduled_actions(status="pending", limit=50)
+        if a.kind == "dept_cadence" and a.department == slug
+    ]
+
+
+def _status(action: episodic.ScheduledAction) -> str:
+    assert action.id is not None
+    row = episodic.get_scheduled_action(action.id)
+    assert row is not None
+    return row.status
+
+
+def _last_error(action: episodic.ScheduledAction) -> str:
+    assert action.id is not None
+    row = episodic.get_scheduled_action(action.id)
+    assert row is not None
+    return row.last_error
+
+
+def test_propose_only_check_in_runs_the_workflow_files_no_card_and_chains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()  # seeded departments are propose_only
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    principal_id = people_store.upsert_person(full_name="Founder", is_principal=True)
+    people_store.set_authority_scope(principal_id, [AuthorityScope.WILDCARD])
+    dept_registry.invalidate()
+    people_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == ["finance"]
+    assert alert_store.list_alerts() == []  # used to be a one-shot proposal card
+    assert _status(action) == "done"
+    assert len(_pending_cadences()) == 1  # the chain survives
+    runs = wf_persistence.list_runs(workflow_name="department_check_in")
+    assert [r["status"] for r in runs] == ["done"]
+
+
+def test_check_in_without_goals_is_skipped_and_chained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()
+    dept_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == []
+    # Recorded as skipped, not done: a done cadence row reads as a check-in
+    # that ran (and would suppress this department's initiative nudges).
+    assert _status(action) == "cancelled"
+    assert _last_error(action).startswith("skipped: no Goals")
+    assert len(_pending_cadences()) == 1
+    # Skipped before create_run: no empty run lands in the activity rail.
+    assert wf_persistence.list_runs(workflow_name="department_check_in") == []
+
+
+def test_check_in_for_an_informational_department_is_skipped_and_chained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = dept_store.create_department("Volunteer Coordination")
+    slug = state.config.slug
+    dept_store.update_department(slug, cadences={"check_in": "daily@09:00"})
+    dept_store.insert_goal(slug, period_value="Q3 2026", key_result="Staff events", target="4")
+    dept_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+
+    action = _cadence_action(slug)
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == []
+    assert _status(action) == "cancelled"
+    assert "no specialist" in _last_error(action)
+    assert len(_pending_cadences(slug)) == 1
+
+
+def test_check_in_failure_retries_without_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch, fail=True)
+
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+
+    # Retried with backoff: the row itself is the one pending occurrence.
+    assert _status(action) == "pending"
+    assert [a.id for a in _pending_cadences()] == [action.id]
+
+
+def test_check_in_failure_after_retries_still_chains(monkeypatch: pytest.MonkeyPatch) -> None:
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch, fail=True)
+
+    action = _cadence_action(attempts=3)  # this was the last attempt
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert _status(action) == "failed"
+    pending = _pending_cadences()
+    assert len(pending) == 1 and pending[0].id != action.id
+    # Nobody watched it fail: one card on Home offers Run again.
+    (card,) = alert_store.list_alerts()
+    assert card.source == "workflow_failed"
+    assert card.headline == "Finance check-in didn't finish"
+    (run,) = wf_persistence.list_runs(workflow_name="department_check_in")
+    assert f"failed_run:{run['run_id']}" in card.topic_tags
+
+
+def test_a_retried_attempt_files_no_card_and_repeat_failures_share_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch, fail=True)
+
+    asyncio.run(_execute_action(_cadence_action(), gateway=None))
+    assert alert_store.list_alerts() == []  # retries left: not a failure yet
+
+    with episodic._get_conn(episodic.DB_PATH) as conn:
+        conn.execute("UPDATE scheduled_actions SET status = 'cancelled'")
+    for _ in range(2):
+        asyncio.run(_execute_action(_cadence_action(attempts=3), gateway=None))
+        with episodic._get_conn(episodic.DB_PATH) as conn:
+            conn.execute("UPDATE scheduled_actions SET status = 'cancelled'")
+    (card,) = alert_store.list_alerts()
+    assert card.occurrence_count == 2
+
+
+def test_run_again_runs_once_past_the_skip_rule_and_adds_no_occurrence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.workflows.failure_alerts import file_failed_run_card, queue_rerun
+
+    dept_store.seed_default_departments()  # no goals: a scheduled fire is skipped
+    dept_registry.invalidate()
+    calls = _check_in_calls(monkeypatch)
+    wf_persistence.create_run(
+        "r-failed", "department_check_in", "Check-in: finance",
+        {"department_slug": "finance", "period_label": "2026-10-12"},
+    )
+    wf_persistence.fail_run("r-failed", "boom")
+    file_failed_run_card(
+        run_id="r-failed", workflow_name="department_check_in", title="Finance check-in",
+        scope="finance",
+    )
+    queue_rerun(wf_persistence.get_run("r-failed") or {})
+    (action,) = episodic.claim_due_actions(_now())
+    assert action.scope_key == "rerun:r-failed"
+
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert calls == ["finance"]
+    assert _status(action) == "done"
+    assert len(_pending_cadences()) == 1  # the next occurrence, once
+
+
+def test_final_attempt_that_chained_before_failing_does_not_chain_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check-in ran and chained, then marking the row done raised on the
+    last attempt: the failure path must not queue a second next occurrence."""
+    from openexecutive.scheduler import runner
+
+    dept_store.seed_default_departments()
+    dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch)
+
+    def _db_locked(_action_id: int, db_path: object = None) -> bool:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(runner, "mark_action_done", _db_locked)
+    action = _cadence_action(attempts=3)
+    asyncio.run(_execute_action(action, gateway=None))
+
+    assert _status(action) == "failed"
+    assert len(_pending_cadences()) == 1
+
+
+def test_skip_that_could_not_be_recorded_does_not_chain_twice_on_refire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chain, then recording the skip fails: the row stays `running`, the boot
+    sweep requeues it, and the re-fire finds the next occurrence queued."""
+    from openexecutive.scheduler import runner
+
+    dept_store.seed_default_departments()
+    dept_registry.invalidate()
+    _check_in_calls(monkeypatch)
+    record = runner._mark_check_in_skipped
+    failures = [RuntimeError("database is locked")]
+
+    def _flaky(action_id: int, reason: str) -> None:
+        if failures:
+            raise failures.pop()
+        record(action_id, reason)
+
+    monkeypatch.setattr(runner, "_mark_check_in_skipped", _flaky)
+    action = _cadence_action()
+    asyncio.run(_execute_action(action, gateway=None))
+    assert _status(action) == "running"
+    assert len(_pending_cadences()) == 1
+
+    assert episodic.requeue_orphaned_running() == 1  # the boot sweep
+    (refired,) = episodic.claim_due_actions(_now())
+    assert refired.id == action.id
+    asyncio.run(_execute_action(refired, gateway=None))
+
+    assert _status(action) == "cancelled"
+    assert len(_pending_cadences()) == 1
+
+
+def test_proactive_trigger_runs_as_an_unattended_session() -> None:
+    """The scheduler's PROACTIVE TRIGGER run is nobody's conversation: its
+    Session is marked unattended, so the chat loop neither offers nor runs
+    the principal-only tools (schedule_tools.UNATTENDED_WITHHELD_TOOLS)."""
+    action = _make_action(channel="slack_dm", channel_ref="U123")
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat, patch(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        return_value=MagicMock(is_empty=lambda: True),
+    ), patch(
+        "openexecutive.knowledge.retriever.retrieve",
+        return_value="",
+    ), patch(
+        "openexecutive.memory.episodic.format_for_prompt",
+        return_value="",
+    ):
+        asyncio.run(_execute_action(action, gateway=None))
+
+    mock_chat.assert_called_once()
+    session = mock_chat.call_args.kwargs["session"]
+    assert session.unattended is True
+    assert session.caller_person_id is None and not session.from_web_chat
+
+# ---------------------------------------------------------------------------
+# email channel → the synthetic trigger names the configured mail backend's
+# send tool (EMAIL_PROVIDER), not a hard-coded Gmail tool
+# ---------------------------------------------------------------------------
+
+def _run_email_action_and_capture_prompt(provider: object) -> str:
+    dept_store.seed_default_departments()
+    dept_store.update_department("operations", authority_level=AuthorityLevel.AUTO_EXECUTE)
+    dept_registry.invalidate()
+    action = _make_action(
+        department="operations", channel="email", channel_ref="alice@example.com|t1",
+    )
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat, patch(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        return_value=MagicMock(is_empty=lambda: True),
+    ), patch(
+        "openexecutive.knowledge.retriever.retrieve",
+        return_value="",
+    ), patch(
+        "openexecutive.memory.episodic.format_for_prompt",
+        return_value="",
+    ), patch(
+        "openexecutive.integrations.workspace.registry.get_mail_provider",
+        return_value=provider,
+    ):
+        asyncio.run(_execute_action(action, gateway=MagicMock()))
+    mock_chat.assert_called_once()
+    return str(mock_chat.call_args.kwargs["user_message"])
+
+
+def test_email_action_hint_follows_the_mail_provider() -> None:
+    from openexecutive.integrations.workspace.google import GoogleMail
+    from openexecutive.integrations.workspace.microsoft import MicrosoftMail
+
+    prompt = _run_email_action_and_capture_prompt(GoogleMail())
+    assert "google_workspace__send_gmail_message (via MCP)" in prompt
+    assert "microsoft_365" not in prompt
+
+    prompt = _run_email_action_and_capture_prompt(MicrosoftMail())
+    assert "microsoft_365__send-mail" in prompt
+    assert "send_gmail_message" not in prompt
+
+
+def test_email_action_without_gateway_fails_fast() -> None:
+    action = _make_action(channel="email", channel_ref="alice@example.com")
+    with patch(
+        "openexecutive.orchestrator.executive.Executive.chat",
+        new_callable=AsyncMock,
+    ) as mock_chat:
+        asyncio.run(_execute_action(action, gateway=None))
+    mock_chat.assert_not_called()
+    updated = episodic.get_scheduled_action(action.id)
+    assert updated is not None
+    assert updated.status != "done"

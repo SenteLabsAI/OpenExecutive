@@ -76,7 +76,10 @@ async def deliver_gate_question(
     if (
         session is not None
         and origin_channel
-        and _session_caller_id(session) == event.person_id
+        # An email turn's answer is no chat reply: nothing sends it unless the
+        # model mails it, so the question must be asked on its own (mode 2).
+        and origin_channel != "email"
+        and session_caller_id(session) == event.person_id
     ):
         return (
             event.model_copy(
@@ -105,10 +108,15 @@ async def deliver_gate_question(
     )
     try:
         from openexecutive.orchestrator.schedule_tools import handle_message_person
+        from openexecutive.people.notifications import approval_send
 
-        raw = await handle_message_person(
-            {"person_id": event.person_id, "text": question}
-        )
+        # The run waits on their answer, and only a reply to this question
+        # resolves it: never held by their quiet hours or digest
+        # (people.notifications).
+        with approval_send():
+            raw = await handle_message_person(
+                {"person_id": event.person_id, "text": question}
+            )
         parsed = json.loads(raw)
     except Exception:
         logger.exception(
@@ -193,7 +201,7 @@ def _dm_session_id(channel: str, channel_ref: str) -> str:
     return pattern.format(ref=channel_ref)
 
 
-def _session_caller_id(session: object) -> int | None:
+def session_caller_id(session: object) -> int | None:
     """The person id behind the current chat session, if it is known."""
     for attr in ("caller_person_id", "person_id"):
         value = getattr(session, attr, None)
@@ -212,7 +220,7 @@ async def _launcher_name(session: object) -> str:
     is the difference between a sign-off request and an anonymous one that
     merely looks official.
     """
-    person_id = _session_caller_id(session)
+    person_id = session_caller_id(session)
     if person_id is None:
         return ""
     try:

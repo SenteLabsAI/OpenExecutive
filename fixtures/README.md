@@ -9,6 +9,7 @@ Pre-built company data suites for demos, evals, and development. Each fixture co
 | `tandem_robotics` | Tandem Robotics | Humanoid Robotics / Warehouse Automation | Series C | $90M |
 | `halcyon_motors` | Halcyon Motors | Electric Vehicles / Automotive | Series C | $140M |
 | `meridian_petroleum` | Meridian Petroleum | Oil & Gas — Refining / Crude Trading | Private / PE-backed | $3.2B |
+| `solo_studio` | Tallgrass Studio | Independent Brand & Product Design Studio | Bootstrapped, owner-run | $310K |
 
 `tandem_robotics`, `halcyon_motors`, and `meridian_petroleum` are clean-baseline
 research demo fixtures (see the callouts below). All three are fictional companies that
@@ -44,6 +45,23 @@ Discord IDs — so nothing in these fixtures maps to a real person.
 > synthetic (placeholder emails + non-routable Discord IDs), shared with the other demo
 > fixtures.
 
+> **`solo_studio`** is a reference fixture for **solo mode** — one person using
+> Open Executive just for themselves. Solo principals can be at any level (a business
+> owner, an executive inside a larger organisation, an independent); this fixture is
+> one example: Tallgrass Studio, a fictional one-person design studio. `people.yaml`
+> holds only the principal (its owner, wildcard authority), `departments.yaml` holds
+> four *areas* (strategy, finance, marketing, product) headed by the principal with one
+> or two goals each, and `workspace.yaml` sets `mode: solo` and the principal's role
+> (`role_kind: owner`, plus `role_title`, `remit` and `measured_on` — every role key is
+> optional in any fixture's `workspace.yaml`, as is `reports_to`). Loaded, the Executive works
+> for that one person: no department check-ins or channels, goals grouped by area, and
+> nobody else contacted unless the principal asks. Its eval scenarios are the built-in
+> `solo_001`–`solo_003` (`packages/core/openexecutive/evals/_scenarios/`), which run as
+> solo mode through their `workspace_mode: solo` key; load this fixture first for the
+> matching goals and memory. `solo_004` and `solo_005` cover in-house executives and need
+> no fixture (`solo_005` plays its principal's role through the scenario's own
+> `principal_role` block). It stages no scheduled actions, so nothing fires on load.
+
 ## Loading a Fixture
 
 ### Via the UI
@@ -68,10 +86,14 @@ Loading a fixture replaces:
 3. Episodic memory rows — decisions, initiatives, advice_given (cleared and seeded)
 4. **People** — leadership and key employees with channels, authority scopes, availability windows
 5. **Departments** — company-specific org shape, charters, OKRs, authority levels (including informational departments with no specialist agent — useful for nonprofits with "Volunteer Coordination" or "Family Services")
+6. **Workspace settings** — reset to the defaults (team mode, no time zone of its own), then taken from the fixture's optional `workspace.yaml`
 
 ## Running Fixture-Specific Evals
 
-Each fixture ships with 2 eval scenarios in `fixtures/companies/<name>/scenarios/`.
+Each team fixture ships with 2 eval scenarios in `fixtures/companies/<name>/scenarios/`
+(`solo_studio` uses the built-in `solo_*` scenarios instead — see above).
+A scenario can set `workspace_mode: solo` (or `team`) to run as that mode without
+changing the install's own setting.
 
 ```bash
 cd evals
@@ -90,6 +112,7 @@ fixtures/companies/<name>/
   memory.json         # Episodic seed data (decisions, initiatives, advice_given)
   people.yaml         # Leadership + key employees as Person records
   departments.yaml    # Company-specific departments + OKRs + authority levels
+  workspace.yaml      # Optional: solo/team mode + the user's time zone
   scenarios/
     <name>_001.yaml   # Eval scenario 1
     <name>_002.yaml   # Eval scenario 2
@@ -97,7 +120,7 @@ fixtures/companies/<name>/
 
 ### Authoring `departments.yaml`
 
-A department can be specialist-aligned (mapped to one of the 8 specialist agents) or informational-only:
+A department can be specialist-aligned (mapped to one of the 9 specialist agents) or informational-only:
 
 ```yaml
 departments:
@@ -124,6 +147,24 @@ departments:
     specialist_key: null          # informational only — no specialist agent
     ...
 ```
+
+### Authoring `workspace.yaml` (optional)
+
+Both keys are optional; a fixture without the file loads in team mode with no
+time zone of its own (the server's `USER_TIMEZONE`, else UTC, applies).
+
+```yaml
+mode: solo                 # solo | team — solo: one person using Open Executive
+                           # just for themselves, so department check-ins don't run
+timezone: America/Chicago  # IANA zone for the brief times, "tomorrow at 9", quiet hours
+```
+
+A value that doesn't validate (including a region like `America` rather than a
+zone like `America/Chicago`) is logged and ignored; it never stops the load.
+Loading a fixture while your own company is live writes your current settings
+to `workspace.yaml` in the backup — even when an earlier backup is reused — so
+unloading the fixture restores them. Unloading from an older backup that has no
+`workspace.yaml` leaves the current settings as they are.
 
 ## Adding a New Fixture
 

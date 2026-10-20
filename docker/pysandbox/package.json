@@ -1,0 +1,9 @@
+{
+  "name": "openexecutive-pysandbox",
+  "private": true,
+  "description": "The Python job sandbox (workflows/python_job.py): Pyodide run by Deno. Pinned with package-lock.json; installed with npm ci by docker/Dockerfile.",
+  "dependencies": {
+    "deno": "2.9.6",
+    "pyodide": "314.0.7"
+  }
+}

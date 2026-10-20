@@ -15,6 +15,37 @@ Design notes
   ``_UNAUTHENTICATED_PATHS``; the existing shared-secret middleware gates it,
   so clients pass ``x-api-key: $BACKEND_SHARED_SECRET`` like the UI does.
 
+* **Who is asking.** Every handler answers as the caller the API already
+  verified (``api.caller``): the mounted app shares the outer request's
+  ``request.state``, so ``caller_gate``'s verdict reaches the handler through
+  FastMCP's request context (``_request``). A deployment that fronts ``/mcp``
+  with its own sign-in and stamps the signed caller, as the UI proxy does,
+  gets per-person answers by the web app's rules: a signed-in email is that
+  person (no one when off the roster); open mode with no ``x-caller-email``,
+  or an operator, is the principal; a service (signed callers on, no
+  assertion) is no one. The principal's own records (episodic memory, the
+  activity feed) go to the principal alone; the briefing and roster to a
+  rostered caller, the briefing narrowed as ``GET /today`` narrows it; the
+  company profile, departments, specialists, knowledge and the workflow
+  catalog to anyone who reached ``/mcp``.
+
+* **ask_executive reads and advises, unless the request may act.** Its turn
+  is marked ``Session.from_mcp_client``: by default the chat loop offers and
+  runs no tool that sends, posts, books, schedules, runs or changes stored
+  state (``schedule_tools.MCP_CLIENT_WITHHELD_TOOLS``), no Act as me or
+  extension tool, and of the gateway tools only reads
+  (``MCP_CLIENT_MCP_TOOLS``). A request may turn on "may act"
+  (``Session.mcp_client_may_act``, ``may_act``): with a shared secret
+  configured, only by the ``x-mcp-client-actions: on`` header on a request
+  the secret authenticated (the gate marks it, ``api.main``); with none, only
+  by the ``MCP_CLIENT_ACTIONS`` setting, and the header is ignored. Such a
+  turn runs the speaker's own changes inside Open Executive under each
+  tool's own checks, proposes anything that reaches another person on an
+  approval card (``propose_actions``, carried out on its own only by their
+  Handle it for me), is still never offered
+  ``MCP_CLIENT_ACTING_WITHHELD_TOOLS``, and every audit row it writes names
+  the app (``audit.via_app``).
+
 * **DNS-rebinding protection** (FastMCP's Host-header check) is disabled: the
   endpoint authenticates with a header secret (not a cookie), so a browser
   rebinding attack cannot supply credentials, and the server runs behind the
@@ -25,7 +56,8 @@ Design notes
   pure reads; ``consult_specialist`` delegates to ``BaseAgent.analyze`` which
   reuses the existing cached system blocks unchanged.
 
-* **State.** Handlers get no FastAPI ``Request``. Most service functions build
+* **State.** Handlers get no FastAPI ``Request`` argument (only the caller
+  read above goes through the request). Most service functions build
   their own SQLite/ChromaDB handles; the one that benefits from the app's warm
   store (``search_knowledge``) reads it from the ``set_store`` singleton.
 """
@@ -34,13 +66,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
+
+from openexecutive.api import caller as api_caller
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +83,32 @@ logger = logging.getLogger(__name__)
 # ``orchestrator/router.SPECIALIST_REGISTRY`` by a unit test. Declared as a
 # ``Literal`` so MCP clients see a proper enum in the tool schema.
 SpecialistKey = Literal[
-    "board_comms", "cfo", "chro", "cmo", "coo", "cpo", "cso", "gc", "triage"
+    "board_comms", "cfo", "chro", "cmo", "coo", "cpo", "cso", "gc", "sales", "triage"
 ]
 
 _INSTRUCTIONS = (
-    "Open Executive exposed as an MCP server. It surfaces a company's "
-    "executive context and a council of specialist analysts so another agent "
-    "can ground itself in this company without re-explaining it.\n\n"
-    "Resources (read-only, company-internal): company profile, today's "
-    "briefing and recent activity, the people roster, department state, "
-    "and episodic memory (past decisions, initiatives, advice).\n\n"
-    "Tools: `consult_specialist` (domain analysis from a CFO/CSO/etc., grounded "
-    "in company knowledge), `search_knowledge` (curated MBA + company-doc "
-    "retrieval), `list_workflows` (catalog of multi-step executive workflows), "
-    "and `ask_executive` (a single synthesized answer from the Executive — a "
-    "fallback; prefer the specialist tool and resources)."
+    "Open Executive as an MCP server: a company's executive context and a "
+    "council of specialist analysts, answered as the person signed in.\n\n"
+    "Resources (read-only): the company profile, today's briefing and recent "
+    "activity, the people roster, department state, and episodic memory (past "
+    "decisions, initiatives, advice). Recent activity and episodic memory are "
+    "the owner's alone; the briefing and roster need someone on the roster.\n\n"
+    "Tools: `consult_specialist` (domain analysis from one specialist, grounded "
+    "in company knowledge), `search_knowledge` (retrieval over the curated "
+    "business knowledge base and company documents), `list_workflows` (the "
+    "catalog of multi-step executive workflows), and `ask_executive` (one "
+    "synthesized answer from the Executive). None of them sends, posts, books "
+    "or changes anything, except `ask_executive` when this server allows it to "
+    "act: then it makes changes inside Open Executive and leaves messages and "
+    "meetings on cards the person approves (or that go on their own under "
+    "their Handle it for me)."
 )
+
+# The request header that asks for a turn that may act (``may_act``).
+ACTIONS_HEADER = "x-mcp-client-actions"
+# What the API's shared-secret gate sets on a request it let through.
+SHARED_SECRET_OK = "shared_secret_ok"
+_CLIENT_NAME_MAX = 60
 
 mcp = FastMCP(
     name="open-executive",
@@ -99,6 +144,137 @@ def _json(payload: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Who is asking.
+# ---------------------------------------------------------------------------
+OWNER_ONLY = "Only the owner can read this."
+ROSTER_ONLY = "Only someone on the team can read this."
+
+
+class CallerRefused(PermissionError):
+    """This caller may not read what it asked for. FastMCP returns the
+    message to the client as the error."""
+
+
+@dataclass(frozen=True)
+class McpCaller:
+    """Who an MCP request asks as: their People entry (None for no one) and
+    whether they are the principal, by the web app's rules."""
+
+    person_id: int | None
+    is_principal: bool
+
+
+# No MCP request is in progress: a direct in-process call (tests, scripts).
+_NO_MCP_REQUEST = object()
+
+
+def _request() -> Any:
+    """The HTTP request behind the MCP call in progress; None when the call
+    has a request context but no HTTP request; ``_NO_MCP_REQUEST`` outside
+    any MCP request. Read in the handler's own task, where FastMCP's request
+    context is set."""
+    try:
+        context = mcp.get_context().request_context
+    except (LookupError, ValueError):
+        return _NO_MCP_REQUEST
+    return getattr(context, "request", None)
+
+
+def _who() -> api_caller.Caller:
+    """The verified caller of the request in progress. Outside any MCP
+    request (a direct in-process call) it is what a request naming no one
+    would be: the principal, or no one once signed callers are on. An MCP
+    call that carries no HTTP request names no one (fails closed)."""
+    request = _request()
+    if request is _NO_MCP_REQUEST:
+        return api_caller.Caller("service") if api_caller.signing_on() else api_caller.Caller("open")
+    if request is None:
+        return api_caller.Caller("service")
+    return api_caller.caller(request)
+
+
+def may_act() -> bool:
+    """Whether the request in progress may act (``Session.mcp_client_may_act``).
+
+    With ``BACKEND_SHARED_SECRET`` configured: only when the request carries
+    ``x-mcp-client-actions: on`` and the API's shared-secret gate let it
+    through (``request.state.shared_secret_ok``, set by the gate in
+    ``api.main`` after its ``x-api-key`` check). Without one: the
+    ``MCP_CLIENT_ACTIONS`` setting, whatever the header says. Fails closed."""
+    import os
+
+    try:
+        if os.environ.get("BACKEND_SHARED_SECRET", "").strip():
+            request = _request()
+            if request is None or request is _NO_MCP_REQUEST:
+                return False
+            asked = str(request.headers.get(ACTIONS_HEADER, "")).strip().lower() == "on"
+            state = getattr(request, "state", None)
+            return asked and getattr(state, SHARED_SECRET_OK, False) is True
+        from openexecutive.config import get_settings
+
+        return get_settings().mcp_client_actions is True
+    except Exception:
+        logger.warning("mcp_server: couldn't tell whether the request may act — answering no", exc_info=True)
+        return False
+
+
+def client_name() -> str:
+    """The MCP client's own name (``clientInfo.name`` from its initialize),
+    as one plain line, or "an AI app" when it gave none (a stateless request
+    has no initialize of its own)."""
+    from openexecutive.utils.prompt_blocks import plain
+
+    name = ""
+    try:
+        params = mcp.get_context().session.client_params
+        info = getattr(params, "clientInfo", None)
+        name = str(getattr(info, "name", "") or "")
+    except Exception:
+        name = ""
+    cleaned = " ".join(plain(name).split())[:_CLIENT_NAME_MAX].strip()
+    return cleaned or "an AI app"
+
+
+def _resolve(who: api_caller.Caller) -> McpCaller:
+    """``who`` on the roster, by ``api.caller.person_id_for``. Fails closed:
+    a roster that can't be read makes them no principal."""
+    from openexecutive.people.store import is_principal_or_self
+
+    person_id = api_caller.person_id_for(who)
+    if who.defaults_to_principal:
+        return McpCaller(person_id, True)
+    try:
+        principal = person_id is not None and is_principal_or_self(person_id, None)
+    except Exception:
+        logger.warning("mcp_server: principal check failed — answering no", exc_info=True)
+        principal = False
+    return McpCaller(person_id, principal)
+
+
+async def current_caller() -> McpCaller:
+    """Who the MCP request in progress asks as."""
+    who = _who()
+    return await asyncio.to_thread(_resolve, who)
+
+
+async def _require_principal() -> McpCaller:
+    resolved = await current_caller()
+    if not resolved.is_principal:
+        raise CallerRefused(OWNER_ONLY)
+    return resolved
+
+
+async def _require_person() -> McpCaller:
+    """The principal, or someone on the roster; a service or an unrostered
+    caller names no one, so reads nothing about the people here."""
+    resolved = await current_caller()
+    if resolved.person_id is None and not resolved.is_principal:
+        raise CallerRefused(ROSTER_ONLY)
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Resources — company-grounded context. Read-only, no LLM calls. The unique
 # thing OE has that a generic agent does not.
 # ---------------------------------------------------------------------------
@@ -120,25 +296,37 @@ async def company_profile() -> str:
 @mcp.resource(
     "oe://today/briefing",
     name="Today briefing",
-    description="The morning-brief snapshot: department health, roster, proposals.",
+    description=(
+        "The morning-brief snapshot: department health, roster, proposals. "
+        "For someone on the roster, as the web app shows it to them."
+    ),
     mime_type="application/json",
 )
 async def today_briefing() -> str:
+    """As ``GET /today`` gives it: the principal's private rows for the
+    principal alone, a drafted artifact's card for its owner."""
     from openexecutive.api.routes.today import _build_today
+    from openexecutive.orchestrator.artifact_records import viewer_for_person
 
-    today = await asyncio.to_thread(_build_today)
+    who = await _require_person()
+    viewer = await asyncio.to_thread(viewer_for_person, who.person_id)
+    today = await asyncio.to_thread(
+        _build_today, include_private=who.is_principal, viewer=viewer
+    )
+    today.caller_person_id = who.person_id
     return _json(today.model_dump(mode="json"))
 
 
 @mcp.resource(
     "oe://today/activity",
     name="Recent activity",
-    description="Recent self-initiated Executive activity (last 20 actions).",
+    description="Recent self-initiated Executive activity (last 20 actions). The owner's alone.",
     mime_type="application/json",
 )
 async def today_activity() -> str:
     from openexecutive.api.routes.today import _build_activity
 
+    await _require_principal()
     activity = await asyncio.to_thread(_build_activity, 20)
     return _json(activity.model_dump(mode="json"))
 
@@ -146,12 +334,14 @@ async def today_activity() -> str:
 @mcp.resource(
     "oe://people/roster",
     name="People roster",
-    description="Active people on the company roster.",
+    description="Active team members on the company roster. For someone on the roster.",
     mime_type="application/json",
 )
 async def people_roster() -> str:
     from openexecutive.people.store import list_people
 
+    # The team, never the principal's contacts (as GET /people gives it).
+    await _require_person()
     people = await asyncio.to_thread(list_people)
     return _json([p.model_dump(mode="json") for p in people])
 
@@ -172,12 +362,13 @@ async def departments_state() -> str:
 @mcp.resource(
     "oe://memory/decisions",
     name="Episodic memory: decisions",
-    description="Past decisions recorded in episodic memory.",
+    description="Past decisions recorded in episodic memory. The owner's alone.",
     mime_type="application/json",
 )
 async def memory_decisions() -> str:
     from openexecutive.memory.episodic import list_decisions
 
+    await _require_principal()
     rows = await asyncio.to_thread(list_decisions)
     return _json([r.model_dump(mode="json") for r in rows])
 
@@ -185,12 +376,13 @@ async def memory_decisions() -> str:
 @mcp.resource(
     "oe://memory/initiatives",
     name="Episodic memory: initiatives",
-    description="Tracked initiatives recorded in episodic memory.",
+    description="Tracked initiatives recorded in episodic memory. The owner's alone.",
     mime_type="application/json",
 )
 async def memory_initiatives() -> str:
     from openexecutive.memory.episodic import list_initiatives
 
+    await _require_principal()
     rows = await asyncio.to_thread(list_initiatives)
     return _json([r.model_dump(mode="json") for r in rows])
 
@@ -198,20 +390,25 @@ async def memory_initiatives() -> str:
 @mcp.resource(
     "oe://memory/advice",
     name="Episodic memory: advice",
-    description="Advice given, recorded in episodic memory.",
+    description="Advice given, recorded in episodic memory. The owner's alone.",
     mime_type="application/json",
 )
 async def memory_advice() -> str:
     from openexecutive.memory.episodic import list_advice
 
+    await _require_principal()
     rows = await asyncio.to_thread(list_advice)
     return _json([r.model_dump(mode="json") for r in rows])
 
 
 # ---------------------------------------------------------------------------
-# Tools — structured capabilities. The flagship is consult_specialist.
+# Tools — structured capabilities. None of them sends, posts, books or
+# changes anything; ask_executive records the conversation in memory.
 # ---------------------------------------------------------------------------
-@mcp.tool()
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+
+
+@mcp.tool(title="Consult a specialist", annotations=_READ_ONLY)
 async def consult_specialist(
     specialist: SpecialistKey, query: str, context: str = ""
 ) -> str:
@@ -221,7 +418,8 @@ async def consult_specialist(
     domain-expert read. Specialists: cso (strategy/M&A/OKRs), cfo (finance/unit
     economics/fundraising), chro (people/comp/org design), gc (legal/contracts/
     compliance), coo (operations/process/metrics), cmo (GTM/brand/PR), cpo
-    (product/roadmap), board_comms (board decks/IR/governance),
+    (product/roadmap), sales (pipeline/deals/pricing conversations/forecast),
+    board_comms (board decks/IR/governance),
     triage (chief of staff — significance of inbound events).
 
     Args:
@@ -243,27 +441,25 @@ async def consult_specialist(
     )
 
 
-@mcp.tool()
+@mcp.tool(title="Search knowledge", annotations=_READ_ONLY)
 async def search_knowledge(query: str) -> str:
-    """Search Open Executive's curated MBA knowledge base and indexed company docs.
+    """Search Open Executive's curated business knowledge base and indexed company docs.
 
     Returns the most relevant retrieved chunks, each prefixed with its
-    ``[source]``. No LLM call — this is raw retrieval you can cite or feed back
-    into your own reasoning.
+    ``[source]``. No LLM call: raw retrieval to cite or reason over.
     """
     from openexecutive.knowledge.retriever import retrieve
 
     return await asyncio.to_thread(retrieve, query=query, store=get_store())
 
 
-@mcp.tool()
+@mcp.tool(title="List workflows", annotations=_READ_ONLY)
 async def list_workflows() -> str:
     """List the available multi-step executive workflows and their input schemas.
 
     Returns a JSON array of workflow metadata (name, title, description,
-    estimated minutes, input schema, steps). Execution is intentionally not
-    exposed over MCP yet — workflows are long-running and would exceed a single
-    tool-call's timeout.
+    estimated minutes, input schema, steps). Workflows are run from Open
+    Executive itself, not over MCP.
     """
     from openexecutive.workflows import list_workflows as _list
 
@@ -271,54 +467,81 @@ async def list_workflows() -> str:
     return _json([w.meta().model_dump(mode="json") for w in workflows])
 
 
-@mcp.tool()
-async def ask_executive(message: str, caller_email: str = "") -> str:
-    """Ask the Executive a question and get one synthesized answer (fallback tool).
+@mcp.tool(
+    title="Ask the Executive",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+async def ask_executive(message: str) -> str:
+    """Ask the Executive a question and get one synthesized, cross-domain answer.
 
-    Prefer ``consult_specialist`` and the company resources — this duplicates
-    OE's existing chat channels and is non-streaming. Use it only when you want
-    a single coherent, cross-domain answer.
+    The Executive answers as it would in Open Executive for the person signed
+    in, drawing on the specialists, company knowledge and memory. By default
+    it reads and advises only: it does not send, post, book or change
+    anything. When this server allows it to act, it can also make changes
+    inside Open Executive for that person (alerts, open loops, follow-ups,
+    the watch list, goals, decisions, remembered facts and the company
+    profile, as their own permissions allow; never the People list), and it leaves a message
+    or a meeting on a card for them to approve, which goes on its own only
+    when their Handle it for me covers it. It never runs scripts or
+    workflows, connects servers or changes the install. The conversation is
+    recorded in Open Executive's memory. Non-streaming.
 
     Args:
-        message: Your question for the Executive.
-        caller_email: Optional — resolve the caller to a known person for
-            person-scoped memory; defaults to the company principal.
+        message: The question for the Executive.
     """
+    from openexecutive.orchestrator.artifact_records import NOBODY
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.session import Session
-    from openexecutive.people.store import (
-        find_person_by_email,
-        find_principal_person,
-    )
 
-    def _resolve_person() -> int | None:
-        # Degrade to None on a DB error rather than surfacing it to the client,
-        # matching the chat route's caller resolution (api/routes/chat.py).
-        try:
-            person = (
-                find_person_by_email(caller_email.strip().lower())
-                if caller_email.strip()
-                else find_principal_person()
-            )
-        except (OSError, sqlite3.Error):
-            logger.warning("ask_executive caller lookup failed", exc_info=True)
-            return None
-        return person.id if person is not None else None
-
-    person_id = await asyncio.to_thread(_resolve_person)
+    # Who is asking comes from the verified request, never from the message:
+    # a signed-in person, the principal for a request that names no one in
+    # open mode, no one for a service.
+    who = _who()
+    person_id = await asyncio.to_thread(api_caller.person_id_for, who)
 
     from openexecutive.onboarding.profile_builder import load_or_create_profile
 
     profile = await asyncio.to_thread(load_or_create_profile)
+    acting = may_act()
     session = Session(
         company_profile=profile if not profile.is_empty() else None,
+        # A client that resolves to no one reads and publishes no one's
+        # documents (``artifact_records.current_viewer`` would otherwise take
+        # a speakerless session for the principal's own work).
+        documents_viewer=NOBODY if person_id is None else None,
+        # Another AI app is asking: the turn reads and advises but never
+        # sends, posts, books or changes anything (Session.from_mcp_client),
+        # unless this request may act (Session.mcp_client_may_act).
+        from_mcp_client=True,
+        mcp_client_may_act=acting,
+        caller_person_id=person_id,
     )
 
     executive = Executive(mcp_gateway=get_active_gateway())
-    return await executive.chat(
-        user_message=message, session=session, person_id=person_id
+    if not acting:
+        return await executive.chat(
+            user_message=message, session=session, person_id=person_id
+        )
+    from openexecutive.audit import via_app
+    from openexecutive.briefing.context import render_and_trust
+
+    # The live board, as the web chat shows it, and what ack_alert may clear:
+    # only for someone on the roster (a caller that is no one clears nothing).
+    briefing_context = (
+        await asyncio.to_thread(render_and_trust, session) if person_id is not None else ""
     )
+    # Every row this turn writes names the app that asked.
+    with via_app(client_name()):
+        return await executive.chat(
+            user_message=message, session=session, person_id=person_id,
+            briefing_context=briefing_context,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +578,9 @@ async def run_session_manager() -> AsyncIterator[None]:
     Production starts one app once, so this runs the manager for the app's life.
     The guard makes it a no-op on any *subsequent* lifespan entry in the same
     process — which only happens in the test suite, where apps are rebuilt via
-    ``create_app()`` and never exercise the live ``/mcp`` protocol — instead of
-    raising ``RuntimeError``.
+    ``create_app()`` (a test that drives the live ``/mcp`` protocol gives the
+    endpoint a session manager of its own) — instead of raising
+    ``RuntimeError``.
     """
     global _session_started
     if _session_started:

@@ -11,4 +11,7 @@ here ever reads an outsider's words as someone on the roster.
 - :mod:`openexecutive.attunement.outcomes` — every proactive DM to a person is
   resolved replied / acted / void / ignored, and the rates steer which
   outreach the nudge engine and the morning standup send to whom.
+- :mod:`openexecutive.attunement.style` — a few short working-style rules per
+  person, learned from their own reactions and requests and pinned into their
+  own turns; editable and lockable on the person page.
 """

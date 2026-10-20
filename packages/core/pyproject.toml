@@ -1,6 +1,6 @@
 [project]
 name = "openexecutive"
-version = "0.2.2"
+version = "0.6.2"
 description = "AI-powered virtual executive team"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,15 @@ dependencies = [
     "rich>=13.7.0",
     "pyyaml>=6.0.1",
     "pypdf>=4.2.0",
+    # Scanned / image-only PDFs have no text layer for pypdf to return.
+    # knowledge/pdf_reader.py renders their pages (pypdfium2) and OCRs them
+    # (RapidOCR on ONNX, models bundled in the wheel) on any provider, offline.
+    "pypdfium2>=4.30",
+    "rapidocr-onnxruntime>=1.4.4; python_version < '3.13'",
+    # RapidOCR pulls in opencv-python, which needs libGL (absent from
+    # python:3.11-slim). The headless build has no GUI deps; the override below
+    # keeps the GUI build out of the lock.
+    "opencv-python-headless>=4.9",
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "slack-bolt>=1.18.0",
@@ -30,6 +39,9 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiohttp>=3.9.0",
     "google-auth>=2.29.0",
+    # Ed25519 for signed callers (api/caller.py). Already here through
+    # google-auth and others; declared because the API now imports it itself.
+    "cryptography>=42",
     "google-api-python-client>=2.131.0",
     "mcp<2,>=1.2.0",
     "honcho-ai>=2.1,<3",
@@ -37,6 +49,12 @@ dependencies = [
     "feedparser>=6.0.11",
     "tzdata>=2026.4",
     "logfire[fastapi,httpx]>=4",
+    # Renders the briefs the scheduler emails (utils/markdown_email.py).
+    "markdown-it-py>=3.0",
+    # Runs the short scripts a workflow action step writes (workflows/step_script.py)
+    # in Monty worker processes: no files, network or environment, only the
+    # step's own tools. Ships prebuilt wheels plus the `monty` worker binary.
+    "pydantic-monty>=1.1,<2",
 ]
 
 [project.urls]
@@ -48,6 +66,7 @@ Issues = "https://github.com/SenteLabsAI/OpenExecutive/issues"
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-xdist>=3.6.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "types-pyyaml>=6.0.12",
@@ -83,6 +102,11 @@ exclude = ["tests/"]
 # in ~2.2 GB of wheels the container never uses (~2.0 GB of NVIDIA libraries,
 # plus triton) and roughly triples the image. Resolve torch alone from PyTorch's CPU-only index instead.
 # `explicit = true` keeps every other package on PyPI.
+[tool.uv]
+# rapidocr-onnxruntime depends on opencv-python (GUI build, needs libGL);
+# opencv-python-headless above provides the same `cv2` module without it.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 
@@ -94,11 +118,16 @@ explicit = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A run leaves close to 1 GB of temp files, and CI and `make check` put them
+# in RAM (/dev/shm). Keep only the failed tests' directories, not the last
+# three runs' worth.
+tmp_path_retention_policy = "failed"
 
 [dependency-groups]
 dev = [
     "mypy>=2.1.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.23.0",
+    "pytest-xdist>=3.6.0",
     "ruff>=0.15.13",
 ]

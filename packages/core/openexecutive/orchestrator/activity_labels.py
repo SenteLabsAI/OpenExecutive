@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from openexecutive.orchestrator import tool_labels
+
 # Shown when a round contains only tools with no entry in `_LABELS`. Going
 # silent is not an option — a round with no label is the exact failure this
 # event exists to fix, and the UI would fall back to its own placeholder.
@@ -34,6 +36,7 @@ SPECIALIST_LABEL = "Consulting specialists…"
 # here rather than trusted. React escapes the value, but a 4KB name or an
 # embedded newline would still wreck a one-line indicator.
 _MCP_NAME_MAX = 48
+_LABEL_MAX = 60
 _MCP_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.:\- ]")
 
 # Canonical tool name -> present-progressive phrase. Every entry ends in an
@@ -47,9 +50,6 @@ _LABELS: dict[str, str] = {
     # Skills
     "search_skills": "Looking through saved skills…",
     "load_skill": "Opening a saved skill…",
-    "create_skill": "Saving a new skill…",
-    "update_skill": "Updating a saved skill…",
-    "delete_skill": "Removing a saved skill…",
 
     # Scheduling and outbound messages
     "schedule_followup": "Scheduling a follow-up…",
@@ -60,6 +60,7 @@ _LABELS: dict[str, str] = {
     "message_person": "Sending a message…",
     "lookup_person": "Looking up people…",
     "ack_alert": "Updating a proposal…",
+    "find_alerts": "Looking through the briefing board…",
 
     # Calendar. These write, so none of them says "checking" — the label is
     # emitted before the call runs and must not promise a read.
@@ -71,14 +72,26 @@ _LABELS: dict[str, str] = {
     "list_people": "Looking up people…",
     "upsert_person": "Updating the people roster…",
     "archive_person": "Updating the people roster…",
+    "resolve_roster_request": "Updating the people roster…",
     "set_department_head": "Updating the org chart…",
     "ask_about_person": "Checking what I know about someone…",
     "list_open_loops": "Checking what people owe…",
     "close_open_loop": "Closing an open loop…",
+    "assign_open_loop": "Assigning a task…",
+    "leave_out_of_brief": "Updating your brief…",
+    "list_followups": "Checking follow-ups…",
+    "cancel_followup": "Cancelling a follow-up…",
+    "move_followup": "Moving a follow-up…",
+    "mark_draft_sent": "Marking the draft sent…",
 
     # Departments
     "list_department_goals": "Reviewing department goals…",
     "update_department_goal": "Updating a department goal…",
+    "create_goal": "Adding a goal…",
+    "record_decision_outcome": "Recording how a decision turned out…",
+    "remember_fact": "Noting that for good…",
+    "forget_fact": "Dropping an old fact…",
+    "update_company_profile": "Updating the company profile…",
 
     # Broadcast channels
     "send_department_message": "Posting to a department channel…",
@@ -93,7 +106,11 @@ _LABELS: dict[str, str] = {
     # Research, alerts, artifacts
     "run_executive_research": "Researching…",
     "create_alert": "Flagging something for review…",
+    "run_python_job": "Working on the files…",
     "draft_artifact": "Writing that up…",
+    "list_artifacts": "Looking through earlier work…",
+    "get_artifact": "Rereading that document…",
+    "read_document": "Reading a document…",
 
     # Workflows
     "draft_workflow": "Drafting a workflow…",
@@ -103,6 +120,27 @@ _LABELS: dict[str, str] = {
 
     # Ask OE panel form fill
     "propose_form_values": "Filling in the form…",
+    # How the app itself works (the user guide)
+    "read_user_guide": "Checking the user guide…",
+
+    # Act as me: a draft in the speaker's own Gmail (never sent)
+    "ghostwrite_email": "Drafting an email in your voice…",
+    # Act as me: reads of the speaker's own mailbox
+    "search_my_email": "Searching your email…",
+    "read_my_email": "Reading your email…",
+    "read_my_email_attachment": "Reading an attachment…",
+    "save_my_email_attachment": "Saving a file from your email…",
+    "remind_me": "Setting a reminder…",
+    "propose_actions": "Leaving you a card to approve…",
+    "find_in_app": "Looking that up in the app…",
+    "do_in_app": "Making that change…",
+    "open_in_app": "Finding the right screen…",
+    "my_email_awaiting_reply": "Checking what's waiting on a reply…",
+    "my_email_read_before": "Finding the email you mean…",
+    "my_calendar": "Checking your calendar…",
+
+    # Always in the loop: the speaker's own notes
+    "recall_history": "Checking your notes…",
 
     # MCP gateway. `call_tool` is dynamic and handled in `_label_for`.
     "search_tools": "Looking for the right tool…",
@@ -146,9 +184,20 @@ _PRIORITY: tuple[frozenset[str], ...] = (
     frozenset({
         "upsert_person",
         "archive_person",
+        "resolve_roster_request",
         "set_department_head",
         "update_department_goal",
+        "create_goal",
+        "record_decision_outcome",
+        "remember_fact",
+        "forget_fact",
+        "update_company_profile",
         "close_open_loop",
+        "assign_open_loop",
+        "leave_out_of_brief",
+        "cancel_followup",
+        "move_followup",
+        "mark_draft_sent",
     }),
     frozenset({
         "create_alert",
@@ -159,9 +208,6 @@ _PRIORITY: tuple[frozenset[str], ...] = (
         "tune_watchlist_entry",
     }),
     frozenset({
-        "create_skill",
-        "update_skill",
-        "delete_skill",
         "propose_form_values",
     }),
 )
@@ -171,17 +217,25 @@ def _mcp_label(tool_input: Any) -> tuple[str, str]:
     """Label an MCP `call_tool` from the underlying tool it wraps.
 
     The real tool name lives in `tool_input["name"]` — the same field
-    `action_chips.summarize_action` reads to surface the true tool on an MCP
-    chip. A static label here would be useless, which matters because MCP is
-    the case that made the old indicator wrong most visibly.
+    `action_chips.summarize_action` reads. Both take their wording from
+    `tool_labels`, so the line and the finished chip say the same thing in
+    plain words, never the raw `server__tool` name. The second element stays
+    the (sanitized) raw name so clients can still tell tools apart.
     """
     raw = tool_input.get("name") if isinstance(tool_input, dict) else None
     if not isinstance(raw, str):
-        return "Using a connected tool…", "call_tool"
+        return f"{tool_labels.GENERIC_DOING}…", "call_tool"
     name = _MCP_NAME_UNSAFE.sub("", raw).strip()[:_MCP_NAME_MAX].strip()
     if not name:
-        return "Using a connected tool…", "call_tool"
-    return f"Using {name}…", name
+        return f"{tool_labels.GENERIC_DOING}…", "call_tool"
+    # Label from the full name: the 48-char cut is for `tool` only, and a
+    # cut name would miss the table the chip reads (and the two would differ).
+    doing = tool_labels.labels_for(raw, tool_input.get("arguments"))[1]
+    # One line beside the dots: the fallback for an unlisted tool can run
+    # long, so the whole label (ellipsis included) stays within _LABEL_MAX.
+    if len(doing) >= _LABEL_MAX:
+        doing = doing[: _LABEL_MAX - 1].rstrip()
+    return f"{doing}…", name
 
 
 def _label_for(tool_use: dict[str, Any]) -> tuple[str, str]:

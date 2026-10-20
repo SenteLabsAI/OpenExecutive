@@ -1,0 +1,34 @@
+{
+  "about": "Signed-caller test vectors, checked by packages/core/tests/unit/test_caller_assertion.py and packages/ui/scripts/callerAssertion.test.mjs. The key is the RFC 8032 section 7.1 TEST 1 key, which is public: never use it for anything real.",
+  "test_signing_key": "rfc8032-test1:nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A",
+  "public_keys": "rfc8032-test1:11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+  "cases": [
+    {
+      "kind": "user",
+      "email": "Olivia@Co.Example",
+      "method": "post",
+      "target": "/chat",
+      "now_ms": 1790000000123,
+      "jti": "AAAAAAAAAAAAAAAAAAAAAAAA",
+      "token": "v1.eyJhdWQiOiJvcGVuZXhlY3V0aXZlLWFwaSIsImV4cCI6MTc5MDAwMDAzMCwiaWF0IjoxNzkwMDAwMDAwLCJqdGkiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJraWQiOiJyZmM4MDMyLXRlc3QxIiwia2luZCI6InVzZXIiLCJtIjoiUE9TVCIsInAiOiIvY2hhdCIsInN1YiI6Im9saXZpYUBjby5leGFtcGxlIn0.6wLIKW2fj3z4z1rbMTw2bzkaI_esp95mjov48SuI7EODlUnay9u68KcdJie33b4MxEeyatCs5yu6C2DxEM5sAw"
+    },
+    {
+      "kind": "operator",
+      "email": "",
+      "method": "GET",
+      "target": "/audit/logs?limit=5&q=a+b",
+      "now_ms": 1790000060999,
+      "jti": "operator-vector-000001",
+      "token": "v1.eyJhdWQiOiJvcGVuZXhlY3V0aXZlLWFwaSIsImV4cCI6MTc5MDAwMDA5MCwiaWF0IjoxNzkwMDAwMDYwLCJqdGkiOiJvcGVyYXRvci12ZWN0b3ItMDAwMDAxIiwia2lkIjoicmZjODAzMi10ZXN0MSIsImtpbmQiOiJvcGVyYXRvciIsIm0iOiJHRVQiLCJwIjoiL2F1ZGl0L2xvZ3M_bGltaXQ9NSZxPWErYiIsInN1YiI6IiJ9.EPNm7fqDnFd8yToNG7ej4rU4LOLERjU8QIstAuz9A_c9GORaRPuzmqWVBaanMIu5w6J3OW4ybgRj-5VHFulnDA"
+    },
+    {
+      "kind": "user",
+      "email": "zoë@co.example",
+      "method": "DELETE",
+      "target": "/documents/My%20Doc.pdf",
+      "now_ms": 1790000120000,
+      "jti": "unicode_vector_0000002",
+      "token": "v1.eyJhdWQiOiJvcGVuZXhlY3V0aXZlLWFwaSIsImV4cCI6MTc5MDAwMDE1MCwiaWF0IjoxNzkwMDAwMTIwLCJqdGkiOiJ1bmljb2RlX3ZlY3Rvcl8wMDAwMDAyIiwia2lkIjoicmZjODAzMi10ZXN0MSIsImtpbmQiOiJ1c2VyIiwibSI6IkRFTEVURSIsInAiOiIvZG9jdW1lbnRzL015JTIwRG9jLnBkZiIsInN1YiI6Inpvw6tAY28uZXhhbXBsZSJ9.yc36WbV97YZypG3QQuH9agW82u2svVDuAlFCnE40y8aK1QZYVqOGrkF0HvQJIpQ2JSflIQDmOOzMQ0uQ7MmPDw"
+    }
+  ]
+}

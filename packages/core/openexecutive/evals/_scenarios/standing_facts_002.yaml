@@ -1,0 +1,19 @@
+id: standing_facts_002
+domain: operations
+description: "Executive lets the current message override an older standing fact (56 units now) while still using the fact where the message relies on it (the original 48 are let)"
+company_context:
+  name: "Northwind Properties"
+  industry: "Residential property management"
+  stage: "Growth"
+  headcount: 60
+  arr: 9000000
+standing_facts: |
+  - [fact 12] Maple House unit count: Maple House has 48 units. (corrects: 52 units) — 2026-09-21
+query: "Quick one: Maple House is 56 units now that the annex has handed over. The original units there are all let and the new ones are empty this month; the other 180 units across the portfolio are at 94%. What's our blended occupancy?"
+expected_topics:
+  - maple_house_56_units
+  - blended_occupancy_calculation
+quality_criteria:
+  current_statement_overrides_standing_fact: true   # works from 56, not the standing 48
+  arithmetic_is_correct: true                       # (0.94*180 + 48) / (180 + 56) ≈ 92.0%
+  no_memory_meta_talk: true

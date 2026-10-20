@@ -21,7 +21,8 @@ Shape notes for anyone changing this file:
 
 * **The system block is a constant**, never f-stringed. An existing profile is
   rendered into the first USER turn via ``to_prompt_block()``, never into the
-  cached system block. This module does not touch ``prompts/cache_manager.py``,
+  cached system block — and so is the solo hint (``solo_hint``: one constant
+  per role kind) when the workspace is in solo mode. This module does not touch ``prompts/cache_manager.py``,
   so the "exactly 2 cache_control blocks" budget there is unaffected.
 
 * **Errors never echo model or user input.** A ``ValidationError``'s ``str()``
@@ -38,7 +39,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from openexecutive.agents.onboarding_interviewer import (
     ONBOARDING_INTERVIEWER_AGENT_ID,
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Budgets. The user can always short-circuit with force_draft, so these only
 # bound a runaway model.
-MAX_QUESTIONS = 8
+MAX_QUESTIONS = 5
 # Must stay above what a single legal /start can produce — a 20k description
 # plus 8 attachments at 15k extracted chars each is ~140k. A lower ceiling
 # locked the user out of the conversation on turn one for doing exactly what
@@ -76,6 +77,8 @@ _MAX_TOKENS = 8000
 # it. Same value fixtures/generator.py uses inline; the two are independent, so
 # changing this one does not change that one.
 _REPAIR_ECHO_CHARS = 2000
+
+_MAX_PROSE_QUESTION_CHARS = 1000
 
 ASK_TOOL_NAME = "ask_clarifying_question"
 EMIT_TOOL_NAME = "emit_company_draft"
@@ -151,6 +154,13 @@ class CompanyDraft(BaseModel):
 class Question(BaseModel):
     question: str
     hint: str = ""
+
+    @field_validator("hint", mode="before")
+    @classmethod
+    def _no_null_hint(cls, value: Any) -> Any:
+        # Models sometimes send "hint": null for "no example"; that is not a
+        # reason to throw the whole question away.
+        return "" if value is None else value
 
 
 @dataclass(frozen=True)
@@ -467,13 +477,24 @@ def _extract_tool_call(response: Any) -> tuple[str, dict[str, Any]]:
     raise InterviewError("The setup assistant did not return a usable response.")
 
 
-def _build_messages(
-    transcript: list[Turn], existing_profile: CompanyProfile | None
-) -> list[dict[str, Any]]:
-    """Replay the transcript as plain text turns.
+def _prose(response: Any) -> str:
+    """The text blocks of a response, joined; empty when there are none."""
+    parts = [
+        str(getattr(b, "text", "") or "").strip()
+        for b in getattr(response, "content", []) or []
+        if getattr(b, "type", None) == "text"
+    ]
+    return "\n\n".join(p for p in parts if p)
 
-    An existing profile is prepended to the FIRST user turn, never put in the
-    cached system block (see module docstring).
+
+def replay_transcript(
+    transcript: list[Turn], continue_prompt: str
+) -> list[dict[str, Any]]:
+    """Replay stored turns as alternating plain-text Messages API turns.
+
+    Shared by every interview-style loop (this one and
+    ``workflows/designer.py``). Returns an empty list when nothing is left to
+    send; the caller decides what that means.
     """
     # Coalesce consecutive same-role turns. The Anthropic API rejects a
     # non-alternating sequence, and two user turns in a row are reachable in
@@ -487,27 +508,115 @@ def _build_messages(
             messages[-1]["content"] = f"{messages[-1]['content']}\n\n{t.text}"
             continue
         messages.append({"role": t.role, "content": t.text})
-    if not messages:
-        raise InterviewError("The setup session has no conversation yet.")
     # A draft records itself as an assistant turn, so the transcript can end on
     # one — e.g. "ask me more questions" then "draft again" without typing.
     # Sending that as a trailing assistant message is a prefill, which the API
     # rejects alongside a forced tool_choice, and semantically asks the model to
     # continue its own summary rather than act.
-    if messages[-1]["role"] == "assistant":
-        messages.append({"role": "user", "content": _CONTINUE_PROMPT})
+    if messages and messages[-1]["role"] == "assistant":
+        messages.append({"role": "user", "content": continue_prompt})
+    return messages
+
+
+# Prepended to the FIRST user turn when the workspace is in solo mode (one
+# person using Open Executive just for themselves — whatever their role).
+# User-turn hints rather than a second system prompt, so the cached system
+# block stays one constant for both modes. One static constant per role kind
+# (the workspace's role_kind, from the role step): no user text is ever
+# interpolated into them.
+_SOLO_DRAFT_RULE = (
+    "In the draft, `people` must hold only them — exactly one person, with "
+    "is_principal true — and `departments` must be empty."
+)
+
+# No role given (or "other"): find out which kind of principal this is.
+SOLO_HINT = (
+    "This person is setting up Open Executive just for themselves: only they "
+    "will use it. They may run their own business, lead a function inside a "
+    "larger organisation, or work independently as an advisor or fractional "
+    "executive — if their words do not make it clear, ask. "
+    + _SOLO_DRAFT_RULE
+    + " The company profile describes the organisation they work in: their "
+    "own business or practice, or their employer. Do not ask about a "
+    "leadership team or departments; ask instead about their role and what "
+    "they are responsible for, that organisation, and their top goals."
+)
+
+SOLO_ROLE_HINTS: dict[str, str] = {
+    "owner": (
+        "This person is setting up Open Executive just for themselves, and "
+        "they own and run the business. "
+        + _SOLO_DRAFT_RULE
+        + " Do not ask about a leadership team or departments; ask instead "
+        "about what they offer, who their customers are, their pricing, their "
+        "cash and runway, and their top goals."
+    ),
+    "in_house": (
+        "This person is setting up Open Executive just for themselves. They "
+        "are an executive inside an organisation they do not own, so the "
+        "company is their employer: draft the company profile for that "
+        "organisation. "
+        + _SOLO_DRAFT_RULE
+        + " Do not add their manager, peers or team as people. Do not ask "
+        "about the company's leadership team or departments, and do not ask "
+        "about cash, runway or fundraising as if the business were theirs. "
+        "Ask instead about their organisation (what it does, its industry "
+        "and size), the function they lead and what they are responsible "
+        "for, who they report to, how big their team is (as context, not a "
+        "roster), what they are measured on, and their top goals."
+    ),
+    "independent": (
+        "This person is setting up Open Executive just for themselves. They "
+        "work independently — an advisor, consultant or fractional executive "
+        "who serves clients — so the company is their own practice. "
+        + _SOLO_DRAFT_RULE
+        + " Clients are not people in the draft. Do not ask about a "
+        "leadership team or departments; ask instead about their practice "
+        "and what they offer, who their clients are and how they work with "
+        "them, how they price their work, and their top goals."
+    ),
+}
+
+
+def solo_hint(role_kind: str | None) -> str:
+    """The solo hint for the principal's role kind: the tailored one, else
+    the role-neutral ``SOLO_HINT`` (no kind, or ``other``)."""
+    return SOLO_ROLE_HINTS.get(role_kind or "", SOLO_HINT)
+
+
+def _build_messages(
+    transcript: list[Turn],
+    existing_profile: CompanyProfile | None,
+    *,
+    solo: bool = False,
+    role_kind: str | None = None,
+) -> list[dict[str, Any]]:
+    """Replay the transcript as plain text turns.
+
+    The solo hint (when ``solo``; tailored to ``role_kind``) and an existing
+    profile are prepended to the FIRST user turn, never put in the cached
+    system block (see module docstring).
+    """
+    messages = replay_transcript(transcript, _CONTINUE_PROMPT)
+    if not messages:
+        raise InterviewError("The setup session has no conversation yet.")
+    preamble: list[str] = []
+    if solo:
+        preamble.append(solo_hint(role_kind))
     if existing_profile is not None and not existing_profile.is_empty():
         block = existing_profile.to_prompt_block()
         if block:
-            messages[0] = {
-                "role": messages[0]["role"],
-                "content": (
-                    "The user is re-running setup. Their current saved profile "
-                    "is below — confirm or update it rather than starting over, "
-                    "and do not re-ask what it already answers.\n\n"
-                    f"{block}\n\n---\n\n{messages[0]['content']}"
-                ),
-            }
+            preamble.append(
+                "The user is re-running setup. Their current saved profile "
+                "is below — confirm or update it rather than starting over, "
+                "and do not re-ask what it already answers.\n\n"
+                f"{block}"
+            )
+    if preamble:
+        messages[0] = {
+            "role": messages[0]["role"],
+            "content": "\n\n".join(preamble) + f"\n\n---\n\n{messages[0]['content']}",
+        }
     return messages
 
 
@@ -538,7 +647,15 @@ async def advance(
     system_text = agent.effective_system_prompt()
     provider = get_provider(resolved_model)
 
-    messages = _build_messages(transcript, existing_profile)
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    workspace = get_workspace()
+    messages = _build_messages(
+        transcript,
+        existing_profile,
+        solo=workspace.mode == "solo",
+        role_kind=workspace.role_kind,
+    )
 
     # The one place tool_choice varies — see the module docstring.
     must_draft = (
@@ -592,7 +709,44 @@ async def advance(
             iteration=attempt,
         )
 
-        name, raw = _extract_tool_call(response)
+        try:
+            name, raw = _extract_tool_call(response)
+        except InterviewError:
+            # No usable tool call (the model answered in prose, or named another
+            # tool). Block types only in the log: the text can hold the user's
+            # financials.
+            logger.error(
+                "onboarding interview: no tool call (stop_reason=%s, blocks=%s)",
+                getattr(response, "stop_reason", None),
+                [getattr(b, "type", None) for b in getattr(response, "content", []) or []],
+            )
+            prose = _prose(response)
+            if attempt == 0:
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": prose or "(no answer)"},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Call exactly one tool: "
+                            + (EMIT_TOOL_NAME if must_draft else f"{ASK_TOOL_NAME} or {EMIT_TOOL_NAME}")
+                            + ", now."
+                        ),
+                    },
+                ]
+                continue
+            if (
+                prose
+                and not must_draft
+                and len(prose) <= _MAX_PROSE_QUESTION_CHARS
+                and prose.endswith("?")
+            ):
+                # The model asked in plain words twice running: the person can
+                # still answer it, so show it rather than a dead end. A long
+                # reply, or one that does not end in a question mark, is
+                # reasoning or a half-made draft: it is never shown.
+                return Question(question=prose)
+            raise
 
         if name == ASK_TOOL_NAME:
             if must_draft:
@@ -626,7 +780,11 @@ async def advance(
                 return question
             except (ValidationError, ValueError) as exc:
                 logger.error(
-                    "onboarding interview: malformed question (%s)", type(exc).__name__
+                    "onboarding interview: malformed question (%s, fields=%s)",
+                    type(exc).__name__,
+                    [".".join(map(str, e["loc"])) for e in exc.errors()]
+                    if isinstance(exc, ValidationError)
+                    else [],
                 )
                 if attempt == 0:
                     continue

@@ -13,6 +13,7 @@ import json
 import logging
 from dataclasses import dataclass
 
+from openexecutive.audit.usage import log_model_usage
 from openexecutive.orchestrator.router import SPECIALIST_DESCRIPTIONS
 from openexecutive.prompts.committee_prompts import DOMAIN_REVIEWER_SYSTEM_TEMPLATE
 from openexecutive.providers import get_provider
@@ -121,6 +122,7 @@ class Reviewer:
                 ],
                 messages=[{"role": "user", "content": user_content}],
             )
+            log_model_usage(msg, model=self.model, actor="committee_reviewer")
             text_blocks = [b for b in msg.content if b.type == "text"]
             text = text_blocks[0].text if text_blocks else ""
         except Exception:

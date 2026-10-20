@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, time
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from openexecutive.alerts.models import (
     SEVERITY_RANK,
@@ -83,15 +83,33 @@ def _parse_hhmm(s: str) -> time | None:
         return None
 
 
+# Stored quiet-hours zones that mean "follow the user's zone". "UTC" is the
+# model default and the column DEFAULT (alerts/store.py), so every existing
+# row carries it, and nothing in the app writes this column (only
+# `save_preferences`, which no route calls) — a stored "UTC" is the default,
+# never a choice. Any other zone that loads is honoured as a choice.
+_FOLLOW_USER_ZONE = frozenset({"", "UTC"})
+
+
+def _quiet_hours_zone(prefs: UserPreferences) -> ZoneInfo:
+    """The zone quiet hours are read in: an explicitly chosen one, else the
+    user's zone (workspace setting, else USER_TIMEZONE, else UTC)."""
+    from openexecutive.memory.workspace_settings import get_user_timezone, load_zone
+
+    stored = (prefs.quiet_hours_tz or "").strip()
+    if stored not in _FOLLOW_USER_ZONE:
+        zone = load_zone(stored)
+        if zone is not None:
+            return zone
+    return get_user_timezone()
+
+
 def _in_quiet_hours(prefs: UserPreferences, now: datetime | None = None) -> bool:
     start = _parse_hhmm(prefs.quiet_hours_start)
     end = _parse_hhmm(prefs.quiet_hours_end)
     if start is None or end is None:
         return False
-    try:
-        tz = ZoneInfo(prefs.quiet_hours_tz or "UTC")
-    except ZoneInfoNotFoundError:
-        tz = ZoneInfo("UTC")
+    tz = _quiet_hours_zone(prefs)
     current = (now or datetime.now(UTC)).astimezone(tz).time()
     if start <= end:
         return start <= current < end
@@ -116,6 +134,7 @@ def resolve_channels(
     severity: AlertSeverity,
     prefs: UserPreferences,
     now: datetime | None = None,
+    workspace_mode: str | None = None,
 ) -> list[AlertChannel]:
     """Apply user controls to a Triage-suggested channel set.
 
@@ -123,7 +142,18 @@ def resolve_channels(
     channels when below severity threshold or inside quiet hours (unless urgent).
     Broadcast channels (department_channel / company_broadcast) survive the
     `channels_enabled` filter — they're org-routing, not personal preference.
+
+    In solo mode (``workspace_mode``, else the workspace setting) the
+    broadcast channels are dropped instead: one person using Open Executive
+    for themselves has no department room or company channel, whatever the
+    triage model suggested.
     """
+    if workspace_mode is None:
+        from openexecutive.memory.workspace_settings import get_workspace
+
+        workspace_mode = get_workspace().mode
+    if workspace_mode == "solo":
+        requested = [c for c in requested if c not in _BROADCAST_CHANNELS]
     enabled = set(prefs.channels_enabled)
     enabled.add(AlertChannel.PERSISTED)  # always persist
     intersected = [

@@ -23,6 +23,7 @@ KIND_LABEL: dict[str, str] = {
     "awaiting_human": "workflow step",
     "principal_brief_morning": "morning brief",
     "principal_brief_eod": "end-of-day digest",
+    "principal_weekly_review": "weekly review",
 }
 
 # channel → trailing "how / to whom" phrase. ``department_channel`` is handled

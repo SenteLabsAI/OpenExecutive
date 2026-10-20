@@ -1,0 +1,542 @@
+"""Tests for scripts/pr_checks.py, the CI gate for the PR rules in CLAUDE.md."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "pr_checks.py"
+_spec = importlib.util.spec_from_file_location("pr_checks", _SCRIPT)
+assert _spec and _spec.loader
+pr_checks = importlib.util.module_from_spec(_spec)
+sys.modules["pr_checks"] = pr_checks  # dataclasses resolve annotations via sys.modules
+_spec.loader.exec_module(pr_checks)
+
+Change = pr_checks.Change
+PKG = "packages/core/openexecutive/"
+PREBUILT = PKG + "architecture/prebuilt/"
+
+
+def _level(check, **kw) -> str:
+    kw.setdefault("changed", set())
+    kw["changed"] = set(kw["changed"]) | set(kw.get("added", ()))
+    return check(Change(**kw)).level
+
+
+# --- arch-doc-drift ----------------------------------------------------------
+
+
+def test_drift_fails_when_documented_module_changes_without_its_section() -> None:
+    changed = {PKG + "integrations/slack.py", PREBUILT + "scheduler.json"}
+    assert _level(pr_checks.check_arch_drift, changed=changed) == "FAIL"
+
+
+def test_drift_passes_when_matching_section_edited() -> None:
+    changed = {PKG + "integrations/slack.py", PREBUILT + "integrations.json"}
+    assert _level(pr_checks.check_arch_drift, changed=changed) == "PASS"
+
+
+def test_drift_accepts_any_of_several_sections() -> None:
+    changed = {PKG + "orchestrator/executive.py", PREBUILT + "lifecycle.json"}
+    assert _level(pr_checks.check_arch_drift, changed=changed) == "PASS"
+
+
+def test_drift_yaml_only_edit_does_not_count() -> None:
+    changed = {PKG + "scheduler/jobs.py", PKG + "architecture/architecture-facts.yaml"}
+    assert _level(pr_checks.check_arch_drift, changed=changed) == "FAIL"
+
+
+def test_drift_ignores_non_doc_modules_and_other_packages() -> None:
+    changed = {
+        PKG + "utils/text.py",
+        PKG + "cli.py",
+        PKG + "evals/runner.py",
+        "packages/ui/src/app/page.tsx",
+        "packages/core/tests/unit/test_x.py",
+    }
+    assert _level(pr_checks.check_arch_drift, changed=changed) == "PASS"
+
+
+def test_drift_unmapped_module_needs_some_section() -> None:
+    assert _level(pr_checks.check_arch_drift, changed={PKG + "config.py"}) == "FAIL"
+    changed = {PKG + "config.py", PREBUILT + "overview.json"}
+    assert _level(pr_checks.check_arch_drift, changed=changed) == "PASS"
+
+
+def test_drift_new_module_needs_section_spec_page_and_json() -> None:
+    added = {PKG + "billing/__init__.py", PKG + "billing/core.py"}
+    result = pr_checks.check_arch_drift(Change(changed=set(added), added=added))
+    assert result.level == "FAIL"
+    assert "billing.json" in result.detail and "sections.py" in result.detail
+
+    changed = added | {
+        PREBUILT + "billing.json",
+        PKG + "architecture/sections.py",
+        "packages/ui/src/app/architecture/page.tsx",
+    }
+    assert _level(pr_checks.check_arch_drift, changed=changed, added=added) == "PASS"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Arch-Docs: n/a - internal rename", "fix x\n\narch-docs: N/A — no behavior change"],
+)
+def test_drift_waiver_line_passes(text: str) -> None:
+    changed = {PKG + "integrations/slack.py"}
+    assert _level(pr_checks.check_arch_drift, changed=changed, waiver_text=text) == "PASS"
+
+
+@pytest.mark.parametrize(
+    "text", ["we did not add Arch-Docs: n/a - here", "Arch-Docs: n/a", "Arch-Docs: na -"]
+)
+def test_drift_waiver_needs_own_line_and_reason(text: str) -> None:
+    changed = {PKG + "integrations/slack.py"}
+    assert _level(pr_checks.check_arch_drift, changed=changed, waiver_text=text) == "FAIL"
+
+
+# --- guide-drift -------------------------------------------------------------
+
+UI = "packages/ui/src/"
+GUIDE = PKG + "guide/prebuilt/"
+
+
+def test_guide_drift_fails_when_a_screen_changes_without_its_section() -> None:
+    changed = {UI + "app/chats/page.tsx", GUIDE + "people.json"}
+    result = pr_checks.check_guide_drift(Change(changed=changed))
+    assert result.level == "FAIL"
+    assert "app/chats/page.tsx" in result.detail and "chat" in result.detail
+
+
+def test_guide_drift_passes_when_its_section_changes() -> None:
+    changed = {UI + "components/sessions/ShareDialog.tsx", GUIDE + "chat.json"}
+    assert _level(pr_checks.check_guide_drift, changed=changed) == "PASS"
+
+
+def test_guide_drift_longest_prefix_wins() -> None:
+    changed = {UI + "app/settings/tools/page.tsx", GUIDE + "settings.json"}
+    assert _level(pr_checks.check_guide_drift, changed=changed) == "FAIL"
+    changed = {UI + "app/settings/tools/page.tsx", GUIDE + "custom_tools.json"}
+    assert _level(pr_checks.check_guide_drift, changed=changed) == "PASS"
+
+
+def test_guide_drift_ignores_unmapped_paths_tests_and_styles() -> None:
+    changed = {
+        UI + "components/shell/AppShell.tsx",
+        UI + "app/chats/chats.test.ts",
+        UI + "app/globals.css",
+        UI + "app/api/chat/route.ts",
+        PKG + "orchestrator/executive.py",
+    }
+    assert _level(pr_checks.check_guide_drift, changed=changed) == "PASS"
+
+
+@pytest.mark.parametrize("text", ["Guide: n/a - spacing only", "x\n\nguide: N/A — refactor"])
+def test_guide_drift_waiver_line_passes(text: str) -> None:
+    changed = {UI + "app/people/page.tsx"}
+    assert _level(pr_checks.check_guide_drift, changed=changed, waiver_text=text) == "PASS"
+
+
+@pytest.mark.parametrize("text", ["see Guide: n/a - x", "Guide: n/a", "Arch-Docs: n/a - x"])
+def test_guide_drift_waiver_needs_own_line_and_reason(text: str) -> None:
+    changed = {UI + "app/people/page.tsx"}
+    assert _level(pr_checks.check_guide_drift, changed=changed, waiver_text=text) == "FAIL"
+
+
+def test_guide_drift_ids_are_guide_sections() -> None:
+    from openexecutive.guide.sections import GUIDE_SECTIONS
+
+    ids = {s.id for s in GUIDE_SECTIONS}
+    for prefix, sections in pr_checks.GUIDE_FOR.items():
+        assert sections <= ids, prefix
+
+
+# --- no-stubs ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line", ["    # TODO: finish", "    raise NotImplementedError", "    pass  # stub"]
+)
+def test_no_stubs_fails_on_stub_in_code(line: str) -> None:
+    lines = {PKG + "memory/store.py": ["x = 1", line]}
+    assert _level(pr_checks.check_no_stubs, added_lines=lines) == "FAIL"
+
+
+def test_no_stubs_ignores_docs_and_exempt_files() -> None:
+    lines = {
+        "docs/roadmap.md": ["- TODO: write this"],
+        "scripts/pr_checks.py": ["STUB_RE = 'TODO'"],
+        PKG + "memory/store.py": ["todos = load_todos()"],
+    }
+    assert _level(pr_checks.check_no_stubs, added_lines=lines) == "PASS"
+
+
+# --- eval-scenarios ----------------------------------------------------------
+
+
+_SALES_AGENT = {PKG + "agents/sales.py": ["class SalesAgent(BaseAgent):", '    name = "sales"']}
+
+
+def test_eval_scenarios_required_for_new_agent() -> None:
+    added = {PKG + "agents/sales.py"}
+    lines = _SALES_AGENT
+    assert _level(pr_checks.check_eval_scenarios, added=added, added_lines=lines) == "FAIL"
+    changed = {PKG + "evals/_scenarios/sales_001.yaml"}
+    assert (
+        _level(pr_checks.check_eval_scenarios, changed=changed, added=added, added_lines=lines)
+        == "PASS"
+    )
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["class FooAgent(", "    BaseAgent,", "):", '    name = "foo"'],
+        ["class FooAgent(SalesAgent):", '    name = "foo"'],
+    ],
+    ids=["wrapped-bases", "subclass-of-an-agent"],
+)
+def test_eval_scenarios_required_for_any_agent_class_header(lines: list[str]) -> None:
+    added = {PKG + "agents/foo.py"}
+    level = _level(pr_checks.check_eval_scenarios, added=added, added_lines={PKG + "agents/foo.py": lines})
+    assert level == "FAIL"
+
+
+def test_eval_scenarios_not_required_for_new_helper_module() -> None:
+    added = {PKG + "agents/presets.py"}
+    lines = {PKG + "agents/presets.py": ["class PresetSpec:", "def target_for(agent: BaseAgent):"]}
+    assert _level(pr_checks.check_eval_scenarios, added=added, added_lines=lines) == "PASS"
+
+
+def test_eval_scenarios_required_for_domain_prompt_change() -> None:
+    changed = {PKG + "prompts/domain_prompts.py"}
+    assert _level(pr_checks.check_eval_scenarios, changed=changed) == "FAIL"
+
+
+def test_eval_scenarios_not_required_for_editing_existing_agent() -> None:
+    changed = {PKG + "agents/finance.py"}
+    assert _level(pr_checks.check_eval_scenarios, changed=changed) == "PASS"
+
+
+def test_eval_scenarios_not_required_for_rename_or_private_module() -> None:
+    renamed = {PKG + "agents/finance_agent.py"}
+    assert _level(pr_checks.check_eval_scenarios, changed=renamed, renamed=renamed) == "PASS"
+    added = {PKG + "agents/_helpers.py", PKG + "agents/__init__.py"}
+    assert _level(pr_checks.check_eval_scenarios, added=added) == "PASS"
+
+
+def test_parse_added_lines_only_trusts_headers() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/x.py b/x.py",
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1 +1,3 @@",
+            "+++ a",  # an added line that reads "++ a"
+            "++++ b/other.py",
+            "+y = 2  # TODO",
+            'diff --git "a/t\\tab.py" "b/t\\tab.py"',
+            "--- /dev/null",
+            '+++ "b/t\\tab.py"',
+            "@@ -0,0 +1 @@",
+            "+z = 1",
+            "diff --git a/gone.py b/gone.py",
+            "--- a/gone.py",
+            "+++ /dev/null",
+            "@@ -1 +0,0 @@",
+            "-old",
+        ]
+    )
+    assert pr_checks._parse_added_lines(diff) == {
+        "x.py": ["++ a", "+++ b/other.py", "y = 2  # TODO"],
+        "t\tab.py": ["z = 1"],
+    }
+
+
+def test_drift_ignores_release_please_version_bump() -> None:
+    main_py = PKG + "api/main.py"
+    bump = {
+        "changed": {main_py},
+        "added_lines": {main_py: ['    version="0.4.2",  # x-release-please-version']},
+        "removed_lines": {main_py: ['    version="0.4.1",  # x-release-please-version']},
+    }
+    assert _level(pr_checks.check_arch_drift, **bump) == "PASS"
+    assert _level(pr_checks.check_tests_present, **bump) == "PASS"
+
+    models_py = PKG + "api/models.py"
+    bump = {
+        "changed": {models_py},
+        "added_lines": {models_py: ['    version: str = "1.0.0-rc.1"  # x-release-please-version']},
+        "removed_lines": {models_py: ['    version: str = "0.4.2"  # x-release-please-version']},
+    }
+    assert _level(pr_checks.check_arch_drift, **bump) == "PASS"
+
+
+def test_release_please_files_match_its_config() -> None:
+    config = json.loads((_SCRIPT.parents[1] / "release-please-config.json").read_text())
+    generic = {
+        f["path"]
+        for pkg in config["packages"].values()
+        for f in pkg.get("extra-files", [])
+        if f.get("type") == "generic"
+    }
+    assert generic == pr_checks.RELEASE_PLEASE_FILES
+
+
+def test_drift_counts_a_marked_bump_outside_release_please_files() -> None:
+    router = PKG + "orchestrator/router.py"
+    change = {
+        "changed": {router},
+        "added_lines": {router: ['SCHEMA_VERSION = "2.0.0"  # x-release-please-version']},
+        "removed_lines": {router: ['SCHEMA_VERSION = "1.0.0"  # x-release-please-version']},
+    }
+    assert _level(pr_checks.check_arch_drift, **change) == "FAIL"
+
+
+_MARK = "  # x-release-please-version"
+
+
+@pytest.mark.parametrize(
+    ("added", "removed"),
+    [
+        # code beside the bump
+        (['version="0.4.2"' + _MARK, "x = 1"], ['version="0.4.1"' + _MARK]),
+        (['version="0.4.2"' + _MARK], ["x = 1"]),
+        (['version="0.4.2"' + _MARK], []),
+        # other edits on a marked line
+        (["SOME_FLAG = True" + _MARK], ["SOME_FLAG = False" + _MARK]),
+        (['version="0.4.2", debug=True' + _MARK], ['version="0.4.1"' + _MARK]),
+        (['name="0.4.2"' + _MARK], ['version="0.4.1"' + _MARK]),
+        (['version="0.4.1"'], ['version="0.4.1"' + _MARK]),
+    ],
+)
+def test_drift_still_counts_code_beside_a_version_bump(
+    added: list[str], removed: list[str]
+) -> None:
+    main_py = PKG + "api/main.py"
+    change = {
+        "changed": {main_py},
+        "added_lines": {main_py: added},
+        "removed_lines": {main_py: removed},
+    }
+    assert _level(pr_checks.check_arch_drift, **change) == "FAIL"
+
+
+def test_parse_removed_lines_keys_by_new_path() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/x.py b/x.py",
+            "--- a/x.py",
+            "+++ b/x.py",
+            "@@ -1,2 +1 @@",
+            "--- a",  # a removed line that reads "-- a"
+            "-old",
+            "+new",
+            "diff --git a/gone.py b/gone.py",
+            "--- a/gone.py",
+            "+++ /dev/null",
+            "@@ -1 +0,0 @@",
+            "-bye",
+        ]
+    )
+    assert pr_checks._parse_removed_lines(diff) == {"x.py": ["-- a", "old"]}
+
+
+# --- tests-present -----------------------------------------------------------
+
+
+def test_tests_present_warns_only() -> None:
+    changed = {PKG + "memory/store.py"}
+    assert _level(pr_checks.check_tests_present, changed=changed) == "WARN"
+    changed.add("packages/core/tests/unit/test_store.py")
+    assert _level(pr_checks.check_tests_present, changed=changed) == "PASS"
+
+
+# --- pinned-actions ----------------------------------------------------------
+
+_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "      - uses: actions/checkout@v7",
+        "        uses: astral-sh/setup-uv@v7.6.0",
+        "      - uses: 'actions/setup-node@main'",
+        "      - uses: actions/checkout@3d3c42e  # short sha",
+    ],
+)
+def test_pinned_actions_fails_on_a_tag_or_branch(line: str) -> None:
+    lines = {".github/workflows/ci.yml": [line]}
+    assert _level(pr_checks.check_pinned_actions, changed=set(lines), added_lines=lines) == "FAIL"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"      - uses: actions/checkout@{_SHA} # v7.0.1",
+        f'        uses: "actions/checkout@{_SHA}"',
+        "      - uses: ./.github/actions/setup",
+        "      - uses: docker://alpine:3.20",
+        "      - run: echo uses: actions/checkout@v7",
+    ],
+)
+def test_pinned_actions_passes_shas_and_local_actions(line: str) -> None:
+    lines = {".github/workflows/ci.yml": [line]}
+    assert _level(pr_checks.check_pinned_actions, changed=set(lines), added_lines=lines) == "PASS"
+
+
+def test_pinned_actions_only_reads_workflow_files() -> None:
+    lines = {"docs/ci.md": ["- uses: actions/checkout@v7"]}
+    assert _level(pr_checks.check_pinned_actions, changed=set(lines), added_lines=lines) == "PASS"
+
+
+def test_every_workflow_in_the_repo_pins_its_actions() -> None:
+    root = _SCRIPT.parents[1]
+    lines = {
+        str(p.relative_to(root)): p.read_text().splitlines()
+        for p in (root / ".github").rglob("*.y*ml")
+    }
+    result = pr_checks.check_pinned_actions(Change(changed=set(lines), added_lines=lines))
+    assert result.level == "PASS", result.detail
+
+
+# --- git plumbing ------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def test_collect_and_main_against_a_real_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    slack = repo / PKG / "integrations" / "slack.py"
+    slack.parent.mkdir(parents=True)
+    slack.write_text("x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-qb", "feature")
+
+    slack.write_text("x = 1\ny = 2  # TODO\n")  # uncommitted edit
+    new = repo / PKG / "agents" / "sales.py"
+    new.parent.mkdir(parents=True)
+    new.write_text("class SalesAgent(BaseAgent):\n    z = 3\n")  # untracked file
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("PR_BODY", raising=False)
+
+    change = pr_checks.collect("main")
+    assert PKG + "integrations/slack.py" in change.changed
+    assert PKG + "agents/sales.py" in change.added
+    assert change.added_lines[PKG + "integrations/slack.py"] == ["y = 2  # TODO"]
+
+    assert pr_checks.main(["--base", "main"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  arch-doc-drift" in out and "FAIL  no-stubs" in out
+
+    slack.write_text("x = 1\ny = 2\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add sales\n\nArch-Docs: n/a - test fixture")
+    monkeypatch.setenv("PR_BODY", "")
+    assert pr_checks.main(["--base", "main"]) == 1  # eval scenarios still missing
+    out = capsys.readouterr().out
+    assert "waived (Arch-Docs: n/a - test fixture)" in out and "FAIL  eval-scenarios" in out
+
+    monkeypatch.setenv("PR_BODY", "## Problem\n\nArch-Docs: n/a - from the PR body\n")
+    _git(repo, "commit", "-q", "--amend", "-m", "add sales")
+    pr_checks.main(["--base", "main"])
+    assert "waived (Arch-Docs: n/a - from the PR body)" in capsys.readouterr().out
+
+
+def test_main_passes_a_release_please_bump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    main_py = repo / PKG / "api" / "main.py"
+    main_py.parent.mkdir(parents=True)
+    main_py.write_text('app = App(\n    version="0.4.1",  # x-release-please-version\n)\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-qb", "release")
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("PR_BODY", raising=False)
+
+    main_py.write_text('app = App(\n    version="0.4.2",  # x-release-please-version\n)\n')
+    _git(repo, "commit", "-qam", "chore(main): release 0.4.2")
+    assert pr_checks.main(["--base", "main"]) == 0
+    assert "PASS  arch-doc-drift  no documented module changed" in capsys.readouterr().out
+
+    main_py.write_text(
+        'app = App(\n    version="0.4.2",  # x-release-please-version\n    debug=True,\n)\n'
+    )
+    assert pr_checks.main(["--base", "main"]) == 1
+    assert "FAIL  arch-doc-drift" in capsys.readouterr().out
+
+
+def test_collect_survives_odd_files_and_git_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", "diff.noprefix", "true")
+    _git(repo, "config", "diff.renames", "false")
+    old = repo / PKG / "memory" / "old name.py"
+    old.parent.mkdir(parents=True)
+    old.write_text("# TODO carried over\n" * 5)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-qb", "feature")
+    _git(repo, "mv", str(old), str(old.with_name("new name.py")))
+    integ = repo / PKG / "integrations"
+    integ.mkdir(parents=True)
+    (integ / "caf\u00e9.py").write_text("# TODO\n")
+    (integ / "latin1.txt").write_bytes(b"caf\xe9\n")
+    (integ / "sp ace.py").write_text("raise NotImplementedError\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "odd files")
+    monkeypatch.chdir(repo)
+
+    change = pr_checks.collect("main")
+    assert PKG + "integrations/caf\u00e9.py" in change.added
+    assert change.added_lines[PKG + "integrations/caf\u00e9.py"] == ["# TODO"]
+    assert change.added_lines[PKG + "integrations/sp ace.py"] == ["raise NotImplementedError"]
+    assert PKG + "integrations/latin1.txt" in change.changed
+    assert {PKG + "memory/old name.py", PKG + "memory/new name.py"} <= change.changed
+    assert change.renamed == {PKG + "memory/new name.py"}
+    assert PKG + "memory/new name.py" not in change.added_lines  # a pure move adds no lines
+    assert pr_checks.check_no_stubs(change).level == "FAIL"
+    assert pr_checks.check_arch_drift(change).level == "FAIL"
+
+
+def test_main_reports_missing_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(
+        tmp_path,
+        "-c",
+        "user.email=t@e.com",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "base",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert pr_checks.main(["--base", "origin/nope"]) == 2
+    assert "is 'origin/nope' fetched?" in capsys.readouterr().out

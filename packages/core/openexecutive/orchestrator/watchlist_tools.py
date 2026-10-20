@@ -44,7 +44,7 @@ from openexecutive.monitoring.validation import (
 from openexecutive.monitoring.validation import (
     WATCHLIST_SLUG_RE as _SLUG_RE,
 )
-from openexecutive.monitoring.validation import normalize_target
+from openexecutive.monitoring.validation import display_label_config, normalize_target
 
 logger = logging.getLogger(__name__)
 
@@ -397,21 +397,6 @@ def _err(tool: str, msg: str) -> str:
 # --------------------------------------------------------------------- #
 
 
-def _display_label_config(signal_type: str, display_label: Any) -> dict[str, Any]:
-    """Map the user-facing label onto the adapter-specific config key."""
-    config: dict[str, Any] = {}
-    if display_label:
-        if signal_type == "vendor_status":
-            config["vendor_label"] = display_label
-        elif signal_type == "rss":
-            config["feed_label"] = display_label
-        elif signal_type == "stock":
-            config["display_name"] = display_label
-        elif signal_type in ("query", "edgar", "page_watch"):
-            config["label"] = display_label
-    return config
-
-
 async def _validated_target(
     tool: str, tool_input: dict[str, Any],
 ) -> tuple[str, str, str, dict[str, Any], dict[str, Any]] | str:
@@ -450,7 +435,7 @@ async def _validated_target(
         if not ok:
             return _err(tool, f"target {target!r} is not a fetchable public URL: {reason}")
 
-    config = _display_label_config(signal_type, tool_input.get("display_label"))
+    config = display_label_config(signal_type, tool_input.get("display_label"))
     # Validate the target before it lands: a non-feed rss URL is converted
     # to a page_watch (when the page has readable text) or rejected, so the
     # research workflow can't seed the watchlist with dead feed rows.
@@ -464,7 +449,11 @@ async def _validated_target(
 
 
 async def handle_add_watchlist_entry(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
     tool = "add_watchlist_entry"
+    if (refused := outside_reach_refusal(tool)) is not None:
+        return refused
     validated = await _validated_target(tool, tool_input)
     if isinstance(validated, str):
         return validated
@@ -680,7 +669,11 @@ async def handle_remove_watchlist_entry(tool_input: dict[str, Any]) -> str:
 
 
 async def handle_tune_watchlist_entry(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
     tool = "tune_watchlist_entry"
+    if (refused := outside_reach_refusal(tool)) is not None:
+        return refused
     try:
         slug = str(tool_input["slug"]).strip()
     except (KeyError, TypeError) as exc:

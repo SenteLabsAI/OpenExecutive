@@ -4,6 +4,54 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Topic tag on an alert only the principal may see: one raised on a turn
+# about mail from one of their contacts or mail they forwarded, or a meeting
+# proposal with a contact. Every surface that serves anyone else — /today for
+# a teammate, a teammate's chat digest, the alert review, the activity rail,
+# the unattended reflection — leaves it out (see ``is_private_alert``). A
+# namespaced token, so no tag the triage model invents can collide with it.
+PRIVATE_ALERT_TAG = "private:principal"
+
+
+def is_private_alert(alert: object) -> bool:
+    """Whether ``alert`` (an Alert, ProposalItem or anything with
+    ``topic_tags``) is private to the principal."""
+    tags = getattr(alert, "topic_tags", None) or []
+    return any(str(t).lower() == PRIVATE_ALERT_TAG for t in tags)
+
+
+# Source of a document the Executive published (`draft_artifact`). Each one
+# is its owner's alone (``owner_person_id``; none = the principal's): it never
+# reaches a surface that serves anyone else (see ``artifact_visible_to``).
+ARTIFACT_SOURCE = "artifact"
+
+
+def artifact_visible_to(
+    owner_person_id: int | None, person_id: int | None, *, is_principal: bool
+) -> bool:
+    """Whether the person ``person_id`` (``is_principal`` when they are the
+    principal) may see a drafted artifact owned by ``owner_person_id``. Not
+    even the principal sees a teammate's."""
+    if owner_person_id is None:
+        return is_principal
+    return person_id is not None and person_id == owner_person_id
+
+
+def visible_alert(alert: object, viewer: object | None) -> bool:
+    """Whether ``alert`` may be shown to ``viewer`` (anything with
+    ``person_id`` and ``is_principal``, e.g. ``artifact_records.Viewer``).
+    Every alert but a drafted artifact may; an artifact only to its owner,
+    and to no one when there is no viewer (a surface shared by everyone)."""
+    if getattr(alert, "source", None) != ARTIFACT_SOURCE:
+        return True
+    if viewer is None:
+        return False
+    return artifact_visible_to(
+        getattr(alert, "owner_person_id", None),
+        getattr(viewer, "person_id", None),
+        is_principal=bool(getattr(viewer, "is_principal", False)),
+    )
+
 
 class AlertSeverity(StrEnum):
     LOW = "low"
@@ -58,6 +106,22 @@ class AlertEvent(BaseModel):
     # ``channel``, which triage reads as the room a message came from and may
     # answer with a team-room broadcast.
     department: str = ""
+    # Private to the principal (see PRIVATE_ALERT_TAG): the pipeline tags it,
+    # routes it to the principal, keeps it out of every broadcast and live
+    # push, and never coalesces it into a card someone else can see.
+    private: bool = False
+    # Set only by the create_alert tool on a team member's chat turn: who
+    # raised it, for its "Raised by <name>" label. Such an alert keeps a
+    # source and id the server picked (``TEAM_RAISED_SOURCE``), whatever the
+    # turn asked, and never goes out as a company-wide broadcast — a person
+    # or department only (alerts/pipeline.py).
+    raised_by: str = ""
+
+
+# The source of every alert a team member raises from chat (see
+# ``AlertEvent.raised_by``): never "email" or a watch, so it can't pose as
+# one, coalesce into one, or claim the id a real one will arrive with.
+TEAM_RAISED_SOURCE = "team_member"
 
 
 class TriageDecision(BaseModel):
@@ -133,6 +197,16 @@ class Alert(BaseModel):
     snoozed_until: str | None = None
     # Registry workflow the review suggested as the next step ('' = none).
     suggested_workflow: str = ""
+    # Artifact format + link metadata (source='artifact' rows only; see
+    # orchestrator/artifact_formats.py). Legacy rows read back as Markdown.
+    artifact_format: str = "markdown"
+    artifact_url: str | None = None
+    artifact_link_label: str | None = None
+    # Composite id ('alert:<n>' / 'run:<hex>') of the version this revised.
+    supersedes_id: str | None = None
+    # Whose document a drafted artifact is (orchestrator/artifact_records.py);
+    # NULL on a draft = the principal's. Unused on every other source.
+    owner_person_id: int | None = None
 
 
 class UserPreferences(BaseModel):
@@ -141,6 +215,9 @@ class UserPreferences(BaseModel):
     severity_threshold: AlertSeverity = AlertSeverity.MEDIUM
     quiet_hours_start: str = ""  # "22:00"
     quiet_hours_end: str = ""  # "07:00"
+    # IANA zone the quiet hours are read in. "UTC" (the historical default,
+    # and the column DEFAULT) and "" both mean "the user's zone" — see
+    # alerts.preferences._quiet_hours_zone.
     quiet_hours_tz: str = "UTC"
     channels_enabled: list[AlertChannel] = Field(
         default_factory=lambda: [

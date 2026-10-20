@@ -2,7 +2,7 @@
 
 Inputs come from the user (a structured form). The workflow orchestrates
 the Board Comms, CFO, and CSO specialists in a defined sequence, grounded
-by the `board-prep-deck` skill and relevant RAG, and assembles the
+by the `board-prep-deck` playbook and relevant RAG, and assembles the
 sections into a single artifact.
 """
 from __future__ import annotations
@@ -13,7 +13,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from openexecutive.knowledge.retriever import retrieve
-from openexecutive.knowledge.skills_repo import SkillNotFoundError, get_skill
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding.profile_builder import load_or_create_profile
@@ -24,6 +23,7 @@ from openexecutive.workflows.base import (
     WorkflowSection,
     WorkflowStepDef,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
 _BP_EXAMPLE_METRICS = (
     "- ARR ended at $4.1M (+18% QoQ, plan was $4.3M; slipped 4%)\n"
@@ -131,6 +131,7 @@ class BoardPrepWorkflow(Workflow):
     )
     section = WorkflowSection.BOARD
     estimated_minutes = 4
+    playbooks = ("board-prep-deck",)
 
     def input_model(self) -> type[BaseModel]:
         return BoardPrepInput
@@ -198,8 +199,7 @@ class BoardPrepWorkflow(Workflow):
         yield WorkflowEvent(type="step_start", step_id="context", step_title="Load context")
 
         ctx.profile = load_or_create_profile()
-        ctx.skill_body = _safe_get_skill_body("board-prep-deck")
-        ctx.update_memo_skill = _safe_get_skill_body("board-update-memo")
+        ctx.skill_body = load_playbook("board-prep-deck")
         ctx.rag = retrieve(
             query=f"board meeting preparation {ctx.inputs.quarter_label}",
             specialist_name="board_comms",
@@ -364,25 +364,12 @@ class _BoardPrepContext:
         self.inputs = inputs
         self.profile: CompanyProfile | None = None
         self.skill_body: str = ""
-        self.update_memo_skill: str = ""
         self.rag: str = ""
         self.exec_summary: str = ""
         self.business_update: str = ""
         self.deep_dive_1: str = ""
         self.deep_dive_2: str = ""
         self.decisions: str = ""
-
-
-def _safe_get_skill_body(name: str) -> str:
-    """Best-effort skill lookup — returns empty string if the skill is gone.
-
-    Workflows must not crash if a built-in skill is renamed; instead we
-    fall back to specialist prompts plus RAG.
-    """
-    try:
-        return get_skill(name).body
-    except (SkillNotFoundError, Exception):  # noqa: BLE001 — diagnostic, not fatal
-        return ""
 
 
 def _company_context_block(profile: CompanyProfile | None) -> str:
@@ -409,10 +396,8 @@ def _section_count(ctx: _BoardPrepContext) -> int:
 
 
 def _build_exec_summary_prompt(ctx: _BoardPrepContext) -> str:
-    skill_clause = (
-        f"\n\nFollow this playbook for the executive summary section:\n\n{ctx.skill_body}"
-        if ctx.skill_body
-        else ""
+    skill_clause = playbook_clause(
+        ctx.skill_body, "Follow this playbook for the executive summary section"
     )
     return (
         f"Draft the **Executive Summary** section of the {ctx.inputs.quarter_label} "

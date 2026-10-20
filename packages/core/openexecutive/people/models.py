@@ -63,6 +63,24 @@ class AvailabilityWindow(BaseModel):
 
 PreferredChannel = Literal["email", "slack", "telegram", "discord", "any"]
 
+# "team": someone the Executive works with — they can sign in to the web app,
+# talk to the bot on Slack / Telegram / Discord, approve things and be chased.
+# "contact": someone outside the team (a client, a contractor, an advisor) the
+# Executive may email or invite only when the principal asks it to directly.
+# Every roster read is team-only unless it opts in (see ``people.store``).
+PersonKind = Literal["team", "contact"]
+PERSON_KINDS: tuple[str, ...] = ("team", "contact")
+
+
+# Contact details besides email and the chat apps (``people.contact_info``).
+DetailKind = Literal["phone", "mobile", "website", "linkedin", "social", "address"]
+DETAIL_KINDS: tuple[str, ...] = ("phone", "mobile", "website", "linkedin", "social", "address")
+
+
+class ContactDetail(BaseModel):
+    kind: DetailKind
+    value: str
+
 
 class Person(BaseModel):
     """A real human who can receive work, approve actions, and respond.
@@ -75,18 +93,37 @@ class Person(BaseModel):
 
     `department_slugs` is advisory — it tells the Executive which department
     contexts this person participates in. FK enforcement deferred to Phase 4.
+
+    `kind` separates the team from contacts (see ``PersonKind``). The
+    principal is always ``"team"``: the store refuses to write a principal
+    contact.
     """
 
     id: int | None = None
     full_name: str
     role: str = ""
     is_principal: bool = False
+    kind: PersonKind = "team"
     department_slugs: list[str] = Field(default_factory=list)
     email: str | None = None
+    # Other addresses the same person writes from (``person_emails``). They
+    # match inbound mail and may be emailed like ``email``, but never sign
+    # in: web sign-in and caller resolution read ``email`` only.
+    email_aliases: list[str] = Field(default_factory=list)
     slack_user_id: str | None = None
     telegram_chat_id: str | None = None
     discord_user_id: str | None = None
+    # How else to reach them (``person_details``), for the reader: never a
+    # channel the Executive sends on. May be filled in from their own email
+    # signature (``people.contact_keeper``).
+    details: list[ContactDetail] = Field(default_factory=list)
     preferred_channel: PreferredChannel = "any"
+    # The chat app they last talked to the Executive in, from their own
+    # account (``people.reach.note_talked``), and when (ISO, UTC). With
+    # ``preferred_channel`` "any", messages go there first.
+    last_channel: str | None = None
+    # Not serialised: when someone last talked is nobody else's business.
+    last_channel_at: str | None = Field(default=None, exclude=True)
     availability: list[AvailabilityWindow] = Field(default_factory=list)
     authority_scope: list[AuthorityScope] = Field(default_factory=list)
     response_sla_hours: int = 24

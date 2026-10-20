@@ -8,7 +8,9 @@ interface Props {
 }
 
 /** The leadership roster. Deliberately has no contact columns: OE never
- * auto-imports emails or chat handles — those are added on the People page. */
+ * auto-imports emails or chat handles — those are added on the People page.
+ * The one exception, the owner's own sign-in email, is its own field on the
+ * review screen (OnboardDraftReview), confirmed by the person signing in. */
 export default function OnboardPeopleDraft({ people, onChange }: Props) {
   function update(i: number, patch: Partial<OnboardPersonDraft>) {
     onChange(people.map((p, j) => (j === i ? { ...p, ...patch } : p)));
@@ -33,8 +35,8 @@ export default function OnboardPeopleDraft({ people, onChange }: Props) {
       </div>
       <p className="text-xs text-fg-muted mb-4">
         Mark yourself with &ldquo;This is me&rdquo; — that&rsquo;s who the Executive
-        reports to and escalates to. Contact details are added later on the People
-        page.
+        reports to and escalates to. Other contact details are added later on the
+        People page.
       </p>
 
       {people.length === 0 && (

@@ -1,10 +1,11 @@
 """The fixed registry of user-guide sections.
 
 The ``/guide`` page is a plain-language overview of every user-facing
-feature — "what it is, what it does" — kept separate from the technical
-``/architecture`` reference. Like the architecture page, each section is
-rendered from a static, version-controlled JSON file under
-``guide/prebuilt/<id>.json``; nothing on the serving path calls an LLM.
+feature — "what it is, what it does, how to use it" — kept separate from
+the technical ``/architecture`` reference. Like the architecture page,
+each section is rendered from a static, version-controlled JSON file
+under ``guide/prebuilt/<id>.json``; nothing on the serving path calls an
+LLM.
 
 The section IDs must match the ``GUIDE_SECTIONS`` const in
 ``packages/ui/src/app/guide/page.tsx`` so deep links keep working and the
@@ -31,8 +32,8 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="ask_oe",
-        title="Ask OE",
-        sub="The page-aware assistant panel — explains any screen and fills forms for you to review.",
+        title="Help with this page",
+        sub="The sparkle button at the top right: explains any screen, answers how the app works, and fills forms for you to review.",
     ),
     GuideSection(
         id="today",
@@ -42,21 +43,21 @@ GUIDE_SECTIONS: list[GuideSection] = [
     GuideSection(
         id="pulse",
         title="Pulse (Memory)",
-        sub="The Executive's running memory — decisions made, initiatives in flight, advice gathered.",
+        sub="The Executive's running memory — decisions made, initiatives in flight, advice gathered, corrections kept.",
     ),
     GuideSection(
         id="review",
         title="Review Queue",
-        sub="Approve, reject, or correct incoming knowledge before the Executive relies on it.",
+        sub="On Knowledge, under Advanced: approve, reject, or correct knowledge before the Executive relies on it.",
     ),
     GuideSection(
         id="jobs",
-        title="Jobs (Workflows)",
+        title="Workflows",
         sub="Multi-step workflows that produce a deliverable — board prep, GTM plan, perf review.",
     ),
     GuideSection(
         id="artifacts",
-        title="Artifacts",
+        title="Documents",
         sub="Your library of finished documents — drafts and workflow outputs in one place.",
     ),
     GuideSection(
@@ -86,8 +87,13 @@ GUIDE_SECTIONS: list[GuideSection] = [
     ),
     GuideSection(
         id="skills",
-        title="Skills",
-        sub="Reusable how-to procedures the Executive can pull up — checklists, playbooks, templates.",
+        title="How it's done",
+        sub="The method behind each workflow, which the Executive also follows in chat. Edit it on the workflow's page.",
+    ),
+    GuideSection(
+        id="custom_tools",
+        title="Custom Tools",
+        sub="When the Executive lacks a tool, it builds one — and keeps the ones it will need again.",
     ),
     GuideSection(
         id="council",
@@ -120,9 +126,14 @@ GUIDE_SECTIONS: list[GuideSection] = [
         sub="Reach the Executive where you already work — Slack, Discord, Telegram, email, Google Chat, MCP.",
     ),
     GuideSection(
+        id="delegate",
+        title="Delegate",
+        sub="What the Executive may do without asking you, writing email as you, and handling things on its own.",
+    ),
+    GuideSection(
         id="settings",
         title="Settings & Advanced",
-        sub="The hub for power-user tools that sit outside the day-to-day nav — including this guide.",
+        sub="Your Executive, workspace, notifications, and the Advanced tools outside the day-to-day nav — including this guide.",
     ),
 ]
 

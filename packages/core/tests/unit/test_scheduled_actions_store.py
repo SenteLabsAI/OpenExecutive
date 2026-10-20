@@ -1,8 +1,12 @@
 """Unit tests for the scheduled_actions table CRUD helpers in episodic memory."""
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -224,6 +228,55 @@ def test_cancel_running_action_refused(db: Path) -> None:
 
 def test_cancel_missing_returns_not_found(db: Path) -> None:
     assert cancel_scheduled_action(9999, db_path=db) == "not_found"
+
+
+def test_cancel_never_overwrites_a_row_claimed_mid_cancel(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scheduler's claim can land between the status check and the write;
+    the write must then match nothing rather than cancel a running action."""
+    from openexecutive.memory import episodic
+
+    action_id = insert_scheduled_action(
+        run_at=_future(), channel="telegram", channel_ref="1", intent_text="t", db_path=db,
+    )
+    real_get_conn = episodic._get_conn
+
+    class _Fetched:
+        def __init__(self, row: Any) -> None:
+            self._row = row
+
+        def fetchone(self) -> Any:
+            return self._row
+
+    class _ClaimAfterStatusCheck:
+        """Connection proxy: the claim happens right after the status SELECT."""
+
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+            cursor = self._conn.execute(sql, params)
+            if sql.startswith("SELECT status FROM scheduled_actions"):
+                row = cursor.fetchone()
+                self._conn.execute(
+                    "UPDATE scheduled_actions SET status = 'running' WHERE id = ?", params
+                )
+                return _Fetched(row)
+            return cursor
+
+    @contextmanager
+    def _racing_conn(db_path: Path) -> Iterator[_ClaimAfterStatusCheck]:
+        with real_get_conn(db_path) as conn:
+            yield _ClaimAfterStatusCheck(conn)
+
+    monkeypatch.setattr(episodic, "_get_conn", _racing_conn)
+    assert cancel_scheduled_action(action_id, db_path=db) == "not_cancellable"
+    monkeypatch.undo()
+
+    row = get_scheduled_action(action_id, db_path=db)
+    assert row is not None
+    assert row.status == "running"
 
 
 def test_count_pending_for_channel_ref(db: Path) -> None:

@@ -1,0 +1,38 @@
+id: delegation_inbox_013
+domain: delegation
+type: inbox
+description: "Inbox watcher: the person asked a contact for a call, and the contact answers that their week is open and they will come back with times. It answers the person's own ask, so a reply offering times is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: correspondent
+  expect: draft
+  thread:
+    id: t-reserve-call
+    subject: "RE: Reserve accounts"
+    messages:
+      - from: "Olivia Owner <olivia@fernway.example>"
+        to: ["dana@northpeak.example"]
+        text: |
+          Hi Dana,
+
+          Thanks for the questions on the reserve accounts. Could we set up a
+          call to discuss? Let me know what times work for you.
+
+          Thanks,
+          Olivia
+      - from: "Dana Park <dana@northpeak.example>"
+        to: ["olivia@fernway.example", "sam.reed@northpeak.example"]
+        text: |
+          Good evening, Olivia -
+
+          Yes, my week is pretty open this coming week, but let me get with Sam
+          on what times may work and I'll circle back tomorrow. Thanks!
+
+          Dana
+quality_criteria:
+  draft_is_olivias_first_person_reply_to_dana: true
+  moves_the_call_forward: true
+  promises_nothing_new: true
+  brief: true

@@ -1,0 +1,44 @@
+id: delegation_013
+domain: delegation
+workspace_mode: solo
+description: "Act as me, forwarding the message with the files: the client's email carries the signed quote, and the principal's own reply came after it. Asked to forward the client's email with the quote, the Executive reads the thread and forwards the client's message by its message_id (ghostwrite_email with forward and forward_message_id), not the principal's later reply, which has no file."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 2
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-quote
+    subject: Signed quote for the rebrand
+    messages:
+      - from: "Sam Client <sam@harbourline.example>"
+        date: "Tue, 13 Oct 2026"
+        text: |
+          Hi Olivia, the signed quote is attached. We're good to start on the 19th.
+
+          Sam
+        attachments:
+          - name: signed-quote.txt
+            text: |
+              QUOTE 2026-118: Harbourline rebrand, $48,000. Signed by Sam Client, 12 Oct 2026.
+      - from: "Olivia Owner <olivia@fernway.example>"
+        date: "Tue, 13 Oct 2026"
+        text: |
+          Thanks Sam, got it. Talk soon.
+
+          Olivia
+query: "Forward Sam's email with the signed quote to Ben (ben@fernway.example) so he can set up the project."
+expected_tool_calls:
+  - read_my_email
+  - ghostwrite_email
+expected_topics:
+  - forward_of_sams_message_with_the_quote
+  - waiting_in_drafts
+quality_criteria:
+  forwards_sams_message_not_the_later_reply: true
+  never_claims_the_email_was_sent: true
+  brief: true

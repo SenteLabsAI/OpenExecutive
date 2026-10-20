@@ -16,6 +16,16 @@ from openexecutive.memory.episodic import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_audit_and_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A cancel writes an audit row; keep it out of ./episodic_memory.db. And a
+    # BACKEND_SHARED_SECRET leaking in from the shell must not change the
+    # admin-token / loopback cases these tests pin (signed-in cancels are
+    # covered in tests/unit/test_scheduled_cancel_permission.py).
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.delenv("BACKEND_SHARED_SECRET", raising=False)
+
+
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     db_path = tmp_path / "episodic.db"

@@ -5,6 +5,7 @@ from openexecutive.config import get_settings
 class LegalAgent(BaseAgent):
     name = "gc"
     domain = "legal"
+    visibility = "core"
     use_deep_reasoning = True
 
     @property

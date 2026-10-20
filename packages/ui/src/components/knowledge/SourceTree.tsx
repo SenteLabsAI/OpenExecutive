@@ -2,16 +2,18 @@
 
 import { useMemo, useState } from "react";
 import type { BuiltinFileMeta } from "@/lib/api";
-import Icon, { type IconName } from "@/components/Icon";
+import Icon from "@/components/Icon";
 
 export type FileKind = "builtin" | "failures";
 
 export type Selection =
   | { kind: "file"; fileKind: FileKind; domain: string; filename: string }
   | { kind: "new"; fileKind: FileKind }
+  | { kind: "playbooks" }
   | { kind: "company" }
   | { kind: "reference" }
   | { kind: "query" }
+  | { kind: "review" }
   | null;
 
 interface SourceTreeProps {
@@ -20,19 +22,27 @@ interface SourceTreeProps {
   failureFiles: BuiltinFileMeta[];
   selection: Selection;
   filter: string;
+  onFilterChange: (value: string) => void;
   onSelect: (sel: Selection) => void;
 }
 
+// The built-in playbooks file tree: one group per domain, each with its
+// playbooks and failure case studies. Lives in the "Built-in playbooks" view
+// under Advanced on the Knowledge page.
 export default function SourceTree({
   domains,
   builtinFiles,
   failureFiles,
   selection,
   filter,
+  onFilterChange,
   onSelect,
 }: SourceTreeProps) {
-  const [collapsedBuiltin, setCollapsedBuiltin] = useState(true);
-  const [collapsedDomains, setCollapsedDomains] = useState<Set<string>>(new Set());
+  // Domains start folded so the tree reads as a short list; the open file's
+  // domain starts open.
+  const [openDomains, setOpenDomains] = useState<Set<string>>(
+    () => new Set(selection?.kind === "file" ? [selection.domain] : [])
+  );
 
   const builtinByDomain = useMemo(() => groupByDomain(builtinFiles), [builtinFiles]);
   const failuresByDomain = useMemo(() => groupByDomain(failureFiles), [failureFiles]);
@@ -42,7 +52,7 @@ export default function SourceTree({
     !normalizedFilter || s.toLowerCase().includes(normalizedFilter);
 
   function toggleDomain(d: string) {
-    setCollapsedDomains((prev) => {
+    setOpenDomains((prev) => {
       const next = new Set(prev);
       if (next.has(d)) next.delete(d);
       else next.add(d);
@@ -60,96 +70,81 @@ export default function SourceTree({
   }
 
   return (
-    <nav className="text-sm space-y-3">
-      <Section
-        label="Built-in"
-        icon="grid"
-        collapsed={collapsedBuiltin}
-        onToggle={() => setCollapsedBuiltin((v) => !v)}
-      >
-        {domains.map((domain) => {
-          const playbooks = (builtinByDomain[domain] ?? []).filter((f) =>
-            matches(f.filename)
-          );
-          const failures = (failuresByDomain[domain] ?? []).filter((f) =>
-            matches(f.filename)
-          );
-          if (normalizedFilter && playbooks.length === 0 && failures.length === 0) {
-            return null;
-          }
-          const isCollapsed = collapsedDomains.has(domain) && !normalizedFilter;
-          return (
-            <div key={domain}>
-              <button
-                onClick={() => toggleDomain(domain)}
-                className="w-full flex items-center gap-1.5 px-1 text-[11px] font-semibold text-fg-muted uppercase tracking-widest hover:text-fg transition-colors"
-              >
-                <span className="text-fg-subtle w-3 inline-block">
-                  {isCollapsed ? "▸" : "▾"}
-                </span>
-                {domain}
-              </button>
-              {!isCollapsed && (
-                <div className="ml-3 mt-1 space-y-2">
-                  <FileGroup
-                    label="Playbooks"
-                    files={playbooks}
-                    accent="indigo"
-                    onClickFile={(f) =>
-                      onSelect({
-                        kind: "file",
-                        fileKind: "builtin",
-                        domain,
-                        filename: f.filename,
-                      })
-                    }
-                    onAdd={() => onSelect({ kind: "new", fileKind: "builtin" })}
-                    isActive={(f) => isActiveFile("builtin", domain, f.filename)}
-                  />
-                  <FileGroup
-                    label="Failures"
-                    files={failures}
-                    accent="rose"
-                    onClickFile={(f) =>
-                      onSelect({
-                        kind: "file",
-                        fileKind: "failures",
-                        domain,
-                        filename: f.filename,
-                      })
-                    }
-                    onAdd={() => onSelect({ kind: "new", fileKind: "failures" })}
-                    isActive={(f) => isActiveFile("failures", domain, f.filename)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </Section>
-
-      <RootButton
-        active={selection?.kind === "company"}
-        onClick={() => onSelect({ kind: "company" })}
-        icon="building"
-      >
-        Company
-      </RootButton>
-      <RootButton
-        active={selection?.kind === "reference"}
-        onClick={() => onSelect({ kind: "reference" })}
-        icon="book"
-      >
-        Reference Library
-      </RootButton>
-      <RootButton
-        active={selection?.kind === "query"}
-        onClick={() => onSelect({ kind: "query" })}
-        accent="indigo"
-        icon="doc-search"
-      >
-        Query mode
-      </RootButton>
+    <nav aria-label="Built-in playbooks" className="space-y-4">
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          data-closes-nav
+          onClick={() => onSelect({ kind: "new", fileKind: "builtin" })}
+          className="inline-flex h-10 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-line bg-surface-elevated px-2 text-sm font-medium text-fg hover:bg-surface-hover transition-colors"
+        >
+          <Icon name="plus" size="w-4 h-4" />
+          Playbook
+        </button>
+        <button
+          data-closes-nav
+          onClick={() => onSelect({ kind: "new", fileKind: "failures" })}
+          className="inline-flex h-10 items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-line bg-surface-elevated px-2 text-sm font-medium text-fg hover:bg-surface-hover transition-colors"
+        >
+          <Icon name="plus" size="w-4 h-4" />
+          Failure case
+        </button>
+      </div>
+      <input
+        value={filter}
+        onChange={(e) => onFilterChange(e.target.value)}
+        placeholder="Filter files…"
+        aria-label="Filter files"
+        className="w-full h-10 rounded-xl border border-line bg-surface-elevated px-3 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40"
+      />
+      {domains.map((domain) => {
+        const playbooks = (builtinByDomain[domain] ?? []).filter((f) => matches(f.filename));
+        const failures = (failuresByDomain[domain] ?? []).filter((f) => matches(f.filename));
+        if (normalizedFilter && playbooks.length === 0 && failures.length === 0) {
+          return null;
+        }
+        const isCollapsed = !openDomains.has(domain) && !normalizedFilter;
+        return (
+          <div key={domain}>
+            <button
+              onClick={() => toggleDomain(domain)}
+              aria-expanded={!isCollapsed}
+              className="w-full flex items-center gap-2 h-10 px-1 text-sm font-semibold text-fg capitalize hover:text-accent transition-colors"
+            >
+              <Icon
+                name="chevron-right"
+                size="w-4 h-4"
+                className={`text-fg-subtle transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+              />
+              {domain}
+              <span className="ml-auto text-xs font-normal text-fg-subtle tabular-nums">
+                {playbooks.length + failures.length}
+              </span>
+            </button>
+            {!isCollapsed && (
+              <div className="ml-3 mt-1 space-y-2 border-l border-line pl-2">
+                <FileGroup
+                  label="Playbooks"
+                  files={playbooks}
+                  tone="default"
+                  onClickFile={(f) =>
+                    onSelect({ kind: "file", fileKind: "builtin", domain, filename: f.filename })
+                  }
+                  isActive={(f) => isActiveFile("builtin", domain, f.filename)}
+                />
+                <FileGroup
+                  label="Failures"
+                  files={failures}
+                  tone="rose"
+                  onClickFile={(f) =>
+                    onSelect({ kind: "file", fileKind: "failures", domain, filename: f.filename })
+                  }
+                  isActive={(f) => isActiveFile("failures", domain, f.filename)}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
     </nav>
   );
 }
@@ -161,66 +156,25 @@ function groupByDomain(files: BuiltinFileMeta[]): Record<string, BuiltinFileMeta
   }, {});
 }
 
-function Section({
-  label,
-  icon,
-  collapsed,
-  onToggle,
-  children,
-}: {
-  label: string;
-  icon?: IconName;
-  collapsed: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <button
-        onClick={onToggle}
-        className="flex items-center gap-1.5 text-xs font-bold text-fg uppercase tracking-widest hover:text-white transition-colors mb-2"
-      >
-        <span className="text-fg-muted w-3 inline-block">{collapsed ? "▸" : "▾"}</span>
-        {icon && <Icon name={icon} size="w-3.5 h-3.5" className="text-fg-muted" />}
-        {label}
-      </button>
-      {!collapsed && <div className="space-y-3">{children}</div>}
-    </div>
-  );
-}
-
 function FileGroup({
   label,
   files,
-  accent,
+  tone,
   onClickFile,
-  onAdd,
   isActive,
 }: {
   label: string;
   files: BuiltinFileMeta[];
-  accent: "indigo" | "rose";
+  tone: "default" | "rose";
   onClickFile: (f: BuiltinFileMeta) => void;
-  onAdd: () => void;
   isActive: (f: BuiltinFileMeta) => boolean;
 }) {
-  const labelClass = accent === "rose" ? "text-rose-400/80" : "text-fg-muted";
+  const labelClass = tone === "rose" ? "text-rose-500" : "text-fg-subtle";
   return (
     <div>
-      <div className="flex items-center justify-between px-1">
-        <span className={`text-[10px] uppercase tracking-widest font-semibold ${labelClass}`}>
-          {label}
-        </span>
-        <button
-          onClick={onAdd}
-          className="text-[10px] text-fg-subtle hover:text-fg transition-colors px-1"
-          title={`Add ${label.toLowerCase()} file`}
-        >
-          +
-        </button>
-      </div>
+      <div className={`px-2 text-xs font-medium ${labelClass}`}>{label}</div>
       {files.length === 0 ? (
-        <p className="text-[11px] text-fg-subtle px-1 mt-0.5">none</p>
+        <p className="text-xs text-fg-subtle px-2 mt-0.5">None</p>
       ) : (
         <div className="mt-0.5">
           {files.map((f) => {
@@ -228,12 +182,12 @@ function FileGroup({
             return (
               <button
                 key={f.filename}
+                data-closes-nav
                 onClick={() => onClickFile(f)}
-                className={`w-full text-left px-2 py-0.5 rounded text-xs transition-colors truncate ${
+                aria-current={active ? "true" : undefined}
+                className={`w-full text-left px-2 py-2.5 rounded-lg text-sm transition-colors truncate ${
                   active
-                    ? accent === "rose"
-                      ? "bg-rose-500/15 text-rose-200"
-                      : "bg-surface-input text-fg"
+                    ? "bg-accent/10 text-accent font-medium"
                     : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
                 }`}
               >
@@ -244,32 +198,5 @@ function FileGroup({
         </div>
       )}
     </div>
-  );
-}
-
-function RootButton({
-  active,
-  onClick,
-  accent,
-  icon,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  accent?: "indigo";
-  icon?: IconName;
-  children: React.ReactNode;
-}) {
-  const activeClass = accent === "indigo" ? "bg-indigo-500/15 text-indigo-200" : "bg-surface-input text-fg";
-  return (
-    <button
-      onClick={onClick}
-      className={`w-full flex items-center gap-2 text-left px-2 py-1.5 rounded-lg text-xs font-bold uppercase tracking-widest transition-colors ${
-        active ? activeClass : "text-fg hover:text-white hover:bg-surface-overlay"
-      }`}
-    >
-      {icon && <Icon name={icon} size="w-3.5 h-3.5" />}
-      {children}
-    </button>
   );
 }

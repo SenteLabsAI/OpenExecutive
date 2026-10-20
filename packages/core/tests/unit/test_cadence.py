@@ -13,6 +13,7 @@ from openexecutive.departments.cadence import (
     bootstrap_cadences,
     cancel_orphaned_cadences,
     enqueue_next,
+    is_valid_cadence_spec,
 )
 from openexecutive.memory import episodic
 
@@ -202,7 +203,7 @@ class TestBootstrapCadences:
         dept_registry.invalidate()
 
         count = bootstrap_cadences(db_path=db)
-        # 8 departments, all seeded with DEFAULT_CHECK_IN_CADENCE "daily@09:00"
+        # 8 departments, all seeded with DEFAULT_CHECK_IN_CADENCE "weekly@mon@09:00"
         assert count == 8
 
         actions = episodic.list_scheduled_actions(db_path=db)
@@ -288,7 +289,7 @@ class TestEnqueueNext:
     def test_run_at_respects_daily_spec(self, tmp_path: Path) -> None:
         db = tmp_path / "test.db"
         dept_store.seed_default_departments(db_path=db)
-        # Finance uses "daily@09:00"
+        dept_store.update_department("finance", cadences={"check_in": "daily@09:00"}, db_path=db)
         dept_registry.invalidate()
 
         after = datetime(2026, 5, 20, 10, 0, tzinfo=UTC)  # after 09:00 today
@@ -301,6 +302,19 @@ class TestEnqueueNext:
         # Should be 09:00 on 2026-05-21 (next day)
         assert run_at_dt.hour == 9
         assert run_at_dt.day == 21
+
+    def test_default_cadence_is_weekly_monday(self, tmp_path: Path) -> None:
+        db = tmp_path / "test.db"
+        dept_store.seed_default_departments(db_path=db)
+        dept_registry.invalidate()
+
+        # Wednesday 2026-05-20: a new department's first check-in is Monday 25th.
+        after = datetime(2026, 5, 20, 10, 0, tzinfo=UTC)
+        action_id = enqueue_next("finance", after=after, db_path=db)
+        assert action_id is not None
+        action = episodic.get_scheduled_action(action_id, db_path=db)
+        assert action is not None
+        assert datetime.fromisoformat(action.run_at) == datetime(2026, 5, 25, 9, 0, tzinfo=UTC)
 
     def test_unknown_department_returns_none(self, tmp_path: Path) -> None:
         db = tmp_path / "test.db"
@@ -409,3 +423,22 @@ class TestCancelOrphanedCadences:
         bootstrap_cadences(db_path=db)
 
         assert cancel_orphaned_cadences(db_path=db) == 0
+
+
+@pytest.mark.parametrize(
+    ("spec", "valid"),
+    [
+        ("daily@09:00", True),
+        ("weekly@mon@09:00", True),
+        ("weekly@thu-17:30", True),
+        ("quarterly@15-08:00", True),
+        ("mondays@09:00", False),
+        ("weekly@xyz@09:00", False),
+        ("daily@24:00", False),
+        ("daily@09:60", False),
+        ("quarterly@32-09:00", False),
+        ("", False),
+    ],
+)
+def test_is_valid_cadence_spec(spec: str, valid: bool) -> None:
+    assert is_valid_cadence_spec(spec) is valid

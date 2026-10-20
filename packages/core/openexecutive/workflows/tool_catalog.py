@@ -1,0 +1,566 @@
+"""What tools a workflow action step can use, and how to reach them.
+
+Two sources, one shape (:class:`ToolInfo`):
+
+* **MCP tools** — everything the MCP gateway exposes (Google Workspace, fetch,
+  any server in ``mcp_servers.json``). The gateway (extensible-mcp) only lets a
+  session call a tool that one of its ``search_tools`` results has returned,
+  so :func:`resolve` doubles as that per-session discovery: every tool a step
+  names is searched for (exact-name match) before the step runs.
+* **Built-ins** — a small fixed set prefixed ``oe__`` so they can never collide
+  with an MCP name (those are always ``server__tool``). They cover what no MCP
+  server does for us: reading a file another tool downloaded, and reaching a
+  person or the alert queue through Open Executive's own guarded paths. An
+  installed extension's tools registered with ``workflow=True`` join them,
+  as ``oe__<name>`` (``orchestrator/extensions.py``); each call runs inside
+  ``extensions.workflow_step(name)`` so the tool knows nobody is in the turn.
+
+The step's tool allowlist is the user's approval (they see it on the review
+card before clicking Create), so this module never widens it: it only answers
+"does this exact name exist, and what is its schema?".
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from openexecutive.config import get_settings
+
+if TYPE_CHECKING:
+    from openexecutive.orchestrator.mcp_gateway import MCPGateway
+    from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
+
+logger = logging.getLogger(__name__)
+
+BUILTIN_PREFIX = "oe__"
+
+# How many gateway results to ask for when resolving one exact name. The
+# gateway ranks by embedding similarity, so the exact tool is normally first;
+# a wider net keeps a near-duplicate name from pushing it out.
+_RESOLVE_TOP_K = 10
+_SEARCH_TOP_K = 8
+_MAX_READ_FILE_BYTES = 25 * 1024 * 1024
+_READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv", ".md", ".txt"})
+
+# Verbs that mark a tool as read-only. The gateway reports no read-only
+# hints, so this is a name heuristic. It drives the review card's "may change
+# things" badge AND which calls the first-write target check skips, so it
+# errs toward "may change": a name that also carries a write verb anywhere
+# (`find_and_replace_doc`, `get_or_create_folder`) is never read-only.
+_READ_VERBS = (
+    "get_", "list_", "search_", "read_", "query_", "find_",
+    "check_", "describe_", "inspect_", "debug_",
+)
+_WRITE_WORDS = frozenset({
+    "add", "append", "apply", "approve", "archive", "assign", "book", "cancel",
+    "clear", "close", "comment", "commit", "copy", "create", "delete", "deploy",
+    "draft", "edit", "execute", "forward", "grant", "import", "insert", "invite",
+    "join", "label", "leave", "mark", "merge", "modify", "move", "notify",
+    "patch", "pay", "post", "publish", "push", "put", "remove", "rename",
+    "reopen", "replace", "reply", "restore", "revoke", "run", "save", "schedule",
+    "send", "set", "share", "submit", "subscribe", "sync", "transfer", "trash",
+    "update", "upload", "upsert", "write",
+})
+_NAME_WORD_RE = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+# Tools whose result can name something the run itself made. Only their
+# structured results can vouch for a new target (see action_step.TargetPolicy).
+_CREATE_WORDS = frozenset({"create", "insert", "upload", "add", "copy", "new", "make", "duplicate"})
+
+
+def _name_words(name: str) -> set[str]:
+    bare = name.split("__", 1)[-1]
+    return {w.lower() for part in re.split(r"[_\-\s]+", bare) for w in _NAME_WORD_RE.findall(part)}
+
+
+def _has_word(words: set[str], vocabulary: frozenset[str]) -> bool:
+    """A word from ``vocabulary``, alone or glued to the front of a longer
+    token (`createfolder`). Short words only match alone, so `settings` is not
+    `set`. For write words a false match only means a stricter check."""
+    return any(
+        w in vocabulary or any(len(v) >= 4 and w.startswith(v) for v in vocabulary)
+        for w in words
+    )
+
+
+def creates(info: ToolInfo) -> bool:
+    """Whether a tool's name says it creates something (create/insert/upload…).
+
+    Stricter than the write check, since here a false match would TRUST a
+    result: whole words only (`list_uploads` is not `upload`), and never a
+    name that starts with a read verb (`get_copyright_info`).
+    """
+    bare = info.name.split("__", 1)[-1].lower()
+    if bare.startswith(_READ_VERBS):
+        return False
+    return bool(_name_words(info.name) & _CREATE_WORDS)
+# A tool that takes a URL can carry data OUT (the URL itself, or a request
+# body), whatever its name says — e.g. `fetch__fetch`. Never label one as
+# reads-only: the review card must show the user it can reach the outside.
+_EGRESS_PARAM_HINTS = (
+    "url", "uri", "endpoint", "webhook", "host", "link", "href", "domain", "site",
+    "server", "remote",
+)
+
+
+@dataclass(frozen=True)
+class ToolInfo:
+    name: str
+    description: str
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    # True: only reads. None: may change something (unknown). Never False —
+    # we can't prove a tool writes, only that its name says it reads.
+    read_only: bool | None = None
+    source: str = "mcp"  # "mcp" | "builtin"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "read_only": self.read_only,
+            "source": self.source,
+        }
+
+    def as_anthropic_tool(self) -> dict[str, Any]:
+        schema = self.input_schema or {"type": "object", "properties": {}}
+        if schema.get("type") != "object":
+            schema = {"type": "object", "properties": {}}
+        return {"name": self.name, "description": self.description[:1024], "input_schema": schema}
+
+
+class ToolCatalogError(RuntimeError):
+    """A tool lookup could not be completed (e.g. no gateway). Fixed-string."""
+
+
+_SCHEMA_WALK_DEPTH = 6
+
+
+def _schema_property_names(schema: Any, depth: int = 0) -> set[str]:
+    """Every property name anywhere in a JSON schema (nested objects, array
+    items, anyOf/oneOf/allOf, $defs) — a URL can hide one level down."""
+    if depth > _SCHEMA_WALK_DEPTH or not isinstance(schema, dict):
+        return set()
+    names: set[str] = set()
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        for key, sub in props.items():
+            names.add(str(key).lower())
+            names |= _schema_property_names(sub, depth + 1)
+    for key in ("items", "additionalProperties"):
+        names |= _schema_property_names(schema.get(key), depth + 1)
+    for key in ("anyOf", "oneOf", "allOf"):
+        for sub in schema.get(key) or []:
+            names |= _schema_property_names(sub, depth + 1)
+    for key in ("$defs", "definitions"):
+        defs = schema.get(key)
+        if isinstance(defs, dict):
+            for sub in defs.values():
+                names |= _schema_property_names(sub, depth + 1)
+    return names
+
+
+def takes_url(info: ToolInfo) -> bool:
+    """Whether a tool has a URL-shaped parameter anywhere (it can reach out,
+    and what comes back is whatever that URL served). An unknown schema is
+    assumed to — the same fail-safe as the read-only label."""
+    if not info.input_schema:
+        return True
+    return any(
+        hint in key
+        for key in _schema_property_names(info.input_schema or {})
+        for hint in _EGRESS_PARAM_HINTS
+    )
+
+
+def _read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> bool | None:
+    if input_schema is None:
+        return None  # schema unknown: can't rule out egress, so never "reads only"
+    if any(
+        hint in key for key in _schema_property_names(input_schema) for hint in _EGRESS_PARAM_HINTS
+    ):
+        return None
+    if _has_word(_name_words(name), _WRITE_WORDS):
+        return None
+    return True if name.split("__", 1)[-1].lower().startswith(_READ_VERBS) else None
+
+
+# ── MCP: parse the gateway's search_tools output ────────────────────────────
+#
+# extensible-mcp (pinned in mcp_gateway.py) returns Markdown, one block per
+# tool:
+#
+#   ## google_workspace__read_sheet_values
+#   **Description:** Reads values from a range…
+#   **Parameters:**
+#   ```json
+#   { …JSON schema… }
+#   ```
+#   **Similarity:** 0.812
+#
+# or "No matching tools found…" when nothing matches.
+
+# A block starts at a "## name" line IMMEDIATELY followed by the
+# "**Description:**" line — a bare "## Heading" inside a multi-line tool
+# description is not a new tool.
+_BLOCK_RE = re.compile(
+    r"^## (?P<name>\S+)[ \t]*\n\*\*Description:\*\*[ \t]?(?P<desc>[^\n]*)", re.MULTILINE
+)
+# The schema is the fenced JSON right after the LAST "**Parameters:**" line of
+# the block, so a ```json example inside a description is never taken for it.
+_PARAMS_MARKER = "\n**Parameters:**\n"
+_SCHEMA_RE = re.compile(r"\A```json[ \t]*\n(?P<schema>.*?)\n```", re.DOTALL)
+
+
+def parse_search_results(text: str) -> list[ToolInfo]:
+    """Parse extensible-mcp's ``search_tools`` Markdown into ToolInfo records."""
+    if not text:
+        return []
+    matches = list(_BLOCK_RE.finditer(text))
+    tools: list[ToolInfo] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[m.end():end]
+        name = m.group("name")
+        schema: dict[str, Any] | None = None
+        cut = block.rfind(_PARAMS_MARKER)
+        schema_match = (
+            _SCHEMA_RE.match(block[cut + len(_PARAMS_MARKER):]) if cut >= 0 else None
+        )
+        if schema_match:
+            try:
+                parsed = json.loads(schema_match.group("schema"))
+                if isinstance(parsed, dict):
+                    schema = parsed
+            except ValueError:
+                logger.warning("tool_catalog: unparseable schema for %s", name)
+        tools.append(
+            ToolInfo(
+                name=name,
+                description=m.group("desc").strip(),
+                input_schema=schema or {},
+                read_only=_read_only_label(name, schema),
+                source="mcp",
+            )
+        )
+    return tools
+
+
+# extensible-mcp's answer when nothing matches.
+_NO_MATCHING_TOOLS = "No matching tools found. Try a different search query."
+
+
+def filter_search_results(text: str, keep: Callable[[str], bool]) -> str:
+    """``search_tools`` output cut down to the tool blocks whose name ``keep``
+    accepts, in order, or the no-match answer when none is left. The "Found
+    N" header goes (its count would be wrong).
+
+    Fails closed: output with no block this parser knows (another format, an
+    error) comes back as no match, since it could name any tool. A block
+    header forged inside another tool's description can still carry that
+    text through, so this only decides what is shown: refusing the call is
+    what keeps a tool from running."""
+    if not isinstance(text, str):
+        return _NO_MATCHING_TOOLS
+    matches = list(_BLOCK_RE.finditer(text))
+    kept = [
+        text[m.start():matches[i + 1].start() if i + 1 < len(matches) else len(text)]
+        for i, m in enumerate(matches)
+        if keep(m.group("name"))
+    ]
+    return "".join(kept) if kept else _NO_MATCHING_TOOLS
+
+
+def _gateway() -> MCPGateway | None:
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+
+    return get_active_gateway()
+
+
+async def _gateway_search(gateway: MCPGateway, query: str, top_k: int) -> list[ToolInfo]:
+    try:
+        text = await gateway.search_tools({"query": query, "top_k": top_k})
+    except Exception as exc:
+        logger.warning("tool_catalog: gateway search failed (%s)", type(exc).__name__)
+        return []
+    return parse_search_results(text)
+
+
+# ── Built-ins ────────────────────────────────────────────────────────────────
+
+Handler = Callable[[dict[str, Any]], Awaitable[str]]
+
+
+def _allowed_file_dirs() -> list[Path]:
+    dirs = list(get_settings().workflow_file_dirs)
+    if not dirs:
+        env = os.environ.get("WORKSPACE_ATTACHMENT_DIR", "").strip()
+        dirs = [env or str(Path("~/.workspace-mcp/attachments"))]
+    out: list[Path] = []
+    for d in dirs:
+        try:
+            out.append(Path(d).expanduser().resolve())
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+def _err(message: str) -> str:
+    return json.dumps({"error": message})
+
+
+def resolve_readable_file(
+    raw: str,
+    extra_dirs: list[Path] | None = None,
+    *,
+    suffixes: frozenset[str] | None = None,
+) -> Path | str:
+    """Resolve a path a tool may read, or return the reason it may not.
+
+    Confined to the configured download directories (plus ``extra_dirs``):
+    the path is resolved (symlinks followed, ``..`` collapsed) BEFORE the
+    containment check, so neither can escape it. Shared by ``oe__read_file``
+    and the Executive's ``read_document`` tool. ``suffixes`` replaces the
+    readable document types (the email poller reads images with it).
+    """
+    if not raw:
+        return "path is required — pass the file path a previous tool returned"
+    try:
+        resolved = Path(raw).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "file not found"
+    allowed = _allowed_file_dirs() + list(extra_dirs or [])
+    if not any(resolved.is_relative_to(d) for d in allowed):
+        return "that file is outside the folders tools may read (downloaded attachments only)"
+    if not resolved.is_file():
+        return "not a file"
+    readable = _READABLE_SUFFIXES if suffixes is None else suffixes
+    if resolved.suffix.lower() not in readable:
+        return "unsupported file type — readable: " + ", ".join(sorted(readable))
+    if resolved.stat().st_size > _MAX_READ_FILE_BYTES:
+        return "file is larger than 25 MB"
+    return resolved
+
+
+async def _read_file(tool_input: dict[str, Any]) -> str:
+    """Extract text from a file a previous tool call downloaded.
+
+    A scanned PDF is converted (``knowledge.pdf_reader``) rather than
+    reported as unreadable.
+    """
+    from openexecutive.knowledge.loader import read_document_text
+
+    resolved = resolve_readable_file(str(tool_input.get("path") or "").strip())
+    if isinstance(resolved, str):
+        return _err(resolved)
+    try:
+        result = await read_document_text(resolved)
+    except Exception as exc:
+        logger.warning("oe__read_file: extraction failed (%s)", type(exc).__name__)
+        return _err("could not read that file")
+    if not result.text.strip():
+        return _err(result.note or "no text could be extracted")
+    text = result.text
+    cap = get_settings().tool_result_max_chars
+    return text if len(text) <= cap else text[:cap] + "\n…[truncated]"
+
+
+async def _message_person(tool_input: dict[str, Any]) -> str:
+    from openexecutive.orchestrator.schedule_tools import handle_message_person
+
+    return await handle_message_person(tool_input)
+
+
+async def _create_alert(tool_input: dict[str, Any]) -> str:
+    from openexecutive.orchestrator.alert_tools import handle_create_alert
+
+    return await handle_create_alert(tool_input)
+
+
+def _builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    from openexecutive.orchestrator.alert_tools import CREATE_ALERT_TOOL
+    from openexecutive.orchestrator.schedule_tools import MESSAGE_PERSON_TOOL
+
+    return {
+        "oe__read_file": (
+            ToolInfo(
+                name="oe__read_file",
+                description=(
+                    "Read the text of a PDF, Word, Excel, CSV, Markdown or text "
+                    "file that another tool downloaded (e.g. an email "
+                    "attachment). Pass the file path that tool returned."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute file path."}
+                    },
+                    "required": ["path"],
+                },
+                read_only=True,
+                source="builtin",
+            ),
+            _read_file,
+        ),
+        "oe__message_person": (
+            ToolInfo(
+                name="oe__message_person",
+                description=MESSAGE_PERSON_TOOL["description"],
+                input_schema=MESSAGE_PERSON_TOOL["input_schema"],
+                read_only=None,
+                source="builtin",
+            ),
+            _message_person,
+        ),
+        "oe__create_alert": (
+            ToolInfo(
+                name="oe__create_alert",
+                description=CREATE_ALERT_TOOL["description"],
+                input_schema=CREATE_ALERT_TOOL["input_schema"],
+                read_only=None,
+                source="builtin",
+            ),
+            _create_alert,
+        ),
+    }
+
+
+def _extension_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    from openexecutive.orchestrator import extensions
+
+    specs: dict[str, tuple[ToolInfo, Handler]] = {}
+    for tool in extensions.workflow_tools():
+        name = f"{extensions.WORKFLOW_PREFIX}{tool.name}"
+
+        async def run(tool_input: dict[str, Any], _handler: Handler = tool.handler, _name: str = tool.name) -> str:
+            with extensions.workflow_step(_name):
+                return await _handler(tool_input)
+
+        specs[name] = (
+            ToolInfo(
+                name=name,
+                description=str(tool.definition.get("description") or ""),
+                input_schema=dict(tool.definition.get("input_schema") or {}),
+                # Only True counts: a tool can't claim to be safe by omission.
+                read_only=True if tool.read_only is True else None,
+                source="builtin",
+            ),
+            run,
+        )
+    return specs
+
+
+def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    # Our own built-ins win a name clash.
+    return {**_extension_specs(), **_builtin_specs()}
+
+
+def builtin_tools() -> list[ToolInfo]:
+    return [info for info, _ in _all_builtin_specs().values()]
+
+
+def builtin_handler(name: str) -> Handler | None:
+    spec = _all_builtin_specs().get(name)
+    return spec[1] if spec else None
+
+
+# ── Public API ───────────────────────────────────────────────────────────────
+
+
+async def search(query: str) -> list[ToolInfo]:
+    """Tools matching a plain-language query: built-ins first, then the gateway."""
+    words = [w for w in re.split(r"\W+", query.lower()) if len(w) > 2]
+    builtins = [
+        t for t in builtin_tools()
+        if not words or any(w in f"{t.name} {t.description}".lower() for w in words)
+    ]
+    gateway = _gateway()
+    mcp = await _gateway_search(gateway, query, _SEARCH_TOP_K) if gateway else []
+    return [*builtins, *mcp]
+
+
+async def resolve(names: list[str]) -> dict[str, ToolInfo]:
+    """Exact-name lookup. Returns only names that exist; the caller diffs.
+
+    Searching for each MCP name also registers it with the gateway's
+    discovered-tools filter, which ``call_tool`` requires.
+    """
+    found: dict[str, ToolInfo] = {}
+    builtins = _all_builtin_specs()
+    mcp_names = []
+    for name in names:
+        if name in builtins:
+            found[name] = builtins[name][0]
+        elif not name.startswith(BUILTIN_PREFIX):
+            mcp_names.append(name)
+    if not mcp_names:
+        return found
+    gateway = _gateway()
+    if gateway is None:
+        return found
+    for name in mcp_names:
+        # "google_workspace__append_table_rows" -> "google workspace append table rows"
+        query = re.sub(r"[_\-]+", " ", name).strip()
+        for info in await _gateway_search(gateway, query, _RESOLVE_TOP_K):
+            if info.name == name:
+                found[name] = info
+                break
+    return found
+
+
+def gateway_available() -> bool:
+    return _gateway() is not None
+
+
+async def validate_definition_and_tools(defn: DynamicWorkflowDef) -> list[str]:
+    """Every save-time check: structural rules, then (if those pass) tool
+    availability. The one entry point for every path that stores a
+    definition, so none can forget the async half."""
+    from openexecutive.workflows.dynamic_models import validate_definition
+
+    return validate_definition(defn) or await validate_tools_available(defn)
+
+
+async def unavailable_step_tools(defn: DynamicWorkflowDef, start_index: int = 0) -> list[str]:
+    """Names of action-step tools that do not resolve right now (sorted).
+
+    ``start_index`` limits the check to the steps still to run — a resumed
+    run must not fail over a tool only an already-finished step used.
+    """
+    from openexecutive.workflows.dynamic_models import ActionStepSpec
+
+    wanted = sorted(
+        {
+            t
+            for s in defn.steps[start_index:]
+            if isinstance(s, ActionStepSpec)
+            for t in s.tools
+        }
+    )
+    if not wanted:
+        return []
+    found = await resolve(wanted)
+    return [t for t in wanted if t not in found]
+
+
+async def validate_tools_available(defn: DynamicWorkflowDef) -> list[str]:
+    """Errors for every action-step tool that does not resolve (empty == OK).
+
+    Runs at save time (and on designer drafts) so a workflow can't be stored
+    with a tool the system can't reach — a typo, a hallucinated name, or a
+    tool the gateway's deny-list filters out.
+    """
+    missing = await unavailable_step_tools(defn)
+    if not missing:
+        return []
+    needs_gateway = [t for t in missing if not t.startswith(BUILTIN_PREFIX)]
+    if needs_gateway and not gateway_available():
+        return [
+            "these tools need the MCP tool gateway, which is not running: "
+            + ", ".join(needs_gateway)
+        ]
+    return ["unknown or unavailable tools: " + ", ".join(missing)]

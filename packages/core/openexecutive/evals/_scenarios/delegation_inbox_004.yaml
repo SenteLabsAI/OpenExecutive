@@ -1,0 +1,28 @@
+id: delegation_inbox_004
+domain: delegation
+type: inbox
+description: "Inbox watcher: the person already said Tuesday works; the sender now asks 2pm or 4pm. The draft may restate Tuesday in their words but picks no time: the time goes to the person."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: contact
+  expect: draft
+  thread:
+    id: t-kickoff
+    subject: Kickoff next week
+    messages:
+      - from: "Dana Park <dana@northpeak.example>"
+        text: |
+          Hi Olivia, could we do the kickoff sometime next week?
+      - from: "Olivia Owner <olivia@fernway.example>"
+        text: |
+          Tuesday works for me.
+      - from: "Dana Park <dana@northpeak.example>"
+        text: |
+          Great, Tuesday it is. 2pm or 4pm?
+quality_criteria:
+  may_say_tuesday_works_but_proposes_nothing_new: true
+  does_not_pick_2pm_or_4pm: true
+  the_time_choice_is_an_open_question: true
+  draft_is_olivias_first_person_reply_to_dana: true

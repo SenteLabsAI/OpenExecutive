@@ -9,6 +9,9 @@
 // differs, so there is only ever one implementation of these nine sections.
 
 import { useEffect, useState, useRef } from "react";
+import { PROFILE_COPY, type ProfileCopy } from "@/components/company-profile/profileCopy";
+import Button from "@/components/ui/Button";
+import type { ProfileWording } from "@/components/shell/navConfig";
 import { type CompanyProfile } from "@/lib/api";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -89,22 +92,22 @@ export function snapshotProfile(profile: CompanyProfile): Record<string, unknown
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-xs text-fg-muted font-medium uppercase tracking-wide mb-1">
+    <p className="text-sm text-fg-muted font-medium mb-1.5">
       {children}
     </p>
   );
 }
 
 function FieldValue({ children }: { children: React.ReactNode }) {
-  return <p className="text-sm text-fg">{children || <span className="text-fg-subtle italic">Not set</span>}</p>;
+  return <p className="text-[15px] text-fg leading-relaxed">{children || <span className="text-fg-subtle italic">Not set</span>}</p>;
 }
 
 function Pills({ items }: { items: string[] }) {
-  if (!items.length) return <span className="text-sm text-fg-subtle italic">Not set</span>;
+  if (!items.length) return <span className="text-[15px] text-fg-subtle italic">Not set</span>;
   return (
     <div className="flex flex-wrap gap-1.5">
       {items.map((item, i) => (
-        <span key={i} className="inline-block px-2 py-0.5 bg-surface-overlay text-fg text-xs rounded-md">
+        <span key={i} className="inline-block px-2.5 py-1 bg-surface-overlay text-fg text-sm rounded-lg">
           {item}
         </span>
       ))}
@@ -129,7 +132,7 @@ function Input({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-colors"
+      className="w-full h-11 rounded-xl border border-line-strong bg-surface-overlay px-3 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50 transition-colors"
     />
   );
 }
@@ -151,7 +154,7 @@ function Textarea({
       onChange={(e) => onChange(e.target.value)}
       rows={rows}
       placeholder={placeholder}
-      className="w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors"
+      className="w-full rounded-xl border border-line-strong bg-surface-overlay px-3 py-2.5 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/50 resize-none transition-colors"
     />
   );
 }
@@ -193,16 +196,13 @@ function Section({
   }
 
   return (
-    <div className="bg-surface-elevated border border-line rounded-xl p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-fg">{title}</h2>
+    <div className="bg-surface-elevated border border-line rounded-2xl p-5 sm:p-6 min-w-0">
+      <div className="flex items-center justify-between gap-3 mb-4 min-h-11">
+        <h2 className="text-lg font-semibold text-fg">{title}</h2>
         {!editing && (
-          <button
-            onClick={() => setEditing(true)}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-          >
+          <Button onClick={() => setEditing(true)} aria-label={`Edit ${title}`}>
             Edit
-          </button>
+          </Button>
         )}
       </div>
 
@@ -210,22 +210,14 @@ function Section({
 
       {editing && (
         <>
-          {error && <p className="text-xs text-red-400 mt-3">{error}</p>}
-          <div className="flex gap-2 mt-4">
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
-            >
+          {error && <p className="text-sm text-red-500 mt-3">{error}</p>}
+          <div className="flex gap-2 mt-5">
+            <Button variant="primary" onClick={handleSave} disabled={saving}>
               {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              onClick={() => { setEditing(false); setError(null); }}
-              disabled={saving}
-              className="px-3 py-1.5 border border-line-strong text-fg-muted hover:text-fg text-xs rounded-lg transition-colors disabled:opacity-40"
-            >
+            </Button>
+            <Button onClick={() => { setEditing(false); setError(null); }} disabled={saving}>
               Cancel
-            </button>
+            </Button>
           </div>
         </>
       )}
@@ -243,7 +235,9 @@ function usePendingSection(
 ): [boolean, (v: boolean) => void] {
   const [editing, setEditing] = useState(false);
   const appliersRef = useRef(appliers);
-  appliersRef.current = appliers;
+  useEffect(() => {
+    appliersRef.current = appliers;
+  });
   useEffect(() => {
     if (!pending) return;
     let touched = false;
@@ -259,7 +253,7 @@ function usePendingSection(
 }
 // ── section components ────────────────────────────────────────────────────────
 
-function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [name, setName] = useState(profile.name);
   const [industry, setIndustry] = useState(profile.industry);
   const [stage, setStage] = useState(profile.stage);
@@ -285,7 +279,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionCompo
 
   return (
     <Section
-      title="Company Basics"
+      title={copy.basicsTitle}
       editing={editing}
       onEditingChange={setEditing}
       saving={saving}
@@ -296,7 +290,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionCompo
         annual_revenue_arr: arr ? parseFloat(arr) : null,
       })}
       viewContent={
-        <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <div><FieldLabel>Name</FieldLabel><FieldValue>{profile.name}</FieldValue></div>
           <div><FieldLabel>Industry</FieldLabel><FieldValue>{profile.industry}</FieldValue></div>
           <div><FieldLabel>Stage</FieldLabel><FieldValue>{profile.stage}</FieldValue></div>
@@ -306,7 +300,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionCompo
         </div>
       }
       editContent={
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><FieldLabel>Name</FieldLabel><Input value={name} onChange={setName} placeholder="Acme Corp" /></div>
           <div><FieldLabel>Industry</FieldLabel><Input value={industry} onChange={setIndustry} placeholder="B2B SaaS" /></div>
           <div><FieldLabel>Stage</FieldLabel><Input value={stage} onChange={setStage} placeholder="Series A" /></div>
@@ -319,7 +313,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending }: SectionCompo
   );
 }
 
-function MissionSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function MissionSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [mission, setMission] = useState(profile.mission);
   const [vision, setVision] = useState(profile.vision);
   useEffect(() => { setMission(profile.mission); setVision(profile.vision); }, [profile]);
@@ -344,7 +338,7 @@ function MissionSection({ profile, saving, onSave, pending }: SectionComponentPr
       }
       editContent={
         <div className="space-y-3">
-          <div><FieldLabel>Mission</FieldLabel><Textarea value={mission} onChange={setMission} rows={2} placeholder="Why does this company exist?" /></div>
+          <div><FieldLabel>Mission</FieldLabel><Textarea value={mission} onChange={setMission} rows={2} placeholder={copy.missionPlaceholder} /></div>
           <div><FieldLabel>Vision</FieldLabel><Textarea value={vision} onChange={setVision} rows={2} placeholder="Where are you in 5 years?" /></div>
         </div>
       }
@@ -424,7 +418,7 @@ function CompetitiveSection({ profile, saving, onSave, pending }: SectionCompone
   );
 }
 
-function ExternalDependenciesSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function ExternalDependenciesSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [vendors, setVendors] = useState(listToText(profile.vendors ?? []));
   const [tickers, setTickers] = useState(listToText(profile.tickers ?? []));
   useEffect(() => {
@@ -446,11 +440,7 @@ function ExternalDependenciesSection({ profile, saving, onSave, pending }: Secti
       onSave={() => onSave({ vendors: textToList(vendors), tickers: textToList(tickers) })}
       viewContent={
         <div className="space-y-4">
-          <p className="text-xs text-fg-subtle">
-            Named here, a vendor or ticker counts as company data: the Executive
-            will start watching its status page or filings on its own instead of
-            asking you first.
-          </p>
+          <p className="text-sm text-fg-subtle">{copy.dependenciesNote}</p>
           <div><FieldLabel>Vendors &amp; dependencies</FieldLabel><Pills items={profile.vendors ?? []} /></div>
           <div><FieldLabel>Tracked tickers</FieldLabel><Pills items={profile.tickers ?? []} /></div>
         </div>
@@ -487,7 +477,7 @@ function PrioritiesSection({ profile, saving, onSave, pending }: SectionComponen
       onSave={() => onSave({ strategic_priorities: { current_year: textToList(priorities), north_star_metric: northStar } })}
       viewContent={
         <div className="space-y-4">
-          <div><FieldLabel>This Year's Priorities</FieldLabel><Pills items={profile.strategic_priorities.current_year} /></div>
+          <div><FieldLabel>This Year&apos;s Priorities</FieldLabel><Pills items={profile.strategic_priorities.current_year} /></div>
           <div><FieldLabel>North Star Metric</FieldLabel><FieldValue>{profile.strategic_priorities.north_star_metric}</FieldValue></div>
         </div>
       }
@@ -537,7 +527,7 @@ function CultureSection({ profile, saving, onSave, pending }: SectionComponentPr
   );
 }
 
-function OrgSection({ profile, saving, onSave, pending }: SectionComponentProps) {
+function OrgSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [departments, setDepartments] = useState(listToText(profile.org_structure.departments));
   const [leadership, setLeadership] = useState(listToText(profile.org_structure.leadership_team));
   useEffect(() => {
@@ -559,13 +549,13 @@ function OrgSection({ profile, saving, onSave, pending }: SectionComponentProps)
       onSave={() => onSave({ org_structure: { departments: textToList(departments), leadership_team: textToList(leadership) } })}
       viewContent={
         <div className="space-y-4">
-          <div><FieldLabel>Departments</FieldLabel><Pills items={profile.org_structure.departments} /></div>
+          <div><FieldLabel>{copy.departmentsLabel}</FieldLabel><Pills items={profile.org_structure.departments} /></div>
           <div><FieldLabel>Leadership Team</FieldLabel><Pills items={profile.org_structure.leadership_team} /></div>
         </div>
       }
       editContent={
         <div className="space-y-3">
-          <div><FieldLabel>Departments (one per line)</FieldLabel><Textarea value={departments} onChange={setDepartments} rows={3} placeholder={"Engineering\nProduct\nGTM"} /></div>
+          <div><FieldLabel>{copy.departmentsLabel} (one per line)</FieldLabel><Textarea value={departments} onChange={setDepartments} rows={3} placeholder={"Engineering\nProduct\nGTM"} /></div>
           <div><FieldLabel>Leadership Team (one per line)</FieldLabel><Textarea value={leadership} onChange={setLeadership} rows={3} placeholder={"Alice Chen, CEO\nBob Smith, CTO"} /></div>
         </div>
       }
@@ -600,13 +590,13 @@ function FinancialsSection({ profile, saving, onSave, pending }: SectionComponen
         }
       })}
       viewContent={
-        <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <div><FieldLabel>Monthly Burn</FieldLabel><FieldValue>{profile.financials.burn_rate_monthly != null ? `$${profile.financials.burn_rate_monthly.toLocaleString()}/mo` : undefined}</FieldValue></div>
           <div><FieldLabel>Runway</FieldLabel><FieldValue>{profile.financials.runway_months != null ? `${profile.financials.runway_months} months` : undefined}</FieldValue></div>
         </div>
       }
       editContent={
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><FieldLabel>Monthly Burn ($)</FieldLabel><Input value={burn} onChange={setBurn} type="number" placeholder="50000" /></div>
           <div><FieldLabel>Runway (months)</FieldLabel><Input value={runway} onChange={setRunway} type="number" placeholder="18" /></div>
         </div>
@@ -622,6 +612,7 @@ interface SectionComponentProps {
   // Ask OE suggested values (flat keys) — sections merge their own keys
   // into draft state and flip into edit mode when one lands.
   pending: PendingValues | null;
+  copy: ProfileCopy;
 }
 
 // ── composed section list ────────────────────────────────────────────────────
@@ -663,6 +654,12 @@ export interface ProfileSectionsProps {
    * derived from its people and department tables at commit time — rendering
    * it here too would give the user two places to edit the same thing. */
   omit?: SectionId[];
+  /** What the profile is called: "company" (team, the default), or in solo
+   * "business" (an owner) or "work" (anyone else). Copy only. */
+  wording?: ProfileWording;
+  /** "columns" lays the cards out two across on wide screens (the profile
+   * page); "stack" (the default) is one column, as onboarding shows them. */
+  layout?: "stack" | "columns";
 }
 
 export function ProfileSections({
@@ -671,12 +668,22 @@ export function ProfileSections({
   onSave,
   pending = null,
   omit = [],
+  wording = "company",
+  layout = "stack",
 }: ProfileSectionsProps) {
   const hidden = new Set(omit);
+  const copy = PROFILE_COPY[wording];
   return (
-    <div className="flex flex-col gap-4">
+    <div className={layout === "columns" ? "grid grid-cols-1 xl:grid-cols-2 gap-5 items-start" : "flex flex-col gap-4"}>
       {SECTION_ORDER.filter(({ id }) => !hidden.has(id)).map(({ id, Component }) => (
-        <Component key={id} profile={profile} saving={saving} onSave={onSave} pending={pending} />
+        <Component
+          key={id}
+          profile={profile}
+          saving={saving}
+          onSave={onSave}
+          pending={pending}
+          copy={copy}
+        />
       ))}
     </div>
   );

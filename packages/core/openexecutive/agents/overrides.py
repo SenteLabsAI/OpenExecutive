@@ -1,7 +1,7 @@
 """Runtime overrides for specialist agent configuration.
 
-Stores per-agent overrides for system prompt, model, deep-reasoning flag,
-and role description. Persisted in the shared episodic_memory.db so it
+Stores per-agent overrides for system prompt, additional instructions,
+model, deep-reasoning flag, and role description. Persisted in the shared episodic_memory.db so it
 survives restarts. Defaults flow through unchanged when no override exists.
 
 History is append-only — every PATCH (or DELETE/reset) writes the prior
@@ -36,6 +36,10 @@ class AgentOverride(BaseModel):
     # monitoring.research.prompts._RESEARCH_FOCUS applies. Does NOT replace
     # the shared research contract, which stays code-only.
     research_focus: str | None = None
+    # Text appended after the agent's system prompt (built-in or replaced),
+    # so an admin can add guidance without freezing the agent on today's
+    # built-in prompt.
+    instructions: str | None = None
     updated_at: str | None = None
 
 
@@ -48,7 +52,24 @@ class AgentHistoryEntry(BaseModel):
     role: str | None = None
     voice_persona_slug: str | None = None
     research_focus: str | None = None
+    instructions: str | None = None
     created_at: str
+
+
+def append_instructions(prompt: str, instructions: str | None) -> str:
+    """Return ``prompt`` with the admin's additional instructions appended.
+
+    Blank or missing instructions leave the prompt byte-identical, so an
+    agent without them keeps its existing prompt cache.
+    """
+    if instructions is None or not instructions.strip():
+        return prompt
+    return (
+        prompt
+        + "\n\n<additional_instructions>\n"
+        + instructions.strip()
+        + "\n</additional_instructions>"
+    )
 
 
 _cache_lock = threading.Lock()
@@ -78,6 +99,7 @@ def initialize_overrides_db(db_path: Path | None = None) -> None:
                 role TEXT,
                 voice_persona_slug TEXT,
                 research_focus TEXT,
+                instructions TEXT,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS agent_override_history (
@@ -89,16 +111,20 @@ def initialize_overrides_db(db_path: Path | None = None) -> None:
                 role TEXT,
                 voice_persona_slug TEXT,
                 research_focus TEXT,
+                instructions TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_override_history_agent
                 ON agent_override_history(agent_id, id DESC);
         """)
-        # Migrate existing DBs that predate voice_persona_slug / research_focus.
+        # Migrate existing DBs that predate voice_persona_slug / research_focus /
+        # instructions.
         _add_column_if_missing(conn, "agent_overrides", "voice_persona_slug")
         _add_column_if_missing(conn, "agent_override_history", "voice_persona_slug")
         _add_column_if_missing(conn, "agent_overrides", "research_focus")
         _add_column_if_missing(conn, "agent_override_history", "research_focus")
+        _add_column_if_missing(conn, "agent_overrides", "instructions")
+        _add_column_if_missing(conn, "agent_override_history", "instructions")
 
 
 def _row_to_override(row: Any) -> AgentOverride:
@@ -111,6 +137,7 @@ def _row_to_override(row: Any) -> AgentOverride:
         role=row["role"],
         voice_persona_slug=row["voice_persona_slug"],
         research_focus=row["research_focus"],
+        instructions=row["instructions"],
         updated_at=row["updated_at"],
     )
 
@@ -165,12 +192,14 @@ def set_override(
     role: str | None = None,
     voice_persona_slug: str | None = None,
     research_focus: str | None = None,
+    instructions: str | None = None,
     prompt_set: bool = False,
     model_set: bool = False,
     deep_set: bool = False,
     role_set: bool = False,
     voice_persona_slug_set: bool = False,
     research_focus_set: bool = False,
+    instructions_set: bool = False,
     db_path: Path | None = None,
 ) -> AgentOverride:
     """Update one or more override fields for an agent.
@@ -193,8 +222,9 @@ def set_override(
             # Snapshot prior state into history before mutating.
             conn.execute(
                 "INSERT INTO agent_override_history "
-                "(agent_id, prompt, model, use_deep_reasoning, role, voice_persona_slug, research_focus, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(agent_id, prompt, model, use_deep_reasoning, role, voice_persona_slug, research_focus, "
+                "instructions, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent_id,
                     existing_row["prompt"],
@@ -203,6 +233,7 @@ def set_override(
                     existing_row["role"],
                     existing_row["voice_persona_slug"],
                     existing_row["research_focus"],
+                    existing_row["instructions"],
                     existing_row["updated_at"],
                 ),
             )
@@ -216,12 +247,13 @@ def set_override(
             new_role = role if role_set else existing_row["role"]
             new_vp = voice_persona_slug if voice_persona_slug_set else existing_row["voice_persona_slug"]
             new_rf = research_focus if research_focus_set else existing_row["research_focus"]
+            new_instr = instructions if instructions_set else existing_row["instructions"]
             conn.execute(
                 "UPDATE agent_overrides SET prompt = ?, model = ?, "
                 "use_deep_reasoning = ?, role = ?, voice_persona_slug = ?, "
-                "research_focus = ?, updated_at = ? "
+                "research_focus = ?, instructions = ?, updated_at = ? "
                 "WHERE agent_id = ?",
-                (new_prompt, new_model, new_deep, new_role, new_vp, new_rf, now, agent_id),
+                (new_prompt, new_model, new_deep, new_role, new_vp, new_rf, new_instr, now, agent_id),
             )
         else:
             new_prompt = prompt if prompt_set else None
@@ -234,11 +266,13 @@ def set_override(
             new_role = role if role_set else None
             new_vp = voice_persona_slug if voice_persona_slug_set else None
             new_rf = research_focus if research_focus_set else None
+            new_instr = instructions if instructions_set else None
             conn.execute(
                 "INSERT INTO agent_overrides "
-                "(agent_id, prompt, model, use_deep_reasoning, role, voice_persona_slug, research_focus, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (agent_id, new_prompt, new_model, new_deep, new_role, new_vp, new_rf, now),
+                "(agent_id, prompt, model, use_deep_reasoning, role, voice_persona_slug, research_focus, "
+                "instructions, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (agent_id, new_prompt, new_model, new_deep, new_role, new_vp, new_rf, new_instr, now),
             )
 
     invalidate_cache()
@@ -262,8 +296,9 @@ def clear_override(agent_id: str, db_path: Path | None = None) -> bool:
             return False
         conn.execute(
             "INSERT INTO agent_override_history "
-            "(agent_id, prompt, model, use_deep_reasoning, role, voice_persona_slug, research_focus, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(agent_id, prompt, model, use_deep_reasoning, role, voice_persona_slug, research_focus, "
+            "instructions, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 agent_id,
                 existing_row["prompt"],
@@ -272,6 +307,7 @@ def clear_override(agent_id: str, db_path: Path | None = None) -> bool:
                 existing_row["role"],
                 existing_row["voice_persona_slug"],
                 existing_row["research_focus"],
+                existing_row["instructions"],
                 existing_row["updated_at"],
             ),
         )
@@ -306,6 +342,7 @@ def list_history(
                 role=row["role"],
                 voice_persona_slug=row["voice_persona_slug"],
                 research_focus=row["research_focus"],
+                instructions=row["instructions"],
                 created_at=row["created_at"],
             )
         )
@@ -335,6 +372,7 @@ def get_history_entry(
         role=row["role"],
         voice_persona_slug=row["voice_persona_slug"],
         research_focus=row["research_focus"],
+        instructions=row["instructions"],
         created_at=row["created_at"],
     )
 
@@ -355,11 +393,13 @@ def rollback_to(
         role=entry.role,
         voice_persona_slug=entry.voice_persona_slug,
         research_focus=entry.research_focus,
+        instructions=entry.instructions,
         prompt_set=True,
         model_set=True,
         deep_set=True,
         role_set=True,
         voice_persona_slug_set=True,
         research_focus_set=True,
+        instructions_set=True,
         db_path=db_path,
     )

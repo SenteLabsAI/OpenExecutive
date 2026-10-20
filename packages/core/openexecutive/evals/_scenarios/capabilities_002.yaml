@@ -1,0 +1,13 @@
+id: capabilities_002
+domain: mcp
+description: "A routine Gmail request goes straight to the pinned Gmail tool with call_tool — no search_tools round trip to rediscover it"
+requires_mcp: true
+query: "Check my inbox for the most recent email about the board meeting and give me a two-line summary of it."
+expected_tool_calls:
+  - call_tool
+quality_criteria:
+  calls_google_workspace_search_gmail_messages_directly: true
+  does_not_call_search_tools_for_a_pinned_gmail_tool: true
+  reports_what_it_found_or_that_nothing_matched: true
+  does_not_hallucinate_email_content: true
+  does_not_say_it_cannot_access_gmail: true

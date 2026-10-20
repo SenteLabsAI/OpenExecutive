@@ -57,6 +57,7 @@ from openexecutive.monitoring.sources._http import (
     fetch_bounded,
     validate_target_url,
 )
+from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +83,10 @@ _ADDED_TEXT_CHARS = 1_000
 # JS/CSS never counts as "visible text". Removed by a linear scan
 # (_strip_blocks), not a lazy `.*?` regex: on a page full of unterminated
 # openers such a regex is quadratic, and a page the server sends is the
-# attacker's to shape.
+# attacker's to shape. The remaining tags go the same way, through
+# utils.html_tags.strip_tags rather than `<[^>]+>`, which rescans to the end
+# of the page from every "<" that nothing closes.
 _DROP_BLOCK_TAGS = ("script", "style", "noscript")
-_TAG_RE = re.compile(r"(?s)<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 
@@ -248,7 +250,7 @@ def html_to_text(body: bytes) -> str:
     except Exception:
         return ""
     markup = _strip_blocks(markup)
-    markup = _TAG_RE.sub(" ", markup)
+    markup = strip_tags(markup, repl=" ")
     text = html.unescape(markup)
     # Full normalized text — NOT truncated. The fetch is already byte-capped
     # (~2MB), and hashing the whole thing means detection has no blind spot;

@@ -43,7 +43,8 @@ const config: Config = {
         DEFAULT: rgbVar("--border-default"),
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["var(--font-sans)", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        display: ["var(--font-display)", "var(--font-sans)", "system-ui", "sans-serif"],
       },
       minHeight: {
         touch: "2.5rem",

@@ -22,8 +22,6 @@ from openexecutive.people import store as people_store
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
 
 
 @pytest.fixture()
@@ -55,7 +53,7 @@ def patched_deps(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from openexecutive.knowledge import retriever
 
-    def _retrieve(query: str, specialist_name: Any = None, store: Any = None) -> str:
+    def _retrieve(query: str, specialist_name: Any = None, store: Any = None, **_k: Any) -> str:
         return ""
 
     monkeypatch.setattr(retriever, "retrieve", _retrieve)

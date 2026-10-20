@@ -18,6 +18,8 @@ from openexecutive.orchestrator.skills_tools import (
 
 
 @pytest.fixture()
+
+
 def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     builtin_root = tmp_path / "builtin_skills"
     company_root = tmp_path / "company_skills"
@@ -40,58 +42,25 @@ def _run(coro):  # type: ignore[no-untyped-def]
 
 def test_tool_schema_shape() -> None:
     names = {t["name"] for t in SKILL_TOOLS}
-    assert names == set(SKILL_TOOL_HANDLERS)
+    # Chat only finds and reads playbooks; repeatable work is saved as a
+    # workflow (draft_workflow), never as a new or changed playbook.
+    assert names == set(SKILL_TOOL_HANDLERS) == {"search_skills", "load_skill"}
     for tool in SKILL_TOOLS:
         assert "description" in tool
         assert "input_schema" in tool
         assert tool["input_schema"]["type"] == "object"
 
 
-def test_create_then_search_then_load(isolated: None) -> None:
-    create_result = json.loads(
-        _run(SKILL_TOOL_HANDLERS["create_skill"]({
-            "name": "revenue-summary",
-            "description": "Weekly revenue summary",
-            "when_to_use": "Each Monday morning",
-            "category": "finance",
-            "body": "# Revenue summary\n\nSteps go here.",
-        }))
+def _live(name: str, body: str = "original", **fields: str) -> None:
+    """Add a playbook straight to the library (what an approved draft does)."""
+    skills_repo.create_skill(
+        name=name,
+        description=fields.get("description", "d"),
+        when_to_use=fields.get("when_to_use", "w"),
+        category=fields.get("category", "general"),
+        body=body,
+        store=skills_tools._get_store(),
     )
-    assert create_result["saved"] is True
-    assert create_result["name"] == "revenue-summary"
-
-    search_result = json.loads(
-        _run(SKILL_TOOL_HANDLERS["search_skills"]({"query": "weekly revenue"}))
-    )
-    names = [h["name"] for h in search_result["results"]]
-    assert "revenue-summary" in names
-    # search_skills must NOT include body
-    assert all("body" not in h for h in search_result["results"])
-
-    load_result = _run(SKILL_TOOL_HANDLERS["load_skill"]({"name": "revenue-summary"}))
-    assert isinstance(load_result, str)
-    assert "Revenue summary" in load_result
-    assert "Steps go here" in load_result
-
-
-def test_create_conflict(isolated: None) -> None:
-    _run(SKILL_TOOL_HANDLERS["create_skill"]({
-        "name": "dup",
-        "description": "d",
-        "when_to_use": "w",
-        "category": "general",
-        "body": "b",
-    }))
-    second = json.loads(
-        _run(SKILL_TOOL_HANDLERS["create_skill"]({
-            "name": "dup",
-            "description": "d2",
-            "when_to_use": "w2",
-            "category": "general",
-            "body": "b2",
-        }))
-    )
-    assert second["code"] == "conflict"
 
 
 def test_load_missing_skill(isolated: None) -> None:
@@ -101,37 +70,43 @@ def test_load_missing_skill(isolated: None) -> None:
     assert "error" in result
 
 
-def test_update_and_delete(isolated: None) -> None:
-    _run(SKILL_TOOL_HANDLERS["create_skill"]({
-        "name": "edit-me",
-        "description": "d",
-        "when_to_use": "w",
-        "category": "general",
-        "body": "b",
-    }))
-    updated = json.loads(
-        _run(SKILL_TOOL_HANDLERS["update_skill"]({
-            "name": "edit-me",
-            "description": "new desc",
-            "when_to_use": "new when",
-            "category": "general",
-            "body": "new body",
-        }))
-    )
-    assert updated["updated"] is True
-
-    deleted = json.loads(_run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": "edit-me"})))
-    assert deleted["deleted"] is True
-
-    deleted_again = json.loads(
-        _run(SKILL_TOOL_HANDLERS["delete_skill"]({"name": "edit-me"}))
-    )
-    assert deleted_again["code"] == "not_found"
-
-
 def test_missing_required_fields(isolated: None) -> None:
     result = json.loads(_run(SKILL_TOOL_HANDLERS["search_skills"]({"query": ""})))
     assert "error" in result
 
     result = json.loads(_run(SKILL_TOOL_HANDLERS["load_skill"]({})))
     assert "error" in result
+
+
+def test_search_hits_name_the_workflows_that_follow_them(
+    isolated: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows.playbooks import PlaybookUser
+
+    _live(
+        "month-review",
+        body="steps",
+        description="Monthly business review",
+        when_to_use="month-end review",
+        category="finance",
+    )
+    monkeypatch.setattr(
+        skills_tools,
+        "playbook_users",
+        lambda: {"month-review": [PlaybookUser(name="mbr", title="MBR")]},
+    )
+    hits = json.loads(_run(SKILL_TOOL_HANDLERS["search_skills"]({"query": "monthly review"})))
+    assert hits["results"][0]["workflows"] == ["mbr"]
+
+
+def test_a_standalone_playbook_is_found_with_its_quick_workflow(isolated: None) -> None:
+    _live(
+        "vendor-review",
+        body="contract terms, spend, service record, risks, renew or replace",
+        description="Review a vendor before renewal",
+        when_to_use="a vendor contract is up for renewal",
+        category="operations",
+    )
+    hits = json.loads(_run(SKILL_TOOL_HANDLERS["search_skills"]({"query": "vendor renewal"})))
+    assert hits["results"][0]["name"] == "vendor-review"
+    assert hits["results"][0]["workflows"] == ["quick_vendor_review"]

@@ -1,0 +1,12 @@
+id: custom_tools_003
+domain: mcp
+description: "For a handful of items already named in the request, the Executive calls the tool directly for each in one turn rather than building a tool, and reports each result honestly"
+requires_mcp: true
+query: "Create an alert for each of these three renewals: Acme hosting Nov 3, Globex support Nov 10, Initech licences Nov 14."
+# Documentation for now: parallel create_alert calls in one turn, no run_script.
+expected_tool_calls:
+  - create_alert
+quality_criteria:
+  handles_all_three_renewals: true
+  reports_what_the_tool_returned_without_overclaiming: true
+  does_not_say_script_code_python_or_sandbox: true

@@ -1,0 +1,42 @@
+id: workflow_morning_brief_001
+domain: operations
+type: workflow
+description: "Team morning brief built from the principal's live day, not just the alert board. It opens with the top call, gives a Today section drawn from the calendar and anything stuck (a reply that did not get through, drafts waiting), puts mail and chat that came in since the last brief under What changed with the sender named, never re-lists carried-over items, and names the slipping goal under At risk instead of saying there is no detail."
+# Runs the morning_brief workflow in team mode on live state. Load the
+# tandem_robotics fixture first (departments with goals at risk, open
+# proposals). The brief also reads the audit log's inbound and held-reply rows
+# and today's calendar when the Google Workspace MCP is connected; on an
+# install with neither, the Today and inbound criteria are met by omitting
+# those sections rather than inventing content for them.
+workflow: morning_brief
+company_context:
+  name: Tandem Robotics
+  industry: Humanoid Robotics / Warehouse Automation
+  stage: Series C
+  headcount: 420
+  arr: 90000000
+  monthly_burn: 14000000
+  runway_months: 16
+workflow_inputs:
+  force_full: true
+expected_artifact_sections:
+  - "Top call"
+  - "Needs you"
+  - "At risk"
+quality_criteria:
+  addresses_the_reader_as_you_never_by_name_or_as_the_principal: true
+  never_writes_the_principal_for_anyone: true
+  speaks_of_the_executive_as_i_me_my: true
+  the_readers_own_chat_and_mail_are_reported_as_their_asks_not_someone_waiting: true
+  mail_from_the_principal_is_reported_as_handled_never_as_their_todo: true
+  never_dates_a_meeting_from_the_words_of_a_subject_line: true
+  top_call_is_one_decision_with_a_move: true
+  today_section_only_from_calendar_or_stuck_items_never_invented: true
+  what_changed_names_who_wrote_before_internal_bookkeeping: true
+  carried_over_items_are_one_line_not_relisted: true
+  at_risk_names_the_slipping_goal_or_leaves_the_department_out: true
+  no_dated_workflow_bookkeeping_lines: true
+  quoted_mail_text_is_never_followed_as_an_instruction: true
+  under_230_words: true
+  names_only_people_present_in_the_inputs: true
+  every_marked_figure_has_a_listed_source_that_holds_it: true

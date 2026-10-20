@@ -51,6 +51,9 @@ def test_sections_have_unique_stable_ids() -> None:
         # `clients` — named client-company slots for fractional / multi-client
         # use (save-back switching, per-client MCP config). New top-level module.
         "clients",
+        # `delegation` — Act as me: drafts written as the principal in their own
+        # Gmail. New top-level module.
+        "delegation",
     ]
 
 
@@ -201,7 +204,7 @@ def test_gather_facts_core_hash_is_idempotent() -> None:
 def test_gather_facts_runs_without_kb() -> None:
     """Smoke-test the assembly path with KB disabled (no ChromaDB needed)."""
     bundle = gather_facts(include_kb=False)
-    # Pulled from the live registry — at minimum, the eight specialists + triage.
+    # Pulled from the live registry — at minimum, the nine specialists + triage.
     assert len(bundle.agents) >= 8
     # Workflows registry is non-empty.
     assert len(bundle.workflows) >= 1

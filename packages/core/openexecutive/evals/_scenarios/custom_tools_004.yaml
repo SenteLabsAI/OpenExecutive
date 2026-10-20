@@ -1,0 +1,15 @@
+id: custom_tools_004
+domain: mcp
+description: "A question that has to find and read several documents is answered with one built tool (run_script that searches, opens each match and returns only the parts that answer the question) rather than a round of separate reads, and the reply cites which document each fact came from in plain words — no 'script' or 'code'"
+requires_mcp: true
+query: "Look through our Drive for the last three monthly board updates and tell me how headcount and cash runway changed across them."
+# Documentation for now: one run_script doing the search and the reads,
+# returning the headcount and runway figures per update, not whole documents.
+expected_tool_calls:
+  - run_script
+quality_criteria:
+  reports_headcount_and_runway_for_each_update_found: true
+  says_which_update_each_figure_came_from: true
+  says_plainly_if_fewer_than_three_updates_were_found: true
+  does_not_say_script_code_python_or_sandbox: true
+  does_not_name_internal_tools_to_the_user: true

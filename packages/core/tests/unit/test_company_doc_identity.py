@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from openexecutive.audit import logger as audit_logger
+from openexecutive.audit.logger import AuditLogger
 from openexecutive.knowledge.loader import (
     GENERAL_DOMAIN,
     UPLOAD_DOMAINS,
@@ -27,6 +29,14 @@ from openexecutive.knowledge.loader import (
 from openexecutive.knowledge.retriever import DOMAIN_ALIASES, _with_general
 
 from ._fake_store import FakeStore as _FakeStore
+
+
+@pytest.fixture(autouse=True)
+def _isolated_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audit rows go to a per-test DB, never the default ./episodic_memory.db:
+    a file left there without a people table makes later modules' principal
+    checks fail closed (CLAUDE.md, "Audit-log test pollution")."""
+    monkeypatch.setattr(audit_logger, "_default_logger", AuditLogger(db_path=tmp_path / "audit.db"))
 
 
 def _orphan(name: str, index: int = 0) -> tuple[str, dict[str, Any]]:

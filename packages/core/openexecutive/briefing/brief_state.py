@@ -18,6 +18,14 @@ time. Scopes are only ever read by exact key, so the namespace cannot
 collide with the per-viewer header cache. Only the scheduler records a
 delivery (after a successful send), so manual workflow runs never advance
 the window.
+
+Each run's outcome, sent or not, goes under ``brief_delivery:<kind>``
+(``record_delivery_outcome``): the reason in ``input_hash`` and, in
+``narrative_text``, the channel that sent it — a channel name, never an
+address — and, for a failure, what happened in a line (the tool's own error,
+or why no channel could be tried; ``detail``). The Briefing's "not sent"
+notice and the Setup status page read it back through ``current_problem``
+and ``describe_problem``.
 """
 from __future__ import annotations
 
@@ -25,8 +33,9 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, cast, get_args
 
 from openexecutive.alerts.lifecycle import parse_aware
 from openexecutive.briefing import narrative_cache
@@ -120,6 +129,195 @@ def record_delivered(kind: str, fingerprint: str, text: str) -> None:
         logger.exception("brief_state: write failed for %s", kind)
 
 
+# How a brief's latest run ended: sent, or why not (``not_written`` — the run
+# failed or produced nothing; the others are scheduler.runner.
+# PrincipalDelivery.reason). ``gateway_down`` is email set up but the MCP
+# gateway that sends it not running, which used to read as ``no_channel``
+# and so blamed the owner's setup for the Executive's own fault.
+DeliveryReason = Literal[
+    "delivered", "no_owner", "no_channel", "gateway_down", "send_failed", "not_written"
+]
+_DELIVERY_REASONS: frozenset[str] = frozenset(get_args(DeliveryReason))
+DELIVERY_SCOPE_PREFIX = "brief_delivery:"
+# The daily briefs (their send times show on the Setup status page).
+BRIEF_KINDS: tuple[str, ...] = ("principal_brief_morning", "principal_brief_eod")
+# Every recurring message to the owner whose runs are recorded: the daily
+# briefs, and solo mode's weekly review.
+DELIVERY_KINDS: tuple[str, ...] = (*BRIEF_KINDS, "principal_weekly_review")
+# Delivery channels (scheduler.runner.delivery_order) as the app names them.
+CHANNEL_NAMES: dict[str, str] = {
+    "email": "email",
+    "slack_dm": "Slack",
+    "discord_dm": "Discord",
+    "telegram": "Telegram",
+}
+# Why a brief didn't reach the owner, and what to do about it, in the user's
+# words.
+DELIVERY_PROBLEMS: dict[str, tuple[str, str]] = {
+    "no_owner": (
+        "there's no owner on the People list to send it to",
+        "Finish setup so you're on the People list as the owner.",
+    ),
+    "no_channel": (
+        "nothing is set up to send it to you",
+        "Connect Gmail, or add your Slack, Telegram or Discord to your People profile.",
+    ),
+    "gateway_down": (
+        "the Executive's mail connection wasn't running",
+        "It keeps retrying on its own; if the Gmail light on the Setup status page stays red, "
+        "the API log says why.",
+    ),
+    "send_failed": (
+        "every way of sending it failed",
+        "The Setup status page shows which connection needs attention.",
+    ),
+    "not_written": (
+        "it couldn't be written",
+        "The Setup status page shows which part needs attention — often the AI model.",
+    ),
+}
+
+
+def brief_name(kind: str) -> str:
+    """The brief's name in the app ("morning brief"): the scheduler's own label."""
+    from openexecutive.scheduler.action_phrasing import KIND_LABEL
+
+    return KIND_LABEL.get(kind, "brief")
+
+
+def channel_phrase(channel: str) -> str:
+    """As in "sent to you by email" or "sent to you on Slack"."""
+    return "by email" if channel == "email" else f"on {CHANNEL_NAMES.get(channel, channel)}"
+
+
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    kind: str
+    reason: DeliveryReason
+    # The delivery channel that sent it ("email", "slack_dm", ...), if one did.
+    channel: str | None
+    at: datetime
+    # What happened when it wasn't sent, in a line: the tool's error, or why
+    # no channel could be tried. None for a delivered brief.
+    detail: str | None = None
+
+
+# The longest detail kept: a line for the notice, not a traceback.
+DETAIL_MAX_CHARS = 300
+# A grant that died shows in the detail like this (orchestrator.mcp_gateway.
+# grant_failure); the notice's fix then says to reconnect rather than to
+# look at the status page.
+_RECONNECT_HINT_RE = re.compile(
+    r"invalid_grant|expired|revoked|reconnect|unauthori[sz]ed|authentication", re.IGNORECASE
+)
+
+
+def record_delivery_outcome(
+    kind: str, *, reason: DeliveryReason, channel: str | None, detail: str | None = None
+) -> None:
+    """Remember how this brief's latest run ended. Never raises."""
+    detail = " ".join(detail.split())[:DETAIL_MAX_CHARS] if detail else None
+    text = json.dumps({"channel": channel or "", "detail": detail}) if detail else (channel or "")
+    try:
+        narrative_cache.put(narrative_cache.BriefingNarrative(
+            scope=f"{DELIVERY_SCOPE_PREFIX}{kind}",
+            input_hash=reason,
+            narrative_text=text,
+            generated_at=narrative_cache.utc_now_iso(),
+        ))
+    except Exception:
+        logger.exception("brief_state: delivery outcome write failed for %s", kind)
+
+
+def _read_outcome_text(text: str) -> tuple[str | None, str | None]:
+    """``(channel, detail)`` from the stored row: a bare channel name (the
+    older shape, and every delivered brief) or the JSON a failure writes."""
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            channel = parsed.get("channel")
+            detail = parsed.get("detail")
+            return (
+                channel if isinstance(channel, str) and channel else None,
+                detail if isinstance(detail, str) and detail else None,
+            )
+    return (text or None), None
+
+
+def describe_problem(reason: DeliveryReason, detail: str | None = None) -> tuple[str, str]:
+    """``(problem, fix)`` for the notice: the reason in the user's words,
+    with what happened appended when it is known, and a fix that names a
+    reconnect when the detail shows a grant that died."""
+    problem, fix = DELIVERY_PROBLEMS[reason]
+    if not detail:
+        return problem, fix
+    if reason in ("send_failed", "gateway_down"):
+        problem = f"{problem} ({detail})"
+        if reason == "send_failed" and _RECONNECT_HINT_RE.search(detail):
+            fix = (
+                "The Executive's sign-in to its mailbox expired or was revoked: connect it again, "
+                "then the next brief goes out."
+            )
+    return problem, fix
+
+
+def last_delivery_outcome() -> DeliveryOutcome | None:
+    """The latest run of any recorded message (``DELIVERY_KINDS``: the two
+    briefs and the weekly review), or None when none has run yet (or the
+    store can't be read). Never raises."""
+    latest: DeliveryOutcome | None = None
+    for kind in DELIVERY_KINDS:
+        try:
+            row = narrative_cache.get(f"{DELIVERY_SCOPE_PREFIX}{kind}")
+        except Exception:
+            logger.exception("brief_state: delivery outcome read failed for %s", kind)
+            continue
+        at = parse_aware(row.generated_at) if row is not None else None
+        if row is None or at is None or row.input_hash not in _DELIVERY_REASONS:
+            continue
+        channel, detail = _read_outcome_text(row.narrative_text or "")
+        outcome = DeliveryOutcome(
+            kind=kind,
+            reason=cast(DeliveryReason, row.input_hash),  # checked above
+            channel=channel,
+            at=at,
+            detail=detail,
+        )
+        if latest is None or outcome.at > latest.at:
+            latest = outcome
+    return latest
+
+
+def current_problem(
+    outcome: DeliveryOutcome | None,
+    *,
+    has_owner: bool,
+    can_deliver: bool,
+    gateway_down: bool = False,
+) -> DeliveryReason | None:
+    """What still keeps the latest brief from the owner, or None.
+
+    A failed send, or a brief that couldn't be written, stays reported until
+    the next brief records a new outcome. Having nowhere to send it is judged
+    from now (``has_owner``, ``can_deliver``, ``gateway_down``: email is set
+    up but the gateway that sends it is not running), not from the record, so
+    a partial fix reports the problem that is left: once a channel exists the
+    next brief will go, and there is nothing to report.
+    """
+    if outcome is None or outcome.reason == "delivered":
+        return None
+    if outcome.reason in ("send_failed", "not_written"):
+        return outcome.reason
+    if can_deliver:
+        return None
+    if not has_owner:
+        return "no_owner"
+    return "gateway_down" if gateway_down else "no_channel"
+
+
 def split_proposals(
     proposals: list[dict[str, Any]], since: datetime | None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -172,7 +370,9 @@ def rewritten_lines(
     ]
 
 
-def handled_since(since: datetime, limit: int = 20) -> list[dict[str, Any]]:
+def handled_since(
+    since: datetime, limit: int = 20, *, include_private: bool = False
+) -> list[dict[str, Any]]:
     """Completed autonomous moves recorded in the audit log since ``since``.
 
     Each item: ``{"kind": event_type sans prefix, "event_type": str,
@@ -181,6 +381,10 @@ def handled_since(since: datetime, limit: int = 20) -> list[dict[str, Any]]:
     ``details`` is the audit row's structured payload (headline, target
     person, evidence ref, new status …) for callers that render more than
     one line. Empty when the audit store is unavailable.
+
+    Rows private to the principal (one that names their contact, say) are
+    left out unless ``include_private``: only the principal's own ``/today``
+    asks for them. The briefs don't, as a written brief can be read by others.
     """
     try:
         from openexecutive.audit.logger import get_audit_logger
@@ -188,7 +392,12 @@ def handled_since(since: datetime, limit: int = 20) -> list[dict[str, Any]]:
         logger_ = get_audit_logger()
         out: list[dict[str, Any]] = []
         for event_type, kind in HANDLED_EVENT_KINDS.items():
-            for ev in logger_.query(event_type=event_type, since=since.isoformat(), limit=limit):
+            for ev in logger_.query(
+                event_type=event_type,
+                since=since.isoformat(),
+                limit=limit,
+                include_private=include_private,
+            ):
                 details = ev.details if isinstance(ev.details, dict) else {}
                 out.append({
                     "kind": kind,
@@ -212,10 +421,39 @@ def build_brief_fingerprint(
     handled: list[dict[str, Any]],
     since: datetime | None,
     pending_watch_suggestions: int = 0,
+    mode: str = "team",
+    live_keys: dict[str, Any] | None = None,
+    reflection_flags: str = "",
+    teammate_changes: str = "",
+    owner_notes: list[Any] | None = None,
+    getting_started: list[str] | None = None,
 ) -> str:
     """Stable hash of everything the brief would say. Deliberately free of
     dates and timestamps so an unchanged day yields the same fingerprint
-    tomorrow (activity is keyed by kind + summary, never by its stamp)."""
+    tomorrow (activity is keyed by kind + summary, never by its stamp).
+
+    ``mode="solo"`` leaves out who is awaiting (the solo brief never says)
+    and carries the mode, so switching mode never suppresses the first brief
+    in the new one as "unchanged". Team fingerprints are unchanged.
+
+    Solo also carries ``due_soon`` (the DUE THIS WEEK items) as
+    ``(loop_id, state)`` pairs — no dates — so a new item, a closed one, or
+    one that falls due today or goes overdue un-suppresses the brief. And
+    the TOP THREE TODAY items by key (in order — no dates, no slot times),
+    plus only a coarse hash of today's calendar (``top_three.calendar_hash``)
+    when one was read, so an unchanged day still suppresses.
+
+    ``live_keys`` (``LiveSignals.keys`` — who wrote and about what, what is
+    stuck, the calendar's shape; no times) and ``reflection_flags`` make the
+    principal's actual world count: a brief is "unchanged" only when no mail
+    came in, nothing got stuck and the day looks the same. Both are carried
+    only when non-empty, so a caller that passes neither keeps its old
+    fingerprint. So is ``teammate_changes`` (the TEAMMATE CORRECTIONS block):
+    a correction a teammate made since the last brief un-suppresses it, since
+    the principal hears of it nowhere else. ``owner_notes`` (the FROM YOUR
+    NOTES keys, ``history_brief.NotesBlock.keys``: note ids and states, no
+    dates) likewise, only when non-empty, and ``getting_started`` (the first
+    week's GETTING STARTED keys, ``first_week.GettingStarted.keys``)."""
     new, carried = split_proposals(today_data.get("proposals", []), since)
     payload = {
         "new": sorted(int(p.get("alert_id") or 0) for p in new),
@@ -243,8 +481,71 @@ def build_brief_fingerprint(
         ),
         "watch_suggestions": int(pending_watch_suggestions),
     }
+    if mode == "solo":
+        payload.pop("awaiting")
+        payload["mode"] = mode
+        due = today_data.get("due_soon") or []
+        if due:
+            # Only when present, so a solo fingerprint with nothing due is
+            # exactly what it was before this block existed.
+            payload["due_soon"] = sorted(
+                (int(d.get("loop_id") or 0), str(d.get("state", ""))) for d in due
+            )
+        top = today_data.get("top_three") or []
+        if top:
+            payload["top_three"] = [str(t.get("key", "")) for t in top]
+        calendar = today_data.get("today_calendar")
+        if isinstance(calendar, dict) and calendar.get("hash"):
+            payload["calendar"] = str(calendar["hash"])
+    if live_keys and any(live_keys.values()):
+        payload["live"] = live_keys
+    if reflection_flags:
+        payload["reflection_flags"] = reflection_flags
+    if teammate_changes:
+        payload["teammate_changes"] = teammate_changes
+    if owner_notes:
+        payload["owner_notes"] = [list(k) if isinstance(k, tuple) else k for k in owner_notes]
+    if getting_started:
+        payload["getting_started"] = sorted(getting_started)
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+_FLAGGED_RE = re.compile(
+    r"\*\*Flagged for the brief:?\*\*:?\s*(.*?)(?=\n\s*\*\*[^*\n]+:?\*\*|\n---|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+_REFLECTION_FLAGS_MAX = 800
+
+
+def reflection_flags_since(since: datetime) -> str:
+    """The "Flagged for the brief" bullets of the latest executive reflection
+    that finished at/after ``since``, or "".
+
+    The reflection runs just before the morning brief and is told to write
+    what the principal should see there; nothing carried it across, so the
+    brief only ever saw an activity line with the run's title. Cut to a few
+    hundred characters. Never raises."""
+    try:
+        from openexecutive.workflows import persistence
+
+        for run in persistence.list_runs(
+            workflow_name="executive_reflection", status="done", limit=3, visible_to=None,
+        ):
+            finished = parse_aware(run.get("updated_at"))
+            if finished is None or finished < since:
+                continue
+            full = persistence.get_run(str(run["run_id"])) or {}
+            match = _FLAGGED_RE.search(str(full.get("artifact") or ""))
+            if match is None:
+                return ""
+            text = match.group(1).strip()
+            if len(text) > _REFLECTION_FLAGS_MAX:
+                text = text[: _REFLECTION_FLAGS_MAX - 1].rstrip() + "…"
+            return text
+    except Exception:
+        logger.debug("brief_state: reflection flags unavailable", exc_info=True)
+    return ""
 
 
 def suppress_unchanged_enabled() -> bool:
@@ -275,14 +576,26 @@ def pending_watch_suggestions() -> int:
 
 
 __all__ = [
+    "BRIEF_KINDS",
+    "CHANNEL_NAMES",
+    "DELIVERY_KINDS",
+    "DELIVERY_PROBLEMS",
     "HANDLED_EVENT_KINDS",
     "REVIEW_EVENT_TYPES",
     "SUPPRESSED_TEMPLATE",
+    "DeliveryOutcome",
+    "DeliveryReason",
+    "describe_problem",
+    "brief_name",
     "build_brief_fingerprint",
+    "channel_phrase",
+    "current_problem",
     "handled_since",
     "last_delivered",
+    "last_delivery_outcome",
     "pending_watch_suggestions",
     "record_delivered",
+    "record_delivery_outcome",
     "rewritten_lines",
     "rewritten_since",
     "scope_for",

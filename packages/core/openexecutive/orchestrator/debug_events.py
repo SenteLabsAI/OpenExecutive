@@ -36,6 +36,11 @@ class DebugCollector:
         logger.info("debug_event kind=%s turn_id=%s data=%s", kind, self.turn_id, data)
         return event
 
+    @property
+    def events(self) -> list[DebugEvent]:
+        """The events emitted so far, oldest first (a copy)."""
+        return list(self._events)
+
     def to_sse_dict(self, event: DebugEvent) -> dict[str, Any]:
         # `turn_id` is always present (possibly null) so client-side types are stable.
         return {

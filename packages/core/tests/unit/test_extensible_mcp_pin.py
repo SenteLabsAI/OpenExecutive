@@ -57,6 +57,22 @@ def test_gateway_freezes_dependency_resolution_with_a_cutoff() -> None:
     assert args[-3:] == ("--from", mcp_gateway._EXTENSIBLE_MCP_GIT, mcp_gateway._EXTENSIBLE_MCP_CMD)
 
 
+# fastembed 0.8.1's PyPI upload time. Any earlier cutoff resolves 0.8.0, which
+# pads to a fixed 128 tokens but truncates at 256, so embedding the Google
+# Workspace tool descriptions raises and the gateway never starts.
+_FASTEMBED_0_8_1_PUBLISHED = "2026-09-22T20:01:22Z"
+
+
+def test_cutoff_admits_the_fastembed_padding_fix() -> None:
+    args = mcp_gateway._EXTENSIBLE_MCP_LAUNCH_ARGS
+    cutoff = args[args.index("--exclude-newer") + 1]
+    # Same fixed-width UTC format (checked above), so string order is time order.
+    assert cutoff > _FASTEMBED_0_8_1_PUBLISHED, (
+        f"cutoff {cutoff} resolves fastembed 0.8.0, whose batch padding breaks the gateway's "
+        "tool index; keep it after fastembed 0.8.1's release"
+    )
+
+
 def test_dockerfile_prewarm_matches_the_gateway_launch() -> None:
     prewarms = _dockerfile_prewarm_args()
     assert prewarms, "docker/Dockerfile no longer pre-warms extensible-mcp with uvx"
@@ -64,4 +80,29 @@ def test_dockerfile_prewarm_matches_the_gateway_launch() -> None:
         f"docker/Dockerfile pre-warms with {prewarms} but the gateway launches with "
         f"{mcp_gateway._EXTENSIBLE_MCP_LAUNCH_ARGS}; the image would cache one set of packages "
         "and resolve another at every start"
+    )
+
+
+# fastembed releases and their PyPI upload times. The gateway's uvx env runs
+# the newest one published before the cutoff; add a release here when you
+# move the cutoff past it.
+_FASTEMBED_RELEASES = {
+    "0.8.1": _FASTEMBED_0_8_1_PUBLISHED,
+    "0.9.0": "2026-10-07T16:38:49Z",
+}
+FASTEMBED_BAKE = re.compile(r'uv pip install --system "fastembed([^"]*)"')
+
+
+def test_dockerfile_bakes_the_model_with_the_runtime_fastembed() -> None:
+    args = mcp_gateway._EXTENSIBLE_MCP_LAUNCH_ARGS
+    cutoff = args[args.index("--exclude-newer") + 1]
+    runtime = max(
+        (v for v, published in _FASTEMBED_RELEASES.items() if published < cutoff),
+        key=lambda v: _FASTEMBED_RELEASES[v],
+    )
+    bakes = FASTEMBED_BAKE.findall(DOCKERFILE.read_text(encoding="utf-8"))
+    assert bakes == [f"=={runtime}"], (
+        f"docker/Dockerfile bakes the tool-search model with fastembed{bakes} but the gateway "
+        f"runs fastembed {runtime}; a cache baked by another version may not load offline, and "
+        "then the gateway times out at startup with no MCP tools"
     )

@@ -48,6 +48,9 @@ from openexecutive.cli.fixture_loader import (
 from openexecutive.cli.fixture_loader import (
     PER_CLIENT_CACHE_TABLES as _PER_CLIENT_CACHE_TABLES,
 )
+from openexecutive.delegation.schema import TABLES as DELEGATION_TABLES
+from openexecutive.memory.history_schema import TABLES as HISTORY_TABLES
+from openexecutive.orchestrator.take_the_lead import TABLES as TAKE_THE_LEAD_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +61,10 @@ logger = logging.getLogger(__name__)
 CLIENT_WORKSPACE_PREFIX = "openexec-client-"
 
 # Tables preserved verbatim across slot restores — operator-level state that
-# does not belong to any one client company.
-_GLOBAL_TABLES = ("generated_fixtures",)
+# does not belong to any one client company. `executive_control` is the
+# global pause switch (scheduler/pause.py): activating a client must never
+# silently un-pause (or re-pause) the Executive.
+_GLOBAL_TABLES = ("generated_fixtures", "executive_control")
 
 # Engagement metadata lives in meta.json — deliberately OUTSIDE the swapped
 # client state, so the practice layer (cockpit, renewal awareness) can see
@@ -112,6 +117,11 @@ _BLANK_WIPE_TABLES = (
     "alerts",
     "mute_topics",
     "user_preferences",
+    # Solo/team mode and the user's time zone (memory.workspace_settings) are
+    # per company, like user_preferences above: a blank client starts on the
+    # defaults (team, no zone) rather than inheriting the previous client's.
+    # Saved slots carry their own row in state.db.
+    "workspace_settings",
     "workflow_runs",
     "audit_log",
     "eval_runs",
@@ -119,10 +129,26 @@ _BLANK_WIPE_TABLES = (
     "watchlist",
     "page_watch_state",
     "outbound_context",
+    # An in-progress setup interview: the previous client's unedited
+    # description and answers (financials included).
+    "onboarding_interviews",
     # Attunement's daily model-call counter (open loops themselves live in
     # scheduled_actions, and sender/feedback columns in chat_messages).
     "attunement_usage",
     "proactive_outcomes",
+    "attunement_profiles",
+    "attunement_profile_history",
+    # Act as me (delegation/): who has it on and each person's "How I write"
+    # — per company like the roster it is keyed on, so a blank client starts
+    # with it off and no profile. (Each person's own-Gmail credential is a
+    # file, not a table, and is re-checked against the roster on every use.)
+    *DELEGATION_TABLES,
+    # Always in the loop (memory/history.py): notes about this company's
+    # people and conversations, and their switches.
+    *HISTORY_TABLES,
+    # Take the lead (orchestrator/take_the_lead.py): its switches, rules and
+    # log, per company.
+    *TAKE_THE_LEAD_TABLES,
     # Legacy talent / staff-onboarding tables. Both features are gone and
     # nothing writes these any more, but the rows may still exist on upgraded
     # installs and they carry candidate PII (names, employers, screening
@@ -141,6 +167,15 @@ _BLANK_WIPE_TABLES = (
     "agent_overrides",
     "review_annotations",
     "review_items",
+    # Roster requests (people.roster_requests) name who wrote to this
+    # company, and aliases are its people's addresses: children first.
+    "roster_ack_log",
+    "roster_request_messages",
+    "roster_requests",
+    # Telegram chats the bot has seen (integrations.telegram_chats): names
+    # of who wrote to this company's bot, for its People pickers.
+    "telegram_chats",
+    "person_emails",
     "person_authority_scope",
     "person_availability",
     "people",
@@ -380,12 +415,10 @@ async def _restore_slot_state(
         # Generated (seed) slots carry people.yaml / departments.yaml /
         # memory.json from the intake draft — apply them with the fixture
         # loader's seeders (people first so memory + department heads can
-        # resolve person ids by name), then layer the boot-time defaults on
-        # top, skipping the default org when the draft supplied one.
+        # resolve person ids by name), then layer the boot-time scheduled
+        # rows on top.
         seeded = _seed_from_slot_files(settings, slot)
-        _reseed_blank_defaults(
-            seed_departments=not bool(seeded.get("departments_seeded"))
-        )
+        _reseed_blank_defaults()
 
     # 2. Company directory artifacts.
     from openexecutive.memory.company_profile import CompanyProfile
@@ -558,8 +591,10 @@ def _ensure_schemas() -> None:
     from openexecutive.knowledge.review_store import ReviewStore
     from openexecutive.memory.episodic import cancel_orphaned_talent_reminders
     from openexecutive.memory.episodic import initialize_db as init_episodic
+    from openexecutive.memory.workspace_settings import init_workspace_settings_db
     from openexecutive.monitoring.store import initialize_db as init_monitoring
     from openexecutive.people.store import initialize_db as init_people
+    from openexecutive.scheduler.pause import initialize_pause_db
 
     # Pass the path explicitly everywhere: some initializers bind their
     # DB_PATH default at import time, which would ignore a runtime override.
@@ -574,12 +609,24 @@ def _ensure_schemas() -> None:
     else:
         if swept:
             logger.info("client-slots: cancelled %d orphaned talent reminder(s)", swept)
+    try:
+        from openexecutive.memory.conversations import split_existing_streams
+
+        split_existing_streams(db_path=db_path)
+    except Exception:
+        logger.exception("client-slots: chat-app conversation split failed")
     init_alerts(db_path)
     init_fixtures(db_path)
     initialize_overrides_db(db_path)
     init_people(db_path)
     init_departments(db_path)
     init_monitoring(db_path)
+    # A slot saved before workspace settings existed has no table; create it
+    # so the slot reads as the defaults.
+    init_workspace_settings_db(db_path)
+    # Before _restore_global_tables: a slot saved before the pause switch
+    # existed lacks the table, and the restore skips tables it can't find.
+    initialize_pause_db(db_path)
     ReviewStore.initialize_db(db_path)
     # Register shipped knowledge as trusted defaults too — without this a
     # freshly activated slot has an empty review_items table until the next
@@ -605,24 +652,17 @@ def _ensure_schemas() -> None:
     ReviewStore.backfill_trusted_defaults(db_path)
 
 
-def _reseed_blank_defaults(*, seed_departments: bool = True) -> None:
-    """Blank slot = factory state: default org + the boot-time scheduled rows.
+def _reseed_blank_defaults() -> None:
+    """Blank slot = factory state: the boot-time scheduled rows.
 
     Mirrors ``reset_all_state`` step 5/5a — without these the new client's
     Today page stays blank until the next process restart. Every call is
-    idempotent and individually guarded. ``seed_departments=False`` skips the
-    default 8-department org (used when a generated seed slot supplied its
-    own departments — the cadence/brief bootstraps still run and pick those
-    up from the table).
+    idempotent and individually guarded. No departments are created: a blank
+    slot starts with none, like a new install, and a generated seed slot's
+    own departments (if any) are picked up by the cadence bootstrap.
     """
     from openexecutive.config import get_settings
-    from openexecutive.departments.store import seed_default_departments
 
-    if seed_departments:
-        try:
-            seed_default_departments()
-        except Exception:
-            logger.exception("client-slots: seed_default_departments failed")
     try:
         from openexecutive.scheduler.runner import seed_principal_briefs
 
@@ -672,7 +712,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     can stub the vector layer without touching the file/DB round-trip logic.
     """
     from openexecutive.knowledge.loader import ingest_file
-    from openexecutive.knowledge.skills_index import SKILLS_COLLECTION, index_skill
+    from openexecutive.knowledge.skills_index import (
+        SKILLS_COLLECTION,
+        index_skill,
+        sync_builtin_skill_index,
+    )
     from openexecutive.knowledge.skills_repo import list_skills
     from openexecutive.knowledge.store import ChromaDBStore
 
@@ -683,6 +727,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         where={"type": "recent_research"},
     )
+    # Indexed artifacts (orchestrator/artifact_tools.py) share that collection.
+    store.delete_documents(
+        collection=ChromaDBStore.RESEARCH_COLLECTION,
+        where={"type": "artifact"},
+    )
     store.delete_notion_docs()
     # Inbound attachments are per-company too, and no longer swept by
     # delete_company_docs above now that they live in their own collection.
@@ -690,6 +739,20 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
     from openexecutive.knowledge.notion_sync import reset_local_state
 
     reset_local_state(profile_path=settings.company_profile_path)
+    # Synced Drive and OneDrive files are per-company too, like Notion's.
+    store.delete_drive_docs()
+    from openexecutive.knowledge import drive_sync
+
+    drive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    store.delete_onedrive_docs()
+    from openexecutive.knowledge import onedrive_sync
+
+    onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    # And synced Confluence pages.
+    store.delete_confluence_docs()
+    from openexecutive.knowledge import confluence_sync
+
+    confluence_sync.reset_local_state(profile_path=settings.company_profile_path)
 
     company_docs_dir: Path = settings.company_profile_path.parent / "docs"
     docs_indexed = 0
@@ -717,6 +780,11 @@ async def _rebuild_vector_state(settings: Any, app_state: Any | None) -> int:
                 index_skill(skill, store)
             except Exception:
                 logger.exception("client-slots: reindex skill failed")
+    # The restored client may hide or customize different built-ins.
+    try:
+        sync_builtin_skill_index(store)
+    except Exception:
+        logger.exception("client-slots: reconcile built-in skills failed")
 
     if app_state is not None and hasattr(app_state, "store"):
         app_state.store = ChromaDBStore(persist_directory=settings.vector_store_path)

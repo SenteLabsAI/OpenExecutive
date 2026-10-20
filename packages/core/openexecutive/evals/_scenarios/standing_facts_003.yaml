@@ -1,0 +1,27 @@
+id: standing_facts_003
+domain: operations
+description: "Executive uses teammates' attributed standing facts: credits Sam Lee's Cedar Court correction when asked where the figures come from, and where Kim Park's line conflicts with the principal's own (unmarked) fact, the principal's figure wins"
+company_context:
+  name: "Northwind Properties"
+  industry: "Residential property management"
+  stage: "Growth"
+  headcount: 60
+  arr: 9000000
+# Rendered under the shared STANDING FACTS header (evals.runner.
+# scenario_standing_facts), in the shape memory/facts.render_facts_for_prompt
+# produces: a teammate's line ends "(per <name>)", the principal's is unmarked.
+standing_facts: |
+  - [fact 16] Maple House units per lease: Maple House has 50 units. (per Kim Park) — 2026-09-26
+  - [fact 14] Cedar Court unit count: Cedar Court has 38 units. (corrects: Cedar Court has 36 units.) (per Sam Lee) — 2026-09-25
+  - [fact 12] Maple House unit count: Maple House has 48 units. (corrects: 52 units) — 2026-09-21
+query: "For the lender pack I need the unit count for Maple House and Cedar Court, and a note on who confirmed each figure."
+expected_topics:
+  - maple_house_48_units
+  - cedar_court_38_units
+  - sam_lee_confirmed_cedar_court
+quality_criteria:
+  uses_principal_figure_on_conflict: true   # Maple House is 48 (the principal's), never 50 (Kim's line)
+  uses_teammate_correction: true            # Cedar Court is 38, not 36
+  credits_the_teammate: true                # names Sam Lee as the source of the Cedar Court figure
+  does_not_attribute_principal_fact_to_a_teammate: true
+  no_memory_meta_talk: true                 # never "my standing facts say" / "as stored"

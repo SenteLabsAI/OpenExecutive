@@ -36,7 +36,7 @@ from openexecutive.people.models import AuthorityScope
 # Org-facing specialist keys a department may map to. Anything else (or None)
 # renders as an informational department. Mirrors orchestrator.router's
 # user-facing specialists; board_comms/triage are internal and excluded.
-ALLOWED_SPECIALIST_KEYS = {"cso", "cfo", "chro", "gc", "coo", "cmo", "cpo"}
+ALLOWED_SPECIALIST_KEYS = {"cso", "cfo", "chro", "gc", "coo", "cmo", "cpo", "sales"}
 
 _SAFE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _VALID_SCOPES = {s.value for s in AuthorityScope}
@@ -718,6 +718,7 @@ async def _generate_bundle(
     if not description or not description.strip():
         raise GenerationError("scenario description is empty")
 
+    from openexecutive.audit.usage import log_model_usage
     from openexecutive.providers.registry import get_provider
 
     resolved_model = model if model is not None else agent.effective_model()
@@ -744,6 +745,7 @@ async def _generate_bundle(
             tool_choice={"type": "tool", "name": "emit_fixture"},
             messages=messages,
         )
+        log_model_usage(response, model=resolved_model, actor=agent.name, iteration=attempt)
         raw = _extract_tool_input(response)
         try:
             bundle = FixtureBundle.model_validate(raw)

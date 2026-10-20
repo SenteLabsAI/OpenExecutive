@@ -16,7 +16,7 @@ openexecutive/
 │   ├── core/                         # Python backend
 │   │   └── openexecutive/
 │   │       ├── orchestrator/         # Executive persona + routing loop
-│   │       ├── agents/               # 8 specialist agents + triage
+│   │       ├── agents/               # 9 specialist agents + triage
 │   │       ├── knowledge/            # ChromaDB store + RAG pipeline
 │   │       ├── memory/               # Company profile + episodic memory
 │   │       ├── onboarding/           # Conversational interview + commit; wizard fallback
@@ -44,7 +44,7 @@ openexecutive/
 | LLM backbone | Anthropic Claude API | Native tool use, prompt caching, streaming |
 | Default model | `claude-sonnet-4-6` | Best speed/quality ratio for most queries |
 | Deep reasoning | `claude-opus-4-7` | Strategy, finance, legal, board — high-stakes decisions |
-| Routing / extraction | `claude-haiku-4-5-20251001` | Intent routing and background memory extraction |
+| Routing / extraction | `claude-haiku-5-5` | Intent routing and background memory extraction |
 | Backend | Python + FastAPI | Async-native, Pydantic models, auto OpenAPI docs |
 | Package manager | `uv` | Fast, reproducible |
 | Vector store | ChromaDB (local) | Zero-config embedded DB |
@@ -77,6 +77,7 @@ The internal routing is implemented as a `consult_specialist` tool — the model
 | Chief Operating Officer | `coo` | `claude-sonnet-4-6` | Process, vendor management, operational scaling |
 | Chief Marketing Officer | `cmo` | `claude-sonnet-4-6` | GTM, brand, messaging, PR, crisis comms |
 | Chief Product Officer | `cpo` | `claude-sonnet-4-6` | Roadmap, prioritization, product strategy |
+| Head of Sales | `sales` | `DEFAULT_MODEL` | Pipeline, qualification, founder-led sales, pricing conversations, proposals, forecasting |
 | Board Comms Director | `board_comms` | `claude-opus-4-7` | Board decks, investor relations, governance |
 
 CSO, CFO, GC, and Board Comms use `extended-thinking` (`budget_tokens: 8000`) for deeper reasoning on high-stakes decisions.
@@ -160,14 +161,17 @@ Curated MBA-level content seeded into ChromaDB at startup:
 | Domain | Content |
 |---|---|
 | Strategy | Competitive analysis frameworks, OKR methodology |
-| Finance | Unit economics, LTV/CAC, fundraising playbooks |
-| HR | Hiring scorecards, comp philosophy, performance management |
-| Legal | Startup legal basics, employment, IP, contracts |
+| Finance | Unit economics, LTV/CAC, fundraising playbooks, running a bootstrapped business on cash |
+| HR | Hiring scorecards, comp philosophy, performance management, first contractor vs. first employee |
+| Legal | Startup legal basics, employment, IP, contracts, contractor agreements and IP assignment |
 | Operations | Scaling frameworks, vendor management |
-| Marketing | GTM playbooks, brand strategy |
+| Marketing | GTM playbooks, brand strategy, pricing a solo offer |
+| Sales | Founder-led sales, qualification and pipeline, proposals and pricing conversations, follow-up and forecasting |
 | Board | Board communication, investor relations, governance |
 
-Collection: `builtin_knowledge`. Seeded once at startup, idempotent.
+Collection: `builtin_knowledge`. Seeded at startup: the whole tree on first boot, then on every later boot only the shipped docs (`knowledge/shipped_manifest.py`) that have no chunks yet, so docs added in a new release reach existing installs. Idempotent.
+
+Specialists also receive the company's stage (from `company/profile.yaml`) as a `<company_stage>` block in their user turn — never in their cached system prompt — so stage-sensitive advice (venture benchmarks vs. cash-first for a bootstrapped company) does not depend on the Executive restating it.
 
 ### Layer 2 — Company-Specific Knowledge
 
@@ -209,6 +213,7 @@ Domain aliases per specialist (`DOMAIN_ALIASES` in `knowledge/retriever.py`):
 | coo | operations, finance |
 | cmo | marketing, strategy |
 | cpo | product, strategy |
+| sales | sales, marketing |
 | board_comms | board, finance, strategy |
 
 ---
@@ -234,13 +239,13 @@ scheduled_actions (id, title, prompt, scheduled_for, status, channel_ref, ...)
 
 **Read path:** `format_for_prompt()` returns the 8 most recent decisions and all active initiatives as a `<past_decisions>` block, injected into the user turn at session start.
 
-**Write path — LLM extraction:** After every Executive response, `schedule_extraction()` fires a background task that calls `claude-haiku-4-5-20251001` with a structured `store_memories` tool. Haiku decides whether the turn contains anything worth remembering and extracts it into typed fields. Results are written to SQLite without blocking the response stream.
+**Write path — LLM extraction:** After every Executive response, `schedule_extraction()` fires a background task that calls `claude-haiku-5-5` with a structured `store_memories` tool. Haiku decides whether the turn contains anything worth remembering and extracts it into typed fields. Results are written to SQLite without blocking the response stream.
 
 ```
 User message + Executive response
         │
         ▼ (background, non-blocking)
-claude-haiku-4-5-20251001 (tool_choice: auto)
+claude-haiku-5-5 (tool_choice: auto)
         │
         └── store_memories tool call (if anything worth keeping)
                 ├── decisions[]   → store_decision()
@@ -313,7 +318,7 @@ AlertEvent (source, subject, body, external_id)
         │
         ▼ store.is_duplicate(external_id) → skip if seen
         │
-        ▼ TriageAgent.evaluate(event)  [claude-haiku-4-5-20251001]
+        ▼ TriageAgent.evaluate(event)  [claude-haiku-5-5]
         │   → TriageDecision(alert=bool, severity, summary, suggested_action)
         │
         ▼ alert=True → store.create_alert() → dispatcher.send(channels)
@@ -328,7 +333,7 @@ AlertEvent (source, subject, body, external_id)
 
 Pre-built multi-step executive deliverables. Each workflow is a subclass of `WorkflowBase` that streams `WorkflowEvent` objects — plan steps first, then intermediate summaries, then a final Markdown artifact.
 
-### Available workflows (18)
+### Available workflows (19)
 
 | Workflow | Section |
 |---|---|
@@ -339,6 +344,7 @@ Pre-built multi-step executive deliverables. Each workflow is a subclass of `Wor
 | `annual_plan` | Operating Cadence |
 | `quarterly_plan` | Operating Cadence |
 | `mbr` (monthly business review) | Operating Cadence |
+| `weekly_review` (a system workflow: in solo mode the scheduler runs it every Friday afternoon and sends it to the principal — goals graded by area, what's due, quiet projects, the week's decisions, older decisions to revisit, next week's top three) | Operating Cadence |
 | `competitive_teardown` | Growth & GTM |
 | `gtm_launch` | Growth & GTM |
 | `pricing_review` | Growth & GTM |
@@ -498,30 +504,43 @@ Async Bolt app in socket mode, embedded in the FastAPI lifespan (no separate pro
 
 Required env vars: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
 
+Or events over HTTP: with `SLACK_SIGNING_SECRET` set and no `SLACK_APP_TOKEN`, the same Bolt app takes Slack's Events API at `POST /webhook/slack` (`integrations/slack_events.py`). The route checks each request's signature (and refuses one older than five minutes) before Bolt or any listener sees it, answers Slack's URL check, and acknowledges at once. The app subscribes to `app_mention`, `message.im`, `message.channels` and `message.groups`, with the scopes `app_mentions:read`, `im:history`, `channels:history` and `groups:history`. In either mode a repeated event id is dropped (Slack resends an event it thinks went unacknowledged) and so is an event delivered for another workspace.
+
+Files a rostered sender shares (PDFs, Word, spreadsheets, text, images) are read into the turn — scanned PDFs converted to text — which needs the bot's **`files:read`** scope. Without it the message still gets a reply, but its files come back unreadable.
+
+A thread follow-up the response gate decides wasn't meant for the bot gets an :eyes: reaction, which needs the **`reactions:write`** scope. Without it the skip is still recorded in the audit log, just with no reaction.
+
+The People and department pages pick Slack people and channels by name (`integrations/chat_directory.py`, `GET /chat-directory/*`). That needs **`users:read`** and **`users:read.email`** (people, and matching a person by work email) and **`channels:read`** / **`groups:read`** (public channels, and the private ones the bot is in). Without them the pickers show only the by-hand ID field. Discord's member list needs the bot's **Server Members** privileged intent (Developer Portal → Bot); without it Discord people are entered by ID. Telegram can't list chats, so the pickers offer the chats the bot has seen a message from (recorded only with `TELEGRAM_WEBHOOK_SECRET` set).
+
 ### Email Poller
 `integrations/email_poller.py`
 
 Polls the configured Gmail inbox via Gmail MCP OAuth every `EMAIL_POLL_INTERVAL_SECONDS` (default 60s). Parses email threads and routes them through the triage pipeline before deciding whether to surface them as alerts or respond directly. Outbound replies are sent via Gmail MCP.
 
+For a sender the principal knows (the team, a contact, the principal), up to five document attachments per email (PDF, Word, Excel, CSV, text, 20 MB each) are downloaded and their text added to the turn, scanned PDFs converted. An unknown sender's attachments are only listed.
+
 Required env var: `EXEC_EMAIL_ADDRESS`  
 Optional: `EMAIL_POLL_INTERVAL_SECONDS`
 
-**Access control**: roster-driven. A sender's address must match the `email` field of a non-archived Person row to receive a response; unknown senders are silently dropped and marked read. Manage via the /people UI.
+**Access control**: inbound is **not** roster-gated. Mail from a sender who isn't on the People roster still reaches the Executive — prefixed with a `[POLICY]` notice and audited as `integration_inbound` with `outcome=accepted_non_roster` — so it can be triaged, logged, or raised as an alert. What it cannot do is auto-reply: the outbound Gmail gate (`orchestrator.mcp_gateway._check_gmail_recipients`) refuses any send whose recipient isn't a non-archived Person's `email`. Self-sent mail and automated senders (noreply, mailer-daemon, postmaster) are skipped before routing. Manage the roster via the /people UI.
 
 ### Telegram Bot
 `integrations/telegram_bot.py`
 
-Webhook-based bot registered via FastAPI (`POST /webhook/telegram`). Validates incoming requests against `TELEGRAM_WEBHOOK_SECRET` using HMAC. Splits long responses at paragraph boundaries to stay within Telegram's 4096-char limit.
+Webhook-based bot registered via FastAPI (`POST /webhook/telegram`). When `TELEGRAM_WEBHOOK_SECRET` is set, rejects (401) any request whose `X-Telegram-Bot-Api-Secret-Token` header doesn't match it (constant-time comparison) — and every request while the secret has characters Telegram can't send (only 1–256 of `A-Z a-z 0-9 _ -`), since only a guess could match it. Splits long responses at paragraph boundaries to stay within Telegram's 4096-char limit.
 
 Required env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`
 
 **Access control**: roster-driven. A sender's chat_id must match the `telegram_chat_id` field of a non-archived Person row to receive a response.
 
-Setup: register the webhook once with Telegram after the API is deployed:
+Setup: register the webhook once with Telegram after the API is deployed, passing the same secret as `secret_token` — without it Telegram sends no header and every update gets a 401:
 ```bash
 curl -F "url=https://your-api-host/webhook/telegram" \
-  "https://api.telegram.org/bot<TOKEN>/setWebhook"
+  -F "secret_token=$TELEGRAM_WEBHOOK_SECRET" \
+  "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook"
 ```
+
+See [docs/telegram_setup.md](telegram_setup.md) for full setup instructions.
 
 ### Google Chat
 `integrations/google_chat.py`
@@ -531,10 +550,9 @@ Webhook-based integration registered via FastAPI (`POST /webhook/google-chat`). 
 Three auth modes (selected by which env vars are set):
 1. **Key file** (`GOOGLE_CHAT_SERVICE_ACCOUNT_FILE`) — standard SA JSON key; blocked by some org policies
 2. **Impersonation** (`GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL`, no key file) — uses ADC to impersonate the SA
-3. **ADC direct** — neither var set; ambient credential must already be the Chat bot SA
+3. **ADC direct** — neither var set; ambient credential must already be the Chat bot SA. `_build_credentials` supports this, but the webhook currently rejects it: it returns 503 unless one of the two vars above is set.
 
-Required env var: `GOOGLE_CHAT_PROJECT_NUMBER`  
-Optional: `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE`, `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL`
+Required env vars: `GOOGLE_CHAT_PROJECT_NUMBER`, plus one of `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` / `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL`
 
 See [docs/google_chat_setup.md](google_chat_setup.md) for full setup instructions.
 
@@ -548,8 +566,8 @@ All settings via environment variables (`.env` file in `packages/core/`).
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key |
 | `DEFAULT_MODEL` | No | `claude-sonnet-4-6` | Model for Executive + most specialists |
-| `DEEP_REASONING_MODEL` | No | `claude-opus-4-7` | Model for CSO, CFO, GC, Board |
-| `ROUTING_MODEL` | No | `claude-haiku-4-5-20251001` | Model for intent routing and memory extraction |
+| `DEEP_REASONING_MODEL` | No | `claude-sonnet-5-5` | Model for CSO, CFO, GC, Board |
+| `ROUTING_MODEL` | No | `claude-haiku-5-5` | Model for intent routing and memory extraction |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB persistence directory |
 | `COMPANY_PROFILE_PATH` | No | `./company/profile.yaml` | Company profile location |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory, alerts, audit, scheduler |
@@ -558,18 +576,24 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | `SCHEDULER_POLL_INTERVAL_SECONDS` | No | `30` | Scheduler poll frequency |
 | `SLACK_BOT_TOKEN` | No | — | Slack bot OAuth token |
 | `SLACK_APP_TOKEN` | No | — | Slack socket mode token |
-| `EXEC_EMAIL_ADDRESS` | No | — | Executive Gmail address (Gmail MCP OAuth) |
+| `SLACK_SIGNING_SECRET` | No | — | Slack signing secret: hear Slack over HTTP at `/webhook/slack` instead of socket mode |
+| `EXEC_EMAIL_ADDRESS` | Yes | — | Executive Gmail address (Gmail MCP OAuth) |
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | Email poll frequency |
+| `EMAIL_TURN_TIMEOUT_S` | No | `300` | Ceiling on the Executive's answer to one inbound email; past it the message is marked read and skipped |
+| `MCP_TOOL_TIMEOUT_S` | No | `120` | Ceiling on one MCP gateway call (Gmail, Calendar, Drive, Outlook, OneDrive) |
+| `CHAT_STREAM_KEEPALIVE_S` | No | `15` | Interval of the SSE keepalive comment on a quiet chat stream; 0 turns it off |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token |
-| `TELEGRAM_WEBHOOK_SECRET` | No | — | HMAC secret for webhook validation |
+| `TELEGRAM_WEBHOOK_SECRET` | No | — | Must match the `secret_token` given to `setWebhook`; checked against `X-Telegram-Bot-Api-Secret-Token` |
 | `GOOGLE_CHAT_PROJECT_NUMBER` | No | — | GCP project number |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | No | — | Path to SA JSON key |
-| `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` | No | — | SA email for ADC impersonation |
+| `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | No | — | Path to SA JSON key (Google Chat needs this or `_EMAIL`) |
+| `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` | No | — | SA email for ADC impersonation (Google Chat needs this or `_FILE`) |
 | `GOOGLE_OAUTH_CLIENT_ID` | No | — | Google OAuth client ID (Gmail MCP) |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | No | — | Google OAuth client secret (Gmail MCP) |
 | `MCP_ENABLED` | No | `false` | Enable MCP tool gateway |
 | `UI_BASE_URL` | No | `http://localhost:3000` | Base URL for UI links in notifications |
-| `USER_TIMEZONE` | No | `UTC` | Timezone for scheduler and alerts |
+| `USER_TIMEZONE` | No | `UTC` | Fallback IANA zone when the user has not set one through `PUT /workspace`: brief and reflection times, "tomorrow at 9" in chat, open-loop due dates, default alert quiet hours |
+| `PRINCIPAL_BRIEF_MORNING_TIME` / `PRINCIPAL_BRIEF_EOD_TIME` / `PRINCIPAL_REFLECTION_TIME` | No | `08:00` / `18:00` / `07:30` local | Unset (or not a valid `HH:MM`): that time in the user's zone. Set to a valid `HH:MM`: read as **UTC**, as before zones existed |
+| `PRINCIPAL_WEEKLY_REVIEW_TIME` | No | `weekly@fri@16:00` local | Solo mode only. Unset (or not a valid `weekly@DOW@HH:MM`): Friday 16:00 in the user's zone. Set to a valid spec: read as **UTC**, like the times above |
 
 See [../.env.example](../.env.example) for the full list.
 
@@ -626,7 +650,7 @@ class YourAgent(BaseAgent):
 
 5. Add knowledge docs to `knowledge/builtin/your_domain/`
 
-6. Add at least 2 eval scenarios to `evals/scenarios/`
+6. Add at least 2 eval scenarios to `packages/core/openexecutive/evals/_scenarios/`
 
 7. Submit PR — CI requires all of the above.
 

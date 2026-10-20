@@ -11,20 +11,30 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  DynamicWorkflowDef,
   WorkflowMeta,
   WorkflowRunSummary,
   WorkflowSection,
   deleteCustomWorkflow,
   deleteWorkflowRun,
+  listCustomWorkflows,
   listWorkflowRuns,
   listWorkflows,
 } from "@/lib/api";
+import StartHere from "@/components/jobs/StartHere";
+import { buttonClass } from "@/components/ui/Button";
+import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
+import SidePanel from "@/components/ui/SidePanel";
+import { formatRelativeTime } from "@/lib/relativeTime";
 import {
   RunBucket,
   runStatusBadgeColor,
   runStatusBucket,
   runStatusLabel,
 } from "@/lib/runStatus";
+import { cadenceLabel, cardAction, lastRunAt } from "@/lib/workflowCards";
+import { starterPicksFor } from "@/lib/workflowStarters";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 
 const SECTION_ORDER: WorkflowSection[] = [
   "Board",
@@ -36,19 +46,39 @@ const SECTION_ORDER: WorkflowSection[] = [
   "Operating Cadence",
 ];
 
-const SECTION_BLURB: Record<WorkflowSection, string> = {
-  Board: "Decks, memos, and talking points for your board meetings.",
-  "Capital & Investors":
-    "Materials for raising capital and reporting to investors.",
-  "Growth & GTM":
-    "Positioning, launches, pricing, and competitive plays.",
-  Product: "Strategy memos, retention and product decisions.",
-  People: "Hiring, performance, org design, and compensation.",
-  "Risk, Legal & Crisis":
-    "Risk register, M&A diligence, and crisis-comms preparation.",
-  "Operating Cadence":
-    "The monthly, quarterly, and annual rhythm of running the company.",
+// Chip labels for the ready-made list. "All" hides the background
+// (system-run) jobs; they get their own chip so the default view is only what
+// a user starts by hand. Custom workflows have their own list on the page.
+type SectionFilter = "all" | "system" | WorkflowSection;
+
+const SECTION_CHIP_LABEL: Record<WorkflowSection, string> = {
+  Board: "Board",
+  "Capital & Investors": "Capital",
+  "Growth & GTM": "Growth & GTM",
+  Product: "Product",
+  People: "People",
+  "Risk, Legal & Crisis": "Risk & Legal",
+  "Operating Cadence": "Operating",
 };
+
+function isSectionFilter(v: string | null): v is SectionFilter {
+  return (
+    v === "all" ||
+    v === "system" ||
+    (SECTION_ORDER as string[]).includes(v ?? "")
+  );
+}
+
+/** Which chip a workflow belongs to. Background jobs only ever show under "System". */
+function inSectionFilter(w: WorkflowMeta, f: SectionFilter): boolean {
+  if (f === "system") return !!w.background;
+  if (w.background) return false;
+  if (f === "all") return true;
+  return w.section === f;
+}
+
+// Runs shown per workflow group before "Show more".
+const RUNS_PER_GROUP = 5;
 
 type Tab = "catalog" | "runs";
 type RunStatus = RunBucket;
@@ -62,20 +92,10 @@ function isStatus(v: string | null): v is RunStatus {
   );
 }
 
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
 function statusBadge(status: string) {
   return (
     <span
-      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ring-1 ${runStatusBadgeColor(status)}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ring-1 ${runStatusBadgeColor(status)}`}
     >
       {runStatusLabel(status)}
     </span>
@@ -112,21 +132,37 @@ function JobsPageInner() {
     : "catalog";
   const statusParam = searchParams.get("status");
   const status: RunStatus | null = isStatus(statusParam) ? statusParam : null;
+  const sectionParam = searchParams.get("section");
+  const section: SectionFilter = isSectionFilter(sectionParam) ? sectionParam : "all";
+  // The ready-made list opens in a side panel; a chip in the URL means
+  // someone was already browsing it.
+  const browsing = searchParams.get("browse") === "1" || section !== "all";
 
   const [workflows, setWorkflows] = useState<WorkflowMeta[]>([]);
+  // All custom workflows, for their schedule and on/off state. Switched-off
+  // ones (e.g. saved from chat with tool steps) aren't runnable, so they are
+  // absent from `workflows` until someone turns them on.
+  const [customDefs, setCustomDefs] = useState<DynamicWorkflowDef[]>([]);
   const [runs, setRuns] = useState<WorkflowRunSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [runsQuery, setRunsQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [wfs, rs] = await Promise.all([listWorkflows(), listWorkflowRuns()]);
+      const [wfs, rs, custom] = await Promise.all([
+        listWorkflows(),
+        listWorkflowRuns(),
+        // Schedules and the switched-off list — never fail the whole page over it.
+        listCustomWorkflows().catch(() => [] as DynamicWorkflowDef[]),
+      ]);
       setWorkflows(wfs);
       setRuns(rs);
+      setCustomDefs(custom);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -157,7 +193,7 @@ function JobsPageInner() {
     return c;
   }, [runs]);
 
-  // Default the runs sub-tab once data is loaded and ?status is missing/invalid.
+  // Default the runs status once data is loaded and ?status is missing/invalid.
   // Ref guard ensures we only auto-set on the first eligible render, so a user
   // who explicitly navigates back to ?tab=runs without ?status isn't overridden
   // mid-interaction and StrictMode double-invocation doesn't double-write.
@@ -198,83 +234,126 @@ function JobsPageInner() {
     [refresh]
   );
 
+  const readyMade = workflows.filter((w) => !w.is_custom);
+  const readyMadeCount = readyMade.filter((w) => !w.background).length;
+  const offWorkflows = customDefs.filter((d) => !d.is_active);
+  const ownWorkflows = workflows.filter((w) => w.is_custom && !w.background);
+  const openRuns = runCounts.active + runCounts.awaiting;
+
   return (
     <>
-      <div className="flex items-center gap-1 border-b border-line mb-6">
-            <TabButton
-              active={tab === "catalog"}
-              onClick={() => setParam({ tab: "catalog" })}
-              label="Catalog"
-              count={workflows.length}
-            />
-            <TabButton
-              active={tab === "runs"}
-              onClick={() => setParam({ tab: "runs" })}
-              label="Runs"
-              count={runs.length}
-            />
-          </div>
+      {tab === "catalog" && (
+        <StartHere
+          readyMadeCount={readyMadeCount}
+          onBrowseReadyMade={() => setParam({ browse: "1" })}
+        />
+      )}
 
-          {loading && (
-            <div className="text-sm text-fg-muted">Loading jobs…</div>
-          )}
-          {error && (
-            <div className="text-sm text-red-400 mb-4">Error: {error}</div>
-          )}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-bold tracking-tight text-fg">
+          {tab === "runs" ? "Runs" : "Your workflows"}
+        </h2>
+        <ViewSwitch
+          tab={tab}
+          runsLabel={openRuns > 0 ? `Runs (${openRuns} open)` : `Runs (${runs.length})`}
+          onChange={(t) => setParam({ tab: t === "catalog" ? null : t })}
+        />
+      </div>
 
-          {!loading && tab === "catalog" && (
-            <CatalogView
-              workflows={workflows}
-              query={catalogQuery}
-              onQueryChange={setCatalogQuery}
-              onDeleteCustom={handleDeleteCustom}
-            />
-          )}
+      {loading && (
+        <div className="text-[15px] text-fg-muted">Loading workflows…</div>
+      )}
+      {error && (
+        <div className="mb-4 text-[15px] text-red-400">Error: {error}</div>
+      )}
 
-          {!loading && tab === "runs" && (
-            <RunsView
-              runs={runs}
-              counts={runCounts}
-              status={status ?? "active"}
-              onStatusChange={(s) => setParam({ status: s })}
-              query={runsQuery}
-              onQueryChange={setRunsQuery}
-              workflowTitleMap={workflowTitleMap}
-              collapsed={collapsed}
-              onToggleCollapsed={(key) =>
-                setCollapsed((c) => ({ ...c, [key]: !c[key] }))
-              }
-              onDelete={handleDelete}
-            />
-          )}
+      {!loading && tab === "catalog" && (
+        <YourWorkflows
+          workflows={ownWorkflows}
+          offWorkflows={offWorkflows}
+          customDefs={customDefs}
+          runs={runs}
+          onDeleteCustom={handleDeleteCustom}
+          onBrowse={() => setParam({ browse: "1" })}
+        />
+      )}
+
+      {!loading && tab === "runs" && (
+        <RunsView
+          runs={runs}
+          counts={runCounts}
+          status={status ?? "active"}
+          onStatusChange={(s) => setParam({ status: s })}
+          query={runsQuery}
+          onQueryChange={setRunsQuery}
+          workflowTitleMap={workflowTitleMap}
+          collapsed={collapsed}
+          onToggleCollapsed={(key) =>
+            setCollapsed((c) => ({ ...c, [key]: !c[key] }))
+          }
+          expanded={expanded}
+          onExpand={(key) => setExpanded((c) => ({ ...c, [key]: true }))}
+          onDelete={handleDelete}
+        />
+      )}
+
+      <SidePanel
+        open={browsing && !loading}
+        onClose={() => setParam({ browse: null, section: null })}
+        title="Ready-made workflows"
+        subtitle="Templates you can run as they are: fill in a few details and go."
+        width="lg"
+      >
+        <CatalogView
+          workflows={readyMade}
+          query={catalogQuery}
+          onQueryChange={setCatalogQuery}
+          section={section}
+          onSectionChange={(s) =>
+            setParam({ browse: "1", section: s === "all" ? null : s })
+          }
+        />
+      </SidePanel>
     </>
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  label,
-  count,
+/** Your workflows · Runs: one control, beside the list's heading. */
+function ViewSwitch({
+  tab,
+  runsLabel,
+  onChange,
 }: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  count: number;
+  tab: Tab;
+  runsLabel: string;
+  onChange: (t: Tab) => void;
 }) {
+  const items: { key: Tab; label: string }[] = [
+    { key: "catalog", label: "Your workflows" },
+    { key: "runs", label: runsLabel },
+  ];
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`-mb-px px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-        active
-          ? "border-indigo-500 text-fg"
-          : "border-transparent text-fg-muted hover:text-fg"
-      }`}
+    <div
+      role="group"
+      aria-label="Show"
+      className="inline-flex max-w-full overflow-x-auto rounded-xl border border-line bg-surface-elevated p-1"
     >
-      {label}
-      <span className="ml-2 text-xs text-fg-muted">{count}</span>
-    </button>
+      {items.map((it) => (
+        <button
+          key={it.key}
+          type="button"
+          aria-pressed={tab === it.key}
+          onClick={() => onChange(it.key)}
+          className={`min-h-10 flex-shrink-0 rounded-lg px-3.5 text-sm font-medium transition-colors ${
+            tab === it.key
+              ? "bg-accent/10 text-accent"
+              : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
+          }`}
+        >
+          {it.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -293,144 +372,288 @@ function SearchInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full sm:w-80 px-3 py-1.5 text-sm rounded-md bg-surface/60 border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-indigo-500/40 focus:border-line-strong"
+      aria-label={placeholder.replace(/…$/, "")}
+      className="h-11 w-full sm:w-80 px-4 text-[15px] rounded-xl bg-surface-elevated border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40"
     />
   );
 }
 
+const cardCls =
+  "flex min-w-0 flex-col rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm";
+
+/**
+ * The user's own workflows as cards, one primary button each. Ones waiting
+ * for approval (switched off) come first.
+ */
+function YourWorkflows({
+  workflows,
+  offWorkflows,
+  customDefs,
+  runs,
+  onDeleteCustom,
+  onBrowse,
+}: {
+  workflows: WorkflowMeta[];
+  offWorkflows: DynamicWorkflowDef[];
+  customDefs: DynamicWorkflowDef[];
+  runs: WorkflowRunSummary[];
+  onDeleteCustom: (name: string) => void;
+  onBrowse: () => void;
+}) {
+  const cadenceByName = new Map(customDefs.map((d) => [d.name, d.cadence] as const));
+
+  if (workflows.length === 0 && offWorkflows.length === 0) {
+    return (
+      <div className="rounded-2xl border border-dashed border-line px-5 py-8 text-center">
+        <p className="text-[15px] text-fg-muted">
+          No workflows of your own yet. Describe one above, or start from a
+          ready-made one.
+        </p>
+        <button type="button" onClick={onBrowse} className={buttonClass("secondary", "md", "mt-4")}>
+          Browse ready-made
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {offWorkflows.map((d) => {
+        const tools = new Set(d.steps.flatMap((s) => (s.kind === "action" ? s.tools : [])));
+        const href = `/jobs/${encodeURIComponent(d.name)}`;
+        return (
+          <div key={`off:${d.name}`} className={`${cardCls} border-amber-500/40`}>
+            <h3 className="text-lg font-semibold leading-snug text-fg">{d.title}</h3>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-fg-muted">
+              <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-300">
+                Waiting for your approval
+              </span>
+              <span>
+                Off
+                {tools.size > 0 && ` · ${tools.size} ${tools.size === 1 ? "tool" : "tools"}`}
+              </span>
+            </div>
+            <div className="mt-auto flex items-center gap-2 pt-5">
+              <Link href={href} className={buttonClass("primary", "md")}>
+                Review
+              </Link>
+              <OverflowMenu
+                label={`More for ${d.title}`}
+                items={[
+                  { label: "Edit", href: `/jobs/new?edit=${encodeURIComponent(d.name)}` },
+                  { label: "Delete", danger: true, onSelect: () => onDeleteCustom(d.name) },
+                ]}
+              />
+            </div>
+          </div>
+        );
+      })}
+      {workflows.map((w) => {
+        const href = `/jobs/${encodeURIComponent(w.name)}`;
+        const action = cardAction(w.name, true, runs);
+        const last = lastRunAt(w.name, runs);
+        const cadence = cadenceLabel(cadenceByName.get(w.name));
+        const meta = [
+          cadence || `${w.steps.length} steps`,
+          last ? `last run ${formatRelativeTime(last)}` : "not run yet",
+        ].join(" · ");
+        const more: OverflowItem[] = [
+          ...(action.kind === "signoff" ? [{ label: "Run again", href }] : []),
+          { label: "Edit", href: `/jobs/new?edit=${encodeURIComponent(w.name)}` },
+          { label: "Delete", danger: true, onSelect: () => onDeleteCustom(w.name) },
+        ];
+        return (
+          <div key={w.name} className={cardCls}>
+            <Link href={href} className="min-w-0" title={w.description}>
+              <h3 className="text-lg font-semibold leading-snug text-fg hover:text-accent transition-colors">
+                {w.title}
+              </h3>
+            </Link>
+            {action.kind === "signoff" ? (
+              <span className="mt-2 inline-flex w-fit rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-300">
+                Waiting for sign-off
+              </span>
+            ) : (
+              <p className="mt-1.5 text-sm text-fg-muted">{meta}</p>
+            )}
+            {w.description && (
+              <p className="mt-2 line-clamp-2 text-sm text-fg-subtle">{w.description}</p>
+            )}
+            <div className="mt-auto flex items-center gap-2 pt-5">
+              {action.kind === "signoff" ? (
+                <Link
+                  href={`/jobs/runs/${encodeURIComponent(action.runId)}`}
+                  className={buttonClass("primary", "md")}
+                >
+                  Review
+                </Link>
+              ) : (
+                <Link href={href} className={buttonClass("primary", "md")}>
+                  Run
+                </Link>
+              )}
+              <OverflowMenu label={`More for ${w.title}`} items={more} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CatalogCard({ workflow: w, useFor }: { workflow: WorkflowMeta; useFor?: string }) {
+  return (
+    <Link
+      href={`/jobs/${encodeURIComponent(w.name)}`}
+      title={w.description}
+      className="block min-w-0 rounded-xl border border-line bg-surface-elevated px-4 py-3.5 hover:border-line-strong hover:bg-surface-overlay transition-colors"
+    >
+      <span className="block text-[15px] font-semibold text-fg">{w.title}</span>
+      <span className="mt-1 block line-clamp-2 text-sm text-fg-muted">
+        {useFor ?? w.description}
+      </span>
+      <span className="mt-1.5 block text-xs text-fg-subtle">
+        {w.quick ? (
+          <span className="mr-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-500">
+            Quick
+          </span>
+        ) : null}
+        {w.quick ? "One question, one document" : `${w.steps.length} steps`} · ~
+        {w.estimated_minutes} min
+      </span>
+    </Link>
+  );
+}
+
+function CatalogGrid({ items }: { items: WorkflowMeta[] }) {
+  return (
+    <div className="grid gap-2.5 sm:grid-cols-2">
+      {items.map((w) => (
+        <CatalogCard key={w.name} workflow={w} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The ready-made list in its panel: a few good first picks, then search,
+ * section chips and every template grouped by section.
+ */
 function CatalogView({
   workflows,
   query,
   onQueryChange,
-  onDeleteCustom,
+  section,
+  onSectionChange,
 }: {
   workflows: WorkflowMeta[];
   query: string;
   onQueryChange: (v: string) => void;
-  onDeleteCustom: (name: string) => void;
+  section: SectionFilter;
+  onSectionChange: (s: SectionFilter) => void;
 }) {
-  const filtered = workflows.filter((w) =>
+  const { mode } = useWorkspace();
+  const byName = new Map(workflows.map((w) => [w.name, w] as const));
+  const picks = starterPicksFor(mode).flatMap((p) => {
+    const w = byName.get(p.name);
+    return w ? [{ workflow: w, useFor: p.useFor }] : [];
+  });
+  const matching = workflows.filter((w) =>
     matchesQuery(query, w.title, w.description)
   );
-
-  // User-created workflows are grouped together under "Custom" regardless of
-  // their declared section, so they're easy to find, edit, and delete.
-  const custom = filtered.filter((w) => w.is_custom);
-  const builtin = filtered.filter((w) => !w.is_custom);
   const known = new Set<string>(SECTION_ORDER);
-  const others = builtin.filter((w) => !known.has(w.section));
+  const chips: { key: SectionFilter; label: string; count: number }[] = [
+    { key: "all" as SectionFilter, label: "All", count: 0 },
+    ...SECTION_ORDER.map((s) => ({
+      key: s as SectionFilter,
+      label: SECTION_CHIP_LABEL[s],
+      count: 0,
+    })),
+    { key: "system" as SectionFilter, label: "System", count: 0 },
+  ]
+    .map((c) => ({ ...c, count: matching.filter((w) => inSectionFilter(w, c.key)).length }))
+    // Keep the active chip even at zero so the selection stays visible.
+    .filter((c) => c.key === "all" || c.key === section || c.count > 0);
 
-  const renderCard = (w: WorkflowMeta) => (
-    <Link
-      key={w.name}
-      href={`/jobs/${encodeURIComponent(w.name)}`}
-      className="block rounded-lg border border-line bg-surface/40 hover:border-line-strong hover:bg-surface-elevated/40 p-5 transition"
-    >
-      <h3 className="text-base font-semibold text-fg mb-2">{w.title}</h3>
-      <p className="text-sm text-fg-muted leading-relaxed mb-3">
-        {w.description}
-      </p>
-      <div className="flex items-center justify-between text-xs text-fg-muted">
-        <span>{w.steps.length} steps</span>
-        <span>~{w.estimated_minutes} min</span>
-      </div>
-    </Link>
-  );
+  const visible = matching.filter((w) => inSectionFilter(w, section));
 
-  const renderCustomCard = (w: WorkflowMeta) => (
-    <div
-      key={w.name}
-      className="rounded-lg border border-line bg-surface/40 p-5 transition hover:border-line-strong"
-    >
-      <Link href={`/jobs/${encodeURIComponent(w.name)}`} className="block">
-        <h3 className="text-base font-semibold text-fg mb-2">{w.title}</h3>
-        <p className="text-sm text-fg-muted leading-relaxed mb-3">
-          {w.description}
-        </p>
-        <div className="flex items-center justify-between text-xs text-fg-muted">
-          <span>{w.steps.length} steps</span>
-          <span>~{w.estimated_minutes} min</span>
-        </div>
-      </Link>
-      <div className="mt-3 flex items-center gap-3 border-t border-line pt-3 text-xs">
-        <Link
-          href={`/jobs/new?edit=${encodeURIComponent(w.name)}`}
-          className="text-indigo-400 hover:text-indigo-300"
-        >
-          Edit
-        </Link>
-        <button
-          type="button"
-          onClick={() => onDeleteCustom(w.name)}
-          className="text-fg-muted hover:text-red-400 transition"
-        >
-          Delete
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderSection = (
-    section: string,
-    blurb: string,
-    items: WorkflowMeta[],
-    card: (w: WorkflowMeta) => React.ReactNode = renderCard
-  ) => (
-    <div key={section}>
-      <div className="mb-3 flex items-baseline gap-3">
-        <h2 className="text-base font-semibold text-fg">{section}</h2>
-        <span className="text-xs text-fg-muted">
-          {items.length} {items.length === 1 ? "job" : "jobs"}
-        </span>
-      </div>
-      <p className="text-xs text-fg-muted mb-3 leading-relaxed">{blurb}</p>
-      <div className="grid sm:grid-cols-2 gap-4">{items.map(card)}</div>
-    </div>
-  );
+  // Under "All", keep light section headings so the list stays scannable;
+  // any single chip is already one group, so it renders as a flat grid.
+  const grouped: { label: string; items: WorkflowMeta[] }[] =
+    section === "all"
+      ? [
+          ...SECTION_ORDER.map((s) => ({
+            label: s as string,
+            items: visible.filter((w) => w.section === s),
+          })),
+          {
+            label: "Other",
+            items: visible.filter((w) => !known.has(w.section)),
+          },
+        ].filter((g) => g.items.length > 0)
+      : [];
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between gap-4">
+    <div className="space-y-5">
+      {picks.length > 0 && !query && section === "all" && (
+        <div>
+          <h3 className="mb-2 text-sm font-semibold text-fg">Good places to start</h3>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            {picks.map(({ workflow, useFor }) => (
+              <CatalogCard key={workflow.name} workflow={workflow} useFor={useFor} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
         <SearchInput
           value={query}
           onChange={onQueryChange}
-          placeholder="Search workflows by title or description…"
+          placeholder="Search ready-made workflows…"
         />
-        <Link
-          href="/jobs/new"
-          className="shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 transition"
-        >
-          + New workflow
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          {chips.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              aria-pressed={section === c.key}
+              onClick={() => onSectionChange(c.key)}
+              className={`min-h-10 rounded-full border px-3.5 text-sm transition-colors ${
+                section === c.key
+                  ? "border-accent/50 bg-accent/10 text-accent font-medium"
+                  : "border-line text-fg-muted hover:text-fg hover:border-line-strong"
+              }`}
+            >
+              {c.label}
+              <span className="ml-1.5 text-fg-subtle">{c.count}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {workflows.length === 0 ? (
-        <div className="text-sm text-fg-muted">No jobs registered yet.</div>
-      ) : filtered.length === 0 ? (
-        <div className="text-sm text-fg-muted">
-          No jobs match &ldquo;{query}&rdquo;.
+        <div className="text-[15px] text-fg-muted">No ready-made workflows available.</div>
+      ) : visible.length === 0 ? (
+        <div className="text-[15px] text-fg-muted">
+          {query ? <>No workflows match &ldquo;{query}&rdquo;.</> : "Nothing here yet."}
+        </div>
+      ) : section === "all" ? (
+        <div className="space-y-5">
+          {grouped.map((g) => (
+            <div key={g.label}>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
+                {g.label}
+                <span className="ml-2 font-normal normal-case tracking-normal">
+                  {g.items.length}
+                </span>
+              </h3>
+              <CatalogGrid items={g.items} />
+            </div>
+          ))}
         </div>
       ) : (
-        <div className="space-y-10">
-          {custom.length > 0 &&
-            renderSection(
-              "Custom",
-              "Workflows you created. Edit or delete them anytime.",
-              custom,
-              renderCustomCard
-            )}
-          {SECTION_ORDER.map((section) => {
-            const items = builtin.filter((w) => w.section === section);
-            if (items.length === 0) return null;
-            return renderSection(section, SECTION_BLURB[section], items);
-          })}
-          {others.length > 0 &&
-            renderSection(
-              "Other",
-              "Workflows not yet assigned to a known section.",
-              others
-            )}
-        </div>
+        <CatalogGrid items={visible} />
       )}
     </div>
   );
@@ -446,6 +669,8 @@ function RunsView({
   workflowTitleMap,
   collapsed,
   onToggleCollapsed,
+  expanded,
+  onExpand,
   onDelete,
 }: {
   runs: WorkflowRunSummary[];
@@ -457,6 +682,8 @@ function RunsView({
   workflowTitleMap: Map<string, string>;
   collapsed: Record<string, boolean>;
   onToggleCollapsed: (key: string) => void;
+  expanded: Record<string, boolean>;
+  onExpand: (key: string) => void;
   onDelete: (runId: string) => void;
 }) {
   const visible = runs.filter(
@@ -481,106 +708,108 @@ function RunsView({
 
   return (
     <div>
-      <div className="flex items-center gap-1 mb-4">
+      <div className="flex flex-wrap items-center gap-2 mb-5">
         <StatusSegment
           active={status === "active"}
           onClick={() => onStatusChange("active")}
           label="Active"
           count={counts.active}
-          tone="amber"
         />
         <StatusSegment
           active={status === "awaiting"}
           onClick={() => onStatusChange("awaiting")}
           label="Awaiting sign-off"
           count={counts.awaiting}
-          tone="amber"
         />
         <StatusSegment
           active={status === "done"}
           onClick={() => onStatusChange("done")}
           label="Done"
           count={counts.done}
-          tone="emerald"
         />
         <StatusSegment
           active={status === "error"}
           onClick={() => onStatusChange("error")}
           label="Error"
           count={counts.error}
-          tone="red"
         />
-      </div>
-
-      <div className="mb-4">
-        <SearchInput
-          value={query}
-          onChange={onQueryChange}
-          placeholder="Search runs by title or workflow…"
-        />
+        <div className="w-full sm:w-auto sm:ml-auto">
+          <SearchInput
+            value={query}
+            onChange={onQueryChange}
+            placeholder="Search runs…"
+          />
+        </div>
       </div>
 
       {visible.length === 0 ? (
-        <div className="text-sm text-fg-muted">
+        <div className="text-[15px] text-fg-muted">
           {query ? `No runs match “${query}”.` : emptyMsg}
         </div>
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-6">
           {Array.from(groups.entries()).map(([workflowName, items]) => {
             const title = workflowTitleMap.get(workflowName) ?? workflowName;
             const isCollapsed = !!collapsed[workflowName];
+            const shown = expanded[workflowName] ? items : items.slice(0, RUNS_PER_GROUP);
+            const hidden = items.length - shown.length;
             return (
               <div key={workflowName}>
                 <button
                   type="button"
+                  aria-expanded={!isCollapsed}
                   onClick={() => onToggleCollapsed(workflowName)}
-                  className="w-full flex items-center gap-2 mb-2 text-left"
+                  className="mb-2 flex min-h-10 w-full items-center gap-2 text-left"
                 >
                   <span
+                    aria-hidden="true"
                     className={`text-fg-muted text-xs transition-transform ${
                       isCollapsed ? "" : "rotate-90"
                     }`}
                   >
                     ▶
                   </span>
-                  <span className="text-sm font-semibold text-fg">
+                  <span className="text-base font-semibold text-fg">
                     {title}
                   </span>
-                  <span className="text-xs text-fg-muted">
+                  <span className="text-sm text-fg-muted">
                     {items.length} {items.length === 1 ? "run" : "runs"}
                   </span>
                 </button>
                 {!isCollapsed && (
-                  <div className="space-y-2">
-                    {items.map((r) => (
+                  <div className="divide-y divide-line rounded-2xl border border-line bg-surface-elevated">
+                    {shown.map((r) => (
                       <div
                         key={r.run_id}
-                        className="flex items-center justify-between gap-4 rounded-md border border-line bg-surface/30 px-4 py-3"
+                        className="flex items-center gap-2 py-1.5 pl-4 pr-2"
                       >
                         <Link
                           href={`/jobs/runs/${encodeURIComponent(r.run_id)}`}
-                          className="flex-1 min-w-0"
+                          className="flex min-h-11 min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1"
                         >
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-sm font-medium text-fg truncate">
-                              {r.title}
-                            </span>
-                            {statusBadge(r.status)}
-                          </div>
-                          <div className="text-xs text-fg-muted">
-                            updated {formatRelativeTime(r.updated_at)}
-                          </div>
+                          <span className="min-w-0 truncate text-[15px] text-fg">{r.title}</span>
+                          {statusBadge(r.status)}
+                          <span className="ml-auto shrink-0 text-sm text-fg-subtle">
+                            {formatRelativeTime(r.updated_at)}
+                          </span>
                         </Link>
-                        <button
-                          type="button"
-                          onClick={() => onDelete(r.run_id)}
-                          className="text-xs text-fg-muted hover:text-red-400 transition"
-                          aria-label="Delete run"
-                        >
-                          Delete
-                        </button>
+                        <OverflowMenu
+                          label={`More for ${r.title}`}
+                          items={[
+                            { label: "Delete run", danger: true, onSelect: () => onDelete(r.run_id) },
+                          ]}
+                        />
                       </div>
                     ))}
+                    {hidden > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onExpand(workflowName)}
+                        className="min-h-11 w-full px-4 text-left text-sm font-medium text-accent hover:underline"
+                      >
+                        Show {hidden} more
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -597,32 +826,25 @@ function StatusSegment({
   onClick,
   label,
   count,
-  tone,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   count: number;
-  tone: "amber" | "emerald" | "red";
 }) {
-  const toneRing =
-    tone === "amber"
-      ? "ring-amber-500/40 text-amber-300"
-      : tone === "emerald"
-      ? "ring-emerald-500/40 text-emerald-300"
-      : "ring-red-500/40 text-red-300";
   return (
     <button
       type="button"
+      aria-pressed={active}
       onClick={onClick}
-      className={`px-3 py-1.5 text-xs rounded-md ring-1 transition ${
+      className={`min-h-10 rounded-full border px-4 text-sm transition-colors ${
         active
-          ? `bg-surface-elevated ${toneRing}`
-          : "ring-line text-fg-muted hover:text-fg hover:ring-line-strong"
+          ? "border-accent/50 bg-accent/10 text-accent font-medium"
+          : "border-line text-fg-muted hover:text-fg hover:border-line-strong"
       }`}
     >
       {label}
-      <span className="ml-1.5 text-fg-muted">{count}</span>
+      <span className="ml-1.5 text-fg-subtle">{count}</span>
     </button>
   );
 }
@@ -630,18 +852,8 @@ function StatusSegment({
 export default function JobsPage() {
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
-        <div className="max-w-5xl mx-auto">
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold text-fg mb-1">
-              Executive Jobs
-            </h1>
-            <p className="text-sm text-fg-muted">
-              Structured executive workflows that produce a deliverable — not a
-              conversation. Each job orchestrates the relevant specialists and
-              knowledge to draft a complete artifact.
-            </p>
-          </div>
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 sm:py-8">
+        <div className="max-w-6xl mx-auto">
           <Suspense fallback={null}>
             <JobsPageInner />
           </Suspense>

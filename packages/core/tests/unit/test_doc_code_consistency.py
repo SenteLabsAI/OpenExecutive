@@ -152,3 +152,60 @@ def test_attachment_isolation_doc_and_code_agree() -> None:
         "Attachment isolation disagrees between integrations/attachments.py "
         "and architecture-facts.yaml (integrations.attachments). Update both."
     )
+
+
+def test_facts_document_the_microsoft_365_gate_and_provider_switch() -> None:
+    """The M365 egress family and the workspace provider switch are load-bearing
+    behavior under `integrations`; the facts must name them as the code does."""
+    from openexecutive.orchestrator import mcp_gateway
+
+    integrations = _load_facts()["integrations"]
+    gateway_notes = integrations["mcp_gateway"]
+    assert hasattr(mcp_gateway, "_GATED_M365_MAIL_TOOLS")
+    for needle in ("_GATED_M365_MAIL_TOOLS", "_check_m365_recipients", "microsoft_365",
+                   "ms365-mcp-launch.sh", "_normalize_tool_name"):
+        assert needle in gateway_notes, needle
+    providers = integrations["workspace_providers"]
+    for needle in ("EMAIL_PROVIDER", "CALENDAR_PROVIDER", "MailProvider", "CalendarProvider",
+                   "add_video_link", "list-mail-folder-messages"):
+        assert needle in providers, needle
+    assert "workspace_providers" in integrations["email_poller"]
+def _delegation_facts() -> dict[str, Any]:
+    facts: dict[str, Any] = _load_facts()["delegation"]
+    return facts
+
+
+def test_act_as_me_send_claim_and_code_agree() -> None:
+    """Act as me sends only an existing draft, by its id, on the person's
+    tap. The page says so; the Gmail client's one send endpoint is
+    drafts.send, never messages.send (which sends any text it is given).
+    Whoever changes what it can send updates architecture-facts.yaml
+    (delegation.gmail_client) and this test together."""
+    import re
+
+    from openexecutive.delegation import gmail
+
+    doc_says_draft_only = "ONE send method, send_draft" in _delegation_facts()["gmail_client"]
+    endpoints = re.findall(r"/(?:messages|drafts)/send\b", Path(gmail.__file__).read_text())
+    assert doc_says_draft_only and endpoints == ["/drafts/send"], (
+        "What Act as me can send disagrees between delegation/gmail.py and "
+        "architecture-facts.yaml (delegation.gmail_client). Update both."
+    )
+
+
+def test_act_as_me_tool_registry_claim_and_code_agree() -> None:
+    """The facts say ghostwrite_email never joins _ALL_SKILL_TOOLS — the list
+    reflection, research and workflow toolkits are built from. Couple that
+    claim to the registry itself."""
+    from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_NAMES
+    from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS, _ALL_SKILL_TOOLS
+
+    doc_says_separate = "NEVER _ALL_SKILL_TOOLS" in _delegation_facts()["tool"]
+    code_is_separate = not (
+        DELEGATION_TOOL_NAMES & {t["name"] for t in _ALL_SKILL_TOOLS}
+        or DELEGATION_TOOL_NAMES & set(_ALL_SKILL_HANDLERS)
+    )
+    assert doc_says_separate and code_is_separate, (
+        "ghostwrite_email must stay out of _ALL_SKILL_TOOLS / _ALL_SKILL_HANDLERS, "
+        "as architecture-facts.yaml (delegation.tool) says."
+    )

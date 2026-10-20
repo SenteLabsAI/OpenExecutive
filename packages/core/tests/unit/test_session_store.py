@@ -247,3 +247,53 @@ def _columns(db_path: Path, table: str) -> set[str]:
 
     with sqlite3.connect(db_path) as conn:
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_list_sessions_previews_the_last_message(db: Path) -> None:
+    create_session("p1", "Lease renewals", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    create_session("p2", "Q3 plan", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    create_session("p3", "Empty", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    save_message("p1", "user", "How are renewals going?", db_path=db)
+    save_message("p1", "assistant", "**Renewals** are at 61%.\n\nSee [the tracker](https://example.com/t).", db_path=db)
+    save_message("p2", "assistant", "Here is the plan.", db_path=db)
+    save_message("p2", "user", "  Start with   the bank rec. ", db_path=db)
+
+    by_id = {s["session_id"]: s for s in list_sessions(OWNER, db_path=db)}
+    assert by_id["p1"]["preview"] == "Renewals are at 61%. See the tracker."
+    assert by_id["p2"]["preview"] == "You: Start with the bank rec."
+    assert by_id["p3"]["preview"] is None
+
+
+def test_list_sessions_preview_keeps_underscores_and_hashes_in_words(db: Path) -> None:
+    create_session("w1", "Files", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    save_message("w1", "assistant", "## Next\n> Check the _sales_report_q3.csv_ and the C# port.", db_path=db)
+    assert list_sessions(OWNER, db_path=db)[0]["preview"] == "Next Check the sales_report_q3.csv and the C# port."
+
+
+def test_list_sessions_preview_is_cut_at_a_word(db: Path) -> None:
+    create_session("long", "Long", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    save_message("long", "assistant", "word " * 60, db_path=db)
+    preview = list_sessions(OWNER, db_path=db)[0]["preview"]
+    assert preview.endswith("word…")
+    assert len(preview) <= 121
+
+
+def test_list_sessions_previews_every_chat_across_lookup_batches(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import openexecutive.memory.session_store as store
+
+    monkeypatch.setattr(store, "_IN_BATCH", 2)
+    for n in range(5):
+        create_session(f"b{n}", f"Chat {n}", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+        save_message(f"b{n}", "assistant", f"Answer {n}", db_path=db)
+    previews = {s["session_id"]: s["preview"] for s in list_sessions(OWNER, db_path=db)}
+    assert previews == {f"b{n}": f"Answer {n}" for n in range(5)}
+
+
+def test_list_sessions_preview_reads_only_the_start_of_a_long_message(db: Path) -> None:
+    create_session("big", "Big", "2024-01-01T00:00:00", caller_person_id=OWNER, db_path=db)
+    save_message("big", "assistant", "Summary first. " + "x" * 500_000, db_path=db)
+    preview = list_sessions(OWNER, db_path=db)[0]["preview"]
+    assert preview.startswith("Summary first.")
+    assert len(preview) <= 121

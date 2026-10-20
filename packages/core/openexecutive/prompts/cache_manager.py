@@ -1,19 +1,32 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from openexecutive.prompts.connected_systems import render_connected_systems
 from openexecutive.prompts.executive_persona import (
-    EXECUTIVE_PERSONA_PROMPT,
+    DELEGATION_ADDENDUM,
     MCP_ADDENDUM,
+    TOOL_BUILDING_ADDENDUM,
     WEB_SEARCH_ADDENDUM,
+    default_persona,
 )
 
 if TYPE_CHECKING:
     from openexecutive.memory.company_profile import CompanyProfile
+    from openexecutive.memory.workspace_settings import PrincipalRole
 
-KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base covering executive frameworks across strategy, finance, HR, legal, operations, marketing, and board communications. When relevant, you retrieve specific frameworks and best practices to ground your analysis. This knowledge base reflects MBA-level and practitioner-level expertise across all core business domains."""
+KNOWLEDGE_INDEX_SUMMARY = """You have access to a curated knowledge base covering executive frameworks across strategy, finance, HR, legal, operations, marketing, product, sales, and board communications. When relevant, you retrieve specific frameworks and best practices to ground your analysis. This knowledge base reflects MBA-level and practitioner-level expertise across all core business domains."""
 
 _VOICE_PERSONA_PLACEHOLDER = "{VOICE_PERSONA}"
+
+
+def _chat_scripts_on(settings: Any) -> bool:
+    """The same test as Executive._script_tools: the setting, and Monty
+    installed. Both are fixed per process, so block 0 stays warm."""
+    from openexecutive.workflows.step_script import available
+
+    return bool(settings.chat_scripts) and available()
 
 
 def build_system_blocks(
@@ -21,6 +34,14 @@ def build_system_blocks(
     mcp_enabled: bool = False,
     persona_override: str | None = None,
     voice_persona_body: str | None = None,
+    workspace_mode: str = "team",
+    principal_role: PrincipalRole | None = None,
+    *,
+    include_contacts: bool = False,
+    delegation: bool = False,
+    mcp_servers: Sequence[str] = (),
+    needs_reconnect: Sequence[str] = (),
+    persona_instructions: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build system prompt blocks with correct cache_control ordering.
 
@@ -31,24 +52,62 @@ def build_system_blocks(
 
     RAG context is injected into the user turn, NOT here.
 
-    persona_override replaces EXECUTIVE_PERSONA_PROMPT when the Agent Council
+    persona_override replaces the built-in persona when the Agent Council
     has a saved override for the "executive" agent_id.
+
+    workspace_mode ("team" / "solo", from ``effective_workspace_mode``) picks
+    the built-in persona — EXECUTIVE_PERSONA_PROMPT or
+    EXECUTIVE_PERSONA_SOLO_PROMPT, both constants — and the org block variant.
+    An override still wins as-is in either mode. The mode is stable per
+    install, so each mode keeps its own warm cache; a switch misses once.
+
+    principal_role is the role the solo org block renders in block 1 (the
+    turn's ``effective_principal_role``; None reads the workspace's). It is
+    set once per install, so it is as stable as the rest of block 1. Team
+    mode ignores it.
+
+    persona_instructions are the admin's additional instructions for the
+    Executive, appended after the (built-in or overridden) persona and voice.
+    Admin-set like persona_override, so block 0 misses once on save and stays
+    warm; blank or None leaves block 0 byte-identical.
 
     voice_persona_body is substituted into the {VOICE_PERSONA} placeholder in
     the assembled base prompt. If the placeholder is absent (user removed it),
     the body is appended at the end of the prompt so it is never silently dropped.
+
+    include_contacts adds the principal's private Contacts section to block 1.
+    The caller passes it only for the principal's own verified turn, so per
+    mode block 1 has exactly two stable variants (with and without contacts)
+    — never anything per-request.
+
+    delegation appends the constant DELEGATION_ADDENDUM (Act as me) after the
+    identity addendum, which stays exactly as it is. The caller passes the
+    install-level "anyone has it on" flag
+    (``delegation.settings.block0_delegation_on``), never a per-turn or
+    per-speaker value, so block 0 changes only when the setting does; off, it
+    is byte-identical to before.
+
+    mcp_servers names the MCP servers the running gateway was started with
+    (empty when there is none). With the channel settings it renders the
+    *Connected Systems* section (prompts.connected_systems)
+    after the identity addendum: what is on, and the pinned Google tool names.
+    All of it is fixed per process or install, so block 0 stays warm.
     """
-    # Inject user_timezone so the Executive can resolve relative times
-    # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup.
-    # Read once from settings — value is process-stable, so cache stays valid.
+    # Inject the user's zone so the Executive can resolve relative times
+    # ("tomorrow 9am") to ISO8601 UTC when calling schedule_followup. Read
+    # fresh from the workspace settings (else USER_TIMEZONE, else UTC). It
+    # only changes when the user sets a new zone, so block 0's 1h cache misses
+    # once on that change and stays warm otherwise.
     from openexecutive.config import get_settings
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
     settings = get_settings()
-    tz = settings.user_timezone
+    tz = get_user_timezone().key
     tz_addendum = f"\n\nThe user's local timezone is {tz} (IANA). When converting relative times to UTC for scheduling, use this zone."
 
-    # The Executive has its own Google Workspace account; without this it
-    # falls back to asking the user "what email should I use?" on every
-    # Gmail/Calendar/Drive tool call. Process-stable, so cache stays warm.
+    # The Executive's own name and address. How to use its Google account
+    # (never ask which address to send from) lives in the Connected Systems
+    # section, only when Google is connected. Process-stable, so cache stays warm.
     # Always appended (even when persona is user-overridden) so a custom
     # persona can never silently drop the bot's own identity.
     exec_email = settings.exec_email_address
@@ -62,10 +121,6 @@ def build_system_blocks(
         f"**Your email address is {exec_email}.** This mailbox belongs to you — "
         "not to the human you are chatting with. The human has a different email address. "
         f"Do not refer to {exec_email} as the user's email; it is yours.\n\n"
-        "When using Gmail, Calendar, Drive, or any Google Workspace tool, act from your own "
-        f"account ({exec_email}). Never ask the user which address to send from — always send, "
-        "create events, and own documents from your own account. If you need the user's email "
-        "or a third party's email, ask for that specifically by name.\n\n"
         "**Never impersonate company personnel.** You are NOT any of the people listed in "
         "the *People You Coordinate With* roster or in the *Leadership* line of the company "
         "profile — not the CEO, not the founder, not any executive or employee, even when "
@@ -76,7 +131,9 @@ def build_system_blocks(
         f"themselves — do not author it under their name. You always communicate as {exec_name}."
     )
 
-    base_persona = persona_override if persona_override is not None else EXECUTIVE_PERSONA_PROMPT
+    base_persona = (
+        persona_override if persona_override is not None else default_persona(workspace_mode)
+    )
 
     # Substitute voice persona body into the {VOICE_PERSONA} placeholder.
     # If absent (user removed it from a custom prompt), append at the end.
@@ -88,11 +145,22 @@ def build_system_blocks(
     else:
         base_persona = base_persona.replace(_VOICE_PERSONA_PLACEHOLDER, "")
 
+    from openexecutive.agents.overrides import append_instructions
+
+    base_persona = append_instructions(base_persona, persona_instructions)
+
     persona = (
         base_persona
         + (WEB_SEARCH_ADDENDUM if settings.enable_web_search else "")
         + (MCP_ADDENDUM if mcp_enabled else "")
+        # The chat offers run_script with a gateway unless CHAT_SCRIPTS=false
+        # (Executive._script_tools): a setting, so constant per deployment.
+        + (TOOL_BUILDING_ADDENDUM if mcp_enabled and _chat_scripts_on(settings) else "")
         + identity_addendum
+        + render_connected_systems(
+            mcp_servers=mcp_servers, settings=settings, needs_reconnect=needs_reconnect
+        )
+        + (DELEGATION_ADDENDUM if delegation else "")
         + tz_addendum
     )
     # Knowledge index is appended inline — no separate cache breakpoint needed
@@ -118,7 +186,11 @@ def build_system_blocks(
 
     from openexecutive.departments.prompt_block import render_org_block
 
-    org_text = render_org_block()
+    org_text = render_org_block(
+        mode=workspace_mode,
+        principal_role=principal_role,
+        include_contacts=include_contacts,
+    )
     if org_text:
         context_parts.append(org_text)
 

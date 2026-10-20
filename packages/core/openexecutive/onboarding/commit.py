@@ -8,17 +8,23 @@ without the profile they just saved.
 The department step is deliberately **additive**, and that is the one place
 this module must not copy ``cli/fixture_loader._seed_departments``. That
 seeder DELETEs every department and goal before inserting, which is correct
-when swapping in a demo company and destructive here: it would drop the eight
-defaults seeded by ``departments.store.seed_default_departments`` along with
-their ``specialist_key`` wiring, and ``create_department`` always writes
-``specialist_key = NULL`` — so a wiped default can never be recreated
-properly. We match drafted departments onto existing ones and create only
-what is genuinely new.
+when swapping in a demo company and destructive here: it would drop
+departments the user already has (and their goals) on a re-run of setup. We
+match drafted departments onto existing ones and create only what is
+genuinely new.
+
+A new install has no departments until this step runs, so the draft decides
+which ones exist: none for a solo workspace or a team that names none. A new
+department named after a specialist's area ("Finance", "HR") is wired to that
+specialist, the same rule the Executive's ``create_goal`` tool uses, so its
+goals get check-ins.
 """
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import re
+import sqlite3
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.utils.slug import DEPARTMENT_SLUG_FALLBACK, slugify
 
@@ -165,6 +171,196 @@ def _strip_wildcard(person_id: int, current: list[AuthorityScope]) -> None:
         set_authority_scope(person_id, remaining)
 
 
+# Loose on purpose: Google checks the address for real at sign-in. This only
+# stops a typo or a stray sentence from becoming the owner's roster address.
+_OWNER_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+# RFC 5321's limit on a forward path.
+_OWNER_EMAIL_MAX_LEN = 254
+
+
+class OwnerEmailError(ValueError):
+    """The owner email from the review screen can't be saved. The message is a
+    fixed, input-free string, safe to return as an HTTP detail."""
+
+
+def check_owner_email(
+    raw: str | None, principal_name: str, *, caller_email: str | None = None
+) -> str | None:
+    """Normalise the owner's sign-in email, or return None when left blank.
+
+    Runs BEFORE the commit writes anything, and setup only ever FILLS IN a
+    missing email. Raises OwnerEmailError when the value is not one plausible
+    address; when another non-archived person holds it (two rows sharing an
+    email would resolve sign-in to the older one); when the drafted
+    principal's own row already has a different email (replacing it would
+    sign the owner out — web sign-in and caller resolution both key on it —
+    so the owner changes it on the People page, signed in with the current
+    one); or when the roster can't be read. "The drafted principal's row" is
+    the one save_onboarding_people's name-keyed upsert will update — compared
+    by id, because two rows can share a name and the upsert then takes the
+    last one.
+    """
+    email = (raw or "").strip().lower()
+    if not email:
+        return None
+    if len(email) > _OWNER_EMAIL_MAX_LEN or not _OWNER_EMAIL_RE.fullmatch(email):
+        raise OwnerEmailError("That email address doesn't look right. Check it and try again.")
+    from openexecutive.people.store import find_person_by_address, list_people
+
+    key = principal_name.strip().lower()
+    try:
+        # A teammate's alias counts as theirs, like their address.
+        holder = find_person_by_address(email)
+        # The same dict save_onboarding_people builds, so the same row wins.
+        own_row = {p.full_name.strip().lower(): p for p in list_people()}.get(key)
+    except (OSError, sqlite3.Error) as exc:
+        # Unknown is not "free": saving anyway could give two people one email.
+        logger.warning("check_owner_email: lookup failed (%s)", type(exc).__name__)
+        raise OwnerEmailError("Could not check that email just now. Try again.") from exc
+    if holder is not None and (own_row is None or holder.id != own_row.id):
+        if own_row is None and _is_own_seat(holder, email, caller_email):
+            # The signed-in owner's own entry under another name (the one a
+            # hosted sign-up seeds from the address, or an old spelling).
+            # adopt_owner_row renames it before the roster is saved.
+            return email
+        if holder.is_principal:
+            raise OwnerEmailError(
+                "That email is on the current owner's People entry, but setup would update "
+                "a different one (another name, or two entries share this name). Use the "
+                "owner's name exactly as on the People page, or leave the email blank."
+            )
+        raise OwnerEmailError(
+            "That email already belongs to someone else on the People page. "
+            "Use the owner's own email, or leave it blank."
+        )
+    if own_row is not None and own_row.email and own_row.email.strip().lower() != email:
+        raise OwnerEmailError(
+            "The owner's People entry already has a different sign-in email, and setup "
+            "never replaces it. Keep that one here, or sign in with it and change it on "
+            "the People page."
+        )
+    return email
+
+
+def _is_own_seat(holder: Any, email: str, caller_email: str | None) -> bool:
+    """Whether ``holder`` is the signed-in caller's own principal entry: it is
+    the principal, it carries the address being saved, and that address is
+    the one the caller signed in with."""
+    return bool(
+        holder.is_principal
+        and caller_email
+        and email == caller_email.strip().lower()
+        and (holder.email or "").strip().lower() == email
+    )
+
+
+def adopt_owner_row(email: str | None, principal_name: str, caller_email: str | None) -> bool:
+    """Rename the caller's own principal entry to the name setup drafted.
+
+    A hosted sign-up seeds the owner's People entry from the sign-in address
+    when no name was given ("ada" for ada@example.com), and the interview
+    drafts the real name. The name-keyed upsert would then add a second row
+    and the email check would reject the save, so the matched entry takes
+    the drafted name first; the upsert finds it by that name and updates it.
+    Returns True when a row was renamed. Best-effort: a failure leaves the
+    roster as it was and the save goes on.
+    """
+    email = (email or "").strip().lower()
+    key = principal_name.strip().lower()
+    if not email or not key:
+        return False
+    from openexecutive.people.store import find_person_by_address, list_people, update_person
+
+    try:
+        holder = find_person_by_address(email)
+        if holder is None or holder.id is None or not _is_own_seat(holder, email, caller_email):
+            return False
+        if holder.full_name.strip().lower() == key:
+            return False
+        if any(p.full_name.strip().lower() == key for p in list_people()):
+            return False
+        return update_person(holder.id, full_name=principal_name.strip())
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning("adopt_owner_row failed (%s)", type(exc).__name__)
+        return False
+
+
+def owner_change_blocked(principal_name: str, caller_person_id: int | None) -> bool:
+    """Whether this commit would make a different person the owner while the
+    caller is not the current owner.
+
+    The seed demotes whoever was principal and grants WILDCARD to the drafted
+    one, so re-running setup is also a way to take the owner's seat: any
+    signed-in user can open /onboard. Keeping the current owner is open to
+    everyone, as is a first setup (no principal yet); handing the role to
+    another People row — including a new row, as a renamed owner becomes
+    under the name-keyed upsert — takes the current owner. A caller with no
+    x-caller-email (the CLI, local login) resolves to the principal already.
+    Lookup errors propagate: the route turns them into a retryable 503.
+    """
+    from openexecutive.people.store import find_principal_person, is_principal_or_self, list_people
+
+    current = find_principal_person()
+    if current is None:
+        return False
+    # The same dict save_onboarding_people builds, so the same row wins.
+    own_row = {p.full_name.strip().lower(): p for p in list_people()}.get(
+        principal_name.strip().lower()
+    )
+    if own_row is not None and own_row.id == current.id:
+        return False
+    return caller_person_id is None or not is_principal_or_self(caller_person_id, None)
+
+
+def owner_email_blocked(email: str | None, caller_person_id: int | None, caller_email: str) -> bool:
+    """Whether someone who isn't the owner is filling in the owner's missing
+    email with an address other than the one they signed in with.
+
+    The roster is the web sign-in allow-list, so an address of their choosing
+    would let them sign in with it as the owner. Their own is allowed: it is
+    how an owner the app can't recognise yet links theirs, and a rostered
+    teammate's own is already on their entry, which check_owner_email
+    refuses. Lookup errors propagate (the route answers 503).
+    """
+    from openexecutive.people.store import find_principal_person, is_principal_or_self
+
+    if not email:
+        return False
+    current = find_principal_person()
+    if current is None or is_principal_or_self(caller_person_id, None):
+        return False
+    if (current.email or "").strip().lower() == email:
+        return False
+    return email != caller_email
+
+
+def link_owner_email(person_id: int, email: str) -> bool:
+    """Fill in the principal's sign-in email.
+
+    Never replaces a different one, and never gives an email two owners:
+    check_owner_email refuses both before anything is written, and this
+    re-checks the row it is about to change. Best-effort, like the rest of
+    this module — the profile is already saved, and a failure here only leaves
+    the owner's email missing, as before this step existed: running setup
+    again adds it.
+    """
+    try:
+        from openexecutive.people.store import find_person_by_address, get_person, update_person
+
+        person = get_person(person_id)
+        holder = find_person_by_address(email)
+        if (
+            person is None
+            or (person.email and person.email.strip().lower() != email)
+            or (holder is not None and holder.id != person_id)
+        ):
+            return False
+        return update_person(person_id, email=email)
+    except Exception as exc:
+        logger.warning("link_owner_email failed (%s)", type(exc).__name__)
+        return False
+
+
 def reconcile_onboarding_departments(
     drafts: list[DepartmentDraft],
     person_ids: dict[str, int],
@@ -182,6 +378,8 @@ def reconcile_onboarding_departments(
         from openexecutive.departments.store import (
             create_department,
             list_departments,
+            match_department,
+            specialist_key_for_area,
             update_department,
         )
         from openexecutive.departments.store import (
@@ -193,9 +391,7 @@ def reconcile_onboarding_departments(
             return counts
 
         init_departments_db()
-        existing = list_departments()
-        by_slug = {d.config.slug: d.config for d in existing}
-        by_title = {d.config.title.strip().lower(): d.config for d in existing}
+        known = [d.config for d in list_departments()]
         # Two drafted titles can collide with each other as well as with an
         # existing row ("Growth" and "growth"). Without this the second one
         # would either create a `growth-2` row or silently overwrite the first
@@ -207,7 +403,9 @@ def reconcile_onboarding_departments(
             # Same fallback the store uses, so the slug we look up is the one
             # create_department would have assigned.
             drafted_slug = slugify(title, fallback=DEPARTMENT_SLUG_FALLBACK)
-            match = by_slug.get(drafted_slug) or by_title.get(title.lower())
+            # By slug or case-insensitive title — the store's shared rule,
+            # also used by the Executive's create_goal tool.
+            match = match_department(title, known)
             # Key on the row actually being touched. Keying on the drafted slug
             # alone missed the match-by-TITLE case: the shipped `hr` department
             # is titled "People & Talent", so drafts "HR" and "People & Talent"
@@ -225,13 +423,22 @@ def reconcile_onboarding_departments(
             head_id = person_ids.get(draft.head_person_name.strip()) if draft.head_person_name else None
 
             if match is None:
-                created = create_department(title, mission=draft.mission.strip())
+                candidate = specialist_key_for_area(title)
+                # One department per specialist: a second would make the
+                # specialist -> department mapping ambiguous.
+                specialist_key = (
+                    candidate
+                    if candidate and not any(k.specialist_key == candidate for k in known)
+                    else None
+                )
+                created = create_department(
+                    title, mission=draft.mission.strip(), specialist_key=specialist_key
+                )
                 counts["created"] += 1
                 slug = created.config.slug
                 # Register it so a later draft in this same batch matches the
                 # row we just made instead of creating a `-2` duplicate.
-                by_slug[slug] = created.config
-                by_title[created.config.title.strip().lower()] = created.config
+                known.append(created.config)
                 # create_department fixes authority to propose_only and takes no
                 # head, so apply the drafted values in a second call.
                 update_department(slug, authority_level=draft.authority_level)

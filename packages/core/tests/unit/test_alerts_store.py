@@ -223,7 +223,7 @@ def test_list_artifact_alerts_filters_by_source(db: Path) -> None:
         source="email", external_id="e-1", severity="high",
         headline="Inbound", body="not an artifact", db_path=db,
     )
-    artifacts = list_artifact_alerts(db_path=db)
+    artifacts = list_artifact_alerts(owner_person_id=None, include_unowned=True, db_path=db)
     assert [a.headline for a in artifacts] == ["Memo"]
     assert artifacts[0].source == "artifact"
 
@@ -241,7 +241,7 @@ def test_list_artifact_alerts_includes_acked_and_dismissed(db: Path) -> None:
     assert acked is not None and dismissed is not None
     set_status(acked, "ack", db_path=db)
     set_status(dismissed, "dismissed", db_path=db)
-    headlines = {a.headline for a in list_artifact_alerts(db_path=db)}
+    headlines = {a.headline for a in list_artifact_alerts(owner_person_id=None, include_unowned=True, db_path=db)}
     assert headlines == {"Acked memo", "Dismissed memo"}
 
 
@@ -252,12 +252,12 @@ def test_list_artifact_alerts_respects_limit_and_order(db: Path) -> None:
             headline=f"Memo {i}", body="z", db_path=db,
         )
     # Limit caps the result.
-    limited = list_artifact_alerts(limit=2, db_path=db)
+    limited = list_artifact_alerts(owner_person_id=None, include_unowned=True, limit=2, db_path=db)
     assert len(limited) == 2
 
     # Full fetch must be newest-first (DESC). Assert monotonic non-increasing
     # created_at — this fails if ORDER BY flips to ASC.
-    full = list_artifact_alerts(db_path=db)
+    full = list_artifact_alerts(owner_person_id=None, include_unowned=True, db_path=db)
     created = [a.created_at for a in full]
     assert created == sorted(created, reverse=True)
     # The capped result is the newest slice of that ordering.
@@ -266,4 +266,19 @@ def test_list_artifact_alerts_respects_limit_and_order(db: Path) -> None:
 
 def test_list_artifact_alerts_empty_on_missing_db(tmp_path: Path) -> None:
     missing = tmp_path / "does-not-exist.db"
-    assert list_artifact_alerts(db_path=missing) == []
+    assert list_artifact_alerts(owner_person_id=None, include_unowned=True, db_path=missing) == []
+
+
+def test_list_artifact_alerts_keeps_to_one_owner(db: Path) -> None:
+    for ext, owner in (("mine", 7), ("theirs", 8), ("unowned", None)):
+        insert_alert(
+            source="artifact", external_id=ext, severity="low", headline=ext,
+            body="b", owner_person_id=owner, db_path=db,
+        )
+
+    def heads(**kw: object) -> set[str]:
+        return {a.headline for a in list_artifact_alerts(db_path=db, **kw)}  # type: ignore[arg-type]
+
+    assert heads(owner_person_id=7) == {"mine"}
+    assert heads(owner_person_id=7, include_unowned=True) == {"mine", "unowned"}
+    assert heads(owner_person_id=None) == set()

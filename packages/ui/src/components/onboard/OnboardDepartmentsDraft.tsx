@@ -4,7 +4,7 @@ import { type OnboardDepartmentDraft, type OnboardPersonDraft } from "@/lib/api"
 
 const AUTHORITY_LEVELS = [
   { value: "propose_only", label: "Proposes, you approve" },
-  { value: "escalate", label: "Escalates to you" },
+  { value: "escalate", label: "Escalates to a person" },
   { value: "auto_execute", label: "Acts on its own" },
 ];
 

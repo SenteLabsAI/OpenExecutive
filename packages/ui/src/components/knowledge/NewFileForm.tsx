@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Button from "@/components/ui/Button";
 
 interface NewFileFormProps {
   domains: string[];
@@ -48,17 +49,18 @@ export default function NewFileForm({
 
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="text-base font-semibold text-fg">{title}</h2>
+      <h2 className="text-lg sm:text-xl font-bold text-fg">{title}</h2>
       {error && (
-        <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+        <p className="text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
           {error}
         </p>
       )}
-      <div className="flex gap-3">
+      <div className="flex flex-col sm:flex-row gap-3">
         <select
           value={domain}
           onChange={(e) => setDomain(e.target.value)}
-          className="rounded-lg border border-line-strong bg-surface-elevated px-3 py-2 text-sm text-fg focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          aria-label="Domain"
+          className="h-11 rounded-xl border border-line-strong bg-surface-elevated px-3 text-[15px] text-fg capitalize focus:outline-none focus:ring-2 focus:ring-accent/50"
         >
           {domains.map((d) => (
             <option key={d} value={d}>
@@ -70,29 +72,27 @@ export default function NewFileForm({
           value={filename}
           onChange={(e) => setFilename(e.target.value)}
           placeholder={variant === "failure" ? "my-failure-case.md" : "my_topic.md"}
-          className="flex-1 rounded-lg border border-line-strong bg-surface-elevated px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          aria-label="Filename"
+          className="flex-1 h-11 rounded-xl border border-line-strong bg-surface-elevated px-3 text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/50"
         />
       </div>
       <textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
         placeholder={placeholder}
-        className="min-h-[400px] w-full rounded-xl border border-line-strong bg-surface-elevated px-4 py-3 text-sm text-fg font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/50 resize-none"
+        className="min-h-[400px] w-full rounded-2xl border border-line-strong bg-surface-elevated px-4 py-3 text-sm text-fg font-mono focus:outline-none focus:ring-2 focus:ring-accent/50 resize-none"
       />
       <div className="flex gap-3">
-        <button
+        <Button
+          variant="primary"
           onClick={handleSubmit}
           disabled={!filename.trim() || !content.trim() || isSaving}
-          className="px-4 py-2 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-colors"
         >
           {isSaving ? "Creating…" : "Create file"}
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-2 border border-line-strong text-fg-muted hover:text-fg text-sm rounded-xl transition-colors"
-        >
+        </Button>
+        <Button variant="ghost" onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );

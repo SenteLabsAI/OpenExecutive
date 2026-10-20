@@ -2,19 +2,26 @@
 
 Every model call the system makes (Executive chat turns, specialist consults
 and workflow specialist steps, specialist research, the research synthesis
-and watchlist passes, triage, the chat memory extractor, the Council test
-boxes) records one ``cache_event`` audit row through
+and watchlist passes, triage, alert review, the brief and its grounding
+repair, the digest, reflection and weekly-review workflows, the committee
+reviewers, the chat memory extractor, the Council test boxes and the small
+utility calls) records one ``cache_event`` audit row through
 :func:`log_model_usage` — tokens, cache hits, provider-reported cost, and the
 server-side web searches the call made. ``GET /audit/usage`` and the
 per-session cost view sum those rows, so a run's weight can be read from the
-audit log instead of guessed.
+audit log instead of guessed. Each call site logs for itself, right after
+its call, because it alone knows its ``actor``;
+``tests/unit/test_usage_recording.py`` fails any model call in this package
+that does not. (The repo-root ``evals/`` harness is a separate client
+process with its own SDK client, so it writes no rows here.)
 
 The ``actor`` column names the source of the call (``executive``,
 ``specialist`` for chat-turn consults, ``specialist_workflow`` for workflow
 steps, ``specialist_mcp`` for the MCP consult tool, ``specialist_research``,
-``research_synthesis``, ``research_watchlist``, ``triage``,
-``memory_extractor``, ``agent_test`` for the Council test boxes), which is
-what the per-source breakdown groups on. A research run binds its
+``research_synthesis``, ``research_watchlist``, ``triage``, ``alert_review``,
+``briefing_narrative``, ``briefing_grounding``, a workflow's own name,
+``committee_reviewer``, ``memory_extractor``, ``agent_test`` for the Council
+test boxes, …), which is what the per-source breakdown groups on. A research run binds its
 ``run_id`` in a ContextVar for its
 duration so every row the run produces carries it in ``details``; the
 workflow then rolls those rows up into the ``usage`` block on its result.

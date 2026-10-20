@@ -1,0 +1,24 @@
+id: finance_bootstrapped_001
+domain: finance
+description: "Runway question from a bootstrapped solo founder"
+company_context:
+  stage: "Bootstrapped, solo founder"
+  industry: "Productized web design studio"
+  headcount: 1
+  arr: 130000
+query: "I run a one-person design studio. I have $42k in the business account, about $9k of that is sales tax and income tax I'll owe next quarter, and clients owe me another $14k (two invoices are over 45 days late). I pay myself $5k a month and other costs are about $2k a month. Revenue swings between $6k and $16k a month. A friend says I should raise a pre-seed round to get some breathing room. How much runway do I actually have, and what should I do?"
+expected_topics:
+  - cash_in_bank_net_of_tax_owed
+  - runway_at_current_burn_including_a_weak_month
+  - collecting_overdue_receivables
+  - owner_pay_and_tax_set_aside
+  - pricing_or_revenue_levers
+  - fundraising_only_if_the_founder_wants_it_not_the_default
+required_routing:
+  - cfo
+quality_criteria:
+  cash_first_advice: true
+  does_not_default_to_fundraising: true
+  does_not_apply_venture_benchmarks: true
+  references_numbers: true
+  actionable: true

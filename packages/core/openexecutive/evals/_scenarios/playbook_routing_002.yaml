@@ -1,0 +1,12 @@
+id: playbook_routing_002
+domain: workflows
+description: "Asked a quick question a playbook covers, the Executive loads and follows the playbook inline rather than launching the full workflow"
+query: "Quick one — what should the executive summary page of a monthly business review cover? Just give me the outline."
+expected_tool_calls:
+  - search_skills
+  - load_skill
+quality_criteria:
+  loads_the_monthly_business_review_playbook: true
+  answers_inline_with_an_outline: true
+  does_not_launch_a_workflow_for_a_quick_question: true
+  concise: true

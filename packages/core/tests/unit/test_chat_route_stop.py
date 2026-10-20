@@ -63,8 +63,6 @@ def _events(body: str) -> list[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
     chat_route._active_stops.clear()
 
 
@@ -93,7 +91,7 @@ def patched_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         retriever,
         "retrieve",
-        lambda query, specialist_name=None, store=None: "",
+        lambda query, specialist_name=None, store=None, **_k: "",
     )
 
     from openexecutive.utils import session_title as _title_mod

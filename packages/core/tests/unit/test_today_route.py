@@ -31,6 +31,11 @@ def _setup_isolated_db(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(wf_persistence, "DB_PATH", db)
     monkeypatch.setattr(insights_cache, "DB_PATH", db)
     monkeypatch.setattr(narrative_cache, "DB_PATH", db)
+    # The header's live blocks read the audit log; keep other modules' rows
+    # (the default ./episodic_memory.db) out of it.
+    from openexecutive.audit import logger as audit_logger
+
+    monkeypatch.setattr(audit_logger, "_default_logger", audit_logger.AuditLogger(db_path=db))
     dept_registry.invalidate()
     # The channel reachability helpers read the people registry; drop its
     # cache so cross-test rosters don't leak through the 60s TTL.
@@ -60,7 +65,9 @@ def _seed_live_action_alert(db: Path, headline: str = "Approve the Q3 budget") -
 
 
 def _current_narrative_hash() -> str:
-    """The principal-scope key exactly as `_attach_narrative` computes it.
+    """The unresolved caller's key exactly as `_attach_narrative` computes it
+    (no principal is seeded here, so a header-less request resolves to no
+    one and reads the shared ``company`` scope).
 
     Derived through `_narrative_context` rather than rebuilt by hand: the key
     is a hash of the rendered model input, so a test that assembled it another
@@ -68,7 +75,7 @@ def _current_narrative_hash() -> str:
     """
     snapshot = today_route._build_today()
     scope, data, desc, viewer = today_route._narrative_inputs(snapshot, None)
-    context, _ = today_route._narrative_context(data, viewer, desc)
+    context, _ = today_route._narrative_context(data, viewer, desc, scope=scope)
     return narrative_cache.build_narrative_input_hash(context, scope=scope)
 
 
@@ -82,6 +89,14 @@ def _make_client() -> TestClient:
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     _setup_isolated_db(tmp_path / "today.db", monkeypatch)
     return _make_client()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_regen_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regen's per-scope pending set and failure backoff are module
+    state; a failed (empty) regen in one test must not back off the next."""
+    monkeypatch.setattr(today_route, "_regen_pending", set())
+    monkeypatch.setattr(today_route, "_regen_failed_at", {})
 
 
 @pytest.fixture(autouse=True)
@@ -293,6 +308,8 @@ def test_artifact_alert_surfaces_as_action_proposal(
     the UI can render it as a document card in the 'Needs you' queue."""
     db = tmp_path / "artifact.db"
     _setup_isolated_db(db, monkeypatch)
+    # No caller header: the principal is asking, and the draft is theirs.
+    pid = people_store.upsert_person(full_name="Jordan", is_principal=True, db_path=db)
 
     alert_store.insert_alert(
         source="artifact",
@@ -302,7 +319,8 @@ def test_artifact_alert_surfaces_as_action_proposal(
         body="## Summary\n\nFull document body.",
         suggested_action="Reframes our Q3 fundraising window.",
         topic_tags=["artifact"],
-        routed_to_person_id=7,
+        routed_to_person_id=pid,
+        owner_person_id=pid,
         db_path=db,
     )
 
@@ -311,7 +329,75 @@ def test_artifact_alert_surfaces_as_action_proposal(
     assert "artifact" in artifact["topic_tags"]
     assert artifact["category"] == "action"
     assert artifact["body"] == "## Summary\n\nFull document body."
-    assert artifact["routed_to_person_id"] == 7
+    assert artifact["routed_to_person_id"] == pid
+    assert artifact["artifact_format"] == "markdown"
+
+
+def test_a_drafted_artifact_card_is_only_its_owners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each person's /today carries their own drafts and nobody else's — not
+    even the principal's carries a teammate's."""
+    db = tmp_path / "artifact_owner.db"
+    _setup_isolated_db(db, monkeypatch)
+    pid = people_store.upsert_person(
+        full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db
+    )
+    sam = people_store.upsert_person(full_name="Sam", email="sam@example.com", db_path=db)
+    for ext, owner in (("p", pid), ("s", sam), ("legacy", None)):
+        alert_store.insert_alert(
+            source="artifact", external_id=ext, severity="medium",
+            headline=f"doc {ext}", body="private body", topic_tags=["artifact"],
+            routed_to_person_id=owner, owner_person_id=owner, db_path=db,
+        )
+
+    def headlines(email: str | None) -> set[str]:
+        headers = {"x-caller-email": email} if email else {}
+        proposals = _make_client().get("/today", headers=headers).json()["proposals"]
+        return {p["headline"] for p in proposals if "artifact" in p["topic_tags"]}
+
+    assert headlines(None) == {"doc p", "doc legacy"}
+    assert headlines("jordan@example.com") == {"doc p", "doc legacy"}
+    assert headlines("sam@example.com") == {"doc s"}
+    assert headlines("stranger@example.com") == set()
+    # The activity rail is everyone's, so it names no one's document.
+    rail = today_route._build_activity(limit=50).items
+    assert not any(i.summary.startswith("doc ") for i in rail)
+
+
+def test_non_markdown_artifact_body_is_rendered_for_the_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An HTML / spreadsheet / link artifact stores format-specific text; the
+    /today card and chat handoff get a Markdown rendering, plus the format."""
+    import json as _json
+
+    db = tmp_path / "artifact_fmt.db"
+    _setup_isolated_db(db, monkeypatch)
+    # No caller header: the principal, whose drafts these are (no owner).
+    people_store.upsert_person(full_name="Jordan", is_principal=True, db_path=db)
+    for ext_id, fmt, body, url in (
+        ("h", "html", "<h1>Pricing</h1><p>Three tiers.</p>", None),
+        ("x", "xlsx", _json.dumps({"summary": "Model", "sheets": [
+            {"name": "S", "columns": ["tier"], "rows": [["pro"]]}]}), None),
+        ("l", "link", "Board deck draft", "https://slides.example/d/1"),
+    ):
+        alert_store.insert_alert(
+            source="artifact", external_id=ext_id, severity="medium",
+            headline=f"{fmt} doc", body=body, topic_tags=["artifact"],
+            artifact_format=fmt, artifact_url=url, db_path=db,
+        )
+
+    by_headline = {
+        p["headline"]: p for p in _make_client().get("/today").json()["proposals"]
+    }
+    html = by_headline["html doc"]
+    assert html["artifact_format"] == "html"
+    assert "<" not in html["body"] and "Three tiers." in html["body"]
+    assert "| tier |" in by_headline["xlsx doc"]["body"]
+    link = by_headline["link doc"]
+    assert link["artifact_url"] == "https://slides.example/d/1"
+    assert link["body"] == "Board deck draft"
 
 
 def test_proposals_include_unrouted_alerts_for_principal_inbox(
@@ -544,6 +630,45 @@ def test_insight_served_from_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert person["insight"] == "Available and clear; last contacted last week"
 
 
+def test_principal_only_roster_regenerates_no_insight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The UI shows no People sidebar for one person, so a one-person install
+    must not pay a daily model call for a note nobody sees."""
+    db = tmp_path / "solo_insight.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Sole Owner", is_principal=True, email="o@co.com", db_path=db)
+
+    stale: list[today_route.StaleInsight] = []
+    snapshot = today_route._build_today(stale_out=stale)
+    assert [p.full_name for p in snapshot.people] == ["Sole Owner"]
+    assert stale == []
+
+    regen: list[object] = []
+
+    async def _spy(items: list[object]) -> None:
+        regen.append(items)
+
+    monkeypatch.setattr(today_route, "_regen_stale_insights", _spy)
+    _make_client().get("/today")
+    assert regen == []
+
+
+def test_two_person_roster_collects_both_stale_insights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "team_insight.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db)
+    people_store.upsert_person(full_name="Tia Teammate", email="t@co.com", db_path=db)
+
+    stale: list[today_route.StaleInsight] = []
+    today_route._build_today(stale_out=stale)
+    assert sorted(person.full_name for person, _signals, _hash in stale) == [
+        "Pat Principal", "Tia Teammate",
+    ]
+
+
 def test_morning_brief_alias_unaffected_by_async_today(client: TestClient) -> None:
     """The sync /morning-brief alias must keep returning the same body as
     the now-async /today (both serve insight=None on a cold INSIGHT cache;
@@ -733,6 +858,58 @@ def test_activity_includes_decisions_and_advice(
     assert "advice_given" in kinds
 
 
+def test_a_card_left_from_chat_reads_as_what_it_did(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delete approved on its chat card reads as the delete, not as
+    "Approved: Finance" (which the brief turned into "I approved the
+    pending department decisions")."""
+    db = tmp_path / "act_app.db"
+    _setup_isolated_db(db, monkeypatch)
+
+    def card(key: str, title: str) -> int:
+        return decision_ledger.create_decision_instance(
+            decision_class="app_action", department="",
+            originating_session_id=None,
+            proposed_payload={
+                "action": "delete_department", "id": key, "value": "",
+                "title": title, "card": f"Delete the department “{title}”",
+            },
+            idempotency_key=None, gate_mode="propose",
+            approver_person_id=None, confidence=None, db_path=db,
+        )
+
+    done = card("finance", "Finance")
+    decision_ledger.mark_resolved(
+        done, decision_ledger.STATUS_APPROVED_UNCHANGED,
+        final_payload={"did": "Deleted the department “Finance”"}, db_path=db,
+    )
+    turned_down = card("legal", "Legal")
+    decision_ledger.mark_resolved(turned_down, decision_ledger.STATUS_REJECTED, db_path=db)
+    # A card on something private to its person (a chat's title) stays off
+    # the team's feed.
+    chat = decision_ledger.create_decision_instance(
+        decision_class="app_action", department="", originating_session_id=None,
+        proposed_payload={
+            "action": "delete_chat", "id": "s1", "value": "",
+            "title": "Private plans", "card": "Delete the chat “Private plans”",
+        },
+        idempotency_key=None, gate_mode="propose",
+        approver_person_id=None, confidence=None, db_path=db,
+    )
+    decision_ledger.mark_resolved(
+        chat, decision_ledger.STATUS_APPROVED_UNCHANGED,
+        final_payload={"did": "Deleted the chat “Private plans”"}, db_path=db,
+    )
+
+    items = _make_client().get("/today/activity?limit=100").json()["items"]
+    summaries = sorted(i["summary"] for i in items if i["kind"] == "decision_resolved")
+    assert summaries == [
+        "Deleted the department “Finance” (asked for in chat, approved on its card)",
+        "Turned down: Delete the department “Legal”",
+    ]
+
+
 def test_activity_includes_workflow_initiative_decision_alert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -787,7 +964,12 @@ def test_activity_includes_workflow_initiative_decision_alert(
     for it in items:
         by_kind.setdefault(it["kind"], []).append(it)
 
-    assert [i["summary"] for i in by_kind.get("workflow_done", [])] == ["Morning brief"]
+    # Named in plain words, not by the run's log title; a brief gets no line
+    # (its text is the brief) but links to its write-up.
+    [done] = by_kind.get("workflow_done", [])
+    assert done["summary"] == "Sent the morning brief"
+    assert done["detail"] is None
+    assert done["artifact_id"] == "run:run-1"
     assert [i["summary"] for i in by_kind.get("initiative_started", [])] == ["AI Opportunity Assessment"]
     # Decision summary derives the verb from status + a human payload key.
     assert by_kind["decision_resolved"][0]["summary"] == "Approved: Book weekly sync"
@@ -917,7 +1099,7 @@ def test_narrative_served_from_cache(
     nhash = _current_narrative_hash()
     narrative_cache.put(
         narrative_cache.BriefingNarrative(
-            scope=narrative_cache.DEFAULT_SCOPE,
+            scope=narrative_cache.COMPANY_SCOPE,
             input_hash=nhash,
             narrative_text="**Top call:** ship the C2 decision.",
             generated_at=narrative_cache.utc_now_iso(),
@@ -957,7 +1139,7 @@ def test_narrative_regenerated_in_background(
     first = c.get("/today").json()
     assert first["narrative"] is None  # cold at response-build time
     # Background task ran during the TestClient call → cache now populated.
-    cached = narrative_cache.get(db_path=db)
+    cached = narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db)
     assert cached is not None and cached.narrative_text == "**What changed:** nothing dramatic."
     # Second request serves it.
     assert c.get("/today").json()["narrative"] == "**What changed:** nothing dramatic."
@@ -974,7 +1156,7 @@ def test_fresh_cache_does_not_trigger_regen(
     nhash = _current_narrative_hash()
     narrative_cache.put(
         narrative_cache.BriefingNarrative(
-            scope=narrative_cache.DEFAULT_SCOPE, input_hash=nhash,
+            scope=narrative_cache.COMPANY_SCOPE, input_hash=nhash,
             narrative_text="cached text", generated_at=narrative_cache.utc_now_iso(),
         ),
         db_path=db,
@@ -1217,8 +1399,9 @@ def test_narrative_personalized_per_viewer(
 def test_unrostered_viewer_gets_whole_company_narrative(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A caller whose email isn't on a Person row falls back to the
-    whole-company (principal-scope) narrative."""
+    """A caller whose email isn't on a Person row falls back to the shared
+    whole-company narrative — the ``company`` scope, never the principal's
+    own (which may carry what is private to them)."""
     db = tmp_path / "unrostered.db"
     _setup_isolated_db(db, monkeypatch)
     _seed_live_action_alert(db)  # non-quiet board, so the synthesizer runs
@@ -1232,8 +1415,10 @@ def test_unrostered_viewer_gets_whole_company_narrative(
     c.get("/today", headers={"x-caller-email": "stranger@x.com"})
     n = c.get("/today", headers={"x-caller-email": "stranger@x.com"}).json()["narrative"]
     assert n == "principal-brief"
-    # Structurally: the fallback writes the DEFAULT_SCOPE key, never "person:None".
-    assert narrative_cache.get("principal", db_path=db) is not None
+    # Structurally: the fallback writes the COMPANY_SCOPE key — never the
+    # principal's own row and never "person:None".
+    assert narrative_cache.get("company", db_path=db) is not None
+    assert narrative_cache.get("principal", db_path=db) is None
     assert narrative_cache.get("person:None", db_path=db) is None
 
 
@@ -1524,6 +1709,33 @@ def test_proposals_carry_lifecycle_fields_and_demote_likely_stale(
     s = by_headline["stale one"]
     assert s["review_verdict"] == "likely_stale"
     assert s["score"] < f["score"]
+
+
+def test_handled_overnight_shows_private_rows_only_to_the_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.audit import logger as audit_logger
+    from openexecutive.briefing import brief_state
+
+    db = tmp_path / "today.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db)
+    people_store.upsert_person(full_name="Tia Teammate", email="t@co.com", db_path=db)
+    al = audit_logger.AuditLogger(db_path=tmp_path / "audit.db")
+    al.initialize_db()
+    monkeypatch.setattr(audit_logger, "get_audit_logger", lambda: al)
+    monkeypatch.setattr(brief_state, "since_for", lambda kind, now=None: datetime.now(UTC) - timedelta(hours=1))
+    al.log("alert_review_closed", "Resolved 'Shared thing'", actor="executive",
+           details={"headline": "Shared thing", "new_status": "resolved"})
+    al.log("alert_review_closed", "Resolved 'Note from a contact'", actor="executive",
+           details={"headline": "Note from a contact", "new_status": "resolved"}, private=True)
+
+    def headlines(email: str) -> set[str]:
+        res = _make_client().get("/today", headers={"x-caller-email": email})
+        return {r["headline"] for r in res.json()["handled_overnight"]}
+
+    assert headlines("p@co.com") == {"Shared thing", "Note from a contact"}
+    assert headlines("t@co.com") == {"Shared thing"}
 
 
 def test_handled_overnight_rows_are_structured_and_track_current_status(
@@ -1914,3 +2126,520 @@ def test_alert_raises_never_reach_the_synthesizer(
     assert "Approve the Q3 budget" not in seen["summaries"]
     assert "decision_logged" in seen["kinds"]  # feed is non-empty
     assert "alert_raised" not in seen["kinds"]
+
+
+def test_solo_today_names_the_principal_for_the_due_soon_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The solo Briefing's "Due soon" card finds the principal's id in
+    /today's `people` (the UI's principalIdOf) and reads their loops from
+    GET /people/{id}/open-loops — so solo must keep the principal in
+    `people`, and the principal must be able to read their own loops."""
+    from openexecutive.api.routes import people as people_route
+    from openexecutive.attunement import open_loops
+    from openexecutive.audit import AuditLogger, set_audit_logger
+    from openexecutive.memory import workspace_settings as ws
+
+    db = tmp_path / "solo-today.db"
+    _setup_isolated_db(db, monkeypatch)
+    set_audit_logger(AuditLogger(db_path=db))
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo"))
+    principal = people_store.upsert_person(
+        full_name="Pat Lee", is_principal=True, email="pat@example.com"
+    )
+    loop_id = open_loops.open_loop(
+        owner_person_id=principal,
+        description="Pat Lee committed to: send the proposal",
+        due_at=datetime.now(UTC) + timedelta(days=2),
+    )
+
+    app = FastAPI()
+    app.include_router(today_route.router)
+    app.include_router(people_route.router)
+    client = TestClient(app)
+    headers = {"x-caller-email": "pat@example.com"}
+    try:
+        people = client.get("/today", headers=headers).json()["people"]
+        loops = client.get(f"/people/{principal}/open-loops", headers=headers)
+    finally:
+        set_audit_logger(None)
+        people_registry.invalidate()
+    principals = [p["id"] for p in people if p["is_principal"]]
+    assert principals == [principal]
+    assert loops.status_code == 200
+    assert [lp["loop_id"] for lp in loops.json()] == [loop_id]
+
+
+# --------------------------------------------------------------------------- #
+# Live, fresh header (briefing.live_signals + scope split + freshness fields)
+# --------------------------------------------------------------------------- #
+
+def _log_inbound(db: Path, sender: str, subject: str, *, private: bool = False) -> None:
+    from openexecutive.audit import logger as audit_logger
+
+    audit_logger.get_audit_logger().log(
+        "integration_inbound", f"Inbound email from {sender}: {subject}", actor="email",
+        details={"channel": "email", "from": sender, "subject": subject},
+        private=private,
+    )
+
+
+def _capture_contexts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    contexts: list[str] = []
+
+    async def _synth(**kw: object) -> str:
+        contexts.append(str(kw.get("rendered_context") or ""))
+        return "live header"
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
+    return contexts
+
+
+def test_inbound_today_makes_a_quiet_board_speak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No proposals, no risk — but mail came in today. The header used to say
+    'Quiet right now' over a busy inbox; it now reads the inbound."""
+    db = tmp_path / "live.db"
+    _setup_isolated_db(db, monkeypatch)
+    _log_inbound(db, "sam@x.com", "vendor renewal terms")
+    contexts = _capture_contexts(monkeypatch)
+
+    c = _make_client()
+    c.get("/today")
+    assert len(contexts) == 1
+    assert "INBOUND" in contexts[0] and "vendor renewal terms" in contexts[0]
+    assert "NOW:" in contexts[0]
+    assert c.get("/today").json()["narrative"] == "live header"
+
+
+def test_private_inbound_only_in_the_principals_own_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "private.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db,
+    )
+    _log_inbound(db, "contact@x.com", "a private matter", private=True)
+    _log_inbound(db, "team@x.com", "shared news")
+    contexts = _capture_contexts(monkeypatch)
+
+    c = _make_client()
+    c.get("/today", headers={"x-caller-email": "p@co.com"})
+    c.get("/today", headers={"x-caller-email": "stranger@x.com"})
+
+    own, shared = contexts
+    assert "a private matter" in own and "shared news" in own
+    assert "a private matter" not in shared and "shared news" in shared
+    assert narrative_cache.get(narrative_cache.DEFAULT_SCOPE, db_path=db) is not None
+    assert narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db) is not None
+
+
+def test_response_says_how_old_the_header_is_and_whether_it_is_refreshing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "fresh2.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    _capture_contexts(monkeypatch)
+
+    c = _make_client()
+    first = c.get("/today").json()
+    assert first["narrative"] is None and first["narrative_stale"] is True
+    second = c.get("/today").json()
+    assert second["narrative"] == "live header"
+    assert second["narrative_stale"] is False
+    assert second["narrative_generated_at"]
+
+
+def test_yesterdays_header_is_not_served_as_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "yday.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=narrative_cache.COMPANY_SCOPE, input_hash="old",
+        narrative_text="yesterday's read",
+        generated_at=(datetime.now(UTC) - timedelta(days=1, hours=1)).isoformat(),
+    ), db_path=db)
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+
+    data = _make_client().get("/today").json()
+    assert data["narrative"] is None
+    assert data["narrative_stale"] is True
+
+
+async def _noop_regen(*_a: object, **_k: object) -> None:
+    return None
+
+
+async def test_regen_is_serialized_per_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    db = tmp_path / "lock.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    release = asyncio.Event()
+    calls = {"n": 0}
+
+    async def _slow(**_kw: object) -> str:
+        calls["n"] += 1
+        await release.wait()
+        return "once"
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _slow)
+    first = asyncio.create_task(today_route._regen_briefing_narrative(None, "company"))
+    await asyncio.sleep(0.05)
+    await today_route._regen_briefing_narrative(None, "company")  # skipped: one is running
+    release.set()
+    await first
+    assert calls["n"] == 1
+    cached = narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db)
+    assert cached is not None and cached.narrative_text == "once"
+
+
+async def test_scheduler_refresh_regenerates_only_when_the_key_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import live_signals
+
+    db = tmp_path / "refresh.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db,
+    )
+    _seed_live_action_alert(db)
+
+    async def _no_calendar(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr(live_signals, "refresh_calendar", _no_calendar)
+    contexts = _capture_contexts(monkeypatch)
+
+    assert await today_route.refresh_principal_narrative() is True
+    assert await today_route.refresh_principal_narrative() is False  # nothing moved
+    _log_inbound(db, "sam@x.com", "new thread")
+    assert await today_route.refresh_principal_narrative() is True
+    assert len(contexts) == 2 and "new thread" in contexts[1]
+    assert narrative_cache.get(narrative_cache.DEFAULT_SCOPE, db_path=db) is not None
+
+
+async def test_scheduler_refresh_needs_a_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_isolated_db(tmp_path / "noprincipal.db", monkeypatch)
+    assert await today_route.refresh_principal_narrative() is False
+
+
+def test_rhythm_runs_stay_out_of_the_briefs_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.workflows import persistence
+
+    _setup_isolated_db(tmp_path / "rhythm.db", monkeypatch)
+    for run_id, name, title in [
+        ("a", "executive_reflection", "Executive Reflection 2026-09-28"),
+        ("b", "competitive_teardown", "Teardown of Acme"),
+    ]:
+        persistence.create_run(run_id, name, title, {})
+        persistence.complete_run(run_id, "x")
+
+    rail = [i.summary for i in today_route._build_activity(10).items]
+    brief = [
+        i.summary for i in today_route._build_activity(
+            10, exclude_workflows=today_route.RHYTHM_WORKFLOWS,
+        ).items
+    ]
+    assert "Looked back on the day" in rail
+    assert "Looked back on the day" not in brief
+    assert "Teardown of Acme" in brief
+
+
+def test_the_shared_header_never_quotes_the_principals_calendar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import live_signals
+    from openexecutive.briefing.top_three import CalendarEvent
+
+    db = tmp_path / "cal.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db,
+    )
+    _seed_live_action_alert(db)
+    later = datetime.now(UTC) + timedelta(hours=2)
+    monkeypatch.setattr(
+        live_signals, "cached_calendar",
+        lambda now, tz: [CalendarEvent("Acquisition talks", later, later + timedelta(hours=1))],
+    )
+    contexts = _capture_contexts(monkeypatch)
+
+    c = _make_client()
+    c.get("/today", headers={"x-caller-email": "p@co.com"})
+    c.get("/today", headers={"x-caller-email": "stranger@x.com"})
+
+    own, shared = contexts
+    assert "Acquisition talks" in own
+    assert "Acquisition talks" not in shared
+    assert "REST OF TODAY'S CALENDAR" not in shared
+
+
+async def test_a_trigger_during_a_regen_gets_one_more_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mail that lands while a regen runs is not lost to the lock: the
+    running regen goes round once more and writes the newer state."""
+    import asyncio
+
+    db = tmp_path / "pending.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    release = asyncio.Event()
+    contexts: list[str] = []
+
+    async def _synth(**kw: object) -> str:
+        contexts.append(str(kw.get("rendered_context")))
+        if len(contexts) == 1:
+            await release.wait()
+        return f"pass {len(contexts)}"
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _synth)
+    first = asyncio.create_task(today_route._regen_briefing_narrative(None, "company"))
+    await asyncio.sleep(0.05)
+    _log_inbound(db, "sam@x.com", "arrived mid-run")
+    await today_route._regen_briefing_narrative(None, "company")  # queued, not run
+    release.set()
+    await first
+
+    assert len(contexts) == 2
+    assert "arrived mid-run" not in contexts[0] and "arrived mid-run" in contexts[1]
+    cached = narrative_cache.get(narrative_cache.COMPANY_SCOPE, db_path=db)
+    assert cached is not None and cached.narrative_text == "pass 2"
+
+
+def test_a_failed_regen_backs_off_instead_of_retrying_every_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "backoff.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    calls = {"n": 0}
+
+    async def _boom(**_kw: object) -> str:
+        calls["n"] += 1
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _boom)
+    c = _make_client()
+    first = c.get("/today").json()
+    assert first["narrative_stale"] is True and calls["n"] == 1
+    second = c.get("/today").json()
+    # Nothing is coming for a while: the page drops its placeholder and no
+    # further model call is spent.
+    assert second["narrative_stale"] is False and second["narrative"] is None
+    assert calls["n"] == 1
+
+    # Once the backoff has passed, a view tries again.
+    today_route._regen_failed_at["company"] = datetime.now(UTC) - timedelta(minutes=6)
+    c.get("/today")
+    assert calls["n"] == 2
+
+
+def test_held_back_lines_are_the_principals_alone(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import grounding
+
+    held = [grounding.HeldBack(event_id=4, surface="morning brief", at="2026-10-13T07:30:00+00:00",
+                               lines=["- Dana's renewal is worth $48K"])]
+    monkeypatch.setattr(grounding, "recent_held_back", lambda since, limit=3: held)
+    people_store.upsert_person(full_name="Founder", email="founder@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Alice Example", email="alice@example.com")
+
+    mine = client.get("/today", headers={"x-caller-email": "founder@example.com"}).json()
+    assert mine["held_back"] == [{
+        "event_id": 4, "surface": "morning brief", "at": "2026-10-13T07:30:00+00:00",
+        "lines": ["- Dana's renewal is worth $48K"],
+    }]
+    theirs = client.get("/today", headers={"x-caller-email": "alice@example.com"}).json()
+    assert theirs["held_back"] == []
+
+
+def test_a_failed_run_card_carries_its_run(client: TestClient) -> None:
+    from openexecutive.workflows.failure_alerts import file_failed_run_card
+
+    file_failed_run_card(
+        run_id="r-9", workflow_name="department_check_in", title="Finance check-in",
+        scope="finance",
+    )
+    alert_store.insert_alert(
+        source="triage", external_id="t-1", severity="medium", headline="other", body="b",
+        topic_tags=["failed_run:spoofed"],
+    )
+    by_headline = {p["headline"]: p for p in client.get("/today").json()["proposals"]}
+    assert by_headline["Finance check-in didn't finish"]["failed_run_id"] == "r-9"
+    assert by_headline["other"]["failed_run_id"] is None  # only a failure card names a run
+
+
+def test_a_delivered_brief_stays_off_the_activity_rail_and_heatmap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A brief's own delivery is not work done: the rail (which every later
+    brief reads) and the heatmap leave it out, so a brief never repeats its
+    last top call as news."""
+    db = tmp_path / "brief_rail.db"
+    _setup_isolated_db(db, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+    for text, kind in (
+        ("**Top call:** pick up the Maple Court buyout", episodic.BRIEF_DELIVERY_KIND),
+        ("Sent the lease summary to Dana", "ad_hoc"),
+    ):
+        episodic.insert_scheduled_action(
+            run_at=now, channel="telegram", channel_ref="42", intent_text=text,
+            kind=kind, status="done", db_path=db,
+        )
+
+    summaries = [i.summary for i in today_route._build_activity(20).items]
+    assert any("lease summary" in s for s in summaries)
+    assert not any("Maple Court" in s for s in summaries)
+    assert dict(episodic.count_activity_by_day(1)) == {now[:10]: 1}
+
+
+# --------------------------------------------------------------------------- #
+# Right now: the header split for Home's card
+# --------------------------------------------------------------------------- #
+
+_RIGHT_NOW_HEADER = (
+    "**Lakeside is the one thing to move today.**\n\n"
+    "- **Lakeside renewal** — they want a price before 4 PM.\n\n"
+    "**Move today:** Send Lakeside the price."
+)
+
+
+def test_today_splits_the_header_for_right_now(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "rn.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+
+    async def _fake(**_kw: object) -> str:
+        return _RIGHT_NOW_HEADER
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _fake)
+    c = _make_client()
+    c.get("/today")
+    data = c.get("/today").json()
+    assert data["narrative_lead"] == "Lakeside is the one thing to move today."
+    assert data["narrative_move"] == "Send Lakeside the price."
+    [point] = data["narrative_points"]
+    assert point["text"].startswith("**Lakeside renewal**")
+    assert point["since"] == data["narrative_generated_at"]
+    assert data["narrative_seen_at"] is None
+    # Not the principal: no morning brief or calendar.
+    assert data["morning_brief"] is None and data["calendar_next"] == []
+
+
+def test_today_seen_round_trips_in_a_teammates_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "rn-seen.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db,
+    )
+    people_store.upsert_person(full_name="Sam Teammate", email="sam@co.com", db_path=db)
+    people_registry.invalidate()
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+    c = _make_client()
+    me = {"x-caller-email": "sam@co.com"}
+    pid = c.get("/today", headers=me).json()["caller_person_id"]
+    assert pid is not None
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=f"person:{pid}", input_hash="x",
+        narrative_text=_RIGHT_NOW_HEADER, generated_at=narrative_cache.utc_now_iso(),
+    ), db_path=db)
+
+    seen = c.post("/today/seen", headers=me).json()["seen_at"]
+    assert seen
+    assert c.get("/today", headers=me).json()["narrative_seen_at"] == seen
+
+    # The owner's look lands in the owner's own scope, apart from Sam's.
+    owner = {"x-caller-email": "p@co.com"}
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=narrative_cache.DEFAULT_SCOPE, input_hash="x",
+        narrative_text=_RIGHT_NOW_HEADER, generated_at=narrative_cache.utc_now_iso(),
+    ), db_path=db)
+    assert c.get("/today", headers=owner).json()["narrative_seen_at"] is None
+    owner_seen = c.post("/today/seen", headers=owner).json()["seen_at"]
+    assert c.get("/today", headers=owner).json()["narrative_seen_at"] == owner_seen
+    assert c.get("/today", headers=me).json()["narrative_seen_at"] == seen
+
+
+def test_an_unrostered_look_is_not_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "rn-company.db"
+    _setup_isolated_db(db, monkeypatch)
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=narrative_cache.COMPANY_SCOPE, input_hash="x",
+        narrative_text=_RIGHT_NOW_HEADER, generated_at=narrative_cache.utc_now_iso(),
+    ), db_path=db)
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+
+    c = _make_client()
+    assert c.post("/today/seen").json()["seen_at"] is None
+    assert c.get("/today").json()["narrative_seen_at"] is None
+
+
+def test_calendar_next_lists_what_is_still_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.briefing import live_signals
+    from openexecutive.briefing.top_three import CalendarEvent
+
+    now = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+    events = [
+        CalendarEvent(title="Offsite", start=None, end=None, all_day=True),
+        CalendarEvent(title="Done", start=now - timedelta(hours=2), end=now - timedelta(hours=1)),
+        CalendarEvent(title="In progress", start=now - timedelta(minutes=10), end=now + timedelta(minutes=20)),
+        CalendarEvent(title="Next", start=now + timedelta(hours=1), end=now + timedelta(hours=2)),
+        CalendarEvent(title="Later", start=now + timedelta(hours=3), end=now + timedelta(hours=4)),
+    ]
+    monkeypatch.setattr(live_signals, "cached_calendar", lambda _now, _tz: events)
+    items = today_route._calendar_next(now)
+    assert [i.title for i in items] == ["In progress", "Next", "Later"]
+    events.append(CalendarEvent(title="Holiday", start=None, end=None, all_day=True))
+    events.remove(events[-2])  # drop "Later"
+    items = today_route._calendar_next(now)
+    assert [i.title for i in items] == ["In progress", "Next", "Offsite"]
+    assert items[2].all_day and items[2].start is None
+
+
+def test_morning_brief_today_only_serves_todays_non_empty_brief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing import brief_state
+
+    def _delivered(at: datetime, text: str = "**Good morning.**") -> None:
+        row = narrative_cache.BriefingNarrative(
+            scope="brief:principal_brief_morning", input_hash="f",
+            narrative_text=text, generated_at=at.isoformat(),
+        )
+        monkeypatch.setattr(brief_state, "last_delivered", lambda _kind: row)
+
+    now = datetime.now(UTC)
+    _delivered(now)
+    item = today_route._morning_brief_today()
+    assert item is not None and item.text == "**Good morning.**"
+
+    _delivered(now - timedelta(days=1, hours=1))
+    assert today_route._morning_brief_today() is None
+
+    _delivered(now, text="  ")
+    assert today_route._morning_brief_today() is None
+
+    monkeypatch.setattr(brief_state, "last_delivered", lambda _kind: None)
+    assert today_route._morning_brief_today() is None

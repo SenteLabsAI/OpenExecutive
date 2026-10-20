@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
@@ -13,23 +13,40 @@ _SPECIALIST_TIMEOUT = 180.0
 logger = logging.getLogger(__name__)
 
 
+AgentVisibility = Literal["core", "internal"]
+
+
 class BaseAgent(ABC):
     name: str
     domain: str
     model: str
     use_deep_reasoning: bool = False
+    # "core": an agent a user would recognise (the Executive and the domain
+    # specialists), listed in the Agent Council's simple view. "internal":
+    # triage and the helper agents, shown only under "Show all agents".
+    visibility: AgentVisibility = "internal"
 
     @abstractmethod
     def get_system_prompt(self) -> str: ...
 
-    def effective_system_prompt(self) -> str:
-        """System prompt with runtime override applied, if any."""
+    def base_system_prompt(self) -> str:
+        """The built-in prompt, or the Council's replacement for it."""
         from openexecutive.agents.overrides import get_override
 
         ov = get_override(self.name)
         if ov is not None and ov.prompt is not None:
             return ov.prompt
         return self.get_system_prompt()
+
+    def effective_system_prompt(self) -> str:
+        """System prompt as sent: the base prompt plus any additional
+        instructions saved in the Council."""
+        from openexecutive.agents.overrides import append_instructions, get_override
+
+        ov = get_override(self.name)
+        return append_instructions(
+            self.base_system_prompt(), ov.instructions if ov is not None else None
+        )
 
     def effective_model(self) -> str:
         from openexecutive.agents.overrides import get_override
@@ -56,6 +73,9 @@ class BaseAgent(ABC):
         failure_cases: str = "",
         department_memory: str = "",
         *,
+        company_stage: str = "",
+        principal_role: str = "",
+        standing_facts: str = "",
         system_prompt_override: str | None = None,
         model_override: str | None = None,
         deep_reasoning_override: bool | None = None,
@@ -106,6 +126,13 @@ class BaseAgent(ABC):
             user_content = (
                 f"<past_decisions>\n{episodic_context}\n</past_decisions>\n\n{user_content}"
             )
+        if standing_facts:
+            # The principal's kept corrections (memory.facts), next to the
+            # institutional memory it overrides. User turn, never the cached
+            # specialist system prompt.
+            user_content = (
+                f"<standing_facts>\n{standing_facts}\n</standing_facts>\n\n{user_content}"
+            )
         if department_memory:
             # Placed adjacent to past_decisions so the specialist sees both
             # forms of institutional context together: the structured ledger
@@ -116,6 +143,23 @@ class BaseAgent(ABC):
             user_content = (
                 f"<department_memory>\n{department_memory}\n</department_memory>\n\n{user_content}"
             )
+        # Solo mode: what the principal does (kind, title, remit —
+        # router.principal_role_context). A VP inside a large company and a
+        # business owner need different advice for the same question; the
+        # tag rides in the USER turn for the same cache reason as the stage
+        # below, which sits just outside it.
+        role = principal_role.strip()
+        if role:
+            user_content = f"<principal_role>\n{role}\n</principal_role>\n\n{user_content}"
+        # The company's stage, from the profile. Specialists never see the
+        # company profile — it lives in the Executive's cached system block —
+        # and stage changes which benchmarks apply (venture metrics mislead a
+        # bootstrapped business). It rides in the USER turn, outermost, so the
+        # specialist's cached system prompt stays byte-identical whatever the
+        # profile says. Collapsed to one line: it is free text.
+        stage = " ".join(company_stage.split())
+        if stage:
+            user_content = f"<company_stage>\n{stage}\n</company_stage>\n\n{user_content}"
 
         create_kwargs: dict = {
             "model": model,

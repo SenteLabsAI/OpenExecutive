@@ -1,0 +1,848 @@
+"""The direct Gmail client for a person's own mailbox (delegation/gmail.py)
+and the script that connects it (scripts/connect-own-gmail.py)."""
+from __future__ import annotations
+
+import asyncio
+import base64
+import email
+import importlib.util
+import inspect
+import json
+import re
+import stat
+import time
+from datetime import UTC, datetime
+from email import policy
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import httpx
+import pytest
+
+from openexecutive.delegation import gmail as gm
+from openexecutive.delegation.gmail import (
+    DelegateGmail,
+    DraftSpec,
+    GmailAuthError,
+    GmailCredential,
+    GmailError,
+    GmailNotConfigured,
+    MailMessage,
+    build_raw,
+    email_key,
+    gmail_link,
+    gmail_status,
+    load_credential,
+    parse_message,
+)
+
+EMAIL = "olivia@co.example"
+EXEC = "ceo.test@example.com"  # tests/conftest.py's EXEC_EMAIL_ADDRESS
+SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "connect-own-gmail.py"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tokens() -> None:
+    gm._TOKENS.clear()
+
+
+def _script() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("connect_own_gmail", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _cred() -> GmailCredential:
+    return GmailCredential(email=EMAIL, refresh_token="r1", client_id="cid", client_secret="sec")
+
+
+# --------------------------------------------------------------------------- #
+# Credential file
+# --------------------------------------------------------------------------- #
+
+
+def test_the_script_writes_what_the_client_reads(tmp_path: Path) -> None:
+    script = _script()
+    assert script.email_key(" Olivia@Co.Example ") == email_key(EMAIL)
+    payload = script.credential_payload(EMAIL, "r1", "cid", "sec")
+    path = script.write_credential(tmp_path / "creds", EMAIL, payload)
+    assert path.name == f"{email_key(EMAIL)}.json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert load_credential(EMAIL, directory=tmp_path / "creds") == GmailCredential(
+        email=EMAIL, refresh_token="r1", client_id="cid", client_secret="sec",
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+    # The script asks for exactly the scopes the client needs.
+    assert list(script.SCOPES) == list(gm.SCOPES)
+
+
+def _write(directory: Path, content: object, *, name: str = EMAIL) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{email_key(name)}.json").write_text(json.dumps(content))
+
+
+@pytest.mark.parametrize("content", [
+    "not json at all",
+    {"email": "someone.else@co.example", "authorized_user": {"refresh_token": "r", "client_id": "c", "client_secret": "s"}},
+    {"email": EMAIL, "authorized_user": {"refresh_token": "", "client_id": "c", "client_secret": "s"}},
+    {"email": EMAIL},
+    {"email": EMAIL, "authorized_user": {"refresh_token": "r", "client_id": "c", "client_secret": "s",
+                                         "token_uri": "https://evil.example/token"}},
+])
+def test_a_bad_credential_file_is_ignored(tmp_path: Path, content: object) -> None:
+    directory = tmp_path / "creds"
+    if isinstance(content, str):
+        directory.mkdir()
+        (directory / f"{email_key(EMAIL)}.json").write_text(content)
+    else:
+        _write(directory, content)
+    assert load_credential(EMAIL, directory=directory) is None
+
+
+def test_no_file_no_credential(tmp_path: Path) -> None:
+    assert load_credential(EMAIL, directory=tmp_path) is None
+    assert load_credential("", directory=tmp_path) is None
+
+
+# --------------------------------------------------------------------------- #
+# Parsing and drafts
+# --------------------------------------------------------------------------- #
+
+
+def _b64(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+
+def _message(headers: dict[str, str], *, plain: str | None = None, html: str | None = None,
+             labels: list[str] | None = None, mid: str = "m1") -> dict[str, Any]:
+    parts = []
+    if plain is not None:
+        parts.append({"mimeType": "text/plain", "body": {"data": _b64(plain)}})
+    if html is not None:
+        parts.append({"mimeType": "text/html", "body": {"data": _b64(html)}})
+    return {
+        "id": mid, "threadId": "t1", "labelIds": labels or ["INBOX"],
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [{"name": k, "value": v} for k, v in headers.items()],
+            "parts": parts,
+        },
+    }
+
+
+def test_a_message_is_parsed_into_what_a_reply_needs() -> None:
+    parsed = parse_message(_message(
+        {
+            "From": "Dana Prospect <Dana@NorthPeak.example>",
+            "To": "Olivia <olivia@co.example>, ops@co.example",
+            "Cc": "sam@northpeak.example",
+            "Reply-To": "billing@elsewhere.example",
+            "Subject": "Brand refresh pilot",
+            "Message-ID": "<abc@mail.example>",
+            "References": "<prev@mail.example>",
+            "List-Unsubscribe": "<mailto:x@y>",
+        },
+        plain="Can we start Oct 5?",
+        html="<p>ignored when plain exists</p>",
+    ))
+    assert parsed.from_addr == "dana@northpeak.example"
+    assert parsed.from_name == "Dana Prospect"
+    assert parsed.to == ["olivia@co.example", "ops@co.example"]
+    assert parsed.cc == ["sam@northpeak.example"]
+    assert parsed.reply_to == "billing@elsewhere.example"
+    assert parsed.message_id_header == "<abc@mail.example>"
+    assert parsed.text == "Can we start Oct 5?"
+    assert parsed.mailing_list is True
+
+
+def test_html_only_mail_becomes_text() -> None:
+    parsed = parse_message(_message(
+        {"From": "a@b.example", "Auto-Submitted": "auto-replied"},
+        html="<div>Hello<br>there</div><script>x()</script><p>&amp; bye</p>",
+    ))
+    assert parsed.text.splitlines() == ["Hello", "there", "& bye"]
+    assert parsed.auto_generated is True
+
+
+@pytest.mark.parametrize(("markup", "lines"), [
+    # Gmail's signature editor: the first line sits in the outer <div>, each
+    # later line in a <div> of its own.
+    (
+        '<div dir="ltr">Olivia Owner<div>Fernway Studio</div><div><span>olivia@fernway.example</span></div></div>',
+        ["Olivia Owner", "Fernway Studio", "olivia@fernway.example"],
+    ),
+    ("<div>One</div><div>Two</div>", ["One", "Two"]),  # no blank line between blocks
+    ("<div>One</div><div><br></div><div>Three</div>", ["One", "", "Three"]),  # Gmail's blank line
+    ("<div>One<br></div><div>Two</div>", ["One", "Two"]),  # a closing <br> adds no line
+    ("<p>One</p><p>Two</p>", ["One", "Two"]),
+    ("<p>Hi Dana,</p><p>&nbsp;</p><p>Thanks.</p>", ["Hi Dana,", "", "Thanks."]),  # an editor's blank line
+    ("Before<table><tr><td>Cell</td></tr></table>After", ["Before", "Cell", "After"]),
+    ("Intro<ul><li>One</li><li>Two</li></ul>", ["Intro", "One", "Two"]),
+    ("a<br/>b<BR >c", ["a", "b", "c"]),
+    ("<picture>Not</picture> a <param>block", ["Not a block"]),
+    ("Nul\x00 <div>kept out</div>", ["Nul", "kept out"]),
+    ("a<style>p {}</style>b<script>x()</script>c<script>never closed", ["abcnever closed"]),
+    # A tag runs to the next ">", whatever its attributes hold.
+    ('<a href="https://x.example/" title="<">click</a> here', ["click here"]),
+    ("if x<y then <b>bold</b>", ["if xbold"]),
+    ("a <> b &#00065; &#" + "1" * 5000 + ";", ["a <> b A \ufffd"]),  # Python refuses to int() 4,301+ digits
+])
+def test_html_becomes_the_lines_it_shows(markup: str, lines: list[str]) -> None:
+    assert gm.html_to_text(markup).split("\n") == lines
+
+
+@pytest.mark.parametrize("markup", [
+    "<" + " " * 100_000,
+    "</" + " " * 100_000,
+    "<" * 100_000,
+    "<div" * 25_000,
+    "<br" * 33_000,
+    "<script" * 14_000,
+    "<script>" + "</script" + " " * 100_000,
+    "&#" + "0" * 100_000 + "65;",
+])
+def test_crafted_html_cannot_stall_the_parser(markup: str) -> None:
+    # Anyone can send the mail this parses, and it runs on the event loop: a
+    # backtracking pattern took minutes on inputs like these.
+    started = time.perf_counter()
+    gm.html_to_text(markup)
+    assert time.perf_counter() - started < 2
+
+
+def test_a_draft_is_threaded_and_cannot_smuggle_a_header() -> None:
+    raw = build_raw(EMAIL, DraftSpec(
+        to=["dana@northpeak.example"],
+        cc=["sam@northpeak.example"],
+        subject="Re: Brand refresh pilot\r\nBcc: attacker@evil.example",
+        body="Yes to Oct 5.\n\nBest,\nOlivia",
+        in_reply_to="<abc@mail.example>",
+        references="<prev@mail.example> <abc@mail.example>",
+        from_name="Olivia Owner",
+    ))
+    msg = email.message_from_bytes(base64.urlsafe_b64decode(raw), policy=policy.default)
+    assert msg["To"] == "dana@northpeak.example"
+    assert msg["Cc"] == "sam@northpeak.example"
+    assert msg["Bcc"] is None
+    assert "attacker" in msg["Subject"]  # kept as text, not a header
+    assert msg["In-Reply-To"] == "<abc@mail.example>"
+    assert msg["X-OE-Ghostwritten"] == "1"
+    assert "Olivia Owner" in msg["From"] and EMAIL in msg["From"]
+    assert msg.get_content().strip().startswith("Yes to Oct 5.")
+
+
+def test_links_open_the_draft_in_the_right_account() -> None:
+    assert gmail_link(EMAIL, thread_id="18c2f") == (
+        "https://mail.google.com/mail/u/?authuser=olivia%40co.example#all/18c2f"
+    )
+    assert gmail_link(EMAIL, message_id="18d") .endswith("#drafts?compose=18d")
+    assert gmail_link(EMAIL, thread_id="../evil").endswith("#drafts")
+    # "$" would match before a trailing newline; the whole id must match.
+    assert gmail_link(EMAIL, thread_id="18c2f\n").endswith("#drafts")
+    assert not gm.valid_id("18c2f\n")
+
+
+# --------------------------------------------------------------------------- #
+# The client, against a mocked Google
+# --------------------------------------------------------------------------- #
+
+
+class FakeGoogle:
+    def __init__(self, *, token_status: int = 200, token_error: str = "",
+                 scope: str = " ".join(gm.SCOPES), api_status: int = 200,
+                 api_reason: str = "") -> None:
+        self.token_status = token_status
+        self.token_error = token_error
+        self.scope = scope
+        self.api_status = api_status
+        self.api_reason = api_reason
+        self.requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            if self.token_status != 200:
+                return httpx.Response(self.token_status, json={"error": self.token_error})
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": self.scope})
+        assert request.headers["Authorization"] == "Bearer at"
+        if self.api_status != 200:
+            body = {"error": {"code": self.api_status, "errors": [{"reason": self.api_reason}]}}
+            return httpx.Response(self.api_status, json=body if self.api_reason else {})
+        path = request.url.path
+        if path.endswith("/profile"):
+            return httpx.Response(200, json={"emailAddress": "Olivia@Co.Example"})
+        if path.endswith("/drafts") and request.method == "POST":
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m9", "threadId": "t1"}})
+        if path.endswith("/settings/sendAs"):
+            return httpx.Response(200, json={"sendAs": [
+                {"sendAsEmail": EMAIL, "isPrimary": True, "signature": "<div>Olivia Owner<br>Fernway</div>"},
+            ]})
+        return httpx.Response(404, json={})
+
+    def client(self) -> DelegateGmail:
+        return DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(self.handler))
+
+
+def test_the_token_is_refreshed_once_and_reused() -> None:
+    google = FakeGoogle()
+    client = google.client()
+    assert asyncio.run(client.profile_email()) == EMAIL
+    assert asyncio.run(client.profile_email()) == EMAIL
+    token_calls = [r for r in google.requests if r.url.host == "oauth2.googleapis.com"]
+    assert len(token_calls) == 1
+    assert b"grant_type=refresh_token" in token_calls[0].content
+
+
+def test_a_draft_is_saved_in_their_thread() -> None:
+    google = FakeGoogle()
+    created = asyncio.run(google.client().create_draft(DraftSpec(
+        to=["dana@northpeak.example"], subject="Re: Pilot", body="Yes.", thread_id="t1",
+    )))
+    assert (created.draft_id, created.message_id, created.thread_id) == ("d1", "m9", "t1")
+    post = next(r for r in google.requests if r.method == "POST" and r.url.path.endswith("/drafts"))
+    sent = json.loads(post.content)
+    assert sent["message"]["threadId"] == "t1"
+    assert "raw" in sent["message"]
+
+
+def test_the_signature_comes_from_gmail_settings() -> None:
+    assert asyncio.run(FakeGoogle().client().send_as_signature()) == "Olivia Owner\nFernway"
+
+
+@pytest.mark.parametrize("google", [
+    FakeGoogle(token_status=400, token_error="invalid_grant"),
+    FakeGoogle(scope=gm.SCOPE_READONLY),  # consent without compose
+    FakeGoogle(api_status=401),
+    FakeGoogle(api_status=403, api_reason="insufficientPermissions"),
+])
+def test_google_refusing_the_credential_is_an_auth_error(google: FakeGoogle) -> None:
+    with pytest.raises(GmailAuthError):
+        asyncio.run(google.client().profile_email())
+
+
+def test_no_credential_is_not_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gm, "credentials_dir", lambda: tmp_path)
+    with pytest.raises(GmailNotConfigured):
+        asyncio.run(DelegateGmail(EMAIL).profile_email())
+
+
+def test_the_only_send_is_an_existing_draft_by_its_id() -> None:
+    """One way to send, and only an existing draft: a new public method
+    fails here until someone decides it belongs."""
+    public = {n for n, _ in inspect.getmembers(DelegateGmail, inspect.isfunction) if not n.startswith("_")}
+    assert public == {
+        "profile_email", "search_threads", "get_thread", "list_sent", "send_as_signature", "create_draft",
+        # The inbox watcher: reads, and deleting a draft it wrote.
+        "list_message_ids", "inbox_message_ids", "has_written_to", "get_message", "send_as_addresses",
+        "get_draft", "delete_draft",
+        # Changing a reply's words from its card (delegation.card_drafts); sends nothing.
+        "update_draft_text",
+        # Chat's reads of their own mailbox (orchestrator.mail_read_tools).
+        "list_attachments", "attachment_bytes",
+        # Send on the person's tap (delegation.reply_send).
+        "send_draft",
+        # Checks an id's shape (Gmail's and Outlook's differ); no call.
+        "valid_id",
+        # Read my calendar (delegation.calendar): read-only.
+        "list_events", "calendar_granted", "calendar_write_granted", "find_invite",
+        # Answer a meeting invite as them (delegation.invites): their own
+        # attendee answer on one event, nothing else.
+        "answer_invite",
+        # A contact's newest mail, for their signature (people.contact_keeper): read-only.
+        "latest_from",
+    }
+    # Gmail's send endpoints (/settings/sendAs is a read, and allowed): the
+    # draft one, once, and never messages.send, which sends any text.
+    source = inspect.getsource(gm)
+    assert re.findall(r"/(?:messages|drafts)/send\b", source) == ["/drafts/send"]
+    assert "/messages/send" not in source
+
+
+def test_send_draft_sends_the_draft_by_its_id_and_nothing_else() -> None:
+    google = FakeGoogle()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/send"):
+            google.requests.append(request)
+            return httpx.Response(200, json={"id": "sent1", "threadId": "t1", "labelIds": ["SENT"]})
+        return FakeGoogle.handler(google, request)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    sent = asyncio.run(client.send_draft("d1"))
+    assert (sent.id, sent.thread_id) == ("sent1", "t1")
+    post = next(r for r in google.requests if r.url.path.endswith("/drafts/send"))
+    assert post.method == "POST" and json.loads(post.content) == {"id": "d1"}
+    with pytest.raises(GmailError):
+        asyncio.run(client.send_draft("d1/../../messages"))
+
+
+def test_update_draft_text_keeps_every_header_and_only_the_version_it_saw() -> None:
+    from email import message_from_bytes, policy
+
+    from openexecutive.delegation.gmail import DraftChanged, build_raw
+
+    raw = build_raw(EMAIL, DraftSpec(
+        to=["dana@northpeak.example"], cc=["ben@northpeak.example"], subject="Re: Pilot", body="Yes.",
+        thread_id="t1", in_reply_to="<p1@x.example>", references="<p0@x.example> <p1@x.example>",
+    ))
+    google = FakeGoogle()
+    puts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/d1") and request.method == "GET":
+            assert request.url.params["format"] == "raw"
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m9", "threadId": "t1", "raw": raw}})
+        if request.url.path.endswith("/drafts/d1") and request.method == "PUT":
+            puts.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m10", "threadId": "t1"}})
+        return FakeGoogle.handler(google, request)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    assert asyncio.run(client.update_draft_text("d1", "m9", "Yes, Thursday works.")) == "m10"
+    sent = puts[0]
+    assert sent["id"] == "d1" and sent["message"]["threadId"] == "t1"
+    msg = message_from_bytes(base64.urlsafe_b64decode(sent["message"]["raw"]), policy=policy.default)
+    assert msg["To"] == "dana@northpeak.example" and msg["Cc"] == "ben@northpeak.example"
+    assert msg["Subject"] == "Re: Pilot" and msg["In-Reply-To"] == "<p1@x.example>"
+    assert msg["References"] == "<p0@x.example> <p1@x.example>"
+    assert msg.get_content().strip() == "Yes, Thursday works."
+    # Changed in Gmail since the card saw it: never overwritten.
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(client.update_draft_text("d1", "m8", "No."))
+    assert err.value.reason == "changed" and len(puts) == 1
+    # Who it goes to changes only when asked.
+    assert asyncio.run(client.update_draft_text("d1", "m9", "Yes.", to=["dana@northpeak.example"], cc=[])) == "m10"
+    msg = message_from_bytes(base64.urlsafe_b64decode(puts[1]["message"]["raw"]), policy=policy.default)
+    assert msg["To"] == "dana@northpeak.example" and msg["Cc"] is None
+    assert msg["In-Reply-To"] == "<p1@x.example>"
+
+
+@pytest.mark.parametrize(("response", "maybe_done"), [
+    (httpx.Response(500, json={}), True),
+    (httpx.Response(503, json={}), True),
+    (httpx.Response(200, content=b"<html>"), True),
+    (httpx.Response(400, json={}), False),
+    (httpx.ConnectError("refused"), False),
+    (httpx.ReadTimeout("slow"), True),
+])
+def test_a_failed_send_says_whether_it_may_have_gone(response: Any, maybe_done: bool) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": " ".join(gm.SCOPES)})
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    with pytest.raises(GmailError) as err:
+        asyncio.run(client.send_draft("d1"))
+    assert err.value.maybe_done is maybe_done
+
+
+# --------------------------------------------------------------------------- #
+# Status
+# --------------------------------------------------------------------------- #
+
+
+class _Mailbox:
+    def __init__(self, opened: str = EMAIL, error: Exception | None = None) -> None:
+        self.opened = opened
+        self.error = error
+
+    async def profile_email(self) -> str:
+        if self.error is not None:
+            raise self.error
+        return self.opened
+
+
+@pytest.mark.parametrize(("person_email", "mailbox", "expected"), [
+    (EMAIL, _Mailbox(), "connected"),
+    (EMAIL, _Mailbox(opened="other@co.example"), "mismatch"),
+    (EMAIL, _Mailbox(error=GmailAuthError("invalid_grant")), "needs_reconnect"),
+    (EMAIL, _Mailbox(error=GmailNotConfigured(EMAIL)), "not_configured"),
+    (EMAIL, _Mailbox(error=RuntimeError("network")), "error"),
+    ("", _Mailbox(), "no_email"),
+    (EXEC.upper(), _Mailbox(opened=EXEC), "shared_mailbox"),
+])
+def test_status(person_email: str, mailbox: _Mailbox, expected: str) -> None:
+    assert asyncio.run(gmail_status(person_email, gmail=mailbox)) == expected
+
+
+def test_a_shared_mailbox_is_refused_before_google_is_asked() -> None:
+    mailbox = SimpleNamespace(profile_email=None)  # would fail if called
+    assert asyncio.run(gmail_status(EXEC, gmail=mailbox)) == "shared_mailbox"
+
+
+@pytest.mark.parametrize(("status", "reason"), [
+    (403, "userRateLimitExceeded"), (403, "rateLimitExceeded"), (429, "rateLimitExceeded"),
+])
+def test_a_rate_limit_is_not_a_reconnect(status: int, reason: str) -> None:
+    google = FakeGoogle(api_status=status, api_reason=reason)
+    with pytest.raises(GmailError) as err:
+        asyncio.run(google.client().profile_email())
+    assert not isinstance(err.value, GmailAuthError)
+    assert asyncio.run(gm.gmail_status(EMAIL, gmail=google.client())) == "error"
+
+
+def test_a_long_reference_chain_keeps_whole_ids_the_root_and_the_parent() -> None:
+    chain = " ".join(f"<id{i:02d}-{'x' * 60}@mail.example>" for i in range(20))
+    refs = gm.references_header(chain, "<parent@mail.example>")
+    assert refs is not None and len(refs) <= 900
+    ids = refs.split()
+    assert ids[0].startswith("<id00-") and ids[-1] == "<parent@mail.example>"
+    assert all(i.startswith("<") and i.endswith(">") for i in ids)
+    assert gm.references_header("<a@x> <b@x>", "<b@x>") == "<a@x> <b@x>"
+    assert gm.references_header("", "") is None
+
+
+def test_the_parent_is_last_even_when_the_chain_already_holds_it() -> None:
+    assert gm.references_header("<r@x> <p@x> <q@x>", "<p@x>") == "<r@x> <q@x> <p@x>"
+
+
+def test_a_parent_too_long_for_the_header_gives_no_header() -> None:
+    assert gm.references_header("", "<" + "a" * 950 + ">") is None
+
+
+@pytest.mark.parametrize("body", [{"error": {"errors": 1}}, {"error": "denied"}, ["x"]])
+def test_an_odd_403_body_is_not_a_rate_limit(body: object) -> None:
+    assert gm._rate_limited(httpx.Response(403, json=body)) is False
+
+
+# --------------------------------------------------------------------------- #
+# What the inbox watcher reads, and deleting a draft it wrote
+# --------------------------------------------------------------------------- #
+
+
+class FakeInboxGoogle(FakeGoogle):
+    """FakeGoogle with the inbox watcher's endpoints."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.drafts: dict[str, dict[str, Any]] = {
+            "d1": {"id": "d1", "message": _message({"From": EMAIL, "To": "dana@x.example"}, plain="Hi", mid="dm1")},
+        }
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.url.host != "oauth2.googleapis.com" and self.api_status == 200:
+            self.requests.append(request)
+            if path.endswith("/messages") and request.method == "GET":
+                return httpx.Response(200, json={"messages": [
+                    {"id": "m2", "threadId": "t2"}, {"id": "../x", "threadId": "t9"}, {"id": "m1", "threadId": "t1"},
+                ]})
+            if "/drafts/" in path:
+                draft_id = path.rsplit("/", 1)[1]
+                if draft_id not in self.drafts:
+                    return httpx.Response(404, json={"error": {"code": 404}})
+                if request.method == "DELETE":
+                    del self.drafts[draft_id]
+                    return httpx.Response(204)
+                return httpx.Response(200, json=self.drafts[draft_id])
+            if path.endswith("/settings/sendAs"):
+                return httpx.Response(200, json={"sendAs": [
+                    {"sendAsEmail": "Olivia@Co.Example", "isPrimary": True}, {"sendAsEmail": "o@alias.example"},
+                    {"sendAsEmail": ""},
+                ]})
+            self.requests.pop()  # recorded again below
+        return super().handler(request)
+
+
+def test_it_lists_message_ids_newest_first() -> None:
+    google = FakeInboxGoogle()
+    ids = asyncio.run(google.client().list_message_ids("in:inbox after:1", max_results=500))
+    assert ids == [("m2", "t2"), ("m1", "t1")]  # a malformed id is dropped
+    listed = next(r for r in google.requests if r.url.path.endswith("/messages"))
+    assert listed.url.params["q"] == "in:inbox after:1" and listed.url.params["maxResults"] == "100"
+
+
+def test_the_inbox_and_sent_lookups_use_gmail_search() -> None:
+    from datetime import UTC, datetime
+
+    google = FakeInboxGoogle()
+    client = google.client()
+    asyncio.run(client.inbox_message_ids(after=datetime.fromtimestamp(1_700_000_000, UTC), max_results=7))
+    listed = [r for r in google.requests if r.url.path.endswith("/messages")][-1]
+    assert listed.url.params["q"] == (
+        "in:inbox -in:chats -from:me -category:promotions -category:social "
+        "-category:updates -category:forums after:1700000000"
+    )
+    assert asyncio.run(client.has_written_to("Dana@NorthPeak.example")) is True
+    listed = [r for r in google.requests if r.url.path.endswith("/messages")][-1]
+    assert listed.url.params["q"] == "in:sent to:dana@northpeak.example"
+    before = len(google.requests)
+    assert asyncio.run(client.has_written_to("x OR in:anywhere")) is False
+    assert len(google.requests) == before
+
+
+def test_a_draft_is_read_and_deleted_and_gone_is_not_an_error() -> None:
+    google = FakeInboxGoogle()
+    client = google.client()
+    draft = asyncio.run(client.get_draft("d1"))
+    assert draft is not None and draft.draft_id == "d1" and draft.message.id == "dm1"
+    assert asyncio.run(client.delete_draft("d1")) is True
+    assert asyncio.run(client.get_draft("d1")) is None
+    assert asyncio.run(client.delete_draft("d1")) is False
+    deletes = [r for r in google.requests if r.method == "DELETE"]
+    assert [r.url.path.rsplit("/", 1)[1] for r in deletes] == ["d1", "d1"]
+    with pytest.raises(GmailError):
+        asyncio.run(client.delete_draft("../messages/m1"))
+
+
+def test_their_send_as_addresses() -> None:
+    assert asyncio.run(FakeInboxGoogle().client().send_as_addresses()) == ["olivia@co.example", "o@alias.example"]
+
+
+@pytest.mark.parametrize(("status", "reason", "error"), [
+    (429, "rateLimitExceeded", gm.GmailRateLimited),
+    (403, "userRateLimitExceeded", gm.GmailRateLimited),
+    (404, "", gm.GmailNotFound),
+])
+def test_a_rate_limit_and_a_missing_thread_are_their_own_errors(status: int, reason: str, error: type) -> None:
+    with pytest.raises(error):
+        asyncio.run(FakeGoogle(api_status=status, api_reason=reason).client().get_thread("t1"))
+
+
+def test_what_the_watcher_reads_off_a_message() -> None:
+    raw = _message(
+        {
+            "From": "Dana <dana@northpeak.example>",
+            "To": EMAIL,
+            "Bcc": "Olivia <olivia@co.example>",
+            "Precedence": "bulk",
+            "Authentication-Results": "mx.google.com; dkim=pass header.i=@northpeak.example; "
+            "spf=pass smtp.mailfrom=dana@northpeak.example; "
+            "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=northpeak.example",
+        },
+        plain="Hi",
+    )
+    raw["internalDate"] = "1790000000000"
+    parsed = parse_message(raw)
+    assert parsed.received_at == "2026-09-21T14:13:20+00:00"
+    assert parsed.bcc == ["olivia@co.example"]
+    assert parsed.bulk is True and parsed.sender_authenticated is True
+    assert parsed.delivery_report is False and parsed.calendar_invite is False
+    # A spoofed From: the verdict is for another domain.
+    raw["payload"]["headers"][0]["value"] = "Dana <dana@elsewhere.example>"
+    assert parse_message(raw).sender_authenticated is False
+
+
+def test_bounces_and_invites_are_marked() -> None:
+    bounce = _message({"From": "Mail Delivery Subsystem <mailer-daemon@googlemail.com>"}, plain="Failed")
+    assert parse_message(bounce).delivery_report is True
+    invite = _message({"From": "dana@northpeak.example"}, plain="Invitation")
+    invite["payload"]["parts"].append({"mimeType": "text/calendar", "body": {"data": _b64("BEGIN:VCALENDAR")}})
+    assert parse_message(invite).calendar_invite is True
+    ooo = _message({"From": "dana@northpeak.example", "X-Autoreply": "yes"}, plain="Away")
+    assert parse_message(ooo).bulk is True
+    assert parse_message(_message({"From": "dana@northpeak.example"}, plain="Hi")).received_at == ""
+
+
+
+# --------------------------------------------------------------------------- #
+# Read my calendar
+# --------------------------------------------------------------------------- #
+
+
+def _calendar_google(scope: str, *, items: list[dict[str, Any]] | None = None, status: int = 200) -> tuple[
+    list[httpx.Request], DelegateGmail
+]:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if status != 200:
+            return httpx.Response(status, json={"error": {"code": status, "errors": [{"reason": "insufficientPermissions"}]}})
+        return httpx.Response(200, json={"items": items or []})
+
+    return seen, DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+
+
+_DAY = (datetime(2026, 10, 14, 7, tzinfo=UTC), datetime(2026, 10, 15, 7, tzinfo=UTC))
+
+
+def test_their_calendar_is_read_with_the_calendar_scope() -> None:
+    items = [
+        {"id": "e1", "summary": "Pilot review", "start": {"dateTime": "2026-10-14T09:00:00-07:00"},
+         "end": {"dateTime": "2026-10-14T09:30:00-07:00"}, "location": "Room 4",
+         "organizer": {"email": "dana@northpeak.example", "displayName": "Dana"},
+         "attendees": [{"email": EMAIL, "self": True, "responseStatus": "accepted"},
+                       {"email": "dana@northpeak.example", "displayName": "Dana"}]},
+        {"id": "e2", "summary": "Offsite", "start": {"date": "2026-10-14"}, "end": {"date": "2026-10-15"},
+         "organizer": {"email": EMAIL, "self": True}},
+        {"id": "e3", "status": "cancelled", "start": {"dateTime": "2026-10-14T10:00:00Z"}},
+        {"id": "e4", "eventType": "workingLocation", "start": {"date": "2026-10-14"}},
+    ]
+    seen, client = _calendar_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]), items=items)
+    events = asyncio.run(client.list_events(*_DAY, max_results=5))
+    assert [e.id for e in events] == ["e1", "e2"]
+    first, offsite = events
+    assert (first.title, first.location, first.response) == ("Pilot review", "Room 4", "accepted")
+    assert first.organizer == "Dana <dana@northpeak.example>" and first.attendees == ("Dana <dana@northpeak.example>",)
+    assert offsite.all_day and offsite.start == "2026-10-14" and offsite.response == "organizer"
+    call = seen[-1]
+    assert call.method == "GET" and call.url.path == "/calendar/v3/calendars/primary/events"
+    assert call.url.params["timeMin"] == "2026-10-14T07:00:00Z" and call.url.params["singleEvents"] == "true"
+    assert call.url.params["maxResults"] == "5"
+
+
+def test_a_sign_in_without_the_calendar_says_so_before_asking_google() -> None:
+    seen, client = _calendar_google(" ".join(gm.SCOPES))
+    with pytest.raises(gm.CalendarNotGranted):
+        asyncio.run(client.list_events(*_DAY))
+    assert all(r.url.host == "oauth2.googleapis.com" for r in seen)
+
+
+def test_the_sign_in_says_whether_it_includes_the_calendar() -> None:
+    _seen, with_it = _calendar_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]))
+    assert asyncio.run(with_it.calendar_granted()) is True
+    gm._TOKENS.clear()
+    _seen, without = _calendar_google(" ".join(gm.SCOPES))
+    assert asyncio.run(without.calendar_granted()) is False
+    gm._TOKENS.clear()
+    _seen, unsaid = _calendar_google("")
+    assert asyncio.run(unsaid.calendar_granted()) is None
+
+
+def test_a_refused_calendar_read_is_not_granted_not_a_reconnect() -> None:
+    _seen, client = _calendar_google("", status=403)
+    with pytest.raises(gm.CalendarNotGranted):
+        asyncio.run(client.list_events(*_DAY))
+    # With the scope granted, a refusal is the project's, not the sign-in's.
+    gm._TOKENS.clear()
+    _seen, granted = _calendar_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]), status=403)
+    with pytest.raises(gm.GmailError) as refused:
+        asyncio.run(granted.list_events(*_DAY))
+    assert not isinstance(refused.value, (gm.CalendarNotGranted, gm.GmailAuthError))
+
+
+def test_the_script_asks_for_the_calendar_only_with_the_flag() -> None:
+    script = _script()
+    payload = script.credential_payload(EMAIL, "r", "c", "s", scopes=[*script.SCOPES, script.CALENDAR_SCOPE])
+    # calendar.events: reads, and answers invites (delegation.invites).
+    assert payload["scopes"][-1] == gm.SCOPE_CALENDAR_EVENTS
+    assert script.credential_payload(EMAIL, "r", "c", "s")["scopes"] == list(gm.SCOPES)
+
+
+def test_each_recipient_keeps_the_name_it_was_written_with() -> None:
+    raw = {"id": "m1", "threadId": "t1", "payload": {"headers": [
+        {"name": "From", "value": "Olivia Owner <olivia@co.example>"},
+        {"name": "To", "value": '"Shah, Priya" <Priya.Shah@northwind.example>, bare@x.example'},
+        {"name": "Cc", "value": "Marco Diaz <marco@fabrikam.example>"},
+    ]}}
+    message = gm.parse_message(raw)
+    assert message.names == {
+        "priya.shah@northwind.example": "Shah, Priya", "bare@x.example": "", "marco@fabrikam.example": "Marco Diaz",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Meeting invites (delegation.invites)
+# --------------------------------------------------------------------------- #
+
+_ICS = (
+    "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:UTC\r\nEND:VTIMEZONE\r\n"
+    "BEGIN:VEVENT\r\nUID:abc123-very-long-uid-that-is-folded@\r\n google.com\r\nSUMMARY:Pilot review\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n"
+)
+
+
+def test_an_invite_keeps_its_method_and_uid_and_nothing_else() -> None:
+    assert gm.ics_invite(_ICS) == ("REQUEST", "abc123-very-long-uid-that-is-folded@google.com")
+    assert gm.ics_invite("BEGIN:VCALENDAR\nMETHOD:CANCEL\nBEGIN:VEVENT\nUID:x1\nEND:VEVENT") == ("CANCEL", "x1")
+    assert gm.ics_invite("not a calendar") == ("", "")
+    invite = _message({"From": "dana@northpeak.example"}, plain="Invitation")
+    invite["payload"]["parts"].append({"mimeType": "text/calendar", "body": {"data": _b64(_ICS)}})
+    parsed = parse_message(invite)
+    assert (parsed.invite_method, parsed.invite_uid) == ("REQUEST", "abc123-very-long-uid-that-is-folded@google.com")
+
+
+def _invite_google(scope: str, *, items: list[dict[str, Any]] | None = None, event: dict[str, Any] | None = None,
+                   status: int = 200) -> tuple[list[httpx.Request], DelegateGmail]:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if status != 200:
+            return httpx.Response(status, json={"error": {"code": status, "errors": [{"reason": "forbidden"}]}})
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json={"items": items or []})
+        return httpx.Response(200, json=event or {})
+
+    return seen, DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+
+
+def test_an_invite_is_found_on_their_calendar_by_its_uid() -> None:
+    gm._TOKENS.clear()
+    item = {"id": "ev1", "summary": "Pilot review", "start": {"dateTime": "2026-10-14T16:00:00Z"},
+            "end": {"dateTime": "2026-10-14T16:30:00Z"}, "organizer": {"email": "dana@northpeak.example"},
+            "attendees": [{"email": EMAIL, "self": True, "responseStatus": "needsAction"}]}
+    seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]), items=[item])
+    message = MailMessage(id="m1", thread_id="t1", calendar_invite=True, invite_method="REQUEST", invite_uid="u1@x")
+    event = asyncio.run(client.find_invite(message))
+    assert event is not None and (event.id, event.response) == ("ev1", "needs_action")
+    assert seen[-1].url.path == "/calendar/v3/calendars/primary/events" and seen[-1].url.params["iCalUID"] == "u1@x"
+    # A cancellation or someone's answer is never a request to answer.
+    cancelled = MailMessage(id="m2", thread_id="t1", calendar_invite=True, invite_method="CANCEL", invite_uid="u1@x")
+    assert asyncio.run(client.find_invite(cancelled)) is None
+
+
+def test_answering_changes_only_their_own_answer_and_tells_the_organizer() -> None:
+    gm._TOKENS.clear()
+    event = {"id": "ev1", "attendees": [
+        {"email": "dana@northpeak.example", "organizer": True, "responseStatus": "accepted"},
+        {"email": EMAIL, "self": True, "responseStatus": "needsAction"},
+        {"email": "ben@co.example", "responseStatus": "tentative"},
+    ]}
+    seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]), event=event)
+    asyncio.run(client.answer_invite("ev1", accept=False))
+    patch = next(r for r in seen if r.method == "PATCH")
+    assert patch.url.path == "/calendar/v3/calendars/primary/events/ev1" and patch.url.params["sendUpdates"] == "all"
+    body = json.loads(patch.content)
+    assert list(body) == ["attendees"]
+    assert [a["responseStatus"] for a in body["attendees"]] == ["accepted", "declined", "tentative"]
+    with pytest.raises(GmailError):
+        asyncio.run(client.answer_invite("ev1/../../other", accept=True))
+
+
+def test_answering_writes_against_the_event_it_read_and_reads_again_once_if_it_changed() -> None:
+    gm._TOKENS.clear()
+    reads = iter(["\"v1\"", "\"v2\""])
+    seen: list[httpx.Request] = []
+    scope = " ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": scope})
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": "ev1", "etag": next(reads), "attendees": [
+                {"email": EMAIL, "self": True, "responseStatus": "needsAction"}]})
+        if request.headers.get("If-Match") == '"v1"':
+            return httpx.Response(412, json={"error": {"code": 412}})
+        return httpx.Response(200, json={})
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    asyncio.run(client.answer_invite("ev1", accept=True))
+    patches = [r.headers.get("If-Match") for r in seen if r.method == "PATCH"]
+    assert patches == ['"v1"', '"v2"']
+
+
+def test_a_read_only_sign_in_reads_but_cannot_answer() -> None:
+    gm._TOKENS.clear()
+    seen, client = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR]))
+    assert asyncio.run(client.calendar_granted()) is True
+    assert asyncio.run(client.calendar_write_granted()) is False
+    with pytest.raises(gm.CalendarWriteNotGranted):
+        asyncio.run(client.answer_invite("ev1", accept=True))
+    assert all(r.url.host == "oauth2.googleapis.com" for r in seen)
+    gm._TOKENS.clear()
+    _seen, events_scope = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]))
+    assert asyncio.run(events_scope.calendar_granted()) is True  # calendar.events reads too
+    assert asyncio.run(events_scope.calendar_write_granted()) is True

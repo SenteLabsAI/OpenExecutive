@@ -9,8 +9,13 @@ import {
   GateState,
   TERMINAL_RUN_STATUSES,
   WorkflowRunDetail,
+  decideWorkflowRun,
   getWorkflowRun,
+  rerunWorkflowRun,
+  artifactDownloadUrl,
 } from "@/lib/api";
+import Button from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
 import { runStatusLabel, runStatusTextColor } from "@/lib/runStatus";
 
 // A paused run is resumed by a background worker, so this page has to notice
@@ -43,6 +48,21 @@ export default function RunDetailPage() {
   const [run, setRun] = useState<WorkflowRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Run again on a failed run: what the server said (queued, or why not).
+  const [rerunMsg, setRerunMsg] = useState<string | null>(null);
+  const [rerunBusy, setRerunBusy] = useState(false);
+  const handleRerun = useCallback(async () => {
+    if (!run) return;
+    setRerunBusy(true);
+    try {
+      await rerunWorkflowRun(run.run_id);
+      setRerunMsg("Running it again now. The result goes where it normally would.");
+    } catch (e) {
+      setRerunMsg(e instanceof Error ? e.message : "Couldn't run it again.");
+    } finally {
+      setRerunBusy(false);
+    }
+  }, [run]);
 
   useEffect(() => {
     if (!runId) return;
@@ -99,6 +119,17 @@ export default function RunDetailPage() {
     }
   }, [run]);
 
+  // The .docx comes from the API; an <a download> keeps the page in place.
+  const handleDownloadDocx = useCallback(() => {
+    if (!run) return;
+    const a = document.createElement("a");
+    a.href = artifactDownloadUrl(`run:${run.run_id}`, "docx");
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [run]);
+
   const handleDownload = useCallback(() => {
     if (!run?.artifact) return;
     const blob = new Blob([run.artifact], { type: "text/markdown" });
@@ -121,7 +152,7 @@ export default function RunDetailPage() {
       <div className="flex flex-col h-full bg-surface text-fg items-center justify-center">
         <div className="text-sm text-red-400 mb-4">Error: {error}</div>
         <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          ← Back to jobs
+          ← Back to workflows
         </Link>
       </div>
     );
@@ -137,63 +168,65 @@ export default function RunDetailPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-4xl mx-auto space-y-6">
-          <div className="flex items-start justify-between gap-4">
+          <Link href="/jobs?tab=runs" className="text-sm text-fg-muted hover:text-fg">
+            ← Runs
+          </Link>
+          <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-2xl font-semibold text-fg mb-1">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mb-2">
                 {run.title}
               </h1>
-              <div className="text-xs text-fg-muted">
+              <div className="text-sm text-fg-muted">
                 {run.workflow_name} · created {formatTimestamp(run.created_at)} ·
                 status <StatusPill status={run.status} />
               </div>
             </div>
             {run.artifact && (
               <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
-                >
+                <Button variant="primary" onClick={handleCopy}>
                   {copied ? "Copied!" : "Copy"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDownload}
-                  className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
-                >
-                  Download .md
-                </button>
+                </Button>
+                <OverflowMenu
+                  trigger="Download"
+                  label="Download"
+                  items={[
+                    { label: "Markdown (.md)", onSelect: handleDownload },
+                    { label: "Word (.docx)", onSelect: handleDownloadDocx },
+                  ]}
+                />
               </div>
             )}
           </div>
 
           {error && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs text-red-300">
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs text-red-300">
               Couldn&apos;t refresh just now ({error}). Still retrying.
             </div>
           )}
 
           {run.status === "running" && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
               This run is still in progress — this page updates itself.
             </div>
           )}
 
           {run.status === "awaiting_human" && (
-            <AwaitingPanel run={run} />
+            // Keyed on the question, so a later sign-off in the same run starts
+            // with fresh buttons rather than the previous answer.
+            <AwaitingPanel key={`${run.awaiting_until ?? ""}:${run.state_json ?? ""}`} run={run} />
           )}
 
           {run.status === "resolved" && (
-            <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-4 py-3 text-sm text-indigo-300">
+            <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 px-4 py-3 text-sm text-indigo-300">
               Answered — picking the workflow back up now. The remaining steps
               are running.
             </div>
           )}
 
           {run.status === "timed_out" && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
               <div className="font-medium mb-1">No reply before the deadline</div>
               <div className="text-xs">
                 The step&apos;s timeout policy was applied, so this run stopped
@@ -203,24 +236,39 @@ export default function RunDetailPage() {
           )}
 
           {run.status === "error" && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
               <div className="font-medium mb-1">Run failed</div>
               <div className="text-xs">{run.error}</div>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                {run.rerunnable && (
+                  <Button variant="secondary" onClick={handleRerun} disabled={rerunBusy}>
+                    Run again
+                  </Button>
+                )}
+                <Link href={`/jobs/${run.workflow_name}`} className="text-xs text-accent hover:underline">
+                  Start a new run instead
+                </Link>
+              </div>
+              {rerunMsg && (
+                <div className="mt-2 text-xs text-fg-muted" role="status">
+                  {rerunMsg}
+                </div>
+              )}
             </div>
           )}
 
           {run.artifact && (
-            <article className="prose prose-invert prose-sm max-w-none rounded-lg border border-line bg-surface/40 p-6
+            <article className="prose prose-invert max-w-none rounded-2xl border border-line bg-surface-elevated p-5 sm:p-8
               prose-headings:text-fg prose-headings:font-semibold
               prose-p:text-fg prose-p:leading-relaxed
               prose-strong:text-fg
-              prose-code:text-indigo-300 prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
+              prose-code:text-accent prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
               prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong
               prose-blockquote:border-line-strong prose-blockquote:text-fg-muted
               prose-ul:text-fg prose-ol:text-fg
               prose-li:marker:text-fg-muted
               prose-hr:border-line-strong
-              prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
+              prose-a:text-accent prose-a:no-underline hover:prose-a:underline
               prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -235,8 +283,8 @@ export default function RunDetailPage() {
             </article>
           )}
 
-          <details className="rounded-md border border-line bg-surface/30 px-4 py-3 text-sm">
-            <summary className="text-xs text-fg-muted cursor-pointer">
+          <details className="rounded-2xl border border-line bg-surface-elevated px-5 py-3 text-sm">
+            <summary className="flex min-h-10 items-center text-[15px] font-medium text-fg-muted cursor-pointer">
               Inputs
             </summary>
             <pre className="mt-3 text-xs text-fg whitespace-pre-wrap font-mono">
@@ -272,6 +320,24 @@ const DELIVERY_NOTES: Record<string, string> = {
 
 function AwaitingPanel({ run }: { run: WorkflowRunDetail }) {
   const gate = parseGateState(run.state_json);
+  const [answer, setAnswer] = useState<"approve" | "reject" | null>(null);
+  const [sending, setSending] = useState(false);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+  // Yes/no requests can be answered here; written replies still go via chat.
+  const canAnswer = (gate?.expected_reply_shape ?? "approve_reject") === "approve_reject";
+
+  async function decide(decision: "approve" | "reject") {
+    setSending(true);
+    setAnswerError(null);
+    try {
+      await decideWorkflowRun(run.run_id, decision);
+      setAnswer(decision);
+    } catch (e) {
+      setAnswerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  }
   const delivery = gate?.delivery;
   const undelivered = delivery !== undefined && delivery !== "sent" && delivery !== "self";
   const deadline = run.awaiting_until
@@ -280,14 +346,33 @@ function AwaitingPanel({ run }: { run: WorkflowRunDetail }) {
   const done = run.resume_progress?.completed_step_ids.length ?? 0;
 
   return (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300 space-y-2">
+    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-300 space-y-2">
       <div className="font-medium">
         Waiting for sign-off
         {run.awaiting_person_id ? ` from person ${run.awaiting_person_id}` : ""}
       </div>
       {gate?.question && (
-        <div className="text-fg text-sm">&ldquo;{gate.question}&rdquo;</div>
+        <div className="text-fg text-sm whitespace-pre-wrap break-words">
+          &ldquo;{gate.question}&rdquo;
+        </div>
       )}
+      {canAnswer && !answer && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <Button variant="primary" onClick={() => void decide("approve")} disabled={sending}>
+            Approve
+          </Button>
+          <Button onClick={() => void decide("reject")} disabled={sending}>
+            Decline
+          </Button>
+          <span className="text-sm text-fg-muted">or reply in chat</span>
+        </div>
+      )}
+      {answer && (
+        <div className="text-xs text-fg">
+          {answer === "approve" ? "Approved" : "Declined"} — the run picks up again in a moment.
+        </div>
+      )}
+      {answerError && <div className="text-xs text-red-300">{answerError}</div>}
       <div className="text-xs space-y-1">
         {deadline && <div>Deadline {deadline}.</div>}
         {delivery && (

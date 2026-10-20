@@ -137,6 +137,40 @@ def test_count_by_day_excludes_decision_scheduling_alert(tmp_path: Path) -> None
     assert by_day.get(today) == 1
 
 
+def test_count_by_day_leaves_out_private_rows(tmp_path: Path) -> None:
+    """Rows private to the principal stay out of everyone's heatmap, as they
+    stay out of the feed: a decision whose payload is private, an alert
+    tagged private (case aside)."""
+    db = tmp_path / "private.db"
+    _seed_db(db)
+    alert_store.initialize_db(db)
+    today = datetime.now(UTC).date().isoformat()
+
+    for key, payload in (
+        ("shared", {"summary": "Book sync"}),
+        ("private", {"summary": "Reply to a contact", "private": True}),
+    ):
+        iid = decision_ledger.create_decision_instance(
+            decision_class="meeting_scheduling", department="ops",
+            originating_session_id=None, proposed_payload=payload,
+            idempotency_key=key, gate_mode="propose",
+            approver_person_id=None, confidence=0.9, db_path=db,
+        )
+        decision_ledger.mark_resolved(iid, decision_ledger.STATUS_REJECTED, db_path=db)
+    alert_store.insert_alert(
+        source="triage", external_id="al1", severity="high",
+        headline="Signal", body="x", db_path=db,
+    )
+    alert_store.insert_alert(
+        source="triage", external_id="al2", severity="high",
+        headline="A contact wrote", body="x", topic_tags=["Private:Principal"], db_path=db,
+    )
+
+    by_day = dict(episodic.count_activity_by_day(30, db_path=db))
+    # The shared decision and the shared alert only.
+    assert by_day.get(today) == 2
+
+
 def test_count_by_day_excludes_pending_actions(tmp_path: Path) -> None:
     """Pending (not-yet-fired) actions are not activity — only status='done'."""
     db = tmp_path / "pending.db"

@@ -6,7 +6,9 @@ import {
   sendOnboardMessage,
   startOnboardInterview,
   type OnboardTurn,
+  type RoleKind,
 } from "@/lib/api";
+import OnboardAnswers from "@/components/onboard/OnboardAnswers";
 
 const MAX_FILES = 8;
 
@@ -15,6 +17,34 @@ interface Props {
   initialTurns?: { role: "user" | "assistant"; text: string }[];
   initialTurn: OnboardTurn | null;
   onDraft: (turn: OnboardTurn, turns: Bubble[]) => void;
+  /** One person setting this up just for themselves — asks about their work, not a team. */
+  solo?: boolean;
+  /** Solo only: the role they gave in the role step, which picks the opening. */
+  roleKind?: RoleKind | null;
+}
+
+type Flavour = "team" | "solo" | "owner" | "in_house" | "independent";
+
+const OPENING: Record<Flavour, string> = {
+  team: "Tell me about your company — what you do, who you sell to, roughly how big you are, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a deck, a one-pager, or anything else that describes the business.",
+  solo: "Tell me about your work — your role, the business or organisation you work in, what you're responsible for, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a one-pager or anything else that describes it.",
+  owner: "Tell me about your business — what you offer, who your customers are, how you price it, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a one-pager, a price list, or anything else that describes the business.",
+  in_house: "Tell me about your work — the organisation you're in, the function you lead and what you're responsible for, who you report to, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a plan, a one-pager, or anything else that describes it.",
+  independent: "Tell me about your practice — what you offer, who your clients are, how you work with them and price it, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a one-pager or anything else that describes it.",
+};
+
+const OPENING_EXAMPLE: Record<Flavour, string> = {
+  team: "e.g. We're Northwind Tools — we sell industrial supplies to construction crews in the Midwest. About 40 people, bootstrapped, doing roughly $12M a year. This year we're trying to launch same-day delivery without blowing up margins.",
+  solo: "e.g. I'm Head of Customer Success at a 300-person software company and report to the COO. My team of twelve looks after renewals. This year I want net revenue retention above 110% and a cleaner handoff from sales.",
+  owner: "e.g. I'm a freelance brand designer working with early-stage food and drink startups. Most projects are fixed-price, $8–15k each, and I have about four months of runway. This year I want to productise a brand-sprint offer and land three retainer clients.",
+  in_house: "e.g. I'm Director of Operations at Meridian Freight, a 2,000-person logistics company. I run our three regional warehouses and report to our VP of Operations. This year I need on-time delivery back above 95% without adding headcount.",
+  independent: "e.g. I'm a fractional CFO for three venture-backed software companies, two days a month each. I price by retainer. This year I want a fourth client and a repeatable board-reporting package.",
+};
+
+function flavourFor(solo: boolean, roleKind: RoleKind | null | undefined): Flavour {
+  if (!solo) return "team";
+  if (roleKind === "owner" || roleKind === "in_house" || roleKind === "independent") return roleKind;
+  return "solo";
 }
 
 export interface Bubble {
@@ -26,7 +56,10 @@ export default function OnboardConversation({
   initialTurns = [],
   initialTurn,
   onDraft,
+  solo = false,
+  roleKind = null,
 }: Props) {
+  const flavour = flavourFor(solo, roleKind);
   const [turn, setTurn] = useState<OnboardTurn | null>(initialTurn);
   const [bubbles, setBubbles] = useState<Bubble[]>(initialTurns);
   const [input, setInput] = useState("");
@@ -103,31 +136,13 @@ export default function OnboardConversation({
             {headline ??
               (started
                 ? "Anything else I should know? Tell me what to change, or draft again."
-                : "Tell me about your company — what you do, who you sell to, roughly how big you are, and what you're focused on this year. Write it however you like; I'll ask about anything I'm missing. You can also attach a deck, a one-pager, or anything else that describes the business.")}
+                : OPENING[flavour])}
           </p>
           {turn?.question_hint && (
             <p className="text-xs text-fg-muted mt-2">{turn.question_hint}</p>
           )}
         </div>
 
-        {earlier.length > 0 && (
-          <details className="text-xs text-fg-muted">
-            <summary className="cursor-pointer hover:text-fg transition-colors">
-              Earlier in this conversation ({earlier.length}{" "}
-              {earlier.length === 1 ? "message" : "messages"})
-            </summary>
-            <div className="flex flex-col gap-3 mt-3">
-              {earlier.map((b, i) => (
-                <div key={i} className={b.role === "user" ? "pl-6" : ""}>
-                  <p className="text-[10px] uppercase tracking-wide text-fg-subtle mb-0.5">
-                    {b.role === "user" ? "You" : "Setup"}
-                  </p>
-                  <p className="text-xs text-fg whitespace-pre-wrap">{b.text}</p>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
       </div>
 
       <div className="flex flex-col gap-2">
@@ -146,7 +161,7 @@ export default function OnboardConversation({
           placeholder={
             started
               ? "Your answer… (Enter to send, Shift+Enter for a new line)"
-              : "e.g. We're Northwind Tools — we sell industrial supplies to construction crews in the Midwest. About 40 people, bootstrapped, doing roughly $12M a year. This year we're trying to launch same-day delivery without blowing up margins."
+              : OPENING_EXAMPLE[flavour]
           }
           className="w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors disabled:opacity-50"
         />
@@ -200,7 +215,24 @@ export default function OnboardConversation({
         </div>
       </div>
 
+      {/* Below the box you answer in: a new question keeps that in view. */}
       <div ref={bottomRef} />
+
+      {started && (
+        <OnboardAnswers
+          sessionId={turn!.session_id}
+          bubbles={earlier}
+          disabled={busy}
+          onRevised={(next, turns) => {
+            if (next.phase === "draft") {
+              onDraft(next, turns);
+              return;
+            }
+            setTurn(next);
+            setBubbles(turns);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ from openexecutive.config import get_settings
 class MarketingAgent(BaseAgent):
     name = "cmo"
     domain = "marketing"
+    visibility = "core"
 
     @property
     def model(self) -> str:  # type: ignore[override]

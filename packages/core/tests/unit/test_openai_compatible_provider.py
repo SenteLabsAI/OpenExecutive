@@ -12,6 +12,9 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from openexecutive.providers import openai_compatible
 from openexecutive.providers.feature_gate import FeatureSpec
 from openexecutive.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -105,3 +108,78 @@ def test_anthropic_only_fields_stripped_for_local_model() -> None:
     assert "output_config" not in body
     # system flattened into a plain string message — no cache_control survives.
     assert isinstance(body["messages"][0]["content"], str)
+
+
+def _effort_provider(effort: str | None) -> OpenAICompatibleProvider:
+    return OpenAICompatibleProvider(
+        base_url="https://api.fireworks.ai/inference/v1",
+        spec_lookup={"llama3.3": _LOCAL_SPEC},
+        reasoning_effort=effort,
+    )
+
+
+def test_reasoning_effort_omitted_by_default() -> None:
+    """Most OpenAI-compatible servers don't know the field; unset = not sent."""
+    captured = _run_create(_local_provider())
+    assert "reasoning_effort" not in captured["json"]
+
+
+def test_reasoning_effort_sent_when_configured() -> None:
+    """Thinking-only models (GLM on Fireworks) otherwise burn the whole
+    max_tokens budget reasoning and return no tool call."""
+    captured = _run_create(_effort_provider("low"))
+    assert captured["json"]["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_sent_on_stream() -> None:
+    provider = _effort_provider("low")
+    stream = provider.messages_stream(
+        model="llama3.3",
+        max_tokens=8,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert stream._body["reasoning_effort"] == "low"  # type: ignore[attr-defined]
+
+
+def test_reasoning_effort_logged_once_per_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The effort in play is what decides whether a thinking-only model
+    answers at all, so it's logged, but once per model, not per call."""
+    monkeypatch.setattr(openai_compatible, "_effort_announced", set())
+    fake_logger = MagicMock()
+    monkeypatch.setattr(openai_compatible, "logger", fake_logger)
+    provider = _effort_provider("low")
+    _run_create(provider)
+    _run_create(provider)
+    assert fake_logger.info.call_count == 1
+    assert fake_logger.info.call_args.args[1:] == ("low", "llama3.3")
+
+
+def test_haiku_5_5_slug_gets_thinking_off_and_no_temperature() -> None:
+    """Through a gateway, Haiku 5.5 is told not to think unless asked and
+    never sent a temperature it would reject."""
+    provider = OpenAICompatibleProvider(
+        base_url="https://gateway.example/v1",
+        api_key="k",
+        slug_lookup={"claude-haiku-5-5": "anthropic/claude-haiku-5.5"},
+        spec_lookup={"claude-haiku-5-5": FeatureSpec()},
+    )
+    captured = _run_create(provider, model="claude-haiku-5-5", temperature=0)
+    body = captured["json"]
+    assert body["model"] == "anthropic/claude-haiku-5.5"
+    assert body["reasoning"] == {"enabled": False}
+    assert "temperature" not in body
+
+
+def test_backend_without_thinking_gets_no_reasoning_field_for_haiku_5_5() -> None:
+    """A local gateway serving a Claude slug takes no thinking fields, so the
+    turned-off thinking added for Haiku 5.5 must not reach it as ``reasoning``."""
+    provider = OpenAICompatibleProvider(
+        base_url="http://localhost:4000/v1",
+        api_key=None,
+        spec_lookup={"claude-haiku-5-5": _LOCAL_SPEC},
+    )
+    body = _run_create(provider, model="claude-haiku-5-5", temperature=0)["json"]
+    assert "reasoning" not in body
+    assert "temperature" not in body

@@ -12,6 +12,18 @@ def test_sensitive_tool_name_redacted() -> None:
     assert "<redacted" in audit_tool_result(
         "google_workspace__get_gmail_message_content", "From: secret"
     )
+    # Microsoft 365 readers are hyphenated; the Gmail entry must not be the
+    # only mail-body rule.
+    assert "<redacted" in audit_tool_result(
+        "microsoft_365__get-mail-message", '{"body": {"content": "secret"}}'
+    )
+    assert "<redacted" in audit_tool_result("microsoft_365__list-mail-messages", "[]")
+    assert "<redacted" in audit_tool_result("microsoft_365__get-calendar-view", "[]")
+    assert "<redacted" in audit_tool_result("microsoft_365__list-mail-attachments", '{"contentBytes": "x"}')
+    assert "<redacted" in audit_tool_result("microsoft_365__download-bytes", '{"contentBytes": "x"}')
+    assert "<redacted" in audit_tool_result("microsoft_365__list-specific-calendar-events", "[]")
+    assert "<redacted" in audit_tool_result("microsoft_365__list-mail-folder-messages", "[]")
+    assert audit_tool_result("microsoft_365__send-mail", '{"success": true}') == '{"success": true}'
 
 
 def test_sensitive_keys_scrubbed_in_input() -> None:

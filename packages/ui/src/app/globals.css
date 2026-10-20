@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
-
 @import "tailwindcss";
 @config "../../tailwind.config.ts";
 
@@ -56,6 +54,15 @@
 }
 
 @layer base {
+  /* Brand: page and section headings in the display face (Bricolage
+   * Grotesque, loaded in app/layout.tsx). Small card titles (an h3, or an h2
+   * set at text-base or smaller) keep the body face, where the display face
+   * looks heavy. Chat answers and other Markdown (.prose) keep it too. */
+  :where(h1, h2):not(:where(.prose *, [class*="text-xs"], [class*="text-sm"], [class*="text-base"])) {
+    font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+    letter-spacing: -0.015em;
+  }
+
   * {
     box-sizing: border-box;
   }
@@ -64,7 +71,7 @@
     height: 100%;
     background-color: rgb(var(--surface-base));
     color: rgb(var(--fg));
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: var(--font-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -96,6 +103,51 @@
   }
 }
 
+/* Consult: the Council mark while the Executive works on a reply (CouncilMark
+ * with `consulting`). A line reaches from the Executive to each specialist in
+ * turn and lights it up, then lets go; the loop starts again from the still
+ * mark. The base styles below are that still mark, so with reduced motion
+ * (animation: none) nothing is dimmed and no line shows. */
+.council-consult circle {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.council-consult .council-spoke {
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 14;
+  stroke-dashoffset: 14;
+  opacity: 0;
+  animation: council-spoke 3.6s ease-out infinite both;
+}
+.council-consult .council-seat {
+  animation: council-seat 3.6s ease-out infinite both;
+}
+.council-consult .council-core {
+  animation: council-core 3.6s ease-in-out infinite both;
+}
+@keyframes council-spoke {
+  0% { stroke-dashoffset: 14; opacity: 0.85; }
+  14%, 62% { stroke-dashoffset: 0; opacity: 0.85; }
+  80%, 100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes council-seat {
+  0% { opacity: 0.45; transform: scale(1); }
+  8% { opacity: 1; transform: scale(1.28); }
+  20%, 62% { opacity: 1; transform: scale(1); }
+  80%, 100% { opacity: 0.45; transform: scale(1); }
+}
+@keyframes council-core {
+  0%, 100% { transform: scale(1); }
+  70% { transform: scale(1.14); }
+  78% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .council-consult * {
+    animation: none !important;
+  }
+}
+
 /* Respect user motion preferences. */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -106,4 +158,36 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Phones. Many labels, badges and timestamps are sized 9 to 11px for dense
+ * desktop panels; on a phone screen that is too small to read, so the floor
+ * is 12px there. Form fields go to 16px, the size below which iOS Safari
+ * zooms the page in whenever one is tapped. Markdown tables scroll sideways
+ * inside their own box instead of pushing the page wider than the screen.
+ * Unlayered on purpose, so these win over Tailwind's utility layer. */
+@media (max-width: 639.98px) {
+  .text-\[9px\],
+  .text-\[10px\],
+  .text-\[11px\] {
+    font-size: 12px;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  .prose table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
+/* Words found in an opened chat (components/Chat.tsx, CSS Custom Highlight API). */
+::highlight(chat-find) {
+  background-color: rgb(99 102 241 / 0.35);
+  color: inherit;
 }

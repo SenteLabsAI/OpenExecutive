@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,8 @@ class WorkflowEvent(BaseModel):
 
     - `step_start`: a step has begun. `step_id`, `step_title` set.
     - `step_done`:  a step finished. `step_id`, `summary` (short preview) set.
+    - `progress`:   a running step reports activity (e.g. a workflow action
+                    step calling a tool). `step_id`, `summary` set.
     - `result`:     structured output ready for programmatic consumers
                     (e.g. a chat tool that needs to iterate). `data` is the
                     typed payload; the human-targeted artifact still
@@ -86,6 +88,17 @@ class WorkflowMeta(BaseModel):
     # True for user-created (dynamic) workflows; False for the built-ins.
     # Lets the catalog UI offer edit/delete only for custom workflows.
     is_custom: bool = False
+    # True for workflows the system runs on its own (scheduler, onboarding,
+    # reflection). Still runnable by hand; the catalog files them under
+    # "System" instead of mixing them in with the jobs a user starts.
+    background: bool = False
+    # Names of the playbooks (skills) this workflow's steps follow — see
+    # workflows/playbooks.py. Drives "Follows playbooks" on the workflow page
+    # and "Used by workflows" on the Playbooks tab.
+    playbooks: list[str] = Field(default_factory=list)
+    # A Quick workflow (workflows/quick.py): one field, one document drafted
+    # by following a playbook that no other workflow follows.
+    quick: bool = False
 
 
 class Workflow(ABC):
@@ -101,6 +114,20 @@ class Workflow(ABC):
     description: str
     section: WorkflowSection  # UI grouping
     estimated_minutes: int = 3
+    # See WorkflowMeta.background.
+    background: bool = False
+    # See WorkflowMeta.playbooks. Declare every playbook `run` loads via
+    # workflows.playbooks.load_playbook (a test holds the two in sync).
+    playbooks: tuple[str, ...] = ()
+    # Workspace modes in which only the principal may start this workflow:
+    # it is built from the principal's own data (their decisions,
+    # commitments, goals, calendar) or it writes to them. Chat
+    # (`run_workflow`) also wants a surface that verified it is them; the
+    # Jobs page (`POST /workflows/{name}/runs`) and an eval run
+    # (`POST /evals/runs`) want a web caller who is the principal. It
+    # controls who starts a run, not who reads one: stored runs follow the
+    # `/workflows/runs` rules. Empty = anyone. See `principal_only_in`.
+    principal_only_modes: ClassVar[frozenset[str]] = frozenset()
 
     @abstractmethod
     def input_model(self) -> type[BaseModel]:
@@ -154,4 +181,23 @@ class Workflow(ABC):
             estimated_minutes=self.estimated_minutes,
             input_schema=self.input_model().model_json_schema(),
             steps=self.steps(),
+            background=self.background,
+            playbooks=self.followed_playbooks(),
         )
+
+    def followed_playbooks(self) -> list[str]:
+        """Names of the playbooks this workflow's steps follow."""
+        return list(self.playbooks)
+
+
+def principal_only_in(workflow: object, mode: str | None) -> bool:
+    """Whether only the principal may start ``workflow`` when it would run in
+    workspace ``mode`` — the mode is in its ``principal_only_modes``.
+
+    ``mode`` None means the mode could not be read, and counts as yes for a
+    workflow that is principal-only in any mode, so an unreadable mode
+    refuses instead of letting the run through. Duck-typed: an object with
+    no ``principal_only_modes`` is never principal-only.
+    """
+    modes: frozenset[str] = getattr(workflow, "principal_only_modes", frozenset())
+    return bool(modes) and (mode is None or mode in modes)

@@ -561,6 +561,51 @@ def remove_watchlist_config_key(
         return int(cursor.rowcount)
 
 
+def set_watchlist_config_key(
+    item_id: int, key: str, value: Any, *, db_path: Path | None = None
+) -> int:
+    """Set one top-level key in a watchlist row's ``config_json`` in place
+    (SQLite ``json_set``), the counterpart of ``remove_watchlist_config_key``.
+    ``value`` is stored as JSON. Returns the rowcount."""
+    if not key.isidentifier():
+        raise ValueError(f"Cannot set config key {key!r}")
+    with _get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE watchlist SET config_json = json_set(config_json, ?, json(?)) WHERE id = ?",
+            (f"$.{key}", json.dumps(value), item_id),
+        )
+        return int(cursor.rowcount)
+
+
+def recent_alert_statuses(
+    watchlist_id: int,
+    *,
+    after_alert_id: int = 0,
+    limit: int = 8,
+    db_path: Path | None = None,
+) -> list[tuple[int, str]]:
+    """``(alert_id, status)`` of the newest alerts this watch raised, newest
+    first, counting only alerts with an id above ``after_alert_id``. One row
+    per alert, however many signals it absorbed. Empty when the alerts table
+    is missing."""
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return []
+    try:
+        with _get_conn(db_path) as conn:
+            rows = conn.execute(
+                "SELECT a.id AS id, a.status AS status FROM alerts a "
+                "WHERE a.id IN (SELECT promoted_alert_id FROM external_signals "
+                "WHERE watchlist_id = ? AND promoted_alert_id IS NOT NULL) "
+                "AND a.id > ? ORDER BY a.id DESC LIMIT ?",
+                (watchlist_id, after_alert_id, limit),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        logger.debug("recent_alert_statuses: alerts table unavailable", exc_info=True)
+        return []
+    return [(int(r["id"]), str(r["status"])) for r in rows]
+
+
 def delete_watchlist_item(item_id: int, db_path: Path | None = None) -> bool:
     """Hard-delete a watchlist row and its ``external_signals`` history.
     Returns True iff a row was removed.
@@ -1075,8 +1120,10 @@ __all__ = [
     "mark_polled",
     "get_page_watch_state",
     "mark_signal_processed",
+    "recent_alert_statuses",
     "remove_watchlist_config_key",
     "set_enabled",
+    "set_watchlist_config_key",
     "update_signal_enrichment",
     "update_watchlist_fields",
     "upsert_page_watch_state",

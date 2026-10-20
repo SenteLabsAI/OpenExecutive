@@ -1,12 +1,22 @@
-import NextAuth from "next-auth";
+import NextAuth, { type Session } from "next-auth";
+import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
+import type { NextRequest } from "next/server";
 import {
   createRosterLoader,
   decideSessionAction,
   describeDenial,
   parseAllowedEmails,
   resolveAllowed,
+  type AllowDecision,
 } from "@/lib/allowlist";
+import {
+  LOCAL_LOGIN_PROVIDER_ID,
+  isLoopbackHost,
+  localLoginEnabled,
+  localLoginSessionAllowed,
+} from "@/lib/localLogin";
+import { OIDC_PROVIDER_ID, emailVerified, oidcConfig } from "@/lib/oidc";
 
 // Operator-controlled allowlist, read once at startup (docs/auth.md promises a
 // restart is what makes an edit live). ALWAYS honored: the backend People
@@ -16,6 +26,59 @@ const ENV_ALLOWED = parseAllowedEmails(process.env.ALLOWED_EMAILS);
 
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
+
+// SSO sign-in through any OpenID Connect provider (see lib/oidc.ts), when
+// AUTH_OIDC_ISSUER / _ID / _SECRET are all set and the issuer is https.
+export const OIDC = oidcConfig({
+  issuer: process.env.AUTH_OIDC_ISSUER,
+  clientId: process.env.AUTH_OIDC_ID,
+  clientSecret: process.env.AUTH_OIDC_SECRET,
+  name: process.env.AUTH_OIDC_NAME,
+  trustUnverifiedEmail: process.env.AUTH_OIDC_TRUST_UNVERIFIED_EMAIL,
+});
+
+// Google stays on offer unless SSO is the only sign-in set up: with nothing
+// set up, its button is what the sign-in page explains.
+export const GOOGLE_SIGN_IN = Boolean(process.env.AUTH_GOOGLE_ID?.trim()) || OIDC === null;
+
+// Local login — `make dev` with neither Google nor SSO sign-in set up (see
+// lib/localLogin.ts for the whole guard). `process.env.NODE_ENV` is written out
+// literally on purpose: Next.js folds it to a build-time constant, so a
+// production build (`next build`, the deploy image) compiles the mode out
+// whatever its runtime environment says.
+export const LOCAL_LOGIN = localLoginEnabled({
+  devServer: process.env.NODE_ENV !== "production",
+  flag: process.env.OE_LOCAL_LOGIN,
+  googleClientId: process.env.AUTH_GOOGLE_ID,
+  oidcIssuer: process.env.AUTH_OIDC_ISSUER,
+  publicDeployment: process.env.OE_PUBLIC_DEPLOYMENT,
+});
+
+// No password: `authorize` admits only a request whose raw Host header is
+// loopback. It signs in one fixed user with no email, which the proxy turns
+// into "no x-caller-email", i.e. the principal.
+const localLogin = Credentials({
+  id: LOCAL_LOGIN_PROVIDER_ID,
+  name: "This computer",
+  credentials: {},
+  authorize: (_credentials, request) =>
+    LOCAL_LOGIN && isLoopbackHost(request.headers.get("host"))
+      ? { id: LOCAL_LOGIN_PROVIDER_ID }
+      : null,
+});
+
+// Generic OpenID Connect: endpoints come from the issuer's discovery
+// document, and Auth.js's default `profile` takes `email` from the ID token.
+// The `signIn` callback below decides whether that email may be trusted.
+const sso = OIDC && {
+  id: OIDC_PROVIDER_ID,
+  name: OIDC.name,
+  type: "oidc" as const,
+  issuer: OIDC.issuer,
+  clientId: OIDC.clientId,
+  clientSecret: OIDC.clientSecret,
+  checks: ["pkce", "state"] as ("pkce" | "state")[],
+};
 
 // How long a fetched roster is trusted. `authorized` runs on nearly every
 // gated request, so this is what keeps one page load from becoming N backend
@@ -71,6 +134,59 @@ function auditAuth(
   });
 }
 
+type SessionVerdict =
+  | { kind: "allow" }
+  | { kind: "deny" }
+  | { kind: "revoke"; email: string; decision: AllowDecision };
+
+/**
+ * May this existing session still be used? The per-request re-check behind
+ * the `authorized` callback, and what /signin asks before bouncing a visitor
+ * onward (bouncing a session the middleware refuses would loop).
+ *
+ * A local-login session is valid only while that mode is on and the
+ * request comes from this machine. A Google or SSO session is re-checked against the
+ * allow-list: it fails open ONLY when the user is not in ALLOWED_EMAILS and
+ * their roster membership is currently unreadable, so a brief backend hiccup
+ * doesn't sign out everyone — the strict `signIn` gate already vetted them
+ * once. A *definite* miss (both lists readable, neither matched) revokes.
+ */
+async function judgeSession(session: Session | null, host: string | null): Promise<SessionVerdict> {
+  if (session?.localLogin) {
+    return localLoginSessionAllowed(LOCAL_LOGIN, host) ? { kind: "allow" } : { kind: "deny" };
+  }
+  const email = session?.user?.email?.toLowerCase();
+  if (!email) return { kind: "deny" };
+  const decision = await checkEmailAllowed(email);
+  // Exhaustive on purpose: a `!== "revoke"` test would admit any future
+  // SessionAction, i.e. fail open. This way adding one is a build error.
+  switch (decideSessionAction(decision)) {
+    case "allow":
+    case "allow_roster_unknown":
+      return { kind: "allow" };
+    case "revoke":
+      return { kind: "revoke", email, decision };
+  }
+}
+
+export async function sessionStillAllowed(session: Session | null, host: string | null): Promise<boolean> {
+  return (await judgeSession(session, host)).kind === "allow";
+}
+
+/**
+ * The response a refused request gets: JSON 401 for API routes (a redirect
+ * would be followed by fetch() and break the caller), otherwise a redirect to
+ * /signin carrying a same-origin path the sign-in page's own check accepts.
+ */
+function refuse(request: NextRequest): Response {
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const signInUrl = new URL("/signin", request.nextUrl.origin);
+  signInUrl.searchParams.set("callbackUrl", request.nextUrl.pathname + request.nextUrl.search);
+  return Response.redirect(signInUrl);
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // @auth/core auto-detects trustHost via `AUTH_URL ?? AUTH_TRUST_HOST ??
   // VERCEL ?? CF_PAGES ?? NODE_ENV !== "production"` — a chain of `??`
@@ -95,10 +211,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // setup already sets AUTH_TRUST_HOST=true explicitly and never relied on
   // that fallback anyway. A deployment that sets neither AUTH_URL nor
   // AUTH_TRUST_HOST gets `false` here — fail-closed, matching intent.
+  // Local login trusts the host without being told: there is no OAuth
+  // redirect to steer, only this machine can connect, and its own checks read
+  // the raw Host header, never the forwarded one.
   trustHost:
     Boolean(process.env.AUTH_URL?.trim()) ||
-    process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true",
-  providers: [Google],
+    process.env.AUTH_TRUST_HOST?.trim().toLowerCase() === "true" ||
+    LOCAL_LOGIN,
+  // Never both: local login is only ever on while neither Google nor SSO is
+  // set up.
+  providers: LOCAL_LOGIN ? [localLogin] : [...(GOOGLE_SIGN_IN ? [Google] : []), ...(sso ? [sso] : [])],
   // 24h JWT TTL. Defence in depth alongside the `authorized` re-check
   // below — a session that somehow drifts out of sync with the roster
   // is corrected on next access, but also naturally expires within a
@@ -109,17 +231,25 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     error: "/signin",
   },
   callbacks: {
-    // Strict initial gate. Requires `email_verified === true` explicitly: a
-    // missing / non-boolean value fails closed. Google always returns true
-    // for real accounts.
-    signIn: async ({ profile }) => {
+    // Strict initial gate. Requires a verified email: for Google
+    // `email_verified === true` explicitly (a missing / non-boolean value
+    // fails closed; Google always returns true for real accounts), for SSO
+    // the rule in lib/oidc.ts. A local-login sign-in was already vetted by the
+    // provider's `authorize` (mode on, loopback Host).
+    signIn: async ({ account, profile }) => {
+      if (account?.provider === LOCAL_LOGIN_PROVIDER_ID) return LOCAL_LOGIN;
+      const provider = account?.provider ?? "unknown";
       const email = profile?.email?.toLowerCase();
       if (!email) {
-        auditAuth("auth_login", "Login denied: no email", null, { denied: true, reason: "no_email" });
+        auditAuth("auth_login", "Login denied: no email", null, { denied: true, reason: "no_email", provider });
         return false;
       }
-      if (profile?.email_verified !== true) {
-        auditAuth("auth_login", `Login denied: ${email} (email not verified)`, email, { denied: true, reason: "email_not_verified" });
+      const verified =
+        provider === OIDC_PROVIDER_ID
+          ? OIDC !== null && emailVerified(profile, OIDC)
+          : profile?.email_verified === true;
+      if (!verified) {
+        auditAuth("auth_login", `Login denied: ${email} (email not verified)`, email, { denied: true, reason: "email_not_verified", provider });
         return false;
       }
       const { allowed, source, rosterUnknown } = await checkEmailAllowed(email);
@@ -133,61 +263,70 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             reason: "not_in_allowlist",
             source,
             roster_unavailable: rosterUnknown,
+            provider,
           },
         );
         return false;
       }
       return true;
     },
-    // Re-runs on every request gated by the middleware (see middleware.ts).
-    // Without this, a user removed from the roster mid-session — or one
-    // whose JWT predates the roster being installed — would keep coasting
-    // until their JWT expires.
-    //
-    // Fails open ONLY for a session that is not in ALLOWED_EMAILS and whose
-    // roster membership is currently unreadable, so a brief backend hiccup
-    // doesn't sign out everyone with a valid session — the strict `signIn`
-    // gate already vetted them once. A *definite* miss (both lists readable,
-    // neither matched) still revokes. `decideSessionAction` owns that
-    // ordering so it can be tested without importing this module.
-    authorized: async ({ auth }) => {
-      if (!auth?.user?.email) return false;
-      const email = auth.user.email.toLowerCase();
-      const decision = await checkEmailAllowed(email);
-      // Exhaustive on purpose: a `!== "revoke"` test would admit any future
-      // SessionAction, i.e. fail open. This way adding one is a build error.
-      switch (decideSessionAction(decision)) {
-        case "allow":
-        case "allow_roster_unknown":
-          return true;
-        case "revoke":
-          // Fire-and-forget audit so a mid-session eviction leaves a
-          // trail even if the user never re-attempts sign-in.
-          auditAuth(
-            "auth_logout",
-            `Session revoked: ${email} (${describeDenial(decision.source)})`,
-            email,
-            {
-              revoked: true,
-              reason: "not_in_allowlist",
-              source: decision.source,
-              // Always false on this branch; read off the decision anyway so
-              // it cannot silently desync from decideSessionAction.
-              roster_unavailable: decision.rosterUnknown,
-            },
-          );
-          return false;
+    // `account` is present only on the sign-in request itself, so the flag is
+    // set once and then rides the JWT.
+    jwt: ({ token, account }) => {
+      if (account) token.localLogin = account.provider === LOCAL_LOGIN_PROVIDER_ID;
+      return token;
+    },
+    session: ({ session, token }) => {
+      session.localLogin = token.localLogin === true;
+      return session;
+    },
+    // Re-runs on every request gated by the middleware (see middleware.ts),
+    // so a user removed from the roster mid-session — or one whose JWT
+    // predates the roster being installed — is refused on their next request
+    // instead of coasting until their JWT expires. Returns a Response rather
+    // than `false` so API routes get JSON 401s instead of Auth.js's default
+    // HTML redirect.
+    authorized: async ({ auth, request }) => {
+      const verdict = await judgeSession(auth, request.headers.get("host"));
+      if (verdict.kind === "allow") return true;
+      if (verdict.kind === "revoke") {
+        // Fire-and-forget audit so a mid-session eviction leaves a
+        // trail even if the user never re-attempts sign-in.
+        auditAuth(
+          "auth_logout",
+          `Session revoked: ${verdict.email} (${describeDenial(verdict.decision.source)})`,
+          verdict.email,
+          {
+            revoked: true,
+            reason: "not_in_allowlist",
+            source: verdict.decision.source,
+            // Always false on this branch; read off the decision anyway so
+            // it cannot silently desync from decideSessionAction.
+            roster_unavailable: verdict.decision.rosterUnknown,
+          },
+        );
       }
+      return refuse(request);
     },
   },
   events: {
-    signIn: ({ user }) => {
+    signIn: ({ user, account }) => {
+      if (account?.provider === LOCAL_LOGIN_PROVIDER_ID) {
+        auditAuth("auth_login", "Login: the owner, on this computer (local login)", null, {
+          provider: LOCAL_LOGIN_PROVIDER_ID,
+        });
+        return;
+      }
       const email = user.email?.toLowerCase() ?? null;
-      auditAuth("auth_login", `Login: ${email ?? "unknown"}`, email, { provider: "google" });
+      auditAuth("auth_login", `Login: ${email ?? "unknown"}`, email, { provider: account?.provider ?? "unknown" });
     },
     signOut: (message) => {
       // JWT strategy sends { token }, session strategy sends { session }.
       const token = "token" in message ? message.token : undefined;
+      if (token?.localLogin === true) {
+        auditAuth("auth_logout", "Logout: the owner, on this computer (local login)", null, {});
+        return;
+      }
       const email = typeof token?.email === "string" ? token.email.toLowerCase() : null;
       auditAuth("auth_logout", `Logout: ${email ?? "unknown"}`, email, {});
     },

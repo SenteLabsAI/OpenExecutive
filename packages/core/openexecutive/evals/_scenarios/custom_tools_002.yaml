@@ -1,0 +1,12 @@
+id: custom_tools_002
+domain: mcp
+description: "Asked what it does when it lacks a tool, the Executive explains it builds one for the job, keeps the ones it will need again, and that the principal manages them under Settings → Advanced → Custom tools — in plain language"
+requires_mcp: true
+query: "What happens when I ask you to do something you don't have a tool for? Can you remember how you did it for next time, and how would I stop you using something you made?"
+expected_tool_calls: []
+quality_criteria:
+  says_it_builds_a_tool_for_the_job_instead_of_refusing: true
+  says_it_keeps_tools_it_will_need_again_and_reuses_them: true
+  points_to_settings_advanced_custom_tools_to_turn_one_off_or_go_back_a_version: true
+  says_a_custom_tool_can_only_do_what_the_conversation_or_workflow_already_may: true
+  does_not_say_script_code_python_or_sandbox: true

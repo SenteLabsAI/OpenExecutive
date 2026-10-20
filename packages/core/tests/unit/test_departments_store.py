@@ -124,7 +124,23 @@ def test_default_authority_is_propose_only(db: Path) -> None:
         assert state.config.authority_level == AuthorityLevel.PROPOSE_ONLY
 
 
-def test_default_cadence_is_daily_morning(db: Path) -> None:
+def test_default_cadence_is_weekly_monday_morning(db: Path) -> None:
+    store.seed_default_departments()
+    state = store.get_department("finance")
+    assert state is not None
+    assert state.config.cadences == {"check_in": "weekly@mon@09:00"}
+
+
+def test_created_department_checks_in_weekly(db: Path) -> None:
+    state = store.create_department("Customer Success")
+    assert state.config.cadences == {"check_in": "weekly@mon@09:00"}
+
+
+def test_existing_cadence_is_kept(db: Path) -> None:
+    """No migration: a department that already has a cadence keeps it."""
+    store.seed_default_departments()
+    store.update_department("finance", cadences={"check_in": "daily@09:00"})
+    store.initialize_db()
     store.seed_default_departments()
     state = store.get_department("finance")
     assert state is not None
@@ -447,6 +463,24 @@ def test_create_department_blank_title_raises(db: Path) -> None:
 def test_create_department_default_cadence_set(db: Path) -> None:
     state = store.create_department("Legal Ops")
     assert "check_in" in state.config.cadences
+
+
+def test_create_department_named_after_a_catalogue_area_gets_its_charter(db: Path) -> None:
+    from openexecutive.departments.charters import FINANCE_CHARTER, HR_CHARTER
+
+    finance = store.create_department("Finance")
+    assert finance.config.charter == FINANCE_CHARTER
+    # Matched by slug as well as title: "HR" is the catalogue's People & Talent.
+    hr = store.create_department("HR")
+    assert hr.config.charter.mission == HR_CHARTER.mission
+
+
+def test_create_department_explicit_mission_beats_the_catalogue(db: Path) -> None:
+    from openexecutive.departments.charters import FINANCE_CHARTER
+
+    state = store.create_department("Finance", mission="Keep the books.")
+    assert state.config.charter.mission == "Keep the books."
+    assert state.config.charter.scope == FINANCE_CHARTER.scope
 
 
 # --------------------------------------------------------------------------- #

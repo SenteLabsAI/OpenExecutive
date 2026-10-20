@@ -18,7 +18,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -30,7 +30,15 @@ from openexecutive.workflows.base import (
     WorkflowStepDef,
 )
 
+if TYPE_CHECKING:
+    from openexecutive.departments.models import DepartmentState
+
 logger = logging.getLogger(__name__)
+
+# Actor on the check-in's own `goal_status_review` audit row. `needs_check_in`
+# ignores that row: it lands after the Goals are stamped reviewed, so counting
+# it as "new" would re-run every check-in.
+_CHECK_IN_ACTOR = "department_check_in"
 
 
 class DepartmentCheckInInput(BaseModel):
@@ -130,9 +138,11 @@ class DepartmentCheckInWorkflow(Workflow):
         dept_decisions = [d for d in all_decisions if d.department == slug]
 
         # Recent audit entries — filter by department in Python since the
-        # query() method doesn't accept a department filter yet.
+        # query() method doesn't accept a department filter yet. Never the
+        # rows private to the principal: the check-in reports to the
+        # department.
         try:
-            all_audit = get_audit_logger().query(limit=30)
+            all_audit = get_audit_logger().query(limit=30, include_private=False)
             audit_entries = [e for e in all_audit if e.department == slug][:20]
         except Exception:
             audit_entries = []
@@ -211,55 +221,9 @@ class DepartmentCheckInWorkflow(Workflow):
 
         verdicts, narrative_text = _parse_verdicts(goal_status_text)
 
-        # Persist verdicts back to the goal rows. Always overwrites — the
-        # audit row below preserves prior status for the diff trail, and
-        # the principal retains the manual UI edit path as the final
-        # override. Hallucinated goal_ids (specialist referenced an id not
-        # in `state.goals`) are silently dropped.
-        from openexecutive.departments import registry as _dept_registry
-        from openexecutive.departments import store as _dept_store
-
-        goals_by_id = {g.id: g for g in state.goals if g.id is not None}
-        transitions: list[dict[str, Any]] = []
-        for v in verdicts:
-            goal = goals_by_id.get(v["goal_id"])
-            if goal is None:
-                continue
-            prior_status = goal.status
-            try:
-                _dept_store.record_goal_review(
-                    v["goal_id"],
-                    status=v["status"],
-                    last_reviewed_at=now.isoformat(),
-                )
-            except Exception:  # noqa: BLE001 - persistence is best-effort; artifact must still ship.
-                logger.exception(
-                    "check_in: record_goal_review failed slug=%s goal_id=%s",
-                    slug, v["goal_id"],
-                )
-                continue
-            transitions.append({
-                "goal_id": v["goal_id"],
-                "from": prior_status,
-                "to": v["status"],
-                "rationale": v["rationale"],
-            })
-
-        if transitions:
-            # Single audit row per workflow run keeps audit volume sane
-            # (~8 rows/day default across the seeded departments).
-            try:
-                get_audit_logger().log(
-                    "goal_status_review",
-                    f"{state.config.title}: reviewed {len(transitions)} goal(s)",
-                    actor="department_check_in",
-                    department=slug,
-                    details={"period": period, "transitions": transitions},
-                )
-            except Exception:  # noqa: BLE001 - audit must not break the workflow.
-                logger.warning("check_in: audit log failed", exc_info=True)
-            # Invalidate the registry cache so the UI's next read sees fresh status.
-            _dept_registry.invalidate()
+        transitions = persist_goal_verdicts(
+            state, verdicts, now=now, period=period, actor=_CHECK_IN_ACTOR
+        )
 
         yield WorkflowEvent(
             type="step_done",
@@ -382,6 +346,78 @@ class DepartmentCheckInWorkflow(Workflow):
 
 
 # --------------------------------------------------------------------------- #
+# Skip rule — asked by the scheduler before it creates a run
+# --------------------------------------------------------------------------- #
+
+def needs_check_in(state: DepartmentState, now: datetime) -> str | None:
+    """Why a scheduled check-in for ``state`` can be skipped, or None to run it.
+
+    The scheduler asks before it creates the run, so a department with nothing
+    to review costs no specialist calls and leaves no empty run in the activity
+    rail. Skips when:
+
+    - the department has no ``specialist_key`` (informational only; the
+      workflow would stop at the goal step anyway);
+    - it has no Goals (nothing to grade);
+    - nothing is new since the oldest Goal's ``last_reviewed_at``: no
+      decision or audit row tagged to the department (the check-in's own
+      review row excluded), and no Goal whose content changed after it was
+      last graded.
+
+    A Goal that was never reviewed always runs the check-in. Reads the same
+    sources as the ``load_context`` step and fails open: a source that cannot
+    be read counts as "something may be new".
+    """
+    from openexecutive.alerts.lifecycle import parse_aware
+
+    slug = state.config.slug
+    if not state.config.specialist_key:
+        return "informational department (no specialist agent)"
+    if not state.goals:
+        return "no Goals to review"
+
+    reviewed = [parse_aware(g.last_reviewed_at) for g in state.goals]
+    if any(r is None for r in reviewed):
+        return None  # a Goal was never graded
+    baseline = min(r for r in reviewed if r is not None)
+
+    for goal, goal_reviewed in zip(state.goals, reviewed, strict=True):
+        edited = parse_aware(goal.updated_at)
+        if edited is not None and goal_reviewed is not None and edited > goal_reviewed:
+            return None
+
+    try:
+        from openexecutive.memory import episodic
+        from openexecutive.memory.episodic import has_department_decision_since
+
+        if has_department_decision_since(slug, baseline, db_path=episodic.DB_PATH):
+            return None
+    except Exception:
+        logger.warning("check_in: decisions unreadable for %s — running", slug, exc_info=True)
+        return None
+
+    try:
+        from openexecutive.audit.logger import get_audit_logger
+
+        # Not the rows private to the principal: whether the check-in runs
+        # would otherwise tell the department one was written.
+        rows = get_audit_logger().query(
+            department=slug,
+            since=baseline.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),  # audit ts format
+            limit=200,
+            include_private=False,
+        )
+    except Exception:
+        logger.warning("check_in: audit unreadable for %s — running", slug, exc_info=True)
+        return None
+    if any(row.actor != _CHECK_IN_ACTOR for row in rows):
+        return None
+
+    days = max(0, (now - baseline).days)
+    return f"nothing new since the Goals were last reviewed ({days}d ago)"
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 
@@ -393,6 +429,7 @@ def _render_goals(state: object) -> str:  # type: ignore[type-arg]
     lines = ["**Goals:**"]
     for goal in state.goals:
         current = f" (current: {goal.current})" if goal.current else ""
+        target = f" — target: {goal.target}" if goal.target else ""
         period_label = (
             goal.period_value
             if goal.period_type == "ongoing"
@@ -406,7 +443,7 @@ def _render_goals(state: object) -> str:  # type: ignore[type-arg]
         # without the prefix and are simply ungradable this cycle.
         id_prefix = f"[id={goal.id}] " if goal.id is not None else ""
         lines.append(
-            f"- {id_prefix}[{goal.status}] {goal.key_result} — target: {goal.target}{current}"
+            f"- {id_prefix}[{goal.status}] {goal.key_result}{target}{current}"
             f" ({period_label})"
         )
     return "\n".join(lines)
@@ -507,6 +544,73 @@ def _parse_verdicts(text: str) -> tuple[list[dict[str, Any]], str]:
             "rationale": str(rationale_raw)[:280],
         })
     return valid, narrative
+
+
+def persist_goal_verdicts(
+    state: DepartmentState,
+    verdicts: list[dict[str, Any]],
+    *,
+    now: datetime,
+    period: str,
+    actor: str,
+) -> list[dict[str, Any]]:
+    """Write parsed verdicts (``_parse_verdicts``) back to ``state``'s goals.
+
+    Shared by the department check-in and the weekly review. Always
+    overwrites — the one ``goal_status_review`` audit row (tagged with
+    ``actor``) keeps each prior status for the diff trail, and the principal
+    keeps the manual UI edit as the final override. A verdict for a goal id
+    not in ``state.goals`` (a hallucinated id) is dropped, and a failed write
+    skips that goal: persistence is best-effort, the artifact still ships.
+    Returns one ``{goal_id, from, to, rationale}`` per goal written.
+    """
+    from openexecutive.audit.logger import get_audit_logger
+    from openexecutive.departments import registry as _dept_registry
+    from openexecutive.departments import store as _dept_store
+
+    slug = state.config.slug
+    goals_by_id = {g.id: g for g in state.goals if g.id is not None}
+    transitions: list[dict[str, Any]] = []
+    for v in verdicts:
+        goal = goals_by_id.get(v["goal_id"])
+        if goal is None:
+            continue
+        prior_status = goal.status
+        try:
+            _dept_store.record_goal_review(
+                v["goal_id"],
+                status=v["status"],
+                last_reviewed_at=now.isoformat(),
+            )
+        except Exception:  # noqa: BLE001 - persistence is best-effort; artifact must still ship.
+            logger.exception(
+                "check_in: record_goal_review failed slug=%s goal_id=%s",
+                slug, v["goal_id"],
+            )
+            continue
+        transitions.append({
+            "goal_id": v["goal_id"],
+            "from": prior_status,
+            "to": v["status"],
+            "rationale": v["rationale"],
+        })
+
+    if transitions:
+        # Single audit row per workflow run keeps audit volume sane
+        # (at most one row per department per day at the default cadence).
+        try:
+            get_audit_logger().log(
+                "goal_status_review",
+                f"{state.config.title}: reviewed {len(transitions)} goal(s)",
+                actor=actor,
+                department=slug,
+                details={"period": period, "transitions": transitions},
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the workflow.
+            logger.warning("check_in: audit log failed", exc_info=True)
+        # Invalidate the registry cache so the UI's next read sees fresh status.
+        _dept_registry.invalidate()
+    return transitions
 
 
 def _gate_proposed_actions(

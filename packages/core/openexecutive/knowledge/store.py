@@ -1,9 +1,77 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
+
+# Chroma's DefaultEmbeddingFunction builds a new ONNXMiniLM_L6_V2 on every
+# call, so every query and upsert loads the model from disk (about 200 ms a
+# query). Its ONNX session also keeps the CPU memory arena on and embeds 32
+# texts per run, each padded to 256 tokens, so a large ingest peaks several
+# hundred MB above the model. The stores share one session per process
+# instead, with the arena off and _EMBED_BATCH texts per run: the same model,
+# the same vectors, a bounded peak.
+#
+# It answers to DefaultEmbeddingFunction's name ("default") with an empty
+# config, which is what existing collections record: Chroma refuses to open
+# a collection with a differently named function, and rebuilds "default"
+# from the stored config if older code opens one this created. It must NOT
+# be a DefaultEmbeddingFunction instance: Chroma's Collection._embed skips
+# any such instance and embeds with a fresh one from the config instead.
+_EMBED_BATCH = 4
+_embedding_function_lock = threading.Lock()
+_shared_embedding_function: Any = None
+
+
+def _embedding_function() -> Any:
+    global _shared_embedding_function
+    with _embedding_function_lock:
+        if _shared_embedding_function is None:
+            _shared_embedding_function = _build_embedding_function()
+        return _shared_embedding_function
+
+
+def _build_embedding_function() -> Any:
+    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+
+    class _SharedMiniLM(ONNXMiniLM_L6_V2):  # type: ignore[misc]
+        _session: Any = None
+        _session_lock = threading.Lock()
+
+        @staticmethod
+        def name() -> str:
+            return "default"
+
+        def get_config(self) -> dict[str, Any]:
+            return {}
+
+        @property
+        def model(self) -> Any:
+            with self._session_lock:
+                if self._session is None:
+                    so = self.ort.SessionOptions()
+                    so.log_severity_level = 3
+                    so.graph_optimization_level = self.ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    so.enable_cpu_mem_arena = False
+                    # Chroma's own choice: every available provider but CoreML.
+                    providers = [
+                        p for p in self.ort.get_available_providers()
+                        if p != "CoreMLExecutionProvider"
+                    ]
+                    self._session = self.ort.InferenceSession(
+                        os.path.join(self.DOWNLOAD_PATH, self.EXTRACTED_FOLDER_NAME, "model.onnx"),
+                        providers=providers,
+                        sess_options=so,
+                    )
+                return self._session
+
+        def _forward(self, documents: list[str], batch_size: int = _EMBED_BATCH) -> Any:
+            return super()._forward(documents, batch_size=_EMBED_BATCH)
+
+    return _SharedMiniLM()
 
 
 class KnowledgeStore(ABC):
@@ -49,8 +117,20 @@ class ChromaDBStore(KnowledgeStore):
     # who can edit a shared page can inject text the agents will read.
     # Retrieved under its own clearly-labelled, lower-ranked section.
     NOTION_COLLECTION = "notion_wiki"
+    # Files synced from shared Google Drive folders (knowledge.drive_sync).
+    # Separate from COMPANY for the same reason as NOTION: a shared folder is
+    # multi-writer and unreviewed. Retrieved under its own labelled,
+    # lower-ranked section.
+    DRIVE_COLLECTION = "drive_docs"
+    # Files synced from OneDrive folders (knowledge.onedrive_sync). Isolated
+    # and ranked like DRIVE, for the same reason.
+    ONEDRIVE_COLLECTION = "onedrive_docs"
+    # Synced Confluence spaces (knowledge.confluence_sync). SEPARATE from
+    # COMPANY for the same reason as NOTION and DRIVE: a wiki is multi-writer
+    # and unreviewed, so the retriever labels it and ranks it lower.
+    CONFLUENCE_COLLECTION = "confluence_wiki"
     # Files attached in an integration channel. Same isolation reasoning as
-    # the two above, taken one step further: this collection is NEVER
+    # the synced collections above, taken one step further: this collection is NEVER
     # queried — not by ``retriever.retrieve``, not by anything else.
     #
     # An attachment's content is chosen by whoever sent the message. It
@@ -79,6 +159,7 @@ class ChromaDBStore(KnowledgeStore):
         return self._client.get_or_create_collection(
             name=name,
             metadata={"hnsw:space": "cosine"},
+            embedding_function=_embedding_function(),
         )
 
     def add_documents(
@@ -159,16 +240,24 @@ class ChromaDBStore(KnowledgeStore):
         except Exception:
             pass
 
-    def iter_chunk_metadata(self, collection: str) -> list[tuple[str, dict[str, Any]]]:
+    def iter_chunk_metadata(
+        self, collection: str, where: dict[str, Any] | None = None
+    ) -> list[tuple[str, dict[str, Any]]]:
         """Return every ``(chunk_id, metadata)`` pair in *collection*.
 
         Chroma's ``where`` has no prefix/substring operator, so metadata
         patterns (rather than exact matches) have to be filtered in Python.
-        Only used against the small ``company_docs`` collection.
+        ``where`` (an exact-match filter) narrows the scan first, for a
+        collection that also holds rows the caller never needs — the built-in
+        seed reads only ``type=builtin`` rows, not the external OER corpus
+        that shares BUILTIN.
         """
         try:
             col = self._get_or_create_collection(collection)
-            rows = col.get(include=["metadatas"])
+            if where:
+                rows = col.get(where=where, include=["metadatas"])
+            else:
+                rows = col.get(include=["metadatas"])
         except Exception:
             return []
         ids = rows.get("ids") or []
@@ -263,6 +352,17 @@ class ChromaDBStore(KnowledgeStore):
         leftover COMPANY rows tagged ``type=notion`` (pre-isolation ingest)."""
         self.delete_documents(collection=self.NOTION_COLLECTION, where={"type": "notion"})
         self.delete_documents(collection=self.COMPANY_COLLECTION, where={"type": "notion"})
+
+    def delete_drive_docs(self) -> None:
+        """Drop every synced Google Drive chunk."""
+        self.delete_documents(collection=self.DRIVE_COLLECTION, where={"type": "drive"})
+
+    def delete_onedrive_docs(self) -> None:
+        """Drop every synced OneDrive chunk."""
+        self.delete_documents(collection=self.ONEDRIVE_COLLECTION, where={"type": "onedrive"})
+    def delete_confluence_docs(self) -> None:
+        """Drop every synced Confluence chunk."""
+        self.delete_documents(collection=self.CONFLUENCE_COLLECTION, where={"type": "confluence"})
 
     def delete_attachment_docs(self) -> None:
         """Drop every inbound attachment chunk, plus any pre-isolation

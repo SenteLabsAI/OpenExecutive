@@ -271,7 +271,59 @@ async def handle_list_workflows(tool_input: dict[str, Any]) -> str:
     return json.dumps({"workflows": out, "count": len(out)})
 
 
+def _principal_only_refusal(name: str, workflow: Any) -> str | None:
+    """The refusal tool result when this turn may not run ``workflow``, else
+    None.
+
+    A workflow whose ``principal_only_modes`` holds the turn's workspace mode
+    (the weekly review in both modes, the morning brief in solo) carries the
+    principal's own data — decisions, commitments, goals, calendar — or
+    writes to it, and this tool is offered on every attended turn, including
+    ones an inbound email, an unverified surface or a teammate started. So
+    only the principal on a surface that verified it is them may run it —
+    ``create_goal``'s rule. Checked at dispatch time and fails closed: a
+    check that cannot be made refuses. The error does not name the rule.
+    """
+    modes: frozenset[str] = getattr(workflow, "principal_only_modes", frozenset())
+    if not modes:
+        return None
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    mode: str = "unknown"
+    try:
+        from openexecutive.memory.workspace_settings import effective_workspace_mode
+        from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+        mode = effective_workspace_mode(session)
+        if mode not in modes or is_principal_on_verified_surface(session):
+            return None
+    except Exception:
+        logger.exception("run_workflow: principal check failed for %s — refusing", name)
+    _audit(
+        "run_workflow", "write", False,
+        f"run_workflow {name} refused: not the principal on a verified surface",
+        {
+            "workflow": name,
+            "refused": True,
+            "workspace_mode": mode,
+            "caller_person_id": getattr(session, "caller_person_id", None),
+            "origin_channel": getattr(session, "origin_channel", "") or None,
+            "from_web_chat": bool(getattr(session, "from_web_chat", False)),
+            "unattended": bool(getattr(session, "unattended", False)),
+        },
+    )
+    return json.dumps({
+        "error": f"{name!r} can't be run from this conversation. Don't retry it here."
+    })
+
+
 async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
+    if (refused := outside_reach_refusal('run_workflow')) is not None:
+        return refused
+
     from openexecutive.config import get_settings
     from openexecutive.knowledge.store import ChromaDBStore
     from openexecutive.workflows import get_workflow
@@ -280,6 +332,7 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
         complete_run,
         create_run,
         fail_run,
+        stored_artifact,
     )
     from openexecutive.workflows.wait_for_human import WaitForHumanEvent
 
@@ -302,6 +355,17 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
             kind="write",
         )
 
+    refusal = _principal_only_refusal(name, workflow)
+    if refusal is not None:
+        return refusal
+
+    from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody
+
+    # A run belongs to whoever starts it; with no one to own it, it would
+    # land in the team's history.
+    if runs_refused_for_nobody():
+        return _err("run_workflow", "runs are kept for people on the People list, and the person you are talking with is not on it", kind="write")
+
     raw_inputs = tool_input.get("inputs")
     if raw_inputs is None:
         raw_inputs = {}
@@ -317,7 +381,12 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
 
     run_id = uuid.uuid4().hex
     try:
-        create_run(run_id, name, f"{workflow.title} (chat-tool fire)", wf_inputs.model_dump())
+        from openexecutive.orchestrator.artifact_records import turn_owner
+
+        create_run(
+            run_id, name, f"{workflow.title} (chat-tool fire)", wf_inputs.model_dump(),
+            owner_person_id=turn_owner(),
+        )
     except Exception as exc:
         # Don't run an untracked workflow: without the run row, a later
         # save_checkpoint would UPDATE nothing (SQLite reports 0 rows, no error)
@@ -344,6 +413,7 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
 
     artifact = ""
     last_error = ""
+    private_to_principal = False
     awaiting: dict[str, Any] | None = None
     try:
         async for event in workflow.run(inputs=wf_inputs, store=store):
@@ -374,6 +444,8 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
                 break
             if event.type == "artifact" and event.content:
                 artifact = event.content
+            elif event.type == "result" and event.data and event.data.get("private_to_principal"):
+                private_to_principal = True
             elif event.type == "error" and event.message:
                 last_error = event.message
     except Exception as exc:
@@ -419,7 +491,11 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
         return json.dumps({"error": f"workflow error: {msg}", "run_id": run_id})
 
     with contextlib.suppress(Exception):
-        complete_run(run_id, artifact)
+        # The artifact still comes back into this (the principal's own) turn;
+        # only the shared run history leaves out a private one.
+        complete_run(
+            run_id, stored_artifact(artifact, private_to_principal=private_to_principal)
+        )
     _audit(
         "run_workflow", "write", True,
         f"run_workflow {name} ok run_id={run_id}",

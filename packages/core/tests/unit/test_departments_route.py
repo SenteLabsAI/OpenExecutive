@@ -4,6 +4,7 @@ Includes coverage for the legacy /okrs aliases kept for one release.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,25 @@ def test_patch_watched_entities_cleans_and_validates(client: TestClient) -> None
     assert client.patch("/departments/finance", json={"watched_entities": [f"e{i}" for i in range(51)]}).status_code == 422
 
 
+@pytest.mark.parametrize("spec", ["mondays@09:00", "daily@25:00", "weekly@xyz@09:00", "quarterly@00-09:00", " "])
+def test_patch_rejects_invalid_cadence(client: TestClient, spec: str) -> None:
+    before = client.get("/departments/finance").json()["config"]["cadences"]
+    resp = client.patch("/departments/finance", json={"cadences": {"check_in": spec}})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert spec in detail
+    assert "weekly@mon@09:00" in detail
+    # Nothing was stored.
+    assert client.get("/departments/finance").json()["config"]["cadences"] == before
+
+
+@pytest.mark.parametrize("spec", ["daily@09:00", "weekly@mon@09:00", "weekly@Mon-09:00", "quarterly@01-09:00", ""])
+def test_patch_accepts_valid_or_empty_cadence(client: TestClient, spec: str) -> None:
+    resp = client.patch("/departments/finance", json={"cadences": {"check_in": spec}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["config"]["cadences"]["check_in"] == spec
+
+
 def test_patch_unknown_department(client: TestClient) -> None:
     resp = client.patch("/departments/nope", json={"headcount": 1})
     assert resp.status_code == 404
@@ -160,6 +180,95 @@ def test_create_goal_with_each_period_type(client: TestClient) -> None:
         body = resp.json()
         assert body["period_type"] == period_type
         assert body["period_value"] == period_value
+
+
+def test_create_goal_needs_only_the_goal_text(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The add-goal form sends just the goal: the period defaults to the
+    current one in the user's zone and the target is left empty."""
+    from openexecutive.orchestrator import department_tools
+
+    monkeypatch.setattr(department_tools, "_today_local", lambda: date(2026, 9, 25))
+    resp = client.post("/departments/finance/goals", json={"key_result": "Close Series A"})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["key_result"] == "Close Series A"
+    assert body["period_type"] == "quarter"
+    assert body["period_value"] == "Q3 2026"
+    assert body["target"] == ""
+    assert body["status"] == "on_track"
+
+
+@pytest.mark.parametrize(
+    ("period_type", "expected"),
+    [("week", "Week of Sep 21"), ("month", "September 2026"), ("year", "2026"), ("ongoing", "Ongoing")],
+)
+def test_create_goal_defaults_a_blank_period_for_its_type(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, period_type: str, expected: str
+) -> None:
+    from openexecutive.orchestrator import department_tools
+
+    monkeypatch.setattr(department_tools, "_today_local", lambda: date(2026, 9, 25))
+    resp = client.post(
+        "/departments/finance/goals",
+        json={"period_type": period_type, "period_value": "  ", "key_result": "K"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["period_value"] == expected
+
+
+def test_create_goal_falls_back_to_utc_when_the_zone_is_unreadable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator import department_tools
+
+    def _boom() -> date:
+        raise RuntimeError("zone unreadable")
+
+    monkeypatch.setattr(department_tools, "_today_local", _boom)
+    resp = client.post("/departments/finance/goals", json={"key_result": "K"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["period_value"].startswith("Q")
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_create_goal_still_requires_the_goal_text(client: TestClient, text: str) -> None:
+    resp = client.post("/departments/finance/goals", json={"key_result": text})
+    assert resp.status_code == 422
+
+
+def test_create_goal_strips_text(client: TestClient) -> None:
+    resp = client.post(
+        "/departments/finance/goals",
+        json={"key_result": "  Close Series A ", "target": "   ", "current": " $2M "},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert (body["key_result"], body["target"], body["current"]) == ("Close Series A", "", "$2M")
+
+
+@pytest.mark.parametrize("field", ["key_result", "period_value"])
+@pytest.mark.parametrize("text", ["", "   "])
+def test_patch_goal_rejects_blanking_required_text(
+    client: TestClient, field: str, text: str
+) -> None:
+    goal_id = client.post(
+        "/departments/finance/goals",
+        json={"period_value": "Q2 2026", "key_result": "K", "target": "T"},
+    ).json()["id"]
+    resp = client.patch(f"/departments/finance/goals/{goal_id}", json={field: text})
+    assert resp.status_code == 422
+
+
+def test_patch_goal_can_clear_the_target(client: TestClient) -> None:
+    goal_id = client.post(
+        "/departments/finance/goals",
+        json={"period_value": "Q2 2026", "key_result": "K", "target": "T"},
+    ).json()["id"]
+    resp = client.patch(f"/departments/finance/goals/{goal_id}", json={"target": ""})
+    assert resp.status_code == 200
+    assert resp.json()["target"] == ""
 
 
 def test_create_goal_for_unknown_department(client: TestClient) -> None:
@@ -404,3 +513,45 @@ def test_delete_department_invalidates_registry(client: TestClient) -> None:
     assert registry._cache is not None
     client.delete("/departments/finance")
     assert registry._cache is None
+
+
+# --------------------------------------------------------------------------- #
+# POST /goals — a goal by area name (the Goals page with no areas yet)
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture()
+def empty_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "departments.db")
+    registry.invalidate()
+    app = FastAPI()
+    app.include_router(departments_route.router)
+    return TestClient(app)
+
+
+def test_goal_with_no_area_named_goes_under_general(empty_client: TestClient) -> None:
+    resp = empty_client.post("/goals", json={"key_result": "Launch the product", "area": "  "})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["key_result"] == "Launch the product"
+    areas = empty_client.get("/departments").json()
+    assert [a["config"]["title"] for a in areas] == ["General"]
+    assert areas[0]["goals"][0]["id"] == resp.json()["id"]
+    # A second goal with no area joins it rather than making "General 2".
+    assert empty_client.post("/goals", json={"key_result": "Hire a designer"}).status_code == 201
+    areas = empty_client.get("/departments").json()
+    assert len(areas) == 1 and len(areas[0]["goals"]) == 2
+
+
+def test_goal_names_a_new_area_or_matches_an_existing_one(empty_client: TestClient) -> None:
+    resp = empty_client.post("/goals", json={"key_result": "Close 10 accounts", "area": "Sales"})
+    assert resp.status_code == 201
+    sales = empty_client.get("/departments").json()[0]["config"]
+    assert sales["title"] == "Sales" and sales["specialist_key"] is None
+    resp = empty_client.post("/goals", json={"key_result": "Close 20 accounts", "area": "sales"})
+    assert resp.json()["department_slug"] == sales["slug"]
+    assert len(empty_client.get("/departments").json()) == 1
+
+
+def test_goal_by_area_validates_the_goal(empty_client: TestClient) -> None:
+    assert empty_client.post("/goals", json={"key_result": "", "area": "Sales"}).status_code == 422
+    assert empty_client.post("/goals", json={"key_result": "x", "area": "a" * 81}).status_code == 422
+    assert empty_client.get("/departments").json() == []

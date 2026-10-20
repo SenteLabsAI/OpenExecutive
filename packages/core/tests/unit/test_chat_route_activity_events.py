@@ -26,7 +26,7 @@ from openexecutive.memory.company_profile import CompanyProfile
 
 MCP_ACTIVITY: dict[str, Any] = {
     "type": "activity",
-    "label": "Using google_workspace__send_gmail_message…",
+    "label": "Sending an email…",
     "tool": "google_workspace__send_gmail_message",
     "iteration": 1,
 }
@@ -41,8 +41,6 @@ SPECIALIST_ACTIVITY: dict[str, Any] = {
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
 
 
 @pytest.fixture()
@@ -70,7 +68,7 @@ def patched_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         retriever,
         "retrieve",
-        lambda query, specialist_name=None, store=None: "",
+        lambda query, specialist_name=None, store=None, **_k: "",
     )
 
     from openexecutive.utils import session_title as _title_mod

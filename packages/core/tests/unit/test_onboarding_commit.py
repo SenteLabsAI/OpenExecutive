@@ -2,20 +2,28 @@
 
 The department half is the reason this file exists. ``cli/fixture_loader``
 seeds departments by DELETing every row first — correct for swapping in a demo
-company, and destructive here: it would drop the eight defaults along with
-their ``specialist_key`` wiring, which ``create_department`` (always
-``specialist_key = NULL``) cannot restore. These tests pin the additive
-behaviour so nobody "simplifies" it into the fixture seeder later.
+company, and destructive here: a re-run of setup would drop the departments a
+workspace already has, with their goals and specialist wiring. These tests pin
+the additive behaviour so nobody "simplifies" it into the fixture seeder later.
+
+``dept_db`` holds the full catalogue (a workspace from before installs started
+empty); ``empty_dept_db`` is a new install, where setup's draft decides which
+departments exist.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from openexecutive.departments import store as dept_store
 from openexecutive.onboarding.commit import (
+    OwnerEmailError,
+    adopt_owner_row,
+    check_owner_email,
     derive_org_structure,
+    link_owner_email,
     reconcile_onboarding_departments,
     save_onboarding_people,
 )
@@ -33,6 +41,15 @@ def dept_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(dept_store, "DB_PATH", path)
     dept_store.initialize_db(path)
     dept_store.seed_default_departments(path)
+    monkeypatch.setattr("openexecutive.departments.registry.invalidate", lambda: None)
+    return path
+
+
+@pytest.fixture()
+def empty_dept_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "departments.db"
+    monkeypatch.setattr(dept_store, "DB_PATH", path)
+    dept_store.initialize_db(path)
     monkeypatch.setattr("openexecutive.departments.registry.invalidate", lambda: None)
     return path
 
@@ -480,3 +497,247 @@ def test_case_variant_names_collapse_onto_one_row_not_two(people_db: Path) -> No
     assert len(set(ids.values())) == 1
     everyone = people_store.list_people(db_path=people_db)
     assert len(everyone) == 1, f"duplicate rows: {[p.full_name for p in everyone]}"
+
+
+# ── the owner's sign-in email ────────────────────────────────────────────────
+# Setup collects no contact details, so without this step the signed-in owner
+# matched no Person: their chat list stayed empty until they found the People
+# page on their own.
+
+
+def test_blank_owner_email_means_none(people_db: Path) -> None:
+    assert check_owner_email(None, "Dana Reyes") is None
+    assert check_owner_email("   ", "Dana Reyes") is None
+
+
+def test_owner_email_is_trimmed_and_lowercased(people_db: Path) -> None:
+    assert check_owner_email("  Dana@Example.COM ", "Dana Reyes") == "dana@example.com"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "dana",
+        "dana@",
+        "@example.com",
+        "dana@example",
+        "dana @example.com",
+        "dana@exa mple.com",
+        "dana@example.com, sam@example.com",
+        "a@b@example.com",
+        f"{'d' * 250}@example.com",
+    ],
+)
+def test_malformed_owner_email_is_rejected_without_echoing_it(
+    people_db: Path, bad: str
+) -> None:
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email(bad, "Dana Reyes")
+    assert bad.strip().lower() not in str(err.value)
+
+
+def test_owner_email_held_by_someone_else_is_rejected(people_db: Path) -> None:
+    """Two rows with one email would make sign-in resolve to the older one."""
+    people_store.upsert_person(full_name="Sam Okafor", email="sam@example.com")
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("SAM@example.com", "Dana Reyes")
+    assert "sam@example.com" not in str(err.value)
+
+
+def test_owner_email_already_on_the_principals_own_row_is_fine(people_db: Path) -> None:
+    """Re-running setup: the drafted principal maps onto their existing row by
+    case-insensitive name, so their own email is not a conflict."""
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    assert check_owner_email("dana@example.com", "  dana reyes ") == "dana@example.com"
+
+
+def test_an_archived_holder_does_not_block_the_owner_email(people_db: Path) -> None:
+    pid = people_store.upsert_person(full_name="Former CEO", email="dana@example.com")
+    people_store.archive_person(pid)
+    assert check_owner_email("dana@example.com", "Dana Reyes") == "dana@example.com"
+
+
+def test_an_unreadable_roster_rejects_rather_than_risking_a_duplicate(
+    people_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _locked(email: str, *_a: object, **_kw: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    # The owner-email check matches aliases too (find_person_by_address).
+    monkeypatch.setattr(people_store, "find_person_by_address", _locked)
+    with pytest.raises(OwnerEmailError):
+        check_owner_email("dana@example.com", "Dana Reyes")
+
+
+def test_linking_makes_the_owner_resolvable_by_their_sign_in(people_db: Path) -> None:
+    ids = save_onboarding_people(
+        [PersonDraft(full_name="Dana Reyes", role="CEO", is_principal=True)]
+    )
+    assert link_owner_email(ids["Dana Reyes"], "dana@example.com") is True
+
+    found = people_store.find_person_by_email("Dana@Example.com", db_path=people_db)
+    assert found is not None and found.id == ids["Dana Reyes"]
+    assert found.is_principal
+
+
+def test_link_failure_is_swallowed(people_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = people_store.upsert_person(full_name="Dana Reyes", is_principal=True)
+
+    def _boom(*a: object, **k: object) -> bool:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(people_store, "update_person", _boom)
+    assert link_owner_email(pid, "dana@example.com") is False
+
+
+def test_setup_never_replaces_the_principals_existing_email(people_db: Path) -> None:
+    """Re-run by someone else who kept their own login in the field: replacing
+    Dana's address would sign her out, since sign-in and caller resolution
+    both key on it, and hand her seat to the re-runner."""
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("ops@example.com", "Dana Reyes")
+    assert "People page" in str(err.value)
+    assert "ops@example.com" not in str(err.value)
+
+
+def test_a_renamed_owner_is_told_it_is_their_own_entry(people_db: Path) -> None:
+    """The upsert keys on the name, so a renamed principal is a new row and
+    their old one still holds the email. The message must not call that
+    "someone else"."""
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("dana@example.com", "Dana Reyes-Kim")
+    assert "current owner" in str(err.value)
+    assert "someone else" not in str(err.value)
+
+
+def test_two_entries_sharing_the_owners_name_cannot_split_the_email(people_db: Path) -> None:
+    """The name-keyed upsert updates the LAST row with that name. If that is
+    not the row holding the email, linking would give two people one email
+    and resolve the owner's sign-in to the row being demoted."""
+    people_store.upsert_person(full_name="Ann Lee", email="ann@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Ann Lee")
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("ann@example.com", "Ann Lee")
+    assert "current owner" in str(err.value)
+
+
+def test_link_refuses_an_email_another_entry_holds(people_db: Path) -> None:
+    people_store.upsert_person(full_name="Sam Okafor", email="sam@example.com")
+    pid = people_store.upsert_person(full_name="Dana Reyes", is_principal=True)
+    assert link_owner_email(pid, "sam@example.com") is False
+    person = people_store.get_person(pid, db_path=people_db)
+    assert person is not None and person.email is None
+
+
+def test_link_never_replaces_a_different_email(people_db: Path) -> None:
+    pid = people_store.upsert_person(
+        full_name="Dana Reyes", email="dana@example.com", is_principal=True
+    )
+    assert link_owner_email(pid, "ops@example.com") is False
+    person = people_store.get_person(pid, db_path=people_db)
+    assert person is not None and person.email == "dana@example.com"
+
+
+def test_someone_elses_alias_is_not_the_owners_email(people_db: Path) -> None:
+    pid = people_store.upsert_person(full_name="Ben Teammate", email="ben@example.com")
+    people_store.set_person_emails(pid, ["dana@example.com"])
+    with pytest.raises(OwnerEmailError):
+        check_owner_email("dana@example.com", "Dana Reyes")
+
+
+# ── a new install: setup decides which departments exist ───────────────────
+
+
+def test_new_install_with_no_drafted_departments_has_none(empty_dept_db: Path) -> None:
+    assert reconcile_onboarding_departments([], {}) == {"updated": 0, "created": 0}
+    assert dept_store.list_departments(db_path=empty_dept_db) == []
+
+
+def test_new_install_creates_only_the_drafted_departments(empty_dept_db: Path) -> None:
+    counts = reconcile_onboarding_departments(
+        [DepartmentDraft(title="Finance"), DepartmentDraft(title="Growth")], {}
+    )
+    assert counts == {"updated": 0, "created": 2}
+    by_slug = {
+        d.config.slug: d.config for d in dept_store.list_departments(db_path=empty_dept_db)
+    }
+    assert set(by_slug) == {"finance", "growth"}
+    # Named after a specialist's area: wired to it and given its charter.
+    assert by_slug["finance"].specialist_key == "cfo"
+    assert by_slug["finance"].charter.scope  # the catalogue's Finance scope
+    # Anything else stays informational.
+    assert by_slug["growth"].specialist_key is None
+
+
+def test_a_specialist_is_wired_to_only_one_new_department(empty_dept_db: Path) -> None:
+    # "HR" and "People & Talent" slug differently but are both the chro area.
+    reconcile_onboarding_departments(
+        [DepartmentDraft(title="HR"), DepartmentDraft(title="People & Talent")], {}
+    )
+    keys = [d.config.specialist_key for d in dept_store.list_departments(db_path=empty_dept_db)]
+    assert keys.count("chro") == 1
+
+
+# ── the owner's seeded entry: matched by the sign-in email ───────────────────
+
+
+def test_the_signed_in_owner_may_name_their_own_seeded_entry(people_db: Path) -> None:
+    """A hosted sign-up seeds the owner's entry from the address ("ada"), and
+    setup drafts the real name. Signed in as that address, the save goes
+    through instead of asking for "the name on the People page"."""
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    assert (
+        check_owner_email("ada@example.com", "Ada Lovelace", caller_email="ada@example.com")
+        == "ada@example.com"
+    )
+
+
+def test_someone_else_signed_in_still_gets_the_rename_error(people_db: Path) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    with pytest.raises(OwnerEmailError) as err:
+        check_owner_email("ada@example.com", "Ada Lovelace", caller_email="sam@example.com")
+    assert "current owner" in str(err.value)
+    with pytest.raises(OwnerEmailError):
+        check_owner_email("ada@example.com", "Ada Lovelace")
+
+
+def test_adopt_renames_the_owners_entry_so_the_upsert_updates_it(people_db: Path) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    assert adopt_owner_row("ada@example.com", "Ada Lovelace", "ada@example.com") is True
+    rows = people_store.list_people()
+    assert [p.full_name for p in rows] == ["Ada Lovelace"]
+    assert rows[0].is_principal and rows[0].email == "ada@example.com"
+
+    ids = save_onboarding_people(
+        [PersonDraft(full_name="Ada Lovelace", role="Owner", is_principal=True)]
+    )
+    assert len(people_store.list_people()) == 1
+    assert ids["Ada Lovelace"] == rows[0].id
+
+
+@pytest.mark.parametrize(
+    ("email", "caller"),
+    [
+        ("ada@example.com", "sam@example.com"),  # not the signed-in person
+        ("ada@example.com", None),  # no signed-in person
+        ("other@example.com", "other@example.com"),  # not the owner's address
+        ("", "ada@example.com"),  # nothing to match on
+    ],
+)
+def test_adopt_leaves_other_cases_alone(people_db: Path, email: str, caller: str | None) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    assert adopt_owner_row(email, "Ada Lovelace", caller) is False
+    assert [p.full_name for p in people_store.list_people()] == ["ada"]
+
+
+def test_adopt_never_renames_onto_an_existing_name(people_db: Path) -> None:
+    people_store.upsert_person(full_name="ada", email="ada@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Ada Lovelace")
+    assert adopt_owner_row("ada@example.com", "Ada Lovelace", "ada@example.com") is False
+
+
+def test_adopt_is_a_no_op_when_the_name_already_matches(people_db: Path) -> None:
+    people_store.upsert_person(full_name="Ada Lovelace", email="ada@example.com", is_principal=True)
+    assert adopt_owner_row("ada@example.com", "ada lovelace", "ada@example.com") is False

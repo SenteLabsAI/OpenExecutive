@@ -34,6 +34,18 @@ def test_list_models_returns_allowed_models(client: TestClient) -> None:
     assert "claude-sonnet-5" in res.json()
 
 
+def test_list_model_options_returns_grouped_allowlist(client: TestClient) -> None:
+    flat = client.get("/agents/models").json()
+    res = client.get("/agents/models/options", params={"agent_id": "cso"})
+    assert res.status_code == 200
+    body = res.json()
+    assert [o["id"] for o in body] == flat
+    opus = next(o for o in body if o["id"] == "claude-opus-5-5")
+    assert opus["provider"] == "anthropic"
+    assert opus["label"] == "Claude Opus 5.5"
+    assert set(opus) == {"id", "provider", "provider_label", "route", "label"}
+
+
 def test_list_agents_returns_all_specialists(client: TestClient) -> None:
     res = client.get("/agents")
     assert res.status_code == 200
@@ -268,3 +280,82 @@ def test_executive_test_endpoint_uses_draft_prompt(client: TestClient) -> None:
     assert kw["system"][0]["text"] == "DRAFT_EXEC_PROMPT"
     # Test endpoint must not persist.
     assert client.get("/agents/executive").json()["has_override"] is False
+
+
+def test_patch_instructions_shown_separately_from_prompt(client: TestClient) -> None:
+    res = client.patch("/agents/cfo", json={"instructions": "Quote figures in EUR."})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["instructions"] == "Quote figures in EUR."
+    assert "instructions" in body["overridden_fields"]
+    # The prompt editor still shows the built-in prompt, not prompt + instructions.
+    assert body["prompt"] == body["prompt_default"]
+    assert "prompt" not in body["overridden_fields"]
+
+
+def test_patch_blank_instructions_clears_them(client: TestClient) -> None:
+    client.patch("/agents/cfo", json={"instructions": "Quote figures in EUR."})
+    body = client.patch("/agents/cfo", json={"instructions": "   "}).json()
+    assert body["instructions"] is None
+    assert "instructions" not in body["overridden_fields"]
+
+
+def test_patch_rejects_overlong_instructions(client: TestClient) -> None:
+    res = client.patch(
+        "/agents/cfo",
+        json={"instructions": "x" * (agents_route.INSTRUCTIONS_MAX_CHARS + 1)},
+    )
+    assert res.status_code == 422
+
+
+def test_executive_detail_returns_instructions(client: TestClient) -> None:
+    client.patch("/agents/executive", json={"instructions": "Sign off as Ada."})
+    body = client.get("/agents/executive").json()
+    assert body["instructions"] == "Sign off as Ada."
+    assert "instructions" in body["overridden_fields"]
+
+
+def test_test_endpoint_appends_draft_instructions(client: TestClient) -> None:
+    create_mock = AsyncMock(
+        return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")])
+    )
+    fake_provider = SimpleNamespace(messages_create=create_mock)
+    with patch("openexecutive.agents.base.get_provider", return_value=fake_provider):
+        res = client.post(
+            "/agents/cso/test",
+            json={"query": "Hi", "prompt": "DRAFT_PROMPT", "instructions": "Use EUR."},
+        )
+    assert res.status_code == 200, res.text
+    text = create_mock.await_args.kwargs["system"][0]["text"]
+    assert text == ov_mod.append_instructions("DRAFT_PROMPT", "Use EUR.")
+    assert client.get("/agents/cso").json()["has_override"] is False
+
+
+def test_test_endpoint_uses_saved_instructions_when_draft_omits_them(
+    client: TestClient,
+) -> None:
+    client.patch("/agents/cso", json={"instructions": "Saved."})
+    create_mock = AsyncMock(
+        return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")])
+    )
+    fake_provider = SimpleNamespace(messages_create=create_mock)
+    with patch("openexecutive.agents.base.get_provider", return_value=fake_provider):
+        res = client.post("/agents/cso/test", json={"query": "Hi", "prompt": "P"})
+    assert res.status_code == 200, res.text
+    text = create_mock.await_args.kwargs["system"][0]["text"]
+    assert text == ov_mod.append_instructions("P", "Saved.")
+
+
+def test_executive_test_endpoint_appends_instructions(client: TestClient) -> None:
+    create_mock = AsyncMock(
+        return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="ok")])
+    )
+    fake_provider = SimpleNamespace(messages_create=create_mock)
+    with patch("openexecutive.providers.get_provider", return_value=fake_provider):
+        res = client.post(
+            "/agents/executive/test",
+            json={"query": "Hello", "prompt": "EXEC", "instructions": "Sign off as Ada."},
+        )
+    assert res.status_code == 200, res.text
+    text = create_mock.await_args.kwargs["system"][0]["text"]
+    assert text == ov_mod.append_instructions("EXEC", "Sign off as Ada.")

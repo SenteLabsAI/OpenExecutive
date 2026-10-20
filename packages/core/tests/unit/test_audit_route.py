@@ -11,6 +11,17 @@ from openexecutive.api.routes import audit as audit_route
 from openexecutive.audit import AuditLogger, set_audit_logger
 
 
+@pytest.fixture(autouse=True)
+def _own_people_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Who may read the log comes from the People list: give each test an
+    empty one, not whatever ./episodic_memory.db an earlier test left behind
+    (one without a people table hides every row)."""
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", tmp_path / "people.db")
+    people_store.initialize_db()
+
+
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
     app = FastAPI()

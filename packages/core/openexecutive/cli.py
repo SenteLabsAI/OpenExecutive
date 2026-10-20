@@ -35,7 +35,9 @@ async def _ask(question: str) -> None:
             "[yellow]No company profile found. Run 'openexecutive onboard' to set one up.[/yellow]"
         )
 
-    session = Session(company_profile=profile if not profile.is_empty() else None)
+    session = Session(
+        company_profile=profile if not profile.is_empty() else None, from_cli=True
+    )
     retrieved = retrieve(query=question)
     episodic = format_for_prompt()
 
@@ -77,7 +79,9 @@ async def _chat() -> None:
     else:
         console.print(f"[green]Company profile loaded: {profile.name}[/green]\n")
 
-    session = Session(company_profile=profile if not profile.is_empty() else None)
+    session = Session(
+        company_profile=profile if not profile.is_empty() else None, from_cli=True
+    )
     executive = Executive()
 
     console.print("[bold]Open Executive[/bold] — type 'exit' to quit\n")
@@ -228,6 +232,272 @@ async def _purge_notion(page_id: str | None, stale: bool, purge_all: bool) -> No
     console.print(f"[green]Notion stale purge:[/green] {stats}")
 
 
+@cli.command("sync-drive")
+def sync_drive() -> None:
+    """Run one Google Drive folder → isolated collection sync tick."""
+    asyncio.run(_sync_drive())
+
+
+async def _sync_drive() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.drive_sync import run_drive_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.drive_sync_enabled:
+        console.print(
+            "[yellow]DRIVE_SYNC_ENABLED is false. See docs/drive_sync_setup.md.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_drive_sync(store=store)
+    console.print(f"[green]Drive sync:[/green] {stats}")
+
+
+@cli.command("purge-drive")
+@click.option("--file-id", default=None, help="Purge one synced file by Drive file id.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge files no longer in the synced folders (needs the sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced file.")
+def purge_drive(file_id: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced Google Drive files and Chroma chunks."""
+    asyncio.run(_purge_drive(file_id, stale, purge_all))
+
+
+async def _purge_drive(file_id: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.drive_sync import (
+        load_state,
+        purge_all_synced,
+        purge_file,
+        run_drive_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    if sum(bool(x) for x in (file_id, stale, purge_all)) != 1:
+        console.print("[red]Specify exactly one of --file-id, --stale, or --all.[/red]")
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if file_id:
+        state = load_state()
+        if purge_file(file_id, store, state):
+            save_state(state)
+            console.print(f"[green]Purged Drive file[/green] {file_id}")
+        else:
+            console.print(f"[red]Could not purge[/red] {file_id}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced Drive file(s).[/green]")
+        return
+    if not settings.drive_sync_enabled:
+        console.print(
+            "[yellow]DRIVE_SYNC_ENABLED is false. See docs/drive_sync_setup.md.[/yellow]"
+        )
+        return
+    stats = await run_drive_sync(store=store, reconcile_only=True)
+    console.print(f"[green]Drive stale purge:[/green] {stats}")
+
+
+@cli.command("sync-onedrive")
+def sync_onedrive() -> None:
+    """Run one OneDrive folder → isolated collection sync tick."""
+    asyncio.run(_sync_onedrive())
+
+
+async def _sync_onedrive() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.onedrive_sync import load_state, run_onedrive_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.onedrive_sync_enabled:
+        console.print(
+            "[yellow]ONEDRIVE_SYNC_ENABLED is false. See docs/onedrive_sync_setup.md.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_onedrive_sync(store=store)
+    console.print(f"[green]OneDrive sync:[/green] {stats}")
+    error = load_state().get("last_error")
+    if isinstance(error, str) and error:
+        console.print(f"[yellow]{error}[/yellow]")
+
+
+@cli.command("purge-onedrive")
+@click.option("--key", default=None, help="Purge one synced file by <drive id>:<item id>.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge files no longer in the synced folders (needs the sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced file.")
+def purge_onedrive(key: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced OneDrive files and Chroma chunks."""
+    asyncio.run(_purge_onedrive(key, stale, purge_all))
+
+
+async def _purge_onedrive(key: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.onedrive_sync import (
+        load_state,
+        purge_all_synced,
+        purge_file,
+        run_onedrive_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    if sum(bool(x) for x in (key, stale, purge_all)) != 1:
+        console.print("[red]Specify exactly one of --key, --stale, or --all.[/red]")
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if key:
+        state = load_state()
+        if purge_file(key, store, state):
+            save_state(state)
+            console.print(f"[green]Purged OneDrive file[/green] {key}")
+        else:
+            console.print(f"[red]Could not purge[/red] {key}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced OneDrive file(s).[/green]")
+        return
+    if not settings.onedrive_sync_enabled:
+        console.print(
+            "[yellow]ONEDRIVE_SYNC_ENABLED is false. See docs/onedrive_sync_setup.md.[/yellow]"
+        )
+        return
+    stats = await run_onedrive_sync(store=store, reconcile_only=True)
+    console.print(f"[green]OneDrive stale purge:[/green] {stats}")
+
+
+@cli.command("onedrive-folder")
+@click.argument("link")
+def onedrive_folder(link: str) -> None:
+    """Turn a OneDrive or SharePoint folder sharing link into the
+    <drive id>/<item id> entry ONEDRIVE_SYNC_FOLDERS takes. Reads as the
+    Executive's Microsoft 365 sign-in, so the folder must be shared with it."""
+    asyncio.run(_onedrive_folder(link))
+
+
+async def _onedrive_folder(link: str) -> None:
+    import httpx
+
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.onedrive_account import (
+        OneDriveAuthTransient,
+        OneDriveCredentialMissing,
+        onedrive_token_provider,
+    )
+    from openexecutive.knowledge.onedrive_client import OneDriveClient, share_id
+
+    try:
+        share_id(link)
+    except ValueError as exc:
+        console.print(f"[red]{exc}.[/red] Paste the folder's https sharing link.")
+        return
+    try:
+        token = onedrive_token_provider(get_settings())
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            item = await OneDriveClient(http, token).resolve_share(link)
+    except (OneDriveCredentialMissing, OneDriveAuthTransient) as exc:
+        console.print(f"[red]Could not sign in to Microsoft 365:[/red] {exc}")
+        return
+    except httpx.HTTPStatusError as exc:
+        console.print(
+            f"[red]Microsoft answered {exc.response.status_code}.[/red] Check the link, "
+            "and that the folder is shared with the Executive's Microsoft account."
+        )
+        return
+    if item is None or not item.is_folder:
+        console.print("[red]That link isn't to a folder.[/red] Share the folder itself.")
+        return
+    console.print(f"{item.name}: [green]{item.drive_id}/{item.id}[/green]")
+    console.print("Add that to ONEDRIVE_SYNC_FOLDERS (comma-separated for several).")
+
+
+@cli.command("sync-confluence")
+def sync_confluence() -> None:
+    """Run one Confluence space → isolated collection sync tick."""
+    asyncio.run(_sync_confluence())
+
+
+async def _sync_confluence() -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.confluence_sync import run_confluence_sync
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    settings = get_settings()
+    if not settings.confluence_sync_enabled:
+        console.print(
+            "[yellow]CONFLUENCE_SYNC_ENABLED is false. "
+            "See docs/confluence_sync_setup.md.[/yellow]"
+        )
+        return
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    stats = await run_confluence_sync(store=store)
+    console.print(f"[green]Confluence sync:[/green] {stats}")
+
+
+@cli.command("purge-confluence")
+@click.option("--page-id", default=None, help="Purge one synced page by Confluence page id.")
+@click.option(
+    "--stale",
+    is_flag=True,
+    help="Purge pages no longer in the synced spaces, or now restricted (needs the sync configured).",
+)
+@click.option("--all", "purge_all", is_flag=True, help="Purge every locally synced page.")
+def purge_confluence(page_id: str | None, stale: bool, purge_all: bool) -> None:
+    """Remove synced Confluence pages and Chroma chunks."""
+    asyncio.run(_purge_confluence(page_id, stale, purge_all))
+
+
+async def _purge_confluence(page_id: str | None, stale: bool, purge_all: bool) -> None:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.confluence_sync import (
+        load_state,
+        purge_all_synced,
+        purge_page,
+        run_confluence_sync,
+        save_state,
+    )
+    from openexecutive.knowledge.store import ChromaDBStore
+
+    if sum(bool(x) for x in (page_id, stale, purge_all)) != 1:
+        console.print("[red]Specify exactly one of --page-id, --stale, or --all.[/red]")
+        return
+    settings = get_settings()
+    store = ChromaDBStore(persist_directory=settings.vector_store_path)
+    if page_id:
+        state = load_state()
+        if purge_page(page_id, store, state):
+            save_state(state)
+            console.print(f"[green]Purged Confluence page[/green] {page_id}")
+        else:
+            console.print(f"[red]Could not purge[/red] {page_id}")
+        return
+    if purge_all:
+        n = purge_all_synced(store)
+        console.print(f"[green]Purged {n} synced Confluence page(s).[/green]")
+        return
+    if not settings.confluence_sync_enabled:
+        console.print(
+            "[yellow]CONFLUENCE_SYNC_ENABLED is false. "
+            "See docs/confluence_sync_setup.md.[/yellow]"
+        )
+        return
+    stats = await run_confluence_sync(store=store, reconcile_only=True)
+    console.print(f"[green]Confluence stale purge:[/green] {stats}")
+
+
 @cli.command("consolidate-initiatives")
 @click.option(
     "--apply",
@@ -293,9 +563,9 @@ def onboard() -> None:
 
 
 async def _onboard() -> None:
+    from openexecutive.memory.workspace_settings import get_workspace
     from openexecutive.onboarding.profile_builder import build_and_save_profile
     from openexecutive.onboarding.wizard import (
-        TOTAL_STEPS,
         WizardState,
         get_current_question,
         process_answer,
@@ -304,15 +574,16 @@ async def _onboard() -> None:
     console.print("[bold]Open Executive Onboarding[/bold]\n")
     console.print("This wizard will set up your company profile. Type 'skip' to skip optional questions.\n")
 
-    state = WizardState()
+    # A solo workspace skips the team steps (see onboarding.wizard).
+    state = WizardState(solo=get_workspace().mode == "solo")
 
     while not state.completed:
         question = get_current_question(state)
         if question is None:
             break
 
-        step_num = state.current_step + 1
-        console.print(f"[dim]Step {step_num}/{TOTAL_STEPS}[/dim]")
+        step_num = state.position() + 1
+        console.print(f"[dim]Step {step_num}/{state.total_steps()}[/dim]")
         console.print(f"[bold]{question}[/bold]\n")
 
         try:

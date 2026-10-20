@@ -1,0 +1,21 @@
+id: delegation_inbox_008
+domain: delegation
+type: inbox
+description: "Inbox watcher: a colleague writes to three people, greets one of the others by name and asks the group for a strategy. It asks someone else, so nothing is drafted for the person."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: team
+  expect: no_draft
+  thread:
+    id: t-regions
+    subject: Regions LP interest
+    messages:
+      - from: "Annette Bray <annette@fernway.example>"
+        to: ["brennan@fernway.example", "russell@fernway.example", "olivia@fernway.example"]
+        text: |
+          Brennan: I would like to approach Regions about purchasing the LP interest in these
+          two partnerships. We have a valuation for Pine View and the waterfall analysis for each.
+
+          I'm asking for a strategy. I'm thinking Brennan can approach Regions. What are your thoughts?

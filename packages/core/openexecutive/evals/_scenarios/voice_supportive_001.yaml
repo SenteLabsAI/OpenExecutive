@@ -1,0 +1,24 @@
+id: voice_supportive_001
+domain: voice
+voice_persona: supportive
+description: "Supportive voice: a first-time manager asks whether to let go of an underperforming early hire. The Executive still gives a clear recommendation, explains why, acknowledges that the call is hard, helps with how to deliver it, and stays inside the persona's length rules (warmth must not turn into padding)."
+# Runs in the Supportive voice via the `voice_persona` key
+# (Session.voice_persona_slug), never the install-wide Executive override.
+company_context:
+  name: Brightline Analytics
+  industry: B2B Data Tooling
+  stage: Seed
+  headcount: 9
+  arr: 600000
+query: "One of our first five hires keeps missing deadlines and the rest of the team is picking up the slack. I've given feedback twice. I hate this, but should I let them go?"
+expected_topics:
+  - clear_recommendation
+  - why_the_recommendation_holds
+  - acknowledges_the_difficulty
+  - how_to_handle_the_conversation
+quality_criteria:
+  gives_a_clear_recommendation_up_front: true
+  explains_the_reasoning_in_plain_language: true
+  warm_without_flattery_or_padding: true
+  addresses_how_the_decision_lands_on_people: true
+  brief: true

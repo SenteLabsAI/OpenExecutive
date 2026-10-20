@@ -4,9 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Message from "@/components/Message";
+import TurnStatusRow, { useTurnClock } from "@/components/TurnStatusRow";
 import { useAskOE } from "@/components/askoe/AskOEContext";
+import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken, FormPatch } from "@/lib/api";
-import { setMessageFeedback, streamChat } from "@/lib/api";
+import { FALLBACK_ACTIVITY_LABEL, setMessageFeedback, streamChat } from "@/lib/api";
+import { turnStatus } from "@/lib/turnStatus";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
 
 // One proposal card per form_patch event: what was applied/skipped, the
@@ -28,6 +31,8 @@ interface PanelMessage {
   patches?: PatchCardData[];
   /** The user stopped this reply mid-stream. */
   stopped?: boolean;
+  /** What the reply looked at, and any part of the analysis it left out. */
+  sources?: AnswerSources;
   /** Persisted row id (from `done`), needed to rate the reply. */
   messageId?: number;
   feedback?: "up" | "down" | null;
@@ -92,6 +97,7 @@ export default function AskOEPanel() {
   const [streaming, setStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [activityLabel, setActivityLabel] = useState<string | null>(null);
+  const turnClock = useTurnClock(streaming);
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -145,6 +151,7 @@ export default function AskOEPanel() {
       setInput("");
       setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
       setStreaming(true);
+      turnClock.start();
       setStreamingContent("");
       setActivityLabel(null);
       const { clientTurnId, signal } = beginTurn();
@@ -154,6 +161,7 @@ export default function AskOEPanel() {
       let messageId: number | undefined;
       const actions: ActionTaken[] = [];
       const patches: PatchCardData[] = [];
+      let sources: AnswerSources | undefined;
       try {
         // Page context is snapshotted per turn — current route, form
         // descriptor, and live field values at the moment of sending.
@@ -163,6 +171,7 @@ export default function AskOEPanel() {
           clientTurnId,
           signal,
         })) {
+          turnClock.markEvent();
           if (item.type === "chunk" && item.content) {
             content += item.content;
             setActivityLabel(null);
@@ -173,6 +182,8 @@ export default function AskOEPanel() {
             patches.push(handlePatch(item));
           } else if (item.type === "action_taken") {
             actions.push(item);
+          } else if (item.type === "sources") {
+            sources = answerSourcesFrom(item);
           } else if (item.type === "error") {
             setError(item.message ?? "Something went wrong.");
           } else if (item.type === "stopped") {
@@ -213,6 +224,7 @@ export default function AskOEPanel() {
               actions: actions.length ? actions : undefined,
               patches: patches.length ? patches : undefined,
               stopped: wasStopped || undefined,
+              sources,
               messageId,
             },
           ]);
@@ -280,6 +292,19 @@ export default function AskOEPanel() {
 
   if (!ctx.open) return null;
 
+  // The panel ignores `thinking`: an `activity` label that arrived after the
+  // last chunk (a chunk clears it) is what marks a tool round in progress.
+  const status = turnStatus({
+    isLoading: streaming,
+    hasText: Boolean(streamingContent),
+    isConsulting: activityLabel !== null,
+    activityLabel,
+    inCommittee: false,
+    msSinceTurnStart: turnClock.msSinceTurnStart,
+    msSinceLastEvent: turnClock.msSinceLastEvent,
+    fallbackLabel: FALLBACK_ACTIVITY_LABEL,
+  });
+
   const emptyPrompts = [
     "What does this page do?",
     ...(ctx.formMeta ? ["Fill this form in for me: "] : []),
@@ -294,13 +319,13 @@ export default function AskOEPanel() {
         aria-hidden="true"
       />
       <aside
-        aria-label="Ask OE"
+        aria-label={`Help with ${ctx.pageTitle}`}
         className="fixed top-8 bottom-0 right-0 z-40 w-[min(24rem,100vw)] lg:static lg:z-auto lg:w-[380px] flex-shrink-0 border-l border-line bg-surface-elevated flex flex-col"
       >
         <div className="h-14 px-4 border-b border-line flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <Icon name="bolt" size="w-4 h-4" className="text-indigo-300 flex-shrink-0" />
-            <span className="text-sm font-semibold text-fg truncate">Ask OE</span>
+            <span className="text-sm font-semibold text-fg truncate">{ctx.pageTitle}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -316,7 +341,7 @@ export default function AskOEPanel() {
               type="button"
               onClick={() => ctx.setOpen(false)}
               title="Close (Ctrl/Cmd + .)"
-              aria-label="Close Ask OE"
+              aria-label="Close help"
               className="min-h-touch min-w-touch flex items-center justify-center text-fg-muted hover:text-fg rounded-lg hover:bg-surface-overlay transition-colors"
             >
               <Icon name="close" size="w-4 h-4" />
@@ -357,6 +382,7 @@ export default function AskOEPanel() {
                 content={m.content}
                 actions={m.actions}
                 stopped={m.stopped}
+                sources={m.role === "assistant" ? m.sources : undefined}
                 feedback={m.feedback}
                 onFeedback={
                   m.role === "assistant" && m.messageId && sessionId
@@ -373,8 +399,13 @@ export default function AskOEPanel() {
           {streaming && (
             <Message
               role="assistant"
-              content={streamingContent || activityLabel || "…"}
+              content={streamingContent || status.label || activityLabel || "…"}
               isStreaming
+              status={
+                streamingContent && status.show ? (
+                  <TurnStatusRow status={status} committeePhase={null} />
+                ) : undefined
+              }
             />
           )}
 

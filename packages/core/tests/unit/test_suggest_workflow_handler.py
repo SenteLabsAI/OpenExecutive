@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,11 +37,12 @@ def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture()
-def session_with_telegram_ref() -> Session:
+def session_with_telegram_ref() -> Iterator[Session]:
     s = Session()
     s.seen_channel_refs.add(("telegram", "42"))
-    current_session.set(s)
-    return s
+    token = current_session.set(s)
+    yield s
+    current_session.reset(token)
 
 
 def _future_iso(seconds: int = 600) -> str:
@@ -350,3 +352,20 @@ def test_ui_base_url_validator_rejects_bad_schemes() -> None:
     # Happy path still works.
     s = Settings(UI_BASE_URL="https://app.example.com")  # type: ignore[call-arg]
     assert s.ui_base_url == "https://app.example.com"
+
+
+def test_the_row_keeps_who_asked_for_it(session_with_telegram_ref: Session) -> None:
+    """The scheduler runs a teammate's row as that teammate
+    (`scheduler.runner._run_teammate_followup`), so the row must say who."""
+    from openexecutive.memory.episodic import get_scheduled_action
+
+    session_with_telegram_ref.caller_person_id = 7
+    payload = _call({
+        "workflow_name": "board_prep",
+        "run_at": _future_iso(),
+        "channel": "telegram",
+        "channel_ref": "42",
+        "reason": "Board meets soon.",
+    })
+    row = get_scheduled_action(payload["id"])
+    assert row is not None and row.created_by_person_id == 7

@@ -2,18 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from openexecutive.audit import logger as audit_logger_module
+from openexecutive.audit.logger import AuditLogger
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
-from openexecutive.departments.models import AuthorityLevel
+from openexecutive.departments.models import AuthorityLevel, DepartmentState
 from openexecutive.memory import episodic
 from openexecutive.workflows.department_check_in import (
     DepartmentCheckInInput,
     DepartmentCheckInWorkflow,
+    needs_check_in,
 )
 
 
@@ -509,3 +513,222 @@ def test_workflow_empty_narrative_does_not_leak_raw_json_into_artifact() -> None
     assert after is not None
     assert after.status == "at_risk"
     assert after.last_reviewed_at != ""
+
+
+# --------------------------------------------------------------------------- #
+# needs_check_in — the skip rule the scheduler applies before creating a run
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def audit_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AuditLogger:
+    """A per-test audit log. Autouse: Goal writes mirror to Honcho, which
+    audits, and would otherwise create ./episodic_memory.db."""
+    al = AuditLogger(tmp_path / "audit.db")
+    monkeypatch.setattr(audit_logger_module, "get_audit_logger", lambda: al)
+    return al
+
+
+def _finance() -> DepartmentState:
+    state = dept_store.get_department("finance")
+    assert state is not None
+    return state
+
+
+def _add_goal() -> int:
+    """A Goal last edited four days ago, so only what a test adds is "new"."""
+    goal_id = dept_store.insert_goal(
+        "finance", period_value="Q3 2026", key_result="Close the round", target="$2M",
+    )
+    edited = (datetime.now(UTC) - timedelta(days=4)).isoformat()
+    with dept_store._get_conn(None) as conn:
+        conn.execute(
+            "UPDATE department_goals SET created_at = ?, updated_at = ? WHERE id = ?",
+            (edited, edited, goal_id),
+        )
+    return goal_id
+
+
+def _review_all(at: datetime) -> None:
+    for goal in _finance().goals:
+        assert goal.id is not None
+        dept_store.record_goal_review(goal.id, status="on_track", last_reviewed_at=at.isoformat())
+
+
+def test_needs_check_in_skips_an_informational_department() -> None:
+    _add_goal()
+    state = _finance()
+    state = state.model_copy(
+        update={"config": state.config.model_copy(update={"specialist_key": None})}
+    )
+    reason = needs_check_in(state, datetime.now(UTC))
+    assert reason is not None and "no specialist" in reason
+
+
+def test_needs_check_in_skips_a_department_without_goals() -> None:
+    reason = needs_check_in(_finance(), datetime.now(UTC))
+    assert reason is not None and "no Goals" in reason
+
+
+def test_needs_check_in_runs_when_a_goal_was_never_reviewed() -> None:
+    _add_goal()
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_needs_check_in_skips_when_nothing_is_new(audit_db: AuditLogger) -> None:
+    _add_goal()
+    _review_all(datetime.now(UTC) + timedelta(seconds=1))
+    # The check-in's own review row lands after the stamp; it is not news.
+    audit_db.log(
+        "goal_status_review", "Finance: reviewed 1 goal(s)",
+        actor="department_check_in", department="finance",
+    )
+    # Activity in another department is not news for this one.
+    audit_db.log("tool_invocation", "sales goal edit", actor="executive", department="sales")
+
+    reason = needs_check_in(_finance(), datetime.now(UTC))
+    assert reason is not None and "nothing new" in reason
+
+
+def test_needs_check_in_runs_after_a_department_audit_row(audit_db: AuditLogger) -> None:
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    audit_db.log(
+        "tool_invocation", "update_department_goal finance", actor="executive",
+        department="finance",
+    )
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_needs_check_in_ignores_rows_before_the_review(audit_db: AuditLogger) -> None:
+    _add_goal()
+    audit_db.log(
+        "tool_invocation", "update_department_goal finance", actor="executive",
+        department="finance",
+    )
+    _review_all(datetime.now(UTC) + timedelta(seconds=1))
+    assert needs_check_in(_finance(), datetime.now(UTC)) is not None
+
+
+def test_needs_check_in_runs_after_a_goal_content_edit(audit_db: AuditLogger) -> None:
+    goal_id = _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    dept_store.update_goal(goal_id, current="$1.2M committed")
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_needs_check_in_runs_after_a_department_decision(audit_db: AuditLogger) -> None:
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    episodic.store_decision(
+        domain="finance", summary="Move the close to October", department="finance",
+        db_path=episodic.DB_PATH,
+    )
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_needs_check_in_sees_a_decision_beyond_the_newest_page(audit_db: AuditLogger) -> None:
+    """The department's decision is filtered in SQL, so a busy week of other
+    departments' decisions cannot push it out of view."""
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    episodic.store_decision(
+        domain="finance", summary="Move the close to October", department="finance",
+        db_path=episodic.DB_PATH,
+    )
+    for n in range(60):
+        episodic.store_decision(
+            domain="sales", summary=f"Sales call outcome {n}", department="sales",
+            db_path=episodic.DB_PATH,
+        )
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_needs_check_in_ignores_another_departments_decision(audit_db: AuditLogger) -> None:
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    episodic.store_decision(
+        domain="sales", summary="New pricing tier", department="sales",
+        db_path=episodic.DB_PATH,
+    )
+    assert needs_check_in(_finance(), datetime.now(UTC)) is not None
+
+
+def test_needs_check_in_uses_the_oldest_review(audit_db: AuditLogger) -> None:
+    """A Goal last graded before the newest activity still gets re-graded."""
+    _add_goal()
+    _add_goal()
+    first, second = _finance().goals
+    assert first.id is not None and second.id is not None
+    now = datetime.now(UTC)
+    dept_store.record_goal_review(
+        first.id, status="on_track", last_reviewed_at=(now - timedelta(days=3)).isoformat(),
+    )
+    audit_db.log("tool_invocation", "finance note", actor="executive", department="finance")
+    dept_store.record_goal_review(
+        second.id, status="on_track", last_reviewed_at=(now + timedelta(seconds=1)).isoformat(),
+    )
+    assert needs_check_in(_finance(), now) is None
+
+
+def test_check_in_never_reads_a_row_private_to_the_principal(audit_db: AuditLogger) -> None:
+    """The check-in reports to the department, so the recent activity it
+    hands the specialist leaves out rows only the principal may read."""
+    _add_goal()
+    audit_db.log("tool_invocation", "finance note: runway review booked",
+                 actor="executive", department="finance")
+    audit_db.log("tool_invocation", "finance note: Jordan Client asked for a discount",
+                 actor="executive", department="finance", private=True)
+    specialist = AsyncMock(return_value=_FAKE_SPECIALIST_RESPONSE)
+
+    async def _collect() -> None:
+        workflow = DepartmentCheckInWorkflow()
+        inputs = DepartmentCheckInInput(department_slug="finance", period_label="2026-05-21")
+        async for _event in workflow.run(inputs=inputs, store=MagicMock()):
+            pass
+
+    with (
+        patch("openexecutive.orchestrator.router.route_to_specialist", specialist),
+        patch("openexecutive.knowledge.retriever.retrieve", return_value=""),
+    ):
+        asyncio.run(_collect())
+
+    queries = " ".join(str(c.kwargs.get("query", "")) for c in specialist.call_args_list)
+    assert "runway review booked" in queries
+    assert "Jordan Client" not in queries
+
+
+def test_needs_check_in_ignores_a_row_private_to_the_principal(audit_db: AuditLogger) -> None:
+    """Whether the check-in runs is seen by the department, so a row only the
+    principal may read must not decide it."""
+    _add_goal()
+    _review_all(datetime.now(UTC) - timedelta(hours=1))
+    audit_db.log("tool_invocation", "finance note: Jordan Client asked for a discount",
+                 actor="executive", department="finance", private=True)
+    assert needs_check_in(_finance(), datetime.now(UTC)) is not None
+    audit_db.log("tool_invocation", "finance note: runway review booked",
+                 actor="executive", department="finance")
+    assert needs_check_in(_finance(), datetime.now(UTC)) is None
+
+
+def test_render_goals_omits_an_empty_target() -> None:
+    """A goal added with only its text renders without a dangling
+    "— target: " in the check-in prompt; one with a target keeps it."""
+    from openexecutive.workflows.department_check_in import _render_goals
+
+    dept_store.insert_goal(
+        "finance", period_type="quarter", period_value="Q3 2026",
+        key_result="Close Series A", target="",
+    )
+    dept_store.insert_goal(
+        "finance", period_type="quarter", period_value="Q3 2026",
+        key_result="Cut burn", target="$200K/mo", current="$260K/mo",
+    )
+    dept_registry.invalidate()
+    state = dept_registry.get_state("finance")
+    rendered = _render_goals(state)
+    no_target = next(line for line in rendered.splitlines() if "Close Series A" in line)
+    assert "target:" not in no_target
+    assert no_target.endswith("Close Series A (quarter Q3 2026)")
+    with_target = next(line for line in rendered.splitlines() if "Cut burn" in line)
+    assert "Cut burn — target: $200K/mo (current: $260K/mo) (quarter Q3 2026)" in with_target

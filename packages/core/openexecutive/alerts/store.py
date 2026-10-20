@@ -8,6 +8,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from openexecutive.alerts.models import (
     Alert,
@@ -84,6 +85,19 @@ def initialize_db(db_path: Path | None = None) -> None:
             ("superseded_by_alert_id", "INTEGER"),
             ("snoozed_until", "TEXT"),
             ("suggested_workflow", "TEXT NOT NULL DEFAULT ''"),
+            # Artifact formats (orchestrator/artifact_formats.py). Only
+            # meaningful for source='artifact' rows; `body` holds the stored
+            # text for the format, the link url/label live beside it, and
+            # `supersedes_id` is the composite id of the version this row
+            # revised ('alert:<n>' / 'run:<hex>').
+            ("artifact_format", "TEXT NOT NULL DEFAULT 'markdown'"),
+            ("artifact_url", "TEXT"),
+            ("artifact_link_label", "TEXT"),
+            ("supersedes_id", "TEXT"),
+            # Whose document a drafted artifact is: the person whose
+            # conversation published it (orchestrator/artifact_records.py).
+            # NULL on a draft = the principal's.
+            ("owner_person_id", "INTEGER"),
         ):
             if col not in existing:
                 try:
@@ -91,6 +105,13 @@ def initialize_db(db_path: Path | None = None) -> None:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column" not in str(exc).lower():
                         raise
+        if "owner_person_id" not in existing:
+            # Drafts written before ownership went to the principal's queue:
+            # whoever they were routed to keeps them.
+            conn.execute(
+                "UPDATE alerts SET owner_person_id = routed_to_person_id "
+                "WHERE source = 'artifact' AND owner_person_id IS NULL"
+            )
         conn.executescript("""
 
             CREATE TABLE IF NOT EXISTS mute_topics (
@@ -110,6 +131,10 @@ def initialize_db(db_path: Path | None = None) -> None:
             );
 
         """)
+        # Who approved which card, and what came of it (alerts/approvals.py).
+        from openexecutive.alerts.approvals import ensure_schema as ensure_approvals_schema
+
+        ensure_approvals_schema(conn)
 
 
 def _now() -> str:
@@ -135,6 +160,11 @@ def insert_alert(
     topic_tags: list[str] | None = None,
     dedup_key: str = "",
     routed_to_person_id: int | None = None,
+    artifact_format: str = "markdown",
+    artifact_url: str | None = None,
+    artifact_link_label: str | None = None,
+    supersedes_id: str | None = None,
+    owner_person_id: int | None = None,
     db_path: Path | None = None,
 ) -> int | None:
     """Insert a new alert. Returns alert id, or None if a duplicate was skipped."""
@@ -144,8 +174,10 @@ def insert_alert(
             """
             INSERT OR IGNORE INTO alerts
                 (external_id, source, severity, headline, body, suggested_action,
-                 topic_tags, dedup_key, status, created_at, routed_to_person_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?)
+                 topic_tags, dedup_key, status, created_at, routed_to_person_id,
+                 artifact_format, artifact_url, artifact_link_label, supersedes_id,
+                 owner_person_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 external_id,
@@ -158,6 +190,11 @@ def insert_alert(
                 dedup_key,
                 _now(),
                 routed_to_person_id,
+                artifact_format,
+                artifact_url,
+                artifact_link_label,
+                supersedes_id,
+                owner_person_id,
             ),
         )
         if cursor.rowcount == 0:
@@ -217,6 +254,47 @@ def list_alerts(
     return [_row_to_alert(r) for r in rows]
 
 
+def _like_escape(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def search_alerts(
+    query: str,
+    limit: int = 10,
+    db_path: Path | None = None,
+    exclude_source: str | None = None,
+) -> list[Alert]:
+    """Alerts of any status whose headline or body contains every word of
+    ``query`` (case-insensitive, any order), newest first.
+
+    The match runs in SQL so an old row is as findable as a new one; the
+    words are LIKE-escaped, so ``%`` and ``_`` in a query match literally.
+    An empty query returns nothing rather than the whole store.
+    """
+    words = query.split()
+    if not words or not _resolve_db_path(db_path).exists():
+        return []
+    clauses: list[str] = []
+    params: list[object] = []
+    for word in words:
+        pattern = f"%{_like_escape(word.lower())}%"
+        clauses.append(
+            "(LOWER(headline) LIKE ? ESCAPE '\\' OR LOWER(body) LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern, pattern])
+    if exclude_source:
+        clauses.append("source != ?")
+        params.append(exclude_source)
+    params.append(limit)
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM alerts WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [_row_to_alert(r) for r in rows]
+
+
 def recent_alerts(
     limit: int = 20,
     db_path: Path | None = None,
@@ -228,7 +306,12 @@ def recent_alerts(
 
 
 def list_artifact_alerts(
-    limit: int = 200, db_path: Path | None = None, archived: bool = False
+    limit: int = 200,
+    db_path: Path | None = None,
+    archived: bool = False,
+    *,
+    owner_person_id: int | None,
+    include_unowned: bool = False,
 ) -> list[Alert]:
     """Alerts authored via `draft_artifact` (source='artifact'), newest first.
 
@@ -237,20 +320,35 @@ def list_artifact_alerts(
     out of the `/today` queue — surfacing it is the whole point of the
     Artifacts section (the row persists; `set_status` never deletes it).
 
+    Only one person's drafts: those `owner_person_id` owns, plus the ones
+    with no owner when `include_unowned` (the principal's, see
+    `orchestrator/artifact_records.py`). No owner and no unowned is nothing.
+
     `archived` selects which slice to return: the default (False) lists only
     active artifacts (`archived_at IS NULL`); True lists only archived ones,
     so the gallery's Active / Archived views are clean swaps, not supersets.
     """
     if not _resolve_db_path(db_path).exists():
         return []
+    owners: list[str] = []
+    params: list[Any] = []
+    if owner_person_id is not None:
+        owners.append("owner_person_id = ?")
+        params.append(owner_person_id)
+    if include_unowned:
+        owners.append("owner_person_id IS NULL")
+    if not owners:
+        return []
     archived_clause = (
         "AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL"
     )
+    params.append(limit)
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             f"SELECT * FROM alerts WHERE source = 'artifact' {archived_clause} "
+            f"AND ({' OR '.join(owners)}) "
             "ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+            params,
         ).fetchall()
     return [_row_to_alert(r) for r in rows]
 
@@ -259,6 +357,20 @@ def set_status(alert_id: int, status: str, db_path: Path | None = None) -> bool:
     with _get_conn(db_path) as conn:
         cursor = conn.execute(
             "UPDATE alerts SET status = ? WHERE id = ?", (status, alert_id)
+        )
+        return cursor.rowcount > 0
+
+
+def set_snoozed_until(
+    alert_id: int, until: str | None, db_path: Path | None = None
+) -> bool:
+    """Hide an ``unread`` alert from the live queue until ``until`` (ISO), or
+    clear the snooze with ``None``. Returns False when the row is missing or
+    no longer ``unread`` (a closed card has nothing to snooze)."""
+    with _get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE alerts SET snoozed_until = ? WHERE id = ? AND status = 'unread'",
+            (until, alert_id),
         )
         return cursor.rowcount > 0
 
@@ -331,9 +443,13 @@ def bulk_set_status(
     category: str | None = None,
     only_status: str | None = "unread",
     exclude_sources: tuple[str, ...] = (),
+    exclude_private: bool = False,
     db_path: Path | None = None,
 ) -> list[int]:
     """Set ``status`` on many alerts at once. Returns the ids updated.
+
+    ``exclude_private`` leaves alerts private to the principal
+    (``models.PRIVATE_ALERT_TAG``) untouched — for a caller who is not them.
 
     Selects candidates by explicit ``alert_ids`` and/or ``created_at <
     before`` (ISO), restricted to ``only_status`` (default ``unread``; pass
@@ -372,6 +488,10 @@ def bulk_set_status(
         conn.execute("BEGIN IMMEDIATE")  # select + update under one write lock
         rows = conn.execute(f"SELECT * FROM alerts WHERE {where}", params).fetchall()
         targets = [_row_to_alert(r) for r in rows]
+        if exclude_private:
+            from openexecutive.alerts.models import is_private_alert
+
+            targets = [a for a in targets if not is_private_alert(a)]
         if category:
             from openexecutive.briefing.ranking import categorize
 
@@ -578,6 +698,22 @@ def get_alert_by_external(
             (source, external_id),
         ).fetchone()
     return _row_to_alert(row) if row else None
+
+
+def has_open_alert(source: str, dedup_key: str, db_path: Path | None = None) -> bool:
+    """True when an ``unread`` alert with this ``(source, dedup_key)`` exists —
+    the row ``coalesce_alert`` would fold a repeat into. Read-only: lets a
+    caller that re-evaluates every few minutes leave an open card alone
+    instead of bumping its occurrence count each pass."""
+    if not dedup_key or not _resolve_db_path(db_path).exists():
+        return False
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM alerts WHERE source = ? AND dedup_key = ? "
+            "AND status = 'unread' LIMIT 1",
+            (source, dedup_key),
+        ).fetchone()
+    return row is not None
 
 
 def set_status_by_external(

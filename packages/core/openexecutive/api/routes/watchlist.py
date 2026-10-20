@@ -14,12 +14,14 @@ import logging
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from openexecutive.alerts.models import AlertSeverity
+from openexecutive.api import caller as api_caller
 from openexecutive.audit import log_event as audit_log
 from openexecutive.monitoring import store as ms
+from openexecutive.monitoring.describe import DescribeError, WatchDraft, describe_watch
 from openexecutive.monitoring.models import (
     DECLINE_KIND_EXPLICIT,
     DECLINE_REASON_NOT_RELEVANT,
@@ -33,6 +35,7 @@ from openexecutive.monitoring.models import (
     is_valid_cadence,
     is_valid_mode,
 )
+from openexecutive.monitoring.noise import WatchNoise, quiet_noise_nudge, watch_noise
 from openexecutive.monitoring.sources import list_registered_kinds
 from openexecutive.monitoring.target_validation import (
     WatchlistTargetError,
@@ -40,6 +43,7 @@ from openexecutive.monitoring.target_validation import (
 )
 from openexecutive.monitoring.validation import (
     VALID_SEVERITY_VALUES,
+    display_label_config,
     is_valid_watchlist_slug,
     normalize_target,
 )
@@ -94,6 +98,23 @@ class WatchlistPatch(BaseModel):
     severity_ceiling: str | None = None
     trigger: dict[str, Any] | None = None
     notes: str | None = Field(default=None, max_length=500)
+    # Stop asking whether this watch is too noisy, for the alerts it has
+    # raised so far (monitoring.noise).
+    quiet_noise_nudge: bool | None = None
+
+
+class WatchlistDescribe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Bounded in the route, not with max_length, so a 422 never echoes it.
+    text: str = ""
+
+
+class WatchlistDetail(WatchlistItem):
+    """One watch plus how noisy its recent alerts were (the detail page's
+    "only tell you about bigger changes?" line)."""
+
+    noise: WatchNoise = Field(default_factory=WatchNoise)
 
 
 class DeclineBody(BaseModel):
@@ -155,12 +176,12 @@ def list_watchlist(
     return ms.list_watchlist(enabled_only=enabled_only, signal_type=signal_type)
 
 
-@router.get("/watchlist/{slug}", response_model=WatchlistItem)
-def get_watchlist_entry(slug: str) -> WatchlistItem:
+@router.get("/watchlist/{slug}", response_model=WatchlistDetail)
+def get_watchlist_entry(slug: str) -> WatchlistDetail:
     item = ms.get_watchlist_item_by_slug(slug)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Watchlist entry {slug!r} not found")
-    return item
+    return WatchlistDetail(**item.model_dump(), noise=watch_noise(item))
 
 
 @router.get("/watchlist/{slug}/signals", response_model=list[SignalRow])
@@ -177,6 +198,21 @@ def get_watchlist_signals(slug: str, limit: int = _SIGNALS_DEFAULT_LIMIT) -> lis
 # --------------------------------------------------------------------------- #
 # Mutation routes
 # --------------------------------------------------------------------------- #
+
+
+_DESCRIBE_STATUS = {"too_many": 429, "timeout": 504, "unavailable": 502}
+
+
+@router.post("/watchlist/describe", response_model=WatchDraft)
+async def describe_watchlist_entry(body: WatchlistDescribe, request: Request) -> WatchDraft:
+    """Draft a watch from a sentence ("tell me if Initech's stock moves more
+    than 8%"). Nothing is saved: the UI shows the draft in plain words and
+    POSTs it to ``/watchlist`` once the person says Start watching. A
+    request that can't become a watch is a 422 with a plain reason."""
+    try:
+        return await describe_watch(body.text, caller_key=api_caller.caller(request).email)
+    except DescribeError as exc:
+        raise HTTPException(status_code=_DESCRIBE_STATUS.get(exc.code, 422), detail=exc.message) from exc
 
 
 @router.post(
@@ -221,13 +257,8 @@ async def create_watchlist_entry(body: WatchlistCreate) -> WatchlistItem:
         )
 
     config: dict[str, Any] = dict(body.config)
-    if body.display_label:
-        if signal_type == "vendor_status":
-            config.setdefault("vendor_label", body.display_label)
-        elif signal_type == "rss":
-            config.setdefault("feed_label", body.display_label)
-        elif signal_type == "stock":
-            config.setdefault("display_name", body.display_label)
+    for key, value in display_label_config(signal_type, body.display_label).items():
+        config.setdefault(key, value)
 
     # Insert-time validation: a non-feed rss target is converted to a
     # page_watch (when the page has readable text) or rejected, so a dead
@@ -348,15 +379,20 @@ def patch_watchlist_entry(slug: str, body: WatchlistPatch) -> WatchlistItem:
     if "notes" in raw and body.notes is not None:
         fields["notes"] = body.notes[:500]
         changes.append("notes updated")
+    quiet_nudge = bool(body.quiet_noise_nudge)
 
-    if not fields:
+    if not fields and not quiet_nudge:
         raise HTTPException(
             status_code=400,
             detail="nothing to change — pass at least one tunable field",
         )
 
     try:
-        ms.update_watchlist_fields(item.id, fields)
+        if fields:
+            ms.update_watchlist_fields(item.id, fields)
+        if quiet_nudge:
+            quiet_noise_nudge(item)
+            changes.append("noise question answered")
     except Exception as exc:
         _audit(
             "watchlist.patch", False,

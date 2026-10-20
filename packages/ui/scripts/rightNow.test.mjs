@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { clockLabel, isNewSince, newSinceLabel, seenBaseline } from "../src/lib/rightNow.ts";
+
+const at = (h, m) => {
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d;
+};
+
+test("clockLabel formats a 12-hour time", () => {
+  assert.equal(clockLabel(at(14, 5).toISOString()), "2:05 PM");
+  assert.equal(clockLabel(at(0, 30).toISOString()), "12:30 AM");
+  assert.equal(clockLabel(null), null);
+  assert.equal(clockLabel("nope"), null);
+});
+
+test("only a look earlier today is a baseline", () => {
+  const now = at(15, 0);
+  assert.equal(seenBaseline(at(11, 5).toISOString(), now)?.getTime(), at(11, 5).getTime());
+  const yesterday = new Date(now.getTime() - 86_400_000);
+  assert.equal(seenBaseline(yesterday.toISOString(), now), null);
+  assert.equal(seenBaseline(null, now), null);
+});
+
+test("points after the baseline are new", () => {
+  const baseline = at(11, 5);
+  const points = [
+    { text: "a", since: at(14, 31).toISOString() },
+    { text: "b", since: at(13, 50).toISOString() },
+    { text: "c", since: at(8, 0).toISOString() },
+    { text: "d", since: null },
+  ];
+  assert.deepEqual(points.map((p) => isNewSince(p, baseline)), [true, true, false, false]);
+  assert.equal(newSinceLabel(points, baseline), "2 new since 11:05 AM");
+  assert.equal(newSinceLabel(points, null), null);
+  assert.equal(newSinceLabel(points.slice(2), baseline), null);
+});

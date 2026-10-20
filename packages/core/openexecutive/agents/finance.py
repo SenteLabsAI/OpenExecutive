@@ -5,6 +5,7 @@ from openexecutive.config import get_settings
 class FinanceAgent(BaseAgent):
     name = "cfo"
     domain = "finance"
+    visibility = "core"
     use_deep_reasoning = True
 
     @property

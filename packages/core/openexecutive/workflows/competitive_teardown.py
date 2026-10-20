@@ -22,6 +22,7 @@ from openexecutive.workflows.base import (
     WorkflowSection,
     WorkflowStepDef,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
 _CT_EXAMPLE_COMPETITOR = (
     "Hex — series-C-funded data tool, ~$150M ARR, strong in the "
@@ -95,6 +96,7 @@ class CompetitiveTeardownWorkflow(Workflow):
     )
     section = WorkflowSection.GROWTH
     estimated_minutes = 4
+    playbooks = ("competitive-teardown",)
 
     def input_model(self) -> type[BaseModel]:
         return CompetitiveTeardownInput
@@ -151,6 +153,7 @@ class CompetitiveTeardownWorkflow(Workflow):
 
         yield WorkflowEvent(type="step_start", step_id="context", step_title="Load context")
         ctx.profile = load_or_create_profile()
+        ctx.playbook = load_playbook("competitive-teardown")
         ctx.rag = retrieve(
             query=f"competitive positioning differentiation {ctx.inputs.competitor}",
             specialist_name="cso",
@@ -241,6 +244,7 @@ class _CTCtx:
     def __init__(self, inputs: CompetitiveTeardownInput) -> None:
         self.inputs = inputs
         self.profile: CompanyProfile | None = None
+        self.playbook: str = ""
         self.rag: str = ""
         self.positioning: str = ""
         self.product: str = ""
@@ -292,6 +296,9 @@ def _build_positioning_prompt(ctx: _CTCtx) -> str:
         "Discipline: cite specific product / launch / hire details. Do "
         "NOT invent press quotes or revenue figures. If the inputs don't "
         "support a claim, say 'unclear from public data'."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Apply the parts of this competitive-teardown playbook that cover this section",
     )
 
 
@@ -318,6 +325,9 @@ def _build_product_prompt(ctx: _CTCtx) -> str:
         "Discipline: name specific product capabilities, not abstractions. "
         "If you're not sure about a capability, mark it '[verify in next "
         "competitive review]' rather than guess."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Apply the parts of this competitive-teardown playbook that cover this section",
     )
 
 
@@ -346,6 +356,9 @@ def _build_counter_prompt(ctx: _CTCtx) -> str:
         "Discipline: do NOT badmouth the competitor. Reps repeating "
         "trash-talk in customer meetings makes us look insecure. "
         "Frame around buyer outcomes, not competitor flaws."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Apply the parts of this competitive-teardown playbook that cover this section",
     )
 
 
@@ -370,6 +383,9 @@ def _build_battlecard_prompt(ctx: _CTCtx) -> str:
         "is 'very', we win.\n\n"
         "Discipline: every line must be usable in a live sales conversation. "
         "If a line would only be useful with internal explanation, cut it."
+    ) + playbook_clause(
+        ctx.playbook,
+        "Apply the parts of this competitive-teardown playbook that cover this section",
     )
 
 

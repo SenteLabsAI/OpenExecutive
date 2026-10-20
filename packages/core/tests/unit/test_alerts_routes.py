@@ -134,7 +134,12 @@ def test_bulk_ack_teaches_the_watch_like_a_single_dismiss(client: TestClient, db
     assert item is not None and item.dismiss_count == 2 and item.trust_score == pytest.approx(0.64)
 
 
-def test_reopen_brings_a_closed_alert_back(client: TestClient, db: Path) -> None:
+def test_reopen_brings_a_closed_alert_back(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: Viewer(person_id=7))
     aid = _insert(db, "closed")
     alert_store.set_status(aid, "expired", db_path=db)
     alert_store.set_review(aid, verdict="likely_stale", note="x", db_path=db)
@@ -147,6 +152,60 @@ def test_reopen_brings_a_closed_alert_back(client: TestClient, db: Path) -> None
     acked = _insert(db, "approved")
     alert_store.set_status(acked, "ack", db_path=db)
     assert client.post(f"/alerts/{acked}/reopen").status_code == 409
-    art = _insert(db, "doc", source="artifact", topic_tags=["artifact"])
+    art = _insert(db, "doc", source="artifact", topic_tags=["artifact"], owner_person_id=7)
     alert_store.set_status(art, "dismissed", db_path=db)
     assert client.post(f"/alerts/{art}/reopen").status_code == 409
+
+
+def test_someone_elses_drafted_artifact_is_not_found(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.artifact_records import Viewer
+
+    theirs = _insert(db, "their doc", source="artifact", topic_tags=["artifact"], owner_person_id=8)
+    principals = _insert(db, "principal doc", source="artifact", topic_tags=["artifact"])
+    # Not even the principal sees a teammate's document; nobody but the
+    # principal sees one with no owner.
+    for viewer, hidden in (
+        (Viewer(person_id=1, is_principal=True), theirs),
+        (Viewer(person_id=7), principals),
+        (Viewer(person_id=None), theirs),
+    ):
+        monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request, v=viewer: v)
+        res = client.post(f"/alerts/{hidden}/ack", json={"status": "dismissed"})
+        assert res.status_code == 404
+    assert alert_store.get_alert(theirs, db_path=db).status == "unread"  # type: ignore[union-attr]
+    monkeypatch.setattr(alerts_route, "_caller_viewer", lambda request: Viewer(person_id=8))
+    res = client.post(f"/alerts/{theirs}/ack", json={"status": "dismissed"})
+    assert res.status_code == 200 and res.json()["status"] == "dismissed"
+
+
+def test_snooze_hides_a_card_until_then_and_undo_brings_it_back(
+    client: TestClient, db: Path
+) -> None:
+    aid = _insert(db, "payout late")
+    until = (datetime.now(UTC) + timedelta(hours=3)).isoformat()
+    res = client.post(f"/alerts/{aid}/snooze", json={"until": until})
+    assert res.status_code == 200 and res.json()["snoozed_until"] is not None
+    assert aid not in {a.id for a in lifecycle.list_live_alerts(db_path=db)}
+
+    res = client.post(f"/alerts/{aid}/snooze", json={"until": None})
+    assert res.status_code == 200 and res.json()["snoozed_until"] is None
+    assert aid in {a.id for a in lifecycle.list_live_alerts(db_path=db)}
+
+
+def test_snooze_refuses_past_too_far_closed_and_roster_cards(
+    client: TestClient, db: Path
+) -> None:
+    aid = _insert(db, "open")
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    far = (datetime.now(UTC) + timedelta(days=31)).isoformat()
+    assert client.post(f"/alerts/{aid}/snooze", json={"until": past}).status_code == 422
+    assert client.post(f"/alerts/{aid}/snooze", json={"until": far}).status_code == 422
+    soon = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    closed = _insert(db, "closed")
+    alert_store.set_status(closed, "dismissed", db_path=db)
+    assert client.post(f"/alerts/{closed}/snooze", json={"until": soon}).status_code == 409
+    roster = _insert(db, "who is this", source="roster_request")
+    assert client.post(f"/alerts/{roster}/snooze", json={"until": soon}).status_code == 409
+    assert client.post("/alerts/9999/snooze", json={"until": soon}).status_code == 404

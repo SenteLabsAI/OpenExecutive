@@ -15,7 +15,8 @@ the hardcoded ``OPENROUTER_MODELS`` snapshot when nothing has been loaded.
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import replace
+from typing import Any, Literal, TypedDict
 
 from fastapi import HTTPException
 
@@ -31,8 +32,12 @@ from openexecutive.providers.provider import LLMProvider
 # Anthropic-direct slugs — used as canonical model names everywhere in
 # the codebase (config defaults, agent class defaults, override DB).
 ANTHROPIC_DIRECT_MODELS: list[str] = [
+    "claude-fable-5-1",
+    "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
+    "claude-haiku-5-5",
     "claude-haiku-4-5",
 ]
 
@@ -228,6 +233,88 @@ def allowed_models_for(agent_id: str | None) -> list[str]:
     return allowed_models()
 
 
+# Display names for the provider keys ``model_options_for`` emits. A vendor
+# missing here (a new OPENROUTER_CATALOG_PROVIDERS entry) shows its raw
+# OpenRouter prefix, which is still a usable group name.
+_PROVIDER_LABELS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google",
+    "meta-llama": "Meta",
+    "deepseek": "DeepSeek",
+    "x-ai": "xAI",
+    "mistralai": "Mistral",
+    "qwen": "Qwen",
+    "local": "Local",
+}
+# ``anthropic/claude-opus-4.8`` → family ``opus``, version ``4.8``.
+_OPENROUTER_CLAUDE_SLUG_RE = re.compile(
+    r"^anthropic/claude-(?P<family>[a-z]+)-(?P<version>\d{1,3}(?:\.\d{1,3})?)$"
+)
+
+
+ModelRoute = Literal["direct", "openrouter", "local"]
+
+
+class ModelOption(TypedDict):
+    id: str
+    provider: str
+    provider_label: str
+    route: ModelRoute
+    label: str
+
+
+def _claude_label(model: str) -> str | None:
+    """``claude-opus-5-5`` / ``anthropic/claude-opus-5.5`` → ``Claude Opus 5.5``."""
+    slug = openrouter_slug_for_claude(model) or model
+    m = _OPENROUTER_CLAUDE_SLUG_RE.match(slug)
+    if m is None:
+        return None
+    return f"Claude {m.group('family').capitalize()} {m.group('version')}"
+
+
+def _model_option(model: str, *, local: bool, openrouter_enabled: bool) -> ModelOption:
+    """Provider grouping + display name for one allowlisted model.
+
+    ``route`` mirrors ``get_provider``: local slugs stay local, Claude ids
+    go direct unless OpenRouter is on, everything else is OpenRouter.
+    """
+    route: ModelRoute
+    if local:
+        provider, route, label = "local", "local", model
+    elif _is_claude(model):
+        provider = "anthropic"
+        route = "openrouter" if openrouter_enabled else "direct"
+        label = _claude_label(model) or model
+    else:
+        vendor, sep, name = model.partition("/")
+        provider = vendor if sep else "other"
+        route = "openrouter"
+        label = (_claude_label(model) if provider == "anthropic" else None) or name or model
+    return {
+        "id": model,
+        "provider": provider,
+        "provider_label": _PROVIDER_LABELS.get(provider, provider),
+        "route": route,
+        "label": label,
+    }
+
+
+def model_options_for(agent_id: str | None) -> list[ModelOption]:
+    """``allowed_models_for(agent_id)`` annotated for the Council's
+    Provider → Model picker. Same ids, same order — the flat list stays the
+    PATCH validator's source of truth; this only adds grouping and labels.
+    """
+    settings = get_settings()
+    local = set(_local_models(settings))
+    return [
+        _model_option(
+            m, local=m in local, openrouter_enabled=bool(settings.openrouter_enabled)
+        )
+        for m in allowed_models_for(agent_id)
+    ]
+
+
 def _is_claude(model: str) -> bool:
     """Any Anthropic-direct Claude id, not just the current trio.
 
@@ -311,8 +398,15 @@ def _local() -> OpenAICompatibleProvider:
         # Local models get the tools-only spec: no cache_control, thinking,
         # or web_search — a self-hosted OpenAI-compatible server has no
         # search tool and would 400 (or silently ignore) the rest.
+        # PDFs only when the operator says the server takes them
+        # (LOCAL_PDF_INPUT, e.g. OpenAI's own API); otherwise the gate
+        # replaces a PDF with a note and pdf_reader OCRs it locally instead.
+        local_spec = replace(
+            _LOCAL_FEATURE_SPEC,
+            supports_pdf_input=bool(getattr(settings, "local_pdf_input", False)),
+        )
         spec_lookup: dict[str, FeatureSpec] = {
-            m: _LOCAL_FEATURE_SPEC for m in _local_models(settings)
+            m: local_spec for m in _local_models(settings)
         }
         _local_provider = OpenAICompatibleProvider(
             base_url=base_url,
@@ -322,6 +416,7 @@ def _local() -> OpenAICompatibleProvider:
             include_usage_accounting=getattr(
                 settings, "local_include_usage_accounting", False
             ),
+            reasoning_effort=getattr(settings, "local_reasoning_effort", None),
         )
     return _local_provider
 
@@ -391,6 +486,23 @@ def get_provider(model: str) -> LLMProvider:
             ),
         )
     return wrap_provider(_openrouter(), "openrouter")
+
+
+def pdf_input_supported(model: str) -> bool:
+    """Whether a PDF ``document`` block sent to ``model`` reaches a reader.
+
+    Mirrors ``get_provider``'s routing without building anything: a local
+    slug reads PDFs only with LOCAL_PDF_INPUT; a Claude id reads them
+    natively on Anthropic (when a key is set) or through OpenRouter; any
+    other slug goes to OpenRouter, whose file-parser handles every model.
+    False when the model has no reachable provider at all.
+    """
+    settings = get_settings()
+    if model in _local_models(settings):
+        return bool(getattr(settings, "local_pdf_input", False))
+    if settings.openrouter_enabled:
+        return True
+    return _is_claude(model) and bool(settings.anthropic_api_key)
 
 
 def _reset_for_tests() -> None:

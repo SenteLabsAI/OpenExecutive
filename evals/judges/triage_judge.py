@@ -9,10 +9,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import anthropic
-
-JUDGE_MODEL = "claude-opus-4-7"
-
 
 def _format_decision(decision: dict[str, Any]) -> str:
     return (
@@ -61,11 +57,8 @@ def _format_expected(expected: dict[str, Any]) -> str:
 async def judge_triage(
     scenario: dict[str, Any],
     decision: dict[str, Any],
-    client: anthropic.AsyncAnthropic | None = None,
 ) -> dict[str, Any]:
-    from openexecutive.providers.anthropic_provider import configured_async_client
-
-    cli = client or configured_async_client()
+    from openexecutive.evals.judges import judge_message
 
     judge_prompt = f"""You are an evaluator for a Triage agent that decides whether incoming
 events (emails, Slack messages, documents) should fire proactive alerts to a
@@ -99,13 +92,7 @@ Respond in JSON:
 {{"severity_accuracy": N, "channel_appropriateness": N, "dedup_correctness": N, "overall": N, "notes": "brief explanation"}}
 """
 
-    message = await cli.messages.create(
-        model=JUDGE_MODEL,
-        max_tokens=500,
-        messages=[{"role": "user", "content": judge_prompt}],
-    )
-
-    text = message.content[0].text  # type: ignore[union-attr]
+    text = await judge_message(judge_prompt)
     try:
         start = text.find("{")
         end = text.rfind("}") + 1

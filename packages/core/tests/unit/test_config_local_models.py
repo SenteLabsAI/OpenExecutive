@@ -18,6 +18,7 @@ _PROVIDER_VARS = (
     "LOCAL_BASE_URL",
     "LOCAL_MODELS",
     "LOCAL_API_KEY",
+    "LOCAL_REASONING_EFFORT",
 )
 
 
@@ -75,3 +76,31 @@ def test_no_provider_configured_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
 def test_anthropic_key_alone_still_boots(monkeypatch: pytest.MonkeyPatch) -> None:
     s = _build(monkeypatch, ANTHROPIC_API_KEY="sk-test")
     assert s.anthropic_api_key == "sk-test"
+
+
+def test_local_reasoning_effort_unset_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = _build(monkeypatch, ANTHROPIC_API_KEY="sk-test")
+    assert s.local_reasoning_effort is None
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "# e.g. low"])
+def test_local_reasoning_effort_blank_means_unset(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    s = _build(monkeypatch, ANTHROPIC_API_KEY="sk-test", LOCAL_REASONING_EFFORT=raw)
+    assert s.local_reasoning_effort is None
+
+
+def test_local_reasoning_effort_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    s = _build(monkeypatch, ANTHROPIC_API_KEY="sk-test", LOCAL_REASONING_EFFORT=" Low ")
+    assert s.local_reasoning_effort == "low"
+
+
+def test_local_reasoning_effort_typo_fails_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typo would otherwise 400 every local call at request time."""
+    with pytest.raises(ValueError, match="LOCAL_REASONING_EFFORT"):
+        _build(monkeypatch, ANTHROPIC_API_KEY="sk-test", LOCAL_REASONING_EFFORT="lwo")

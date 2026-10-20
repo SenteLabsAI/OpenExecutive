@@ -27,6 +27,13 @@ Rules:
 - **Never expand `$BACKEND_SHARED_SECRET`** into the literal value in commands you print, in PRs, or in commit messages.
 - **Never write the value to a file.** Do not read from `.env` to "help" — if the env var isn't exported, ask the user to export it before proceeding.
 - For routes that vary by caller, optionally add `-H "x-caller-email: <user's-own-email>"`. Never put someone else's email there — the backend uses that header to resolve the caller's Person row and pull their per-person Honcho memory.
+- **Signed callers.** When the API has `CALLER_ASSERTION_PUBLIC_KEYS` set, a bare `x-caller-email` is refused (`401 caller_assertion_required`), and a request with only `x-api-key` is a service that is never the owner. Owner-only routes refuse it. Then ask the user to export the UI's `CALLER_ASSERTION_PRIVATE_KEY` and sign each request instead of sending `x-caller-email`. Treat that key like the shared secret: never expand, print or store it.
+
+  ```bash
+  -H "x-caller-assertion: $(uv run --with cryptography python scripts/mint-caller-assertion.py GET /today)"
+  ```
+
+  Each assertion covers one request: the same method, the exact path and query, within 30 seconds, once. So mint one per call. It signs as the operator (the owner); `--email <user's-own-email>` signs as that user.
 
 ## Safety tiers
 

@@ -45,6 +45,16 @@ def test_guide_is_diagram_free() -> None:
         assert data["mermaid"] is None, f"{spec.id} should have no diagram"
 
 
+def test_every_section_has_how_to_use() -> None:
+    # Each section explains how to use the feature, not just what it is.
+    for spec in GUIDE_SECTIONS:
+        data = prebuilt.get_prebuilt(spec.id)
+        assert data is not None
+        assert (
+            "**How to use:**" in data["markdown"]
+        ), f"{spec.id}: add a **How to use:** walkthrough"
+
+
 def test_get_prebuilt_unknown_returns_none() -> None:
     assert prebuilt.get_prebuilt("does-not-exist") is None
 

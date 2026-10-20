@@ -75,7 +75,7 @@ class DepartmentConfig(BaseModel):
     title: str
     # Key into orchestrator.router.SPECIALIST_REGISTRY. Nullable: some org
     # structures (nonprofits, SMBs) have departments that do not map to one
-    # of the 8 specialist agents — e.g. "Volunteer Coordination", "Family
+    # of the specialist agents — e.g. "Volunteer Coordination", "Family
     # Services". Those departments render as informational rows in the UI
     # and are skipped by specialist-routing workflows.
     specialist_key: str | None = None
@@ -83,7 +83,8 @@ class DepartmentConfig(BaseModel):
     authority_level: AuthorityLevel = AuthorityLevel.PROPOSE_ONLY
     head_person_id: int | None = None
     head_persona_slug: str | None = None
-    # cadence_name -> spec, e.g. {"check_in": "daily@09:00"}. Parsed by Phase 5.
+    # cadence_name -> spec, e.g. {"check_in": "weekly@mon@09:00"}; an empty spec
+    # means the check-in is off. Parsed by departments/cadence.py.
     cadences: dict[str, str] = Field(default_factory=dict)
     # Department-scoped broadcast channels. When set, OE can post to the
     # department's team room via `send_department_message` instead of (or

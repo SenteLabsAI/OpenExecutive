@@ -118,7 +118,7 @@ export default function TokenUsagePage() {
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-6 py-6">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
           <div className="flex items-center justify-between gap-4">
             <h1 className="text-xl font-semibold text-fg">Token usage</h1>
             <Link
@@ -129,7 +129,7 @@ export default function TokenUsagePage() {
             </Link>
           </div>
           <p className="mt-1 text-sm text-fg-muted">
-            Aggregate token usage and cost across all sessions, summed from the
+            What the AI has cost across every conversation, added up from the
             audit log. Days are UTC. Cost is the actual OpenRouter charge captured
             per call — it accrues from when cost tracking went live, so calls
             logged before then count tokens but $0.
@@ -192,6 +192,66 @@ export default function TokenUsagePage() {
           ) : null}
 
           {/* By source */}
+          {data?.scripts && data.scripts.scripts > 0 ? (
+            <section className="mt-8">
+              <h2 className="text-sm font-medium text-fg mb-2">Done in one go</h2>
+              <p className="text-xs text-fg-muted mb-3">
+                When work repeats over many items, the Executive builds a tool for the job and runs it
+                once, instead of spending a model turn on each item.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard
+                  label="Jobs done in one go"
+                  value={fmtInt(data.scripts.scripts)}
+                  hint={`${fmtInt(data.scripts.ok)} worked · ${fmtInt(data.scripts.in_workflows)} in workflows`}
+                />
+                <StatCard label="Actions taken" value={fmtInt(data.scripts.calls)} />
+                <StatCard
+                  label="Model turns avoided"
+                  value={`up to ${fmtInt(data.scripts.turns_avoided)}`}
+                  hint="actions that needed no model turn of their own"
+                />
+                <StatCard
+                  label="Time taken"
+                  value={`${(data.scripts.duration_ms / 1000).toFixed(1)}s`}
+                  hint="mostly the tools' own time"
+                />
+              </div>
+            </section>
+          ) : null}
+
+          {data?.python_jobs && data.python_jobs.jobs > 0 ? (
+            <section className="mt-8">
+              <h2 className="text-sm font-medium text-fg mb-2">Work on files</h2>
+              <p className="text-xs text-fg-muted mb-3">
+                Jobs the Executive ran with Python on files: splitting PDFs, building spreadsheets,
+                documents and charts. Tokens and charges are for the whole turns that ran one.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard
+                  label="File jobs"
+                  value={fmtInt(data.python_jobs.jobs)}
+                  hint={`${fmtInt(data.python_jobs.ok)} worked · ${fmtInt(data.python_jobs.saved_runs)} with a custom tool`}
+                />
+                <StatCard
+                  label="Charged for those turns"
+                  value={fmtCost(data.python_jobs.cost_usd)}
+                  hint={`${fmtInt(data.python_jobs.output_tokens)} output tokens over ${fmtInt(data.python_jobs.turns)} turns`}
+                />
+                <StatCard
+                  label="CPU time"
+                  value={`${(data.python_jobs.cpu_ms / 1000).toFixed(1)}s`}
+                  hint={`${(data.python_jobs.duration_ms / 1000).toFixed(1)}s from start to finish`}
+                />
+                <StatCard
+                  label="Largest job"
+                  value={`${fmtInt(data.python_jobs.peak_mb_max)} MB`}
+                  hint="peak memory of one job"
+                />
+              </div>
+            </section>
+          ) : null}
+
           {data && data.by_source && data.by_source.length > 0 ? (
             <section className="mt-8">
               <h2 className="text-sm font-medium text-fg mb-2">By source</h2>

@@ -94,7 +94,7 @@ def test_mcp_round_is_named_by_the_underlying_tool_before_thinking() -> None:
 
     acts = _activities(items)
     assert len(acts) == 1
-    assert acts[0]["label"] == "Using google_workspace__send_gmail_message…"
+    assert acts[0]["label"] == "Sending an email…"
     assert acts[0]["tool"] == "google_workspace__send_gmail_message"
     assert acts[0]["iteration"] == 1
     # This is the regression: an MCP round must not claim a specialist fan-out.

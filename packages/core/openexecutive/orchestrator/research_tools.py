@@ -59,6 +59,18 @@ RUN_EXECUTIVE_RESEARCH_TOOL: dict[str, Any] = {
 async def handle_run_executive_research(
     tool_input: dict[str, Any],
 ) -> str:
+    from openexecutive.delegation.lockdown import outside_reach_refusal
+
+    if (refused := outside_reach_refusal('run_executive_research')) is not None:
+        return refused
+
+    from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody
+
+    # A run belongs to whoever starts it; with no one to own it, it would
+    # land in the team's history.
+    if runs_refused_for_nobody():
+        return _err("runs are kept for people on the People list, and the person you are talking with is not on it")
+
     note = str(tool_input.get("note", "")).strip()
 
     from openexecutive.config import get_settings
@@ -79,11 +91,14 @@ async def handle_run_executive_research(
 
     run_id = str(uuid.uuid4())
     try:
+        from openexecutive.orchestrator.artifact_records import turn_owner
+
         create_run(
             run_id,
             "executive_research",
             f"{workflow.title} (chat-tool fire)",
             wf_inputs.model_dump(),
+            owner_person_id=turn_owner(),
         )
     except Exception:
         logger.exception("run_executive_research: create_run failed")

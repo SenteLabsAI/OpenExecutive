@@ -13,6 +13,13 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openexecutive.people.models import AvailabilityWindow, Person
+from openexecutive.people.notifications import (
+    NotificationSettings,
+    in_quiet_hours,
+    quiet_applies,
+    quiet_hours_end,
+    zone_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,36 +84,48 @@ def _in_window(window: AvailabilityWindow, now: datetime) -> bool:
 
 def _channel_ref_for(person: Person, channel: str) -> str | None:
     """Return the channel reference string for a Person on a given channel."""
-    if channel == "email":
-        return person.email
-    if channel == "slack":
-        return person.slack_user_id
-    if channel == "telegram":
-        return person.telegram_chat_id
-    if channel == "discord":
-        return person.discord_user_id
-    return None
+    from openexecutive.people.reach import channel_id
+
+    return channel_id(person, channel)
 
 
 def _resolve_channel(person: Person) -> tuple[str, str | None]:
-    """Return (preferred_channel, channel_ref_or_None) for the person.
-
-    If preferred_channel is "any", tries email → slack → discord → telegram
-    in order.
+    """Return (channel, channel_ref_or_None) for the person: the first channel
+    in ``people.reach.reach_order`` (their pick, else where they last talked,
+    then Slack, Discord, Telegram, then email). A picked channel with no id
+    stays the answer, with no ref.
     """
+    from openexecutive.people.reach import reach_order
+
     pref = person.preferred_channel
     if pref != "any":
         return pref, _channel_ref_for(person, pref)
-    # Try in priority order.
-    for ch in ("email", "slack", "discord", "telegram"):
+    for ch in reach_order(person):
         ref = _channel_ref_for(person, ch)
         if ref:
             return ch, ref
     return "email", None
 
 
-def is_within_availability(person: Person, *, now: datetime) -> bool:
+def _quiet_settings(person: Person, *, quiet_hours: bool, urgent: bool) -> NotificationSettings | None:
+    """The person's notification settings when their quiet hours apply to this
+    lookup (``quiet_hours`` asked for, quiet hours on, and not an urgent
+    message they let through), else None. Fails open."""
+    if not quiet_hours or person.id is None:
+        return None
+    return quiet_applies(person.id, urgent=urgent)
+
+
+def is_within_availability(
+    person: Person, *, now: datetime, quiet_hours: bool = False, urgent: bool = False
+) -> bool:
     """Return True if `person` is on the clock right now (leave + windows only).
+
+    With ``quiet_hours`` it is also False during the person's own quiet hours
+    (Settings → Notifications, ``people.notifications``), unless ``urgent``
+    and they let urgent things through. Only the Executive's own outreach asks
+    for that (nudge routing); the outbound guard's availability check does not,
+    so a message someone asked for is never held by them here.
 
     False when the person is on leave, or has availability windows configured and
     `now` falls outside all of them (no windows means "always on"). Unlike
@@ -120,10 +139,15 @@ def is_within_availability(person: Person, *, now: datetime) -> bool:
     if person.on_leave_until is not None and now.astimezone(UTC).date() <= person.on_leave_until:
         return False
     # Window check: no windows means "always on"; otherwise must be inside one.
-    return not person.availability or any(_in_window(win, now) for win in person.availability)
+    if person.availability and not any(_in_window(win, now) for win in person.availability):
+        return False
+    quiet = _quiet_settings(person, quiet_hours=quiet_hours, urgent=urgent)
+    return quiet is None or not in_quiet_hours(quiet, now)
 
 
-def is_reachable_now(person: Person, *, now: datetime) -> bool:
+def is_reachable_now(
+    person: Person, *, now: datetime, quiet_hours: bool = False, urgent: bool = False
+) -> bool:
     """Return True if `person` can be reached right now.
 
     False when the person is archived, on leave, has no usable channel_ref for
@@ -134,30 +158,46 @@ def is_reachable_now(person: Person, *, now: datetime) -> bool:
     """
     if person.archived:
         return False
-    if not is_within_availability(person, now=now):
+    if not is_within_availability(person, now=now, quiet_hours=quiet_hours, urgent=urgent):
         return False
     _, ref = _resolve_channel(person)
     return ref is not None
 
 
-def next_window_for(person: Person, *, after: datetime) -> datetime | None:
+def next_window_for(
+    person: Person, *, after: datetime, quiet_hours: bool = False, urgent: bool = False
+) -> datetime | None:
     """Next window-open moment for `person`, or None (Person-object variant).
 
     None when no windows are configured (always-reachable, no deferral needed)
-    or no window falls within the 14-day scan horizon.
+    or no window falls within the 14-day scan horizon. With ``quiet_hours``
+    (see ``is_within_availability``) the moment must also be outside the
+    person's quiet hours; with quiet hours but no windows that is when the
+    quiet hours end.
     """
+    quiet = _quiet_settings(person, quiet_hours=quiet_hours, urgent=urgent)
     if not person.availability:
-        return None
+        # Always on but for quiet hours: the end of them, if they are on now.
+        if quiet is None or not in_quiet_hours(quiet, after):
+            return None
+        return quiet_hours_end(quiet, after)
 
     step = timedelta(minutes=_SCAN_STEP_MINUTES)
     horizon = after + timedelta(days=_SCAN_DAYS)
     probe = after + step  # start one step ahead so we don't return "now"
+    zone = zone_for(quiet) if quiet is not None else None
 
     while probe <= horizon:
-        if any(_in_window(win, probe) for win in person.availability):
+        if any(_in_window(win, probe) for win in person.availability) and (
+            quiet is None or not in_quiet_hours(quiet, probe, zone=zone)
+        ):
             return probe.astimezone(UTC).replace(second=0, microsecond=0)
         probe += step
 
+    if quiet is not None:
+        # Quiet hours cover every window in the horizon: the window wins,
+        # rather than the message never going.
+        return next_window_for(person, after=after)
     return None
 
 
@@ -165,6 +205,8 @@ def prefer_channel_for(
     person_id: int,
     *,
     now: datetime,
+    quiet_hours: bool = False,
+    urgent: bool = False,
 ) -> tuple[str, str] | None:
     """Return (channel, channel_ref) if the Person is reachable right now.
 
@@ -176,11 +218,15 @@ def prefer_channel_for(
     - Current time is outside all configured availability windows.
       (If no windows are configured at all, the Person is always considered
       reachable — no windows means "always on".)
+    - ``quiet_hours`` is set and it is the person's quiet hours (see
+      ``is_within_availability``).
     """
     from openexecutive.people.registry import get_person
 
     person = get_person(person_id)
-    if person is None or not is_reachable_now(person, now=now):
+    if person is None or not is_reachable_now(
+        person, now=now, quiet_hours=quiet_hours, urgent=urgent
+    ):
         return None
     # Reachability guarantees a usable ref; resolve it for the caller.
     channel, ref = _resolve_channel(person)
@@ -193,6 +239,8 @@ def next_available_window(
     person_id: int,
     *,
     after: datetime,
+    quiet_hours: bool = False,
+    urgent: bool = False,
 ) -> datetime | None:
     """Scan forward up to 14 days to find the next window-open moment.
 
@@ -207,4 +255,4 @@ def next_available_window(
     person = get_person(person_id)
     if person is None:
         return None
-    return next_window_for(person, after=after)
+    return next_window_for(person, after=after, quiet_hours=quiet_hours, urgent=urgent)

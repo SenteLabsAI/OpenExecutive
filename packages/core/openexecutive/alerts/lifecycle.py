@@ -29,7 +29,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from openexecutive.alerts.models import Alert
+from openexecutive.alerts.models import Alert, visible_alert
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,12 @@ _SWEEP_PAGE = 5000
 
 # Sources whose rows have their own lifecycle and must never be expired,
 # closed or routed by the automatic machinery: artifacts persist in the
-# gallery until archived; decision-backed alerts end via /decisions.
-TTL_EXEMPT_SOURCES: frozenset[str] = frozenset({"artifact", "decision_scheduling"})
+# gallery until archived; decision-backed alerts end via /decisions; a roster
+# request's card ends when the request is answered or expires
+# (people.roster_requests).
+TTL_EXEMPT_SOURCES: frozenset[str] = frozenset(
+    {"artifact", "decision_scheduling", "roster_request"}
+)
 
 
 def parse_aware(iso: str | None) -> datetime | None:
@@ -115,11 +119,14 @@ def is_expired(
     if days is None:
         return False
     # A situation that keeps re-firing stays live: the age anchor is the
-    # later of created_at and last_seen_at (coalescing bumps the latter).
+    # latest of created_at and last_seen_at (coalescing bumps the latter).
+    # A snooze counts too, so a card snoozed past its TTL comes back when
+    # the snooze ends instead of expiring unseen.
     anchor = parse_aware(alert.created_at)
-    seen = parse_aware(getattr(alert, "last_seen_at", None))
-    if seen is not None and (anchor is None or seen > anchor):
-        anchor = seen
+    for later in (getattr(alert, "last_seen_at", None), getattr(alert, "snoozed_until", None)):
+        stamp = parse_aware(later)
+        if stamp is not None and (anchor is None or stamp > anchor):
+            anchor = stamp
     if anchor is None:
         return False
     now = now or datetime.now(UTC)
@@ -151,8 +158,13 @@ def list_live_alerts(
     db_path: Path | None = None,
     *,
     now: datetime | None = None,
+    viewer: object | None = None,
 ) -> list[Alert]:
     """``unread`` alerts that are still live: not past TTL, not snoozed.
+
+    A drafted artifact is its owner's alone (``models.visible_alert``): it is
+    kept only for the ``viewer`` it belongs to, and left out with no viewer —
+    the board the review, the reflection and the shared digests read.
 
     Newest first, like ``store.list_alerts``. This is the read every
     user-facing surface shares; the sweep merely persists what this view
@@ -170,6 +182,7 @@ def list_live_alerts(
         a for a in rows
         if not is_expired(a, now, monitoring_days=monitoring_days, action_days=action_days)
         and not _is_snoozed(a, now)
+        and visible_alert(a, viewer)
     ]
     return live[:limit]
 

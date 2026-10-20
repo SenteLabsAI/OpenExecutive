@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "98d78c7dccf74b8ea294e78c4e5be4c2f0024f63",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "openexecutive",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "changelog-sections": [
+        { "type": "feat", "section": "Added" },
+        { "type": "fix", "section": "Fixed" },
+        { "type": "perf", "section": "Changed" },
+        { "type": "revert", "section": "Reverted" },
+        { "type": "refactor", "section": "Changed", "hidden": true },
+        { "type": "docs", "section": "Documentation", "hidden": true },
+        { "type": "test", "section": "Tests", "hidden": true },
+        { "type": "chore", "section": "Chores", "hidden": true }
+      ],
+      "extra-files": [
+        { "type": "toml", "path": "packages/core/pyproject.toml", "jsonpath": "$.project.version" },
+        { "type": "toml", "path": "packages/core/uv.lock", "jsonpath": "$.package[?(@.name.value==='openexecutive')].version" },
+        { "type": "json", "path": "packages/ui/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/ui/package-lock.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "packages/ui/package-lock.json", "jsonpath": "$.packages[''].version" },
+        { "type": "generic", "path": "packages/core/openexecutive/api/main.py" },
+        { "type": "generic", "path": "packages/core/openexecutive/api/models.py" }
+      ]
+    }
+  }
+}

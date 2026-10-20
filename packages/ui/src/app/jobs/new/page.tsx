@@ -4,6 +4,10 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
+import Button, { buttonClass } from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
+import ToolPicker from "@/components/jobs/ToolPicker";
+import WorkflowWizard from "@/components/jobs/WorkflowWizard";
 import {
   DYNAMIC_SPECIALISTS,
   DynamicInputField,
@@ -14,7 +18,10 @@ import {
   WorkflowSection,
   createCustomWorkflow,
   getCustomWorkflow,
+  getWorkflowDesignerSession,
   listPeople,
+  listSkills,
+  type SkillMeta,
   updateCustomWorkflow,
 } from "@/lib/api";
 
@@ -44,12 +51,19 @@ function newStep(kind: StepKind, idx: number): DynamicStep {
       timeout_hours: 48,
       on_timeout: "escalate",
     };
+  if (kind === "action")
+    return { kind, id, title: "", goal: "", tools: [] };
   return { kind, id, title: "Assemble", instructions: "", specialist: "cso" };
 }
 
 const inputCls =
-  "w-full px-3 py-1.5 text-sm rounded-md bg-surface/60 border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-indigo-500/40";
-const labelCls = "block text-xs font-medium text-fg-muted mb-1";
+  "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-60";
+const labelCls = "block text-sm font-medium text-fg-muted mb-1.5";
+
+// The editor's sections, shown one at a time. A new workflow walks them in
+// order with Next/Back; an existing one (or a wizard draft) can jump between
+// them and save from any of them.
+const STAGES = ["Details", "Inputs", "Steps", "Schedule"] as const;
 
 // ---- Ask OE form descriptor helpers ---------------------------------------
 
@@ -61,12 +75,16 @@ const INPUT_FIELDS_SCHEMA =
 function stepsSchema(people: Person[]): string {
   const roster = people.map((p) => `${p.id} = ${p.full_name} (${p.role})`).join("; ");
   return (
-    "JSON array of step objects, run in order. Three kinds: " +
+    "JSON array of step objects, run in order. Four kinds: " +
     '{"kind": "specialist", "id": string, "title": string, "specialist": one of [' +
     DYNAMIC_SPECIALISTS.join(", ") +
-    '], "goal": string (may use {field} placeholders), "rag_query"?: string} | ' +
+    '], "goal": string (may use {field} placeholders), "rag_query"?: string, ' +
+    '"playbook"?: string (name of an existing playbook the step follows)} | ' +
     '{"kind": "approval_gate", "id": string, "title": string, "person_id": number, ' +
     '"question": string, "timeout_hours"?: number, "on_timeout"?: "escalate" | "auto_proceed" | "fail"} | ' +
+    '{"kind": "action", "id": string, "title": string, "goal": string (what to get done with tools), ' +
+    '"tools": string[] (exact tool names — keep the ones already chosen; new ones must come from the tool search), ' +
+    '"max_tool_calls"?: number (1-50)} | ' +
     '{"kind": "synthesis", "id": string, "title": string, "specialist"?: string, "instructions"?: string}. ' +
     "The LAST step must be a synthesis step. " +
     (roster ? `person_id must be one of: ${roster}.` : "No people on the roster yet.")
@@ -104,6 +122,7 @@ function coerceInputFields(raw: unknown): DynamicInputField[] | null {
 
 const STEP_KINDS: ReadonlySet<string> = new Set([
   "specialist",
+  "action",
   "approval_gate",
   "synthesis",
 ]);
@@ -131,8 +150,13 @@ function BuilderInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editName = searchParams.get("edit");
+  // A wizard session whose draft seeds this form ("Edit details"). Without
+  // `edit` it is create mode — the draft has not been saved yet; with it, the
+  // draft is a revision of that saved workflow.
+  const designerId = searchParams.get("designer");
 
   const [people, setPeople] = useState<Person[]>([]);
+  const [playbooks, setPlaybooks] = useState<SkillMeta[]>([]);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -147,19 +171,44 @@ function BuilderInner() {
   const [cadence, setCadence] = useState("weekly@mon@09:00");
   const [cadencePersonId, setCadencePersonId] = useState<number>(0);
 
+  const [stage, setStage] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(!!editName);
+  const [loading, setLoading] = useState(!!editName || !!designerId);
+  // Saving edits keeps a switched-off workflow off: turning it on from its
+  // review card is the approval step, not "Save changes".
+  const [isActive, setIsActive] = useState(true);
 
   useEffect(() => {
     listPeople()
       .then((p) => setPeople(p.filter((x) => !x.archived)))
       .catch(() => setPeople([]));
+    listSkills()
+      .then(setPlaybooks)
+      .catch(() => setPlaybooks([]));
   }, []);
 
   useEffect(() => {
-    if (!editName) return;
-    getCustomWorkflow(editName)
+    const load: Promise<DynamicWorkflowDef> | null = designerId
+      ? getWorkflowDesignerSession(designerId).then((t) => {
+          if (!t.draft) throw new Error("That conversation has no draft yet.");
+          if ((t.editing ?? null) !== editName)
+            throw new Error("That conversation is about a different workflow.");
+          const draft = t.draft.definition;
+          // Keep the workflow's on/off state as it is now, not as it was
+          // when the conversation opened.
+          return editName
+            ? getCustomWorkflow(editName).then((cur) => ({
+                ...draft,
+                is_active: cur.is_active,
+              }))
+            : draft;
+        })
+      : editName
+      ? getCustomWorkflow(editName)
+      : null;
+    if (!load) return;
+    load
       .then((d) => {
         setName(d.name);
         setTitle(d.title);
@@ -168,6 +217,7 @@ function BuilderInner() {
         setEstimatedMinutes(d.estimated_minutes);
         setFields(d.input_fields);
         setSteps(d.steps);
+        if (editName) setIsActive(d.is_active !== false);
         if (d.cadence) {
           setCadenceEnabled(true);
           setCadence(d.cadence);
@@ -176,7 +226,7 @@ function BuilderInner() {
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [editName]);
+  }, [editName, designerId]);
 
   // ---- Ask OE registration -------------------------------------------------
   // Recreated each render so getFields/applyPatch close over current state;
@@ -186,7 +236,7 @@ function BuilderInner() {
     formId: "workflow_builder",
     title: editName ? "Edit workflow" : "New workflow",
     description:
-      "Builds a reusable executive job from specialist steps, optional approval gates, and a final synthesis step.",
+      "Builds a reusable workflow from specialist steps, optional approval gates, and a final synthesis step.",
     getFields: (): PageFormField[] => [
       {
         name: "name",
@@ -244,7 +294,7 @@ function BuilderInner() {
       },
       {
         name: "cadence_person_id",
-        label: "Deliver artifact to (person id)",
+        label: "Deliver document to (person id)",
         type: "number",
         value: cadencePersonId,
         description:
@@ -374,11 +424,12 @@ function BuilderInner() {
       steps,
       cadence: cadenceEnabled ? cadence.trim() : null,
       cadence_person_id: cadenceEnabled ? cadencePersonId : null,
+      is_active: isActive,
     };
     try {
       if (editName) await updateCustomWorkflow(editName, def);
       else await createCustomWorkflow(def);
-      router.push(`/jobs/${encodeURIComponent(def.name)}`);
+      router.push(`/jobs/${encodeURIComponent(def.name)}?saved=1`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setSaving(false);
@@ -386,14 +437,52 @@ function BuilderInner() {
   }
 
   if (loading) {
-    return <div className="text-sm text-fg-muted">Loading…</div>;
+    return <div className="text-[15px] text-fg-muted">Loading…</div>;
   }
 
+  // Editing or refining a draft: every section is already filled in.
+  const prefilled = !!editName || !!designerId;
+  const last = STAGES.length - 1;
+  const saveLabel = saving ? "Saving…" : editName ? "Save changes" : "Create workflow";
+  const cancelHref = designerId
+    ? `/jobs/new?${editName ? `edit=${encodeURIComponent(editName)}&` : ""}session=${encodeURIComponent(designerId)}`
+    : "/jobs";
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <nav aria-label="Sections" className="flex gap-1 overflow-x-auto">
+        {STAGES.map((label, i) => (
+          <button
+            key={label}
+            type="button"
+            aria-current={stage === i ? "step" : undefined}
+            onClick={() => setStage(i)}
+            className={`flex min-h-10 flex-shrink-0 items-center gap-2 rounded-xl px-3 sm:px-3.5 text-[15px] font-medium transition-colors ${
+              stage === i
+                ? "bg-accent/10 text-accent"
+                : "text-fg-muted hover:text-fg hover:bg-surface-overlay"
+            }`}
+          >
+            {!prefilled && (
+              <span
+                aria-hidden="true"
+                className={`hidden h-6 w-6 items-center justify-center rounded-full text-xs font-semibold sm:inline-flex ${
+                  stage === i ? "bg-accent-strong text-white" : "bg-surface-overlay text-fg-muted"
+                }`}
+              >
+                {i + 1}
+              </span>
+            )}
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <div className="rounded-2xl border border-line bg-surface-elevated p-5 shadow-sm sm:p-7">
       {/* Metadata */}
+      {stage === 0 && (
       <section className="space-y-4">
-        <h2 className="text-base font-semibold text-fg">Details</h2>
+        <h2 className="text-lg font-semibold text-fg">Details</h2>
         <div className="grid sm:grid-cols-2 gap-4">
           <div>
             <label className={labelCls}>Name (snake_case, unique)</label>
@@ -452,17 +541,17 @@ function BuilderInner() {
           </div>
         </div>
       </section>
+      )}
 
       {/* Input fields */}
+      {stage === 1 && (
       <section
         className={`space-y-3 rounded-md ${suggestedCls("input_fields")}`}
         onInput={() => clearSuggested("input_fields")}
       >
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-fg">Input fields</h2>
-          <button
-            type="button"
-            className="text-xs text-indigo-400 hover:text-indigo-300"
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-fg">Input fields</h2>
+          <Button
             onClick={() =>
               setFields((fs) => [
                 ...fs,
@@ -471,19 +560,19 @@ function BuilderInner() {
             }
           >
             + Add field
-          </button>
+          </Button>
         </div>
-        <p className="text-xs text-fg-muted">
+        <p className="text-sm text-fg-muted">
           Free-text fields the user fills when running. Reference them in step
           goals with <code>{"{field_name}"}</code>.
         </p>
         {fields.length === 0 && (
-          <p className="text-xs text-fg-subtle">No input fields.</p>
+          <p className="text-sm text-fg-subtle">No input fields.</p>
         )}
         {fields.map((f, i) => (
           <div
             key={i}
-            className="rounded-md border border-line bg-surface/30 p-3 grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end"
+            className="rounded-xl border border-line bg-surface p-4 grid sm:grid-cols-[1fr_1fr_auto] gap-3 items-end"
           >
             <div>
               <label className={labelCls}>Field name</label>
@@ -503,58 +592,67 @@ function BuilderInner() {
                 placeholder="Topic"
               />
             </div>
-            <div className="flex items-center gap-3 pb-1.5">
-              <label className="flex items-center gap-1 text-xs text-fg-muted">
+            <div className="flex items-center gap-2">
+              <label className="flex min-h-10 items-center gap-2 px-1 text-sm text-fg-muted">
                 <input
                   type="checkbox"
+                  className="h-4 w-4"
                   checked={f.required}
                   onChange={(e) => updateField(i, { required: e.target.checked })}
                 />
                 Required
               </label>
-              <button
-                type="button"
-                className="text-xs text-fg-muted hover:text-red-400"
-                onClick={() => setFields((fs) => fs.filter((_, idx) => idx !== i))}
-              >
-                Remove
-              </button>
+              <OverflowMenu
+                label={`More for field ${f.label || i + 1}`}
+                items={[
+                  {
+                    label: "Remove field",
+                    danger: true,
+                    onSelect: () => setFields((fs) => fs.filter((_, idx) => idx !== i)),
+                  },
+                ]}
+              />
             </div>
           </div>
         ))}
       </section>
+      )}
 
       {/* Steps */}
+      {stage === 2 && (
       <section
         className={`space-y-3 rounded-md ${suggestedCls("steps")}`}
         onInput={() => clearSuggested("steps")}
       >
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-fg">Steps</h2>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="text-xs text-indigo-400 hover:text-indigo-300"
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold text-fg">Steps</h2>
+          <div className="flex flex-wrap gap-2">
+            <Button
               onClick={() =>
                 setSteps((ss) => [...ss, newStep("specialist", ss.length)])
               }
             >
               + Specialist
-            </button>
-            <button
-              type="button"
-              className="text-xs text-indigo-400 hover:text-indigo-300"
+            </Button>
+            <Button
+              onClick={() => setSteps((ss) => [...ss, newStep("action", ss.length)])}
+            >
+              + Action
+            </Button>
+            <Button
               onClick={() =>
                 setSteps((ss) => [...ss, newStep("approval_gate", ss.length)])
               }
             >
               + Approval gate
-            </button>
+            </Button>
           </div>
         </div>
-        <p className="text-xs text-fg-muted">
-          Steps run in order. The last step must be a <b>synthesis</b> step that
-          assembles the artifact. Place any approval gate just before it.
+        <p className="text-sm text-fg-muted">
+          Steps run in order. <b>Specialist</b> steps analyze and write;{" "}
+          <b>action</b> steps get things done with the tools you choose. The last
+          step must be a <b>synthesis</b> step that assembles the result. Place any
+          approval gate just before it.
         </p>
         {steps.map((s, i) => (
           <StepEditor
@@ -563,18 +661,23 @@ function BuilderInner() {
             index={i}
             total={steps.length}
             people={people}
+            playbooks={playbooks}
             onChange={(patch) => updateStep(i, patch)}
             onMove={(dir) => moveStep(i, dir)}
             onRemove={() => setSteps((ss) => ss.filter((_, idx) => idx !== i))}
           />
         ))}
       </section>
+      )}
 
       {/* Cadence */}
-      <section className="space-y-3">
-        <label className="flex items-center gap-2 text-base font-semibold text-fg">
+      {stage === 3 && (
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold text-fg">Schedule</h2>
+        <label className="flex min-h-10 items-center gap-2.5 text-[15px] font-medium text-fg">
           <input
             type="checkbox"
+            className="h-4 w-4"
             checked={cadenceEnabled}
             onChange={(e) => setCadenceEnabled(e.target.checked)}
           />
@@ -594,7 +697,7 @@ function BuilderInner() {
               />
             </div>
             <div>
-              <label className={labelCls}>Deliver artifact to</label>
+              <label className={labelCls}>Deliver document to</label>
               <select
                 className={`${inputCls} ${suggestedCls("cadence_person_id")}`}
                 value={cadencePersonId}
@@ -608,31 +711,46 @@ function BuilderInner() {
                 ))}
               </select>
             </div>
-            <p className="sm:col-span-2 text-xs text-fg-subtle">
+            <p className="sm:col-span-2 text-sm text-fg-subtle">
               Scheduled runs supply no inputs, so a scheduled workflow must have
               no <b>required</b> input fields.
             </p>
           </div>
         )}
+        {!cadenceEnabled && (
+          <p className="text-sm text-fg-subtle">
+            Off: the workflow runs when someone starts it.
+          </p>
+        )}
       </section>
+      )}
+      </div>
 
       {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-[15px] text-red-500">
           {error}
         </div>
       )}
 
-      <div className="flex items-center gap-3 border-t border-line pt-4">
-        <button
-          type="button"
-          disabled={saving}
-          onClick={handleSave}
-          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition"
-        >
-          {saving ? "Saving…" : editName ? "Save changes" : "Create workflow"}
-        </button>
-        <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
-          Cancel
+      <div className="flex flex-wrap items-center gap-2">
+        {stage > 0 && (
+          <Button onClick={() => setStage((s) => s - 1)}>Back</Button>
+        )}
+        {stage < last && (
+          <Button
+            variant={prefilled ? "secondary" : "primary"}
+            onClick={() => setStage((s) => s + 1)}
+          >
+            Next: {STAGES[stage + 1]}
+          </Button>
+        )}
+        {(stage === last || prefilled) && (
+          <Button variant="primary" disabled={saving} onClick={handleSave}>
+            {saveLabel}
+          </Button>
+        )}
+        <Link href={cancelHref} className={buttonClass("ghost", "md", "ml-auto")}>
+          {designerId ? "Back to conversation" : "Cancel"}
         </Link>
       </div>
     </div>
@@ -644,6 +762,7 @@ function StepEditor({
   index,
   total,
   people,
+  playbooks,
   onChange,
   onMove,
   onRemove,
@@ -652,35 +771,25 @@ function StepEditor({
   index: number;
   total: number;
   people: Person[];
+  playbooks: SkillMeta[];
   onChange: (patch: Partial<DynamicStep>) => void;
   onMove: (dir: -1 | 1) => void;
   onRemove: () => void;
 }) {
   return (
-    <div className="rounded-md border border-line bg-surface/30 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+    <div className="rounded-xl border border-line bg-surface p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold uppercase tracking-wide text-fg-muted">
           {index + 1}. {step.kind.replace("_", " ")}
         </span>
-        <div className="flex items-center gap-2 text-xs text-fg-muted">
-          <button type="button" onClick={() => onMove(-1)} disabled={index === 0}>
-            ↑
-          </button>
-          <button
-            type="button"
-            onClick={() => onMove(1)}
-            disabled={index === total - 1}
-          >
-            ↓
-          </button>
-          <button
-            type="button"
-            className="hover:text-red-400"
-            onClick={onRemove}
-          >
-            Remove
-          </button>
-        </div>
+        <OverflowMenu
+          label={`More for step ${index + 1}`}
+          items={[
+            { label: "Move up", disabled: index === 0, onSelect: () => onMove(-1) },
+            { label: "Move down", disabled: index === total - 1, onSelect: () => onMove(1) },
+            { label: "Remove step", danger: true, onSelect: onRemove },
+          ]}
+        />
       </div>
 
       <div className="grid sm:grid-cols-2 gap-3">
@@ -732,6 +841,69 @@ function StepEditor({
               className={inputCls}
               value={step.rag_query ?? ""}
               onChange={(e) => onChange({ rag_query: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>Follow a playbook (optional)</label>
+            <select
+              className={inputCls}
+              value={step.playbook ?? ""}
+              onChange={(e) => onChange({ playbook: e.target.value })}
+            >
+              <option value="">None</option>
+              {/* Keep a saved choice visible even if that playbook is gone. */}
+              {step.playbook && !playbooks.some((p) => p.name === step.playbook) && (
+                <option value={step.playbook}>{step.playbook} (not found)</option>
+              )}
+              {playbooks.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} — {p.description}
+                </option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
+
+      {step.kind === "action" && (
+        <>
+          <div>
+            <label className={labelCls}>
+              Goal — what to get done, and where (use {"{field}"} placeholders)
+            </label>
+            <textarea
+              className={`${inputCls} min-h-[80px]`}
+              value={step.goal}
+              placeholder="e.g. Find today's emailed bills, read each PDF, and add a row per bill (vendor, amount, due date) to the Bill tracker sheet. Skip bills already listed."
+              onChange={(e) => onChange({ goal: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>
+              Tools this step may use — saving the workflow approves them
+            </label>
+            <ToolPicker
+              value={step.tools}
+              onChange={(tools) => onChange({ tools })}
+              inputCls={inputCls}
+            />
+          </div>
+          <div className="sm:w-48">
+            <label className={labelCls}>Max tool calls per run</label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              className={inputCls}
+              placeholder="20 (default)"
+              value={step.max_tool_calls ?? ""}
+              onChange={(e) =>
+                // Empty means "use the server default" — undefined is dropped
+                // from the saved JSON, where 0 would fail validation.
+                onChange({
+                  max_tool_calls: e.target.value === "" ? undefined : Number(e.target.value),
+                })
+              }
             />
           </div>
         </>
@@ -826,29 +998,98 @@ function StepEditor({
   );
 }
 
-export default function NewWorkflowPage() {
+function AdvancedBuilderPage() {
+  const searchParams = useSearchParams();
+  const editName = searchParams.get("edit");
+  const editing = !!editName;
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-3xl mx-auto">
           <div className="mb-6">
-            <Link href="/jobs" className="text-xs text-fg-muted hover:text-fg">
-              ← Back to jobs
+            <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
+              ← Back to workflows
             </Link>
-            <h1 className="text-2xl font-semibold text-fg mt-2 mb-1">
-              New workflow
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mt-2 mb-2">
+              {editing ? "Edit workflow" : "New workflow"}
             </h1>
-            <p className="text-sm text-fg-muted">
-              Build a reusable executive job from specialist steps, optional
-              approval gates, and a final synthesis step. You can also ask the
-              Executive in chat to create one for you.
+            <p className="text-[15px] text-fg-muted">
+              Build a reusable workflow from specialist steps, optional
+              approval gates, and a final synthesis step.
+              {editName ? (
+                <>
+                  {" "}
+                  <Link
+                    href={`/jobs/new?edit=${encodeURIComponent(editName)}`}
+                    className="text-accent hover:underline"
+                  >
+                    Describe the change instead
+                  </Link>{" "}
+                  and let the assistant make it.
+                </>
+              ) : (
+                <>
+                  {" "}
+                  <Link href="/jobs/new" className="text-accent hover:underline">
+                    Describe it instead
+                  </Link>{" "}
+                  and let the assistant draft it.
+                </>
+              )}
             </p>
           </div>
-          <Suspense fallback={null}>
-            <BuilderInner />
-          </Suspense>
+          <BuilderInner />
         </div>
       </main>
     </div>
+  );
+}
+
+function WizardPage() {
+  const editName = useSearchParams().get("edit");
+  const [progress, setProgress] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col h-full min-h-0 bg-surface text-fg">
+      <div className="border-b border-line px-4 sm:px-6 py-4">
+        <div className="max-w-3xl mx-auto">
+          <Link href="/jobs" className="text-sm text-fg-muted hover:text-fg">
+            ← Back to workflows
+          </Link>
+          <div className="mt-1 flex items-baseline justify-between gap-3">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">
+              {editName ? "Edit workflow" : "New workflow"}
+            </h1>
+            {progress && (
+              <span className="shrink-0 text-sm text-fg-subtle">{progress}</span>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0">
+        <WorkflowWizard
+          key={editName ?? ""}
+          editName={editName ?? undefined}
+          onProgress={setProgress}
+        />
+      </div>
+    </div>
+  );
+}
+
+function NewWorkflowRouter() {
+  const searchParams = useSearchParams();
+  // The step-by-step form is the advanced editor: refining a wizard draft
+  // ("Edit details") or opting in explicitly. Editing a saved workflow is a
+  // conversation by default (`?edit=` alone).
+  const advanced =
+    !!searchParams.get("designer") || searchParams.get("mode") === "advanced";
+  return advanced ? <AdvancedBuilderPage /> : <WizardPage />;
+}
+
+export default function NewWorkflowPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewWorkflowRouter />
+    </Suspense>
   );
 }

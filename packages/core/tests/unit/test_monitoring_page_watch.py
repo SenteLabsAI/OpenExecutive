@@ -282,6 +282,30 @@ def test_html_to_text_is_linear_on_unterminated_openers() -> None:
     ) == "a b d e"
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (b"<" * 200_000, "<" * 200_000),
+        (b"<a" * 100_000, "<a" * 100_000),
+        (b"<\n" * 100_000, "< " * 99_999 + "<"),
+        (b"<div class=x" * 40_000, "<div class=x" * 40_000),
+        (b"<p>kept</p>" + b"<" * 200_000, "kept " + "<" * 200_000),
+        (b"<>" * 100_000, "<>" * 100_000),
+    ],
+    ids=["lt", "lt-a", "lt-newline", "div-attr", "tags-then-lt", "empty-pairs"],
+)
+def test_html_to_text_is_linear_on_unclosed_tags(body: bytes, expected: str) -> None:
+    """A page full of "<" that nothing closes must reduce in one pass: the
+    poll runs this on the event loop, and the `<[^>]+>` strip it replaced
+    rescanned to the end of the page from every such "<" (quadratic — about
+    40 minutes of CPU for a 2 MB page). Such a "<" stays text, as it did."""
+    import time
+
+    started = time.perf_counter()
+    assert html_to_text(body) == expected
+    assert time.perf_counter() - started < 2
+
+
 def test_page_watch_registered() -> None:
     assert "page_watch" in list_registered_kinds()
 

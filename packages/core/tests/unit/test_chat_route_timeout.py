@@ -8,6 +8,7 @@ If `Executive.stream_chat` hangs, the route must:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -36,8 +37,6 @@ def _all_sessions(db_path: Path) -> list[dict[str, Any]]:
 @pytest.fixture(autouse=True)
 def _reset_route_state() -> None:
     chat_route._sessions.clear()
-    chat_route._last_turn_events.clear()
-    chat_route._last_turn_meta.clear()
     chat_route._active_stops.clear()
 
 
@@ -107,9 +106,11 @@ def test_chat_endpoint_handles_hanging_executive(
     assert rows[0]["title"] == "trigger hang"
 
 
-def test_last_turn_debug_endpoint_returns_events(
+def test_debug_events_reach_only_the_callers_own_stream(
     temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A turn's debug events go to the caller over their own SSE stream. There
+    is no process-wide "last turn" snapshot any other caller could read (#198)."""
     from openexecutive.orchestrator import executive as exec_mod
 
     class _MiniExecutive:
@@ -129,14 +130,91 @@ def test_last_turn_debug_endpoint_returns_events(
 
     chat_resp = client.post("/chat", json={"message": "hello"})
     assert chat_resp.status_code == 200
-    _ = chat_resp.text
-
-    last = client.get("/debug/last-turn").json()
-    assert last["meta"]["chunks"] == 1
-    kinds = [e["kind"] for e in last["events"]]
+    events = [
+        json.loads(line[len("data: "):])
+        for line in chat_resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    debug = [e for e in events if e.get("type") == "debug_event"]
+    kinds = [e["kind"] for e in debug]
     assert "knowledge_retrieved" in kinds
     assert "turn_complete" in kinds
     # All events carry the same turn_id.
-    turn_ids = {e.get("turn_id") for e in last["events"]}
-    assert len(turn_ids) == 1
-    assert next(iter(turn_ids)) == last["meta"]["turn_id"]
+    assert len({e.get("turn_id") for e in debug}) == 1
+
+    assert client.get("/debug/last-turn").status_code == 404
+
+
+def test_quiet_turn_sends_keepalives_then_the_answer(
+    temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow step (a long tool call) no longer leaves the stream silent: SSE
+    comments go out while it runs, and the answer still arrives after them."""
+    from openexecutive.config import Settings
+    from openexecutive.orchestrator import executive as exec_mod
+
+    class _SlowExecutive:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **_kwargs: Any) -> AsyncIterator[str]:
+            await asyncio.sleep(0.3)
+            yield "after the wait"
+
+    monkeypatch.setattr(exec_mod, "Executive", _SlowExecutive)
+    original_init = Settings.__init__
+
+    def _fast_keepalive_init(self: Settings, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        object.__setattr__(self, "chat_stream_keepalive_s", 0.05)
+
+    monkeypatch.setattr(Settings, "__init__", _fast_keepalive_init)
+
+    app = FastAPI()
+    app.include_router(chat_route.router)
+    resp = TestClient(app).post("/chat", json={"message": "slow one"})
+    assert resp.status_code == 200
+    lines = resp.text.splitlines()
+    keepalives = [i for i, ln in enumerate(lines) if ln == ": keepalive"]
+    answer = next(i for i, ln in enumerate(lines) if "after the wait" in ln)
+    assert len(keepalives) >= 2
+    assert keepalives[0] < answer
+    assert '"type": "error"' not in resp.text
+    assert '"type": "done"' in resp.text
+
+
+def test_keepalives_do_not_stretch_the_deadline(
+    temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole-turn deadline still holds when keepalives fill the silence."""
+    from openexecutive.config import Settings
+    from openexecutive.orchestrator import executive as exec_mod
+
+    class _HangingExecutive:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **_kwargs: Any) -> AsyncIterator[str]:
+            await asyncio.sleep(60)
+            yield "never"
+
+    monkeypatch.setattr(exec_mod, "Executive", _HangingExecutive)
+    original_init = Settings.__init__
+
+    def _short_init(self: Settings, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        object.__setattr__(self, "chat_stream_timeout_s", 0.3)
+        object.__setattr__(self, "chat_stream_keepalive_s", 0.05)
+
+    monkeypatch.setattr(Settings, "__init__", _short_init)
+
+    app = FastAPI()
+    app.include_router(chat_route.router)
+    resp = TestClient(app).post("/chat", json={"message": "hang"})
+    assert ": keepalive" in resp.text.splitlines()
+    assert "timed out" in resp.text.lower()
+    assert '"type": "done"' in resp.text

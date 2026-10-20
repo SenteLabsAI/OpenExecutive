@@ -212,3 +212,73 @@ async def test_outer_cancellation_does_not_orphan_the_step() -> None:
     # And it stays cancelled — it must not resume and finish its round later.
     await asyncio.sleep(0.2)
     assert state["phase"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_keepalive_interval_returns_the_step_still_running() -> None:
+    """Past the keepalive interval the step is handed back in flight, and
+    passing it back in delivers its item: nothing is restarted or lost."""
+    started = {"n": 0}
+
+    async def gen() -> Any:
+        started["n"] += 1
+        await asyncio.sleep(0.2)
+        yield "slow"
+
+    stream = gen().__aiter__()
+    step = await _next_stream_step(stream, None, 5.0, "t-ka", keepalive_s=0.05)
+    assert step.idle is True
+    assert step.pending is not None and not step.pending.done()
+    assert not step.timed_out
+
+    step = await _next_stream_step(
+        stream, None, 5.0, "t-ka", keepalive_s=1.0, pending=step.pending
+    )
+    assert step.produced is True and step.item == "slow"
+    assert started["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_keepalive_past_the_deadline_is_a_timeout() -> None:
+    """When the deadline is nearer than the keepalive, it is the deadline that
+    ends the wait, and the step is cancelled as before."""
+    cancelled = {"seen": False}
+
+    async def gen() -> Any:
+        try:
+            await asyncio.sleep(30)
+            yield "never"
+        except asyncio.CancelledError:
+            cancelled["seen"] = True
+            raise
+
+    step = await _next_stream_step(gen().__aiter__(), None, 0.05, "t-dl", keepalive_s=1.0)
+    assert step.timed_out is True and step.idle is False
+    assert cancelled["seen"] is True
+
+
+@pytest.mark.asyncio
+async def test_stop_during_a_kept_step_cancels_it() -> None:
+    """A step carried across a keepalive is still cut by the stop switch."""
+    cancelled = {"seen": False}
+
+    async def gen() -> Any:
+        try:
+            await asyncio.sleep(30)
+            yield "never"
+        except asyncio.CancelledError:
+            cancelled["seen"] = True
+            raise
+
+    stream = gen().__aiter__()
+    event = asyncio.Event()
+    waiter = _waiter(event)
+    step = await _next_stream_step(stream, waiter, 5.0, "t-st", keepalive_s=0.05)
+    assert step.idle is True
+    event.set()
+    step = await _next_stream_step(
+        stream, waiter, 5.0, "t-st", keepalive_s=0.05, pending=step.pending
+    )
+    assert step.stopped is True
+    assert cancelled["seen"] is True
+    await _drain(waiter)

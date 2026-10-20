@@ -195,8 +195,8 @@ def test_draft_gmail_message_is_gated() -> None:
 
 
 def test_send_with_thread_reply_to_non_roster_is_gated() -> None:
-    """In 1.21.1 reply/forward are just send_gmail_message with thread_id; the
-    recipient still must be on the roster."""
+    """A reply is send_gmail_message with thread_id; the recipient still must
+    be on the roster."""
     gateway, session_call = _make_gateway()
     result = _call(
         gateway,
@@ -221,6 +221,38 @@ def test_new_191_arg_keys_allowed() -> None:
     )
     assert session_call.await_count == 1
     assert "error" not in json.loads(result)
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["google_workspace__send_gmail_message", "google_workspace__draft_gmail_message"],
+)
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # workspace-mcp derives To/Cc from the thread — never roster-checked.
+        {"thread_id": "t1", "reply_all": True},
+        # Forwards an arbitrary inbox message (and its attachments) out.
+        {"forward_message_id": "m1"},
+        {"forward_message_id": "m1", "include_forwarded_attachments": True},
+    ],
+)
+def test_workspace_mcp_1_29_recipient_and_forward_args_rejected(
+    tool_name: str, extra: dict[str, Any]
+) -> None:
+    """workspace-mcp 1.29.0 added reply_all / forward_message_id /
+    include_forwarded_attachments to send_gmail_message. They move recipients or
+    inbox content past the roster check, so they must stay off the arg
+    allow-list even when the explicit `to` is on the roster."""
+    gateway, session_call = _make_gateway()
+    result = _call(
+        gateway,
+        {"to": "alice@example.com", "subject": "hi", "body": "b", **extra},
+        ["alice@example.com"],
+        tool_name=tool_name,
+    )
+    assert session_call.await_count == 0
+    assert "not permitted" in json.loads(result)["error"]
 
 
 def test_from_email_control_char_blocked() -> None:

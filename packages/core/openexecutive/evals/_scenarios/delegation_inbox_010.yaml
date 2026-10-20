@@ -1,0 +1,28 @@
+id: delegation_inbox_010
+domain: delegation
+type: inbox
+description: "Inbox watcher: an outside contact writes to the person and a colleague, copies two of their own team, says good morning to the colleague by name and asks for a signature. The colleague is asked, so nothing is drafted for the person."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: contact
+  expect: no_draft
+  thread:
+    id: t-amendment
+    subject: Second amendment to the purchase agreement
+    messages:
+      - from: "Dana Pruitt <dana@harrowfield.example>"
+        to: ["priya@fernway.example", "olivia@fernway.example"]
+        cc: ["lee@harrowfield.example", "sam@harrowfield.example"]
+        text: |
+          Good morning,  Priya,
+
+          Hope you're doing well!
+
+          Could you please sign the Second Amended Purchase and Sale Agreement?
+
+          Thank you!
+
+          Dana Pruitt
+          Harrowfield Partners

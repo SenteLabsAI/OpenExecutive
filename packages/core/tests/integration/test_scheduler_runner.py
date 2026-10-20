@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from openexecutive.audit import logger as audit_logger
 from openexecutive.memory.episodic import (
     ScheduledAction,
     claim_due_actions,
@@ -27,6 +28,10 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db_path = tmp_path / "episodic.db"
     initialize_db(db_path)
     monkeypatch.setattr("openexecutive.memory.episodic.DB_PATH", db_path)
+    # Patching DB_PATH doesn't reach the audit logger, which keeps its own
+    # path, so _execute_action's audit rows would otherwise land in
+    # ./episodic_memory.db in the working directory (see CLAUDE.md, Testing).
+    monkeypatch.setattr(audit_logger, "_default_logger", audit_logger.AuditLogger(db_path=db_path))
     return db_path
 
 
@@ -208,7 +213,7 @@ def test_scheduler_dispatches_due_actions_when_company_profile_active(
     assert action_id in dispatched
 
 
-def test_runner_loop_cancellable() -> None:
+def test_runner_loop_cancellable(db: Path) -> None:
     """The loop must respect asyncio cancellation."""
 
     async def _runner() -> None:

@@ -60,20 +60,44 @@ thing that builds `Dockerfile.ui`.
 | `sha-<short>` | every push | The commit the image was built from. |
 | `buildcache` | every push | BuildKit layer cache. Not an image; ignore it. |
 
-**Cutting a release** is pushing a `vX.Y.Z` tag:
+**Cutting a release** is merging the release PR.
+[.github/workflows/release-please.yml](../.github/workflows/release-please.yml)
+runs release-please on every push to `main` and keeps one open PR,
+"chore(main): release X.Y.Z", up to date. PRs are squash-merged, so each one
+lands as a single commit whose subject is the PR title, and the version comes
+from those titles' conventional-commit types since the last release. Before 1.0,
+`feat` and `fix` both bump the patch version and a breaking change (`!` or a
+`BREAKING CHANGE:` footer) bumps the minor; minor versions are kept for
+milestones. From 1.0 the usual rule applies: `feat` → minor, `fix` → patch,
+breaking → major. The PR bumps
+every place the version is written (listed in `release-please-config.json`)
+and adds the `CHANGELOG.md` entry, which can be edited in the PR before
+merging. Merges that are only `chore`/`docs`/`test`/`refactor` wait for the
+next `feat` or `fix`. Merging the release PR tags the merge commit `vX.Y.Z`
+and creates the GitHub Release; the tag push then runs the image workflow.
+It needs the `RELEASE_PLEASE_TOKEN` repository secret (a fine-grained token
+for this repository with Contents and Pull requests read/write), because
+events made with the default `GITHUB_TOKEN` start no workflows: without it
+the release PR would get no CI and the tag would publish no images.
 
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
+Pushing a `vX.Y.Z` tag by hand still works (`git tag v0.3.0 && git push
+origin v0.3.0`) but bypasses the version bump and changelog, so the release
+PR is the normal path.
 
-The workflow runs on the tag push and publishes the versioned tags. It does
-not check CI: it publishes whatever commit the tag points at, and the `main`
-tag is published in parallel with CI on every push, so tag only a commit on
-`main` that CI has passed. The two images are separate jobs, so a release is
-not atomic — if one fails, check the package pages and re-run the failed job
-from the Actions UI. Nothing bumps the version strings in
-`packages/core/pyproject.toml` or `packages/ui/package.json` for you; update
-them in the release commit.
+The image workflow runs on the tag push and publishes the versioned tags. It
+does not check CI: it publishes whatever commit the tag points at, and the
+`main` tag is published in parallel with CI on every push, so the release PR
+should only be merged once its CI is green. The two images are separate jobs,
+so a release is not atomic — if one fails, check the package pages and re-run
+the failed job from the Actions UI.
+
+Once both images are published, the same run creates the GitHub Release for
+the tag if it does not exist yet (release-please normally already made it),
+with that version's `CHANGELOG.md` section as the notes. A hand-pushed tag
+with no `## [X.Y.Z]` section fails that job instead of publishing an empty
+release. If the images fail, no release is
+created; re-running the failed job from the Actions UI creates it once the
+images succeed. A release that already exists for the tag is left alone.
 
 The images are `linux/amd64` only. The API image bakes the embedding models at
 build time (see the Dockerfile), which makes an emulated arm64 build
@@ -94,6 +118,7 @@ One volume, mounted at `/data`:
 - `/data/company/profile.yaml` + `/data/company/docs/` — onboarding output + uploaded docs
 - `/data/company/mcp_servers.json` — MCP gateway config. Placing this file is what **enables** MCP when `MCP_ENABLED` is unset; set `MCP_ENABLED=false` to keep MCP off with the file in place. A config defining no servers under `mcpServers`, or a gateway that fails to start, is logged and skipped — the API boots without MCP tools (and without the email poller) rather than failing to boot.
 - `/data/google_credentials/` — Google Workspace OAuth token, if that integration is enabled
+- `/data/ms365_credentials/` — Microsoft 365 MSAL token cache (+ its `.cache-key`), if that integration is enabled
 
 Nothing hardcodes those paths. Each is an env var, and the defaults are
 repo-relative so a local checkout works with no configuration:
@@ -104,6 +129,7 @@ EPISODIC_DB_PATH              = /data/episodic_memory.db
 COMPANY_PROFILE_PATH          = /data/company/profile.yaml
 MCP_SERVERS_CONFIG_PATH       = /data/company/mcp_servers.json
 WORKSPACE_MCP_CREDENTIALS_DIR = /data/google_credentials
+MS365_MCP_CREDENTIALS_DIR     = /data/ms365_credentials
 ```
 
 On first boot the volume is empty. ChromaDB rebuilds the built-in knowledge index
@@ -120,12 +146,13 @@ with "no company profile" on a fresh volume is expected, not a fault.
 |---|---|
 | `ANTHROPIC_API_KEY` | Every agent call. The app will not start without it. |
 | `BACKEND_SHARED_SECRET` | Gates every API route via `x-api-key`. Generate with `openssl rand -hex 32`; the UI needs the same value. |
+| `CALLER_ASSERTION_PUBLIC_KEYS` (API), `CALLER_ASSERTION_PRIVATE_KEY` (UI) | Signed callers: the UI signs who is signed in and the API checks it, so the shared secret alone can't act as the owner. Recommended. Make the pair with `scripts/make-caller-keys.py`; see [auth.md](auth.md#signed-callers). |
 | `OE_PUBLIC_DEPLOYMENT=1` | **Set this on every internet-reachable instance.** See below. |
-| `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. |
-| `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in. See [auth.md](auth.md). |
+| `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. With `OE_PUBLIC_DEPLOYMENT` set these are the only ones: the `localhost:3000` origins `make dev` uses are dropped. |
+| `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_OIDC_ISSUER`, `AUTH_OIDC_ID`, `AUTH_OIDC_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in (Google and/or SSO). See [auth.md](auth.md). |
 
-Integrations (Slack, Discord, email, Google Workspace) are all optional and off
-unless their variables are set. [.env.example](../.env.example) is the full list.
+Integrations (Slack, Discord, email, Google Workspace, Microsoft 365) are all
+optional and off unless their variables are set. [.env.example](../.env.example) is the full list.
 
 ### `OE_PUBLIC_DEPLOYMENT`
 
@@ -150,8 +177,16 @@ skipping the check.
 can reach it unauthenticated. It returns:
 
 ```json
-{"status": "ok", "builtin_knowledge_chunks": 1234, "version": "0.1.0"}
+{"status": "ok", "builtin_knowledge_chunks": 1234, "google_tools_missing": [], "version": "0.1.0"}
 ```
+
+`google_tools_missing` is the pinned Google tools startup priming could not
+find. `[]` means it checked and they are all there — the only value that says
+so. A list of names means a `workspace-mcp` update renamed one, or the
+configured services and tool tier never loaded it; Settings → Setup status
+names them too. `null` means no answer: Google Workspace is not configured, or
+the probe has not finished, or it failed. Expect `null` during the startup
+grace period below, so alert on a non-empty list rather than on "not `[]`".
 
 **Give it a startup grace period of about 5 minutes.** A cold container builds
 the MCP tool-discovery vector index and loads Chroma before it serves. The
@@ -207,6 +242,265 @@ too. The launcher fails fast if neither the key nor `USER_GOOGLE_EMAIL` is set.)
 Outbound egress is gated either way: the Executive can only email, invite, or
 share with People on the roster.
 
+Every Google Workspace call acts as the Executive's own account: the gateway
+refuses a call whose `user_google_email` names any other address.
+
+#### Narrowing the Google tool surface (optional)
+
+Two variables decide how much of Google Workspace the co-located child loads.
+Both default to everything; leave them unset unless you want less.
+
+| Variable | Default | Values |
+|---|---|---|
+| `WORKSPACE_MCP_TOOLS` | `all` | `all`, or comma-separated service names: `gmail`, `calendar`, `drive`, `docs`, `sheets` (also `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`) |
+| `WORKSPACE_MCP_TOOL_TIER` | `complete` | `core`, `extended`, `complete` |
+
+`WORKSPACE_MCP_TOOLS` reaches workspace-mcp as `--tools`, which decides which
+service **modules** it imports. A service you leave out is never imported, so
+none of its tools exist — not in the index, and not callable. The tier decides
+how many tools per service are registered; tiers are cumulative, and `core` is
+the smallest.
+
+Both are prompt-visible. The Connected Systems block in the cached system
+prompt names only the services actually loaded and pins only the tool names
+that exist at the active tier, and startup priming probes the same set — so the
+Executive is never told a tool is "already available" when it is not. If you
+narrow these, expect the block to name fewer services; that is the intended
+effect, not a fault.
+
+Two things worth knowing before narrowing:
+
+- `core` leaves out ten of the pinned tools — Gmail drafts, threads and
+  attachments, Drive item listing, calendar freebusy, and the Docs/Sheets
+  listing and info tools. `extended` and `complete` both cover all of them.
+- `all` means every service only as the **whole** value (surrounding commas or
+  spaces are fine). `gmail,all` is passed through as the two names `gmail` and
+  `all`, and since `all` is not a service name, workspace-mcp's argument parser
+  rejects it and **the child does not start at all** — you lose every Google
+  tool, not just the misspelled one. Write `all` on its own, or list only real
+  service names.
+- Both variables reach the child through the `env` block of the
+  `google_workspace` entry in `mcp_servers.json`, which must forward them
+  (`"WORKSPACE_MCP_TOOLS": "$WORKSPACE_MCP_TOOLS"` and the same for
+  `WORKSPACE_MCP_TOOL_TIER`, as
+  [mcp_servers.json.example](../packages/core/mcp_servers.json.example) does).
+  A config that forwards only one of them leaves the API filtering the prompt
+  on a value the child never saw, which hides tools that are in fact callable.
+
+A pinned tool that priming cannot find is logged once at startup, naming both
+possible causes — the service list or tier excluding it, or workspace-mcp having
+renamed it since the pin in `docker/Dockerfile`.
+
+### Your own Gmail or Outlook (Act as me, optional)
+
+Act as me lets the Executive draft replies **as the owner**, in the owner's
+own Drafts (Gmail or Outlook), when they ask it to, and (with **Draft replies to my
+inbox** on) for mail that needs them. Nothing goes out unless the owner sends
+it: from their mailbox, or with **Send** on a reply card on Today, which needs signed
+sign-ins on a server (see `docs/auth.md`). It uses a separate
+credential for the owner's mailbox, read by the API directly and never handed
+to workspace-mcp, so it must not live in the credentials directory above.
+
+```bash
+# On a machine with a browser, with the same OAuth client exported:
+uv run --with google-auth-oauthlib python scripts/connect-own-gmail.py --email you@example.com
+docker compose exec api mkdir -p /data/delegation_google
+docker compose cp delegation-credentials/<file>.json api:/data/delegation_google/
+```
+
+For an Outlook mailbox (work, school or personal), run
+`scripts/connect-own-outlook.py` instead, with the Microsoft 365 app from
+`.env.example` exported (`MS365_MCP_CLIENT_ID`, and `MS365_MCP_TENANT_ID` if
+it is single-tenant). It prints a code to enter at Microsoft's sign-in page,
+from any browser, and writes the same kind of file, which goes in the same
+directory. The app needs public client flows on and the delegated Graph
+permissions `User.Read`, `Mail.ReadWrite` and `Mail.Send`. A person has one
+mailbox for Act as me: connecting the other kind replaces the file.
+The address is checked against Microsoft's directory, never the mail itself:
+a personal account that signs in with another address (a Gmail one, say) and
+has no Outlook address of its own on file is matched by that sign-in address,
+so use it on the People page and with `--email`.
+
+**Read my calendar (optional).** Run either script with `--calendar` to also
+grant access to the person's own calendar (`calendar.events` on Google, which
+the OAuth client's consent screen must list; the delegated
+`Calendars.ReadWrite` permission on the Microsoft app). Then turn on **Read my
+calendar** in Delegate → Act as me. The Executive reads events fresh each time
+and keeps nothing. The one change it makes there is answering a meeting
+invite: Accept or Decline on an invite card on Home, or an accept on its own
+under Handle it for me. A credential minted without `--calendar` keeps working
+for mail, and the switch says to reconnect with the flag; one minted earlier
+with read-only calendar access (`calendar.readonly`, `Calendars.Read`) keeps
+reading, and its invite cards say to connect again to answer.
+
+```bash
+MS365_MCP_CLIENT_ID=<app id> uv run python scripts/connect-own-outlook.py --email you@example.com
+```
+
+No restart is needed. The address must be the owner's email on the People
+page, and it must not be the Executive's own `EXEC_EMAIL_ADDRESS`. Then turn
+it on in Delegate → Act as me; the setup status page shows the connection.
+
+**Team members (optional).** Set `DELEGATION_TEAM_MEMBERS=true` and the owner
+gets **Let team members use it** in Delegate → Act as me. Once they turn it
+on, each team member connects their own Gmail or Outlook the same way (the script with
+their own address, one file each in the same directory) and turns it on for
+themselves. A team member's mail, drafts, reply cards and audit rows are
+theirs alone: the owner sees only who uses it and how much.
+
+---
+
+## Upgrading
+
+**Settings → About** shows the version you are running. When a newer release
+is out it says so and links the release notes and this section. The API asks
+GitHub's public releases API for the latest release at most every six hours,
+and sends nothing about your install. Set `UPDATE_CHECK_ENABLED=false` to turn
+the check off (for an air-gapped host, say); the running version is still shown.
+`GET /version` returns the same facts as JSON.
+
+There is no in-app update button: updating means replacing the containers,
+which the app cannot do from inside one without being given control of the
+host's Docker. Upgrade from the host instead.
+
+1. **Read the release notes.** Each release's entry in
+   [CHANGELOG.md](../CHANGELOG.md) (also on the GitHub Release) lists what
+   changed. Before 1.0 a minor bump (`0.4.x` → `0.5.0`) marks a breaking
+   change, such as a new required env var; do what its entry says first.
+2. **Back up the database.** `/data/episodic_memory.db` is the part you cannot
+   rebuild; see Backups under [Operations](#operations).
+3. **Replace the containers.** Your data lives in the `executive_data` volume,
+   which survives both of these.
+
+   From a checkout, with `make docker`:
+
+   ```bash
+   git fetch --tags
+   git checkout vX.Y.Z     # or `git pull` on main to follow unreleased changes
+   make docker             # rebuilds the API image and restarts the stack
+   ```
+
+   From the published images: change the image tags to the new release
+   (`ghcr.io/sentelabsai/openexecutive-api:X.Y.Z` and
+   `ghcr.io/sentelabsai/openexecutive-ui:X.Y.Z`), then
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+   Never run `docker compose down -v` to upgrade: `-v` deletes the volume.
+4. **Check it came back.** `curl -s http://localhost:8000/health` reports the
+   new `version`, and Settings → About shows it.
+
+To go back, see **Rollback** under [Operations](#operations).
+
+---
+
+## Microsoft 365 credentials
+
+Outlook mail and calendar tools come from `@softeria/ms-365-mcp-server`, a
+Node MCP server that — like `workspace-mcp` — runs co-located inside the API as
+a stdio child of the MCP gateway. It is baked into the API image (a Node build
+stage copies the pinned package and the `node` binary in; there is no npm in
+the runtime image) and launched by
+[docker/ms365-mcp-launch.sh](../docker/ms365-mcp-launch.sh) from the
+`microsoft_365` entry in `/data/company/mcp_servers.json` (see
+[packages/core/mcp_servers.json.example](../packages/core/mcp_servers.json.example)
+for the exact block). Both servers can be configured at once; the Executive
+discovers whichever tools are present.
+
+Auth is the MSAL **device-code** flow against your own Entra app registration
+(the server's built-in public client id is refused). Register the app (Entra
+admin center → App registrations → New; *Allow public client flows: Yes*;
+delegated Graph permissions `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
+`Files.ReadWrite` and `Files.Read.All` (only with `MS365_MCP_ONEDRIVE=true`, below),
+plus `User.Read` and `offline_access` for the sign-in, with admin consent —
+`ms365-mcp-launch.sh --list-permissions` prints exactly what the configured
+tool list requests), then set:
+
+```
+MS365_MCP_CLIENT_ID=<application (client) id>
+MS365_MCP_TENANT_ID=<directory (tenant) id>          # or "common" / "consumers"
+MS365_MCP_EXPECTED_USERNAME=exec@yourcompany.com     # pins the signed-in account
+MS365_MCP_CLIENT_SECRET=<only for a confidential app registration>
+```
+
+The API serves no OAuth callback and needs none: sign in once from inside the
+container and the refresh token lands on the volume.
+
+```bash
+docker compose exec api /usr/local/bin/ms365-mcp-launch.sh --login          # prints a URL + code; sign in as the exec mailbox
+docker compose exec api /usr/local/bin/ms365-mcp-launch.sh --verify-login
+docker compose restart api        # the gateway reads config and credentials at startup
+```
+
+Setup is the launcher's `--login`, never chat: `MS365_MCP_EXPECTED_USERNAME`
+is what stops a different account being bound. Run `--login` again if the
+refresh token is ever revoked — until then every Microsoft 365 call answers
+with an error payload and the API keeps serving. The server registers its
+account tools whatever `--enabled-tools` says, so the gateway refuses
+`microsoft_365__login`, `logout`, `select-account` and `remove-account`
+itself and leaves them out of `search_tools` results — a chat turn cannot
+sign the mailbox out, wipe the seeded token or switch accounts, whatever
+`mcp_servers.json` says. The example config denies them too (defense in
+depth). The read-only `verify-login` and `list-accounts` stay callable.
+
+The launcher scrubs `$VAR` placeholders that extensible-mcp leaves literal for
+unset variables, refuses to start without `MS365_MCP_CLIENT_ID`, keeps the
+token cache under `MS365_MCP_CREDENTIALS_DIR` (0700), and starts the server
+with an **explicit allow-list** of tools (`--enabled-tools`, an anchored regex
+in the launcher) rather than the upstream `mail,calendar` preset: the preset
+also registers inbox forwarding rules, mailbox settings (external auto-reply),
+calendar sharing and event forwarding, which can address people the gateway
+never sees. Exactly the Outlook mail + calendar tools and the OneDrive tools
+(plus the login tools) are exposed. Egress is gated like Google: `send-mail`, forward and every draft
+tool have their recipients roster-checked from the arguments; reply,
+reply-all and send-draft — whose recipient is whoever the referenced message
+names — have the gateway read that message first and check the sender /
+original recipients / draft recipients (reply-all checks `replyTo` and the
+sender together); `create-/update-calendar-event` attendees must be People
+on the roster. Every mail write's `from`, `sender` and `replyTo` may name
+only `EXEC_EMAIL_ADDRESS` (the Outlook twin of the Gmail acting-account pin),
+and `move-mail-message` into Deleted Items, Junk Email or Recoverable Items
+is refused, so the model cannot trash mail through a move. OneDrive gets the
+surface Google Drive has (search, list, upload and edit, folders, move,
+rename, copy, share; no delete), but only with `MS365_MCP_ONEDRIVE=true`
+and a fresh `--login`: the server asks for its tools' permissions on every
+token refresh, so the file tools are off until the sign-in grants them. `download-bytes` is pinned to mail
+attachments and OneDrive file content, and a OneDrive file comes back as its
+text rather than base64. `share-drive-item` invitees must be on the roster
+and named by email, and `create-drive-item-share-link` must be scoped to
+specific people (`scope: "users"`); an invite must require sign-in and grant
+only view or edit. Writes (upload, new folder, move, copy) land only in the
+Executive's own drives, so nothing is written into a folder someone else
+shared, and `search-onedrive-files` takes plain words only (its query goes
+into the request path unencoded). The same sign-in feeds the optional
+OneDrive folder sync ([onedrive_sync_setup.md](onedrive_sync_setup.md)),
+which asks the launcher for a token (`--access-token`) rather than keeping a
+credential of its own. Widening the allow-list
+(`MS365_MCP_ENABLED_TOOLS` / `MS365_MCP_PRESET`) is an operator decision that
+must come with a matching gate change in `orchestrator/mcp_gateway.py`.
+
+### Switching the mailbox and calendar to Microsoft 365
+
+Adding the server only gives the Executive Outlook *tools*. Three code paths
+call a fixed backend without the model choosing — the inbound mailbox poller,
+alert email dispatch and the scheduler's email hint, and the typed
+`create_calendar_event` / `create_instant_meeting` tools with their approval
+ledger. They follow two switches, both defaulting to `google`:
+
+```
+EMAIL_PROVIDER=microsoft      # poll the Outlook inbox; reply via microsoft_365__reply-mail-message
+CALENDAR_PROVIDER=microsoft   # book on the Outlook calendar with a Teams link
+```
+
+The switches are independent. A chosen backend whose MCP server is missing
+from `mcp_servers.json` is logged at startup and the poller skips its cycle;
+boot never fails. On Microsoft the approval-time conflict check reads only the
+Executive's own calendar (delegated permissions cannot read attendees'
+free/busy), so it is advisory in a narrower sense than Google's.
+
 ---
 
 ## Operations
@@ -249,6 +543,7 @@ the host — a plain file copy of a live SQLite database can be torn.
 | Container is killed and restarted repeatedly during startup | Health-check grace period too short | Raise it to ~5 minutes (see above) |
 | API refuses to start: `BACKEND_SHARED_SECRET is required` | `OE_PUBLIC_DEPLOYMENT` is set with no secret | Working as intended — set the secret |
 | Every UI request errors, API is healthy | UI proxy can't reach the API, or the shared secret differs between them | Check `BACKEND_BASE_URL` on the UI and that both sides carry the same `BACKEND_SHARED_SECRET` |
+| Every UI request is `401` with a `caller_assertion_*` code | Signed callers are half set up | See [auth.md → Debugging](auth.md#debugging) |
 | Browser console shows CORS errors | UI origin missing from `BACKEND_ALLOWED_ORIGINS` | Add the exact scheme + host |
 | Scheduled actions firing twice | More than one API replica | Scale the API to exactly 1 (see the warning at the top) |
 | Onboarding wizard says "no company profile" | Empty volume on first boot | Expected — complete the wizard; output lands at `/data/company/profile.yaml` |

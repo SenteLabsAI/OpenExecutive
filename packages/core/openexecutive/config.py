@@ -1,9 +1,17 @@
+import logging
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# One PYTHON_JOB_EXTRA_LIBRARIES entry: a package name, optionally with its
+# import name when that differs ("scikit-learn (import sklearn)").
+_EXTRA_LIBRARY = re.compile(r"[A-Za-z0-9_.\-]+( \(import [A-Za-z0-9_.]+\))?")
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 # Walk up from this file to find the repo root .env. If no .env exists
 # (CI, fresh checkouts), `_ROOT` becomes `cwd` so file-path defaults stay
@@ -29,6 +37,10 @@ _ENV_FILE = _ROOT / ".env"
 # which httpx/h11 reject as a *connection* error at the first Claude call —
 # two silent retries later, and nowhere near the setting that caused it.
 _WORKSPACE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# What Telegram's setWebhook accepts as a secret_token — and so the only
+# header values its servers can ever send back.
+_TELEGRAM_SECRET_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
 
 
 def _blank_or_comment(v: Any) -> bool:
@@ -106,16 +118,20 @@ class Settings(BaseSettings):
     # off entirely; see openexecutive.observability for what a trace records.
     logfire_token: str | None = Field(None, alias="LOGFIRE_TOKEN")
 
-    default_model: str = Field("claude-sonnet-5", alias="DEFAULT_MODEL")
-    deep_reasoning_model: str = Field("claude-opus-5", alias="DEEP_REASONING_MODEL")
-    routing_model: str = Field("claude-haiku-4-5", alias="ROUTING_MODEL")
+    default_model: str = Field("claude-sonnet-5-5", alias="DEFAULT_MODEL")
+    # The model the specialists with deep reasoning on by default (CFO, legal,
+    # strategy, board comms) run on. Deep reasoning stays on whatever it is;
+    # set DEEP_REASONING_MODEL=claude-opus-5-5 (or apply the Council's
+    # Thorough preset) to put them on the largest model.
+    deep_reasoning_model: str = Field("claude-sonnet-5-5", alias="DEEP_REASONING_MODEL")
+    routing_model: str = Field("claude-haiku-5-5", alias="ROUTING_MODEL")
     # Model for the executive_research specialist fan-out (research-mode turn
     # only — the chat path still uses each agent's deep_reasoning_model). The
     # research turn is retrieve-from-web-search + summarize, which does not
     # need Opus-tier reasoning; running 7 specialists on Sonnet (deep reasoning
     # off) instead of Opus is the dominant cost lever for the workflow.
-    # Set RESEARCH_MODEL=claude-opus-5 to restore the prior behavior.
-    research_model: str = Field("claude-sonnet-5", alias="RESEARCH_MODEL")
+    # Set RESEARCH_MODEL=claude-opus-5-5 to restore the prior behavior.
+    research_model: str = Field("claude-sonnet-5-5", alias="RESEARCH_MODEL")
 
     vector_store_path: Path = Field(_ROOT / "chroma_db", alias="VECTOR_STORE_PATH")
     company_profile_path: Path = Field(
@@ -146,6 +162,16 @@ class Settings(BaseSettings):
     )
     knowledge_builtin_n_results: int = Field(5, alias="KNOWLEDGE_BUILTIN_N_RESULTS")
     knowledge_company_n_results: int = Field(3, alias="KNOWLEDGE_COMPANY_N_RESULTS")
+    # Total characters of knowledge excerpts a chat turn carries (web chat,
+    # Telegram, Discord, Google Chat). The closest matches are kept first.
+    # Every excerpt is re-sent on each model call of the turn, so a long tail
+    # of weak matches costs on every call. 0 = no cap.
+    knowledge_chat_max_chars: int = Field(6000, ge=0, alias="KNOWLEDGE_CHAT_MAX_CHARS")
+    # A specialist's own retrieval (router._retrieve_for_call) takes fewer
+    # chunks than the Executive's: it answers one narrow question. The company
+    # count also caps each synced source (Notion, Drive, OneDrive, Confluence).
+    specialist_builtin_n_results: int = Field(3, alias="SPECIALIST_BUILTIN_N_RESULTS", ge=0)
+    specialist_company_n_results: int = Field(2, alias="SPECIALIST_COMPANY_N_RESULTS", ge=0)
 
     # Max parallel `consult_specialist` calls dispatched in one chat turn.
     # 0 (default) is inert: resolve_fanout_cap() falls back to the specialist
@@ -196,6 +222,21 @@ class Settings(BaseSettings):
     openrouter_catalog_refresh_s: float = Field(
         _DEFAULT_OPENROUTER_CATALOG_REFRESH_S, alias="OPENROUTER_CATALOG_REFRESH_S"
     )
+
+    # ---- Speech to text (voice notes, the chat mic) ---------------------
+    # Any server with the standard POST /audio/transcriptions call (OpenAI,
+    # Groq, OpenRouter, a self-hosted Whisper server). Unset, it uses
+    # OpenRouter when OPENROUTER_API_KEY is set; with neither there is no
+    # transcription and voice notes get a line asking for text instead.
+    transcription_base_url: str | None = Field(None, alias="TRANSCRIPTION_BASE_URL")
+    transcription_api_key: str | None = Field(None, alias="TRANSCRIPTION_API_KEY")
+    # Blank: elevenlabs/scribe-v2 on OpenRouter, whisper-1 elsewhere.
+    transcription_model: str | None = Field(None, alias="TRANSCRIPTION_MODEL")
+    # Longest voice note transcribed, in seconds.
+    transcription_max_seconds: int = Field(300, alias="TRANSCRIPTION_MAX_SECONDS")
+    # Audio sent to the speech server per UTC day, in MB (0 = no limit). The
+    # servers bill by length, which a file can misstate; bytes it can't.
+    transcription_max_mb_per_day: int = Field(200, alias="TRANSCRIPTION_MAX_MB_PER_DAY")
 
     @field_validator("anthropic_workspace_id", mode="before")
     @classmethod
@@ -286,11 +327,37 @@ class Settings(BaseSettings):
     local_include_usage_accounting: bool = Field(
         False, alias="LOCAL_INCLUDE_USAGE_ACCOUNTING"
     )
+    # Whether LOCAL_BASE_URL accepts PDFs as OpenAI `file` content parts —
+    # true for OpenAI's own API (https://api.openai.com/v1), false for
+    # Ollama / LM Studio / vLLM. Off, a PDF for a local model is OCR'd on
+    # this server instead (knowledge/pdf_reader.py).
+    local_pdf_input: bool = Field(False, alias="LOCAL_PDF_INPUT")
+    # Optional `reasoning_effort` sent on every local request (e.g. "low").
+    # Thinking-only models (GLM on Fireworks) otherwise spend the whole
+    # max_tokens budget reasoning and return no tool call. Unset = not sent.
+    # A Literal so a typo fails at startup instead of 400ing every local call.
+    local_reasoning_effort: (
+        Literal["none", "minimal", "low", "medium", "high"] | None
+    ) = Field(None, alias="LOCAL_REASONING_EFFORT")
+
+    # The model that scores eval answers (`make eval` and the Evals page).
+    # Unset = Claude Opus. Any slug the registry routes works, so a slug in
+    # LOCAL_MODELS runs the judge on the local server too, for a run with no
+    # hosted API at all.
+    eval_judge_model: str | None = Field(None, alias="EVAL_JUDGE_MODEL")
 
     @field_validator("local_models", mode="before")
     @classmethod
     def _parse_local_models(cls, v: Any) -> list[str]:
         return _parse_csv_list(v)
+
+    @field_validator("local_reasoning_effort", mode="before")
+    @classmethod
+    def _parse_local_reasoning_effort(cls, v: Any) -> Any:
+        # `LOCAL_REASONING_EFFORT=` (or a bare `# comment`) means unset.
+        if _blank_or_comment(v):
+            return None
+        return v.strip().lower() if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def _validate_local_models(self) -> "Settings":
@@ -315,6 +382,13 @@ class Settings(BaseSettings):
                 "enable local models (LOCAL_MODELS_ENABLED=true + LOCAL_BASE_URL)."
             )
         return self
+
+    # ---- Update check ---------------------------------------------------
+    # GET /version asks GitHub for the latest Open Executive release (at most
+    # every few hours) so Settings can say when a newer one is out. Turn it
+    # off for an air-gapped install or one that must not call out to GitHub;
+    # the running version is still shown.
+    update_check_enabled: bool = Field(True, alias="UPDATE_CHECK_ENABLED")
 
     # ---- Honcho memory provider ----------------------------------------
     # External per-person memory layer (https://honcho.dev). When enabled,
@@ -376,6 +450,12 @@ class Settings(BaseSettings):
     # typically 5–12s.
     committee_extra_timeout_s: float = Field(60.0, alias="COMMITTEE_EXTRA_TIMEOUT_S")
 
+    # How often a streaming chat turn sends an SSE comment while nothing else
+    # is going out (a slow tool call, a long specialist round). Browsers and
+    # proxies drop an idle stream, often after 30-60s, well inside the
+    # whole-turn deadline above. 0 turns it off.
+    chat_stream_keepalive_s: float = Field(15.0, alias="CHAT_STREAM_KEEPALIVE_S", ge=0)
+
     # Per-call ceiling for the onboarding interview. It used to borrow
     # chat_stream_timeout_s, which meant raising that to 300s would have let the
     # wizard's 2-attempt retry loop hang for up to 600s before surfacing
@@ -402,10 +482,15 @@ class Settings(BaseSettings):
             self.vector_store_path = base / self.vector_store_path
         if not self.company_profile_path.is_absolute():
             self.company_profile_path = base / self.company_profile_path
+        if not self.delegation_google_credentials_dir.is_absolute():
+            self.delegation_google_credentials_dir = base / self.delegation_google_credentials_dir
         return self
 
     slack_bot_token: str | None = Field(None, alias="SLACK_BOT_TOKEN")
     slack_app_token: str | None = Field(None, alias="SLACK_APP_TOKEN")
+    # The other way to hear Slack: with this set and no SLACK_APP_TOKEN, Slack
+    # posts events to POST /webhook/slack, signed with the app's signing secret.
+    slack_signing_secret: str | None = Field(None, alias="SLACK_SIGNING_SECRET")
     # Company-wide broadcast channels — when set, OE can post to "the
     # whole team" on a given integration without picking a specific
     # human or department. Used by `send_company_broadcast`. Each is
@@ -421,16 +506,114 @@ class Settings(BaseSettings):
         None, alias="TELEGRAM_DEFAULT_CHAT_ID"
     )
 
-    # Required: the Executive's own Google Workspace address. No default —
-    # we never want the Executive to operate as some other user's account
-    # because an env var silently fell through. The email poller, alert
-    # dispatcher, and the persona's identity addendum all read this.
+    # Required: the Executive's own mailbox address (Google Workspace or
+    # Microsoft 365 — see EMAIL_PROVIDER). No default — we never want the
+    # Executive to operate as some other user's account because an env var
+    # silently fell through. The email poller, alert dispatcher, and the
+    # persona's identity addendum all read this.
     exec_email_address: str = Field(..., alias="EXEC_EMAIL_ADDRESS")
     # Display name the Executive signs messages with. Pinned into the
     # identity addendum so the model has a concrete self-name and never
     # falls back to signing as a person from the company People roster.
     exec_display_name: str = Field("Open Executive", alias="EXEC_DISPLAY_NAME")
+    # AI disclosure (orchestrator.disclosure): a line on the mail and chat
+    # messages the Executive sends saying it is an AI assistant. On unless
+    # turned off. The texts replace the built-in wording; one that doesn't
+    # say "AI" is ignored, so the line can't be reworded into hiding it.
+    ai_disclosure: bool = Field(True, alias="AI_DISCLOSURE")
+    ai_disclosure_mail_text: str = Field("", alias="AI_DISCLOSURE_MAIL_TEXT", max_length=500)
+    ai_disclosure_chat_text: str = Field("", alias="AI_DISCLOSURE_CHAT_TEXT", max_length=200)
+    # Where each person's own switches start (delegation.disclosure): a line
+    # on the replies Handle it for me sends as them on its own, and on the
+    # drafts they approve and send themselves. Each person can change theirs.
+    ai_disclosure_handle_it: bool = Field(True, alias="AI_DISCLOSURE_HANDLE_IT")
+    ai_disclosure_approved_sends: bool = Field(False, alias="AI_DISCLOSURE_APPROVED_SENDS")
     email_poll_interval_seconds: int = Field(60, alias="EMAIL_POLL_INTERVAL_SECONDS")
+    # Whole-turn ceiling for the Executive's answer to one inbound email. The
+    # poller handles mail one message at a time, so a turn with no ceiling held
+    # every message behind it. A timed-out message is marked read and not tried
+    # again: the turn may already have replied.
+    email_turn_timeout_s: float = Field(300.0, alias="EMAIL_TURN_TIMEOUT_S", gt=0)
+    # Ceiling on one call through the MCP gateway (Gmail, Calendar, Drive,
+    # Outlook, OneDrive, tool search). A call past it is abandoned and reported
+    # as not answered, so a hung workspace server can't hold a turn, a brief or
+    # the email poller.
+    mcp_tool_timeout_s: float = Field(120.0, alias="MCP_TOOL_TIMEOUT_S", gt=0)
+    # Lets `ask_executive` over Open Executive's own MCP server act
+    # (`Session.mcp_client_may_act`) on an install with no
+    # BACKEND_SHARED_SECRET. With a secret configured this is ignored, and only
+    # the `x-mcp-client-actions: on` header on a request the secret
+    # authenticated turns it on (`mcp_server.may_act`).
+    mcp_client_actions: bool = Field(False, alias="MCP_CLIENT_ACTIONS")
+
+    # Which Google services the co-located workspace-mcp child loads, and at
+    # which tier. These are the same two variables `docker/workspace-mcp-launch.sh`
+    # turns into `--tools` / `--tool-tier`; they are read here so the prompt can
+    # describe what actually loaded instead of the whole manifest. Both are
+    # process-constant, which is what keeps cached block 0 warm.
+    workspace_mcp_tools: str = Field("all", alias="WORKSPACE_MCP_TOOLS")
+    workspace_mcp_tool_tier: str = Field("complete", alias="WORKSPACE_MCP_TOOL_TIER")
+
+    @property
+    def workspace_mcp_service_list(self) -> list[str] | None:
+        """The Google services loaded, or ``None`` meaning "all of them".
+
+        Mirrors `workspace-mcp-launch.sh`'s normalisation exactly, including the
+        cases that are easy to miss — and every one of them resolves to "all",
+        so a Python parser that handled only `split(",")` would answer with a
+        NARROWER set than the child actually loaded. That direction matters:
+        this value gates what the prompt advertises, and under-reporting hides a
+        tool the model can really call, which is the mirror image of the bug
+        this property exists to fix.
+
+        The four rules, in the launcher's order:
+
+        1. unset or empty -> ``all``
+        2. a value still reading ``$SOMETHING`` -> ``all``. extensible-mcp
+           leaves an unresolved `$VAR` in a config `env` block as that literal
+           text, so the child can receive the string "$WORKSPACE_MCP_TOOLS".
+        3. commas become spaces, then a value with no non-whitespace left
+           (``","``) -> ``all``
+        4. ``all`` only means every service when it is the WHOLE value, after
+           the launcher collapses whitespace. ``"gmail,all"`` becomes
+           ``--tools gmail all``, and since ``--tools`` is declared
+           ``nargs="*" choices=VALID_SERVICES`` and ``all`` is not a service
+           name, **argparse exits 2 and the child never starts** — so nothing
+           loads at all. This property reports ``["gmail", "all"]`` there,
+           matching what the launcher passes rather than what survives it;
+           neither answer describes a dead child, which is a gap the prompt
+           cannot express (``server_names`` comes from the config file, not
+           from child health). Treating ``all`` as a sentinel wherever it
+           appeared made this answer "every service" instead, the widening
+           direction this property exists to prevent. A parity test against
+           the real script catches both.
+        """
+        raw = (self.workspace_mcp_tools or "").strip()
+        if not raw or raw.startswith("$"):
+            return None
+        names = [p for p in raw.replace(",", " ").split() if p]
+        if not names or names == ["all"]:
+            return None
+        return list(dict.fromkeys(names))
+
+    @property
+    def workspace_mcp_tier(self) -> str:
+        """The tier the child runs at. An unresolved ``$VAR`` reads as the
+        launcher's default, for the same reason as above."""
+        raw = (self.workspace_mcp_tool_tier or "").strip()
+        return "complete" if not raw or raw.startswith("$") else raw
+
+    # Roster requests (people.roster_requests): someone off the roster who
+    # writes in is held for the principal to confirm, and told so — at most
+    # once per sender per ROSTER_ACK_WINDOW_DAYS, and at most
+    # ROSTER_ACK_DAILY_CAP acknowledgements a day across all senders, so a
+    # forged sender cannot turn the Executive into a mail cannon. At most
+    # ROSTER_REQUEST_DAILY_CAP new requests a day; an unanswered one closes
+    # after ROSTER_REQUEST_TTL_DAYS.
+    roster_ack_window_days: int = Field(7, ge=1, le=365, alias="ROSTER_ACK_WINDOW_DAYS")
+    roster_ack_daily_cap: int = Field(20, ge=0, le=10_000, alias="ROSTER_ACK_DAILY_CAP")
+    roster_request_daily_cap: int = Field(30, ge=0, le=10_000, alias="ROSTER_REQUEST_DAILY_CAP")
+    roster_request_ttl_days: int = Field(14, ge=1, le=365, alias="ROSTER_REQUEST_TTL_DAYS")
 
     # Telegram + Discord channel access is roster-driven: a sender's
     # channel ID must be present on a non-archived Person row. The old
@@ -503,18 +686,198 @@ class Settings(BaseSettings):
     )
     google_chat_project_number: str | None = Field(None, alias="GOOGLE_CHAT_PROJECT_NUMBER")
 
+    @field_validator(
+        "slack_bot_token", "slack_app_token", "slack_signing_secret", "telegram_bot_token",
+        "discord_bot_token", "discord_app_id", "google_chat_project_number",
+        "google_chat_service_account_file", "google_chat_service_account_email",
+        mode="before",
+    )
+    @classmethod
+    def _unset_if_comment(cls, v: Any) -> Any:
+        # `KEY=   # note` reaches us as "# note": python-dotenv only strips a
+        # comment that follows a value. Left alone, that note would count as
+        # a token and switch the channel on with it. TELEGRAM_WEBHOOK_SECRET
+        # is deliberately not here: read as unset, a junk secret would switch
+        # the webhook's check off; kept, it makes the webhook refuse every
+        # update (see telegram_webhook_secret_valid).
+        return None if _blank_or_comment(v) else v
+
     # ---- Tool results ----
     # Upper bound on a single tool result's characters before it enters the
     # prompt. A circuit breaker against an unbounded result (a large document
     # fetch) dominating a turn and then being re-sent on every remaining
-    # iteration of the tool loop — deliberately set high enough that ordinary
-    # tool output never reaches it. Applies to every tool, not just MCP.
+    # iteration of the tool loop. 20,000 characters (about 5,500 tokens) is
+    # well above a typical result; a longer one is cut with a marker that
+    # asks for a narrower request. Applies to every tool, not just MCP.
     tool_result_max_chars: int = Field(
-        50_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
+        20_000, alias="TOOL_RESULT_MAX_CHARS", ge=1_000
+    )
+    # What all of one turn's tool results may add together, in characters
+    # (specialists' answers aside): each stays in the prompt for every later
+    # call of the turn. Past it a result shows its first 3,000 characters and
+    # says the turn has read enough. 0 turns it off.
+    tool_results_turn_max_chars: int = Field(
+        40_000, alias="TOOL_RESULTS_TURN_MAX_CHARS", ge=0
+    )
+    # Workflow action steps may also act through one short sandboxed script
+    # (`run_script`, workflows/step_script.py) that calls the step's own tools
+    # — each call through the same allowlist, budget, target check and audit.
+    # Off: the step only calls its tools one by one, as before.
+    workflow_step_scripts: bool = Field(True, alias="WORKFLOW_STEP_SCRIPTS")
+    # A step's script calls have a budget of their own, 10x the step's
+    # max_tool_calls up to this ceiling: they cost no model turn each, so the
+    # direct-call budget (1-50) would cap a folder at ~50 files. Each call
+    # still goes through the allowlist, target check and audit.
+    workflow_script_max_calls: int = Field(
+        500, alias="WORKFLOW_SCRIPT_MAX_CALLS", ge=1, le=5_000
+    )
+    # The same in chat: the Executive may run one sandboxed script over the
+    # gateway tools a conversation has found, each call checked exactly as a
+    # call_tool. Never offered on a turn private to the principal.
+    chat_scripts: bool = Field(True, alias="CHAT_SCRIPTS")
+    # The most tool calls a chat turn's scripts may make in all (gateway and
+    # the Executive's own tools); message_person and upsert_person have
+    # tighter caps of their own (step_script.CHAT_OWN_TOOL_CAPS).
+    chat_script_max_calls: int = Field(200, alias="CHAT_SCRIPT_MAX_CALLS", ge=1, le=5_000)
+    # How many scripts (each a Monty worker process, up to 128 MB and one CPU
+    # core while computing) may run at once across the whole server, chat and
+    # workflows together. More wait their turn, within their own time limit.
+    script_max_workers: int = Field(2, alias="SCRIPT_MAX_WORKERS", ge=1, le=32)
+    # Python jobs (workflows/python_job.py): Python with real libraries on
+    # files, in a WebAssembly sandbox run by Deno. Offered only when the
+    # sandbox is installed at PYTHON_SANDBOX_DIR (the API image does that).
+    python_jobs_enabled: bool = Field(True, alias="PYTHON_JOBS_ENABLED")
+    python_sandbox_dir: Path = Field(Path("/opt/pysandbox"), alias="PYTHON_SANDBOX_DIR")
+    python_job_timeout_s: float = Field(120.0, alias="PYTHON_JOB_TIMEOUT_S", ge=5, le=900)
+    # The sandbox process's data limit (RLIMIT_DATA): measured, pandas plus a
+    # chart needs about 1.5 GB of it; 1 GB is too little.
+    python_job_memory_mb: int = Field(1536, alias="PYTHON_JOB_MEMORY_MB", ge=512, le=16384)
+    # Run Python jobs on a separate runner instead of the local sandbox: each
+    # job is POSTed there (workflows/python_job.py, _run_remote) with this key
+    # as a bearer token, and the local sandbox isn't needed. https only, or
+    # plain http to localhost or a .internal / .flycast name. The key is
+    # required with the URL.
+    python_job_runner_url: str | None = Field(None, alias="PYTHON_JOB_RUNNER_URL")
+    python_job_runner_key: str | None = Field(None, alias="PYTHON_JOB_RUNNER_KEY")
+    # Libraries the runner has beyond the local sandbox's, named in the job
+    # tool's description (e.g. "scipy, scikit-learn (import sklearn)"). Used
+    # only with PYTHON_JOB_RUNNER_URL; the local sandbox can't install more.
+    python_job_extra_libraries: str | None = Field(None, alias="PYTHON_JOB_EXTRA_LIBRARIES")
+
+    @field_validator("python_job_runner_url")
+    @classmethod
+    def _validate_python_job_runner_url(cls, v: str | None) -> str | None:
+        from urllib.parse import urlparse
+        v = (v or "").strip()
+        if not v:
+            return None
+        parsed = urlparse(v)
+        host = (parsed.hostname or "").lower()
+        private = host in {"localhost", "127.0.0.1", "::1"} or host.endswith((".internal", ".flycast"))
+        if not host or not (parsed.scheme == "https" or (parsed.scheme == "http" and private)):
+            raise ValueError(
+                "PYTHON_JOB_RUNNER_URL must be an https URL (plain http only to localhost, .internal or .flycast)"
+            )
+        return v
+
+    @field_validator("python_job_extra_libraries")
+    @classmethod
+    def _validate_python_job_extra_libraries(cls, v: str | None) -> str | None:
+        # It goes into a tool description, so only package names, each with an
+        # optional import name ("scikit-learn (import sklearn)"). A bad
+        # value is dropped, not fatal: it is optional and the control plane may
+        # push it to machines that must still boot.
+        v = " ".join((v or "").split())
+        if not v:
+            return None
+        items = [item.strip() for item in v.split(",")]
+        if len(v) > 300 or not all(_EXTRA_LIBRARY.fullmatch(item) for item in items):
+            logging.getLogger(__name__).warning(
+                "PYTHON_JOB_EXTRA_LIBRARIES ignored: not a short comma-separated list of package names"
+            )
+            return None
+        return ", ".join(items)
+
+    @model_validator(mode="after")
+    def _validate_python_job_runner_key(self) -> "Settings":
+        # Without a key every job (code and files) would go out unauthenticated.
+        if self.python_job_runner_url and not (self.python_job_runner_key or "").strip():
+            raise ValueError("PYTHON_JOB_RUNNER_URL requires PYTHON_JOB_RUNNER_KEY")
+        return self
+    # ---- Extensions (orchestrator/extensions.py) ----
+    # Python modules this install adds, comma-separated (e.g. "acme.tools").
+    # Each module's register() adds chat tools and document collections at
+    # startup. A bad name is dropped, not fatal, like the extra libraries.
+    extensions: str | None = Field(None, alias="OPENEXECUTIVE_EXTENSIONS")
+
+    @field_validator("extensions")
+    @classmethod
+    def _validate_extensions(cls, v: str | None) -> str | None:
+        items = [item.strip() for item in (v or "").split(",") if item.strip()]
+        good = [item for item in items if _MODULE_NAME.fullmatch(item)]
+        if len(good) != len(items):
+            logging.getLogger(__name__).warning(
+                "OPENEXECUTIVE_EXTENSIONS: ignored names that are not Python module paths"
+            )
+        return ",".join(good) or None
+
+    # A script that worked may be saved and run again by name (saved tools,
+    # workflows/saved_tools.py). Off: run_script ignores save_as/tool and
+    # list_saved_tools lists nothing; saved tools stay stored.
+    saved_tools_enabled: bool = Field(True, alias="SAVED_TOOLS_ENABLED")
+
+    # ---- Scanned PDFs (knowledge/pdf_reader.py) ----
+    # A PDF with no text layer (a scan, or one printed to PDF as images) is
+    # read by a model through its own provider's PDF support: Anthropic
+    # natively, OpenRouter via its file-parser (see PDF_OPENROUTER_ENGINE), a
+    # local server only when LOCAL_PDF_INPUT says it takes PDFs. Otherwise —
+    # or when that call fails — the server OCRs the pages locally.
+    # Unset means DEFAULT_MODEL, the model the deployment already runs on.
+    pdf_vision_model: str | None = Field(None, alias="PDF_VISION_MODEL")
+    # OpenRouter's PDF parser for a model that cannot read files natively
+    # (a native-file model always gets "native"). mistral-ocr is OpenRouter's
+    # scan-grade OCR ($2 per 1,000 pages); cloudflare-ai is free Markdown.
+    pdf_openrouter_engine: Literal["mistral-ocr", "cloudflare-ai", "native"] = Field(
+        "mistral-ocr", alias="PDF_OPENROUTER_ENGINE"
+    )
+    # Pages read per converted PDF; the rest are skipped with a note.
+    pdf_vision_max_pages: int = Field(100, alias="PDF_VISION_MAX_PAGES", ge=1, le=600)
+    # Pages sent to the model per request (each request transcribes a slice).
+    pdf_vision_pages_per_call: int = Field(
+        20, alias="PDF_VISION_PAGES_PER_CALL", ge=1, le=100
+    )
+    # Opt-in: whether scanned PDFs may be sent to the model provider at all.
+    # On, the deployment's model reads them through its provider (Anthropic
+    # natively; OpenRouter, and for a model without native file input its
+    # parser, e.g. Mistral OCR; a local server with LOCAL_PDF_INPUT). Off (the
+    # default), they never leave this server: local OCR only. Off by default
+    # because company documents are sensitive and turning it on adds data
+    # egress (and, on OpenRouter, possibly a third-party processor).
+    pdf_provider_reading: bool = Field(False, alias="PDF_PROVIDER_READING")
+    # Local OCR: what reads scanned PDFs while PDF_PROVIDER_READING is off,
+    # for a model that cannot take a PDF, and the fallback when the provider
+    # fails. Off means such a PDF stays unreadable (and says so).
+    pdf_ocr_enabled: bool = Field(True, alias="PDF_OCR_ENABLED")
+    # Files that arrive on their own through a channel (chat, Slack, Google
+    # Chat, email attachments) — not ones the Executive or the signed-in user
+    # asks to read — convert at most this many pages each, and at most
+    # PDF_INBOUND_PAGES_PER_HOUR pages across all senders per rolling hour,
+    # so sending scans cannot run up unbounded model spend or CPU. The rest of
+    # such a file is one `read_document` away when it is on disk.
+    pdf_inbound_max_pages: int = Field(30, alias="PDF_INBOUND_MAX_PAGES", ge=1, le=600)
+    pdf_inbound_pages_per_hour: int = Field(
+        300, alias="PDF_INBOUND_PAGES_PER_HOUR", ge=0
     )
 
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"
+    )
+    # Directories a workflow action step's `oe__read_file` tool may read —
+    # where tools that download files (e.g. Gmail attachments via
+    # workspace-mcp) save them. Comma-separated. Empty means workspace-mcp's
+    # own default: $WORKSPACE_ATTACHMENT_DIR, else ~/.workspace-mcp/attachments.
+    workflow_file_dirs: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, alias="WORKFLOW_FILE_DIRS"
     )
     # Left unset, this is inferred from the presence of mcp_servers_config_path
     # (see _resolve_mcp). Set explicitly, the explicit value always wins.
@@ -540,9 +903,11 @@ class Settings(BaseSettings):
     calendar_max_events_per_day: int = Field(10, alias="CALENDAR_MAX_EVENTS_PER_DAY")
     # Maximum number of attendees per event (inclusive of organizer).
     calendar_max_attendees: int = Field(8, alias="CALENDAR_MAX_ATTENDEES")
-    # When true, every booking requests a Google Meet video link
-    # (add_google_meet on the manage_event MCP call). The model can still
-    # opt out per-event via the tool's add_google_meet=false.
+    # When true, every booking requests a video-meeting link — Google Meet
+    # (add_google_meet on the manage_event MCP call) or Microsoft Teams
+    # (isOnlineMeeting on the Graph event), per CALENDAR_PROVIDER. The model can
+    # still opt out per-event via the tool's add_video_link=false. The env alias
+    # keeps its historical name for compatibility.
     calendar_meet_links_enabled: bool = Field(True, alias="CALENDAR_MEET_LINKS_ENABLED")
     # Default duration (minutes) for an impromptu create_instant_meeting that
     # doesn't specify one.
@@ -551,6 +916,23 @@ class Settings(BaseSettings):
     # DMs a human attendee for the recap (decisions + action items).
     calendar_post_meeting_followup_enabled: bool = Field(
         True, alias="CALENDAR_POST_MEETING_FOLLOWUP_ENABLED"
+    )
+
+    # Which workspace backend the code paths that call a fixed mailbox /
+    # calendar use — the inbound email poller, alert email dispatch and the
+    # scheduler's email hint (EMAIL_PROVIDER); the typed booking tools and the
+    # approval-time conflict check (CALENDAR_PROVIDER). "google" = Gmail /
+    # Google Calendar via the google_workspace MCP server; "microsoft" =
+    # Outlook via the microsoft_365 MCP server (integrations.workspace).
+    # Separate switches: Outlook mail with a Google calendar is legitimate.
+    # Fail-soft, no validator tying either to its server being configured —
+    # a missing server is logged at startup and the poller skips its cycle;
+    # it never blocks boot (see the calendar_booking_enabled note above).
+    # Pydantic enforces the Literal, so a typo fails at startup with a clear
+    # message.
+    email_provider: Literal["google", "microsoft"] = Field("google", alias="EMAIL_PROVIDER")
+    calendar_provider: Literal["google", "microsoft"] = Field(
+        "google", alias="CALENDAR_PROVIDER"
     )
 
     # Anthropic native web_search server tool. Enabled by default — the
@@ -586,7 +968,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "web_search_allowed_domains", "web_search_blocked_domains",
-        "research_specialists", mode="before",
+        "research_specialists", "workflow_file_dirs", mode="before",
     )
     @classmethod
     def _parse_domain_list(cls, v: Any) -> list[str]:
@@ -688,10 +1070,37 @@ class Settings(BaseSettings):
         10, alias="ALERT_REVIEW_MAX_MOVES_PER_SCAN"
     )
 
+    # Grounding checks on unattended prose (briefing/grounding.py): the
+    # morning brief, EOD digest, reflection flags and outward tool calls, and
+    # the alert text triage/review writes must name only people and figures
+    # found in their own inputs or the company profile. "enforce" holds back
+    # (briefs) or refuses (tools) what it can't ground, "report" only writes
+    # a `grounding` audit row, "off" skips the pass. Citations put [n] after
+    # each grounded figure in a brief, with a Sources list at the end.
+    grounding_checks: Literal["enforce", "report", "off"] = Field(
+        "enforce", alias="GROUNDING_CHECKS"
+    )
+    grounding_citations: bool = Field(True, alias="GROUNDING_CITATIONS")
+
     # Principal briefs: when nothing changed since the last delivered brief,
     # send a one-line "nothing new" instead of re-synthesising the same list.
     principal_brief_suppress_unchanged: bool = Field(
         True, alias="PRINCIPAL_BRIEF_SUPPRESS_UNCHANGED"
+    )
+
+    # How often the scheduler checks whether the principal's /today "What's
+    # going on" header is out of date (new mail, something stuck, the hour
+    # turned) and rewrites it before anyone opens the page. Only between the
+    # two local hours below. 0 turns it off (the header then refreshes only
+    # when the page is opened).
+    briefing_narrative_refresh_minutes: int = Field(
+        10, alias="BRIEFING_NARRATIVE_REFRESH_MINUTES"
+    )
+    briefing_narrative_refresh_start_hour: int = Field(
+        6, alias="BRIEFING_NARRATIVE_REFRESH_START_HOUR"
+    )
+    briefing_narrative_refresh_end_hour: int = Field(
+        22, alias="BRIEFING_NARRATIVE_REFRESH_END_HOUR"
     )
 
     # Proactive nudge engine — heartbeat that scans for stalled workflows,
@@ -718,6 +1127,27 @@ class Settings(BaseSettings):
     # loop the nudge engine's commitment source chases once it is due, and a
     # later "sent it" from the same person closes it. Rows live in
     # scheduled_actions (kind="open_loop"); see attunement/open_loops.py.
+    # Do what it says (orchestrator/claim_check.py): a reply that claims a
+    # change no tool call made gets one more round to make it or say it
+    # can't. One small ROUTING_MODEL call, only when the reply uses a word
+    # that can claim a change.
+    claim_check_enabled: bool = Field(True, alias="CLAIM_CHECK_ENABLED")
+    # Conversation review (memory.chat_review): once a chat has been quiet
+    # this long, one small tool loop reads the new part and fixes what the
+    # replies left undone, from the person's own quoted words. Empty model =
+    # ROUTING_MODEL.
+    chat_review_enabled: bool = Field(True, alias="CHAT_REVIEW_ENABLED")
+    chat_review_quiet_minutes: int = Field(30, ge=1, alias="CHAT_REVIEW_QUIET_MINUTES")
+    chat_review_max_per_day: int = Field(10, ge=0, alias="CHAT_REVIEW_MAX_PER_DAY")
+    chat_review_model: str = Field("", alias="CHAT_REVIEW_MODEL")
+    # Replay of the misses (memory.replay): nightly, the turns the review
+    # graded a miss run again with today's lessons and facts, in a dry run,
+    # and a judge says whether they would now go right. At most MAX_CASES a
+    # night within MINUTES; empty judge model = EVAL_JUDGE_MODEL, else Sonnet.
+    chat_replay_enabled: bool = Field(True, alias="CHAT_REPLAY_ENABLED")
+    chat_replay_max_cases: int = Field(30, ge=0, alias="CHAT_REPLAY_MAX_CASES")
+    chat_replay_minutes: int = Field(20, ge=1, alias="CHAT_REPLAY_MINUTES")
+    chat_replay_judge_model: str = Field("", alias="CHAT_REPLAY_JUDGE_MODEL")
     attunement_enabled: bool = Field(True, alias="ATTUNEMENT_ENABLED")
     attunement_open_loops_enabled: bool = Field(True, alias="ATTUNEMENT_OPEN_LOOPS_ENABLED")
     # When no due date is stated, the loop is due this many days after it opens.
@@ -727,6 +1157,16 @@ class Settings(BaseSettings):
     attunement_loop_ttl_days: int = Field(21, alias="ATTUNEMENT_LOOP_TTL_DAYS")
     attunement_max_open_loops_per_person: int = Field(
         15, alias="ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON"
+    )
+    # Tell a person, once, when someone else assigns them a task
+    # (attunement/assignment_notice.py). Chasing it stays the nudge engine's.
+    attunement_assign_notify_enabled: bool = Field(
+        True, alias="ATTUNEMENT_ASSIGN_NOTIFY_ENABLED"
+    )
+    # The owner's monthly "what your Executive did" message, on the first
+    # weekday of the month (briefing/value_summary.py). Both workspace modes.
+    value_summary_monthly_enabled: bool = Field(
+        True, alias="VALUE_SUMMARY_MONTHLY_ENABLED"
     )
     # Ceiling on open-loop extraction model calls per UTC day, across everyone.
     attunement_max_calls_per_day: int = Field(200, alias="ATTUNEMENT_MAX_CALLS_PER_DAY")
@@ -740,6 +1180,53 @@ class Settings(BaseSettings):
     attunement_mute_cooldown_multiplier: int = Field(
         3, alias="ATTUNEMENT_MUTE_COOLDOWN_MULTIPLIER"
     )
+    # Working style: a few short "how they like replies" rules per person,
+    # learned from their own reactions and requests (attunement/style.py).
+    # A pass runs after this many new messages from the person (or right
+    # after a thumbs-down), at most once per interval and N times a day.
+    attunement_style_enabled: bool = Field(True, alias="ATTUNEMENT_STYLE_ENABLED")
+    attunement_style_trigger_turns: int = Field(10, alias="ATTUNEMENT_STYLE_TRIGGER_TURNS")
+    attunement_style_min_interval_hours: int = Field(
+        2, alias="ATTUNEMENT_STYLE_MIN_INTERVAL_HOURS"
+    )
+    attunement_style_max_per_day: int = Field(4, alias="ATTUNEMENT_STYLE_MAX_PER_DAY")
+
+    # ---- Act as me (delegation/) ---------------------------------------------
+    # Where each person's own-Gmail credential lives, one file per person
+    # (written by scripts/connect-own-gmail.py). Never the workspace-mcp
+    # credentials dir: workspace-mcp picks a credential there by address, which
+    # would put this mailbox within the model's reach. Docker: on /data.
+    delegation_google_credentials_dir: Path = Field(
+        _ROOT / "company" / "delegation_google", alias="DELEGATION_GOOGLE_CREDENTIALS_DIR"
+    )
+    # The model that learns "How I write" and writes drafts; unset = DEFAULT_MODEL.
+    delegation_composer_model: str | None = Field(None, alias="DELEGATION_COMPOSER_MODEL")
+    # Ceiling on drafts written as one person per UTC day (a cost guard),
+    # from chat and the inbox watcher together (delegation.caps).
+    delegation_max_drafts_per_day: int = Field(
+        50, alias="DELEGATION_MAX_DRAFTS_PER_DAY", ge=1, le=1000
+    )
+    # The inbox watcher (delegation.inbox): how often it checks a person's
+    # inbox while their "Draft replies to my inbox" switch is on, how many of
+    # the day's drafts it may write (within the limit above), and the model
+    # that decides whether an email needs a reply (unset = ROUTING_MODEL).
+    delegation_inbox_poll_minutes: int = Field(
+        5, alias="DELEGATION_INBOX_POLL_MINUTES", ge=1, le=1440
+    )
+    delegation_inbox_max_drafts_per_day: int = Field(
+        20, alias="DELEGATION_INBOX_MAX_DRAFTS_PER_DAY", ge=1, le=1000
+    )
+    delegation_classifier_model: str | None = Field(None, alias="DELEGATION_CLASSIFIER_MODEL")
+    # Handle it for me (delegation.handle_it): the most replies the inbox
+    # watcher may send on its own as one person per UTC day, within its
+    # drafts limit above. Past it, replies wait on cards as before.
+    delegation_handle_it_max_sends_per_day: int = Field(
+        20, alias="DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", ge=1, le=500
+    )
+    # Whether the owner may let team members use Act as me for themselves
+    # (Delegate → Act as me → "Let team members use it", off until they turn
+    # it on). Off: the owner alone, as before (delegation.settings).
+    delegation_team_members: bool = Field(False, alias="DELEGATION_TEAM_MEMBERS")
 
     # External-condition monitoring — heartbeat that polls source adapters
     # (vendor_status in PR-A; RSS + stock in PR-B) and emits external_signals
@@ -868,6 +1355,144 @@ class Settings(BaseSettings):
         40, alias="NOTION_MAX_PAGES_PER_SCAN"
     )
 
+    # Google Drive folder → isolated collection sync. OFF by default. When on,
+    # a scheduler heartbeat re-indexes the files in DRIVE_SYNC_FOLDER_IDS (and
+    # their subfolders) into the DRIVE Chroma collection (not COMPANY — a
+    # shared folder is multi-writer and unreviewed). It reads as a service
+    # account with drive.readonly, so only folders shared with that account's
+    # email are visible. See docs/drive_sync_setup.md.
+    drive_sync_enabled: bool = Field(False, alias="DRIVE_SYNC_ENABLED")
+    drive_sync_service_account_file: str | None = Field(
+        None, alias="DRIVE_SYNC_SERVICE_ACCOUNT_FILE"
+    )
+    drive_sync_folder_ids: str = Field("", alias="DRIVE_SYNC_FOLDER_IDS")
+    drive_sync_interval_minutes: int = Field(60, alias="DRIVE_SYNC_INTERVAL_MINUTES")
+    drive_max_files_per_scan: int = Field(40, alias="DRIVE_MAX_FILES_PER_SCAN")
+
+    @property
+    def drive_sync_folder_id_list(self) -> list[str]:
+        """``DRIVE_SYNC_FOLDER_IDS`` split on commas, blanks dropped, order kept."""
+        return list(
+            dict.fromkeys(p.strip() for p in self.drive_sync_folder_ids.split(",") if p.strip())
+        )
+
+    # Confluence space → isolated collection sync. OFF by default. When on, a
+    # scheduler heartbeat re-indexes the pages in CONFLUENCE_SYNC_SPACE_KEYS
+    # into the CONFLUENCE Chroma collection (not COMPANY — a wiki is
+    # multi-writer and unreviewed). Cloud and Server/DC both work. The URL,
+    # credential and SSL names match mcp-atlassian's, so one .env serves both.
+    # The token acts as the user who made it; pages with read restrictions
+    # are skipped unless CONFLUENCE_SYNC_SKIP_RESTRICTED=false. See
+    # docs/confluence_sync_setup.md.
+    confluence_sync_enabled: bool = Field(False, alias="CONFLUENCE_SYNC_ENABLED")
+    confluence_url: str | None = Field(None, alias="CONFLUENCE_URL")
+    confluence_personal_token: str | None = Field(None, alias="CONFLUENCE_PERSONAL_TOKEN")
+    confluence_username: str | None = Field(None, alias="CONFLUENCE_USERNAME")
+    confluence_api_token: str | None = Field(None, alias="CONFLUENCE_API_TOKEN")
+    confluence_ssl_verify: str = Field("true", alias="CONFLUENCE_SSL_VERIFY")
+    confluence_sync_space_keys: str = Field("", alias="CONFLUENCE_SYNC_SPACE_KEYS")
+    confluence_sync_skip_restricted: bool = Field(True, alias="CONFLUENCE_SYNC_SKIP_RESTRICTED")
+    confluence_sync_allow_http: bool = Field(False, alias="CONFLUENCE_SYNC_ALLOW_HTTP")
+    # Refuse a CONFLUENCE_URL whose host resolves to a loopback, private,
+    # link-local or other non-public address, checked on every request. For
+    # an install where whoever sets the URL must not reach the network the
+    # app runs in. Off by default: a Server/DC wiki on the LAN is common.
+    confluence_sync_public_hosts_only: bool = Field(
+        False, alias="CONFLUENCE_SYNC_PUBLIC_HOSTS_ONLY"
+    )
+    confluence_sync_interval_minutes: int = Field(60, alias="CONFLUENCE_SYNC_INTERVAL_MINUTES")
+    confluence_max_pages_per_scan: int = Field(40, alias="CONFLUENCE_MAX_PAGES_PER_SCAN")
+
+    @property
+    def confluence_sync_space_key_list(self) -> list[str]:
+        """``CONFLUENCE_SYNC_SPACE_KEYS`` split on commas, blanks dropped, order kept."""
+        return list(
+            dict.fromkeys(
+                p.strip() for p in self.confluence_sync_space_keys.split(",") if p.strip()
+            )
+        )
+
+    @model_validator(mode="after")
+    def _validate_confluence_sync(self) -> "Settings":
+        if not self.confluence_sync_enabled:
+            return self
+        from openexecutive.knowledge.confluence_client import config_problem
+
+        problem = config_problem(
+            url=self.confluence_url,
+            personal_token=self.confluence_personal_token,
+            username=self.confluence_username,
+            api_token=self.confluence_api_token,
+            space_keys=self.confluence_sync_space_key_list,
+            allow_http=self.confluence_sync_allow_http,
+        )
+        if problem:
+            raise ValueError(f"CONFLUENCE_SYNC_ENABLED=true: {problem}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_drive_sync(self) -> "Settings":
+        if not self.drive_sync_enabled:
+            return self
+        if not self.drive_sync_service_account_file:
+            raise ValueError(
+                "DRIVE_SYNC_ENABLED=true requires DRIVE_SYNC_SERVICE_ACCOUNT_FILE "
+                "(a service-account key JSON; see docs/drive_sync_setup.md)"
+            )
+        ids = self.drive_sync_folder_id_list
+        if not ids:
+            raise ValueError("DRIVE_SYNC_ENABLED=true requires DRIVE_SYNC_FOLDER_IDS")
+        bad = [i for i in ids if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", i)]
+        if bad:
+            raise ValueError(f"DRIVE_SYNC_FOLDER_IDS has ids Drive would not issue: {bad}")
+        return self
+
+    # OneDrive folder → isolated collection sync. OFF by default. The Microsoft
+    # analogue of the Drive sync above: a scheduler heartbeat re-indexes the
+    # files in ONEDRIVE_SYNC_FOLDERS (and their subfolders) into the ONEDRIVE
+    # Chroma collection. Microsoft has no per-folder service account, so it
+    # reads as the Executive's own Microsoft 365 sign-in (the one the
+    # microsoft_365 MCP server holds), with Files.Read.All, and only the
+    # folders listed here. Each entry is ``<drive id>/<item id>``; the
+    # ``onedrive-folder`` CLI command turns a share link into one. See
+    # docs/onedrive_sync_setup.md.
+    onedrive_sync_enabled: bool = Field(False, alias="ONEDRIVE_SYNC_ENABLED")
+    onedrive_sync_folders: str = Field("", alias="ONEDRIVE_SYNC_FOLDERS")
+    onedrive_sync_interval_minutes: int = Field(60, alias="ONEDRIVE_SYNC_INTERVAL_MINUTES")
+    onedrive_max_files_per_scan: int = Field(40, alias="ONEDRIVE_MAX_FILES_PER_SCAN")
+    # The Microsoft 365 MCP launcher; the sync asks it for an access token
+    # (``--access-token``) so it reads with the server's own sign-in.
+    ms365_mcp_launcher: str = Field(
+        "/usr/local/bin/ms365-mcp-launch.sh", alias="MS365_MCP_LAUNCHER"
+    )
+
+    @property
+    def onedrive_sync_folder_list(self) -> list[tuple[str, str]]:
+        """``ONEDRIVE_SYNC_FOLDERS`` as ``(drive id, item id)`` pairs, blanks and
+        repeats dropped, order kept. Entries that don't parse are dropped here;
+        the validator refuses them when the sync is on."""
+        from openexecutive.knowledge.onedrive_client import parse_folder_entry
+
+        pairs = (parse_folder_entry(p) for p in self.onedrive_sync_folders.split(","))
+        return list(dict.fromkeys(p for p in pairs if p is not None))
+
+    @model_validator(mode="after")
+    def _validate_onedrive_sync(self) -> "Settings":
+        if not self.onedrive_sync_enabled:
+            return self
+        from openexecutive.knowledge.onedrive_client import parse_folder_entry
+
+        entries = [p.strip() for p in self.onedrive_sync_folders.split(",") if p.strip()]
+        if not entries:
+            raise ValueError("ONEDRIVE_SYNC_ENABLED=true requires ONEDRIVE_SYNC_FOLDERS")
+        bad = [e for e in entries if parse_folder_entry(e) is None]
+        if bad:
+            raise ValueError(
+                f"ONEDRIVE_SYNC_FOLDERS entries must be <drive id>/<item id>: {bad} "
+                "(run `openexecutive onedrive-folder <share link>` to get one)"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_notion_sync(self) -> "Settings":
         if self.notion_sync_enabled and not self.notion_api_key:
@@ -880,10 +1505,13 @@ class Settings(BaseSettings):
     @field_validator("user_timezone")
     @classmethod
     def _validate_tz(cls, v: str) -> str:
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        from zoneinfo import ZoneInfo
         try:
             ZoneInfo(v)
-        except ZoneInfoNotFoundError as exc:
+        except Exception as exc:
+            # Not only ZoneInfoNotFoundError: a region directory ("America")
+            # raises IsADirectoryError and a malformed key ValueError, and
+            # either would otherwise escape as a raw traceback at startup.
             raise ValueError(f"USER_TIMEZONE {v!r} is not a known IANA zone") from exc
         return v
 
@@ -906,6 +1534,19 @@ class Settings(BaseSettings):
         ):
             self.mcp_enabled = True
         return self
+
+    @property
+    def telegram_webhook_secret_valid(self) -> bool:
+        """Whether TELEGRAM_WEBHOOK_SECRET is set to a value Telegram can send.
+
+        setWebhook only accepts 1–256 of ``A-Z a-z 0-9 _ -``, so any other
+        value — a leftover ``# note``, a pasted ``<value from Step 2>`` — can
+        only ever be matched by someone who guessed it. Such a secret proves
+        nothing: the webhook refuses every update while it is set, and
+        nothing counts a Telegram message as verified.
+        """
+        secret = self.telegram_webhook_secret
+        return bool(secret) and _TELEGRAM_SECRET_RE.fullmatch(secret or "") is not None
 
     @property
     def mcp_auto_enabled(self) -> bool:
@@ -939,5 +1580,41 @@ def mcp_config_file_present(config_path: Path) -> bool:
         return False
 
 
+# get_settings() is called hundreds of times a minute (every key decrypt,
+# every per-tenant check), and building Settings re-parses the environment
+# and .env for every field: ~5 ms each, most of an idle server's CPU. So it
+# is built once and rebuilt only when what it reads changes: the
+# environment, the working directory (relative path defaults), the .env
+# file, and whether the MCP config file exists (_resolve_mcp).
+_settings_lock = threading.Lock()
+_settings_cache: tuple[tuple[object, ...], bool, Settings] | None = None
+
+
+def _settings_key() -> tuple[object, ...]:
+    try:
+        stat = _ENV_FILE.stat()
+        env_file: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        env_file = None
+    try:
+        cwd: str | None = os.getcwd()
+    except OSError:
+        cwd = None
+    return (tuple(os.environ.items()), cwd, env_file)
+
+
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    """The current settings. Each call returns its own copy, so a caller that
+    changes a field never changes anyone else's."""
+    global _settings_cache
+    key = _settings_key()
+    with _settings_lock:
+        cached = _settings_cache
+    if cached is not None:
+        cached_key, mcp_file, settings = cached
+        if cached_key == key and mcp_config_file_present(settings.mcp_servers_config_path) == mcp_file:
+            return settings.model_copy(deep=True)
+    settings = Settings()  # type: ignore[call-arg]
+    with _settings_lock:
+        _settings_cache = (key, mcp_config_file_present(settings.mcp_servers_config_path), settings)
+    return settings.model_copy(deep=True)

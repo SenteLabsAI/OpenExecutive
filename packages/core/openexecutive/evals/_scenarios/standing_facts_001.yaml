@@ -1,0 +1,24 @@
+id: standing_facts_001
+domain: operations
+description: "Executive uses <standing_facts>: a correction the principal made in an earlier chat (Maple House is 48 units, not 52) holds in a later, unrelated request, with no memory meta-talk"
+company_context:
+  name: "Northwind Properties"
+  industry: "Residential property management"
+  stage: "Growth"
+  headcount: 60
+  arr: 9000000
+# Rendered under the shared STANDING FACTS header (evals.runner.
+# scenario_standing_facts) and passed as the <standing_facts> body, in the
+# shape memory/facts.render_facts_for_prompt produces. No store is read.
+standing_facts: |
+  - [fact 12] Maple House unit count: Maple House has 48 units. (corrects: 52 units) — 2026-09-21
+  - [fact 9] Cedar Court: Cedar Court is 36 units and fully let. — 2026-09-02
+query: "Draft the portfolio section of this month's owners' letter: each building, its unit count, and one line on occupancy."
+expected_topics:
+  - owners_letter_draft
+  - maple_house_48_units
+  - cedar_court_36_units
+quality_criteria:
+  uses_corrected_figure: true        # 48 units for Maple House, never 52
+  does_not_invent_other_buildings: true
+  no_memory_meta_talk: true          # never "as you corrected earlier" / "my notes say"

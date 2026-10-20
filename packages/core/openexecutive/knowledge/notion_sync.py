@@ -782,16 +782,22 @@ async def _apply_tick(
         state["reconcile_skips"] = 0
 
     if not reconcile_only:
+        synced_at = (now or datetime.now(UTC)).isoformat()
         unresolved_times = list(fetch.unresolved_times)
         for page, page_id, edited, markdown in fetch.fetched:
             try:
                 chunks = await ingest_page(page, markdown, store)
                 filename = slugify(page_title(page), page_id)
-                state.setdefault("pages", {})[page_id] = {
+                record: dict[str, Any] = {
                     "last_edited": edited,
                     "title": page_title(page),
                     "filename": filename,
+                    "synced_at": synced_at,
                 }
+                url = page.get("url")
+                if isinstance(url, str) and url.startswith("https://"):
+                    record["url"] = url
+                state.setdefault("pages", {})[page_id] = record
                 stats["updated"] += 1
                 logger.info(
                     "notion_sync: indexed %s (%d chunks)", page_title(page), chunks
@@ -823,7 +829,49 @@ async def _apply_tick(
                     state["watermark"] = candidate
 
     state["last_run"] = (now or datetime.now(UTC)).isoformat()
+    # A tick that skipped some pages still succeeded, but the knowledge page
+    # should say so rather than show a clean sync.
+    if stats["failed"]:
+        state["last_error"] = _partial_failure_message(stats["failed"])
+    else:
+        state.pop("last_error", None)
     save_state(state)
+
+
+def _partial_failure_message(failed: int) -> str:
+    return (
+        f"{failed} page{'' if failed == 1 else 's'} could not be synced. "
+        "Check the server logs."
+    )
+
+
+# One tick at a time per process — see the matching lock in drive_sync.
+_RUN_LOCK = asyncio.Lock()
+
+
+# When the last tick in this process ended, failed or not. ``last_run`` is
+# stamped only on success and with the tick's start time, so a manual-sync
+# cooldown keyed on it alone lets a failing or slow source be re-run
+# back-to-back.
+_last_finished_at: datetime | None = None
+
+
+def is_syncing() -> bool:
+    return _RUN_LOCK.locked()
+
+
+def last_finished_at() -> datetime | None:
+    return _last_finished_at
+
+
+def _record_error(message: str) -> None:
+    """Keep a short, user-facing reason the last tick failed (never a trace)."""
+    try:
+        state = load_state()
+        state["last_error"] = message
+        save_state(state)
+    except Exception:
+        logger.exception("notion_sync: could not record the last error")
 
 
 async def run_notion_sync(
@@ -833,7 +881,31 @@ async def run_notion_sync(
     now: datetime | None = None,
     reconcile_only: bool = False,
 ) -> dict[str, int]:
-    """One sync tick. Returns counts: seen / updated / skipped / failed / purged / capped."""
+    """One sync tick. Returns counts: seen / updated / skipped / failed / purged / capped
+    (plus ``busy`` when another tick is already running in this process)."""
+    if _RUN_LOCK.locked():
+        logger.info("notion_sync: a tick is already running — skipping")
+        return {"busy": 1}
+    global _last_finished_at
+    async with _RUN_LOCK:
+        try:
+            return await _run_notion_sync_locked(
+                store=store, client=client, now=now, reconcile_only=reconcile_only
+            )
+        except Exception:
+            _record_error("The last sync failed unexpectedly. Check the server logs.")
+            raise
+        finally:
+            _last_finished_at = datetime.now(UTC)
+
+
+async def _run_notion_sync_locked(
+    *,
+    store: ChromaDBStore | None,
+    client: httpx.AsyncClient | None,
+    now: datetime | None,
+    reconcile_only: bool,
+) -> dict[str, int]:
     settings = get_settings()
     stats = {
         "seen": 0,
@@ -998,3 +1070,72 @@ def enqueue_next_notion_sync_scan(
     except Exception:
         logger.exception("notion_sync.enqueue_next: insert failed")
         return None
+
+
+def list_synced_pages() -> dict[str, Any]:
+    """What the knowledge page shows for Notion: one row per page on record.
+
+    Mirrors ``drive_sync.list_synced_files``. Pages recorded before
+    ``synced_at`` / ``url`` were kept per page fall back to the tick time and
+    no link.
+    """
+    state = load_state()
+    last_run = state.get("last_run") if isinstance(state.get("last_run"), str) else None
+    raw_pages = state.get("pages")
+    pages: list[dict[str, Any]] = []
+    for pid, rec in (raw_pages if isinstance(raw_pages, dict) else {}).items():
+        safe = sanitize_notion_id(str(pid))
+        if not safe or not isinstance(rec, dict):
+            continue
+        filename = _safe_filename(str(rec.get("filename") or ""))
+        url = rec.get("url")
+        pages.append(
+            {
+                "id": safe,
+                "name": str(rec.get("title") or filename or safe),
+                "url": url if isinstance(url, str) and url.startswith("https://") else None,
+                "modified_at": rec.get("last_edited")
+                if isinstance(rec.get("last_edited"), str)
+                else None,
+                "synced_at": rec.get("synced_at")
+                if isinstance(rec.get("synced_at"), str)
+                else last_run,
+                "indexed": filename is not None,
+            }
+        )
+    pages.sort(key=lambda p: p["name"].lower())
+    error = state.get("last_error")
+    return {
+        "last_run": last_run,
+        "last_error": error if isinstance(error, str) else None,
+        "files": pages,
+    }
+
+
+def read_synced_page(page_id: str) -> dict[str, Any] | None:
+    """The stored Markdown of one synced page, or None when it is unknown.
+
+    The path comes from the state record for a sanitized id, never from the
+    caller, and must be a ``notion-*.md`` name directly under ``docs/notion/``.
+    """
+    safe = sanitize_notion_id(page_id)
+    if not safe:
+        return None
+    raw_pages = load_state().get("pages")
+    rec = raw_pages.get(safe) if isinstance(raw_pages, dict) else None
+    if not isinstance(rec, dict):
+        return None
+    filename = _safe_filename(str(rec.get("filename") or ""))
+    if filename is None:
+        return None
+    try:
+        text = (_docs_dir() / filename).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    url = rec.get("url")
+    return {
+        "id": safe,
+        "name": str(rec.get("title") or filename),
+        "url": url if isinstance(url, str) and url.startswith("https://") else None,
+        "content": _PAGE_ID_COMMENT.sub("", text, count=1).lstrip(),
+    }

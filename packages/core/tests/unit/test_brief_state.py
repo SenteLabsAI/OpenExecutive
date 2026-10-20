@@ -136,6 +136,23 @@ def test_handled_since_reads_review_audit_events(tmp_path: Path, monkeypatch: py
     assert brief_state.handled_since(datetime.now(UTC) + timedelta(hours=1)) == []
 
 
+def test_handled_since_keeps_private_rows_for_the_principals_own_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.audit import logger as audit_logger
+
+    al = audit_logger.AuditLogger(db_path=tmp_path / "audit.db")
+    al.initialize_db()
+    monkeypatch.setattr(audit_logger, "get_audit_logger", lambda: al)
+    al.log("alert_review_routed", "Routed 'Acme renewal' to Dana", actor="executive")
+    al.log("alert_review_closed", "Resolved 'Note from a contact'", actor="executive", private=True)
+
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert [h["kind"] for h in brief_state.handled_since(since)] == ["routed"]
+    both = brief_state.handled_since(since, include_private=True)
+    assert sorted(h["kind"] for h in both) == ["closed", "routed"]
+
+
 def test_fingerprint_moves_with_pending_watch_suggestions() -> None:
     since = datetime.now(UTC) - timedelta(hours=12)
     base = dict(today_data={"proposals": [], "departments": [], "people": []}, activity=[], handled=[], since=since)
@@ -217,3 +234,38 @@ def test_fingerprint_moves_when_a_carried_item_is_rewritten() -> None:
     assert brief_state.build_brief_fingerprint(
         today_data={"proposals": [again], "departments": [], "people": []}, **base,
     ) == fp_rewritten
+
+
+def test_fingerprint_counts_the_live_world_only_when_given() -> None:
+    since = datetime.now(UTC) - timedelta(hours=12)
+    base = {"today_data": {}, "activity": [], "handled": [], "since": since}
+    legacy = brief_state.build_brief_fingerprint(**base)
+    # Nothing live → the fingerprint is exactly what it was before.
+    empty_live = {"inbound": [], "stuck": [], "drafts": 0, "conversations": [], "calendar": ""}
+    assert brief_state.build_brief_fingerprint(**base, live_keys=empty_live) == legacy
+    mail = brief_state.build_brief_fingerprint(
+        **base, live_keys={**empty_live, "inbound": ["sam@x.com|renewal|1"]},
+    )
+    assert mail != legacy
+    assert brief_state.build_brief_fingerprint(**base, reflection_flags="- x") != legacy
+
+
+def test_reflection_flags_since_reads_the_latest_reflection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.workflows import persistence
+
+    monkeypatch.setattr(persistence, "DB_PATH", tmp_path / "runs.db")
+    persistence.initialize_runs_db()
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert brief_state.reflection_flags_since(since) == ""
+    persistence.create_run("r", "executive_reflection", "Executive Reflection", {})
+    persistence.complete_run(
+        "r", "**Flagged for the brief:**\n- Board deck due Friday\n\n**Quiet:** rest is calm",
+    )
+    assert brief_state.reflection_flags_since(since) == "- Board deck due Friday"
+    later = datetime.now(UTC) + timedelta(minutes=1)
+    assert brief_state.reflection_flags_since(later) == ""  # older than the window
+    persistence.create_run("s", "executive_reflection", "Executive Reflection", {})
+    persistence.complete_run("s", "**Acted on:**\n- DM'd Sam")
+    assert brief_state.reflection_flags_since(since) == ""  # latest has no flags

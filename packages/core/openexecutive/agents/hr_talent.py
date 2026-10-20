@@ -5,6 +5,7 @@ from openexecutive.config import get_settings
 class HRAgent(BaseAgent):
     name = "chro"
     domain = "hr"
+    visibility = "core"
 
     @property
     def model(self) -> str:  # type: ignore[override]

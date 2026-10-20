@@ -151,8 +151,9 @@ def test_propose_only_approver_outside_window_sets_deliver_at() -> None:
 # ESCALATE
 # ---------------------------------------------------------------------------
 
-def test_escalate_routes_and_is_allowed() -> None:
-    """ESCALATE should set action='escalate' and allowed=True (dispatch continues)."""
+def test_escalate_routes_and_is_not_allowed() -> None:
+    """ESCALATE routes to an approver and is NOT allowed to execute: the level
+    promises "the specialist will not act" until a person approves."""
     _set_dept_level("legal", AuthorityLevel.ESCALATE)
     principal_id = people_store.upsert_person(
         full_name="Founder", is_principal=True
@@ -161,8 +162,18 @@ def test_escalate_routes_and_is_allowed() -> None:
 
     decision = gate_action("legal", "ad_hoc", now=_NOW)
     assert decision.action == "escalate"
-    assert decision.allowed is True
+    assert decision.allowed is False
     assert decision.assignee_person_id == principal_id
+
+
+def test_escalate_with_no_approver_is_not_allowed() -> None:
+    """With nobody to ask, an escalation still must not execute."""
+    _set_dept_level("legal", AuthorityLevel.ESCALATE)
+
+    decision = gate_action("legal", "ad_hoc", now=_NOW)
+    assert decision.action == "escalate"
+    assert decision.allowed is False
+    assert decision.assignee_person_id is None
 
 
 # ---------------------------------------------------------------------------

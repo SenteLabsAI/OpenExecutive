@@ -3,17 +3,25 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-
 import {
+  ARTIFACT_EXTENSIONS,
   ArtifactDetail,
   archiveArtifact,
+  artifactDownloadUrl,
   deleteArtifact,
   getArtifact,
   restoreArtifact,
 } from "@/lib/api";
-import Icon from "@/components/Icon";
+import ArtifactViewer from "@/components/ArtifactViewer";
+import Button, { buttonClass } from "@/components/ui/Button";
+import OverflowMenu from "@/components/ui/OverflowMenu";
+
+// Seed for "Revise in chat": opens a fresh chat with the id pre-filled so the
+// Executive can get_artifact → draft_artifact(supersedes=…).
+function reviseHref(art: ArtifactDetail): string {
+  const draft = `Revise artifact ${art.id} ("${art.title}"): `;
+  return `/?new=1&draft=${encodeURIComponent(draft)}`;
+}
 
 function formatTimestamp(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -46,19 +54,6 @@ export default function ArtifactDetailPage() {
     }
   }, [art]);
 
-  const handleDownload = useCallback(() => {
-    if (!art?.body) return;
-    const blob = new Blob([art.body], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${art.id.replace(":", "-")}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [art]);
-
   const handleToggleArchive = useCallback(async () => {
     if (!art) return;
     const archiving = !art.archived_at;
@@ -75,6 +70,16 @@ export default function ArtifactDetailPage() {
       setBusy(false);
     }
   }, [art]);
+
+  // Downloads come from the API; an <a download> keeps the page in place.
+  const download = useCallback((url: string) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, []);
 
   const handleDelete = useCallback(async () => {
     if (!art) return;
@@ -99,7 +104,7 @@ export default function ArtifactDetailPage() {
       <div className="flex flex-col h-full bg-surface text-fg items-center justify-center">
         <div className="text-sm text-red-400 mb-4">Error: {error}</div>
         <Link href="/artifacts" className="text-sm text-fg-muted hover:text-fg">
-          ← Back to artifacts
+          ← Back to documents
         </Link>
       </div>
     );
@@ -115,89 +120,84 @@ export default function ArtifactDetailPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface text-fg">
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-8">
         <div className="max-w-4xl mx-auto space-y-6">
-          <div className="flex items-start justify-between gap-4">
+          <Link href="/artifacts" className="text-sm text-fg-muted hover:text-fg">
+            ← Documents
+          </Link>
+          <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
-              <h1 className="text-2xl font-semibold text-fg mb-1">{art.title}</h1>
-              <div className="text-xs text-fg-muted">
-                {art.source_label} · created {formatTimestamp(art.created_at)}
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mb-2 break-words">
+                {art.title}
+              </h1>
+              <div className="text-sm text-fg-muted">
+                {art.format_label} · {art.source_label} · created{" "}
+                {formatTimestamp(art.created_at)}
+                {art.archived_at && " · archived"}
               </div>
+              {art.supersedes_id && (
+                <div className="text-sm text-fg-muted mt-1">
+                  Replaces an{" "}
+                  <Link
+                    href={`/artifacts/${encodeURIComponent(art.supersedes_id)}`}
+                    className="text-accent hover:underline"
+                  >
+                    earlier version
+                  </Link>
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
-              >
-                {copied ? "Copied!" : "Copy"}
-              </button>
-              <button
-                type="button"
-                onClick={handleDownload}
-                className="text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch"
-              >
-                Download .md
-              </button>
-              <button
-                type="button"
-                onClick={handleToggleArchive}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg transition px-3 py-1.5 rounded-md border border-line hover:bg-surface-overlay min-h-touch disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-              >
-                <Icon
-                  name={art.archived_at ? "restore" : "archive"}
-                  size="w-3.5 h-3.5"
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <Link href={reviseHref(art)} className={buttonClass("primary", "md")}>
+                Revise in chat
+              </Link>
+              <Button onClick={handleCopy}>{copied ? "Copied!" : "Copy"}</Button>
+              {art.downloads.length > 0 && (
+                <OverflowMenu
+                  trigger="Download"
+                  label="Download"
+                  items={art.downloads.map((target, i) => ({
+                    label: `As .${ARTIFACT_EXTENSIONS[target]}`,
+                    onSelect: () =>
+                      download(artifactDownloadUrl(art.id, i === 0 ? undefined : target)),
+                  }))}
                 />
-                {art.archived_at ? "Restore" : "Archive"}
-              </button>
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={busy}
-                aria-label="Delete permanently"
-                className="inline-flex items-center gap-1.5 text-xs text-fg-muted hover:text-red-400 transition px-3 py-1.5 rounded-md border border-line hover:bg-red-500/10 hover:border-red-500/30 min-h-touch disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-              >
-                <Icon name="trash" size="w-3.5 h-3.5" />
-                Delete
-              </button>
+              )}
+              <OverflowMenu
+                label="More actions"
+                items={[
+                  {
+                    label: art.archived_at ? "Restore" : "Archive",
+                    disabled: busy,
+                    onSelect: () => void handleToggleArchive(),
+                  },
+                  {
+                    label: "Delete permanently",
+                    danger: true,
+                    disabled: busy,
+                    onSelect: () => void handleDelete(),
+                  },
+                ]}
+              />
             </div>
           </div>
 
           {art.rationale && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-              <div className="text-xs font-medium text-amber-300 mb-1">
+            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 px-5 py-4">
+              <div className="text-sm font-semibold text-amber-600 dark:text-amber-300 mb-1">
                 Why this is worth your time
               </div>
-              <div className="text-sm text-fg">{art.rationale}</div>
+              <div className="text-[15px] text-fg">{art.rationale}</div>
             </div>
           )}
 
-          <article
-            className="prose prose-invert prose-sm max-w-none rounded-lg border border-line bg-surface/40 p-6
-              prose-headings:text-fg prose-headings:font-semibold
-              prose-p:text-fg prose-p:leading-relaxed
-              prose-strong:text-fg
-              prose-code:text-indigo-300 prose-code:bg-surface-overlay prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
-              prose-pre:bg-surface-overlay prose-pre:border prose-pre:border-line-strong
-              prose-blockquote:border-line-strong prose-blockquote:text-fg-muted
-              prose-ul:text-fg prose-ol:text-fg
-              prose-li:marker:text-fg-muted
-              prose-hr:border-line-strong
-              prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
-              prose-table:text-fg prose-th:text-fg prose-th:border-line-strong prose-td:border-line-strong"
-          >
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                a: ({ node: _node, ...props }) => (
-                  <a {...props} rel="noopener noreferrer nofollow" target="_blank" />
-                ),
-              }}
-            >
-              {art.body}
-            </ReactMarkdown>
-          </article>
+          <ArtifactViewer
+            format={art.format}
+            body={art.body}
+            title={art.title}
+            externalUrl={art.external_url}
+            linkLabel={art.link_label}
+          />
         </div>
       </main>
     </div>

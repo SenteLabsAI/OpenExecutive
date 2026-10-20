@@ -273,3 +273,48 @@ def test_raising_mcp_tool_becomes_error_result_and_turn_survives(
     assert len(failures) == 1
     assert failures[0]["details"]["kind"] == "mcp"
     assert failures[0]["details"]["tool"] == "gcal__list"
+
+
+class _HangingGateway(_ExplodingGateway):
+    async def call_tool(self, _input: dict[str, Any]) -> str:
+        await asyncio.sleep(30)
+        return "{}"
+
+
+def test_a_turn_cut_off_mid_mcp_call_records_the_call_as_cancelled(
+    _no_audit_writes: list[dict[str, Any]],
+) -> None:
+    """A deadline (the email turn's) can cancel a send already on its way to
+    the server; the call still gets its tool_invocation row."""
+    provider = _ScriptedProvider(
+        [
+            _FinalMsg(
+                [_ToolUseBlock(
+                    "tu-send", "call_tool",
+                    {"name": "google_workspace__send_gmail_message", "arguments": "{}"},
+                )],
+                stop_reason="tool_use",
+            ),
+        ]
+    )
+    exec_ = Executive(mcp_gateway=_HangingGateway())  # type: ignore[arg-type]
+
+    async def _go() -> None:
+        with patch("openexecutive.orchestrator.executive.get_provider", return_value=provider):
+            async with asyncio.timeout(0.2):
+                async for _item in exec_._stream_agent_loop(
+                    system_blocks=[],
+                    messages=[{"role": "user", "content": "do the thing"}],
+                    model="claude-test",
+                ):
+                    pass
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(_go())
+    cancelled = [
+        row for row in _no_audit_writes
+        if row["event_type"] == "tool_invocation" and row.get("details", {}).get("cancelled")
+    ]
+    assert len(cancelled) == 1
+    assert cancelled[0]["details"]["tool"] == "google_workspace__send_gmail_message"
+    assert cancelled[0]["summary"].endswith("CANCELLED")

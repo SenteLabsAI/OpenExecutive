@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -433,6 +433,11 @@ def _mark_defaults_seeded(conn: sqlite3.Connection, now: str) -> None:
 def seed_default_departments(db_path: Path | None = None) -> int:
     """Insert the 8 default departments on first run only.
 
+    Nothing calls this at startup any more: a new install starts with no
+    departments, and setup (``onboarding.commit``) or the Executive's
+    ``create_goal`` tool creates only the ones the company has. It remains for
+    tests and tooling that want the full catalogue in one call.
+
     Seeding happens exactly once per database, tracked by the
     ``default_departments_seeded`` row in ``departments_meta``. After that
     first run the user owns the department list: departments they delete stay
@@ -646,10 +651,9 @@ def _mirror_goal_to_honcho(
     try:
         from openexecutive.memory.honcho_client import append_department_note
 
-        body = (
-            f"Goal {transition} ({period_type} {period_value}): {key_result}\n"
-            f"Target: {target}"
-        )
+        body = f"Goal {transition} ({period_type} {period_value}): {key_result}"
+        if target:
+            body += f"\nTarget: {target}"
         if current:
             body += f"\nCurrent: {current}"
         if status:
@@ -848,13 +852,17 @@ def create_department(
     title: str,
     *,
     mission: str = "",
+    specialist_key: str | None = None,
     db_path: Path | None = None,
 ) -> DepartmentState:
     """Insert a new custom department and return its initial state.
 
     The slug is derived from the title. If a collision exists, a numeric suffix
-    is appended (-2, -3, …). specialist_key is always NULL for user-created
-    departments. Raises ValueError if title is blank after stripping.
+    is appended (-2, -3, …). ``specialist_key`` is NULL unless the caller
+    passes one — the UI and onboarding never do; the Executive's
+    ``create_goal`` tool does when a new area is named after a specialist's
+    domain (see ``specialist_key_for_area``). Raises ValueError if title is
+    blank after stripping.
     """
     title = title.strip()
     if not title:
@@ -862,6 +870,14 @@ def create_department(
 
     base_slug = _slugify(title)
     now = _now()
+    # A department named after one of the catalogue areas ("Finance", "HR")
+    # starts from that area's charter, so it reads the same as it would have
+    # when all eight were created up front. An explicit mission still wins.
+    catalogue = default_charter_for(title)
+    scope: list[str] = list(catalogue.scope) if catalogue else []
+    out_of_scope: list[str] = list(catalogue.out_of_scope) if catalogue else []
+    if not mission.strip() and catalogue is not None:
+        mission = catalogue.mission
 
     with _get_conn(db_path) as conn:
         slug = base_slug
@@ -879,12 +895,15 @@ def create_department(
                   (slug, title, specialist_key,
                    charter_mission, charter_scope_json, charter_out_of_scope_json,
                    authority_level, cadences_json, updated_at)
-                VALUES (?, ?, NULL, ?, '[]', '[]', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     slug,
                     title,
+                    specialist_key or None,
                     mission,
+                    json.dumps(scope),
+                    json.dumps(out_of_scope),
                     AuthorityLevel.PROPOSE_ONLY.value,
                     json.dumps({"check_in": DEFAULT_CHECK_IN_CADENCE}),
                     now,
@@ -899,6 +918,65 @@ def create_department(
     if state is None:
         raise RuntimeError(f"Department {slug!r} vanished immediately after insert")
     return state
+
+
+def match_department(
+    name: str, departments: Iterable[DepartmentConfig]
+) -> DepartmentConfig | None:
+    """The department ``name`` refers to, or None.
+
+    ``name`` may be a slug ("finance", "board_comms") or a title ("People &
+    Talent"): it matches a department whose slug equals it as given or as
+    ``create_department`` would slug it, else one whose title matches
+    case-insensitively. Slug matches win over title matches, so a title that
+    happens to slug to another department's slug still finds that one.
+    Shared by onboarding's additive department step and the ``create_goal``
+    chat tool, so both resolve a name the same way.
+    """
+    raw = name.strip()
+    if not raw:
+        return None
+    configs = list(departments)
+    slugs = {raw.lower(), _slugify(raw)}
+    for config in configs:
+        if config.slug in slugs:
+            return config
+    title = raw.lower()
+    for config in configs:
+        if config.title.strip().lower() == title:
+            return config
+    return None
+
+
+# An area named after a specialist's domain gets that specialist, so a goal
+# filed under a new "Sales" area — or a "Finance" area recreated after the
+# default was deleted — is reviewed by the matching specialist. Keyed by slug:
+# the default departments' slugs and slugged titles, plus Sales, the one
+# specialist with no default department.
+_AREA_SPECIALISTS: dict[str, str] = {
+    **{slug: key for slug, _title, key, _charter in DEFAULT_DEPARTMENTS},
+    **{_slugify(title): key for _slug, title, key, _charter in DEFAULT_DEPARTMENTS},
+    "sales": "sales",
+}
+
+
+_CATALOGUE_CHARTERS: dict[str, DepartmentCharter] = {
+    **{slug: charter for slug, _title, _key, charter in DEFAULT_DEPARTMENTS},
+    **{_slugify(title): charter for _slug, title, _key, charter in DEFAULT_DEPARTMENTS},
+}
+
+
+def default_charter_for(title: str) -> DepartmentCharter | None:
+    """The catalogue charter for an area called ``title`` ("Finance",
+    "People & Talent", "hr"), or None when it is not one of the eight."""
+    return _CATALOGUE_CHARTERS.get(_slugify(title))
+
+
+def specialist_key_for_area(title: str) -> str | None:
+    """The specialist a new area called ``title`` obviously belongs to
+    ("Finance" → ``cfo``, "Sales" → ``sales``), or None for anything else —
+    that area stays informational (no specialist, no check-in review)."""
+    return _AREA_SPECIALISTS.get(_slugify(title))
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:

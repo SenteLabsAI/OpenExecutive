@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -108,7 +109,7 @@ def test_list_artifact_runs_only_done_with_artifact(temp_db: Path) -> None:
     create_run("failed-1", "board_prep", "Boom", {}, db_path=temp_db)
     fail_run("failed-1", "boom", db_path=temp_db)
 
-    runs = list_artifact_runs(db_path=temp_db)
+    runs = list_artifact_runs(visible_to=None, db_path=temp_db)
     assert [r["run_id"] for r in runs] == ["done-1"]
     # List query omits the heavy artifact body.
     assert "artifact" not in runs[0]
@@ -116,7 +117,7 @@ def test_list_artifact_runs_only_done_with_artifact(temp_db: Path) -> None:
 
 def test_list_artifact_runs_empty_on_missing_db(tmp_path: Path) -> None:
     missing = tmp_path / "nope.db"
-    assert list_artifact_runs(db_path=missing) == []
+    assert list_artifact_runs(visible_to=None, db_path=missing) == []
 
 
 def test_list_artifact_runs_excludes_empty_artifact(temp_db: Path) -> None:
@@ -124,7 +125,7 @@ def test_list_artifact_runs_excludes_empty_artifact(temp_db: Path) -> None:
     with the artifacts detail route so a card never dead-ends in a 404."""
     create_run("empty-1", "board_prep", "Empty", {}, db_path=temp_db)
     complete_run("empty-1", "", db_path=temp_db)
-    assert list_artifact_runs(db_path=temp_db) == []
+    assert list_artifact_runs(visible_to=None, db_path=temp_db) == []
 
 
 # -----------------------------------------------------------------------------
@@ -220,6 +221,41 @@ def test_list_runs_empty_initially(client: TestClient) -> None:
     assert r.json()["runs"] == []
 
 
+def test_a_run_someone_started_is_theirs_alone(
+    client: TestClient, temp_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run started by hand is its starter's (and the person it waits on);
+    a scheduled one is the team's. Someone else's answers 404."""
+    from openexecutive.api.routes import workflows as workflows_route
+
+    create_run("team", "board_prep", "Team", {}, db_path=temp_db)
+    create_run("sams", "board_prep", "Sam's", {}, db_path=temp_db, owner_person_id=7)
+    complete_run("sams", "# Sam's deck", db_path=temp_db)
+    caller: dict[str, int | None] = {"id": 7}
+    monkeypatch.setattr(workflows_route, "_caller_person_id", lambda request: caller["id"])
+
+    assert {r["run_id"] for r in client.get("/workflows/runs").json()["runs"]} == {"team", "sams"}
+    assert client.get("/workflows/runs/sams").json()["artifact"] == "# Sam's deck"
+    for other in (1, 8, None):  # the principal, a teammate, someone off the roster
+        caller["id"] = other
+        assert {r["run_id"] for r in client.get("/workflows/runs").json()["runs"]} == {"team"}
+        assert client.get("/workflows/runs/sams").status_code == 404
+        assert client.delete("/workflows/runs/sams").status_code == 404
+        assert client.get("/workflows/runs/team").status_code == 200
+        answer = client.post("/workflows/runs/sams/decision", json={"decision": "approve"})
+        assert answer.status_code == 404
+    assert get_run("sams", db_path=temp_db) is not None
+
+
+def test_run_visible_to_the_person_it_waits_on(temp_db: Path) -> None:
+    from openexecutive.workflows.persistence import run_visible_to
+
+    run = {"owner_person_id": 7, "awaiting_person_id": 9}
+    assert run_visible_to(run, 7) and run_visible_to(run, 9)
+    assert not run_visible_to(run, 1) and not run_visible_to(run, None)
+    assert run_visible_to({"owner_person_id": None}, None)
+
+
 # -----------------------------------------------------------------------------
 # Sanity checks across all registered workflows — runs without any LLM calls.
 # Catches a new workflow that forgot a required attribute, has an invalid
@@ -229,7 +265,9 @@ def test_list_runs_empty_initially(client: TestClient) -> None:
 
 @pytest.mark.parametrize("workflow", list_workflows(), ids=lambda w: w.name)
 def test_workflow_metadata_is_valid(workflow) -> None:
-    assert workflow.name in WORKFLOW_REGISTRY
+    from openexecutive.workflows.quick import QuickWorkflow
+
+    assert workflow.name in WORKFLOW_REGISTRY or isinstance(workflow, QuickWorkflow)
     assert workflow.title.strip(), f"{workflow.name} has empty title"
     assert workflow.description.strip(), f"{workflow.name} has empty description"
     assert workflow.section, f"{workflow.name} has no section"
@@ -269,8 +307,10 @@ def test_workflow_input_schema_has_properties(workflow) -> None:
 def test_all_workflows_listed_via_api(client: TestClient) -> None:
     r = client.get("/workflows")
     assert r.status_code == 200
+    from openexecutive.workflows.quick import quick_workflows
+
     api_names = {w["name"] for w in r.json()["workflows"]}
-    assert api_names == set(WORKFLOW_REGISTRY.keys())
+    assert api_names == set(WORKFLOW_REGISTRY.keys()) | {w.name for w in quick_workflows()}
 
 
 # -----------------------------------------------------------------------------
@@ -441,3 +481,392 @@ def test_run_detail_resume_progress_is_null_for_a_pause_only_run(
             detail = c.get(f"/workflows/runs/{events[-1]['run_id']}").json()
 
     assert detail["resume_progress"] is None
+
+
+# -----------------------------------------------------------------------------
+# Principal-only workflows over HTTP: the weekly review (both modes) and the
+# solo morning brief carry the principal's own data, so on the Jobs page and
+# in an eval run only the principal (or anyone before there is one) may start
+# them — the rule `run_workflow` applies in chat.
+# -----------------------------------------------------------------------------
+
+PRINCIPAL_EMAIL = "pat@example.com"
+TEAMMATE_EMAIL = "sam@example.com"
+
+
+class _PlainWorkflow:
+    """An ordinary workflow (no principal_only_modes) that just renders."""
+
+    name = "plain"
+    title = "Plain"
+
+    def input_model(self):  # noqa: ANN201 - duck-typed stub
+        from pydantic import BaseModel as _BM
+        from pydantic import create_model
+        model: type[_BM] = create_model("_PlainIn", topic=(str, ""))
+        return model
+
+    def steps(self):  # noqa: ANN201
+        return []
+
+    async def run(self, inputs, store):  # noqa: ANN001, ANN201
+        from openexecutive.workflows.base import WorkflowEvent
+        yield WorkflowEvent(type="artifact", content="# Plain")
+
+
+@pytest.fixture
+def principal_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    """The workflows router on a temp DB, with the real weekly review and
+    morning brief classes (so their real principal_only_modes apply) whose
+    run is stubbed, a roster of a principal and a teammate, and audit
+    captured."""
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+
+    from openexecutive.api.routes import workflows as wf_routes
+    from openexecutive.memory import episodic
+    from openexecutive.people import store as people_store
+    from openexecutive.workflows import persistence
+    from openexecutive.workflows.base import WorkflowEvent
+    from openexecutive.workflows.morning_brief import MorningBriefWorkflow
+    from openexecutive.workflows.weekly_review import WeeklyReviewWorkflow
+
+    db = tmp_path / "episodic.db"
+    for module in (episodic, people_store, persistence):
+        monkeypatch.setattr(module, "DB_PATH", db)
+    episodic.initialize_db(db)
+    people_store.initialize_db(db)
+    initialize_runs_db(db)
+
+    class _Weekly(WeeklyReviewWorkflow):
+        async def run(self, inputs, store):  # type: ignore[override]  # noqa: ANN001, ANN201
+            yield WorkflowEvent(type="artifact", content="# Weekly review")
+
+    class _Morning(MorningBriefWorkflow):
+        async def run(self, inputs, store):  # type: ignore[override]  # noqa: ANN001, ANN201
+            yield WorkflowEvent(type="artifact", content="# Morning brief")
+
+    stubs = {"weekly_review": _Weekly(), "morning_brief": _Morning(), "plain": _PlainWorkflow()}
+    monkeypatch.setattr(wf_routes, "get_workflow", lambda name: stubs[name])
+    audit: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: audit.append((event_type, kw)),
+    )
+
+    app = FastAPI()
+    app.include_router(wf_routes.router)
+    app.state.store = object()
+    return SimpleNamespace(client=TestClient(app), db=db, audit=audit)
+
+
+def _roster(*, with_principal: bool = True) -> dict[str, int]:
+    from openexecutive.people import store as people_store
+
+    ids = {"teammate": people_store.upsert_person(full_name="Sam Ortiz", email=TEAMMATE_EMAIL)}
+    if with_principal:
+        ids["principal"] = people_store.upsert_person(
+            full_name="Pat Lee", is_principal=True, email=PRINCIPAL_EMAIL
+        )
+    return ids
+
+
+def _set_mode(mode: str) -> None:
+    from openexecutive.memory import workspace_settings as ws
+
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode=mode))  # type: ignore[arg-type]
+
+
+def _start(client: TestClient, workflow: str, email: str | None) -> Any:
+    headers = {"x-caller-email": email} if email else {}
+    return client.post(f"/workflows/{workflow}/runs", json={}, headers=headers)
+
+
+def _refusals(audit: list[tuple[str, dict]]) -> list[dict]:
+    return [kw["details"] for _t, kw in audit if kw.get("details", {}).get("refused") is True]
+
+
+PRINCIPAL_ONLY_CASES = [
+    ("weekly_review", "solo"), ("weekly_review", "team"), ("morning_brief", "solo"),
+]
+
+
+@pytest.mark.parametrize(("workflow", "mode"), PRINCIPAL_ONLY_CASES)
+def test_principal_only_run_refuses_a_teammate_and_a_stranger(
+    principal_only: Any, workflow: str, mode: str
+) -> None:
+    from openexecutive.api.routes.workflows import PRINCIPAL_ONLY_DETAIL
+
+    ids = _roster()
+    _set_mode(mode)
+    # A rostered teammate, and a signed-in email that is on nobody's entry.
+    for email in (TEAMMATE_EMAIL, "stranger@example.com"):
+        r = _start(principal_only.client, workflow, email)
+        assert r.status_code == 403, (email, r.text)
+        assert r.json()["detail"] == PRINCIPAL_ONLY_DETAIL
+    # Refused before any run row exists.
+    assert list_runs(db_path=principal_only.db) == []
+    refusals = _refusals(principal_only.audit)
+    assert len(refusals) == 2
+    assert refusals[0]["workflow"] == workflow
+    assert refusals[0]["workspace_mode"] == mode
+    assert refusals[0]["caller_person_id"] == ids["teammate"]
+    assert refusals[0]["surface"] == "jobs"
+    assert refusals[1]["caller_person_id"] is None
+    assert [a[1]["actor"] for a in principal_only.audit] == [TEAMMATE_EMAIL, "stranger@example.com"]
+
+
+@pytest.mark.parametrize(("workflow", "mode"), PRINCIPAL_ONLY_CASES)
+def test_principal_only_run_allows_the_principal(
+    principal_only: Any, workflow: str, mode: str
+) -> None:
+    _roster()
+    _set_mode(mode)
+    # Signed in as the principal, and with no caller header (CLI, local login).
+    for email in (PRINCIPAL_EMAIL, None):
+        r = _start(principal_only.client, workflow, email)
+        assert r.status_code == 200, (email, r.text)
+        assert _sse_events(r.text)[-1]["type"] == "done"
+    runs = list_runs(db_path=principal_only.db)
+    assert len(runs) == 2 and {r["status"] for r in runs} == {"done"}
+    assert _refusals(principal_only.audit) == []
+
+
+@pytest.mark.parametrize(("workflow", "mode"), PRINCIPAL_ONLY_CASES)
+def test_principal_only_run_with_no_principal_on_the_roster(
+    principal_only: Any, workflow: str, mode: str
+) -> None:
+    """No principal on the roster (the roster filled in before anyone was
+    flagged, or the old principal archived to re-run onboarding) lets no
+    signed-in caller in, unlike PUT /workspace. A request with no caller
+    header (the CLI, local login) still counts as the principal."""
+    from openexecutive.people import store as people_store
+
+    ids = _roster()
+    _set_mode(mode)
+    people_store.archive_person(ids["principal"])
+    for email in (TEAMMATE_EMAIL, PRINCIPAL_EMAIL):
+        r = _start(principal_only.client, workflow, email)
+        assert r.status_code == 403, (email, r.text)
+    people_store.upsert_person(full_name="Kim Park", email="kim@example.com")
+    assert _start(principal_only.client, workflow, "kim@example.com").status_code == 403
+    assert list_runs(db_path=principal_only.db) == []
+    assert len(_refusals(principal_only.audit)) == 3
+
+    r = _start(principal_only.client, workflow, None)
+    assert r.status_code == 200, r.text
+    assert _sse_events(r.text)[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize(("workflow", "mode"), [
+    ("morning_brief", "team"), ("plain", "solo"), ("plain", "team"),
+])
+def test_other_runs_are_unchanged_for_a_teammate(
+    principal_only: Any, workflow: str, mode: str
+) -> None:
+    _roster()
+    _set_mode(mode)
+    r = _start(principal_only.client, workflow, TEAMMATE_EMAIL)
+    assert r.status_code == 200, r.text
+    assert _sse_events(r.text)[-1]["type"] == "done"
+    assert principal_only.audit == []
+
+
+def test_an_unreadable_mode_refuses_a_teammate(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mode that cannot be read counts as one the workflow is the
+    principal's alone in — even the brief that is open in team mode."""
+    from openexecutive.memory import workspace_settings as ws
+
+    _roster()
+    monkeypatch.setattr(ws, "read_stored_mode", lambda db_path=None: None)
+    assert _start(principal_only.client, "morning_brief", TEAMMATE_EMAIL).status_code == 403
+    assert _refusals(principal_only.audit)[0]["workspace_mode"] == "unknown"
+    assert _start(principal_only.client, "morning_brief", PRINCIPAL_EMAIL).status_code == 200
+    assert _start(principal_only.client, "plain", TEAMMATE_EMAIL).status_code == 200
+
+
+def test_an_unreadable_roster_refuses(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _roster()
+    _set_mode("team")
+
+    def _boom(*_a: Any, **_kw: Any) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(people_store, "find_person_by_email", _boom)
+    monkeypatch.setattr(people_store, "find_principal_person", _boom)
+    # Even the principal's own email cannot be confirmed, so it is refused...
+    assert _start(principal_only.client, "weekly_review", PRINCIPAL_EMAIL).status_code == 403
+    assert list_runs(db_path=principal_only.db) == []
+    assert _refusals(principal_only.audit)[0]["caller_person_id"] is None
+    # ...and so is a request with no caller header: whose run it is (the
+    # principal's) cannot be read either.
+    assert _start(principal_only.client, "weekly_review", None).status_code == 503
+    assert list_runs(db_path=principal_only.db) == []
+
+
+class _WhoReadsWorkflow(_PlainWorkflow):
+    """Records whose documents its steps would read."""
+
+    seen: list[Any] = []
+
+    async def run(self, inputs, store):  # noqa: ANN001, ANN201
+        from openexecutive.orchestrator.artifact_records import current_viewer
+        from openexecutive.workflows.base import WorkflowEvent
+
+        self.seen.append(current_viewer())
+        yield WorkflowEvent(type="artifact", content="# Plain")
+
+
+def test_a_jobs_page_run_is_its_starters_and_reads_as_them(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.api.routes import workflows as wf_routes
+    from openexecutive.orchestrator.artifact_records import NOBODY, Viewer
+
+    ids = _roster()
+    _set_mode("team")
+    monkeypatch.setattr(wf_routes, "get_workflow", lambda name: _WhoReadsWorkflow())
+    _WhoReadsWorkflow.seen = []
+
+    assert _start(principal_only.client, "plain", TEAMMATE_EMAIL).status_code == 200
+    (run,) = list_runs(db_path=principal_only.db)
+    stored = get_run(run["run_id"], db_path=principal_only.db)
+    assert stored is not None and stored["owner_person_id"] == ids["teammate"]
+    assert _WhoReadsWorkflow.seen == [Viewer(person_id=ids["teammate"])]
+    # A signed-in email that is on nobody's entry starts nothing.
+    assert _start(principal_only.client, "plain", "stranger@example.com").status_code == 403
+    assert len(list_runs(db_path=principal_only.db)) == 1
+    assert NOBODY not in _WhoReadsWorkflow.seen
+
+
+# The eval runner calls workflow.run directly on live data and streams the
+# artifact back, so POST /evals/runs applies the same rule.
+
+def _eval_client(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch, scenarios: list[dict]
+) -> tuple[TestClient, list[list[dict]]]:
+    from fastapi import FastAPI
+
+    from openexecutive.api.routes import evals as evals_routes
+
+    ran: list[list[dict]] = []
+
+    async def _run_scenarios(*, kind, scenario_id=None, store=None,  # noqa: ANN001, ANN202
+                             cancel_event=None, scenarios=None):
+        ran.append(scenarios)
+        yield {"type": "suite_done", "kind": kind, "passed": 0, "total": len(scenarios or [])}
+
+    monkeypatch.setattr(evals_routes, "load_scenarios", lambda kind, scenario_id=None: scenarios)
+    monkeypatch.setattr(evals_routes, "run_scenarios", _run_scenarios)
+    for fn in ("create_eval_run", "complete_eval_run", "fail_eval_run", "append_scenario_result"):
+        monkeypatch.setattr(evals_routes, fn, lambda *_a, **_kw: None)
+    app = FastAPI()
+    app.include_router(evals_routes.router)
+    return TestClient(app), ran
+
+
+def _scenario(workflow: str, mode: str | None = None) -> dict:
+    s = {"id": f"wf_{workflow}", "type": "workflow", "workflow": workflow, "_kind": "workflow"}
+    if mode:
+        s["workspace_mode"] = mode
+    return s
+
+
+def test_eval_run_of_a_principal_only_workflow_refuses_a_teammate(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _roster()
+    _set_mode("team")
+    # The weekly review in either mode; the morning brief as a solo scenario
+    # on a team install (the scenario's mode is the one it runs in).
+    for scenario in (_scenario("weekly_review", "solo"), _scenario("weekly_review"),
+                     _scenario("morning_brief", "solo")):
+        client, ran = _eval_client(principal_only, monkeypatch, [_scenario("board_prep"), scenario])
+        body = {"kind": "workflow"}
+        r = client.post("/evals/runs", json=body, headers={"x-caller-email": TEAMMATE_EMAIL})
+        assert r.status_code == 403, (scenario, r.text)
+        assert r.json()["detail"] == f"Only the principal can run the {scenario['id']} eval."
+        assert ran == []
+    refusals = _refusals(principal_only.audit)
+    assert [d["surface"] for d in refusals] == ["evals"] * 3
+    assert [d["workspace_mode"] for d in refusals] == ["solo", "team", "solo"]
+    assert refusals[0]["scenario_id"] == "wf_weekly_review"
+
+
+def test_eval_run_with_no_principal_on_the_roster(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _roster(with_principal=False)
+    _set_mode("team")
+    client, ran = _eval_client(principal_only, monkeypatch, [_scenario("weekly_review")])
+    r = client.post("/evals/runs", json={"kind": "workflow"},
+                    headers={"x-caller-email": TEAMMATE_EMAIL})
+    assert r.status_code == 403, r.text
+    assert ran == []
+    r = client.post("/evals/runs", json={"kind": "workflow"})
+    assert r.status_code == 200, r.text
+    assert len(ran) == 1
+
+
+def test_eval_run_of_a_principal_only_workflow_allows_the_principal(
+    principal_only: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _roster()
+    _set_mode("team")
+    scenarios = [_scenario("weekly_review", "solo"), _scenario("morning_brief")]
+    client, ran = _eval_client(principal_only, monkeypatch, scenarios)
+    for headers in ({"x-caller-email": PRINCIPAL_EMAIL}, {}):
+        r = client.post("/evals/runs", json={"kind": "workflow"}, headers=headers)
+        assert r.status_code == 200, r.text
+        assert _sse_events(r.text)[-1]["type"] == "done"
+    # The runner gets the very list that was checked, not a fresh load.
+    assert ran == [scenarios, scenarios]
+    # A teammate may still run the team morning brief scenario.
+    client, ran = _eval_client(principal_only, monkeypatch, [_scenario("morning_brief")])
+    r = client.post("/evals/runs", json={"kind": "workflow"},
+                    headers={"x-caller-email": TEAMMATE_EMAIL})
+    assert r.status_code == 200, r.text
+    assert _refusals(principal_only.audit) == []
+
+
+class _PrivateBriefWorkflow(_GateRouteWorkflow):
+    """Finishes with an artifact and reports it drew on private rows."""
+
+    name = "private_brief"
+
+    async def run(self, inputs, store):  # noqa: ANN001, ANN201
+        from openexecutive.workflows.base import WorkflowEvent
+
+        yield WorkflowEvent(type="result", data={"private_to_principal": True})
+        yield WorkflowEvent(type="artifact", content="PRIVATE TEXT")
+        yield WorkflowEvent(type="done")
+
+
+def test_http_run_keeps_a_private_artifact_out_of_run_history(temp_db: Path) -> None:
+    """The stream carries the text to the caller; the shared run history keeps
+    a stand-in, as the scheduler and the chat tool do."""
+    from openexecutive.workflows.persistence import PRIVATE_RUN_ARTIFACT
+
+    with patch("openexecutive.workflows.persistence.DB_PATH", temp_db), \
+         patch("openexecutive.api.routes.workflows.create_run",
+               side_effect=lambda **kw: create_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.complete_run",
+               side_effect=lambda **kw: complete_run(db_path=temp_db, **kw)), \
+         patch("openexecutive.api.routes.workflows.get_workflow",
+               lambda name: _PrivateBriefWorkflow()), \
+         TestClient(create_app()) as c:
+        r = c.post("/workflows/private_brief/runs", json={"topic": "x"})
+    events = _sse_events(r.text)
+    assert r.status_code == 200, r.text
+    assert any(e.get("content") == "PRIVATE TEXT" for e in events)
+    run_id = next(e["run_id"] for e in events if e["type"] == "run_created")
+    run = get_run(run_id, db_path=temp_db)
+    assert run is not None and run["status"] == "done"
+    assert run["artifact"] == PRIVATE_RUN_ARTIFACT

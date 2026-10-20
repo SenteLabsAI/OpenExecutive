@@ -1,0 +1,523 @@
+"""Send on your tap (delegation/reply_send.py): the one path that sends, only
+the exact draft, only for the person it was written for, and never twice."""
+from __future__ import annotations
+
+import ast
+import asyncio
+import functools
+import sqlite3
+from datetime import timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import openexecutive
+from openexecutive.api.caller import Caller
+from openexecutive.delegation import drafts, inbox
+from openexecutive.delegation.gmail import GmailAuthError, GmailError, GmailRateLimited
+from openexecutive.delegation.reply_send import SendRefused, send_approved_reply
+from openexecutive.delegation.settings import set_enabled
+from openexecutive.memory import decision_ledger as ledger
+
+from . import test_delegation_inbox as _inbox_tests
+from .test_delegation_inbox import DANA, NOW, OWNER, FakeInbox, _ledger, _msg, _scan
+
+# Reuse the inbox tests' fixtures (an isolated DB, the owner with both
+# switches on, the two scripted model calls) under the same names.
+db = _inbox_tests.db
+owner = _inbox_tests.owner
+models = _inbox_tests.models
+
+LOCAL = Caller("open", "")
+SIGNED_OWNER = Caller("user", OWNER)
+
+
+@pytest.fixture(autouse=True)
+def local_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``make dev``'s local login unless a test says otherwise."""
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    monkeypatch.delenv("OE_PUBLIC_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("CALLER_ASSERTION_PUBLIC_KEYS", raising=False)
+
+
+def _card(owner: Any) -> tuple[FakeInbox, Any]:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    _scan(owner, mailbox)
+    return mailbox, inbox.open_cards(owner.id)[0]
+
+
+def _send(card: Any, mailbox: FakeInbox, owner: Any, *, caller: Caller = LOCAL,
+          confirm: dict[str, Any] | None = None, resolver: int | None = -1) -> str:
+    return asyncio.run(send_approved_reply(
+        card, caller=caller, resolver=owner.id if resolver == -1 else resolver,
+        confirm=confirm, gmail=mailbox, now=NOW + timedelta(minutes=30),
+    ))
+
+
+def _refused(card: Any, mailbox: FakeInbox, owner: Any, **kw: Any) -> SendRefused:
+    with pytest.raises(SendRefused) as err:
+        _send(card, mailbox, owner, **kw)
+    return err.value
+
+
+def _status(card: Any) -> str:
+    row = ledger.get_decision_instance(card.id)
+    assert row is not None
+    return row.status
+
+
+# ── sending ───────────────────────────────────────────────────────────────────
+
+
+def test_it_sends_that_draft_and_records_it(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    assert _send(card, mailbox, owner) == "sent-d1"
+    assert mailbox.sent == ["d1"]
+    row = ledger.get_decision_instance(card.id)
+    assert row is not None and row.status == "approved_unchanged" and row.resolver_person_id == owner.id
+    assert row.external_event_id == "sent-d1"
+    assert _ledger(db)["m1"] == ("sent", "sent")
+    assert drafts.sent_message_ids(owner.id) == {"sent-d1"}
+    assert inbox.open_cards(owner.id) == []
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT private_to_principal FROM audit_log WHERE event_type = 'delegation_reply_sent'"
+        ).fetchall()
+    assert rows == [(1,)]
+
+
+def test_a_double_tap_sends_once(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+
+    async def both() -> list[Any]:
+        return await asyncio.gather(*[
+            send_approved_reply(card, caller=LOCAL, resolver=owner.id, gmail=mailbox, now=NOW + timedelta(minutes=30))
+            for _ in range(2)
+        ], return_exceptions=True)
+
+    results = asyncio.run(both())
+    assert mailbox.sent == ["d1"]
+    assert sorted(type(r).__name__ for r in results) == ["SendRefused", "str"]
+    refused = next(r for r in results if isinstance(r, SendRefused))
+    assert refused.code == "already_handled"
+
+
+def test_an_edited_draft_is_sent_as_edited(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    mailbox.edit("d1")
+    _send(card, mailbox, owner)
+    assert _status(card) == "approved_with_edit"
+
+
+def test_it_works_while_the_executive_is_paused(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.scheduler import pause
+
+    monkeypatch.setattr(pause, "is_paused", lambda *a, **kw: True)
+    mailbox, card = _card(owner)
+    assert _send(card, mailbox, owner) == "sent-d1"
+
+
+# ── who may send ──────────────────────────────────────────────────────────────
+
+
+def test_without_signed_callers_a_server_never_sends(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    mailbox, card = _card(owner)
+    monkeypatch.delenv("OE_LOCAL_LOGIN")
+    assert _refused(card, mailbox, owner).code == "caller_signing_required"
+    # Even for the owner's own email: only a signature proves it.
+    assert _refused(card, mailbox, owner, caller=Caller("open", OWNER)).code == "caller_signing_required"
+    assert mailbox.sent == [] and _status(card) == "proposed"
+
+
+def test_with_signed_callers_only_the_owner_signed_in_sends(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mailbox, card = _card(owner)
+    monkeypatch.delenv("OE_LOCAL_LOGIN")
+    monkeypatch.setenv("CALLER_ASSERTION_PUBLIC_KEYS", "k1:" + "A" * 43)
+    for caller in (Caller("service", ""), Caller("user", "ben@co.example"), Caller("operator", ""), LOCAL):
+        assert _refused(card, mailbox, owner, caller=caller).code == "not_yours"
+    assert mailbox.sent == []
+    assert _send(card, mailbox, owner, caller=SIGNED_OWNER) == "sent-d1"
+
+
+def test_only_the_person_it_was_written_for(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    assert _refused(card, mailbox, owner, resolver=owner.id + 1).code == "not_yours"
+    assert _refused(card, mailbox, owner, resolver=None).code == "not_yours"
+    assert mailbox.sent == []
+
+
+def test_both_switches_gmail_and_no_client_slot(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    mailbox, card = _card(owner)
+    inbox.set_watch(owner.id, False, updated_by="test")
+    assert _refused(card, mailbox, owner).code == "inbox_off"
+    inbox.set_watch(owner.id, True, updated_by="test")
+    set_enabled(owner.id, False, updated_by="test")
+    assert _refused(card, mailbox, owner).code == "inbox_off"
+    set_enabled(owner.id, True, updated_by="test")
+    monkeypatch.setattr(inbox, "_client_slot_active", lambda: True)
+    assert _refused(card, mailbox, owner).code == "client_slot"
+    monkeypatch.setattr(inbox, "_client_slot_active", lambda: False)
+    mailbox.profile_error = GmailAuthError("revoked")
+    assert _refused(card, mailbox, owner).code == "gmail_needs_reconnect"
+    assert mailbox.sent == [] and _status(card) == "proposed"
+
+
+# ── what it sends ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("edit", "code"), [
+    ({"to": []}, "no_recipients"),
+    ({"cc": [f"p{i}@x.example" for i in range(10)]}, "too_many_recipients"),
+    ({"bcc": ["EXEC"]}, "executive_recipient"),
+])
+def test_the_recipients_are_checked_again(owner: Any, models: dict[str, Any], edit: dict[str, Any], code: str) -> None:
+    from openexecutive.config import get_settings
+
+    exec_address = get_settings().exec_email_address.strip().lower()
+    mailbox, card = _card(owner)
+    mailbox.edit("d1", **{k: [exec_address if a == "EXEC" else a for a in v] for k, v in edit.items()})
+    assert _refused(card, mailbox, owner, confirm={"recipients": ["anything"]}).code == code
+    assert mailbox.sent == [] and _status(card) == "proposed"
+
+
+def test_it_must_be_from_them(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    mailbox.drafts["d1"].message.from_addr = "someone@else.example"
+    assert _refused(card, mailbox, owner).code == "not_from_you"
+
+
+def test_new_recipients_need_a_second_yes(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    mailbox.edit("d1", cc=["sam@northpeak.example"])
+    first = _refused(card, mailbox, owner, confirm={"recipients": [DANA]})
+    assert first.code == "confirm" and first.extra["reasons"] == ["recipients_changed"]
+    assert first.extra["recipients"] == [DANA, "sam@northpeak.example"]
+    assert mailbox.sent == []
+    # Confirming a list that isn't what the draft holds is not a yes.
+    assert _refused(card, mailbox, owner, confirm={"recipients": [DANA, "x@y.example"]}).code == "confirm"
+    _send(card, mailbox, owner, confirm={"recipients": first.extra["recipients"]})
+    assert mailbox.sent == ["d1"] and _status(card) == "approved_with_edit"
+
+
+def test_a_newer_message_needs_a_second_yes(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    first = _refused(card, mailbox, owner)
+    assert first.code == "confirm" and first.extra["reasons"] == ["thread_moved_on"]
+    _send(card, mailbox, owner, confirm={"thread_moved_on": True})
+    assert mailbox.sent == ["d1"]
+
+
+def test_a_draft_gone_or_answered_closes_the_card(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    del mailbox.drafts["d1"]
+    assert _refused(card, mailbox, owner).code == "draft_gone"
+    assert _status(card) == "closed_externally"
+
+    mailbox, card = _card_in_thread(owner, "t2")
+    mailbox.add(_msg("mine", "t2", sender=OWNER, name="Olivia", minutes_ago=-5, labels=("SENT",), to=[DANA]))
+    assert _refused(card, mailbox, owner).code == "you_replied"
+    assert _status(card) == "closed_externally" and mailbox.sent == []
+
+
+def _card_in_thread(owner: Any, thread: str) -> tuple[FakeInbox, Any]:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m-" + thread, thread, sender="ben@northpeak.example"))
+    _scan(owner, mailbox, now=NOW + timedelta(minutes=1))
+    card = next(c for c in inbox.open_cards(owner.id) if inbox.card_payload(c)["thread_id"] == thread)
+    return mailbox, card
+
+
+# ── when Gmail fails ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("error", "status", "code"), [
+    (GmailError("gmail POST returned 400"), 502, "gmail_error"),
+    (GmailRateLimited("429"), 429, "rate_limited"),
+    (GmailAuthError("revoked"), 409, "gmail_needs_reconnect"),
+])
+def test_a_send_gmail_refused_hands_the_card_back(
+    owner: Any, models: dict[str, Any], error: Exception, status: int, code: str
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_error = error
+    refused = _refused(card, mailbox, owner)
+    assert (refused.status, refused.code) == (status, code)
+    assert _status(card) == "proposed" and mailbox.sent == []
+    mailbox.send_error = None
+    assert _send(card, mailbox, owner) == "sent-d1"
+
+
+def test_an_unconfirmed_send_that_did_not_go_is_handed_back_by_the_reconciler(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    assert _status(card) == "executing"
+    # The draft is still there and nothing was sent. Gmail can take a moment
+    # to settle a send, so one look isn't enough...
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+    assert _status(card) == "executing"
+    # ...the second one hands it back to the person.
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=36), own={OWNER})) == 0
+    assert _status(card) == "proposed"
+    assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["send_failed"]}
+
+
+def test_an_unconfirmed_send_whose_draft_vanished_waits_for_the_sent_message(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    """The draft is gone but the sent message isn't in the thread yet: one
+    look isn't enough to call it deleted."""
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    sent_message = mailbox.drafts.pop("d1").message
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+    assert _status(card) == "executing"
+    # It shows up by the next scan: recorded as sent, not as deleted.
+    sent_message.labels = ["SENT"]
+    sent_message.id = "sent-d1"
+    sent_message.received_at = (NOW + timedelta(minutes=5)).isoformat()
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=36), own={OWNER})) == 1
+    assert _status(card) == "approved_unchanged"
+    assert _ledger(db)["m1"] == ("sent", "sent")
+
+
+def test_an_unconfirmed_send_whose_draft_was_deleted_closes_on_the_second_look(
+    owner: Any, models: dict[str, Any]
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    asyncio.run(mailbox.delete_draft("d1"))
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=36), own={OWNER})) == 1
+    row = ledger.get_decision_instance(card.id)
+    assert row is not None and row.status == "closed_externally" and row.reversal_reason == "draft_deleted"
+
+
+def test_an_unconfirmed_send_whose_draft_lingers_but_went_is_not_handed_back(
+    owner: Any, models: dict[str, Any]
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_error = GmailError("gmail POST returned 503", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    # Gmail delivered it; the draft hasn't disappeared yet.
+    mailbox.add(_msg("sent-late", "t1", sender=OWNER, name="Olivia", minutes_ago=-5, labels=("SENT",), to=[DANA]))
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 1
+    assert _status(card) == "approved_unchanged"
+
+
+def test_an_unconfirmed_send_that_went_is_recorded_by_the_reconciler(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    mailbox, card = _card(owner)
+    mailbox.send_then_fail = GmailError("gmail POST failed: ReadTimeout", maybe_done=True)
+    assert _refused(card, mailbox, owner).code == "send_unconfirmed"
+    assert mailbox.sent == ["d1"] and _status(card) == "executing"
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 1
+    row = ledger.get_decision_instance(card.id)
+    assert row is not None and row.status == "approved_unchanged" and row.external_event_id == "sent-d1"
+    assert _ledger(db)["m1"] == ("sent", "sent")
+
+
+def test_a_draft_edited_while_sending_is_not_sent(owner: Any, models: dict[str, Any]) -> None:
+    """Everything is checked against the draft as it was read; one edited in
+    Gmail between that read and the send is refused, not sent unchecked."""
+    mailbox, card = _card(owner)
+    reads = 0
+    get_draft = mailbox.get_draft
+
+    async def edited_on_the_second_read(draft_id: str) -> Any:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            mailbox.edit(draft_id, bcc=["someone@else.example"])
+        return await get_draft(draft_id)
+
+    mailbox.get_draft = edited_on_the_second_read  # type: ignore[method-assign]
+    assert _refused(card, mailbox, owner).code == "draft_changed"
+    assert mailbox.sent == [] and _status(card) == "proposed"
+    # Looked at again, the new recipient needs a yes like any other change.
+    confirm = _refused(card, mailbox, owner)
+    assert confirm.code == "confirm" and "someone@else.example" in confirm.extra["recipients"]
+
+
+def test_the_reconciler_leaves_a_card_being_sent_alone(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    assert ledger.claim_for_execution(card.id, resolver_person_id=owner.id)
+    inbox.SENDING.add(card.id)
+    try:
+        del mailbox.drafts["d1"]  # would read as deleted, if it looked
+        assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 0
+        assert _status(card) == "executing"
+    finally:
+        inbox.SENDING.discard(card.id)
+
+
+# ── nothing else can reach it ─────────────────────────────────────────────────
+
+
+_ROOT = Path(openexecutive.__file__).parent
+
+
+@functools.cache
+def _index() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """One pass over every module under openexecutive/, shared by every lookup
+    in this file: re-parsing the package for each lookup made these the
+    slowest tests in the suite.
+
+    Returns (names, imports). ``names`` maps each name used in code (a call,
+    an attribute, an imported name) to the files that use it. ``imports`` maps
+    each module (openexecutive.a.b) to the files that import it, however it is
+    spelled: ``import a.b``, ``from a.b import x`` or ``from a import b``.
+    Paths are relative to the package."""
+    names: dict[str, set[str]] = {}
+    imports: dict[str, set[str]] = {}
+    for path in _ROOT.rglob("*.py"):
+        rel = path.relative_to(_ROOT).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if isinstance(node, ast.Attribute):
+                names.setdefault(node.attr, set()).add(rel)
+            elif isinstance(node, ast.Name):
+                names.setdefault(node.id, set()).add(rel)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    names.setdefault(alias.name, set()).add(rel)
+                if node.module is not None:
+                    imports.setdefault(node.module, set()).add(rel)
+                    for alias in node.names:
+                        imports.setdefault(f"{node.module}.{alias.name}", set()).add(rel)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.setdefault(alias.name, set()).add(rel)
+    return names, imports
+
+
+def _uses(name: str) -> set[str]:
+    """Files under openexecutive/ that name ``name`` in code (a call, an
+    attribute, an imported name), relative to the package."""
+    return set(_index()[0].get(name, set()))
+
+
+def _importers(module: str) -> set[str]:
+    """Files under openexecutive/ that import ``module`` (openexecutive.a.b),
+    however it is spelled."""
+    return set(_index()[1].get(module, set()))
+
+
+def test_only_the_send_path_sends_and_only_the_approve_route_and_the_watcher_reach_it() -> None:
+    """Two doors and no more: the person's tap (the approve route) and Handle
+    it for me (the inbox watcher, under the person's own switch)."""
+    assert _uses("send_draft") == {"delegation/reply_send.py"}
+    assert _uses("send_approved_reply") == {"api/routes/decisions.py"}
+    assert _uses("send_on_its_own") == {"delegation/inbox.py"}
+    # card_drafts, answers and the edit routes use its refusals and caller check only.
+    assert _importers("openexecutive.delegation.reply_send") == {
+        "api/routes/decisions.py", "api/routes/delegation.py", "delegation/inbox.py", "delegation/card_drafts.py",
+        "delegation/answers.py",
+    }
+    assert _importers("openexecutive.delegation.reply_send.SendRefused") >= {"delegation/answers.py"}
+    assert not ({"send_draft", "send_approved_reply", "send_on_its_own"} & {
+        n for n, files in _index()[0].items() if "delegation/answers.py" in files
+    })
+
+
+def test_only_dismiss_deletes_a_draft() -> None:
+    """Dismiss deletes an unedited draft; the watcher takes back only one it
+    has just made, when that draft's card couldn't be made (a follow-up's
+    too), or an unedited follow-up nobody needs once the thread is answered,
+    and a reply kept on its card takes back the draft it made for a send that
+    was refused before anything went."""
+    assert _uses("delete_draft") == {
+        "delegation/replies.py", "delegation/inbox.py", "delegation/follow_ups.py", "delegation/card_drafts.py",
+    }
+    assert _importers("openexecutive.delegation.replies") == {"api/routes/decisions.py", "api/routes/delegation.py"}
+
+
+def test_a_second_tap_never_clears_the_first_taps_mark(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _card(owner)
+    inbox.SENDING.add(card.id)  # the first tap, still inside send_draft
+    try:
+        refused = _refused(card, mailbox, owner)
+        assert refused.code == "already_handled"
+        assert card.id in inbox.SENDING and mailbox.sent == []
+    finally:
+        inbox.SENDING.discard(card.id)
+
+
+def test_a_sent_reply_is_reported_sent_even_when_recording_it_fails(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    def locked(*a: Any, **kw: Any) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    finish = ledger.finish_execution
+    monkeypatch.setattr(ledger, "finish_execution", locked)
+    mailbox, card = _card(owner)
+    assert _send(card, mailbox, owner) == "sent-d1"
+    assert mailbox.sent == ["d1"] and card.id not in inbox.SENDING
+    # The reconciler records it from the sent message.
+    monkeypatch.setattr(ledger, "finish_execution", finish)
+    assert asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=31), own={OWNER})) == 1
+    assert _status(card) == "approved_unchanged"
+
+
+# ── Always in the loop ────────────────────────────────────────────────────────
+
+
+def _noted(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    from openexecutive.memory import history_notes
+
+    calls: list[dict[str, Any]] = []
+
+    def fake(person_id: int, **kw: Any) -> Any:
+        calls.append({"person_id": person_id, **kw})
+        return asyncio.sleep(0)
+
+    monkeypatch.setattr(history_notes, "note_sent_reply", fake)
+    return calls
+
+
+def test_a_sent_reply_is_not_noted_unless_they_turned_it_on(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _noted(monkeypatch)
+    mailbox, card = _card(owner)
+    _send(card, mailbox, owner)
+    assert calls == []
+
+
+def test_a_sent_reply_is_noted_from_what_went(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory.history import set_person_settings
+
+    calls = _noted(monkeypatch)
+    set_person_settings(owner.id, by="test", reply_notes=True)
+    mailbox, card = _card(owner)
+    _send(card, mailbox, owner)
+    [call] = calls
+    assert call["person_id"] == owner.id and call["thread_id"] == "t1"
+    assert call["to_addresses"] == [DANA] and call["to_names"] == ["Dana Park"]
+
+
+def test_a_failure_to_start_noting_never_touches_the_send(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.memory import history
+
+    def broken(_person_id: int) -> Any:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(history, "person_settings", broken)
+    mailbox, card = _card(owner)
+    assert _send(card, mailbox, owner) == "sent-d1"

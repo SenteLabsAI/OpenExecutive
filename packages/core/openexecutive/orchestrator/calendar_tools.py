@@ -7,7 +7,8 @@ Exposes two tools to the Executive:
 The handler enforces code-enforced caps regardless of trust-ledger mode, routes
 through gate_action for the MEETING_SCHEDULING scope, writes a decision_instances
 row so the trust ledger fills, and delegates the actual calendar operation to the
-Google Workspace MCP via MCPGateway.call_tool("google_workspace__manage_event").
+configured backend (`integrations.workspace`: Google Calendar via workspace-mcp
+or Outlook via ms-365-mcp-server, per CALENDAR_PROVIDER).
 
 The approve→execute bridge lives in api/routes/decisions.py.
 """
@@ -15,8 +16,14 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openexecutive.departments.authority import GateDecision
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +33,24 @@ _INSTANT_START_LEAD = timedelta(minutes=1)
 _POST_MEETING_FOLLOWUP_DELAY = timedelta(minutes=5)
 # A single calendar event can't sensibly run longer than a day.
 _MAX_INSTANT_DURATION_MINUTES = 24 * 60
+
+# The Person who already approved this booking on an approval card
+# (``delegation.action_cards``). When they are also the person the meeting
+# gate would ask, it is booked now instead of asking them twice; anyone else's
+# approval still goes to the gate's approver.
+_approved_by: ContextVar[int | None] = ContextVar("calendar_approved_by", default=None)
+
+
+@contextmanager
+def approved_by(person_id: int) -> Iterator[None]:
+    """Book inside this block as already approved by ``person_id``. Only for
+    code that has itself established that person approved this exact
+    meeting (the decisions approve route, after the signed-caller check)."""
+    token = _approved_by.set(person_id)
+    try:
+        yield
+    finally:
+        _approved_by.reset(token)
 
 # ---------------------------------------------------------------------------
 # Tool definitions (Anthropic tool-use schema)
@@ -37,9 +62,10 @@ CREATE_CALENDAR_EVENT_TOOL: dict[str, Any] = {
         "Schedule a FUTURE calendar meeting with one or more people from the "
         "roster (use create_instant_meeting for a call happening right now). "
         "In propose-only mode (default) this creates a Proposal that the "
-        "approver must action before the event is actually created. A Google "
-        "Meet video link is attached automatically unless you set "
-        "add_google_meet=false for an in-person meeting. "
+        "approver must action before the event is actually created. A video-"
+        "meeting link (Google Meet or Microsoft Teams, per the configured "
+        "calendar) is attached automatically unless you set "
+        "add_video_link=false for an in-person meeting. "
         "Use `attendee_person_ids` — NOT raw email addresses — so the system can "
         "verify attendees are on the People roster. "
         "You may use this proactively (e.g. when a goal has stalled and a sync "
@@ -88,10 +114,11 @@ CREATE_CALENDAR_EVENT_TOOL: dict[str, Any] = {
                     "(the account owner). Never assume — always ask first."
                 ),
             },
-            "add_google_meet": {
+            "add_video_link": {
                 "type": "boolean",
                 "description": (
-                    "Whether to attach a Google Meet video link (default true). "
+                    "Whether to attach a video-meeting link — Google Meet or "
+                    "Microsoft Teams, per the configured calendar (default true). "
                     "Set false only for an explicitly in-person meeting."
                 ),
             },
@@ -104,10 +131,11 @@ CREATE_INSTANT_MEETING_TOOL: dict[str, Any] = {
     "name": "create_instant_meeting",
     "description": (
         "Start an impromptu meeting RIGHT NOW with one or more people from the "
-        "roster and get back a Google Meet link to share immediately. Use this "
+        "roster and get back a video-meeting link (Google Meet or Microsoft "
+        "Teams, per the configured calendar) to share immediately. Use this "
         "(not create_calendar_event) when the user wants to meet now / asap, or "
         "when you proactively decide a live call is needed this moment. The event "
-        "starts in ~1 minute and a Google Meet link is always attached. This "
+        "starts in ~1 minute and a video link is always attached. This "
         "books immediately (no approval step) and emails a calendar invite to "
         "every attendee, so use it deliberately. Use `attendee_person_ids` — NOT "
         "raw emails. Supply `confidence` (0.0–1.0) for trust-ledger calibration."
@@ -192,6 +220,12 @@ def _parse_iso(raw: str) -> datetime | None:
         return None
 
 
+def is_business_day(day: date) -> bool:
+    """Monday to Friday. Shared with the morning brief's slot suggestions
+    (``briefing.top_three``), so it never suggests a day this refuses."""
+    return day.weekday() < 5  # Saturday=5, Sunday=6
+
+
 def _check_business_hours(dt: datetime, start_hhmm: str, end_hhmm: str) -> bool:
     """Return True if dt falls within business hours (single-tz, v1 limitation)."""
     try:
@@ -199,7 +233,7 @@ def _check_business_hours(dt: datetime, start_hhmm: str, end_hhmm: str) -> bool:
         eh, em = (int(x) for x in end_hhmm.split(":"))
     except (ValueError, AttributeError):
         return True  # misconfigured cap → don't block
-    if dt.weekday() >= 5:  # Saturday=5, Sunday=6
+    if not is_business_day(dt.date()):
         return False
     t_minutes = dt.hour * 60 + dt.minute
     return (sh * 60 + sm) <= t_minutes < (eh * 60 + em)
@@ -217,7 +251,18 @@ def _resolve_attendees(
     max-attendees, roster membership, non-archived, present email, and
     principal-protection (the principal is only allowed when ``include_principal``
     is set). Shared by both the scheduled and instant booking handlers.
+
+    A contact is a valid attendee only on a turn the principal started on a
+    verified surface (``people_tools.contacts_reachable_now``) — the same rule
+    the gateway's calendar gate applies when the event is created. On any
+    other turn a contact's id reads as "not found", like an unknown one.
     """
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.orchestrator.people_tools import (
+        PRIVATE_TURN_REFUSAL,
+        contacts_reachable_now,
+        turn_is_private_to_principal,
+    )
     from openexecutive.people.store import list_people
 
     if not attendee_person_ids:
@@ -225,7 +270,11 @@ def _resolve_attendees(
     if len(attendee_person_ids) > max_attendees:
         return {"error": f"too many attendees (max {max_attendees})"}
 
-    all_people = {p.id: p for p in list_people() if p.id is not None}
+    all_people = {
+        p.id: p
+        for p in list_people(include_contacts=contacts_reachable_now())
+        if p.id is not None
+    }
     attendee_emails: list[str] = []
     int_ids: list[int] = []
     for pid in attendee_person_ids:
@@ -240,6 +289,10 @@ def _resolve_attendees(
             return {"error": f"person {person.full_name!r} (id={person_id}) has no email"}
         if getattr(person, "archived", False):
             return {"error": f"person {person.full_name!r} (id={person_id}) is archived"}
+        if turn_is_private_to_principal() and not person.is_principal:
+            return {"error": PRIVATE_TURN_REFUSAL}
+        if outside_content.added_this_turn(person_id):
+            return json.loads(outside_content.added_person_error(f"person_id {person_id}"))
         if getattr(person, "is_principal", False) and not include_principal:
             return {"error": (
                 f"{person.full_name!r} is the principal. Set include_principal=true "
@@ -248,6 +301,26 @@ def _resolve_attendees(
         attendee_emails.append(person.email)
         int_ids.append(person_id)
     return attendee_emails, int_ids
+
+
+def _has_contact(person_ids: list[int]) -> bool:
+    """Whether any of these (already validated) attendees is one of the
+    principal's contacts. Such a booking is private to the principal: its
+    proposal is theirs to approve and hidden from everyone else."""
+    from openexecutive.people.store import get_person
+
+    for pid in person_ids:
+        person = get_person(pid)
+        if person is not None and person.kind != "team":
+            return True
+    return False
+
+
+def _principal_id() -> int | None:
+    from openexecutive.people.store import find_principal_person
+
+    principal = find_principal_person()
+    return principal.id if principal is not None else None
 
 
 def _daily_cap_reached(now: datetime, max_per_day: int) -> bool:
@@ -261,29 +334,6 @@ def _daily_cap_reached(now: datetime, max_per_day: int) -> bool:
         and i.status not in (STATUS_FAILED, "rejected", "auto_no_response")
     ]
     return len(today_instances) >= max_per_day
-
-
-def _extract_meet_link(event: dict[str, Any]) -> str | None:
-    """Pull the Google Meet video URL out of a created-event response.
-
-    The workspace-mcp ``manage_event`` returns the Calendar event object; the
-    Meet link lives under ``conferenceData.entryPoints[].uri`` for the ``video``
-    entry point. Some servers also surface ``hangoutLink`` directly. Tolerant of
-    both snake_case and camelCase key spellings.
-    """
-    for key in ("meet_link", "hangoutLink", "hangout_link"):
-        val = event.get(key)
-        if isinstance(val, str) and val:
-            return val
-    conf = event.get("conferenceData") or event.get("conference_data") or {}
-    if isinstance(conf, dict):
-        entry_points = conf.get("entryPoints") or conf.get("entry_points") or []
-        for ep in entry_points:
-            if isinstance(ep, dict) and ep.get("entryPointType") == "video":
-                uri = ep.get("uri")
-                if isinstance(uri, str) and uri:
-                    return uri
-    return None
 
 
 def _pick_recap_target(
@@ -308,7 +358,9 @@ def _pick_recap_target(
             continue
         if person is None or getattr(person, "archived", False):
             continue
-        if getattr(person, "is_principal", False):
+        # The recap ask is a chase that fires later, unattended: never a
+        # contact (they cannot answer the bot anyway).
+        if getattr(person, "is_principal", False) or getattr(person, "kind", "team") != "team":
             continue
         resolved = resolve_person_scheduled_dm(person, configured)
         if resolved is not None:
@@ -392,6 +444,8 @@ def _propose_via_decision_alert(
     proposed_payload: dict[str, Any],
     approver_person_id: int | None,
     severity: str,
+    *,
+    private: bool = False,
 ) -> None:
     """Surface a proposed meeting as a routed briefing alert.
 
@@ -403,6 +457,7 @@ def _propose_via_decision_alert(
     proposal (the ledger row is the source of truth); mirrors the exception
     handling in authority.propose_via_alert.
     """
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG
     from openexecutive.alerts.store import insert_alert
     from openexecutive.memory.decision_ledger import (
         DECISION_ALERT_SOURCE,
@@ -437,6 +492,9 @@ def _propose_via_decision_alert(
             topic_tags=[
                 decision_instance_tag(instance_id),
                 "decision_class:meeting_scheduling",
+                # A booking with one of the principal's contacts: the card
+                # (which lists their address) is the principal's alone.
+                *([PRIVATE_ALERT_TAG] if private else []),
             ],
             dedup_key=external_id,
             routed_to_person_id=approver_person_id,
@@ -446,6 +504,102 @@ def _propose_via_decision_alert(
             "calendar_tools: failed to surface decision %d as briefing alert",
             instance_id,
         )
+
+
+# What the model is told when the person in this web chat approves the booking
+# themselves: the card sits under its reply (action_chips carries its id), so
+# it should point there, not send them to the briefing.
+_CARD_HERE = (
+    "The approval card is shown right here in the chat, under your reply, and "
+    "also on the briefing. The booking happens when they tap Approve on it; "
+    "nothing in the chat books it."
+)
+
+
+def _approval_card_here(session: Any, approver_person_id: int | None, private: bool) -> bool:
+    """Whether the person in this web chat may approve the booking, so its card
+    is shown under the reply. The same rule as ``decisions._resolver``: the
+    principal, or the approver it went to unless it is the principal's private
+    booking. A chat app that shows cards with buttons
+    (``channel_cards.shows_cards``) counts as the web chat; any other surface
+    (Slack, email, a scheduled run) shows no card."""
+    from openexecutive.integrations.channel_cards import card_here
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+    if session is None or not card_here(session):
+        return False
+    if is_principal_on_verified_surface(session):
+        return True
+    caller = getattr(session, "caller_person_id", None)
+    return not private and caller is not None and caller == approver_person_id
+
+
+def _asked_on_a_verified_surface(session: Any) -> bool:
+    """Whether someone on the team started this turn on a surface that
+    verified who they are: the principal (``is_principal_on_verified_surface``)
+    or a rostered teammate (``teammate_on_verified_surface``, never in a turn
+    an email started). An inbound email, a contact's message or an unattended
+    run answers False, so text someone else wrote can't book, start or cancel
+    a meeting with nobody approving it. Fails closed."""
+    from openexecutive.orchestrator.people_tools import (
+        is_principal_on_verified_surface,
+        teammate_on_verified_surface,
+    )
+
+    if session is None:
+        return False
+    return is_principal_on_verified_surface(session) or teammate_on_verified_surface(session) is not None
+
+
+_NOT_FROM_HERE = (
+    "only someone on the team, asking directly in the app or their own chat, "
+    "can do this; suggest it to them instead"
+)
+
+
+def _solo_meeting_gate(class_mode: str, session: Any) -> GateDecision:
+    """The meeting gate in solo mode. No department is consulted — the
+    install's departments are only the principal's areas, not an
+    organisation with an operations team — so the ``meeting_scheduling``
+    class mode (the principal's own setting, PUT
+    /decisions/classes/meeting_scheduling) decides, and ``auto_execute``
+    books right away only when the principal started this turn on a surface
+    that verified it is them (the roster-write rule,
+    ``people_tools.is_principal_on_verified_surface``). Anything else — an
+    inbound email, a contact's message, an unattended run — is proposed to
+    the principal on the briefing, so text someone else wrote cannot put a
+    meeting on the principal's calendar — or to a teammate who holds the
+    Meetings approval range on People, when there is one."""
+    from openexecutive.departments.authority import GateDecision
+    from openexecutive.orchestrator.people_tools import is_principal_on_verified_surface
+
+    if class_mode == "auto_execute" and is_principal_on_verified_surface(session):
+        return GateDecision(
+            allowed=True, action="execute", reason="solo: meeting_scheduling is auto_execute"
+        )
+    approver_id: int | None = None
+    try:
+        from openexecutive.people.models import AuthorityScope
+        from openexecutive.people.store import find_approvers, find_principal_person
+
+        delegated = [p for p in find_approvers(AuthorityScope.MEETING_SCHEDULING) if not p.is_principal]
+        if delegated:
+            approver_id = delegated[0].id
+        else:
+            principal = find_principal_person()
+            approver_id = principal.id if principal is not None else None
+    except Exception:
+        logger.warning("calendar_tools: approver lookup failed", exc_info=True)
+    return GateDecision(
+        allowed=False,
+        action="propose",
+        assignee_person_id=approver_id,
+        reason=(
+            "solo: meeting_scheduling proposes to its approver"
+            if class_mode != "auto_execute"
+            else "solo: auto_execute needs the principal on a verified surface — proposing"
+        ),
+    )
 
 
 async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
@@ -461,6 +615,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         mark_executed,
         mark_resolved,
     )
+    from openexecutive.memory.workspace_settings import effective_workspace_mode
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.schedule_tools import current_session
     from openexecutive.people.models import AuthorityScope
@@ -469,10 +624,10 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
 
     # 1. Gate: calendar must be enabled and MCP must be active.
     if not settings.calendar_booking_enabled:
-        return json.dumps({"error": "calendar_booking_enabled is not set to true"})
+        return json.dumps({"error": "calendar booking isn't turned on for this workspace"})
     gateway = get_active_gateway()
     if gateway is None:
-        return json.dumps({"error": "MCP gateway is not running — calendar unavailable"})
+        return json.dumps({"error": "the calendar isn't connected right now"})
 
     # 2. Parse required fields.
     try:
@@ -550,28 +705,62 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     idem = _idem_key(attendee_emails, start.isoformat(), end.isoformat(), title)
     existing = get_live_by_idem(idem)
     if existing is not None:
+        here = _approval_card_here(
+            current_session.get(), existing.approver_person_id, _payload_private(existing)
+        )
         return json.dumps({
             "status": "already_proposed",
             "decision_instance_id": existing.id,
-            "message": "An identical proposal is already pending approval.",
+            "approve_here": here,
+            "message": (
+                "An identical proposal is already pending approval. " + _CARD_HERE
+                if here else "An identical proposal is already pending approval."
+            ),
         })
 
     # 10. Authority gate.
     session = current_session.get()
     session_id = getattr(session, "session_id", None) if session is not None else None
+    class_mode = get_class_mode("meeting_scheduling")
 
-    gate_decision = gate_action(
-        "operations",
-        "meeting_scheduling",
-        required_scope=AuthorityScope.MEETING_SCHEDULING,
-        now=now,
+    if effective_workspace_mode(session) == "solo":
+        # Solo: the principal is the only approver and there is no operations
+        # department to consult — the class mode decides.
+        gate_decision = _solo_meeting_gate(class_mode, session)
+    else:
+        gate_decision = gate_action(
+            "operations",
+            "meeting_scheduling",
+            required_scope=AuthorityScope.MEETING_SCHEDULING,
+            now=now,
+        )
+        if gate_decision.action == "execute" and not _asked_on_a_verified_surface(session):
+            # The department's authority covers its people asking, not text
+            # from outside (an inbound email): that waits for an approver.
+            # An execute decision carries no approver: route it as a proposal.
+            from openexecutive.departments.authority import _route_proposal
+
+            gate_decision = _route_proposal(
+                department_slug="operations",
+                action="propose",
+                required_scope=AuthorityScope.MEETING_SCHEDULING,
+                now=now,
+                reason="auto_execute needs someone on the team on a verified surface — proposing",
+            )
+    # With a contact on the invite the booking is private to the principal:
+    # they approve it (only they may reach a contact at approval time) and
+    # nobody else sees the proposal.
+    private = _has_contact(attendee_int_ids)
+    approver_person_id = _principal_id() if private else gate_decision.assignee_person_id
+
+    # A video-meeting link is requested by default; the model can opt out for
+    # an in-person meeting via add_video_link=false. `add_google_meet` is the
+    # pre-rename spelling, still honoured for callers that learned it.
+    from openexecutive.integrations.workspace.calendar import wants_video_link
+
+    add_video_link = wants_video_link(
+        tool_input, getattr(settings, "calendar_meet_links_enabled", True)
     )
-
-    # A Google Meet link is requested by default; the model can opt out for an
-    # in-person meeting via add_google_meet=false.
-    add_google_meet = bool(tool_input.get(
-        "add_google_meet", getattr(settings, "calendar_meet_links_enabled", True)
-    ))
 
     # Build the payload that will be re-used at execute time.
     proposed_payload = {
@@ -581,10 +770,9 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
         "attendee_emails": attendee_emails,
         "attendee_person_ids": attendee_int_ids,
         "description": description,
-        "add_google_meet": add_google_meet,
+        "add_video_link": add_video_link,
+        **({"private": True} if private else {}),
     }
-
-    class_mode = get_class_mode("meeting_scheduling")
 
     # 11. Record in the ledger.
     try:
@@ -595,15 +783,18 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
             proposed_payload=proposed_payload,
             idempotency_key=idem,
             gate_mode=gate_decision.action,
-            approver_person_id=gate_decision.assignee_person_id,
+            approver_person_id=approver_person_id,
             confidence=confidence,
         )
     except Exception:
         logger.exception("calendar_tools: failed to create decision_instance")
         return json.dumps({"error": "internal error recording proposal"})
 
-    # 12. Execute or propose.
-    if gate_decision.action == "execute" and class_mode == "auto_execute":
+    # 12. Execute or propose. A booking its approver already approved on a
+    # card is booked now: asking them again would only repeat the question.
+    approved = _approved_by.get()
+    already_approved = approved is not None and approved == approver_person_id
+    if (gate_decision.action == "execute" and class_mode == "auto_execute") or already_approved:
         # Auto-execute path (Build 3 — only reachable after promotion). The
         # booking happens now, so there is nothing to approve — deliberately
         # NO briefing alert here.
@@ -636,21 +827,26 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
     _propose_via_decision_alert(
         instance_id,
         proposed_payload,
-        gate_decision.assignee_person_id,
+        approver_person_id,
         severity="high" if gate_decision.action == "escalate" else "medium",
+        private=private,
     )
+    here = _approval_card_here(session, approver_person_id, private)
     return json.dumps({
         "status": "proposed",
         "decision_instance_id": instance_id,
+        "approve_here": here,
         "message": (
-            "The booking has been surfaced on the briefing for approval. "
-            "The approver will be notified."
+            _CARD_HERE if here else (
+                "The booking has been surfaced on the briefing for approval. "
+                "The approver will be notified."
+            )
         ),
     })
 
 
 async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
-    """Book an impromptu meeting starting now and return the Google Meet link.
+    """Book an impromptu meeting starting now and return the video-meeting link.
 
     Unlike create_calendar_event this auto-executes immediately (no approval
     step — the user asked for a call *now*) and skips the horizon and
@@ -672,10 +868,13 @@ async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
     settings = get_settings()
 
     if not settings.calendar_booking_enabled:
-        return json.dumps({"error": "calendar_booking_enabled is not set to true"})
+        return json.dumps({"error": "calendar booking isn't turned on for this workspace"})
     gateway = get_active_gateway()
     if gateway is None:
-        return json.dumps({"error": "MCP gateway is not running — calendar unavailable"})
+        return json.dumps({"error": "the calendar isn't connected right now"})
+    # It books at once, with no approval: only for someone on the team.
+    if not _asked_on_a_verified_surface(current_session.get()):
+        return json.dumps({"error": _NOT_FROM_HERE})
 
     try:
         attendee_person_ids = list(tool_input["attendee_person_ids"])
@@ -731,7 +930,8 @@ async def handle_create_instant_meeting(tool_input: dict[str, Any]) -> str:
         "attendee_emails": attendee_emails,
         "attendee_person_ids": attendee_int_ids,
         "description": description,
-        "add_google_meet": True,  # instant meetings always get a Meet link
+        "add_video_link": True,  # instant meetings always get a video link
+        **({"private": True} if _has_contact(attendee_int_ids) else {}),
     }
 
     session = current_session.get()
@@ -782,79 +982,43 @@ async def _do_create_event(
     gateway: Any,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Call google_workspace__manage_event action=create via the MCP gateway.
+    """Create the event through the configured calendar backend.
 
-    Returns a dict with "event_id" (and "meet_link" when a Google Meet link was
+    Returns a dict with "event_id" (and "meet_link" when a video link was
     minted) on success, or "error" on failure. On success it also schedules the
-    best-effort post-meeting recap follow-up. The gateway backstop
-    (_check_calendar_attendees) will run again on this call — belt-and-suspenders.
+    best-effort post-meeting recap follow-up. The gateway backstop (the
+    provider's attendee egress gate) will run again on this call —
+    belt-and-suspenders.
     """
-    from openexecutive.config import get_settings
+    from openexecutive.integrations.workspace.registry import get_calendar_provider
 
-    settings = get_settings()
-    arguments: dict[str, Any] = {
-        "action": "create",
-        "summary": payload["title"],
-        "start_time": payload["start"],
-        "end_time": payload["end"],
-        "attendees": payload["attendee_emails"],
-        "send_updates": "all",
-    }
-    # Request a Google Meet link unless the payload explicitly opted out.
-    if bool(payload.get("add_google_meet", getattr(settings, "calendar_meet_links_enabled", True))):
-        arguments["add_google_meet"] = True
-    if payload.get("description"):
-        arguments["description"] = payload["description"]
-
+    result = await get_calendar_provider().create_event(gateway, payload)
+    if "error" in result:
+        return result
+    # Best-effort: a follow-up failure must never break a successful booking.
     try:
-        raw = await gateway.call_tool({
-            "name": "google_workspace__manage_event",
-            "arguments": arguments,
-        })
-        result = json.loads(raw) if isinstance(raw, str) else raw
-        # If the MCP returned an error dict, surface it directly.
-        if isinstance(result, dict) and "error" in result:
-            return {"error": result["error"]}
-        # The MCP returns the event object; extract the id field.
-        event_id = (
-            result.get("id")
-            or result.get("event_id")
-            or result.get("eventId")
+        await _schedule_post_meeting_followup(
+            payload, result.get("event_id"), result.get("meet_link")
         )
-        meet_link = _extract_meet_link(result) if isinstance(result, dict) else None
-        out: dict[str, Any] = {"event_id": event_id, "raw": result}
-        if meet_link:
-            out["meet_link"] = meet_link
-        # Best-effort: a follow-up failure must never break a successful booking.
-        try:
-            await _schedule_post_meeting_followup(payload, event_id, meet_link)
-        except Exception:
-            logger.exception("calendar_tools: post-meeting follow-up scheduling failed")
-        return out
-    except Exception as exc:
-        logger.exception("calendar_tools: manage_event create failed")
-        return {"error": str(exc)}
+    except Exception:
+        logger.exception("calendar_tools: post-meeting follow-up scheduling failed")
+    return result
 
 
 async def _do_delete_event(
     gateway: Any,
     external_event_id: str,
 ) -> dict[str, Any]:
-    """Call google_workspace__manage_event action=delete via the MCP gateway."""
-    try:
-        raw = await gateway.call_tool({
-            "name": "google_workspace__manage_event",
-            "arguments": {
-                "action": "delete",
-                "event_id": external_event_id,
-                "send_updates": "all",
-            },
-        })
-        result = json.loads(raw) if isinstance(raw, str) else raw
-        return result if isinstance(result, dict) else {"ok": True}
-    except Exception as exc:
-        logger.exception("calendar_tools: manage_event delete failed")
-        return {"error": str(exc)}
+    """Delete the event through the configured calendar backend."""
+    from openexecutive.integrations.workspace.registry import get_calendar_provider
+
+    return await get_calendar_provider().delete_event(gateway, external_event_id)
+
+
+_NO_EVENT_ID = (
+    "This meeting was booked, but its calendar event id wasn't recorded, so it "
+    "can't be cancelled from here. Delete it in the calendar itself."
+)
 
 
 async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
@@ -864,6 +1028,12 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         mark_reversed,
     )
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
+    from openexecutive.orchestrator.people_tools import contacts_reachable_now
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    # Cancelling notifies everyone invited: only for someone on the team.
+    if not _asked_on_a_verified_surface(current_session.get()):
+        return json.dumps({"error": _NOT_FROM_HERE})
 
     try:
         instance_id = int(tool_input["decision_instance_id"])
@@ -871,7 +1041,14 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         return json.dumps({"error": "decision_instance_id must be an integer"})
 
     instance = get_decision_instance(instance_id)
-    if instance is None:
+    # Only a meeting booking, and one private to the principal (a meeting
+    # with their contact) only on their own verified turn. Anything else reads
+    # exactly like a missing id, so this tool can neither act on another class
+    # of decision (a reply drafted in the owner's own Gmail) nor reveal that
+    # one exists.
+    if instance is None or instance.decision_class != "meeting_scheduling" or (
+        _payload_private(instance) and not contacts_reachable_now()
+    ):
         return json.dumps({"error": f"decision_instance {instance_id} not found"})
 
     if instance.status not in (
@@ -880,6 +1057,11 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         return json.dumps({
             "error": f"cannot cancel a decision_instance with status={instance.status!r}",
         })
+
+    # A booked meeting whose event id was never read can't be deleted here:
+    # saying it was cancelled would leave it on everyone's calendar.
+    if instance.status != "proposed" and not instance.external_event_id:
+        return json.dumps({"error": _NO_EVENT_ID})
 
     # If there's an actual calendar event, delete it via the MCP.
     if instance.external_event_id:
@@ -890,8 +1072,17 @@ async def handle_cancel_calendar_event(tool_input: dict[str, Any]) -> str:
         if "error" in result:
             return json.dumps(result)
 
-    mark_reversed(instance_id, reason="cancelled_by_executive")
+    mark_reversed(instance_id, reason="cancelled_by_executive", decision_class="meeting_scheduling")
     return json.dumps({"status": "cancelled", "decision_instance_id": instance_id})
+
+
+def _payload_private(instance: Any) -> bool:
+    """Whether a booking's payload marks it private to the principal."""
+    try:
+        payload = json.loads(instance.proposed_payload_json or "{}")
+    except (TypeError, ValueError):
+        return True  # unreadable: fail closed
+    return isinstance(payload, dict) and payload.get("private") is True
 
 
 CALENDAR_TOOL_HANDLERS: dict[str, Any] = {

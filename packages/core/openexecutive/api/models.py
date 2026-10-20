@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from openexecutive.memory.workspace_settings import RoleKind
 
 
 class PageFormField(BaseModel):
@@ -65,6 +67,31 @@ class ChatRequest(BaseModel):
     # would contradict `_clean_client_turn_id`, which drops it and carries on.
     # The max_length is a size bound, not a format check.
     client_turn_id: str | None = Field(None, max_length=64)
+    # The caller's own words for this turn, when `message` carries text the
+    # caller did not write — a briefing handoff seeds the turn with the
+    # Executive's own card body. Peer memory records it, and episodic
+    # extraction and open loops quote commitments from it. Absent → `message`.
+    # Recorded under the caller's own peer and, like `message` would be, in
+    # the shared memory of each department consulted that turn; it is not in
+    # the transcript, so the chat_turn audit row keeps it next to `message`.
+    memory_text: str | None = Field(None, min_length=1, max_length=2000)
+
+
+class BackgroundChatRequest(BaseModel):
+    """Body of POST /chat/background: a new chat that runs to the end on the
+    server, whether or not the caller stays to watch (a phone app approving
+    a card, then closing). `message` and `memory_text` mean what they do on
+    `ChatRequest`."""
+
+    message: str = Field(..., min_length=1, max_length=32000)
+    memory_text: str | None = Field(None, min_length=1, max_length=2000)
+
+
+class BackgroundChatResponse(BaseModel):
+    """Where the background turn's chat will be: open it from the chat list
+    once the turn has answered."""
+
+    session_id: str
 
 
 class StopChatRequest(BaseModel):
@@ -73,6 +100,19 @@ class StopChatRequest(BaseModel):
     client_turn_id: str = Field(
         ..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
     )
+
+
+class AddChatMessageRequest(BaseModel):
+    """Body of POST /chat/add — a message for a turn that is still running."""
+
+    client_turn_id: str = Field(
+        ..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
+    # Client-minted, echoed back in the stream's `message_added` event.
+    message_id: str = Field(
+        ..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
+    message: str = Field(..., min_length=1, max_length=32000)
 
 
 class ChatResponse(BaseModel):
@@ -98,11 +138,15 @@ class OnboardAnswerRequest(BaseModel):
 
 class OnboardStatusResponse(BaseModel):
     session_id: str
+    # The step's place among the steps this wizard asks — a solo workspace
+    # skips the team steps, so this is not an index into WIZARD_STEPS.
     current_step: int
     total_steps: int
     current_question: str | None
     progress_percent: int
     completed: bool
+    # Whether the current step can be skipped.
+    optional: bool = False
 
 
 class DocumentUploadResponse(BaseModel):
@@ -117,6 +161,32 @@ class CompanyDocContent(BaseModel):
     content: str
 
 
+class SyncedDocContent(BaseModel):
+    """One Google Drive file or Notion page as the knowledge base stored it."""
+
+    id: str
+    name: str
+    url: str | None = None
+    content: str
+
+
+class GatewayHealth(BaseModel):
+    """The MCP gateway (orchestrator/gateway_boot.py): ``off`` (MCP not
+    enabled), ``no_servers`` (enabled, config names none), ``starting`` (an
+    attempt is running), ``up``, or ``down`` (every attempt failed so far;
+    ``next_retry_at`` says when the next one is). ``attempts`` counts starts
+    tried. The failure's text stays in the log and the owner's Setup notice:
+    the route is open to anyone. ``email_poller`` is whether the poller that
+    rides on the gateway runs."""
+
+    state: str
+    attempts: int = 0
+    last_failed_at: str | None = None
+    up_since: str | None = None
+    next_retry_at: str | None = None
+    email_poller: bool = False
+
+
 class HealthResponse(BaseModel):
     status: str
     builtin_knowledge_chunks: int
@@ -124,7 +194,33 @@ class HealthResponse(BaseModel):
     company_name: str | None = None
     builtin_skills: int = 0
     company_skills: int = 0
-    version: str = "0.2.2"
+    # The pinned Google tools startup priming could not find. `[]` is the only
+    # value that asserts every one is present; `null` means no answer — Google
+    # Workspace is not configured, or the probe has not finished, or it failed.
+    # Setup status says which. A non-empty list means a workspace-mcp rename or
+    # a tool the configured services and tier never loaded.
+    google_tools_missing: list[str] | None = None
+    # The MCP gateway's state (``GatewayHealth``). A hosted instance whose
+    # gateway failed to start used to look healthy here while no email went
+    # out or came in.
+    gateway: GatewayHealth | None = None
+    version: str = "0.6.2"  # x-release-please-version
+
+
+class VersionResponse(BaseModel):
+    """The running version and, when the update check is on, the latest release."""
+
+    current: str
+    latest: str | None = None
+    update_available: bool = False
+    release_url: str | None = None
+    check_enabled: bool = True
+
+
+class SkillWorkflowRef(BaseModel):
+    name: str
+    title: str
+    is_custom: bool = False
 
 
 class SkillMeta(BaseModel):
@@ -134,6 +230,10 @@ class SkillMeta(BaseModel):
     when_to_use: str
     source: str
     filename: str
+    customized: bool = False
+    hidden: bool = False
+    # Workflows whose steps follow this playbook (switched-off custom ones too).
+    used_by: list[SkillWorkflowRef] = []
 
 
 class SkillDetail(SkillMeta):
@@ -150,6 +250,13 @@ class SkillCreate(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: list[SkillMeta]
+
+
+class SkillDeleteResponse(BaseModel):
+    name: str
+    # "deleted" (company skill removed), "reverted" (customization removed,
+    # the built-in is back) or "hidden" (built-in hidden for this company).
+    outcome: Literal["deleted", "reverted", "hidden"]
 
 
 class SkillSearchHit(BaseModel):
@@ -171,6 +278,25 @@ class SessionSummary(BaseModel):
     created_at: str
     updated_at: str
     message_count: int = 0
+    # Set only on a search (`GET /sessions?q=`): how many messages contain the
+    # words (0 when only the title does) and the newest one around the match.
+    match_count: int | None = None
+    snippet: str | None = None
+    # Set on the plain list: the chat's last message as one line, "You: "
+    # before the person's own words, for a list that says what each chat is.
+    preview: str | None = None
+    # When its owner pinned it to the top of their list; absent when not.
+    pinned_at: str | None = None
+    # The owner's topic this chat is filed under (`GET /sessions/topics`);
+    # absent when none, and on a chat shared with the caller.
+    topic_id: int | None = None
+    # A chat someone shared with the caller (`GET /sessions/shared-with-me`,
+    # or opened by id): they read it and write in it with its owner, but only
+    # the owner renames, pins, shares or deletes it. `shared_by` names the
+    # owner and `shared_at` says when.
+    shared_with_you: bool | None = None
+    shared_by: str | None = None
+    shared_at: str | None = None
 
 
 class TargetCustomerData(BaseModel):
@@ -242,6 +368,81 @@ class CompanyProfileUpdateRequest(BaseModel):
     tickers: list[str] | None = None
 
 
+# ── workspace settings (/workspace) ──────────────────────────────────────────
+
+
+class WorkspaceResponse(BaseModel):
+    mode: Literal["solo", "team"]
+    # The zone the user set, or null when none is set.
+    timezone: str | None
+    # The zone in effect: `timezone`, else the USER_TIMEZONE setting, else UTC.
+    effective_timezone: str
+    # The principal's role (memory.workspace_settings.PrincipalRole); each is
+    # null when not set. Read by solo mode only.
+    role_kind: RoleKind | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    remit: str | None = None
+    measured_on: str | None = None
+    # The company's own email domains: on one of them an address matches a
+    # teammate by its local part (people.identity). `company_domains_custom`
+    # is false when they are derived from the principal's addresses. Returned
+    # only to the principal, like the role; empty for anyone else.
+    company_domains: list[str] = Field(default_factory=list)
+    company_domains_custom: bool = False
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    """A partial update: only the fields present are changed. `timezone: null`
+    (or blank) clears the stored zone; `mode` may be omitted but not null.
+    The role fields work like `timezone`: null or blank clears one. Their
+    length caps are checked after trimming (ROLE_TEXT_MAX)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["solo", "team"] | None = None
+    timezone: str | None = Field(default=None, max_length=64)
+    role_kind: RoleKind | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    remit: str | None = None
+    measured_on: str | None = None
+    # null (or []) goes back to deriving them from the principal's addresses.
+    company_domains: list[str] | None = None
+
+    @field_validator("company_domains", mode="before")
+    @classmethod
+    def _domains(cls, v: object) -> object:
+        from openexecutive.memory.workspace_settings import validate_company_domains
+
+        # Runs only when sent; the message never quotes the value.
+        return validate_company_domains(v)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _mode_not_null(cls, v: object) -> object:
+        # Runs only when the field is sent (defaults are not validated).
+        if v is None:
+            raise ValueError("mode must be 'solo' or 'team'")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, v: str | None) -> str | None:
+        from openexecutive.memory.workspace_settings import validate_timezone
+
+        return validate_timezone(v)
+
+    @field_validator("role_kind", "role_title", "reports_to", "remit", "measured_on", mode="before")
+    @classmethod
+    def _role_field(cls, v: object, info: ValidationInfo) -> object:
+        from openexecutive.memory.workspace_settings import validate_role_field
+
+        # Runs only for fields that were sent; the message never quotes `v`.
+        assert info.field_name is not None
+        return validate_role_field(info.field_name, v)
+
+
 
 # ── conversational onboarding (/onboard/interview/*) ─────────────────────────
 
@@ -262,8 +463,31 @@ class OnboardMessageRequest(BaseModel):
     message: str
 
 
+class OnboardUnderstandingResponse(BaseModel):
+    """What the free-text description already says (see onboarding/understand.py)."""
+
+    mode: str | None = None
+    role_kind: str | None = None
+    role_title: str | None = None
+    reports_to: str | None = None
+    company: str | None = None
+    focus: str | None = None
+
+
 class OnboardSessionRequest(BaseModel):
     session_id: str
+
+
+class OnboardReviseRequest(BaseModel):
+    """Change one of the person's earlier answers and carry on from there."""
+
+    session_id: str
+    # Which of the person's own answers, oldest first: 0 is the description.
+    # Defaulted so a missing one gets the route's fixed 404, not a 422 that
+    # echoes the whole body (message included).
+    answer: int = -1
+    # No Field(max_length=...) — see ONBOARD_MESSAGE_MAX_CHARS above.
+    message: str
 
 
 # No Field(max_length=...) on any of the draft models below, for the same
@@ -322,3 +546,64 @@ class OnboardCommitRequest(BaseModel):
     profile: CompanyProfileUpdateRequest
     people: list[OnboardPersonDraft] = Field(default_factory=list)
     departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+    # The principal's sign-in email, confirmed by the user on the review
+    # screen (pre-filled from their own login). The one contact detail setup
+    # saves: without it the signed-in owner matches no Person, so their chat
+    # history stays empty until they add it on the People page. Never taken
+    # from the model's draft — the people drafts above still drop emails.
+    owner_email: str | None = None
+
+
+# ── /workflows/designer/* (conversational "New workflow" wizard) ─────────────
+# Bounded in the route, not with Field(max_length=...), so a rejection is a
+# fixed string instead of FastAPI's 422 echo of the whole message. The question
+# and transcript budgets live in workflows/designer.py, which enforces them.
+WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS = 8_000
+
+
+class WorkflowDesignerStartRequest(BaseModel):
+    message: str
+
+
+class WorkflowDesignerEditRequest(BaseModel):
+    # A saved custom workflow's name (the same bound the definition enforces).
+    name: str = Field(max_length=64)
+
+
+class WorkflowDesignerMessageRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class WorkflowDesignerSessionRequest(BaseModel):
+    session_id: str
+
+
+class WorkflowDesignerTranscriptTurn(BaseModel):
+    role: str
+    text: str
+
+
+class WorkflowDesignerDraftResponse(BaseModel):
+    # A DynamicWorkflowDef dump — the exact body POST /workflows/custom takes.
+    definition: dict[str, Any]
+    summary: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class WorkflowDesignerTurnResponse(BaseModel):
+    session_id: str
+    # "question" while designing, "draft" once a reviewable draft exists.
+    phase: str
+    questions_asked: int
+    max_questions: int
+    question: str | None = None
+    hint: str | None = None
+    options: list[str] = Field(default_factory=list)
+    draft: WorkflowDesignerDraftResponse | None = None
+    transcript: list[WorkflowDesignerTranscriptTurn] = Field(default_factory=list)
+    # Set when the session changes a saved workflow: its name, and the stored
+    # definition as it was when the session opened (what the draft is compared
+    # with). The draft is then saved with POST /workflows/custom/{editing}/save-edit.
+    editing: str | None = None
+    original: dict[str, Any] | None = None

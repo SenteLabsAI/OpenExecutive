@@ -1,9 +1,11 @@
 """Every model call site records a ``cache_event`` usage row: specialist
-consults, specialist tool calls, triage, and the chat memory extractor (the
-Executive's own turns and the research loops are covered by their module
-tests)."""
+consults, specialist tool calls, triage, the chat memory extractor, the
+brief and its grounding repair, and alert review (the Executive's own turns
+and the research loops are covered by their module tests), plus a guard that
+fails any model call in the package that records no row."""
 from __future__ import annotations
 
+import ast
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import openexecutive
 from openexecutive.agents.base import BaseAgent
 from openexecutive.audit.logger import AuditLogger, set_audit_logger
 
@@ -214,3 +217,209 @@ def test_memory_extractor_retry_records_its_own_usage(
     rows = audit.query(event_type="cache_event")
     assert len(rows) == 2 and {r.actor for r in rows} == {"memory_extractor"}
     assert sorted(r.details["input_tokens"] for r in rows) == [12, 30]
+
+
+def _text_response(text: str, **usage: object) -> SimpleNamespace:
+    response = _response(**usage)
+    response.content = [SimpleNamespace(type="text", text=text)]
+    return response
+
+
+@pytest.fixture
+def fast_provider(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """A utility-fast provider answering with one text block."""
+    create = AsyncMock(return_value=_text_response("brief", input_tokens=50, output_tokens=7))
+    monkeypatch.setattr(
+        "openexecutive.providers.get_provider",
+        lambda _m: SimpleNamespace(messages_create=create),
+    )
+    monkeypatch.setattr("openexecutive.agents.utility_fast.get_fast_model", lambda: "claude-fast")
+    return create
+
+
+def test_briefing_narrative_records_usage(audit: AuditLogger, fast_provider: AsyncMock) -> None:
+    """The morning brief and the /today header both synthesize through here."""
+    from openexecutive.briefing.narrative import synthesize_briefing_narrative
+
+    text = asyncio.run(synthesize_briefing_narrative(
+        today_data={}, activity=[], period_label="Monday", rendered_context="ctx",
+    ))
+
+    assert text == "brief"
+    rows = audit.query(event_type="cache_event")
+    assert [r.actor for r in rows] == ["briefing_narrative"]
+    assert rows[0].details["model"] == "claude-fast"
+    assert rows[0].details["input_tokens"] == 50
+
+
+def test_briefing_grounding_repair_records_usage(
+    audit: AuditLogger, fast_provider: AsyncMock,
+) -> None:
+    from openexecutive.briefing.grounding import GroundingReport, _repair
+
+    asyncio.run(_repair("draft", "context", "system", GroundingReport(lines=[])))
+
+    rows = audit.query(event_type="cache_event")
+    assert [r.actor for r in rows] == ["briefing_grounding"]
+    assert rows[0].details["output_tokens"] == 7
+
+
+def test_alert_review_records_usage(audit: AuditLogger, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.agents.alert_review import AlertReviewAgent
+
+    monkeypatch.setattr("openexecutive.agents.overrides.get_override", lambda _name: None)
+    block = SimpleNamespace(type="tool_use", name="emit_alert_reviews", input={"reviews": []})
+    response = _response(input_tokens=400, output_tokens=60, cache_read_input_tokens=300)
+    response.content = [block]
+    provider = SimpleNamespace(messages_create=AsyncMock(return_value=response))
+    monkeypatch.setattr("openexecutive.agents.alert_review.get_provider", lambda _m: provider)
+
+    agent = AlertReviewAgent()
+    asyncio.run(agent.review("batch"))
+
+    rows = audit.query(event_type="cache_event")
+    assert [r.actor for r in rows] == ["alert_review"]
+    assert rows[0].details["model"] == agent.effective_model()
+    assert rows[0].details["cache_read_input_tokens"] == 300
+
+
+def test_alert_review_failed_call_records_nothing(
+    audit: AuditLogger, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A call that raised has no response to read usage from."""
+    from openexecutive.agents.alert_review import AlertReviewAgent
+
+    monkeypatch.setattr("openexecutive.agents.overrides.get_override", lambda _name: None)
+    provider = SimpleNamespace(messages_create=AsyncMock(side_effect=RuntimeError("down")))
+    monkeypatch.setattr("openexecutive.agents.alert_review.get_provider", lambda _m: provider)
+
+    assert asyncio.run(AlertReviewAgent().review("batch")) == []
+    assert audit.query(event_type="cache_event") == []
+
+
+PACKAGE = Path(openexecutive.__file__).resolve().parent
+
+# Modules exempt from the guard below, each with the reason. Keep this short:
+# an entry is a place the usage view can silently under-count.
+_EXEMPT: dict[str, str] = {
+    "architecture/generator.py": (
+        "no runtime caller: architecture/__init__.py exports it for re-authoring, "
+        "but the /architecture page serves the hand-authored prebuilt JSON and "
+        "nothing calls generate_section outside tests"
+    ),
+}
+
+
+def _is_model_call(node: ast.Call) -> bool:
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr in {"messages_create", "messages_stream"}:
+        return True
+    # A raw SDK client (triage's injectable one) spells it messages.create.
+    return (
+        func.attr in {"create", "stream"}
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "messages"
+    )
+
+
+def _called_name(node: ast.Call) -> str | None:
+    func = node.func
+    return func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+
+
+_FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _own_calls(fn: ast.AST) -> list[ast.Call]:
+    """The calls in ``fn``'s own body — a nested def is its own function."""
+    calls: list[ast.Call] = []
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (*_FUNCTION, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return calls
+
+
+def _unlogged_model_calls(tree: ast.Module) -> list[tuple[int, str]]:
+    """``(line, function)`` for each model call whose function records no
+    usage. A function records usage when it calls ``log_model_usage``, or a
+    function of the same module that does (the Executive's
+    ``_emit_cache_event``), or is nested in one that does (a retry closure
+    whose caller logs each response).
+
+    The check is per function and by name, so a green run is not proof:
+    it misses a call at module level or in a lambda, a call through
+    ``getattr`` or an alias, and a second model call in a function that
+    logs one, and it lets two same-named functions in a module share one
+    logging status."""
+    loggers = {"log_model_usage"} | {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, _FUNCTION)
+        and any(_called_name(c) == "log_model_usage" for c in _own_calls(fn))
+    }
+    found: list[tuple[int, str]] = []
+
+    def visit(node: ast.AST, enclosing_logs: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, _FUNCTION):
+                visit(child, enclosing_logs)
+                continue
+            calls = _own_calls(child)
+            logs = enclosing_logs or any(_called_name(c) in loggers for c in calls)
+            if not logs:
+                found.extend((c.lineno, child.name) for c in calls if _is_model_call(c))
+            visit(child, logs)
+
+    visit(tree, False)
+    return found
+
+
+def test_every_model_call_records_usage() -> None:
+    """Every model call in the ``openexecutive`` package records a
+    ``cache_event`` row, so ``/audit/usage`` and the session cost view count
+    it. A new call site that skips ``log_model_usage`` fails here instead of
+    quietly under-counting. The providers implement the call and are
+    skipped; the repo-root ``evals/`` harness is a separate client process
+    and out of scope."""
+    offenders = [
+        f"{rel}:{line} ({name})"
+        for path in sorted(PACKAGE.rglob("*.py"))
+        if not (rel := path.relative_to(PACKAGE).as_posix()).startswith("providers/")
+        and rel not in _EXEMPT
+        for line, name in _unlogged_model_calls(ast.parse(path.read_text(), filename=str(path)))
+    ]
+    assert offenders == []
+    assert sorted(m for m in _EXEMPT if not (PACKAGE / m).exists()) == []
+
+
+def test_the_usage_guard_catches_an_unlogged_call() -> None:
+    """Negative control: the guard flags a bare call and accepts each logged
+    shape, so a clean run above means something."""
+    source = (
+        "async def bare(p):\n"
+        "    return await p.messages_create(model='m')\n"
+        "async def direct(p):\n"
+        "    r = await p.messages_create(model='m')\n"
+        "    log_model_usage(r, model='m', actor='a')\n"
+        "def _wrapper(r):\n"
+        "    log_model_usage(r, model='m', actor='a')\n"
+        "async def via_wrapper(p):\n"
+        "    async with p.messages_stream(model='m') as s:\n"
+        "        _wrapper(await s.get_final_message())\n"
+        "async def outer(p):\n"
+        "    async def _call():\n"
+        "        return await p.messages_create(model='m')\n"
+        "    log_model_usage(await _call(), model='m', actor='a')\n"
+        "async def raw(client):\n"
+        "    return await client.messages.create(model='m')\n"
+    )
+    assert _unlogged_model_calls(ast.parse(source)) == [(2, "bare"), (16, "raw")]
+
+

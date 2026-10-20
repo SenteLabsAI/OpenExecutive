@@ -14,6 +14,8 @@ must not behave like the fixture loader.
 """
 from __future__ import annotations
 
+import sqlite3
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,10 @@ from openexecutive.api.models import ONBOARD_MESSAGE_MAX_CHARS
 from openexecutive.api.routes import onboarding as route
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding import interview as iv
+from openexecutive.onboarding import interview_store
+from openexecutive.onboarding.commit import (
+    save_onboarding_people as _real_save_onboarding_people,
+)
 
 
 def _draft(**overrides: Any) -> iv.CompanyDraft:
@@ -79,15 +85,21 @@ def seeded(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
 @pytest.fixture()
 def client(
-    monkeypatch: pytest.MonkeyPatch, profile_path: Path
+    monkeypatch: pytest.MonkeyPatch, profile_path: Path, tmp_path: Path
 ) -> TestClient:
     fired: list[str] = []
+    # An empty roster unless a test seeds one: the commit reads it to decide
+    # who owns the workspace, and must never see the developer's real DB.
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", tmp_path / "no-people.db")
 
     async def _no_research(session_id: str) -> None:
         fired.append(session_id)
 
     monkeypatch.setattr(route, "_fire_post_onboarding_research", _no_research)
     monkeypatch.setattr(route, "_interview_sessions", OrderedDict())
+    monkeypatch.setattr(interview_store, "DB_PATH", tmp_path / "interviews.db")
     monkeypatch.setattr(route, "_onboarding_research_fired", set())
     monkeypatch.setattr(route, "_wizard_sessions", {})
     # No people/department DB writes unless a test asks for them.
@@ -105,8 +117,13 @@ def client(
     return c
 
 
-def _start(client: TestClient, description: str = "We sell industrial tools.") -> str:
-    resp = client.post("/onboard/interview/start", data={"description": description})
+def _start(
+    client: TestClient, description: str = "We sell industrial tools.", caller: str | None = None
+) -> str:
+    # A session belongs to whoever started it, so a test that commits as
+    # someone starts as them too (the UI sends the same caller on every call).
+    headers = {"x-caller-email": caller} if caller else {}
+    resp = client.post("/onboard/interview/start", data={"description": description}, headers=headers)
     assert resp.status_code == 200, resp.text
     return resp.json()["session_id"]
 
@@ -695,3 +712,782 @@ def test_a_full_legal_start_does_not_lock_the_conversation(
         "/onboard/interview/message", json={"session_id": sid, "message": "Series A."}
     )
     assert follow_up.status_code == 200, follow_up.text
+
+
+# ── the owner's sign-in email ────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def people_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A real roster, and the real save_onboarding_people the client fixture stubs."""
+    from openexecutive.people import store as people_store
+
+    path = tmp_path / "people.db"
+    monkeypatch.setattr(people_store, "DB_PATH", path)
+    people_store.initialize_db(path)
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.save_onboarding_people", _real_save_onboarding_people
+    )
+    return path
+
+
+def test_commit_links_the_owner_email_to_the_principal(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["owner_email"] = " Dana@Example.com "
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+
+    owner = people_store.find_person_by_email("dana@example.com", db_path=people_db)
+    assert owner is not None
+    assert owner.full_name == "Dana Reyes" and owner.is_principal
+    assert owner.email == "dana@example.com"
+
+
+def test_commit_without_an_owner_email_leaves_the_principal_without_one(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    seeded.append(_draft())
+    sid = _start(client)
+    assert client.post("/onboard/interview/commit", json=_commit_body(sid)).status_code == 200
+    principal = people_store.find_principal_person(db_path=people_db)
+    assert principal is not None and principal.email is None
+
+
+@pytest.mark.parametrize("taken", [False, True])
+def test_a_rejected_owner_email_writes_nothing_and_stays_retryable(
+    client: TestClient,
+    seeded: list[Any],
+    people_db: Path,
+    profile_path: Path,
+    taken: bool,
+) -> None:
+    from openexecutive.people import store as people_store
+
+    if taken:
+        people_store.upsert_person(full_name="Sam Okafor", email="secret-owner@example.com")
+        bad = "secret-owner@example.com"
+    else:
+        bad = "secret-owner-at-example"
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["owner_email"] = bad
+
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 422
+    assert "secret-owner" not in resp.text
+    assert not profile_path.exists()
+    assert people_store.find_principal_person(db_path=people_db) is None
+
+    # Fixed and resent, the same session saves.
+    body["owner_email"] = "dana@example.com"
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+    assert profile_path.exists()
+
+
+def test_a_rerun_never_replaces_the_owners_existing_email(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["owner_email"] = "ops@example.com"
+
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 422
+    assert not profile_path.exists()
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email == "dana@example.com"
+
+    # Kept as it was (what the review screen now pre-fills on a re-run), it saves.
+    body["owner_email"] = "dana@example.com"
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email == "dana@example.com"
+
+
+# ── who may change the owner ─────────────────────────────────────────────────
+# Setup demotes the current owner when it drafts someone else as principal,
+# and any signed-in user can open /onboard.
+
+
+def _seed_owner_and_teammate() -> None:
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Dana Reyes", email="dana@example.com", is_principal=True)
+    people_store.upsert_person(full_name="Bob Lin", email="bob@example.com")
+
+
+def _bob_as_owner(sid: str) -> dict[str, Any]:
+    body = _commit_body(sid)
+    body["people"] = [{"full_name": "Bob Lin", "role": "COO", "is_principal": True}]
+    body["departments"] = [{"title": "Operations"}]
+    return body
+
+
+def test_a_teammate_cannot_take_the_owner_role_by_rerunning_setup(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client, caller="bob@example.com")
+    resp = client.post(
+        "/onboard/interview/commit",
+        json=_bob_as_owner(sid),
+        headers={"x-caller-email": "bob@example.com"},
+    )
+    assert resp.status_code == 403
+    assert not profile_path.exists()
+    owner = people_store.find_principal_person(db_path=people_db)
+    assert owner is not None and owner.full_name == "Dana Reyes"
+
+
+def test_the_owner_can_hand_the_role_on(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client, caller="dana@example.com")
+    resp = client.post(
+        "/onboard/interview/commit",
+        json=_bob_as_owner(sid),
+        headers={"x-caller-email": "dana@example.com"},
+    )
+    assert resp.status_code == 200, resp.text
+    owner = people_store.find_principal_person(db_path=people_db)
+    assert owner is not None and owner.full_name == "Bob Lin"
+
+
+def test_anyone_may_rerun_setup_that_keeps_the_owner(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client, caller="bob@example.com")
+    resp = client.post(
+        "/onboard/interview/commit",
+        json=_commit_body(sid),
+        headers={"x-caller-email": "bob@example.com"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_local_login_and_the_cli_count_as_the_owner(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    """No x-caller-email resolves to the principal, as everywhere else."""
+    from openexecutive.people import store as people_store
+
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    sid = _start(client)
+    assert client.post("/onboard/interview/commit", json=_bob_as_owner(sid)).status_code == 200
+    owner = people_store.find_principal_person(db_path=people_db)
+    assert owner is not None and owner.full_name == "Bob Lin"
+
+
+def test_a_service_cannot_save_a_first_setup(
+    client: TestClient, seeded: list[Any], profile_path: Path
+) -> None:
+    """With signed callers on, a request holding only the shared secret names
+    no one, so it can't choose the owner (and their sign-in email) on an
+    install that has none yet."""
+    import json as _json
+
+    from openexecutive.api import caller as api_caller
+
+    vectors = _json.loads((Path(__file__).parent / "caller_assertion_vectors.json").read_text())
+    client.app.middleware("http")(  # type: ignore[attr-defined]
+        api_caller.caller_gate(api_caller.parse_public_keys(vectors["public_keys"]))
+    )
+    seeded.append(_draft())
+    sid = _start(client)
+    resp = client.post("/onboard/interview/commit", json=_commit_body(sid))
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Sign in to save setup."
+    assert not profile_path.exists()
+
+
+# ── who may fill in the owner's missing email ────────────────────────────────
+# The roster is the web sign-in allow-list, so an address put on an owner entry
+# that has none becomes a way to sign in as the owner.
+
+
+OWNER_EMAIL_REFUSAL = "Only the owner can put another address on the owner's entry."
+
+
+def _seed_owner_without_email_and_teammate() -> None:
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Dana Reyes", is_principal=True)
+    people_store.upsert_person(full_name="Bob Lin", email="bob@example.com")
+
+
+def _commit_with_owner_email(
+    client: TestClient, email: str, caller: str | None
+) -> Any:
+    sid = _start(client, caller=caller)
+    body = _commit_body(sid)
+    body["owner_email"] = email
+    headers = {"x-caller-email": caller} if caller else {}
+    return client.post("/onboard/interview/commit", json=body, headers=headers)
+
+
+def test_a_teammate_cannot_put_an_address_of_their_own_on_the_owners_entry(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    # An address Bob controls that is on nobody's entry yet.
+    resp = _commit_with_owner_email(client, "bob.private@example.com", caller="bob@example.com")
+    assert resp.status_code == 403
+    assert resp.json()["detail"].startswith(OWNER_EMAIL_REFUSAL)
+    assert not profile_path.exists()
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email is None
+    assert people_store.find_person_by_email("bob.private@example.com", db_path=people_db) is None
+
+
+def test_someone_signed_in_elsewhere_cannot_link_another_address(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    # Let in by ALLOWED_EMAILS, on no entry: only their own address may go on.
+    from openexecutive.people import store as people_store
+
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    resp = _commit_with_owner_email(client, "someone@example.com", caller="dana@example.com")
+    assert resp.status_code == 403
+    assert resp.json()["detail"].startswith(OWNER_EMAIL_REFUSAL)
+    assert not profile_path.exists()
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email is None
+
+
+def test_a_teammates_own_address_is_refused_too(
+    client: TestClient, seeded: list[Any], people_db: Path, profile_path: Path
+) -> None:
+    # What makes allowing the caller's own address safe: a rostered teammate's
+    # is already on their own entry. What the review screen pre-fills for Bob
+    # when the owner has none — and the message says what works.
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    resp = _commit_with_owner_email(client, "bob@example.com", caller="bob@example.com")
+    assert resp.status_code == 422
+    assert "leave it blank" in resp.json()["detail"]
+    assert not profile_path.exists()
+
+
+def test_an_unreadable_roster_refuses_to_link_the_owner_email(
+    client: TestClient,
+    seeded: list[Any],
+    people_db: Path,
+    profile_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def locked(*_args: Any, **_kwargs: Any) -> bool:
+        raise sqlite3.OperationalError("database is locked")
+
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    monkeypatch.setattr("openexecutive.onboarding.commit.owner_email_blocked", locked)
+    resp = _commit_with_owner_email(client, "dana@example.com", caller="dana@example.com")
+    assert resp.status_code == 503
+    assert not profile_path.exists()
+
+
+def test_the_owner_can_still_link_the_email_they_signed_in_with(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    # Dana's entry has no email, so the app can't tell her login is hers yet;
+    # the review screen pre-fills the address she signed in with.
+    from openexecutive.people import store as people_store
+
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    resp = _commit_with_owner_email(client, "Dana@Example.com", caller="dana@example.com")
+    assert resp.status_code == 200, resp.text
+    dana = people_store.find_person_by_email("dana@example.com", db_path=people_db)
+    assert dana is not None and dana.is_principal
+
+
+def test_local_login_and_the_cli_can_link_any_owner_email(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    from openexecutive.people import store as people_store
+
+    _seed_owner_without_email_and_teammate()
+    seeded.append(_draft())
+    assert _commit_with_owner_email(client, "dana@example.com", caller=None).status_code == 200
+    dana = people_store.find_principal_person(db_path=people_db)
+    assert dana is not None and dana.email == "dana@example.com"
+
+
+def test_a_teammate_rerun_that_keeps_the_owners_email_still_saves(
+    client: TestClient, seeded: list[Any], people_db: Path
+) -> None:
+    # What the review screen pre-fills on a re-run: the owner's current email.
+    _seed_owner_and_teammate()
+    seeded.append(_draft())
+    resp = _commit_with_owner_email(client, "dana@example.com", caller="bob@example.com")
+    assert resp.status_code == 200, resp.text
+
+
+# ── solo: one person, no new departments, workspace settings untouched ───────
+
+
+def test_solo_commit_keeps_workspace_settings_and_saves_one_person(
+    client: TestClient,
+    seeded: list[Any],
+    profile_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the solo review screen sends — the principal alone and no
+    departments — creates exactly one Person and leaves the seeded areas
+    as they were. The workspace settings live in their own table, so the
+    commit (which rebuilds the profile from scratch) cannot wipe them."""
+    from openexecutive.departments import store as dept_store
+    from openexecutive.memory import episodic
+    from openexecutive.memory import workspace_settings as ws
+    from openexecutive.onboarding.commit import (
+        reconcile_onboarding_departments as real_reconcile,
+    )
+    from openexecutive.people import store as people_store
+
+    db = tmp_path / "episodic.db"
+    for module in (episodic, dept_store, people_store):
+        monkeypatch.setattr(module, "DB_PATH", db)
+    people_store.initialize_db(db)
+    dept_store.initialize_db(db)
+    dept_store.seed_default_departments(db)
+    monkeypatch.setattr("openexecutive.departments.registry.invalidate", lambda: None)
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.save_onboarding_people", _real_save_onboarding_people
+    )
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.reconcile_onboarding_departments", real_reconcile
+    )
+    ws.restore_workspace_settings(ws.WorkspaceSettings(mode="solo", timezone="Europe/Berlin"))
+    areas_before = sorted(d.config.slug for d in dept_store.list_departments(db))
+    assert areas_before, "fixture assumption: the default areas are seeded"
+
+    seeded.append(
+        _draft(
+            people=[{"full_name": "Dana Reyes", "role": "Founder", "is_principal": True}],
+            departments=[],
+        )
+    )
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["departments"] = []
+    body["people"] = [{"full_name": "Dana Reyes", "role": "Founder", "is_principal": True}]
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 200, resp.text
+
+    assert ws.get_workspace() == ws.WorkspaceSettings(mode="solo", timezone="Europe/Berlin")
+    people = people_store.list_people(db_path=db)
+    assert [(p.full_name, p.is_principal) for p in people] == [("Dana Reyes", True)]
+    assert sorted(d.config.slug for d in dept_store.list_departments(db)) == areas_before
+    saved = CompanyProfile.load_from_yaml(profile_path)
+    assert saved.org_structure.departments == []
+    assert saved.org_structure.leadership_team == ["Dana Reyes, Founder"]
+
+
+# ── persistence: a session outlives the process that started it ─────────────
+
+
+def test_session_is_found_again_after_the_process_forgets_it(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    """A restart (or another worker) empties the in-memory table; the stored
+    copy answers GET and the interview carries on from the same question."""
+    seeded.append(iv.Question(question="Who runs ops?", hint="A name is enough."))
+    sid = _start(client)
+    route._interview_sessions.clear()
+
+    resp = client.get(f"/onboard/interview/{sid}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["phase"] == "question"
+    assert body["question"] == "Who runs ops?"
+    assert body["question_hint"] == "A name is enough."
+    assert [t["role"] for t in body["turns"]] == ["user", "assistant"]
+    assert body["questions_asked"] == 1
+
+    seeded.append(_draft())
+    route._interview_sessions.clear()
+    resp = client.post("/onboard/interview/message", json={"session_id": sid, "message": "Sam."})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phase"] == "draft"
+
+
+def test_stored_draft_survives_a_restart(client: TestClient, seeded: list[Any]) -> None:
+    seeded.append(_draft())
+    sid = _start(client)
+    route._interview_sessions.clear()
+    resp = client.get(f"/onboard/interview/{sid}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phase"] == "draft"
+    assert resp.json()["draft"]["name"] == "Northwind Tools"
+
+
+def test_saving_deletes_the_stored_transcript(
+    client: TestClient, seeded: list[Any], profile_path: Path
+) -> None:
+    """The transcript carries financials: once the profile is on disk, the
+    stored copy is gone, so a later GET does not bring it back."""
+    seeded.append(_draft())
+    sid = _start(client)
+    assert interview_store.load(sid) is not None
+    resp = client.post("/onboard/interview/commit", json=_commit_body(sid))
+    assert resp.status_code == 200, resp.text
+    assert interview_store.load(sid) is None
+    route._interview_sessions.clear()
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+def test_an_expired_session_is_gone_from_the_store_too(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    route._interview_sessions[sid].last_touched -= route._INTERVIEW_TTL_SECONDS + 1
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+    assert interview_store.load(sid) is None
+
+
+def test_a_store_failure_does_not_fail_the_turn(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(interview_store, "DB_PATH", Path("/nonexistent/dir/interviews.db"))
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    assert client.get(f"/onboard/interview/{sid}").status_code == 200
+
+
+def test_a_turn_taken_on_another_worker_is_seen_here(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two workers hold the same session. The other one takes a turn (its
+    stored row is newer); this one must carry on from that, not from its
+    own stale copy, or its next save would overwrite the other's turns."""
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    stale = route._interview_sessions[sid]
+
+    # "Worker B": the same session, advanced and stored a moment later.
+    other = interview_store.load(sid)
+    assert other is not None
+    other.transcript.append(iv.Turn(role="user", text="Sam runs ops."))
+    other.transcript.append(iv.Turn(role="assistant", text="And finance?"))
+    other.questions_asked = 2
+    later = stale.stored_at + 1
+    monkeypatch.setattr(interview_store.time, "time", lambda: later)
+    interview_store.save(sid, other)
+
+    body = client.get(f"/onboard/interview/{sid}").json()
+    assert body["question"] == "And finance?"
+    assert body["questions_asked"] == 2
+    assert len(body["turns"]) == 4
+    assert route._interview_sessions[sid] is not stale
+
+
+def test_a_local_copy_as_new_as_the_store_is_kept(client: TestClient, seeded: list[Any]) -> None:
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    held = route._interview_sessions[sid]
+    client.get(f"/onboard/interview/{sid}")
+    assert route._interview_sessions[sid] is held
+
+
+def test_another_caller_cannot_read_or_continue_the_session(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    """The id is not a capability: a session answers only to whoever started
+    it, with the same 404 an unknown id gets."""
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client, caller="dana@example.com")
+    other = {"x-caller-email": "bob@example.com"}
+    assert client.get(f"/onboard/interview/{sid}", headers=other).status_code == 404
+    resp = client.post(
+        "/onboard/interview/message", json={"session_id": sid, "message": "Sam"}, headers=other
+    )
+    assert resp.status_code == 404
+    assert client.post("/onboard/interview/draft", json={"session_id": sid}, headers=other).status_code == 404
+    assert client.post("/onboard/interview/commit", json=_commit_body(sid), headers=other).status_code == 404
+    # Still theirs, also after a restart.
+    route._interview_sessions.clear()
+    assert (
+        client.get(f"/onboard/interview/{sid}", headers={"x-caller-email": "dana@example.com"}).status_code
+        == 200
+    )
+
+
+def test_a_stranger_neither_keeps_a_session_alive_nor_caches_it(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    """A refused read must not touch the session (which would extend its TTL)
+    nor pull the stored transcript into this worker's table."""
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client, caller="dana@example.com")
+    held = route._interview_sessions[sid]
+    touched = held.last_touched
+    other = {"x-caller-email": "bob@example.com"}
+    assert client.get(f"/onboard/interview/{sid}", headers=other).status_code == 404
+    assert held.last_touched == touched
+
+    route._interview_sessions.clear()
+    assert client.get(f"/onboard/interview/{sid}", headers=other).status_code == 404
+    assert sid not in route._interview_sessions
+
+
+def test_an_abandoned_stored_session_is_swept_on_the_next_read(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded.append(iv.Question(question="Who runs ops?"))
+    sid = _start(client)
+    route._interview_sessions.clear()
+    later = time.time() + route._INTERVIEW_TTL_SECONDS + 1
+    monkeypatch.setattr(interview_store.time, "time", lambda: later)
+    assert interview_store.load("someone-else") is None
+    with sqlite3.connect(interview_store._path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM onboarding_interviews").fetchone()[0] == 0
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+# ── changing an earlier answer (/onboard/interview/revise) ───────────────────
+
+
+def _two_answers(client: TestClient, seeded: list[Any]) -> str:
+    seeded.append(iv.Question(question="What do you sell?"))
+    sid = _start(client, "We are Northwind.")
+    seeded.append(iv.Question(question="How big is the team?"))
+    client.post("/onboard/interview/message", json={"session_id": sid, "message": "Tools."})
+    seeded.append(iv.Question(question="Who runs ops?"))
+    client.post("/onboard/interview/message", json={"session_id": sid, "message": "Forty."})
+    return sid
+
+
+def test_revise_drops_what_followed_and_asks_again(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    assert client.get(f"/onboard/interview/{sid}").json()["questions_asked"] == 3
+
+    seeded.append(iv.Question(question="Who are your customers?", hint="Trades?"))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 1, "message": "Tool rentals."},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["question"] == "Who are your customers?"
+    assert body["question_hint"] == "Trades?"
+    assert body["questions_asked"] == 2
+    turns = [t["text"] for t in client.get(f"/onboard/interview/{sid}").json()["turns"]]
+    assert turns == [
+        "We are Northwind.",
+        "What do you sell?",
+        "Tool rentals.",
+        "Who are your customers?",
+    ]
+
+
+def test_revise_can_redraft_and_clears_a_stale_draft(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    seeded.append(_draft())
+    client.post("/onboard/interview/draft", json={"session_id": sid})
+
+    seeded.append(_draft(summary="Rentals, not sales."))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 2, "message": "Twelve."},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "draft"
+    assert resp.json()["summary"] == "Rentals, not sales."
+    roles = [t.role for t in route._interview_sessions[sid].transcript]
+    assert all(a != b for a, b in zip(roles, roles[1:], strict=False)), roles
+
+
+def test_revising_the_description_keeps_its_attachments(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="What do you sell?"))
+    resp = client.post(
+        "/onboard/interview/start",
+        data={"description": "We are Northwind."},
+        files=[("files", ("brief.md", b"Northwind brief text", "text/markdown"))],
+    )
+    sid = resp.json()["session_id"]
+
+    seeded.append(iv.Question(question="Who runs ops?"))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "We are Northwind Tools."},
+    )
+    assert resp.status_code == 200
+    first = route._interview_sessions[sid].transcript[0].text
+    assert first.startswith("We are Northwind Tools.\n\n=== Attached: brief.md")
+    assert "Northwind brief text" in first
+    assert resp.json()["questions_asked"] == 1
+
+
+def test_a_failed_revise_changes_nothing(client: TestClient, seeded: list[Any]) -> None:
+    sid = _two_answers(client, seeded)
+    before = client.get(f"/onboard/interview/{sid}").json()
+
+    seeded.append(iv.InterviewError("The setup assistant is unavailable right now."))
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "SECRET-ARR-123"},
+    )
+    assert resp.status_code == 502
+    assert "SECRET-ARR-123" not in resp.text
+    assert client.get(f"/onboard/interview/{sid}").json() == before
+
+
+def test_revise_rejects_a_missing_answer_and_a_saved_session(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    for answer in (-1, 3):
+        resp = client.post(
+            "/onboard/interview/revise",
+            json={"session_id": sid, "answer": answer, "message": "x"},
+        )
+        assert resp.status_code == 404
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 0, "message": "  "}
+    )
+    assert resp.status_code == 422
+
+    route._interview_sessions[sid].saved = True
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 0, "message": "x"}
+    )
+    assert resp.status_code == 409
+
+
+def test_revise_is_owner_only(client: TestClient, seeded: list[Any]) -> None:
+    sid = _two_answers(client, seeded)
+    resp = client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "x"},
+        headers={"x-caller-email": "someone@else.test"},
+    )
+    assert resp.status_code == 404
+
+
+def test_start_over_forgets_the_session_everywhere(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    resp = client.delete(
+        f"/onboard/interview/{sid}", headers={"x-caller-email": "someone@else.test"}
+    )
+    assert resp.status_code == 404
+    assert client.delete(f"/onboard/interview/{sid}").status_code == 204
+    assert sid not in route._interview_sessions
+    assert interview_store.load(sid) is None
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+def test_revising_a_files_only_description_keeps_every_file(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="What do you sell?"))
+    resp = client.post(
+        "/onboard/interview/start",
+        data={"description": ""},
+        files=[("files", ("brief.md", b"Northwind brief text", "text/markdown"))],
+    )
+    sid = resp.json()["session_id"]
+    seeded.append(iv.Question(question="Who runs ops?"))
+    client.post(
+        "/onboard/interview/revise",
+        json={"session_id": sid, "answer": 0, "message": "We are Northwind."},
+    )
+    first = route._interview_sessions[sid].transcript[0].text
+    assert first.startswith("We are Northwind.\n\n=== Attached: brief.md")
+    assert "Northwind brief text" in first
+
+
+def test_a_revise_missing_its_answer_is_404_without_echo(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "message": "SECRET-ARR-123"}
+    )
+    assert resp.status_code == 404
+    assert "SECRET-ARR-123" not in resp.text
+
+
+def test_an_unexpected_error_mid_revise_restores_the_session(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    seeded.append(_draft())
+    client.post("/onboard/interview/draft", json={"session_id": sid})
+    held = route._interview_sessions[sid]
+    before = (list(held.transcript), held.questions_asked, held.draft)
+
+    seeded.append(RuntimeError("database is locked"))
+    no_raise = TestClient(client.app, raise_server_exceptions=False)
+    resp = no_raise.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 1, "message": "x"}
+    )
+    assert resp.status_code == 500
+    assert (held.transcript, held.questions_asked, held.draft) == before
+
+
+def test_a_turn_finishing_after_start_over_does_not_store_it_again(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    sid = _two_answers(client, seeded)
+    in_flight = route._interview_sessions[sid]
+    assert client.delete(f"/onboard/interview/{sid}").status_code == 204
+    route._persist_interview(sid, in_flight)
+    assert interview_store.load(sid) is None
+    assert client.get(f"/onboard/interview/{sid}").status_code == 404
+
+
+def test_a_failed_revise_never_rolls_back_a_turn_added_meanwhile(
+    client: TestClient, seeded: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revise turn runs on a copy, so another request's turn on the
+    same session survives a revise that fails."""
+    sid = _two_answers(client, seeded)
+    held = route._interview_sessions[sid]
+
+    async def _concurrent_then_fail(transcript: list[iv.Turn], **kwargs: Any) -> Any:
+        held.transcript.append(iv.Turn(role="user", text="added meanwhile"))
+        raise iv.InterviewError("The setup assistant is unavailable right now.")
+
+    monkeypatch.setattr(iv, "advance", _concurrent_then_fail)
+    resp = client.post(
+        "/onboard/interview/revise", json={"session_id": sid, "answer": 0, "message": "x"}
+    )
+    assert resp.status_code == 502
+    assert held.transcript[-1].text == "added meanwhile"
+    assert held.transcript[0].text == "We are Northwind."

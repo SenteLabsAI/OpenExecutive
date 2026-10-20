@@ -15,7 +15,10 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import WorkspaceSettings
 
 # Matches a relative run_at sentinel like "+30s", "+5m", or "+1h" used by
 # fixture-staged scheduled actions. Resolved against load time so reloads
@@ -294,11 +297,17 @@ async def _load_from_dir(
         # save it back to its slot and leave client mode before the fixture
         # replaces everything. Without this, loading a demo would silently
         # destroy the active client's unsaved work.
+        # Whether the live state is the user's own company right now: not a
+        # loaded fixture, not a client (or one we failed to park).
+        sentinel = _fixture_active_sentinel(settings)
+        live_is_users = not sentinel.exists()
         try:
             from openexecutive.clients.slots import park_active_client
 
-            park_active_client(settings)
+            if park_active_client(settings) is not None:
+                live_is_users = False
         except Exception:
+            live_is_users = False
             logger.exception("fixture load: client save-back failed (continuing)")
 
         # Auto-snapshot user state on first ever fixture load. Use the same
@@ -307,7 +316,6 @@ async def _load_from_dir(
         # disable auto-snapshot. The sentinel guards the inverse: if a previous
         # fixture is already active, current state is NOT the user's company.
         backup_dir = _user_backup_dir(settings)
-        sentinel = _fixture_active_sentinel(settings)
         auto_snapshot_taken = False
         if not (backup_dir / "profile.yaml").exists() and not sentinel.exists():
             try:
@@ -317,6 +325,16 @@ async def _load_from_dir(
                 # Best-effort: do not block the fixture load if snapshot fails
                 # on a truly empty environment. User can call snapshot manually.
                 pass
+        elif live_is_users and backup_dir.is_dir():
+            # An earlier snapshot is being reused (unload keeps _user_backup),
+            # but the workspace settings are the user's own right now and may
+            # have changed since — refresh them, or unload would restore
+            # stale ones (or, from a backup that predates workspace.yaml,
+            # none at all).
+            try:
+                _dump_workspace(backup_dir / "workspace.yaml")
+            except Exception:
+                logger.exception("fixture load: refreshing the backed-up workspace settings failed")
 
         summary = await _apply_state_from_source(fixture_dir, settings)
 
@@ -429,6 +447,12 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
     from openexecutive.knowledge.store import ChromaDBStore
     from openexecutive.memory.company_profile import CompanyProfile
 
+    # ── 0. Read + validate the optional workspace.yaml before anything is
+    #       swapped; it is applied at 4b. Never raises — a bad value is
+    #       logged and skipped, so it cannot abort the load half-way.
+    workspace_wanted = _read_workspace_file(source_dir / "workspace.yaml")
+    restoring_user_backup = _same_dir(source_dir, _user_backup_dir(settings))
+
     profile_path = source_dir / "profile.yaml"
     profile = (
         CompanyProfile.load_from_yaml(profile_path)
@@ -459,11 +483,30 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
         collection=ChromaDBStore.RESEARCH_COLLECTION,
         where={"type": "recent_research"},
     )
+    # Indexed artifacts (orchestrator/artifact_tools.py) are per-company too.
+    store.delete_documents(
+        collection=ChromaDBStore.RESEARCH_COLLECTION,
+        where={"type": "artifact"},
+    )
     store.delete_notion_docs()
     store.delete_attachment_docs()
     from openexecutive.knowledge.notion_sync import reset_local_state
 
     reset_local_state(profile_path=settings.company_profile_path)
+    # Synced Drive and OneDrive files are per-company too, like Notion's.
+    store.delete_drive_docs()
+    from openexecutive.knowledge import drive_sync
+
+    drive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    store.delete_onedrive_docs()
+    from openexecutive.knowledge import onedrive_sync
+
+    onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
+    # And synced Confluence pages.
+    store.delete_confluence_docs()
+    from openexecutive.knowledge import confluence_sync
+
+    confluence_sync.reset_local_state(profile_path=settings.company_profile_path)
 
     docs_indexed = 0
     for dest_doc in sorted(company_docs_dir.glob("*.md")):
@@ -479,6 +522,17 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
     people_seeded = _seed_people(source_dir / "people.yaml")
     memory_seeded = _seed_episodic_memory(source_dir / "memory.json", settings)
     departments_seeded = _seed_departments(source_dir / "departments.yaml")
+
+    # ── 4b. Workspace settings (solo/team mode, the user's time zone) ─────
+    # A fixture: back to the defaults, then its workspace.yaml if it has one
+    # — unconditional, so a fixture without the file never inherits the
+    # previous company's mode or zone. The user's backup: its workspace.yaml,
+    # or — for a backup that predates the file — the settings are left as
+    # they are rather than reset. No scheduler side effects either way:
+    # scheduled_actions were just rebuilt from memory.json.
+    workspace_applied = _apply_workspace(
+        workspace_wanted, keep_when_missing=restoring_user_backup
+    )
 
     # ── 5. Wipe the external-monitoring layer ──────────────────────────────
     # The watchlist + external_signals tables are NOT part of memory.json or
@@ -537,6 +591,7 @@ async def _apply_state_from_source(source_dir: Path, settings: Any) -> dict[str,
         "memory_seeded": memory_seeded,
         "people_seeded": people_seeded,
         "departments_seeded": departments_seeded,
+        "workspace": workspace_applied,
         "monitoring_cleared": monitoring_cleared,
         "research_history_cleared": research_history_cleared,
     }
@@ -659,8 +714,8 @@ async def reset_all_state(
     """Wipe live state AND the snapshot — return to factory-default.
 
     Intentionally destructive. Unlike unload, there is no path back from
-    this. Re-seeds the 8 default specialist departments after wiping so the
-    user sees a sensible starting org instead of a blank departments page.
+    this. Leaves no departments, like a new install: setup creates only the
+    ones the company has. ``departments_seeded`` in the result is always 0.
 
     ``app_state`` (optional) is FastAPI's ``request.app.state``; when
     provided, the shared ``store`` attribute is swapped *inside* the lock
@@ -676,8 +731,9 @@ async def reset_all_state(
          (workflow_runs, audit_log, eval_runs) so /jobs and /audit reset
          too
       4. DELETE people + child tables (authority scope, availability)
-      5. DELETE departments + Goals, then re-seed 8 default departments
-      5a. Re-bootstrap principal briefs, department cadences, and (if
+      5. DELETE departments + Goals (none are re-created)
+      5a. Reset the workspace settings to the defaults (team, no zone),
+          then re-bootstrap principal briefs, department cadences, and (if
           enabled) the nudge-scan heartbeat — without this Today stays
           blank until the next API restart
       6. Remove the _user_backup/ directory entirely (sentinel goes with it)
@@ -703,17 +759,39 @@ async def reset_all_state(
             collection=ChromaDBStore.RESEARCH_COLLECTION,
             where={"type": "recent_research"},
         )
+        # Indexed artifacts (orchestrator/artifact_tools.py) are per-company too.
+        store.delete_documents(
+            collection=ChromaDBStore.RESEARCH_COLLECTION,
+            where={"type": "artifact"},
+        )
         store.delete_notion_docs()
         store.delete_attachment_docs()
         from openexecutive.knowledge.notion_sync import reset_local_state
 
         reset_local_state(profile_path=settings.company_profile_path)
+        # Synced Drive and OneDrive files are per-company too, like Notion's.
+        store.delete_drive_docs()
+        from openexecutive.knowledge import drive_sync
+
+        drive_sync.reset_local_state(profile_path=settings.company_profile_path)
+        store.delete_onedrive_docs()
+        from openexecutive.knowledge import onedrive_sync
+
+        onedrive_sync.reset_local_state(profile_path=settings.company_profile_path)
+        # And synced Confluence pages.
+        store.delete_confluence_docs()
+        from openexecutive.knowledge import confluence_sync
+
+        confluence_sync.reset_local_state(profile_path=settings.company_profile_path)
 
         # 2b. Company-authored skills — delete the filesystem directory and
         # the company-source rows from the shared `skills` ChromaDB
         # collection. Built-in skills (source='builtin') are preserved so
         # the box still has its default skill library after a reset.
-        from openexecutive.knowledge.skills_index import SKILLS_COLLECTION
+        from openexecutive.knowledge.skills_index import (
+            SKILLS_COLLECTION,
+            sync_builtin_skill_index,
+        )
         company_skills_dir: Path = settings.company_profile_path.parent / "skills"
         if company_skills_dir.exists():
             shutil.rmtree(company_skills_dir)
@@ -721,6 +799,9 @@ async def reset_all_state(
             collection=SKILLS_COLLECTION,
             where={"source": "company"},
         )
+        # The wiped dir held the hidden list and any customizations, so every
+        # built-in is back in effect.
+        sync_builtin_skill_index(store)
 
         # 3. Episodic rows — includes chat history, voice personas, alerts
         # state (alerts, mutes, preferences), AND the run/audit
@@ -773,12 +854,26 @@ async def reset_all_state(
             ),
         )
 
-        # Attunement's daily call counter and outcome ledger. Created by initialize_db, which an
+        # Attunement's daily call counter, outcome ledger and working styles. Created by initialize_db, which an
         # older DB may not have run yet, so guarded per table (the helper
         # above only guards the file).
         if EPISODIC_DB_PATH.exists():
+            from openexecutive.delegation.schema import TABLES as DELEGATION_TABLES
+            from openexecutive.memory.history_schema import TABLES as HISTORY_TABLES
+            from openexecutive.orchestrator.take_the_lead import TABLES as TAKE_THE_LEAD_TABLES
+
             with sqlite3.connect(str(EPISODIC_DB_PATH)) as _conn:
-                for _table in ("attunement_usage", "proactive_outcomes"):
+                for _table in ("attunement_usage", "proactive_outcomes",
+                               "attunement_profiles", "attunement_profile_history",
+                               # Gated decisions and each class's mode: a
+                               # reset box has proposed nothing yet.
+                               "decision_instances", "decision_class_state",
+                               # Act as me: every table it keeps.
+                               *DELEGATION_TABLES,
+                               # Always in the loop: notes and switches.
+                               *HISTORY_TABLES,
+                               # Take the lead: switches, rules, its log.
+                               *TAKE_THE_LEAD_TABLES):
                     if _conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (_table,)
                     ).fetchone():
@@ -850,23 +945,32 @@ async def reset_all_state(
 
         # 4. People (child tables first to satisfy FK ordering)
         from openexecutive.people import store as people_store
+        from openexecutive.people.roster_requests import TABLES as ROSTER_REQUEST_TABLES
+
+        if people_store.DB_PATH.exists():
+            # So the alias and roster-request tables exist to be wiped on a
+            # DB created before them (idempotent).
+            people_store.initialize_db()
         people_cleared = _delete_all_rows(
             people_store.DB_PATH,
-            ("person_authority_scope", "person_availability", "people"),
+            (
+                *ROSTER_REQUEST_TABLES,
+                "person_emails",
+                "person_authority_scope",
+                "person_availability",
+                "people",
+            ),
         )
 
-        # 5. Departments + Goals, then re-seed defaults. ``departments_meta``
-        # carries the "default-departments-already-seeded" sentinel; without
-        # wiping it here, ``seed_default_departments`` short-circuits to a
-        # no-op on any reset after the first ever (the sentinel is set at
-        # API boot via ``api/main.py``), and the box ends up with zero
-        # departments — which then nukes the cadence bootstrap downstream.
+        # 5. Departments + Goals. A reset leaves none, like a new install:
+        # setup (or the Executive's create_goal tool) creates only the ones
+        # the company has.
         from openexecutive.departments import store as dept_store
         _delete_all_rows(
             dept_store.DB_PATH,
             ("department_goals", "departments", "departments_meta"),
         )
-        departments_seeded = dept_store.seed_default_departments()
+        departments_seeded = 0
 
         # 5a. Re-bootstrap the built-in scheduled actions that
         # ``api/main.py`` enqueues at process startup. The episodic wipe
@@ -881,8 +985,15 @@ async def reset_all_state(
         # table simply enqueues one row apiece.
         from openexecutive.config import get_settings
         from openexecutive.departments.cadence import bootstrap_cadences
+        from openexecutive.memory.workspace_settings import reset_workspace_settings
         from openexecutive.scheduler.runner import seed_principal_briefs
 
+        # Factory state is team mode with no zone of its own — reset it
+        # before the bootstraps below, which read both.
+        try:
+            reset_workspace_settings()
+        except Exception:
+            logger.exception("reset: reset_workspace_settings failed")
         try:
             seed_principal_briefs()
         except Exception:
@@ -1135,6 +1246,9 @@ def snapshot_user_state(settings: Any, *, force: bool = False) -> dict[str, Any]
     # ── 5. departments.yaml ───────────────────────────────────────────────
     departments_count = _dump_departments(backup_dir / "departments.yaml")
 
+    # ── 6. workspace.yaml — so unload restores the user's mode and zone ───
+    _dump_workspace(backup_dir / "workspace.yaml")
+
     # Clear active-fixture marker — this state IS the user's company now.
     _fixture_active_sentinel(settings).unlink(missing_ok=True)
 
@@ -1145,6 +1259,115 @@ def snapshot_user_state(settings: Any, *, force: bool = False) -> dict[str, Any]
         "people_snapshotted": people_count,
         "departments_snapshotted": departments_count,
     }
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def _read_workspace_file(workspace_path: Path) -> WorkspaceSettings | None:
+    """The settings an optional ``workspace.yaml`` asks for (``mode:
+    solo|team``, ``timezone: <IANA zone>``, and the principal's role:
+    ``role_kind``, ``role_title``, ``reports_to``, ``remit``,
+    ``measured_on`` — each optional), or None when there is no file.
+
+    Never raises: an unreadable file, a non-mapping or a value that does not
+    validate is logged and skipped (reading as the default for that field).
+    """
+    import yaml
+
+    from openexecutive.memory.workspace_settings import (
+        ROLE_FIELDS,
+        WORKSPACE_MODES,
+        WorkspaceMode,
+        WorkspaceSettings,
+        validate_role_field,
+        validate_timezone,
+    )
+
+    if not workspace_path.is_file():
+        return None
+    wanted = WorkspaceSettings()
+    try:
+        raw = yaml.safe_load(workspace_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.exception("fixture: unreadable %s — using the defaults", workspace_path)
+        return wanted
+    if not isinstance(raw, dict):
+        logger.warning("fixture: %s is not a mapping — using the defaults", workspace_path)
+        return wanted
+    mode = raw.get("mode")
+    if mode is not None:
+        if isinstance(mode, str) and mode in WORKSPACE_MODES:
+            wanted.mode = cast(WorkspaceMode, mode)
+        else:
+            logger.warning("fixture: ignoring workspace mode %r", mode)
+    tz = raw.get("timezone")
+    if tz is not None:
+        try:
+            wanted.timezone = validate_timezone(str(tz))
+        except ValueError:
+            logger.warning("fixture: ignoring workspace timezone %r", tz)
+    for field in ROLE_FIELDS:
+        value = raw.get(field)
+        if value is None:
+            continue
+        try:
+            setattr(wanted, field, validate_role_field(field, value))
+        except ValueError:
+            # The field name only: the value is the principal's own text.
+            logger.warning("fixture: ignoring an invalid workspace %s", field)
+    return wanted
+
+
+def _apply_workspace(
+    wanted: WorkspaceSettings | None, *, keep_when_missing: bool
+) -> dict[str, Any]:
+    """Make ``wanted`` (from ``_read_workspace_file``) the live settings and
+    return what is in effect — the mode and zone only. ``wanted is None`` (no
+    file) means the defaults — or, with ``keep_when_missing``, leave the
+    settings as they are. A write failure is logged rather than aborting a
+    half-applied load.
+
+    The returned dict becomes the ``workspace`` key of the load / unload
+    response, which any caller of those routes sees, so the principal's role
+    (who they report to, what they are measured on — shown by ``GET
+    /workspace`` to the principal only) is left out of it. It is still
+    applied.
+    """
+    from openexecutive.memory.workspace_settings import (
+        ROLE_FIELDS,
+        WorkspaceSettings,
+        get_workspace,
+        reset_workspace_settings,
+        restore_workspace_settings,
+    )
+
+    if wanted is None and keep_when_missing:
+        logger.info("fixture: no workspace.yaml in the backup — keeping the current settings")
+    else:
+        try:
+            reset_workspace_settings()
+            if wanted is not None and wanted != WorkspaceSettings():
+                restore_workspace_settings(wanted)
+        except Exception:
+            logger.exception("fixture: applying the workspace settings failed")
+    return get_workspace().model_dump(exclude={*ROLE_FIELDS, "company_domains"})
+
+
+def _dump_workspace(workspace_path: Path) -> None:
+    """Write the live workspace settings in ``workspace.yaml`` form."""
+    import yaml
+
+    from openexecutive.memory.workspace_settings import get_workspace
+
+    workspace_path.write_text(
+        yaml.safe_dump(get_workspace().model_dump(), sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _dump_episodic_memory(memory_path: Path) -> dict[str, int]:
@@ -1509,6 +1732,15 @@ def _seed_people(people_path: Path) -> int:
             # Child tables first to satisfy foreign-key ordering when PRAGMA
             # foreign_keys=ON. department_slugs are stored as a JSON column on
             # `people` itself (no separate junction table).
+            existing = {
+                r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            # A fixture's people come with no aliases and nobody waiting.
+            for table in (
+                "roster_ack_log", "roster_request_messages", "roster_requests", "person_emails",
+            ):
+                if table in existing:
+                    conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed names
             conn.execute("DELETE FROM person_authority_scope")
             conn.execute("DELETE FROM person_availability")
             conn.execute("DELETE FROM people")

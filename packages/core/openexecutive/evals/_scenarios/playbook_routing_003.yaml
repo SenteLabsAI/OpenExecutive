@@ -1,0 +1,11 @@
+id: playbook_routing_003
+domain: workflows
+description: "Asked for a finished document that a standalone playbook covers (a post-mortem), the Executive finds the playbook, sees its Quick workflow, and runs or offers that workflow with the request filled in"
+query: "Write up a full post-mortem for Tuesday's checkout outage. Checkout was down 42 minutes after a config push; we rolled back. I want the finished document."
+expected_tool_calls:
+  - search_skills
+quality_criteria:
+  checks_playbooks_first: true
+  runs_or_offers_the_quick_post_mortem_workflow: true
+  passes_the_outage_details_as_the_request: true
+  no_fabricated_facts: true

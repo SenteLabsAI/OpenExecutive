@@ -37,7 +37,12 @@ from typing import Any
 
 import httpx
 
-from openexecutive.providers.feature_gate import FeatureSpec, apply_feature_gates
+from openexecutive.providers.feature_gate import (
+    FeatureSpec,
+    apply_feature_gates,
+    fit_claude_generation,
+    relax_forced_tool_choice,
+)
 from openexecutive.providers.translator import (
     StreamAccumulator,
     from_openai_response,
@@ -64,6 +69,23 @@ def _announce_reasoning(slug: str, body: dict[str, Any]) -> None:
         )
 
 
+# Slugs for which we've already logged the LOCAL_REASONING_EFFORT being
+# sent. A missing or wrong effort is what makes a thinking-only model burn
+# its whole max_tokens budget, so the log shows which value is in play.
+_effort_announced: set[str] = set()
+
+
+def _announce_effort(slug: str, effort: str) -> None:
+    if slug not in _effort_announced:
+        _effort_announced.add(slug)
+        logger.info(
+            "reasoning_effort=%s sent to %s via OpenAI-compatible backend "
+            "(LOCAL_REASONING_EFFORT)",
+            effort,
+            slug,
+        )
+
+
 class OpenAICompatibleProvider:
     """LLMProvider implementation backed by any OpenAI-compatible endpoint.
 
@@ -82,6 +104,7 @@ class OpenAICompatibleProvider:
         spec_lookup: dict[str, FeatureSpec] | None = None,
         model_resolver: Callable[[str], tuple[str, FeatureSpec] | None] | None = None,
         include_usage_accounting: bool = False,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -106,6 +129,9 @@ class OpenAICompatibleProvider:
         # behind a LiteLLM gateway), which rejects an unrecognized top-level
         # `usage` field outright rather than ignoring it.
         self._include_usage_accounting = include_usage_accounting
+        # Top-level `reasoning_effort` for thinking-only backends
+        # (LOCAL_REASONING_EFFORT). None = not sent.
+        self._reasoning_effort = reasoning_effort
 
     # ------------------------------------------------------------------
     # internal helpers
@@ -127,6 +153,7 @@ class OpenAICompatibleProvider:
                 supports_thinking=False,
                 supports_web_search=False,
                 supports_tool_use=True,
+                supports_pdf_input=False,
             ),
         )
         return slug, spec
@@ -142,6 +169,20 @@ class OpenAICompatibleProvider:
     # LLMProvider surface
     # ------------------------------------------------------------------
 
+    def _extend_body(self, slug: str, body: dict[str, Any]) -> None:
+        """Backend-specific request fields, added to the translated body in
+        place. A plain OpenAI-compatible server gets only what the operator
+        opted into: an unknown top-level field can 400 there (see
+        include_usage_accounting).
+
+        ``reasoning_effort`` is sent unconditionally when configured. Local
+        slugs never carry a per-call ``reasoning`` object (their spec has
+        ``supports_thinking=False``), so there is nothing for it to clash
+        with."""
+        if self._reasoning_effort:
+            body["reasoning_effort"] = self._reasoning_effort
+            _announce_effort(slug, self._reasoning_effort)
+
     def messages_create(self, **kwargs: Any) -> Awaitable[Any]:
         return self._messages_create(kwargs)
 
@@ -151,10 +192,15 @@ class OpenAICompatibleProvider:
         request_timeout = kwargs.pop("timeout", None)
         model = kwargs.pop("model", "")
         slug, spec = self._resolve(model)
-        gated = apply_feature_gates(spec, kwargs)
+        # Fitted before the gate, so a backend whose spec takes no thinking
+        # (a local gateway serving a Claude slug) drops the added field too.
+        gated = apply_feature_gates(
+            spec, fit_claude_generation(slug, relax_forced_tool_choice(slug, kwargs))
+        )
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
+        self._extend_body(slug, body)
         _announce_reasoning(slug, body)
 
         try:
@@ -179,10 +225,15 @@ class OpenAICompatibleProvider:
         request_timeout = kwargs.pop("timeout", None)
         model = kwargs.pop("model", "")
         slug, spec = self._resolve(model)
-        gated = apply_feature_gates(spec, kwargs)
+        # Fitted before the gate, so a backend whose spec takes no thinking
+        # (a local gateway serving a Claude slug) drops the added field too.
+        gated = apply_feature_gates(
+            spec, fit_claude_generation(slug, relax_forced_tool_choice(slug, kwargs))
+        )
         body = to_openai_request(
             slug, gated, include_usage=self._include_usage_accounting
         )
+        self._extend_body(slug, body)
         _announce_reasoning(slug, body)
         body["stream"] = True
         return _OpenAICompatibleStream(

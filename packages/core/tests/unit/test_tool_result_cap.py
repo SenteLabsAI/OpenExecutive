@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -78,8 +78,8 @@ def test_limit_is_honoured_not_hardcoded() -> None:
     [
         500,     # a short JSON status result
         4_000,   # a specialist's analysis
-        20_000,  # a substantial document excerpt
-        40_000,  # the attachments extractor's own ceiling
+        15_000,  # a long email thread
+        20_000,  # a substantial document excerpt (the shipped default)
     ],
 )
 def test_default_limit_does_not_fire_on_ordinary_output(size: int) -> None:
@@ -274,3 +274,207 @@ def test_hostile_tool_name_is_truncated_not_echoed_whole() -> None:
     out = _cap_tool_result("x" * 50_000, tool_name="N" * 500, limit=2_000)
     assert "N" * 500 not in out
     assert "N" * 80 in out
+
+
+# --------------------------------------------------------------------- #
+# The turn's reading budget (TOOL_RESULTS_TURN_MAX_CHARS)
+# --------------------------------------------------------------------- #
+
+
+def test_turn_budget_limit() -> None:
+    from openexecutive.orchestrator.executive import _TURN_BUDGET_FLOOR, _turn_result_limit
+
+    # Plenty left: the per-result cap applies, not the budget.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=40_000, used=0) == (20_000, False)
+    # Partly used: what is left.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=40_000, used=30_000) == (10_000, True)
+    # Used up: still a floor, so the model sees what it got.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=40_000, used=60_000) == (
+        _TURN_BUDGET_FLOOR, True,
+    )
+    # Never more than the per-result cap, even at the floor.
+    assert _turn_result_limit("x", per_result=2_000, turn_budget=40_000, used=60_000) == (2_000, True)
+    # Off, and specialists exempt.
+    assert _turn_result_limit("read_document", per_result=20_000, turn_budget=0, used=10**6) == (20_000, False)
+    assert _turn_result_limit("consult_specialist", per_result=20_000, turn_budget=40_000, used=10**6) == (
+        20_000, False,
+    )
+    # A built tool's result lists the writes that already ran: never cut short.
+    assert _turn_result_limit("run_script", per_result=20_000, turn_budget=40_000, used=10**6) == (20_000, False)
+    # Nor is tool discovery: a cut schema would leave the next call unmakeable.
+    for name in ("open_tools", "search_tools"):
+        assert _turn_result_limit(name, per_result=20_000, turn_budget=40_000, used=10**6) == (20_000, False)
+
+
+def test_budget_marker_says_answer_from_what_you_have() -> None:
+    out = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000, budget_spent=True)
+    assert len(out) <= 3_000
+    assert "already read as much as it can" in out
+    # A read cut by the budget must never be the basis of an edit: the
+    # model would write back a document missing everything past the cut.
+    assert "Never edit, rewrite or replace anything from this cut result" in out
+    # Without the full re-read left, an edit is offered as its own request.
+    assert "offer to do it as its own request" in out
+    assert "exactly the same input" not in out
+    # A narrower re-read would be cut too, so the budget note drops the
+    # "call the tool again" advice rather than contradict it.
+    assert "call the tool again" not in out
+    plain = _cap_tool_result("x" * 50_000, tool_name="read_document", limit=3_000)
+    assert "already read as much as it can" not in plain
+    assert "call the tool again" in plain
+
+
+def test_a_turns_reads_share_one_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three long reads across two rounds: the first two fit the budget, the
+    third comes back at the floor with the budget note. A specialist's
+    answer after that is neither counted nor cut."""
+    exec_ = Executive()
+    monkeypatch.setattr(exec_._settings, "tool_result_max_chars", 20_000)
+    monkeypatch.setattr(exec_._settings, "tool_results_turn_max_chars", 40_000)
+
+    provider = _ScriptedProvider(
+        [
+            _FinalMsg([_ToolUseBlock("r1", "read_document", {"n": 1}),
+                       _ToolUseBlock("r2", "read_document", {"n": 2})], "tool_use"),
+            _FinalMsg([_ToolUseBlock("r3", "read_document", {"n": 3}),
+                       _ToolUseBlock("s1", "consult_specialist", {"specialist": "cfo", "query": "q"})],
+                      "tool_use"),
+            _FinalMsg([_TextBlock("done")], "end_turn"),
+        ]
+    )
+
+    async def _read(*_a: Any, **_k: Any) -> str:
+        return "d" * 19_000
+
+    async def _go() -> None:
+        with patch(
+            "openexecutive.orchestrator.executive.get_provider", return_value=provider,
+        ), patch.dict(
+            "openexecutive.orchestrator.executive._ALL_SKILL_HANDLERS", {"read_document": _read},
+        ), patch(
+            "openexecutive.orchestrator.executive.route_parallel",
+            new=AsyncMock(return_value={"s1": "a" * 15_000}),
+        ):
+            async for _ in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "x"}], model="claude-test",
+            ):
+                pass
+
+    asyncio.run(_go())
+    first = {b["tool_use_id"]: b["content"] for b in provider.calls[1]["messages"][-1]["content"]}
+    assert len(first["r1"]) == 19_000 and len(first["r2"]) == 19_000
+    second = {b["tool_use_id"]: b["content"] for b in provider.calls[2]["messages"][-1]["content"]}
+    assert len(second["r3"]) <= 3_000
+    assert "already read as much as it can" in second["r3"]
+
+
+def test_budget_marker_offers_the_full_reread_while_it_is_left() -> None:
+    out = _cap_tool_result(
+        "x" * 50_000, tool_name="read_document", limit=3_000, budget_spent=True, full_reread_left=True
+    )
+    assert len(out) <= 3_000
+    assert "call the tool again with exactly the same input" in out
+    assert "Never edit, rewrite or replace anything from this cut result" in out
+    assert "narrower" not in out
+
+
+@pytest.mark.parametrize("full_reread_left", [False, True])
+def test_budget_marker_fits_the_smallest_cap(full_reread_left: bool) -> None:
+    """The per-result cap can be as low as 1,000 (the config's floor), and
+    the budget can still be what set it: the longer budget marker must fit."""
+    out = _cap_tool_result(
+        "x" * 50_000,
+        tool_name="t" * 200,
+        limit=1_000,
+        budget_spent=True,
+        full_reread_left=full_reread_left,
+    )
+    assert len(out) <= 1_000
+    assert "already read as much as it can" in out
+
+
+def test_a_cut_read_can_be_read_once_more_in_full() -> None:
+    """The read the question asks to edit may be the one the budget cut.
+    Repeating that exact call brings it back whole, once per turn, from the
+    result already in hand; any other repeat stays cut, so the turn is
+    still bounded."""
+    from openexecutive.orchestrator.executive import _TURN_BUDGET_FLOOR, _TurnReadingBudget
+
+    budget = _TurnReadingBudget(per_result=20_000, turn_budget=40_000)
+    doc = "d" * 19_000
+    assert budget.cap("read_document", {"id": "q2"}, doc, "t1") == doc
+    assert budget.cap("read_document", {"id": "q3"}, doc, "t2") == doc
+    # Over budget: the third read is cut, and offered the full re-read.
+    cut = budget.cap("read_document", {"id": "q3-plan"}, doc, "t3")
+    assert len(cut) <= _TURN_BUDGET_FLOOR
+    assert "exactly the same input" in cut
+    # A different call is not a repeat of a cut one: nothing to replay.
+    assert budget.replay({"id": "t4", "name": "read_document", "input": {"id": "q2"}}) is None
+    # The same call again is answered with the stored result, in full.
+    repeat = {"id": "t5", "name": "read_document", "input": {"id": "q3-plan"}}
+    assert budget.replay(repeat) == doc
+    assert budget.cap("read_document", {"id": "q3-plan"}, doc, "t5") == doc
+    # That was the turn's one: no further replay, and no longer offered.
+    assert budget.replay({"id": "t6", "name": "read_document", "input": {"id": "q3-plan"}}) is None
+    again = budget.cap("read_document", {"id": "q4"}, doc, "t6")
+    assert len(again) <= _TURN_BUDGET_FLOOR
+    assert "exactly the same input" not in again
+    assert "offer to do it as its own request" in again
+
+
+def test_a_repeated_cut_call_is_replayed_not_run_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The budget cuts any tool's result, writes included, and the marker
+    asks for a repeat with the same input. That repeat must be answered
+    from the result in hand: running it again would do the write twice."""
+    exec_ = Executive()
+    monkeypatch.setattr(exec_._settings, "tool_result_max_chars", 20_000)
+    monkeypatch.setattr(exec_._settings, "tool_results_turn_max_chars", 40_000)
+
+    provider = _ScriptedProvider(
+        [
+            _FinalMsg([_ToolUseBlock("r1", "read_document", {"n": 1}),
+                       _ToolUseBlock("r2", "read_document", {"n": 2})], "tool_use"),
+            _FinalMsg([_ToolUseBlock("w1", "create_event", {"title": "Board prep"})], "tool_use"),
+            _FinalMsg([_ToolUseBlock("w2", "create_event", {"title": "Board prep"})], "tool_use"),
+            _FinalMsg([_TextBlock("done")], "end_turn"),
+        ]
+    )
+    writes: list[int] = []
+
+    async def _read(*_a: Any, **_k: Any) -> str:
+        return "d" * 19_000
+
+    async def _write(*_a: Any, **_k: Any) -> str:
+        writes.append(1)
+        return "e" * 12_000
+
+    async def _go() -> None:
+        with patch(
+            "openexecutive.orchestrator.executive.get_provider", return_value=provider,
+        ), patch.dict(
+            "openexecutive.orchestrator.executive._ALL_SKILL_HANDLERS",
+            {"read_document": _read, "create_event": _write},
+        ):
+            async for _ in exec_._stream_agent_loop(
+                system_blocks=[], messages=[{"role": "user", "content": "x"}], model="claude-test",
+            ):
+                pass
+
+    asyncio.run(_go())
+    cut = provider.calls[2]["messages"][-1]["content"][0]["content"]
+    assert len(cut) <= 3_000 and "exactly the same input" in cut
+    replayed = provider.calls[3]["messages"][-1]["content"][0]["content"]
+    assert replayed == "e" * 12_000
+    assert len(writes) == 1
+
+
+def test_a_result_under_the_floor_never_spends_the_reread() -> None:
+    """A short result past the budget is not cut, so repeating it must not
+    use up the turn's one full re-read."""
+    from openexecutive.orchestrator.executive import _TurnReadingBudget
+
+    budget = _TurnReadingBudget(per_result=20_000, turn_budget=10_000)
+    budget.cap("read_document", {"id": "a"}, "d" * 10_000)
+    assert budget.cap("list_files", {}, "short") == "short"
+    assert budget.cap("list_files", {}, "short") == "short"
+    assert budget.full_reread_left

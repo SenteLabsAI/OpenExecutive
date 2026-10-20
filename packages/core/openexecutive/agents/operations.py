@@ -5,6 +5,7 @@ from openexecutive.config import get_settings
 class OperationsAgent(BaseAgent):
     name = "coo"
     domain = "operations"
+    visibility = "core"
 
     @property
     def model(self) -> str:  # type: ignore[override]

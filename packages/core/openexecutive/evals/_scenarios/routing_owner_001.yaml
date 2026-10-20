@@ -1,0 +1,21 @@
+id: routing_owner_001
+domain: finance
+description: "An owner-run property business weighs a rent increase: a finance judgment call, so the Executive consults the CFO before answering."
+company_context:
+  name: Copperline Properties
+  stage: Bootstrapped, owner-run
+  industry: Residential property management
+  headcount: 4
+  arr: 1450000
+query: "Our 48 units on Alder Court renew in January. Market rent is up about 6%, we're at 96% occupancy, and turning a unit costs us roughly $3,200 plus a month empty. Should I raise rents 6%, raise them 3%, or hold them flat?"
+required_routing:
+  - cfo
+expected_topics:
+  - compares_extra_rent_to_turnover_cost
+  - break_even_vacancy_for_each_option
+  - recommends_one_option
+  - tenant_retention_risk
+quality_criteria:
+  references_numbers: true
+  gives_recommendation: true
+  actionable: true

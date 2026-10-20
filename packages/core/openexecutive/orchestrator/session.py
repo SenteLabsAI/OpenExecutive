@@ -3,9 +3,23 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.memory.company_profile import CompanyProfile
+
+if TYPE_CHECKING:
+    from openexecutive.memory.workspace_settings import PrincipalRole
+
+
+def history_window_start(total: int, max_turns: int = 20, step_turns: int = 10) -> int:
+    """Index of the first of ``total`` history messages the model is shown
+    (``Session.get_recent_history``): the last ``max_turns`` turns, the start
+    moving in steps of ``step_turns``. Messages before it are out of view."""
+    keep = max_turns * 2
+    if total <= keep:
+        return 0
+    step = max(1, step_turns) * 2
+    return ((total - keep) // step) * step
 
 
 @dataclass
@@ -18,25 +32,88 @@ class Session:
     # Used by schedule_followup to refuse scheduling sends to refs the user
     # never actually used — anti-spam guard.
     seen_channel_refs: set[tuple[str, str]] = field(default_factory=set)
-    # Which inbound chat channel this session arrived on ("slack", "discord",
-    # "telegram", "google_chat"), and the address on it. Empty for web/CLI
-    # turns. Used when a workflow raises an approval gate mid-conversation:
-    # the gate records where to look for the answer, so a reply on this
-    # channel can resolve it. Inbound vocabulary — see `normalize_channel`.
+    # Mailbox message and thread ids this conversation was shown by a search
+    # that left other teammates' mail out (or the inbound email it answers).
+    # The model may reach the Executive's mailbox only by these
+    # (orchestrator.teammate_mail).
+    mail_ids_seen: set[str] = field(default_factory=set)
+    # Who this conversation's mail actually reached: the lowercased to/cc
+    # addresses of every send the mailbox accepted, and the message ids an
+    # Outlook reply answered. The email poller reads them after an inbound
+    # email's turn to tell whether its sender got a reply
+    # (integrations.unanswered_mail).
+    mail_sent_to: set[str] = field(default_factory=set)
+    mail_replied_ids: set[str] = field(default_factory=set)
+    # Which inbound channel this session arrived on ("slack", "discord",
+    # "telegram", "google_chat", "email"), and the address on it. Empty for
+    # web/CLI turns and runs nobody started from a channel. Used when a
+    # workflow raises an approval gate mid-conversation: the gate records
+    # where to look for the answer, so a reply on this channel can resolve it
+    # (not on email, whose reply is no chat message — see `gate_delivery`).
+    # Also how `content_trust.principal_speaking` tells an inbound email from
+    # the principal's own surfaces: an email turn that left it empty was read
+    # as the web app's. Inbound vocabulary — see `normalize_channel`.
     origin_channel: str = ""
     origin_channel_ref: str = ""
     # True only for a session minted by the web chat route. `origin_channel`
-    # cannot stand in for this: it names an INBOUND CHAT ADAPTER, and the email
-    # poller, alert review, the CLI, the MCP server, the scheduler and the
-    # unattended workflows all leave it empty while being nothing like a
-    # browser turn. Anything that wants to treat browser turns differently has
-    # to ask for them by name.
+    # cannot stand in for this: alert review, the CLI, the MCP server, the
+    # scheduler and the unattended workflows all leave it empty while being
+    # nothing like a browser turn. Anything that wants to treat browser turns
+    # differently has to ask for them by name.
     from_web_chat: bool = False
+    # True only for a session minted by the CLI (`openexecutive ask` / `chat`),
+    # which runs on the host itself — the principal's own surface for
+    # `content_trust.principal_speaking`, as the web chat is.
+    from_cli: bool = False
+    # True only for a session minted by Open Executive's own MCP server
+    # (`mcp_server.ask_executive`): another AI app is asking, on behalf of
+    # `caller_person_id`. Such a turn reads and advises but never sends,
+    # posts, books, schedules, runs or changes anything: the chat loop
+    # neither offers nor runs `schedule_tools.MCP_CLIENT_WITHHELD_TOOLS`, Act
+    # as me, recall_history or extension tools, and of the gateway tools only
+    # the reads in `schedule_tools.MCP_CLIENT_MCP_TOOLS`. Never the
+    # principal's own surface for `content_trust.principal_speaking`.
+    from_mcp_client: bool = False
+    # Set with `from_mcp_client` when the request turned on "may act"
+    # (`mcp_server.ask_executive`: the `x-mcp-client-actions: on` header on a
+    # request the deployment's shared secret authenticated, or
+    # `MCP_CLIENT_ACTIONS` where no secret is configured). Such a turn runs
+    # the speaker's own changes inside Open Executive (alerts, open loops,
+    # follow-ups, the watch list, goals, decision outcomes, remembered facts,
+    # and company profile writes, never the roster, each under its own owner-only and
+    # person checks), counts as a verified surface for `caller_person_id`,
+    # and offers anything that reaches another person only as an approval
+    # card (`propose_actions`), which goes on its own only by the speaker's
+    # Handle it for me (`action_cards.on_its_own_refusal`). It is still
+    # never offered `schedule_tools.MCP_CLIENT_ACTING_WITHHELD_TOOLS`, Act as
+    # me's mailbox tools, recall_history or extension tools.
+    mcp_client_may_act: bool = False
     # The rostered Person behind this conversation, when one is resolved. The
     # adapters already pass this to `Executive.chat(person_id=...)`; holding it
     # on the session too lets tool handlers running mid-turn tell "the approver
     # is the person I'm already talking to" from "the approver is someone else".
     caller_person_id: int | None = None
+    # Set by a channel adapter that verified for itself that `caller_person_id`
+    # is who sent this turn's message, on a channel the checks in
+    # `people_tools` don't know. That channel then counts as a verified
+    # surface (`people_tools._is_verified_speaker_surface`) for every gate
+    # that asks, as Slack and Discord do: an adapter sets it only when it
+    # resolved `caller_person_id` from a sender identity the platform
+    # authenticated, never from anything the message says, and per turn.
+    speaker_verified: bool = False
+    # The sender's People entry on a channel that names its sender but isn't
+    # one `people_tools` verifies (Google Chat, by the Google account email on
+    # its signed event). Read only by the department gate
+    # (`department_gate.speaker`), so the principal there isn't held and a
+    # teammate gets their own department's authority. Never a grant for
+    # anything else, and never set alongside `caller_person_id`.
+    gate_sender_person_id: int | None = None
+    # Set by a channel adapter when nobody but the speaker (and the
+    # Executive) can read the conversation, e.g. a direct message
+    # (`delegation.settings.private_conversation`, which also needs
+    # `speaker_verified`). Act as me and recalled notes also need the
+    # speaker's turn to be verified.
+    private_chat: bool = False
     # The live alert board as the server derived it this turn, recorded by
     # `briefing.context.render_and_trust`. `ack_alert` refuses anything else on
     # EVERY session, web included, so an id quoted inside an alert's own body —
@@ -45,7 +122,129 @@ class Session:
     # invented. It does not stop the model being argued into acking the wrong
     # LIVE card; see `format_open_alerts_for_prompt` for the limits of this
     # control. Empty means the turn was shown no board and can ack nothing.
+    # `find_alerts` is the one thing that adds to it after that, and only on a
+    # turn with `principal_board_shown` — so an open row off the board (read,
+    # snoozed, past TTL but not yet swept) can be cleared there too.
     trusted_alert_ids: set[int] = field(default_factory=set)
+    # Whether `render_and_trust` showed THIS turn the principal's own board:
+    # the principal on a verified surface, and on a channel only in their DM
+    # (`channel_context.attach_briefing_context`). `find_alerts` answers and
+    # widens nothing without it — "principal on a verified surface" alone
+    # also passes the principal's turn in a shared Slack or Discord thread.
+    principal_board_shown: bool = False
+    # Ids `find_alerts` added to `trusted_alert_ids` this turn, capped across
+    # calls (`schedule_tools._FIND_ALERTS_MAX_PER_TURN`). Reset per turn with
+    # the trusted set.
+    found_alert_ids: set[int] = field(default_factory=set)
+    # Pending roster requests ("who is this new sender?") the server showed
+    # this turn in its <roster_requests> block — the principal's own verified
+    # turn only (`briefing.context.render_and_trust`). `resolve_roster_request`
+    # answers nothing else, so an id the model invents or reads out of text
+    # cannot add anyone.
+    trusted_roster_request_ids: set[int] = field(default_factory=set)
+    # Per-session override of the install's workspace mode ("solo" / "team";
+    # None = use the workspace setting). Evals run scenarios concurrently on
+    # one Executive, so they set it here instead of flipping the global. Read
+    # it through `memory.workspace_settings.effective_workspace_mode`.
+    workspace_mode: str | None = None
+    # Per-session override of the principal's role (None = use the
+    # workspace's), for the same reason: an eval scenario supplies the role
+    # of the principal it plays without writing the install-wide row. Read
+    # it through `memory.workspace_settings.effective_principal_role`.
+    principal_role: PrincipalRole | None = None
+    # Per-session voice persona slug (None = the Executive override's voice,
+    # else Direct), so an eval scenario can play a voice without writing the
+    # install-wide override that concurrent scenarios share.
+    voice_persona_slug: str | None = None
+    # The mode resolved for the turn in progress, pinned at its start by
+    # `workspace_settings.pin_turn_workspace_mode` (Executive.stream_chat and
+    # the committee path) so the tool handlers use the same mode as the
+    # persona and tool list. Re-resolved every turn; never an override.
+    turn_workspace_mode: str | None = None
+    # The principal's role resolved for the turn in progress, pinned with the
+    # mode by `workspace_settings.pin_turn_principal_role` (an empty role in
+    # team), so the org block, the specialists' <principal_role> tag and any
+    # workflow the turn starts agree even if the role is edited mid-turn.
+    # Re-resolved every turn; never an override.
+    turn_principal_role: PrincipalRole | None = None
+    # True for a run nobody is watching that goes through the chat loop (the
+    # scheduler's PROACTIVE TRIGGER dispatch). Its prompt quotes stored intent
+    # text, so the loop neither offers nor runs the tools in
+    # `schedule_tools.UNATTENDED_WITHHELD_TOOLS` — things only the principal
+    # decides, such as starting to track a goal.
+    unattended: bool = False
+    # On an unattended run, the teammate (not the principal) whose own turn
+    # queued it (``ScheduledAction.created_by_person_id``): the run is theirs
+    # and a fork may give it no more than that teammate's own turns get.
+    # None for the principal's rows and the system's.
+    run_for_person_id: int | None = None
+    # True for a turn about something private to the principal (mail from one
+    # of their contacts, mail they forwarded): an alert raised on it is
+    # private to the principal (``alerts.models.PRIVATE_ALERT_TAG``) and it
+    # may not draft a team-visible artifact. Set by the email poller.
+    private_to_principal: bool = False
+    # The bare, lowercased From address of the inbound email this turn is
+    # answering, and whether it is the principal's primary address with
+    # Gmail's own Authentication-Results reporting dmarc=pass for it
+    # (``integrations.fact_confirmation.authenticated_by_gmail``; fails
+    # closed). Set by the email poller only; empty / False on every other
+    # surface. The fact tools read them to let the principal's own
+    # email request a standing fact, held until a token reply confirms it
+    # (``orchestrator.fact_tools``) — a From line alone proves nothing.
+    email_from: str = ""
+    email_authenticated: bool = False
+    # Whether Gmail authenticated the From of a teammate's (not the
+    # principal's) inbound email: only then does the turn read the mailbox as
+    # that teammate (orchestrator.teammate_mail).
+    email_sender_authenticated: bool = False
+    # True when the inbound email this turn answers is from someone not in
+    # People (a contact or a stranger): the whole turn counts as having read
+    # outside content (``orchestrator.outside_content.SENDER``). Set by the
+    # email poller only.
+    sender_off_team: bool = False
+    # Act as me for the turn in progress (``delegation.settings.TurnDelegation``),
+    # pinned at its start by ``pin_turn_delegation``: whether the speaker has
+    # it on, whether ``ghostwrite_email`` is offered, and whether the turn has
+    # touched their mailbox (every audit row it writes after that is private).
+    # Re-resolved every turn; never an override.
+    turn_delegation: Any = None
+    # What the turn in progress read from outside and who it added
+    # (``orchestrator.outside_content.TurnOutside``), set by its
+    # ``begin_turn``; a closed turn's record holds nothing.
+    turn_outside: Any = None
+    # True when this web request carried a signed-in caller (``x-caller-email``,
+    # stamped by the UI proxy from the sign-in), set per turn by the chat
+    # route. A header-less request resolves to the principal but is no
+    # sign-in: Act as me needs one (or local login).
+    web_caller_signed_in: bool = False
+    # True when this web chat is shared (``session_store.shared_with``): more
+    # than one person reads and writes in it, so it is no private
+    # conversation (``delegation.settings.private_conversation``). Set per
+    # turn by the chat route.
+    shared_chat: bool = False
+    # True on a shared chat's turn when someone other than its owner has
+    # written since the owner's last message (the speaker included): the turn
+    # is not offered sends to people or contact writes
+    # (``schedule_tools.SHARED_CHAT_WITHHELD_TOOLS``). Set per turn by the
+    # chat route; it fails closed (True) when the history can't be read.
+    others_spoke_last: bool = False
+    # Whose documents this session reads and publishes, when that is not its
+    # own speaker (``artifact_records.current_viewer``): a session a workflow
+    # mints inside someone's turn (``executive_research``'s synthesis) is
+    # pinned to that turn's viewer, so what it drafts is theirs. An
+    # ``artifact_records.Viewer``; None derives it from this session.
+    documents_viewer: Any = None
+    # Evals and tests only (``delegation.settings.DelegationOverride``): run
+    # as if the speaker had Act as me, against a fake mailbox.
+    delegation_override: Any = None
+    # A replay of a graded turn (``memory.replay``): the chat loop runs as it
+    # would for the recorded surface and speaker, reads for real, and every
+    # tool that sends, posts, books, schedules, runs or changes stored state
+    # returns "done" and lands in ``replay_calls`` instead of running. The
+    # post-turn passes (memory, open loops, style, notes, the review itself)
+    # are skipped: nothing a replay does reaches anyone or is kept.
+    replay: bool = False
+    replay_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def add_user_message(self, content: str) -> None:
         self.conversation_history.append({"role": "user", "content": content})
@@ -53,8 +252,18 @@ class Session:
     def add_assistant_message(self, content: str | list[dict[str, Any]]) -> None:
         self.conversation_history.append({"role": "assistant", "content": content})
 
-    def get_recent_history(self, max_turns: int = 20) -> list[dict[str, Any]]:
-        history = self.conversation_history[-(max_turns * 2):]
+    def get_recent_history(self, max_turns: int = 20, step_turns: int = 10) -> list[dict[str, Any]]:
+        """The last ``max_turns`` turns, give or take ``step_turns``.
+
+        The window's start moves in steps of ``step_turns`` rather than one
+        turn at a time, so a long conversation keeps between ``max_turns``
+        and ``max_turns + step_turns`` turns. A window that slid every turn
+        would change the first history message on every request, and the
+        prompt cache (``orchestrator.executive._apply_history_cache_marker``)
+        would miss and re-write the whole conversation each time.
+        """
+        start = history_window_start(len(self.conversation_history), max_turns, step_turns)
+        history = self.conversation_history[start:]
         # Anthropic requires messages to start with a user turn.
         # Drop a leading assistant message if history length is odd (can happen on error recovery).
         if history and history[0]["role"] != "user":

@@ -71,13 +71,14 @@ def test_seed_principal_briefs_includes_reflection(
     _setup_isolated_db(tmp_path / "refl.db", monkeypatch)
 
     inserted = runner.seed_principal_briefs()
-    assert inserted == 3  # morning + eod + reflection
+    assert inserted == 4  # morning + eod + reflection + chat_replay
 
     actions = episodic.list_scheduled_actions(status="pending", limit=10)
     kinds = {a.kind for a in actions}
     assert "executive_reflection" in kinds
     assert "principal_brief_morning" in kinds
     assert "principal_brief_eod" in kinds
+    assert "chat_replay" in kinds
 
 
 def test_reflection_seed_idempotent(
@@ -438,7 +439,118 @@ def test_previous_reflection_artifact_reads_last_done_run(
     wf_persistence.complete_run("r2", "BRIEF TEXT")
     wf_persistence.create_run("r3", "executive_reflection", "Reflection running", {})
     assert _previous_reflection_artifact() == "**Acted on:** DM'd Dana"
+    # A reflection someone started by hand is theirs, never the team's standup.
+    wf_persistence.create_run("mine", "executive_reflection", "Sam's", {}, owner_person_id=7)
+    wf_persistence.complete_run("mine", "SAM'S OWN")
+    assert _previous_reflection_artifact() == "**Acted on:** DM'd Dana"
 
     wf_persistence.create_run("r4", "executive_reflection", "Reflection empty", {})
     wf_persistence.complete_run("r4", "(no artifact)")
     assert _previous_reflection_artifact() is None
+
+
+# ---------------------------------------------------------------------------
+# Grounding: outward prose and flags must name only what the input holds
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reflection_refuses_ungrounded_alert_and_drops_ungrounded_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_isolated_db(tmp_path / "refl_ground.db", monkeypatch)
+    from openexecutive import providers
+    from openexecutive.briefing import grounding
+    from openexecutive.orchestrator import executive
+
+    monkeypatch.setattr(grounding, "profile_sources", lambda: [])
+    monkeypatch.setattr(grounding, "org_sources", lambda: [])
+    monkeypatch.setattr(grounding, "grounding_mode", lambda: "enforce")
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "openexecutive.audit.log_event",
+        lambda event_type, summary, **kw: audits.append({"type": event_type, **kw}),
+    )
+    called: list[dict[str, Any]] = []
+
+    async def _stub_create_alert(payload: dict[str, Any]) -> str:
+        called.append(payload)
+        return '{"status": "alert_scheduled"}'
+
+    monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "create_alert", _stub_create_alert)
+    seq = _SequenceProvider([
+        _FakeMixedResponse(
+            "create_alert",
+            {"subject": "Lease renewal", "body": "Marcus Lee says the renewal is 52 units."},
+            "",
+        ),
+        _FakeFinalResponse(
+            "**Acted on:**\n- Tried an alert\n\n"
+            "**Flagged for the brief:**\n- Marcus Lee wants a call\n- Nothing else pressing"
+        ),
+    ])
+    monkeypatch.setattr(providers, "get_provider", lambda _model: seq)
+
+    events = [
+        e async for e in ExecutiveReflectionWorkflow().run(
+            inputs=ExecutiveReflectionInput(), store=None,  # type: ignore[arg-type]
+        )
+    ]
+    artifact = next(e for e in events if e.type == "artifact").content
+
+    assert called == []
+    assert "✗ `create_alert`" in artifact and "Not sent" in artifact
+    assert "Marcus Lee wants a call" not in artifact
+    assert "- Nothing else pressing" in artifact
+    assert "_Grounding: held back 1 flag naming" in artifact
+    tools = [a for a in audits if a["type"] == "grounding" and "tool" in a["details"]]
+    assert tools and tools[0]["details"]["names_bad"] == ["Marcus Lee"]
+
+    # What the next brief reads stops at the tool log.
+    from openexecutive.briefing.brief_state import _FLAGGED_RE
+
+    match = _FLAGGED_RE.search(artifact)
+    assert match is not None
+    assert "Tool calls" not in match.group(1)
+    assert match.group(1).strip() == "- Nothing else pressing"
+
+
+@pytest.mark.asyncio
+async def test_the_standup_knows_its_principal_and_drops_stale_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The brief is written from this pass's flags. A team standup that did
+    not know which teammate was the principal flagged "a review with <their
+    name>", and the brief named its own reader; a flag copied from yesterday
+    kept a goal "off track" after it was back on track."""
+    db = tmp_path / "refl_principal.db"
+    _setup_isolated_db(db, monkeypatch)
+    from openexecutive import providers
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", db)
+    people_store.initialize_db(db)
+    principal_id = people_store.upsert_person(
+        full_name="Pat Owner", email="pat@x.com", is_principal=True,
+    )
+    people_store.upsert_person(full_name="Dana Lee", email="dana@x.com")
+
+    calls: list[dict[str, Any]] = []
+
+    class _Capture:
+        async def messages_create(self, **kwargs: Any) -> _FakeResponse:
+            calls.append(kwargs)
+            return _FakeResponse("**Quiet:** Nothing else.")
+
+    monkeypatch.setattr(providers, "get_provider", lambda _model: _Capture())
+
+    async for _event in ExecutiveReflectionWorkflow().run(
+        inputs=ExecutiveReflectionInput(), store=None,  # type: ignore[arg-type]
+    ):
+        pass
+
+    content = calls[0]["messages"][0]["content"]
+    assert f"YOUR PRINCIPAL: person_id={principal_id} — Pat Owner" in content
+    assert "Dana Lee" in content  # the team roster is still there
+    system = str(calls[0]["system"])
+    assert "never copy a flag from it unless today's input shows the same problem" in system
+    assert "'the principal', never by name" in system

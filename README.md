@@ -5,22 +5,22 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black.svg)](https://nextjs.org/)
 
-Open Executive is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also be configured as a digital twin to replicate a busy leader—responding in alignment with their specific role and insights—allowing leaders to truly scale their impact through AI.
+Open Executive is designed to transform leadership and management. Highly configurable, it can be deployed at any management level. Out of the box it supports spend approval thresholds, integration with corporate knowledge systems, and defined governance for how it interacts with human colleagues and other AI systems. Open Executive can also act as a busy leader's digital twin: with **Act as me** switched on, it drafts email in their own voice, from their own Gmail, for them to review and send—so leaders can truly scale their impact through AI without giving up the final say.
 
-It meets people where they already work, with integrations for Slack, Discord, Telegram, email, Google Workspace, Notion and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
+It meets people where they already work, with integrations for Slack, Discord, Telegram, Google Chat, email, Google Workspace, Microsoft 365 (Outlook mail and calendar, OneDrive), Notion, Confluence and any MCP-compatible AI tool, with more on the roadmap. Open Executive will always be open source.
 
 A managed cloud offering is coming (https://openexecutive.ai), where you can get access without deploying anything yourself.
 
 
 ## Demo
 
-[![Open Executive demo video](https://img.youtube.com/vi/O_g97xxVTMk/maxresdefault.jpg)](https://youtu.be/O_g97xxVTMk)
+[![Open Executive demo video](https://img.youtube.com/vi/hDk_RcjujPU/hqdefault.jpg)](https://youtu.be/hDk_RcjujPU)
 
-A walkthrough of Open Executive in action — [watch on YouTube](https://youtu.be/O_g97xxVTMk).
+A walkthrough of Open Executive in action — [watch on YouTube](https://youtu.be/hDk_RcjujPU).
 
 ## What It Does
 
-Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a single coherent executive voice backed by eight specialist AI agents:
+Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a single coherent executive voice backed by nine specialist AI agents:
 
 - **Chief Strategy Officer** — competitive analysis, M&A, market positioning, OKRs
 - **Chief Financial Officer** — financial modeling, fundraising, unit economics, cash flow
@@ -29,6 +29,7 @@ Developed by [sentelabs.ai](https://sentelabs.ai) Open Executive provides a sing
 - **Chief Operating Officer** — process design, vendor management, operational scaling
 - **Chief Marketing Officer** — GTM strategy, brand, communications, PR
 - **Chief Product Officer** — roadmap, prioritization, product strategy
+- **Head of Sales** — pipeline and qualification, founder-led sales, pricing conversations, proposals, forecasting
 - **Board Communications Director** — board decks, investor relations, governance
 
 All responses come from one consistent executive voice. The internal agent architecture is never exposed to the user. Beyond Q&A, the system maintains episodic memory of past decisions and initiatives across sessions, and a built-in scheduler can proactively surface follow-ups and time-sensitive actions.
@@ -38,7 +39,7 @@ All responses come from one consistent executive voice. The internal agent archi
 ```
 User message
     ↓
-Executive Orchestrator (claude-sonnet-5)
+Executive Orchestrator (claude-sonnet-5-5)
     ↓ tool use → parallel specialist calls
 CSO / CFO / CHRO / GC / COO / CMO / CPO / Board
     ↓ each specialist retrieves relevant context from ChromaDB
@@ -49,7 +50,9 @@ Synthesized executive response
 
 **Knowledge** — Two retrieval layers per specialist call: (1) built-in MBA-level Markdown (`knowledge/builtin/`, git-tracked) seeded into ChromaDB at startup, and (2) your uploaded company documents chunked and stored in a separate `company_docs` collection. RAG context is injected into the user turn, never the cached system prompt.
 
-**Episodic memory** — After every response, a background `claude-haiku-4-5` pass extracts key decisions, initiatives, and advice into SQLite. The next session opens with a `<past_decisions>` block so the Executive remembers what it recommended last month.
+**Episodic memory** — After every response, a background `claude-haiku-5-5` pass extracts key decisions, initiatives, and advice into SQLite. The next session opens with a `<past_decisions>` block so the Executive remembers what it recommended last month.
+
+**Always in the loop** — Each person can turn on "Keep track of what happens" (Settings → Memory). The Executive then keeps private, dated notes of what they said, in chat where it can confirm it's them (the web app signed in, their own Slack or Discord, Telegram with a webhook secret) and in Act as me replies they send. Every note rests on their own words, checked word for word. Only they see it, in Memories → History, where they can correct, pin or forget it. Notes are read back only to them, in a private chat, and expire after 90 days by default (the owner can change this). The owner's morning brief and evening digest include what the owner's own notes say is due, and anyone with notes on gets a short reminder on the day something they promised by email is due. It needs no setup and no extra service.
 
 **Scheduler** — A built-in job runner claims due actions via `UPDATE … RETURNING` to prevent double-firing. The API must run as a single instance; do not horizontally scale it without gating the scheduler first.
 
@@ -62,8 +65,9 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 | Layer | Choice |
 |---|---|
 | LLM backbone | Anthropic Claude API |
-| Default model | `claude-sonnet-5` (Executive + most specialists) |
-| Deep reasoning | `claude-opus-5` (CSO, CFO, GC, Board — with extended thinking) |
+| Default model | `claude-sonnet-5-5` (Executive + most specialists) |
+| Deep reasoning | `claude-opus-5-5` (CSO, CFO, GC, Board — with adaptive thinking) |
+| Other models | Pick any agent's model in the Agent Council, including `claude-fable-5-1` |
 | Backend | Python 3.11 + FastAPI |
 | Package manager | `uv` |
 | Vector store | ChromaDB (local, embedded) |
@@ -79,13 +83,13 @@ openexecutive/
 │   ├── core/
 │   │   └── openexecutive/
 │   │       ├── orchestrator/     # Executive persona + routing loop
-│   │       ├── agents/           # 8 specialist agents
+│   │       ├── agents/           # 9 specialist agents
 │   │       ├── knowledge/        # ChromaDB store + RAG pipeline
 │   │       ├── memory/           # Company profile + episodic memory
 │   │       ├── onboarding/       # Wizard state machine + profile builder
 │   │       ├── prompts/          # Persona + domain prompts + cache manager
 │   │       ├── api/              # FastAPI app + routes
-│   │       ├── integrations/     # Slack, Email, Telegram, Google Chat, Discord
+│   │       ├── integrations/     # Slack, Email (Gmail or Outlook), Telegram, Google Chat, Discord
 │   │       ├── scheduler/        # Background job runner (single-instance)
 │   │       ├── alerts/           # Proactive alert system
 │   │       ├── audit/            # Audit logging
@@ -107,15 +111,23 @@ openexecutive/
 git clone https://github.com/SenteLabsAI/OpenExecutive.git
 cd OpenExecutive
 
+# Install the backend and web app dependencies
+make install
+
 # Set your Anthropic API key
 cp .env.example .env
 # Edit .env and add ANTHROPIC_API_KEY=sk-ant-...
-# For the web UI's Google sign-in, also fill in the AUTH_* block
-# (see docs/auth.md for the Google Cloud Console steps).
 
 # Start everything
 make dev
 ```
+
+**Trying it on your own computer needs no sign-in setup.** While
+`AUTH_GOOGLE_ID` and `AUTH_OIDC_ISSUER` are blank, `make dev` uses local login: the web app
+only accepts connections from this computer, you click **Open**, and you are
+the owner. To invite your team, or to run it on a server or with `make docker`,
+set up Google or SSO sign-in by filling in the `AUTH_*` block (see
+[docs/auth.md](docs/auth.md) for the Google Cloud Console and SSO steps).
 
 All configuration lives in that repo-root `.env` — `make dev` and `make docker`
 both load it for the API *and* the UI (Auth.js needs `AUTH_SECRET` /
@@ -125,7 +137,11 @@ in both files the root `.env` takes precedence.
 
 Open http://localhost:3000 to start chatting with your executive. The API runs on port 8000 and the UI on 3000.
 
-> **First run:** requires Python 3.11+ and Node 22+. The initial `uv sync` pulls heavy
+To check everything is working, open **Settings → Setup status**. It tests
+the AI key and each chat app's token, then shows a green, amber or red light
+for each part of your setup, with what to do about anything that isn't green.
+
+> **First run:** requires Python 3.11+ and Node 22.6+. The initial `uv sync` pulls heavy
 > ML dependencies (ChromaDB + sentence-transformers/PyTorch), and the first boot
 > downloads a small embedding model (~90 MB) to build the local vector index — so the
 > first `make dev` takes a few minutes before the app is ready. Subsequent starts are fast.
@@ -160,6 +176,31 @@ run in every shell too: Windows PowerShell 5.1, the version that ships with
 Windows, has no `&&` operator and rejects the chained form with `The token
 '&&' is not a valid statement separator in this version.`
 
+## Set Up Integrations
+
+Every integration is optional and off until you configure it. Each one has a
+setup guide:
+
+| Integration | What it does | Setup |
+|---|---|---|
+| **Slack** | Answers mentions and DMs | Set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` (socket mode), or `SLACK_SIGNING_SECRET` to take events over HTTP at `/webhook/slack` |
+| **Discord** | Answers DMs, mentions and slash commands | [Run the Discord Bot](#run-the-discord-bot) |
+| **Telegram** | Answers messages to your bot | [docs/telegram_setup.md](docs/telegram_setup.md) |
+| **Google Chat** | Answers mentions in a space | [docs/google_chat_setup.md](docs/google_chat_setup.md) |
+| **Email and calendar (Google Workspace)** | Reads and sends the Executive's Gmail, books on its calendar | [Google Workspace credentials](docs/deployment.md#google-workspace-credentials) |
+| **Email and calendar (Microsoft 365)** | The same with Outlook mail and calendar | [Microsoft 365 credentials](docs/deployment.md#microsoft-365-credentials) |
+| **Act as me** | Drafts replies in the owner's own Gmail for them to send | [Your own Gmail](docs/deployment.md#your-own-gmail-act-as-me-optional) |
+| **Google Drive folders** | Syncs shared folders into the knowledge base (read-only) | [docs/drive_sync_setup.md](docs/drive_sync_setup.md) |
+| **OneDrive folders** | Syncs chosen OneDrive or SharePoint folders into the knowledge base, as the Executive's Microsoft 365 sign-in | [docs/onedrive_sync_setup.md](docs/onedrive_sync_setup.md) |
+| **OneDrive in chat** | Search, read, upload, move, copy and share OneDrive files (no delete, no anonymous links) | Set `MS365_MCP_ONEDRIVE=true` and sign in again ([docs/onedrive_sync_setup.md](docs/onedrive_sync_setup.md)) |
+| **Confluence** | Syncs chosen spaces into the knowledge base (read-only, Cloud or Server/Data Center) | [docs/confluence_sync_setup.md](docs/confluence_sync_setup.md) |
+| **Notion** | Syncs the pages shared with an internal integration into the knowledge base | Set `NOTION_SYNC_ENABLED=true` and `NOTION_API_KEY` (see [.env.example](.env.example)) |
+| **MCP tools** | Gives the Executive tools from other MCP servers, with deny rules for destructive ones | Copy [packages/core/mcp_servers.json.example](packages/core/mcp_servers.json.example) to `company/mcp_servers.json` and list your servers under `mcpServers`; MCP turns on when the file exists (Docker keeps it on `/data`, see [docs/deployment.md](docs/deployment.md#persistent-state)) |
+| **MCP clients** | Lets any MCP client talk to the Executive | [Connect as an MCP Server](#connect-as-an-mcp-server) |
+
+Synced Drive, OneDrive, Confluence and Notion content is kept apart from your uploaded
+documents and labelled as unreviewed, so it ranks below them.
+
 ## Run the Discord Bot
 
 1. Create a Discord application at https://discord.com/developers/applications
@@ -174,7 +215,7 @@ make dev
 
 The bot is embedded in the API process (alongside the email poller, scheduler, and resumer) so it shares the same SQLite database and ChromaDB vector store under `/data` in production. Skip the token to disable.
 
-For iterating on bot-only code without restarting the API, `make discord` runs the bot as a standalone process against the same local DB.
+For iterating on bot-only code without restarting the API, `make discord` runs the bot as a standalone process against the same local DB. Use it **instead of** the embedded bot, not alongside it: stop the API, or start it without `DISCORD_BOT_TOKEN`, first — two processes on one token each open a gateway connection and every message gets answered twice.
 
 Users can DM the bot, `@mention` it in a channel (replies in a thread), or use `/ask` and `/today` slash commands. Slash commands sync to `DISCORD_GUILD_IDS` instantly on startup; leave blank for global registration (up to 1-hour propagation delay).
 
@@ -212,7 +253,7 @@ The built-in knowledge base is **trusted by default** — the Executive can use 
 |-----------|-----------|
 | **Web UI** | `http://localhost:3000` |
 | **Slack** | Mention `@OpenExecutive` or DM the app |
-| **Email** | CC or email the configured address (IMAP/SMTP poller) |
+| **Email** | CC or email the configured address (Gmail via the Google Workspace MCP, or Outlook via the Microsoft 365 MCP) |
 | **Telegram** | Message the configured bot |
 | **Google Chat** | Mention the app in a space |
 | **Discord** | DM the bot, `@mention` it in a channel, or use `/ask` / `/today` slash commands |
@@ -260,10 +301,40 @@ claude mcp add --transport http open-executive http://localhost:8000/mcp \
 
 Connected clients get eight read-only resources (company profile, today's
 briefing and activity, people roster, department state, and episodic memory for
-decisions, initiatives and advice) and four tools, of which `consult_specialist`
-is the primary one: domain analysis from any of the nine specialists, each
-grounded in your company's knowledge base. The full inventory is on the **MCP
-Server** section of the `/architecture` page.
+decisions, initiatives and advice) and four tools: `consult_specialist` (domain
+analysis from any of the ten specialists, each grounded in your company's
+knowledge base), `search_knowledge`, `list_workflows` and `ask_executive`. The
+full inventory is on the **MCP Server** section of the `/architecture` page.
+
+`/mcp` answers as the caller the API verified, by the web app's rules. With no
+`x-caller-email` (open mode) the client is the owner, as the CLI is. A request
+that carries a signed-in person (a deployment that puts its own sign-in in
+front of `/mcp` and stamps the caller as the web UI's proxy does; see
+[signed callers](docs/auth.md#signed-callers)) gets that person's answers: the
+owner's episodic memory and recent activity go to the owner alone, the briefing
+and roster to someone on the roster (the briefing narrowed as the web app
+narrows it), and the company profile, departments, specialists, knowledge and
+workflow catalog to anyone. With signed callers on, a client holding only the
+shared secret is a service: never the owner, and `ask_executive` asks as no
+one. By default `ask_executive` only reads and advises: on its turn the
+Executive is not offered anything that sends, posts, books, schedules, runs or
+changes stored data, and of the connected MCP servers' tools only the reads.
+
+A client can let it act by sending `x-mcp-client-actions: on` (honored only on a
+request the `BACKEND_SHARED_SECRET` authenticated; with no secret set the header
+is ignored and `MCP_CLIENT_ACTIONS=true` turns it on for every request). Then it
+makes the person's own changes inside Open Executive (alerts, open loops,
+follow-ups, the watch list, goals, decision outcomes, remembered facts and the
+company profile), each under the same permissions as in the web app. It never
+changes the People list; a new contact goes on a card that always waits.
+A message or a meeting is left on an approval card instead of sent: it waits
+for the person's tap on the web, or goes on its own when their Handle it for me
+is on, everyone on it has been on the People list for at least a week, and
+nothing on it is sensitive. It still
+never runs scripts or workflows, loads MCP servers or reads their mailbox, and
+every action is recorded as coming from the AI app. On a server without signed
+callers (`CALLER_ASSERTION_PUBLIC_KEYS`), acting mode trusts whoever holds the
+shared secret to say who is asking.
 
 This is the inverse of the `MCP_ENABLED` and `MCP_SERVERS_CONFIG_PATH` settings
 under [Configuration](#configuration), which configure the MCP *gateway*: Open
@@ -306,6 +377,11 @@ published release, and `main` for the current head of `main`. The available vers
 each package's page under the repository's Packages. See
 [docs/deployment.md](docs/deployment.md#images) for how releases are cut.
 
+**Upgrading.** Settings → About shows the running version and says when a newer
+release is out (`UPDATE_CHECK_ENABLED=false` turns the check off). To upgrade,
+back up, then rebuild or pull the new tag; see
+[docs/deployment.md](docs/deployment.md#upgrading).
+
 > **⚠️ Single-instance only**: the scheduler claims rows via `UPDATE … RETURNING`,
 > which is not safe across processes. A second API replica double-fires every
 > scheduled action. Pin the API to one instance. The UI is stateless.
@@ -317,7 +393,7 @@ health-check timing, resource sizing, operations, and common failure modes.
 
 ### Access control
 
-The deployed UI is gated behind Google sign-in with an email allow-list, and the public API is protected by a shared-secret header between the UI proxy and the FastAPI backend. See [docs/auth.md](docs/auth.md) for the full setup (Google Cloud Console steps, required environment variables, adding/removing users, rotating secrets, and a debugging table).
+The deployed UI is gated behind Google sign-in or SSO sign-in (any OpenID Connect provider, such as Keycloak, Okta or Entra ID) with an email allow-list, and the public API is protected by a shared-secret header between the UI proxy and the FastAPI backend. See [docs/auth.md](docs/auth.md) for the full setup (Google Cloud Console and SSO steps, required environment variables, adding/removing users, rotating secrets, and a debugging table).
 
 ## Configuration
 
@@ -330,16 +406,17 @@ the app refuses to start.
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes¹ | — | Anthropic API key |
 | `ANTHROPIC_WORKSPACE_ID` | No | — | Required only for an organisation-scoped Anthropic key; sent as the `anthropic-workspace-id` header. Workspace-scoped keys need no value |
-| `DEFAULT_MODEL` | No | `claude-sonnet-5` | Executive + most specialists |
-| `DEEP_REASONING_MODEL` | No | `claude-opus-5` | CSO, CFO, GC, Board |
+| `DEFAULT_MODEL` | No | `claude-sonnet-5-5` | Executive + most specialists |
+| `DEEP_REASONING_MODEL` | No | `claude-sonnet-5-5` | CSO, CFO, GC, Board (deep reasoning on) |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB directory |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory |
 | `COMPANY_PROFILE_PATH` | No | `./company/profile.yaml` | Company profile |
 | `ENABLE_CACHING` | No | `true` | Anthropic prompt caching |
-| `ROUTING_MODEL` | No | `claude-haiku-4-5` | Model for intent routing |
+| `ROUTING_MODEL` | No | `claude-haiku-5-5` | Model for intent routing |
 | `SLACK_BOT_TOKEN` | No | — | Slack bot OAuth token |
 | `SLACK_APP_TOKEN` | No | — | Slack socket mode token |
-| `EXEC_EMAIL_ADDRESS` | No | — | Executive Gmail address (Gmail MCP OAuth) |
+| `SLACK_SIGNING_SECRET` | No | — | Slack signing secret: hear Slack over HTTP at `/webhook/slack` instead of socket mode |
+| `EXEC_EMAIL_ADDRESS` | No | — | The Executive's own mailbox (Gmail via Google Workspace MCP, or Outlook via Microsoft 365 MCP) |
 | `EMAIL_POLL_INTERVAL_SECONDS` | No | `60` | How often to poll for new email |
 | `TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token (from @BotFather) |
 | `TELEGRAM_WEBHOOK_SECRET` | No | — | Random string for webhook validation |
@@ -351,6 +428,28 @@ the app refuses to start.
 | `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | No | — | Path to service account JSON key |
 | `GOOGLE_OAUTH_CLIENT_ID` | No | — | Google OAuth client ID (Gmail MCP) |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | No | — | Google OAuth client secret (Gmail MCP) |
+| `MS365_MCP_CLIENT_ID` | No | — | Entra app registration client ID (Microsoft 365 MCP: Outlook mail + calendar) |
+| `MS365_MCP_TENANT_ID` | No | `common` | Entra tenant ID for the Microsoft 365 MCP sign-in |
+| `MS365_MCP_CLIENT_SECRET` | No | — | Entra client secret (only for a confidential app registration) |
+| `MS365_MCP_EXPECTED_USERNAME` | No | — | Pin the Microsoft 365 sign-in to this mailbox UPN |
+| `MS365_MCP_ONEDRIVE` | No | `false` | Add the OneDrive tools (and the file permissions they need) to the Microsoft 365 sign-in; run `--login` again after turning it on |
+| `MCP_ENABLED` | No | on when the config file exists | MCP gateway (the Executive using other servers' tools); `false` keeps it off with the file in place |
+| `MCP_SERVERS_CONFIG_PATH` | No | `./company/mcp_servers.json` | MCP gateway server list and tool filters (see [mcp_servers.json.example](packages/core/mcp_servers.json.example)) |
+| `EMAIL_PROVIDER` | No | `google` | Backend for the inbound mailbox poller + alert email: `google` or `microsoft` |
+| `CALENDAR_PROVIDER` | No | `google` | Backend for the typed calendar booking tools: `google` or `microsoft` |
+| `DELEGATION_GOOGLE_CREDENTIALS_DIR` | No | — | Where the owner's own Gmail credential for Act as me lives (see [docs/deployment.md](docs/deployment.md#your-own-gmail-act-as-me-optional)) |
+| `DRIVE_SYNC_ENABLED` | No | `false` | Sync shared Google Drive folders into the knowledge base |
+| `DRIVE_SYNC_SERVICE_ACCOUNT_FILE` | No | — | Service account key with `drive.readonly` |
+| `DRIVE_SYNC_FOLDER_IDS` | No | — | Comma-separated Drive folder IDs to sync |
+| `ONEDRIVE_SYNC_ENABLED` | No | `false` | Sync OneDrive or SharePoint folders into the knowledge base, as the Microsoft 365 sign-in |
+| `ONEDRIVE_SYNC_FOLDERS` | No | — | Comma-separated `<drive id>/<item id>` entries (`openexecutive onedrive-folder <sharing link>` prints one) |
+| `CONFLUENCE_SYNC_ENABLED` | No | `false` | Sync Confluence spaces into the knowledge base |
+| `CONFLUENCE_URL` | No | — | Confluence base URL (Cloud or Server/Data Center) |
+| `CONFLUENCE_USERNAME` / `CONFLUENCE_API_TOKEN` | No | — | Confluence Cloud sign-in (email + API token) |
+| `CONFLUENCE_PERSONAL_TOKEN` | No | — | Confluence Server/Data Center personal access token |
+| `CONFLUENCE_SYNC_SPACE_KEYS` | No | — | Comma-separated space keys to sync |
+| `NOTION_SYNC_ENABLED` | No | `false` | Sync the Notion pages shared with your integration into the knowledge base |
+| `NOTION_API_KEY` | No | — | Notion internal integration token |
 | `OPENROUTER_ENABLED` | No | `false` | Route Claude calls through OpenRouter and unlock non-Anthropic models per-agent in the Council UI |
 | `OPENROUTER_API_KEY` | No | — | Required when `OPENROUTER_ENABLED=true` |
 | `OPENROUTER_CATALOG_ENABLED` | No | `true` | Fetch OpenRouter's live `/models` catalog at startup to populate the Council dropdown; falls back to a built-in list on failure |
@@ -362,7 +461,8 @@ the app refuses to start.
 | `LOCAL_API_KEY` | No | — | Optional bearer token (vLLM / gateways); Ollama & LM Studio need none |
 | `LOCAL_MODELS` | No | — | Comma-separated local model slugs to surface in the Council UI and route locally, e.g. `llama3.3,qwen2.5` |
 | `LOCAL_TIMEOUT_S` | No | `300` | Per-call timeout for local generation, in seconds |
-| `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels |
+| `LOCAL_REASONING_EFFORT` | No | — | `reasoning_effort` sent on every local request: `none`, `minimal`, `low`, `medium` or `high`. Set it for thinking-only models (GLM on Fireworks) that otherwise spend the whole token budget reasoning |
+| `HONCHO_ENABLED` | No | `false` | Per-person memory layer ([honcho.dev](https://honcho.dev)) — a peer card shared across all channels; on the Memories page each person sees only their own |
 | `HONCHO_API_KEY` | No | — | Required when `HONCHO_ENABLED=true` |
 | `HONCHO_BASE_URL` | No | — | Self-hosted Honcho endpoint |
 | `ENABLE_WEB_SEARCH` | No | `true`² | Let the Executive and specialists answer with live web results (news, market data, competitor moves) alongside your uploaded documents |
@@ -448,7 +548,7 @@ data.
 3. Register in `packages/core/openexecutive/orchestrator/router.py` — add to `SPECIALIST_REGISTRY` and the `specialist` enum in `SPECIALIST_TOOLS`
 4. Add domain alias to `DOMAIN_ALIASES` in `packages/core/openexecutive/knowledge/retriever.py`
 5. Add knowledge docs to `knowledge/builtin/your_domain/`
-6. Add at least 2 eval scenarios to `evals/scenarios/`
+6. Add at least 2 eval scenarios to `packages/core/openexecutive/evals/_scenarios/`
 7. Submit a PR — CI requires all of the above
 
 ## Development
@@ -466,11 +566,13 @@ pytest packages/core/tests/unit/ -v
 
 ## Evaluation System
 
-`evals/` contains 29 scenarios covering all 8 domains, scored by `claude-opus-4-7` as an LLM-as-judge. Each scenario defines a query, simulated company context, expected topics, required specialist routing, and a domain-specific rubric. Five scoring dimensions (persona coherence, domain accuracy, company context utilization, routing quality, actionability) are each rated 1–5. The CI gate requires ≥ 3.5/5 average; any dimension dropping > 10% vs `main` fails the PR.
+`evals/` contains 29 scenarios covering all 8 domains, scored by `claude-opus-5-5` as an LLM-as-judge. Each scenario defines a query, simulated company context, expected topics, required specialist routing, and a domain-specific rubric. Five scoring dimensions (persona coherence, domain accuracy, company context utilization, routing quality, actionability) are each rated 1–5. The CI gate requires ≥ 3.5/5 average; any dimension dropping > 10% vs `main` fails the PR.
 
 ## Privacy
 
 Everything in `company/` is gitignored — the profile YAML, uploaded documents, and the ChromaDB vector store. None of this leaves your local machine (or your own volume in cloud deployments) except as part of prompts sent to the Anthropic API. Anthropic does not train on API data.
+
+Inside the app, what the Executive keeps about a person is theirs: Always in the loop notes and the peer memory card are shown only to that person, the owner included.
 
 ## Contributing
 

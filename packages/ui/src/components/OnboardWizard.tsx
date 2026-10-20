@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { PROFILE_COPY } from "@/components/company-profile/profileCopy";
+import { profileWording } from "@/components/shell/navConfig";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { startOnboarding, submitOnboardAnswer, type OnboardStatus } from "@/lib/api";
 
 interface OnboardWizardProps {
@@ -8,6 +11,7 @@ interface OnboardWizardProps {
 }
 
 export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
+  const { mode, role } = useWorkspace();
   const [status, setStatus] = useState<OnboardStatus | null>(null);
   const [answer, setAnswer] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -97,14 +101,17 @@ export default function OnboardWizard({ onComplete }: OnboardWizardProps) {
     );
   }
 
-  const isOptionalStep = status.current_step >= 6;
+  // The server says which steps can be skipped (a solo workspace asks fewer
+  // steps, so the position alone no longer tells); older backends only had
+  // the team order, where the optional steps start at the seventh.
+  const isOptionalStep = status.optional ?? status.current_step >= 6;
 
   return (
-    <div className="flex flex-col h-full max-w-2xl mx-auto px-6 py-10">
+    <div className="flex flex-col h-full max-w-2xl mx-auto px-4 sm:px-6 py-10">
       {/* Progress */}
       <div className="mb-10">
         <div className="flex justify-between text-xs text-fg-muted mb-2.5 font-medium">
-          <span>Setting up your company profile</span>
+          <span>{PROFILE_COPY[profileWording(mode, role.role_kind)].progress}</span>
           <span>{status.progress_percent}% complete</span>
         </div>
         <div className="w-full bg-surface-overlay rounded-full h-1.5">

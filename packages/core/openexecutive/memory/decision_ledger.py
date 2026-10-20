@@ -7,8 +7,22 @@ powers the Proposals UI and the promotion evaluator (Build 3).
 
 Status state-machine (valid transitions only; enforced by compare-and-set):
   proposed → approved_unchanged | approved_with_edit | rejected | auto_no_response | failed
+  proposed → executing → approved_unchanged | approved_with_edit | failed
+                       → executed     (an auto_execute row acted on its own:
+                                       Handle it for me's replies)
+                       → proposed     (release_claim: nothing was done)
+  proposed | executing → closed_externally  (settled outside the app)
   executed  → reversed | failed        (auto-execute path, Build 3)
   approved_* → reversed
+
+``executing`` is for an approval with an effect outside the app that must
+happen once (sending an email): the approver claims the row
+(``claim_for_execution``) BEFORE acting, so of two taps only one acts, and
+finishes it after. A failure that leaves it unclear whether the effect
+happened keeps it ``executing`` for a reconciler, never retried blindly.
+``closed_externally`` records that something outside the app settled it (the
+draft was sent or deleted in Gmail, the person replied, it expired); its
+reason goes in ``reversal_reason``.
 """
 from __future__ import annotations
 
@@ -41,6 +55,11 @@ STATUS_REJECTED = "rejected"
 STATUS_AUTO_NO_RESPONSE = "auto_no_response"
 STATUS_REVERSED = "reversed"
 STATUS_FAILED = "failed"
+STATUS_EXECUTING = "executing"
+STATUS_CLOSED_EXTERNALLY = "closed_externally"
+
+# Still open: waiting on someone, or being carried out right now.
+OPEN_STATUSES: tuple[str, ...] = (STATUS_PROPOSED, STATUS_EXECUTING)
 
 # Severity values for circuit-breaker detection.
 SEVERITY_NONE = ""
@@ -165,11 +184,12 @@ def get_live_by_idem(
     idempotency_key: str,
     db_path: Path | None = None,
 ) -> DecisionInstance | None:
-    """Return a non-resolved instance with this key, if any."""
+    """Return a non-resolved instance with this key, if any (one being
+    carried out counts: it is not resolved yet)."""
     with _get_conn(db_path or _db_path()) as conn:
         row = conn.execute(
-            "SELECT * FROM decision_instances WHERE idempotency_key = ? AND status = ?",
-            (idempotency_key, STATUS_PROPOSED),
+            "SELECT * FROM decision_instances WHERE idempotency_key = ? AND status IN (?, ?)",
+            (idempotency_key, *OPEN_STATUSES),
         ).fetchone()
     if row is None:
         return None
@@ -208,28 +228,155 @@ def mark_resolved(
         return result.rowcount == 1
 
 
-def mark_reversed(
+def claim_for_execution(
     instance_id: int,
     *,
-    reason: str = "",
+    resolver_person_id: int | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """Mark an approved/executed instance as reversed."""
+    """proposed → executing, compare-and-set. True for the one caller that
+    claimed it; everyone else gets False and must not act."""
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(
+            "UPDATE decision_instances SET status = ?, resolver_person_id = ? "
+            "WHERE id = ? AND status = ?",
+            (STATUS_EXECUTING, resolver_person_id, instance_id, STATUS_PROPOSED),
+        )
+        return result.rowcount == 1
+
+
+_FINISHED_STATUSES = frozenset({
+    STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT, STATUS_EXECUTED, STATUS_FAILED,
+})
+
+
+def finish_execution(
+    instance_id: int,
+    status: str,
+    *,
+    final_payload: dict[str, Any] | None = None,
+    external_event_id: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """executing → approved_unchanged | approved_with_edit | executed |
+    failed, compare-and-set. The resolver was recorded when it was claimed
+    (none for ``executed``: nobody tapped, the class's mode acted)."""
+    if status not in _FINISHED_STATUSES:
+        raise ValueError(f"not a status an execution finishes in: {status!r}")
+    now = datetime.now(UTC).isoformat()
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(
+            """
+            UPDATE decision_instances
+            SET status = ?, resolved_at = ?, final_payload_json = ?, external_event_id = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                status, now,
+                json.dumps(final_payload) if final_payload is not None else None,
+                external_event_id,
+                instance_id, STATUS_EXECUTING,
+            ),
+        )
+        return result.rowcount == 1
+
+
+def release_claim(instance_id: int, db_path: Path | None = None) -> bool:
+    """executing → proposed, compare-and-set: nothing was done, so the
+    decision is back where it was, waiting on someone."""
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(
+            "UPDATE decision_instances SET status = ?, resolver_person_id = NULL "
+            "WHERE id = ? AND status = ?",
+            (STATUS_PROPOSED, instance_id, STATUS_EXECUTING),
+        )
+        return result.rowcount == 1
+
+
+def hand_back(instance_id: int, proposed_payload: dict[str, Any], db_path: Path | None = None) -> bool:
+    """An ``auto_execute`` row that will not act on its own after all becomes
+    an ordinary ``propose`` row, waiting on its approver, with the payload
+    saying why. Compare-and-set on proposed + auto_execute, so a row that
+    was claimed, acted on or closed meanwhile is left alone."""
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(
+            "UPDATE decision_instances SET gate_mode = 'propose', proposed_payload_json = ? "
+            "WHERE id = ? AND status = ? AND gate_mode = 'auto_execute'",
+            (json.dumps(proposed_payload), instance_id, STATUS_PROPOSED),
+        )
+        return result.rowcount == 1
+
+
+def update_open_payload(
+    instance_id: int,
+    proposed_payload: dict[str, Any],
+    *,
+    expected_json: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Replace the payload of a row still waiting on someone (proposed),
+    compare-and-set: a row claimed, acted on or closed meanwhile is left
+    alone. With ``expected_json`` (the row's ``proposed_payload_json`` as it
+    was read), only while it is still that, so two writers never overwrite
+    each other's change."""
+    sql = "UPDATE decision_instances SET proposed_payload_json = ? WHERE id = ? AND status = ?"
+    params: tuple[Any, ...] = (json.dumps(proposed_payload), instance_id, STATUS_PROPOSED)
+    if expected_json is not None:
+        sql += " AND proposed_payload_json = ?"
+        params = (*params, expected_json)
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(sql, params)
+        return result.rowcount == 1
+
+
+def close_externally(
+    instance_id: int,
+    *,
+    reason: str,
+    db_path: Path | None = None,
+) -> bool:
+    """proposed | executing → closed_externally, compare-and-set: something
+    outside the app settled it. ``reason`` is a short code, kept in
+    ``reversal_reason``."""
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path or _db_path()) as conn:
         result = conn.execute(
             """
             UPDATE decision_instances
             SET status = ?, resolved_at = ?, reversal_reason = ?
-            WHERE id = ? AND status IN (?,?,?,?)
+            WHERE id = ? AND status IN (?, ?)
             """,
-            (
-                STATUS_REVERSED, now, reason,
-                instance_id,
-                STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT,
-                STATUS_EXECUTED, STATUS_PROPOSED,
-            ),
+            (STATUS_CLOSED_EXTERNALLY, now, reason[:200], instance_id, *OPEN_STATUSES),
         )
+        return result.rowcount == 1
+
+
+def mark_reversed(
+    instance_id: int,
+    *,
+    reason: str = "",
+    decision_class: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Mark an approved/executed instance as reversed. With
+    ``decision_class``, only an instance of that class: a caller that
+    reverses one kind of decision can never reverse another."""
+    now = datetime.now(UTC).isoformat()
+    sql = (
+        "UPDATE decision_instances SET status = ?, resolved_at = ?, reversal_reason = ? "
+        "WHERE id = ? AND status IN (?,?,?,?)"
+    )
+    params: tuple[Any, ...] = (
+        STATUS_REVERSED, now, reason,
+        instance_id,
+        STATUS_APPROVED_UNCHANGED, STATUS_APPROVED_WITH_EDIT,
+        STATUS_EXECUTED, STATUS_PROPOSED,
+    )
+    if decision_class is not None:
+        sql += " AND decision_class = ?"
+        params = (*params, decision_class)
+    with _get_conn(db_path or _db_path()) as conn:
+        result = conn.execute(sql, params)
         return result.rowcount == 1
 
 
@@ -277,6 +424,8 @@ def list_instances(
     decision_class: str,
     *,
     status: str | None = None,
+    approver_person_id: int | None = None,
+    resolved_since: str | None = None,
     limit: int = 100,
     db_path: Path | None = None,
 ) -> list[DecisionInstance]:
@@ -285,6 +434,12 @@ def list_instances(
     if status is not None:
         sql += " AND status = ?"
         params.append(status)
+    if approver_person_id is not None:
+        sql += " AND approver_person_id = ?"
+        params.append(approver_person_id)
+    if resolved_since is not None:
+        sql += " AND resolved_at >= ?"
+        params.append(resolved_since)
     sql += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     with _get_conn(db_path or _db_path()) as conn:

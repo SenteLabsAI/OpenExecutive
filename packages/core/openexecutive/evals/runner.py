@@ -12,10 +12,37 @@ Yielded event shapes:
                               #   chat:     "query", "response"
                               #   workflow: "workflow_name", "workflow_inputs", "artifact"
                               #   triage:   "event", "decision"
+                              #   inbox:    "outcome" (verdict, drafted, reply)
                               }
   {"type": "scenario_error",  "index": int, "total": int, "scenario_id": str, "error": str}
   {"type": "suite_done",      "kind": str, "passed": int, "total": int}
   {"type": "suite_canceled",  "kind": str, "passed": int, "total": int}
+
+A chat, mcp or workflow scenario may set ``workspace_mode: solo`` (or
+``team``) to run as that workspace mode without touching the install-wide
+setting — scenarios run concurrently on one Executive. Chat puts it on the
+scenario's ``Session.workspace_mode``; a workflow runs with a session carrying
+it bound as the current session, which is where workflows read the mode.
+
+A scenario may likewise set a ``principal_role`` mapping (``role_kind``,
+``role_title``, ``reports_to``, ``remit``, ``measured_on`` — the workspace
+settings' role fields) to play a principal with that role. It goes on the
+session (``Session.principal_role``) the same way, never into the
+install-wide settings row, which concurrent scenarios would share.
+
+A chat scenario may set ``voice_persona`` (a voice slug such as
+``supportive``) to answer in that voice. It goes on
+``Session.voice_persona_slug``, never the Executive's install-wide override.
+
+A chat scenario may set a ``delegation`` block (Act as me: the asker, their
+threads) to run with ``ghostwrite_email`` offered against an in-memory
+mailbox (``scenarios.scenario_delegation``); the drafts it saves go to the
+judge alongside the reply.
+
+An ``inbox`` scenario (``type: inbox``) runs the inbox watcher's two model
+calls on one email (``delegation.inbox.reply_for``): whether it drafts at all
+must match ``expect``, and a draft is judged by ``judge_inbox``. Nothing
+reaches Gmail and nothing is stored.
 """
 from __future__ import annotations
 
@@ -24,10 +51,18 @@ import contextlib
 import logging
 import os
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from dataclasses import asdict
 from typing import Any
 
-from openexecutive.evals.judges import judge_chat, judge_triage, judge_workflow
-from openexecutive.evals.scenarios import load_scenarios
+from openexecutive.evals.judges import judge_chat, judge_inbox, judge_triage, judge_workflow
+from openexecutive.evals.scenarios import (
+    load_scenarios,
+    routing_check,
+    scenario_delegation,
+    scenario_inbox,
+    scenario_principal_role,
+    scenario_voice_persona,
+)
 from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
@@ -46,14 +81,20 @@ async def run_scenarios(
     scenario_id: str | None = None,
     store: Any = None,
     cancel_event: asyncio.Event | None = None,
+    scenarios: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Async generator that streams progress events as scenarios run in parallel.
 
     If ``cancel_event`` is provided and set during the run, all in-flight
     scenario tasks are cancelled and the generator yields ``suite_canceled``
     instead of ``suite_done``.
+
+    ``scenarios``, when given, is the list to run instead of loading it
+    again: ``POST /evals/runs`` passes the list it checked, so an edit to a
+    user scenario in between cannot swap in one that was not checked.
     """
-    scenarios = load_scenarios(kind=kind, scenario_id=scenario_id)
+    if scenarios is None:
+        scenarios = load_scenarios(kind=kind, scenario_id=scenario_id)
     total = len(scenarios)
     passed = [0]  # single-item list — safe under asyncio without locks
 
@@ -136,6 +177,8 @@ def _make_run_one(
     """Returns a `run_one(i, scenario)` coroutine for the requested kind."""
     if kind == "triage":
         return _make_triage_runner(sem, queue, passed, total, cancel_event)
+    if kind == "inbox":
+        return _make_inbox_runner(sem, queue, passed, total, cancel_event)
     if kind == "workflow":
         return _make_workflow_runner(store, sem, queue, passed, total, cancel_event)
     # chat (default) and mcp both go through Executive.chat
@@ -144,6 +187,28 @@ def _make_run_one(
 
 def _is_canceled(cancel_event: asyncio.Event | None) -> bool:
     return cancel_event is not None and cancel_event.is_set()
+
+
+def scenario_workspace_mode(scenario: dict[str, Any]) -> str | None:
+    """The scenario's ``workspace_mode`` ("solo" / "team"), or None to run
+    under the install's own setting. Raises ValueError for any other value, so
+    a typo fails the scenario instead of silently running in the wrong mode."""
+    mode = scenario.get("workspace_mode")
+    if mode is None:
+        return None
+    if mode not in ("solo", "team"):
+        raise ValueError(f"workspace_mode must be 'solo' or 'team', got {mode!r}")
+    return str(mode)
+
+
+def scenario_standing_facts(scenario: dict[str, Any]) -> str:
+    """The ``<standing_facts>`` body for a scenario: its ``standing_facts``
+    lines under the shared block header, or "" when it has none. Never the
+    install's own facts store, so a scenario runs the same on every machine."""
+    from openexecutive.memory.facts import FACTS_BLOCK_HEADER
+
+    lines = str(scenario.get("standing_facts") or "").strip()
+    return f"{FACTS_BLOCK_HEADER}\n{lines}" if lines else ""
 
 
 def _make_triage_runner(
@@ -218,6 +283,101 @@ def _make_triage_runner(
     return run_one
 
 
+async def run_inbox_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
+    """One ``type: inbox`` scenario: ``{"outcome", "scores", "passed"}``."""
+    from openexecutive.delegation.inbox import addressed_for, handling_relation, reply_for
+    from openexecutive.delegation.inbox_classifier import wants_draft
+
+    case = scenario_inbox(scenario)
+    if case is None:
+        raise ValueError("inbox scenarios require an `inbox` block")
+    verdict, reply = await reply_for(
+        case.person, case.message, case.thread, relation=case.relation, own={case.person.email}
+    )
+    handled_as = handling_relation(case.relation, case.message)
+    addressed = addressed_for(case.person, case.message, {case.person.email})
+    wanted = verdict is not None and wants_draft(verdict, handled_as, addressed)
+    drafted = reply is not None and not isinstance(reply, str)
+    outcome: dict[str, Any] = {
+        "verdict": asdict(verdict) if verdict is not None else None,
+        "handled_as": handled_as,
+        "drafted": drafted,
+        "reply": asdict(reply) if drafted and reply is not None and not isinstance(reply, str) else None,
+        "no_reply_because": reply if isinstance(reply, str) else None,
+    }
+    scores: dict[str, Any]
+    if verdict is None:
+        # No verdict is a failed call, never a pass for "no draft".
+        scores = {"overall": 0, "notes": "the classifier gave no verdict (a failed or malformed call)"}
+    elif wanted != case.expect_draft:
+        scores = {
+            "overall": 1,
+            "notes": f"expected {'a draft' if case.expect_draft else 'no draft'}, "
+            f"the classifier {'wanted one' if wanted else 'did not want one'} "
+            f"({verdict.kind}, {verdict.confidence:.2f}, as {handled_as})",
+        }
+    elif not wanted:
+        scores = {"overall": 5, "notes": "drafted nothing, as expected"}
+    elif not drafted:
+        scores = {"overall": 1, "notes": f"a draft was wanted but not written ({reply})"}
+    else:
+        scores = await judge_inbox(scenario, outcome)
+    return {
+        "outcome": outcome,
+        "scores": scores,
+        "passed": float(scores.get("overall", 0)) >= _PASS_THRESHOLD,
+    }
+
+
+def _make_inbox_runner(
+    sem: asyncio.Semaphore,
+    queue: asyncio.Queue[dict[str, Any] | None],
+    passed: list[int],
+    total: int,
+    cancel_event: asyncio.Event | None,
+) -> RunOne:
+    async def run_one(i: int, scenario: dict[str, Any]) -> None:
+        if _is_canceled(cancel_event):
+            return
+        try:
+            async with sem:
+                if _is_canceled(cancel_event):
+                    return
+                await queue.put({
+                    "type": "scenario_start",
+                    "index": i,
+                    "total": total,
+                    "scenario_id": scenario["id"],
+                    "description": scenario.get("description", ""),
+                })
+                try:
+                    result = await run_inbox_scenario(scenario)
+                    if result["passed"]:
+                        passed[0] += 1
+                    await queue.put({
+                        "type": "scenario_done",
+                        "index": i,
+                        "total": total,
+                        "scenario_id": scenario["id"],
+                        "passed": result["passed"],
+                        "scores": result["scores"],
+                        "outcome": result["outcome"],
+                    })
+                except Exception as exc:
+                    logger.exception("eval scenario %s failed", scenario["id"])
+                    await queue.put({
+                        "type": "scenario_error",
+                        "index": i,
+                        "total": total,
+                        "scenario_id": scenario["id"],
+                        "error": str(exc),
+                    })
+        except asyncio.CancelledError:
+            return
+
+    return run_one
+
+
 def _make_workflow_runner(
     store: Any,
     sem: asyncio.Semaphore,
@@ -226,6 +386,8 @@ def _make_workflow_runner(
     total: int,
     cancel_event: asyncio.Event | None,
 ) -> RunOne:
+    from openexecutive.orchestrator.schedule_tools import set_session
+    from openexecutive.orchestrator.session import Session
     from openexecutive.workflows import WORKFLOW_REGISTRY
 
     async def run_one(i: int, scenario: dict[str, Any]) -> None:
@@ -252,12 +414,25 @@ def _make_workflow_runner(
                     workflow_inputs = scenario.get("workflow_inputs") or {}
                     inputs = workflow.input_model()(**workflow_inputs)
                     artifact = ""
-                    async for ev in workflow.run(inputs, store):
-                        ev = ensure_workflow_event(ev, site='evals.runner')
-                        if ev.type == "artifact":
-                            artifact = ev.content or ""
-                        elif ev.type == "error":
-                            raise RuntimeError(f"workflow errored: {ev.message}")
+                    # Workflows read the mode from the current session; this
+                    # task's own binding, so concurrent scenarios don't mix.
+                    # Bound only when the scenario sets a mode: a bound session
+                    # also arms schedule_followup's seen-refs guard, which a
+                    # workflow that binds no session of its own would then hit.
+                    mode = scenario_workspace_mode(scenario)
+                    role = scenario_principal_role(scenario)
+                    binding = (
+                        set_session(Session(workspace_mode=mode, principal_role=role))
+                        if mode is not None or role is not None
+                        else contextlib.nullcontext()
+                    )
+                    with binding:
+                        async for ev in workflow.run(inputs, store):
+                            ev = ensure_workflow_event(ev, site='evals.runner')
+                            if ev.type == "artifact":
+                                artifact = ev.content or ""
+                            elif ev.type == "error":
+                                raise RuntimeError(f"workflow errored: {ev.message}")
                     scores = await judge_workflow(scenario, artifact)
                     ok = float(scores.get("overall", 0)) >= _PASS_THRESHOLD
                     if ok:
@@ -300,6 +475,7 @@ def _make_chat_runner(
     cancel_event: asyncio.Event | None,
 ) -> RunOne:
     from openexecutive.memory.company_profile import CompanyProfile
+    from openexecutive.orchestrator.debug_events import DebugCollector
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.session import Session
 
@@ -336,19 +512,51 @@ def _make_chat_runner(
                         profile.financials.burn_rate_monthly = ctx["monthly_burn"]
                     if ctx.get("runway_months"):
                         profile.financials.runway_months = ctx["runway_months"]
-                    session = Session(company_profile=profile)
+                    # Act as me: a fresh in-memory mailbox for the asker,
+                    # whose drafts the judge reads (nothing reaches Google).
+                    delegation = scenario_delegation(scenario)
+                    session = Session(
+                        company_profile=profile,
+                        workspace_mode=scenario_workspace_mode(scenario),
+                        principal_role=scenario_principal_role(scenario),
+                        voice_persona_slug=scenario_voice_persona(scenario),
+                        delegation_override=delegation,
+                    )
                     query = scenario["query"]
+                    # Records which specialists the turn consulted, for
+                    # the scenario's routing expectation (routing_check).
+                    collector = DebugCollector()
                     response = await executive.chat(
                         user_message=query,
                         session=session,
+                        debug_collector=collector,
                         # A scenario may supply the <peer_memory> body itself.
                         # Evals run with no person_id, so the Honcho prefetch
                         # never fires; this is the only way to exercise how the
                         # Executive USES peer memory. None keeps chat()'s default.
                         peer_memory_context=scenario.get("peer_memory_context"),
+                        # Likewise the <standing_facts> body (memory/facts.py):
+                        # the scenario's own lines under the shared header, or
+                        # none — an eval never reads the install's facts.
+                        standing_facts=scenario_standing_facts(scenario),
                     )
-                    scores = await judge_chat(scenario, response)
+                    if delegation is not None:
+                        drafts = [asdict(d) for d in delegation.gmail.drafts]
+                        scores = await judge_chat(scenario, response, drafts=drafts)
+                    else:
+                        scores = await judge_chat(scenario, response)
                     ok = float(scores.get("overall", 0)) >= _PASS_THRESHOLD
+                    routing = routing_check(
+                        scenario,
+                        [
+                            str(e.data.get("specialist", ""))
+                            for e in collector.events
+                            if e.kind == "specialist_start"
+                        ],
+                    )
+                    if routing is not None:
+                        scores["routing"] = routing
+                        ok = ok and routing["ok"]
                     if ok:
                         passed[0] += 1
                     await queue.put(

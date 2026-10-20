@@ -1,5 +1,14 @@
 import { NextRequest } from "next/server";
-import { auth } from "@/auth";
+import { LOCAL_LOGIN, auth } from "@/auth";
+import {
+  CALLER_ASSERTION_HEADER,
+  mintCallerAssertion,
+  parseCallerSigningKey,
+  type CallerSigner,
+} from "@/lib/callerAssertion";
+import { isCrossSiteWrite } from "@/lib/crossSite";
+import { localLoginSessionAllowed } from "@/lib/localLogin";
+import { upstreamSegment } from "@/lib/proxySegments";
 
 // Streaming-aware proxy to the FastAPI backend. Replaces the `rewrites()` rule
 // in next.config.ts, which buffers SSE responses in dev so the chat stream
@@ -15,18 +24,55 @@ export const dynamic = "force-dynamic";
 const BACKEND_BASE = process.env.BACKEND_BASE_URL ?? "http://localhost:8000";
 const BACKEND_SHARED_SECRET = process.env.BACKEND_SHARED_SECRET ?? "";
 
+// Signed callers (lib/callerAssertion.ts, docs/auth.md): with
+// CALLER_ASSERTION_PRIVATE_KEY set, every request also carries a signed
+// statement of who is calling, which the API checks. A key that can't be read
+// refuses every request rather than let one go out unsigned.
+let CALLER_SIGNER: CallerSigner | null = null;
+let CALLER_SIGNER_BROKEN = false;
+try {
+  CALLER_SIGNER = parseCallerSigningKey(process.env.CALLER_ASSERTION_PRIVATE_KEY);
+} catch (err) {
+  CALLER_SIGNER_BROKEN = true;
+  console.error(`[proxy] ${err instanceof Error ? err.message : "CALLER_ASSERTION_PRIVATE_KEY can't be used"}`);
+}
+
 async function proxy(req: NextRequest, params: { path: string[] }): Promise<Response> {
+  // Another page on this site (any localhost port counts) must not be able to
+  // make the browser post here with the user's cookie — see lib/crossSite.ts.
+  if (isCrossSiteWrite(req.method, req.headers.get("sec-fetch-site"))) {
+    return new Response(JSON.stringify({ error: "cross-site request refused" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   // Belt-and-suspenders: middleware should have already rejected unauthenticated
   // traffic, but check here too so a stray client can't reach the backend.
   const session = await auth();
-  if (!session?.user) {
+  // A local-login session has no email on purpose: the backend reads a
+  // request with no `x-caller-email` as the principal (the CLI's fallback).
+  // So it is re-checked here, where it reaches the API, and every OTHER
+  // session must carry an email — without one it would be read the same way.
+  const callerEmail = session?.user?.email?.toLowerCase();
+  const allowed = session?.localLogin
+    ? localLoginSessionAllowed(LOCAL_LOGIN, req.headers.get("host"))
+    : Boolean(callerEmail);
+  if (!allowed) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: { "content-type": "application/json" },
     });
   }
+  if (CALLER_SIGNER_BROKEN) {
+    return new Response(JSON.stringify({ error: "caller signing is misconfigured" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
 
-  const path = params.path.join("/");
+  // An id holding a slash goes on as one segment (proxySegments.ts).
+  const path = params.path.map(upstreamSegment).join("/");
   const url = new URL(`${BACKEND_BASE}/${path}`);
   // Preserve query string.
   req.nextUrl.searchParams.forEach((v, k) => url.searchParams.append(k, v));
@@ -66,9 +112,23 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   // filtering on /audit, /today, etc.). Source: the verified NextAuth
   // session — clients have no way to set this themselves (stripped
   // above).
-  const callerEmail = session.user.email?.toLowerCase();
-  if (callerEmail) {
+  if (callerEmail && !session?.localLogin) {
     headers.set("x-caller-email", callerEmail);
+  }
+
+  // Sign it: a local-login session is the operator (the owner at this
+  // computer, naming no one), anyone else the email above. Bound to this
+  // method and to the path and query exactly as fetch sends them.
+  if (CALLER_SIGNER) {
+    headers.set(
+      CALLER_ASSERTION_HEADER,
+      mintCallerAssertion(CALLER_SIGNER, {
+        kind: session?.localLogin ? "operator" : "user",
+        email: session?.localLogin ? "" : (callerEmail ?? ""),
+        method: req.method,
+        target: `${url.pathname}${url.search}`,
+      }),
+    );
   }
 
   const init: RequestInit = {
@@ -91,7 +151,13 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   // Pass response through as a stream. Do not buffer.
   const respHeaders = new Headers(upstream.headers);
   // Hint to any downstream proxies (and Next's dev server) not to buffer SSE.
-  respHeaders.set("Cache-Control", "no-cache, no-transform");
+  // An upstream `no-store` (e.g. artifact downloads — confidential files)
+  // is kept, so the browser never writes the body to its disk cache.
+  const upstreamCache = upstream.headers.get("cache-control") ?? "";
+  respHeaders.set(
+    "Cache-Control",
+    /no-store/i.test(upstreamCache) ? "no-store, no-transform" : "no-cache, no-transform"
+  );
   respHeaders.set("X-Accel-Buffering", "no");
 
   return new Response(upstream.body, {

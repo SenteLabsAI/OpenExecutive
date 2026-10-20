@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import openexecutive.integrations.google_chat as gc_module
 from openexecutive.integrations.google_chat import _process_and_reply, send_reply  # noqa: F401
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -365,3 +366,252 @@ def test_invalid_jwt_issuer_returns_401(monkeypatch: pytest.MonkeyPatch) -> None
             headers={"Authorization": "Bearer valid-sig-wrong-iss"},
         )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Attachments
+# ---------------------------------------------------------------------------
+
+_UPLOADED = {
+    "name": "spaces/AAA/messages/MSG1/attachments/A1",
+    "contentName": "scan.pdf",
+    "contentType": "application/pdf",
+    "attachmentDataRef": {"resourceName": "spaces/AAA/attachments/RES1"},
+    "source": "UPLOADED_CONTENT",
+}
+_DRIVE = {
+    "name": "spaces/AAA/messages/MSG1/attachments/A2",
+    "contentName": "Board deck",
+    "contentType": "application/pdf",
+    "driveDataRef": {"driveFileId": "1AbC"},
+    "source": "DRIVE_FILE",
+}
+
+
+def test_attachment_only_message_is_no_longer_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gc_module, "verify_google_jwt", lambda *_: {})
+    process_calls: list[dict] = []
+
+    async def fake_process(**kwargs: Any) -> None:
+        process_calls.append(kwargs)
+
+    monkeypatch.setattr(gc_module, "_process_and_reply", fake_process)
+    payload = _message_event(text="<users/111>")
+    payload["message"]["attachment"] = [_UPLOADED]
+    payload["user"]["email"] = "jane@acme.com"
+
+    app = FastAPI()
+    app.include_router(gc_module.router)
+    with patch("openexecutive.integrations.google_chat.get_settings", return_value=_make_settings()):
+        resp = TestClient(app).post(
+            "/webhook/google-chat", json=payload, headers={"Authorization": "Bearer x"}
+        )
+
+    assert resp.status_code == 200
+    (call,) = process_calls
+    assert call["message_text"] == "(Attached files: scan.pdf)"
+    assert call["attachments"] == [_UPLOADED]
+    assert call["sender_email"] == "jane@acme.com"
+
+
+def _run_with_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+    attachments: list[dict],
+    download: Any,
+    *,
+    rostered: bool = True,
+) -> dict[str, Any]:
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
+
+    monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _: None)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_: "")
+    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda: "")
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda: SimpleNamespace(is_empty=lambda: True),
+    )
+    monkeypatch.setattr(gc_module, "download_attachment", download)
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_email",
+        lambda email, **_kw: SimpleNamespace(id=3) if rostered and email == "bob@acme.com" else None,
+    )
+    monkeypatch.setattr("openexecutive.integrations.attachments._schedule_ingest", lambda *_: None)
+
+    async def fake_read(data: bytes, *, filename: str = "", inbound: bool = False) -> PdfReadResult:
+        return PdfReadResult("APPRAISED VALUE 4.2M", "ocr", 1)
+
+    monkeypatch.setattr("openexecutive.knowledge.pdf_reader.read_pdf_text", fake_read)
+
+    captured: dict[str, Any] = {}
+
+    async def fake_chat(**kw: Any) -> str:
+        captured.update(kw)
+        return "Done."
+
+    mock_exec = MagicMock()
+    mock_exec.chat = fake_chat
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", return_value=mock_exec),
+        patch("openexecutive.integrations.google_chat.send_reply", new=lambda *a, **k: None),
+    ):
+        asyncio.run(
+            _process_and_reply(
+                message_text="What is this worth?",
+                sender_name="Bob",
+                space_name="spaces/AAA",
+                thread_name="spaces/AAA/threads/T1",
+                message_name="spaces/AAA/messages/MSG1",
+                service_account_file="/fake/key.json",
+                service_account_email=None,
+                attachments=attachments,
+                sender_email="bob@acme.com",
+            )
+        )
+    return captured
+
+
+def test_uploaded_pdf_is_downloaded_and_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    downloads: list[str] = []
+
+    def download(resource: str, sa_file: str | None, sa_email: str | None) -> bytes:
+        downloads.append(resource)
+        return b"%PDF-scan"
+
+    captured = _run_with_attachments(monkeypatch, [_UPLOADED], download)
+
+    assert downloads == ["spaces/AAA/attachments/RES1"]
+    assert captured["user_message"] == wrap_untrusted(
+        "[Attached: scan.pdf] (converted from scanned pages)\nAPPRAISED VALUE 4.2M",
+        source="attachment", author="scan.pdf",
+    ) + "\n\nWhat is this worth?"
+
+
+def test_drive_file_is_left_to_the_drive_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    def download(*_a: Any) -> bytes:
+        raise AssertionError("a Drive file has no bytes to download here")
+
+    captured = _run_with_attachments(monkeypatch, [_DRIVE], download)
+
+    assert captured["user_message"].startswith(
+        "(Attached Board deck: a Google Drive file, id 1AbC — read it with the Drive tools)"
+    )
+
+
+def test_oversized_or_failed_downloads_become_notes(monkeypatch: pytest.MonkeyPatch) -> None:
+    def too_big(*_a: Any) -> bytes:
+        raise ValueError("attachment too large")
+
+    captured = _run_with_attachments(monkeypatch, [_UPLOADED], too_big)
+    assert captured["user_message"].startswith("(Skipped scan.pdf: file too large — limit 20 MB)")
+
+    def broken(*_a: Any) -> bytes:
+        raise RuntimeError("403")
+
+    captured = _run_with_attachments(monkeypatch, [_UPLOADED], broken)
+    assert captured["user_message"].startswith("(Could not download scan.pdf)")
+
+
+def test_download_attachment_stops_past_the_size_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cap is checked per chunk, so an oversized file is never held whole."""
+    requested: list[str] = []
+    service = MagicMock()
+    service.media.return_value.download_media.side_effect = (
+        lambda resourceName: requested.append(resourceName) or "REQUEST"
+    )
+    chunks_read: list[int] = []
+
+    class FakeDownloader:
+        def __init__(self, buf: Any, request: Any, chunksize: int) -> None:
+            assert request == "REQUEST"
+            self.buf = buf
+
+        def next_chunk(self) -> tuple[None, bool]:
+            chunks_read.append(1)
+            self.buf.write(b"x" * 10)
+            return None, len(chunks_read) >= 100
+
+    monkeypatch.setattr(gc_module, "_build_credentials", lambda *_: "creds")
+    monkeypatch.setattr("googleapiclient.discovery.build", lambda *a, **k: service)
+    monkeypatch.setattr("googleapiclient.http.MediaIoBaseDownload", FakeDownloader)
+
+    assert gc_module.download_attachment("res/1", None, None, max_bytes=1000) == b"x" * 1000
+    assert requested == ["res/1"]
+
+    chunks_read.clear()
+    with pytest.raises(ValueError):
+        gc_module.download_attachment("res/1", None, None, max_bytes=25)
+    assert len(chunks_read) == 3
+
+
+def test_files_from_someone_off_the_roster_are_not_downloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The webhook authenticates Google, not the sender: anyone in a space
+    can post. Their files are named to the Executive, never downloaded."""
+    def download(*_a: Any) -> bytes:
+        raise AssertionError("an off-roster sender's file must not be downloaded")
+
+    captured = _run_with_attachments(monkeypatch, [_UPLOADED], download, rostered=False)
+
+    assert captured["user_message"] == (
+        "(Attached files, not read — files are read only from people on the team: scan.pdf)"
+        "\n\nWhat is this worth?"
+    )
+
+
+@pytest.mark.parametrize("rostered", [True, False])
+def test_the_sender_is_named_to_the_department_gate_only(
+    monkeypatch: pytest.MonkeyPatch, rostered: bool
+) -> None:
+    """The sender's People entry reaches the department gate, so the owner's
+    own sends aren't held, but never `caller_person_id`: this surface grants
+    nothing else."""
+    captured = _run_with_attachments(monkeypatch, [], lambda *_a: b"", rostered=rostered)
+
+    session = captured["session"]
+    assert session.gate_sender_person_id == (3 if rostered else None)
+    assert session.caller_person_id is None
+
+
+@pytest.mark.parametrize(("person", "expected"), [(SimpleNamespace(id=42), 42), (None, None)])
+def test_the_inbound_row_carries_the_senders_people_id(
+    monkeypatch: pytest.MonkeyPatch, person: Any, expected: int | None,
+) -> None:
+    """The brief tells the owner's own Google Chat messages from a namesake's
+    by this id (briefing.live_signals), never by the display name."""
+    rows: list[tuple[str, dict[str, Any]]] = []
+    looked_up: list[str] = []
+
+    def _find(email: str) -> Any:
+        looked_up.append(email)
+        return person
+
+    def _log(kind: str, _summary: str, **kw: Any) -> None:
+        rows.append((kind, kw.get("details") or {}))
+
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_email", _find)
+    monkeypatch.setattr("openexecutive.audit.log_event", _log)
+    monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _e: None)
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+
+    with patch("openexecutive.integrations.google_chat.send_reply", new=lambda *a, **k: None):
+        asyncio.run(
+            _process_and_reply(
+                message_text="Any word on the offer?",
+                sender_name="Pat Owner",
+                space_name="spaces/AAA",
+                thread_name="spaces/AAA/threads/T1",
+                message_name="spaces/AAA/messages/M1",
+                service_account_file="/fake/key.json",
+                service_account_email=None,
+                sender_email="pat@x.com",
+            )
+        )
+
+    assert looked_up == ["pat@x.com"]
+    [inbound] = [d for kind, d in rows if kind == "integration_inbound"]
+    assert inbound["sender_person_id"] == expected

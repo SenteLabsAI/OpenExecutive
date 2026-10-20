@@ -13,7 +13,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from openexecutive.knowledge.retriever import retrieve
-from openexecutive.knowledge.skills_repo import SkillNotFoundError, get_skill
 from openexecutive.knowledge.store import ChromaDBStore
 from openexecutive.memory.company_profile import CompanyProfile
 from openexecutive.onboarding.profile_builder import load_or_create_profile
@@ -24,6 +23,7 @@ from openexecutive.workflows.base import (
     WorkflowSection,
     WorkflowStepDef,
 )
+from openexecutive.workflows.playbooks import load_playbook, playbook_clause
 
 _QP_EXAMPLE_RECAP = (
     "- Shipped v2 reporting, on time; adoption ahead of plan\n"
@@ -119,6 +119,7 @@ class QuarterlyPlanWorkflow(Workflow):
     )
     section = WorkflowSection.OPERATING
     estimated_minutes = 4
+    playbooks = ("quarterly-okr-set", "quarterly-forecast")
 
     def input_model(self) -> type[BaseModel]:
         return QuarterlyPlanInput
@@ -178,8 +179,8 @@ class QuarterlyPlanWorkflow(Workflow):
         # --- Step 1: context ---
         yield WorkflowEvent(type="step_start", step_id="context", step_title="Load context")
         ctx.profile = load_or_create_profile()
-        ctx.okr_skill = _safe_get_skill_body("quarterly-okr-set")
-        ctx.forecast_skill = _safe_get_skill_body("quarterly-forecast")
+        ctx.okr_skill = load_playbook("quarterly-okr-set")
+        ctx.forecast_skill = load_playbook("quarterly-forecast")
         ctx.rag = retrieve(
             query=f"quarterly planning OKRs strategic priorities {ctx.inputs.quarter_label}",
             specialist_name="cso",
@@ -295,13 +296,6 @@ class _QuarterlyPlanContext:
         self.risks: str = ""
 
 
-def _safe_get_skill_body(name: str) -> str:
-    try:
-        return get_skill(name).body
-    except (SkillNotFoundError, Exception):  # noqa: BLE001 — diagnostic, not fatal
-        return ""
-
-
 def _company_context_block(profile: CompanyProfile | None) -> str:
     if profile is None or profile.is_empty():
         return ""
@@ -320,11 +314,7 @@ def _first_line(text: str, max_len: int = 140) -> str:
 
 
 def _build_okrs_prompt(ctx: _QuarterlyPlanContext) -> str:
-    skill_clause = (
-        f"\n\nFollow this playbook for OKR setting:\n\n{ctx.okr_skill}"
-        if ctx.okr_skill
-        else ""
-    )
+    skill_clause = playbook_clause(ctx.okr_skill, "Follow this playbook for OKR setting")
     constraints = (
         f"\n\nKnown constraints:\n{ctx.inputs.known_constraints}"
         if ctx.inputs.known_constraints.strip()
@@ -359,11 +349,7 @@ def _build_okrs_prompt(ctx: _QuarterlyPlanContext) -> str:
 
 
 def _build_financial_frame_prompt(ctx: _QuarterlyPlanContext) -> str:
-    skill_clause = (
-        f"\n\nReference this forecasting playbook:\n\n{ctx.forecast_skill}"
-        if ctx.forecast_skill
-        else ""
-    )
+    skill_clause = playbook_clause(ctx.forecast_skill, "Reference this forecasting playbook")
     revenue_context = (
         f"\n\nRevenue context:\n{ctx.inputs.revenue_target_context}"
         if ctx.inputs.revenue_target_context.strip()

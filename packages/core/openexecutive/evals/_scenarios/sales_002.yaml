@@ -1,0 +1,21 @@
+id: sales_002
+domain: sales
+description: "End-of-quarter discount request on a services proposal"
+company_context:
+  stage: "Bootstrapped"
+  industry: "Data engineering consultancy"
+  headcount: 4
+  arr: 900000
+query: "A prospect says they'll sign our $60k implementation proposal this week if we knock 30% off. It's our biggest deal this quarter and I'm tempted to just say yes. How should I handle this?"
+expected_topics:
+  - discount_trade_for_value
+  - scope_reduction_before_price
+  - walk_away_point
+  - payment_terms
+  - margin_impact
+required_routing:
+  - sales
+quality_criteria:
+  actionable: true
+  references_numbers: true
+  gives_negotiation_language: true

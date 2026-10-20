@@ -1,0 +1,16 @@
+id: routing_skip_002
+domain: routing
+description: "A question about what the Executive can do is answered directly, with no specialist."
+company_context:
+  name: Larkfield Partners
+  stage: Bootstrapped
+  industry: Accounting practice
+  headcount: 6
+query: "What kinds of things can you help me with day to day?"
+no_routing: true
+expected_topics:
+  - concrete_examples_of_help
+  - invites_a_first_task
+quality_criteria:
+  brief: true
+  does_not_describe_internal_architecture: true

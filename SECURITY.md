@@ -38,11 +38,17 @@ A few things worth knowing when assessing or reporting:
   `BACKEND_SHARED_SECRET`, `AUTH_*`, integration tokens) are injected via
   environment variables / platform secrets and are gitignored locally. If you find a
   committed secret, report it privately rather than opening an issue.
-- **Access control.** The deployed UI is gated by Google sign-in with an email
-  allow-list, and the API is protected by a shared-secret header between the UI
-  proxy and the FastAPI backend (see [docs/auth.md](docs/auth.md)). The product
-  is currently a shared workspace with no per-user data isolation — treat all
-  allow-listed users as trusted.
+- **Access control.** The deployed UI is gated by Google or SSO (OpenID
+  Connect) sign-in with an allow-list (`ALLOWED_EMAILS` plus the People
+  roster), and the API by a shared-secret header between the UI proxy and the
+  FastAPI backend, optionally with signed callers so the API checks who is
+  signed in rather than trusting a header (see [docs/auth.md](docs/auth.md)).
+  Local login, with no sign-in, is for one person on their own computer only.
+- **What each person can see.** It is one company's workspace: everyone on the
+  roster shares the company's knowledge, alerts and briefs. Some data is
+  private to one person, owner included: their People card, the artifacts
+  they create, and their own mailbox under Act as me. A path where one
+  signed-in person can read or act on another's private data is in scope.
 - **Outbound actions.** The Executive can send messages and call external tools
   (MCP). Reports about prompt-injection paths that lead to unintended outbound
   actions or data egress are in scope and appreciated.

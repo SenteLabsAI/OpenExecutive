@@ -1,0 +1,397 @@
+"""The model side of chat topics (store: ``memory.chat_topics``).
+
+- ``name_chat``: a new chat's first exchange gets its title and its topic in
+  the one utility-fast call that used to give only the title.
+- ``tidy_new_topic``: when that call makes a new topic, one short call over
+  the topic names alone checks it against the owner's other topics: it merges
+  it into one that means the same, or else puts it under an area it shares
+  with related ones. No call on a turn that made no topic.
+- ``backfill``: chats from before topics (or whose naming failed) are filed
+  in batches, from their titles only, the first time the owner opens the
+  Topic view; then ``assign_areas`` gives the topics not yet looked at their
+  areas, in one call over the names.
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import re
+import time
+from typing import Any
+
+from openexecutive.memory import chat_topics as store
+from openexecutive.utils.session_title import clean_title
+
+logger = logging.getLogger(__name__)
+
+_NAME_SYSTEM = (
+    "You name a chat thread and file it under a topic. Reply with exactly two "
+    "lines and nothing else:\n"
+    "Title: <a concise 4-6 word title>\n"
+    "Topic: <topic>\n"
+    "For Topic, reuse one of the person's existing topics, written exactly as "
+    "listed, when the chat is about the same matter. Otherwise give a new "
+    "2-4 word topic naming the matter (a project, deal, hire, customer, "
+    "person or area of the business), broad enough that later chats about it "
+    "fit too. Write none for small talk or a one-off question with no lasting "
+    "matter."
+)
+
+_AREA_RULE = (
+    "An area is a broader matter that two or more topics share: one property, "
+    "deal, client, fund or project (topics St. Albans Offers and St. Albans "
+    "Disposition share the area St. Albans). Name it in 1-3 words, reusing an "
+    "existing area, written exactly as listed, when one fits."
+)
+
+_TIDY_SYSTEM = (
+    "You keep a person's list of chat topics tidy. You get one new topic and "
+    "their other topics, each with its area if it has one. Reply with exactly "
+    "three lines and nothing else:\n"
+    "Same: <the other topic about the same matter as the new one, exactly as "
+    "listed, or none>\n"
+    "Area: <the area the new topic shares with at least one other topic, or "
+    "none>\n"
+    "With: <the other topics in that area that have no area yet, exactly as "
+    "listed, separated by ; , or none>\n" + _AREA_RULE
+)
+
+_AREAS_SYSTEM = (
+    "You group a person's chat topics under areas. You get their topics, "
+    "numbered, each with its area if it has one. For each topic marked new, "
+    "reply with one line in the form <number>: <area>, and nothing else. "
+    + _AREA_RULE
+    + " Write none for a topic that shares its matter with no other topic."
+)
+
+_BACKFILL_SYSTEM = (
+    "You file a person's chats under topics, from their titles. Reply with one "
+    "line per chat, in the form <number>: <topic>, and nothing else. Reuse an "
+    "existing topic, written exactly as listed, when a chat is about the same "
+    "matter. Otherwise give a new 2-4 word topic naming the matter (a project, "
+    "deal, hire, customer, person or area of the business), and put chats "
+    "about the same matter under the same topic. Write none for small talk or "
+    "a one-off question with no lasting matter."
+)
+
+# Titles per backfill call: a few thousand tokens in, one short line each out.
+BACKFILL_BATCH = 80
+# A batch's reply is longer than a title's, so it gets longer to come back.
+BACKFILL_TIMEOUT_S = 60.0
+# After a backfill fails, the Topic view doesn't start another for a while.
+BACKFILL_RETRY_S = 600.0
+
+_tasks: set[asyncio.Task[Any]] = set()
+_backfilling: set[int] = set()
+_backfill_failed_at: dict[int, float] = {}
+
+
+def _keep(task: asyncio.Task[Any]) -> None:
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+def _topic_list(names: list[str]) -> str:
+    return "\n".join(f"- {n}" for n in names) if names else "(none yet)"
+
+
+async def _ask(
+    system: str, content: str, *, max_tokens: int, actor: str, timeout_s: float | None = None
+) -> str:
+    """One utility-fast call, bounded by ``timeout_s`` (default the
+    utility-fast budget) so a hung call can't hold a background task."""
+    from openexecutive.agents.utility_fast import get_fast_model
+    from openexecutive.audit.usage import log_model_usage
+    from openexecutive.config import get_settings
+    from openexecutive.providers import get_provider
+
+    model = get_fast_model()
+    response = await asyncio.wait_for(
+        get_provider(model).messages_create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+        ),
+        timeout=timeout_s or get_settings().utility_fast_timeout_s,
+    )
+    log_model_usage(response, model=model, actor=actor)
+    return "".join(
+        getattr(b, "text", "") for b in response.content if getattr(b, "type", "") == "text"
+    ).strip()
+
+
+def parse_title_and_topic(raw: str) -> tuple[str | None, str | None]:
+    """``Title: …`` / ``Topic: …`` lines. A reply without the labels is
+    taken as a bare title, so a model that ignores the format still names
+    the chat."""
+    title: str | None = None
+    topic: str | None = None
+    for line in raw.splitlines():
+        label, _, rest = line.partition(":")
+        key = label.strip().lower()
+        if key == "title" and title is None:
+            title = clean_title(rest)
+        elif key == "topic" and topic is None:
+            topic = store.clean_topic_name(rest)
+    if title is None and topic is None and raw.strip():
+        title = clean_title(raw.strip().splitlines()[0])
+    return title, topic
+
+
+async def _title_and_topic(
+    user_msg: str, assistant_msg: str, names: list[str]
+) -> tuple[str | None, str | None]:
+    """The one call that names a chat: its title and its topic."""
+    raw = await _ask(
+        _NAME_SYSTEM,
+        f"EXISTING TOPICS:\n{_topic_list(names)}\n\n"
+        f"USER MESSAGE:\n{user_msg[:2000]}\n\n"
+        f"EXECUTIVE RESPONSE:\n{assistant_msg[:2000]}",
+        max_tokens=48,
+        actor="session_title",
+    )
+    return parse_title_and_topic(raw)
+
+
+def _owner_only(session_id: str, owner: int) -> bool:
+    from openexecutive.api.routes.chat import _shared_space
+
+    try:
+        return not _shared_space(session_id) and store.owner_only(session_id, owner)
+    except Exception:
+        logger.exception("name_chat: couldn't tell who wrote in the chat")
+        return False
+
+
+async def name_chat(session_id: str, user_msg: str, assistant_msg: str) -> str | None:
+    """Title a chat from its first exchange and file it under a topic.
+    Returns the title (None when the call failed; the caller keeps its
+    placeholder). A chat with no owner only gets a title."""
+    from openexecutive.memory.session_store import get_session_owner, update_session_title
+    from openexecutive.utils.session_title import generate_session_title
+
+    # Two small indexed reads, done inline so the call starts on this step:
+    # the stop path dispatches naming as a task and must see it under way.
+    try:
+        _, owner = get_session_owner(session_id)
+    except Exception:
+        logger.exception("name_chat: couldn't read the chat's owner")
+        owner = None
+    if owner is not None and not _owner_only(session_id, owner):
+        # Someone else wrote here (a channel, a group, a shared chat): name it
+        # without the owner's topics in the prompt, and leave filing to the
+        # backfill, whose answer only the owner sees.
+        owner = None
+    if owner is None:
+        title = await generate_session_title(user_msg, assistant_msg)
+        if title:
+            await asyncio.to_thread(update_session_title, session_id, title)
+        return title
+    try:
+        names = store.topic_names(owner)
+        title, topic = await _title_and_topic(user_msg, assistant_msg, names)
+    except Exception:
+        logger.exception("name_chat: failed")
+        return None
+    if title:
+        await asyncio.to_thread(update_session_title, session_id, title)
+    topic_id, made = await asyncio.to_thread(store.set_auto_topic, session_id, owner, topic)
+    if made and topic_id is not None and len(names) > 0:
+        with contextlib.suppress(RuntimeError):  # no running loop
+            _keep(asyncio.get_running_loop().create_task(tidy_new_topic(owner, topic_id)))
+    return title
+
+
+def _topics_list(topics: list[dict[str, Any]], mark: set[int] | None = None) -> str:
+    lines = []
+    for i, t in enumerate(topics, start=1):
+        line = f"{i}. {t['name']}"
+        if t["area"]:
+            line += f" (area: {t['area']})"
+        elif mark is not None and t["id"] in mark:
+            line += " (new)"
+        lines.append(line)
+    return "\n".join(lines) if lines else "(none yet)"
+
+
+def parse_tidy(raw: str) -> tuple[str | None, str | None, list[str]]:
+    """``Same: …`` / ``Area: …`` / ``With: a; b`` lines. A reply of one bare
+    line is taken as Same, as the call answered before it gave areas."""
+    same: str | None = None
+    area: str | None = None
+    with_: list[str] = []
+    labelled = False
+    for line in raw.splitlines():
+        label, _, rest = line.partition(":")
+        key = label.strip().lower()
+        if key == "same":
+            labelled = True
+            same = store.clean_topic_name(rest)
+        elif key == "area":
+            labelled = True
+            area = store.clean_topic_name(rest)
+        elif key == "with":
+            labelled = True
+            with_ = [n for n in (store.clean_topic_name(p) for p in re.split(r"[;,]", rest)) if n]
+    if not labelled and raw.strip():
+        same = store.clean_topic_name(raw.strip().splitlines()[0])
+    return same, area, with_
+
+
+async def tidy_new_topic(owner: int, topic_id: int) -> int | None:
+    """Merge a just-made topic into one of the owner's others that means the
+    same, or else put it under the area it shares with related ones. Returns
+    the topic it was merged into, if any. Leaves the merge alone once the
+    owner has touched the topic (renamed, pinned, filed a chat under it)."""
+    try:
+        new = await asyncio.to_thread(store.owned_topic, owner, topic_id)
+        if new is None:
+            return None
+        all_topics = await asyncio.to_thread(store.topics_with_areas, owner)
+        others = [t for t in all_topics if t["id"] != topic_id]
+        if not others:
+            return None
+        raw = await _ask(
+            _TIDY_SYSTEM,
+            f"NEW TOPIC: {new['name']}\n\nOTHER TOPICS:\n{_topics_list(others)}",
+            max_tokens=64,
+            actor="chat_topics",
+        )
+        same, area, with_ = parse_tidy(raw)
+        by_name = {str(t["name"]).lower(): t for t in others}
+        if same and same.lower() in by_name and not new["kept"]:
+
+            def _merge() -> int | None:
+                current = store.owned_topic(owner, topic_id)
+                if current is None or current["kept"]:
+                    return None
+                into_id = store.topic_id_by_name(owner, str(by_name[same.lower()]["name"]))
+                if into_id is None:
+                    return None
+                return into_id if store.merge_topics(owner, topic_id, into_id) else None
+
+            merged = await asyncio.to_thread(_merge)
+            if merged is not None:
+                return merged
+        # An area needs another topic in it: one already there, or one named
+        # alongside that has none yet.
+        joining = [by_name[n.lower()]["id"] for n in with_ if n.lower() in by_name and not by_name[n.lower()]["area"]]
+        shared = area is not None and (
+            any(str(t["area"] or "").lower() == area.lower() for t in others) or joining
+        )
+        await asyncio.to_thread(store.set_area, owner, [topic_id, *joining] if shared else [topic_id], area if shared else None)
+        return None
+    except Exception:
+        logger.exception("tidy_new_topic: failed")
+        return None
+
+
+async def assign_areas(owner: int) -> int:
+    """Give the owner's topics not yet looked at their areas, in one call
+    over the topic names. Returns how many got one. Raises when the call
+    fails, so the backfill waits before trying again."""
+    topics = await asyncio.to_thread(store.topics_with_areas, owner)
+    new = {t["id"] for t in topics if t["area"] is None}
+    if len(topics) < 3 or not new:
+        return 0
+    raw = await _ask(
+        _AREAS_SYSTEM,
+        f"TOPICS:\n{_topics_list(topics, new)}",
+        max_tokens=12 * len(new) + 32,
+        actor="chat_topics",
+        timeout_s=BACKFILL_TIMEOUT_S,
+    )
+    picks = parse_backfill(raw, len(topics))
+    # An area counts once two topics share it (an existing one included).
+    existing = [str(t["area"]).lower() for t in topics if t["area"]]
+    chosen = [str(a).lower() for i, a in picks.items() if a and topics[i - 1]["id"] in new]
+    count = {a: existing.count(a) + chosen.count(a) for a in set(existing + chosen)}
+    def _save() -> int:
+        n = 0
+        for i, t in enumerate(topics, start=1):
+            if t["id"] not in new:
+                continue
+            area = picks.get(i)
+            keep = area if area and count.get(area.lower(), 0) >= 2 else None
+            store.set_area(owner, [t["id"]], keep)
+            n += 1 if keep else 0
+        return n
+
+    return await asyncio.to_thread(_save)
+
+
+_LINE = re.compile(r"^\s*(\d+)\s*[:.)\-]\s*(.*)$")
+
+
+def parse_backfill(raw: str, count: int) -> dict[int, str | None]:
+    """``<number>: <topic>`` lines, 1-based, for numbers up to ``count``."""
+    out: dict[int, str | None] = {}
+    for line in raw.splitlines():
+        m = _LINE.match(line)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if 1 <= n <= count and n not in out:
+            out[n] = store.clean_topic_name(m.group(2))
+    return out
+
+
+def backfill_running(owner: int) -> bool:
+    return owner in _backfilling
+
+
+def start_backfill(owner: int) -> bool:
+    """Start filing the owner's untagged chats in the background, unless it
+    is running already or failed a short while ago. True when it runs."""
+    if owner in _backfilling:
+        return True
+    failed = _backfill_failed_at.get(owner)
+    if failed is not None and time.monotonic() - failed < BACKFILL_RETRY_S:
+        return False
+    try:
+        task = asyncio.get_running_loop().create_task(backfill(owner))
+    except RuntimeError:  # pragma: no cover - no running loop
+        return False
+    _backfilling.add(owner)
+    task.add_done_callback(lambda _t: _backfilling.discard(owner))
+    _keep(task)
+    return True
+
+
+async def backfill(owner: int) -> int:
+    """File the owner's untagged chats, newest first, a batch per call.
+    Returns how many were filed. A failed call stops the run (the rest wait
+    for the next one); a chat the reply skips is filed under no topic, so it
+    isn't asked about again."""
+    filed = 0
+    try:
+        pending = await asyncio.to_thread(store.untagged_sessions, owner)
+        for at in range(0, len(pending), BACKFILL_BATCH):
+            batch = pending[at:at + BACKFILL_BATCH]
+            names = await asyncio.to_thread(store.topic_names, owner)
+            titles = "\n".join(f"{i}. {c['title'][:120]}" for i, c in enumerate(batch, start=1))
+            raw = await _ask(
+                _BACKFILL_SYSTEM,
+                f"EXISTING TOPICS:\n{_topic_list(names)}\n\nCHATS:\n{titles}",
+                max_tokens=16 * len(batch) + 32,
+                actor="chat_topics",
+                timeout_s=BACKFILL_TIMEOUT_S,
+            )
+            picks = parse_backfill(raw, len(batch))
+
+            def _file(batch: list[dict[str, str]] = batch, picks: dict[int, str | None] = picks) -> int:
+                n = 0
+                for i, chat in enumerate(batch, start=1):
+                    store.set_auto_topic(chat["session_id"], owner, picks.get(i), only_untagged=True)
+                    n += 1
+                return n
+
+            filed += await asyncio.to_thread(_file)
+        await assign_areas(owner)
+        _backfill_failed_at.pop(owner, None)
+    except Exception:
+        _backfill_failed_at[owner] = time.monotonic()
+        logger.exception("chat_topics.backfill: failed owner=%s", owner)
+    return filed

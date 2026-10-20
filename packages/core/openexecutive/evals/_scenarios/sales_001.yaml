@@ -1,0 +1,21 @@
+id: sales_001
+domain: sales
+description: "Inflated pipeline in founder-led sales"
+company_context:
+  stage: "Seed"
+  industry: "B2B workflow software for accounting firms"
+  headcount: 7
+  arr: 600000
+query: "I'm the founder and I still run all of our sales. Our CRM shows 45 open deals worth about $1.8M, but we closed only 3 last quarter and my board keeps asking when the pipeline will convert. Most deals have been sitting in 'demo done' for months. How should I set up our pipeline stages and qualification so I know which deals are real, and what should I do with the ones that aren't?"
+expected_topics:
+  - stage_exit_criteria
+  - qualification
+  - economic_buyer
+  - pipeline_cleanup
+  - forecast_accuracy
+required_routing:
+  - sales
+quality_criteria:
+  actionable: true
+  references_numbers: true
+  distinguishes_real_from_inflated_pipeline: true

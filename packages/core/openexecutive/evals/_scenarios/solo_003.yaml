@@ -1,0 +1,22 @@
+id: solo_003
+domain: operations
+workspace_mode: solo
+description: "Solo mode: a status/brief-style question. The answer covers what changed, what needs the principal, and goals at risk by area — with no departments section, no people-waiting section and no 'across the team' framing."
+company_context:
+  name: Tallgrass Studio
+  industry: Independent Brand & Product Design Studio
+  stage: Bootstrapped, owner-run
+  headcount: 1
+  arr: 310000
+  monthly_burn: 6500
+  runway_months: 2.1
+query: "Give me the quick status — what's changed, what needs me this week, and what's at risk?"
+expected_topics:
+  - what_changed
+  - decisions_that_need_the_principal
+  - goals_at_risk_by_area
+quality_criteria:
+  no_departments_section: true
+  no_people_waiting_or_team_section: true
+  names_goals_by_area: true
+  brief: true

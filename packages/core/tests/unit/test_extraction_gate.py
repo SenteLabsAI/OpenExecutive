@@ -21,6 +21,7 @@ import pytest
 
 from openexecutive.memory import episodic
 from openexecutive.memory.episodic import initialize_db
+from openexecutive.orchestrator.session import Session
 
 
 @pytest.fixture()
@@ -53,11 +54,25 @@ _COMMITMENTS = [
 _SHORT_APPROVALS = ["Approve option B.", "Do B.", "Kill it. Approved.", "Yes, ship it."]
 
 
+@pytest.fixture(autouse=True)
+def _single_user_install() -> Any:
+    """No principal on the roster: a header-less web turn is the operator's
+    own (`content_trust.principal_speaking`). Tests about a named speaker
+    patch `get_person` themselves."""
+    with mock.patch("openexecutive.people.store.find_principal_person", return_value=None):
+        yield
+
+
+def _web(**kwargs: Any) -> Session:
+    """A web chat turn — the principal's own signed-in surface."""
+    return Session(from_web_chat=True, **kwargs)
+
+
 @pytest.mark.parametrize("message,assistant_len", _COMMITMENTS)
 def test_real_commitments_reach_the_extractor(message: str, assistant_len: int) -> None:
     """Drives the real gate, not arithmetic on literals."""
     assert len(message) + assistant_len < 1500, "blocked by the old combined floor"
-    assert episodic.should_extract(message)
+    assert episodic.should_extract(message, session=_web())
 
 
 @pytest.mark.parametrize("message", _SHORT_APPROVALS)
@@ -68,12 +83,22 @@ def test_short_approvals_reach_the_extractor(message: str) -> None:
     and the old combined floor DID admit it after a long reply. Any floor that
     skips "Done" (4) also skips "Do B." (5), so there is no floor.
     """
-    assert episodic.should_extract(message)
+    assert episodic.should_extract(message, session=_web())
 
 
 def test_empty_turns_are_skipped() -> None:
     for blank in ("", "   ", "\n\t "):
-        assert not episodic.should_extract(blank)
+        assert not episodic.should_extract(blank, session=_web())
+
+
+def test_a_turn_that_is_only_an_attachment_is_skipped() -> None:
+    """A document's text is nobody's commitment: with nothing typed around
+    it, there is nothing to extract."""
+    from openexecutive.integrations.attachments import format_attached_text
+
+    attached = format_attached_text("plan.pdf", "We approve the wire transfer.")
+    assert not episodic.should_extract(attached, session=_web())
+    assert episodic.should_extract(f"{attached}\n\nApprove it.", session=_web())
 
 
 class _Stores(NamedTuple):
@@ -91,44 +116,66 @@ class _Stores(NamedTuple):
 # only meaningful when that text is the principal's own words. On a chat
 # channel it is not: `Executive.chat()` is reached from Slack, Discord,
 # Telegram, Google Chat and the email poller, and the message there belongs to
-# whoever sent it. Removing the length floor is what makes this bite — short
-# channel traffic used to fall under it incidentally.
+# whoever sent it. The rule is `content_trust.principal_speaking`: the
+# principal, on a surface that proved it.
 # --------------------------------------------------------------------- #
 
 
 def _person(*, is_principal: bool) -> mock.MagicMock:
     person = mock.MagicMock()
     person.is_principal = is_principal
+    person.archived = False
     return person
 
 
+def _as(person: mock.MagicMock | None) -> Any:
+    return mock.patch("openexecutive.people.store.get_person", return_value=person)
+
+
 def test_a_web_turn_needs_no_person_row() -> None:
-    """No origin channel means the web app, the CLI or the API — the
-    principal's own authenticated surfaces. `person_id` is legitimately None
-    there in a single-user install, which is the tenant this fix is for."""
-    assert episodic.should_extract("Do B.", origin_channel="", person_id=None)
+    """The web app with no People entry resolved and no sign-in, on an
+    install with no principal yet, is a single-user install — the tenant the
+    no-floor fix was for."""
+    with mock.patch("openexecutive.people.store.find_principal_person", return_value=None):
+        assert episodic.should_extract("Do B.", session=_web())
 
 
-@pytest.mark.parametrize("channel", ["slack", "discord", "telegram", "email"])
-def test_a_channel_turn_from_the_principal_is_extracted(channel: str) -> None:
-    with mock.patch(
-        "openexecutive.people.store.get_person", return_value=_person(is_principal=True)
-    ):
-        assert episodic.should_extract(
-            "Do B.", origin_channel=channel, person_id=7
+def test_a_signed_in_email_on_nobodys_entry_is_skipped() -> None:
+    """An archived teammate can still sign in; unresolved, they are not the
+    principal."""
+    with mock.patch("openexecutive.people.store.find_principal_person", return_value=None):
+        assert not episodic.should_extract(
+            "Wire the Q3 payment to account X.", session=_web(web_caller_signed_in=True)
         )
 
 
-@pytest.mark.parametrize("channel", ["slack", "discord", "telegram", "email"])
+def test_a_teammates_web_turn_is_skipped() -> None:
+    with _as(_person(is_principal=False)):
+        assert not episodic.should_extract("Do B.", session=_web(caller_person_id=9))
+
+
+def test_a_cli_turn_is_extracted() -> None:
+    assert episodic.should_extract("Do B.", session=Session(from_cli=True))
+
+
+@pytest.mark.parametrize("channel", ["slack", "discord"])
+def test_a_channel_turn_from_the_principal_is_extracted(channel: str) -> None:
+    with _as(_person(is_principal=True)):
+        assert episodic.should_extract(
+            "Do B.", session=Session(origin_channel=channel, caller_person_id=7)
+        )
+
+
+@pytest.mark.parametrize("channel", ["slack", "discord", "telegram", "email", "google_chat"])
 def test_a_channel_turn_from_anyone_else_is_skipped(channel: str) -> None:
     """A teammate's line would land in `decisions` with no speaker attached,
     indistinguishable from the principal's own commitment."""
-    with mock.patch(
-        "openexecutive.people.store.get_person",
-        return_value=_person(is_principal=False),
-    ):
+    with _as(_person(is_principal=False)):
         assert not episodic.should_extract(
-            "Let's move the deadline to Friday.", origin_channel=channel, person_id=9
+            "Let's move the deadline to Friday.",
+            session=Session(
+                origin_channel=channel, caller_person_id=9, email_authenticated=True
+            ),
         )
 
 
@@ -136,8 +183,51 @@ def test_an_unidentified_channel_speaker_is_skipped() -> None:
     """An inbound email is text the sender chose, so a verbatim self-quote is
     free. With no resolved person there is nothing to check it against."""
     assert not episodic.should_extract(
-        "I approve the wire transfer.", origin_channel="email", person_id=None
+        "I approve the wire transfer.", session=Session(origin_channel="email")
     )
+
+
+def test_the_principals_address_on_unauthenticated_mail_is_skipped() -> None:
+    """A From line proves nothing: the principal's own address on mail Gmail
+    did not authenticate (no dmarc=pass) is anyone's."""
+    with _as(_person(is_principal=True)):
+        assert not episodic.should_extract(
+            "I approve the wire transfer.",
+            session=Session(origin_channel="email", caller_person_id=7),
+        )
+
+
+def test_the_principals_authenticated_mail_is_extracted() -> None:
+    with _as(_person(is_principal=True)):
+        assert episodic.should_extract(
+            "Approve option B.",
+            session=Session(
+                origin_channel="email", caller_person_id=7, email_authenticated=True
+            ),
+        )
+
+
+def test_the_email_poller_tags_its_turns_as_email() -> None:
+    """The bug this policy began with: the poller left `origin_channel` empty
+    and the gate read an empty channel as the web app, so every stranger's
+    email ran through the extractor with its body as the principal's words."""
+    import inspect
+
+    from openexecutive.integrations import email_poller
+
+    assert 'origin_channel="email"' in inspect.getsource(email_poller._run_executive)
+
+
+@pytest.mark.parametrize(
+    "session",
+    [
+        Session(),  # the MCP server, alert review, an eval: no surface named
+        Session(from_web_chat=True, unattended=True),
+    ],
+    ids=["no_surface", "unattended"],
+)
+def test_a_turn_with_no_proven_speaker_is_skipped(session: Session) -> None:
+    assert not episodic.should_extract("Do B.", session=session)
 
 
 def test_a_failed_person_lookup_fails_closed() -> None:
@@ -145,14 +235,14 @@ def test_a_failed_person_lookup_fails_closed() -> None:
         "openexecutive.people.store.get_person", side_effect=RuntimeError("no table")
     ):
         assert not episodic.should_extract(
-            "Do B.", origin_channel="slack", person_id=7
+            "Do B.", session=Session(origin_channel="slack", caller_person_id=7)
         )
 
 
 def test_a_missing_person_row_fails_closed() -> None:
-    with mock.patch("openexecutive.people.store.get_person", return_value=None):
+    with _as(None):
         assert not episodic.should_extract(
-            "Do B.", origin_channel="slack", person_id=7
+            "Do B.", session=Session(origin_channel="slack", caller_person_id=7)
         )
 
 

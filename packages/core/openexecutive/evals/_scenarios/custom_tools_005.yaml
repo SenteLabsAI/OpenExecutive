@@ -1,0 +1,12 @@
+id: custom_tools_005
+domain: mcp
+description: "A single named document the person wants edited is read in full with a direct call, not through a built tool that returns extracts: the multi-read rule must not stop the Executive reading what it is about to change"
+requires_mcp: true
+query: "Open the Q3 hiring plan doc in Drive and fix any dates that fall on a weekend."
+# Documentation for now: a direct read of the one document, then the edit.
+expected_tool_calls:
+  - call_tool
+quality_criteria:
+  reads_the_whole_document_before_editing: true
+  lists_each_date_changed_with_old_and_new_value: true
+  does_not_say_script_code_python_or_sandbox: true

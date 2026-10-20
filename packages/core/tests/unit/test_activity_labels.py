@@ -146,7 +146,7 @@ def test_mcp_call_tool_uses_the_underlying_tool_name() -> None:
         [_tu("call_tool", name="google_workspace__send_gmail_message", arguments={})]
     )
     assert evt is not None
-    assert evt["label"] == "Using google_workspace__send_gmail_message…"
+    assert evt["label"] == "Sending an email…"
     assert evt["tool"] == "google_workspace__send_gmail_message"
 
 
@@ -227,12 +227,21 @@ def test_every_registered_executive_tool_has_a_label() -> None:
     """The real drift guard: adding a tool without a label is a silent regression.
 
     `_ALL_SKILL_HANDLERS` is the merged source of truth for every handler-backed
-    tool the Executive can call; MCP and the specialist tool sit outside it.
+    tool the Executive can call; MCP, the specialist tool and the Act as me
+    tools (their own registry, offered per turn) sit outside it.
     """
+    from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOL_HANDLERS
     from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
+    from openexecutive.orchestrator.history_tools import HISTORY_TOOL_HANDLERS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOL_NAMES
 
-    registered = set(_ALL_SKILL_HANDLERS) | set(MCP_TOOL_NAMES) | {"consult_specialist"}
+    registered = (
+        set(_ALL_SKILL_HANDLERS)
+        | set(DELEGATION_TOOL_HANDLERS)
+        | set(HISTORY_TOOL_HANDLERS)
+        | set(MCP_TOOL_NAMES)
+        | {"consult_specialist"}
+    )
     # `call_tool` is labelled dynamically from the tool it wraps.
     missing = registered - set(al._LABELS) - {"call_tool"}
     assert not missing, f"tools with no activity label: {sorted(missing)}"

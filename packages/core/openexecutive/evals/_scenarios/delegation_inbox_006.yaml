@@ -1,0 +1,20 @@
+id: delegation_inbox_006
+domain: delegation
+type: inbox
+description: "Inbox watcher: a teammate's thank-you needs no reply, so nothing is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: team
+  expect: no_draft
+  thread:
+    id: t-thanks
+    subject: "Re: Moodboards"
+    messages:
+      - from: "Olivia Owner <olivia@fernway.example>"
+        text: |
+          Here are the moodboards for Friday.
+      - from: "Priya Shah <priya@fernway.example>"
+        text: |
+          Thanks, these look great!

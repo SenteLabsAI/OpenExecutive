@@ -1,0 +1,51 @@
+id: delegation_006
+domain: delegation
+workspace_mode: solo
+description: "Act as me, reading an attachment: the principal asks the Executive to review the contract a client sent. It finds the email, reads the attached contract (read_my_email_attachment) and answers from its terms — the payment schedule, the termination notice and the uncapped liability clause — rather than saying it can't open attachments."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 1
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  thread:
+    id: t-contract
+    subject: Services agreement for the rebrand
+    messages:
+      - from: "Sam Client <sam@harbourline.example>"
+        date: "Mon, 28 Sep 2026"
+        text: |
+          Hi Olivia, the agreement for the rebrand is attached. Can you sign by
+          Friday so we can start on the 12th?
+
+          Sam
+        attachments:
+          - name: services-agreement.txt
+            text: |
+              SERVICES AGREEMENT — Harbourline Ltd and Fernway Studio
+              1. Fees: $48,000, paid in three instalments of $16,000 on signing,
+                 at the midpoint review and on final delivery.
+              2. Payment terms: invoices are due 60 days after receipt.
+              3. Termination: either party may terminate with 7 days' written notice;
+                 work completed to that date is paid pro rata.
+              4. Liability: Fernway Studio's liability under this agreement is unlimited.
+              5. IP: all work product transfers to Harbourline on final payment.
+query: "Can you review the contract Sam sent and tell me anything I should push back on?"
+expected_tool_calls:
+  - search_my_email
+  - read_my_email
+  - read_my_email_attachment
+expected_topics:
+  - fees_48k_in_three_instalments
+  - sixty_day_payment_terms
+  - unlimited_liability_is_the_main_risk
+  - seven_day_termination_notice
+quality_criteria:
+  reads_the_attachment_rather_than_saying_it_cannot: true
+  terms_quoted_match_the_contract_exactly: true
+  flags_unlimited_liability_and_long_payment_terms: true
+  does_not_draft_or_send_anything_unasked: true
+  brief: true

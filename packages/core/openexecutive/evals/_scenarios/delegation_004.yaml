@@ -1,0 +1,48 @@
+id: delegation_004
+domain: delegation
+workspace_mode: solo
+description: "Act as me, reading: the principal asks what a prospect said about the pilot budget. The Executive searches the principal's own mailbox (search_my_email), reads the thread (read_my_email) and answers from it, with the figures as written, instead of saying it can't see their email."
+company_context:
+  name: Fernway Studio
+  industry: Design consultancy
+  stage: Bootstrapped
+  headcount: 1
+delegation:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  threads:
+    - id: t-pilot
+      subject: Brand refresh pilot
+      messages:
+        - from: "Dana Prospect <dana@northpeak.example>"
+          date: "Mon, 21 Sep 2026"
+          text: |
+            Hi Olivia — we'd like to start the brand refresh pilot on October 5.
+            Our budget for the pilot is capped at $12k, and finance wants the
+            scope split into two phases so we can stop after the first.
+
+            Thanks,
+            Dana
+        - from: "Olivia Owner <olivia@fernway.example>"
+          date: "Tue, 22 Sep 2026"
+          text: |
+            Thanks Dana, that works. I'll send a scope by Friday.
+    - id: t-lunch
+      subject: Lunch next week?
+      messages:
+        - from: "Sam Friend <sam@example.org>"
+          date: "Wed, 23 Sep 2026"
+          text: "Free for lunch Thursday?"
+query: "What did Dana say about the budget for the pilot?"
+expected_tool_calls:
+  - search_my_email
+  - read_my_email
+expected_topics:
+  - budget_capped_at_12k
+  - scope_split_into_two_phases
+quality_criteria:
+  answers_from_the_email_rather_than_saying_it_cannot_see_it: true
+  figures_match_the_email_exactly: true
+  does_not_draft_or_send_anything: true
+  brief: true

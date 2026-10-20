@@ -1,0 +1,27 @@
+id: artifacts_001
+domain: artifacts
+description: "Principal asks for a spreadsheet deliverable; Executive publishes it with draft_artifact(format='xlsx') and replies with the link."
+company_context:
+  stage: "Series A"
+  industry: "B2B SaaS"
+  headcount: 45
+  arr: 3500000
+# Exercises the request-driven artifact path: when the principal ASKS for a
+# deliverable, draft_artifact is always used (the "quiet is the right
+# default" bar applies only to unprompted drafts). With no connected app
+# tool for spreadsheets the Executive builds the workbook itself (xlsx via
+# `sheets`) rather than pasting a table into chat. `expected_tool_calls` is
+# documentation for now (matches mcp_tool_call_001.yaml convention).
+query: "Put together a spreadsheet comparing three pricing tiers for our product — Starter, Growth, Enterprise — with price per seat, included seats, and support level. I want to share it with the board."
+expected_tool_calls:
+  - draft_artifact
+expected_topics:
+  - three_pricing_tiers
+  - price_per_seat
+  - support_level
+  - link_to_artifact
+quality_criteria:
+  publishes_as_spreadsheet_not_chat_table: true
+  replies_with_artifact_link: true
+  does_not_redirect_to_ui: true
+  brief: true

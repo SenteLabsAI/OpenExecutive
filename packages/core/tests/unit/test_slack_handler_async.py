@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from openexecutive.integrations import slack_bot
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 
 MENTION_EVENT = {
     "text": "<@UBOT> where are we on hiring?",
@@ -55,6 +56,7 @@ def slack_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # create_slack_app() assigns the module global; restore it so these tests
     # cannot leak a resolved id into any other Slack test.
     monkeypatch.setattr(slack_bot, "_bot_user_id", None)
+    monkeypatch.setattr(slack_bot, "_bot_id_last_attempt", None)
 
 
 def _person() -> MagicMock:
@@ -126,6 +128,11 @@ class _Harness:
         self.store = _FakeSessionStore()
         self.episodic_kwargs: list[dict[str, Any]] = []
         self.person = _person()
+        # Which conversation of a stream a message lands in
+        # (integrations.conversations); identity unless a test cuts one.
+        self.conversation: dict[str, str] = {}
+        self.titled: list[str] = []
+        self.fresh = MagicMock(return_value="Started a fresh conversation.")
 
     def _record_episodic(self, *_: Any, **kwargs: Any) -> str:
         self.episodic_kwargs.append(kwargs)
@@ -142,7 +149,7 @@ class _Harness:
         self._patches = [
             patch.object(slack_bot, "_bot_user_id", "UBOT"),
             patch("openexecutive.people.store.find_person_by_slack_id",
-                  side_effect=lambda _uid: self.person),
+                  side_effect=lambda _uid, **_kw: self.person),
             audit_patch,
             patch("openexecutive.knowledge.retriever.retrieve",
                   side_effect=self._record_retrieve),
@@ -162,6 +169,11 @@ class _Harness:
                   return_value="WARM_STORE"),
             patch("openexecutive.workflows.inbound_resolver.resolve_inbound_message",
                   new=AsyncMock(return_value=None)),
+            patch("openexecutive.integrations.conversations.conversation_for",
+                  side_effect=lambda sid: self.conversation.get(sid, sid)),
+            patch("openexecutive.integrations.conversations.title_after_turn",
+                  side_effect=lambda sid, *_a: self.titled.append(sid)),
+            patch("openexecutive.integrations.conversations.start_fresh", new=self.fresh),
             exec_patch,
         ]
         for p in self._patches:
@@ -878,3 +890,351 @@ async def test_no_alias_for_a_thread_someone_else_rooted() -> None:
     assert resolve.await_args.kwargs["session_ids"] == [
         "slack:thread:C1:1700000000.0"
     ]
+
+
+# ── Shared files (file_share) ──────────────────────────────────────────────
+
+_PDF_FILE = {
+    "name": "appraisal.pdf",
+    "mimetype": "application/pdf",
+    "size": 2048,
+    "url_private_download": "https://files.slack.com/files-pri/T1-F1/download/appraisal.pdf",
+}
+FILE_DM_EVENT = dict(DM_EVENT, text="", subtype="file_share", files=[_PDF_FILE])
+
+
+@asynccontextmanager
+async def _scanned_pdf_download() -> AsyncIterator[AsyncMock]:
+    """Slack's file download and the PDF converter, stubbed: every download
+    returns a scanned PDF that converts to 'APPRAISED VALUE 4.2M'."""
+    from openexecutive.knowledge.pdf_reader import PdfReadResult
+
+    download = AsyncMock(return_value=b"%PDF-scan")
+    with (
+        patch("openexecutive.integrations.attachments.download_bytes", download),
+        patch("openexecutive.integrations.attachments._schedule_ingest"),
+        patch(
+            "openexecutive.knowledge.pdf_reader.read_pdf_text",
+            AsyncMock(return_value=PdfReadResult("APPRAISED VALUE 4.2M", "ocr", 1)),
+        ),
+    ):
+        yield download
+
+
+@pytest.mark.asyncio
+async def test_a_shared_pdf_is_read_into_the_turn() -> None:
+    """File shares used to be dropped outright (their `subtype`), so a PDF
+    sent to the bot got no reply at all."""
+    async with _listeners() as listeners, _scanned_pdf_download() as download:
+        with _Harness() as h:
+            await listeners["handle_message"](
+                event=dict(FILE_DM_EVENT), say=h.say, client=h.client
+            )
+
+            h.chat.assert_awaited_once()
+            kwargs = h.chat.await_args.kwargs
+            assert kwargs["user_message"].startswith(
+                wrap_untrusted(
+                    "[Attached: appraisal.pdf] (converted from scanned pages)\n"
+                    "APPRAISED VALUE 4.2M",
+                    source="attachment", author="appraisal.pdf",
+                )
+            )
+            # Memory and history record the file's name, not its text as the
+            # sender's words.
+            assert kwargs["memory_text"] == "(Attached files: appraisal.pdf)"
+            assert h.store.messages["slack:dm:U123"][0]["content"] == (
+                "(Attached files: appraisal.pdf)"
+            )
+
+    download.assert_awaited_once()
+    assert download.await_args.args[0] == _PDF_FILE["url_private_download"]
+    assert download.await_args.kwargs["headers"] == {"Authorization": "Bearer xoxb-test"}
+
+
+@pytest.mark.asyncio
+async def test_an_unrostered_senders_file_is_never_downloaded() -> None:
+    async with _listeners() as listeners, _scanned_pdf_download() as download:
+        with _Harness() as h:
+            h.person = None
+            await listeners["handle_message"](
+                event=dict(FILE_DM_EVENT), say=h.say, client=h.client
+            )
+            h.chat.assert_not_awaited()
+
+    download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_bot_token_only_goes_to_slacks_file_host() -> None:
+    elsewhere = dict(_PDF_FILE, url_private_download="https://evil.example/appraisal.pdf")
+    event = dict(FILE_DM_EVENT, files=[elsewhere])
+    async with _listeners() as listeners, _scanned_pdf_download() as download:
+        with _Harness() as h:
+            await listeners["handle_message"](event=event, say=h.say, client=h.client)
+            message = h.chat.await_args.kwargs["user_message"]
+
+    download.assert_not_awaited()
+    assert message.startswith("(Could not download appraisal.pdf)")
+
+
+@pytest.mark.asyncio
+async def test_other_message_subtypes_are_still_ignored() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            await listeners["handle_message"](
+                event=dict(DM_EVENT, subtype="message_changed"), say=h.say, client=h.client
+            )
+            h.chat.assert_not_awaited()
+
+
+# --- someone off the roster: held for the principal, told it arrived ---------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("event", "mode"), [(DM_EVENT, "dm"), (MENTION_EVENT, "mention")])
+async def test_an_unknown_sender_is_held_and_told_privately(event: dict[str, Any], mode: str) -> None:
+    intake = AsyncMock(return_value=None)
+    async with _listeners() as listeners:
+        with _Harness() as h, patch("openexecutive.integrations.roster_intake.intake", new=intake):
+            h.person = None
+            h.client.users_info = AsyncMock(return_value={
+                "user": {"profile": {"real_name": "Annamarie Chen", "email": "am@acme.com"}}
+            })
+            h.client.chat_postEphemeral = AsyncMock()
+            name = "handle_message" if mode == "dm" else "handle_mention"
+            await listeners[name](event=dict(event), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            intake.assert_awaited_once()
+            kwargs = intake.await_args.kwargs
+            assert intake.await_args.args == ("slack", "U123")
+            assert kwargs["display_name"] == "Annamarie Chen"
+            assert kwargs["profile_email"] == "am@acme.com"
+            assert kwargs["payload"]["mode"] == mode
+            assert kwargs["payload"]["event"]["text"] == event["text"]
+            await kwargs["send_ack"]("received")
+            if mode == "dm":
+                h.say.assert_awaited_once()
+                h.client.chat_postEphemeral.assert_not_awaited()
+            else:
+                # Only the sender sees it: the channel learns nothing.
+                h.say.assert_not_awaited()
+                assert h.client.chat_postEphemeral.await_args.kwargs["user"] == "U123"
+
+
+@pytest.mark.asyncio
+async def test_a_contact_writing_on_slack_is_not_held() -> None:
+    intake = AsyncMock()
+    contact = _person()
+    async with _listeners() as listeners:
+        with _Harness() as h, patch("openexecutive.integrations.roster_intake.intake", new=intake):
+            with patch(
+                "openexecutive.people.store.find_person_by_slack_id",
+                side_effect=lambda _uid, include_contacts=False: contact if include_contacts else None,
+            ):
+                await listeners["handle_message"](event=dict(DM_EVENT), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            h.say.assert_not_awaited()
+    intake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_held_slack_message_is_replayed_once_they_are_on_the_roster() -> None:
+    from openexecutive.integrations import roster_intake
+    from openexecutive.people.roster_requests import HeldMessage
+
+    posted = AsyncMock()
+    async with _listeners() as _listeners_by_name:
+        replay = roster_intake._REPLAYERS["slack"]
+        with _Harness() as h, patch(
+            "slack_sdk.web.async_client.AsyncWebClient.chat_postMessage", new=posted
+        ):
+            message = HeldMessage(
+                id=1, request_id=1, external_id="1700000100.0",
+                payload={"event": dict(DM_EVENT), "mode": "dm"},
+            )
+            assert await replay(message, None) is True
+            h.chat.assert_awaited_once()
+    # The answer goes back to the DM it came from.
+    assert posted.await_args.kwargs["channel"] == "D9"
+    assert posted.await_args.kwargs["text"] == "the reply"
+
+
+# --- drops the sender can see (#315) ------------------------------------------
+
+THREAD_EVENT = {
+    "text": "and the budget?",
+    "user": "U123",
+    "channel": "C1",
+    "ts": "1700000500.0",
+    "thread_ts": "1700000000.0",
+}
+THREAD_SESSION = "slack:thread:C1:1700000000.0"
+GROUP_THREAD = {
+    "messages": [
+        {"user": "U123", "text": "<@UBOT> run the brief"},
+        {"user": "UBOT", "text": "here it is"},
+        {"user": "U456", "text": "nice, thanks"},
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_a_gate_skip_is_marked_with_a_reaction() -> None:
+    """The skip stays quiet in the thread, but the sender can see the bot read
+    the message, so a misjudged one isn't mistaken for one that never arrived."""
+    from openexecutive.integrations.response_gate import GateDecision
+
+    skip = AsyncMock(return_value=GateDecision(allow=False, reason="sidebar", raw="NO|sidebar"))
+    async with _listeners() as listeners:
+        with _Harness() as h, patch(
+            "openexecutive.integrations.response_gate.should_respond", new=skip
+        ):
+            h.client.conversations_replies = AsyncMock(return_value=GROUP_THREAD)
+            h.client.reactions_add = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            h.say.assert_not_awaited()
+            assert h.client.reactions_add.await_args.kwargs == {
+                "channel": "C1", "timestamp": "1700000500.0", "name": "eyes",
+            }
+            assert {"outcome": "skipped_gate"}.items() <= h.audit_details()[-1].items()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_skip_reaction_changes_nothing_else() -> None:
+    """Without the reactions:write scope the reaction fails; the skip is still
+    audited and nothing escapes into Bolt."""
+    from openexecutive.integrations.response_gate import GateDecision
+
+    skip = AsyncMock(return_value=GateDecision(allow=False, reason="sidebar", raw="NO|sidebar"))
+    async with _listeners() as listeners:
+        with _Harness() as h, patch(
+            "openexecutive.integrations.response_gate.should_respond", new=skip
+        ):
+            h.client.conversations_replies = AsyncMock(return_value=GROUP_THREAD)
+            h.client.reactions_add = AsyncMock(side_effect=RuntimeError("missing_scope"))
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.say.assert_not_awaited()
+            assert h.audit_details()[-1]["outcome"] == "skipped_gate"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_the_bot_is_in_tells_the_sender() -> None:
+    """Slack times out on the thread, but the bot has answered there before
+    (its stored history says so): the sender is told privately and the drop
+    is audited, instead of the message vanishing."""
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.store.messages[THREAD_SESSION] = [{"role": "assistant", "content": "here it is"}]
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.chat.assert_not_awaited()
+            h.say.assert_not_awaited()
+            kwargs = h.client.chat_postEphemeral.await_args.kwargs
+            assert (kwargs["channel"], kwargs["user"], kwargs["thread_ts"]) == (
+                "C1", "U123", "1700000000.0",
+            )
+            assert "@-mention me" in kwargs["text"]
+            assert h.audit_details()[-1]["outcome"] == "dropped_thread_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_the_bot_never_joined_stays_silent() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.client.chat_postEphemeral.assert_not_awaited()
+            assert h.audit_details() == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_tells_no_one_off_the_roster() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.person = None
+            h.store.messages[THREAD_SESSION] = [{"role": "assistant", "content": "here it is"}]
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](event=dict(THREAD_EVENT), say=h.say, client=h.client)
+            h.client.chat_postEphemeral.assert_not_awaited()
+            assert h.audit_details()[-1]["outcome"] == "rejected_unknown_sender"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_thread_stays_silent_while_the_bot_id_is_unknown() -> None:
+    """With no bot id the mention filter is off, so an @-mention in the thread
+    is also on its way to app_mention; telling the sender to @-mention would
+    contradict the answer they are about to get."""
+    async with _listeners() as listeners:
+        with _Harness() as h, patch.object(slack_bot, "_bot_user_id", None):
+            h.store.messages[THREAD_SESSION] = [{"role": "assistant", "content": "here it is"}]
+            h.client.conversations_replies = AsyncMock(side_effect=TimeoutError())
+            h.client.chat_postEphemeral = AsyncMock()
+            await listeners["handle_message"](
+                event=dict(THREAD_EVENT, text="<@UBOT> and the budget?"), say=h.say, client=h.client
+            )
+            h.client.chat_postEphemeral.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_startup_identity_lookup_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """auth_test failing at boot used to turn thread follow-ups off until a
+    restart. A later channel message retries it, at most once a minute."""
+    clock = [1000.0]
+    monkeypatch.setattr(slack_bot.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "slack_sdk.web.async_client.AsyncWebClient.auth_test",
+        AsyncMock(side_effect=RuntimeError("slack down")),
+    )
+    async with _listeners() as listeners:
+        assert slack_bot.bot_user_id() is None
+        client = MagicMock()
+        client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+        unrelated = {"text": "lunch?", "user": "U9", "channel": "C1", "ts": "1.0"}
+
+        clock[0] += 30  # inside the retry interval: no call
+        await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
+        client.auth_test.assert_not_awaited()
+        assert slack_bot.bot_user_id() is None
+
+        clock[0] += 31
+        await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
+        client.auth_test.assert_awaited_once()
+        assert slack_bot.bot_user_id() == "UBOT"
+
+        clock[0] += 120  # resolved: never asked again
+        await listeners["handle_message"](event=dict(unrelated), say=AsyncMock(), client=client)
+        client.auth_test.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_chat_in_a_dm_starts_a_fresh_conversation_instead_of_a_turn() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            await listeners["handle_message"](
+                event=dict(DM_EVENT, text="new chat"), say=h.say, client=h.client
+            )
+
+            h.fresh.assert_called_once_with("slack:dm:U123", 7)
+            h.say.assert_awaited_once()
+            assert h.say.await_args.kwargs["text"] == "Started a fresh conversation."
+            h.chat.assert_not_awaited()
+            assert h.store.messages == {}
+
+
+@pytest.mark.asyncio
+async def test_a_dm_after_the_gap_is_saved_and_titled_as_the_next_conversation() -> None:
+    async with _listeners() as listeners:
+        with _Harness() as h:
+            h.conversation["slack:dm:U123"] = "slack:dm:U123~2"
+            await listeners["handle_message"](
+                event=dict(DM_EVENT), say=h.say, client=h.client
+            )
+
+            assert h.chat.await_args.kwargs["session"].session_id == "slack:dm:U123~2"
+            assert list(h.store.created) == ["slack:dm:U123~2"]
+            assert h.titled == ["slack:dm:U123~2"]
+            h.fresh.assert_not_called()

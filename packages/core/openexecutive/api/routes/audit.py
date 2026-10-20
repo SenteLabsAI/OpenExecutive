@@ -7,15 +7,30 @@ Also exposes a session-scoped read at GET /audit/sessions/{session_id} that
 returns the full ordered timeline for one inbound request plus a derived
 graph (nodes + edges) so the UI can render a flow-chart view without
 re-deriving causality from event types client-side.
+
+Rows private to the principal (``AuditEvent.private`` — see
+``audit.logger``) are read by the principal alone: every read route leaves
+them out for anyone else, in SQL, so totals and pages stay honest, and a
+private row's id answers 404 exactly like a missing one. A team member's own
+rows (``AuditEvent.private_to_person``: their own chats with the Executive,
+their mail, Act as me) are theirs: nobody else reads their words.
+
+Once a principal is on the roster, anyone else reads their own rows and
+nothing more (``_view``): the log holds what everyone said to the Executive,
+so it isn't a shared page. The principal reads a team member's own rows as
+actions only (``_redact``): what was done, when and in whose conversation,
+never what was said, and a text search leaves them out.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from openexecutive.api import path_ids  # noqa: F401  (registers the {…:session} convertor)
 from openexecutive.audit import AuditLogger, get_audit_logger
 from openexecutive.audit.logger import EVENT_TYPES
 
@@ -24,9 +39,10 @@ from openexecutive.audit.logger import EVENT_TYPES
 # come from third-party webhooks, so reflecting an unvalidated value into the
 # response body would let an attacker shape stored XSS via a malformed inbound.
 # 256 chars is generous (longest observed in practice is ~80).
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=]{1,256}$")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_:@\-\.\+/=~]{1,256}$")
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class AuditEventOut(BaseModel):
@@ -141,6 +157,40 @@ class UsageBySource(UsageTotals):
     source: str
 
 
+class ScriptUsage(BaseModel):
+    """What the sandboxed scripts (run_script) did over the window: how many
+    ran (and how many worked), the tool calls they made, the time they took,
+    and an upper bound on the model turns those calls would otherwise have
+    needed (each call past a script's first, unless batched)."""
+    scripts: int = 0
+    ok: int = 0
+    calls: int = 0
+    turns_avoided: int = 0
+    duration_ms: int = 0
+    in_workflows: int = 0
+
+
+class PythonJobUsage(BaseModel):
+    """What the Python jobs (run_python_job) did over the window: how many ran
+    (and worked), how many ran a kept Custom tool or took a chat attachment,
+    their time, CPU and largest peak memory, the bytes in and out, and the
+    model usage of the turns that ran one (the whole turn, not just the job)."""
+    jobs: int = 0
+    ok: int = 0
+    saved_runs: int = 0
+    attachments: int = 0
+    duration_ms: int = 0
+    cpu_ms: int = 0
+    peak_mb_max: int = 0
+    bytes_in: int = 0
+    bytes_out: int = 0
+    turns: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+
+
 class UsageSummary(BaseModel):
     """Aggregate token usage + cost across ALL sessions over an optional time
     window, with by-day, by-model and by-source breakdowns. Derived from
@@ -152,6 +202,8 @@ class UsageSummary(BaseModel):
     by_day: list[UsageByDay]
     by_model: list[UsageByModel]
     by_source: list[UsageBySource] = []
+    scripts: ScriptUsage = ScriptUsage()
+    python_jobs: PythonJobUsage = PythonJobUsage()
 
 
 class Degradation(BaseModel):
@@ -190,6 +242,129 @@ def _resolve_logger(request: Request) -> AuditLogger:
     return get_audit_logger()
 
 
+def _sees_private_rows(request: Request) -> bool:
+    """Whether the caller may read rows private to the principal — the rule
+    ``/alerts`` and ``/decisions`` use (``people.caller_is_principal``): the
+    principal's signed-in email, or no ``x-caller-email`` (the CLI, direct
+    curl, local login) once a principal is on the roster. With no principal
+    yet, nobody. Fails closed."""
+    from openexecutive.api.routes.people import caller_is_principal
+
+    return caller_is_principal(request)
+
+
+def _view(request: Request) -> dict[str, Any]:
+    """Which rows the caller reads, as ``AuditLogger.query`` / ``count``
+    filters. The principal: every row, a team member's own shown redacted
+    (``_redact``: what was done, not what was said). Anyone else,
+    once a principal is on the roster: their own rows alone (none for a
+    caller who resolves to nobody). Before then nobody is the principal, so
+    everyone reads the rows not private to one, as before. Fails closed."""
+    if _sees_private_rows(request):
+        # Every row, a teammate's own included: those are shown as actions,
+        # their words left out (`_redact`).
+        return {"include_private": True, "all_owners": True}
+    try:
+        from openexecutive.api.routes.chat import _resolve_caller_person_id
+        from openexecutive.people.store import find_principal_person
+
+        if find_principal_person() is None:
+            return {"include_private": False}
+        caller = _resolve_caller_person_id(request)
+    except Exception:
+        logger.exception("audit: couldn't tell who is reading — showing nothing")
+        caller = None
+    # Their own rows are all private (to them), so only the owner filter applies.
+    return {"include_private": True, "owned_by": caller, "only_owned": True}
+
+
+def _may_read(event: Any, view: dict[str, Any]) -> bool:
+    """Whether a row read by id is one ``view`` lets the caller read."""
+    if view.get("only_owned"):
+        owner = view.get("owned_by")
+        return owner is not None and event.private_to_person == owner
+    if event.private_to_person is not None:
+        return bool(view.get("all_owners"))
+    return not event.private or bool(view.get("include_private"))
+
+
+def _searchable(view: dict[str, Any]) -> dict[str, Any]:
+    """``view`` for a text search: a redacted row's own words must not decide
+    whether it matches, so a search leaves other people's rows out."""
+    return {k: v for k, v in view.items() if k != "all_owners"}
+
+
+# What a redacted row keeps of its details: what was done and what it cost,
+# never what was said (message text, queries, recipients, results).
+_SAFE_DETAIL_KEYS = frozenset({
+    "tool", "kind", "ok", "refused", "iteration", "specialist", "department",
+    "model", "input_tokens", "output_tokens", "cache_read_input_tokens",
+    "cache_creation_input_tokens", "cost_usd", "duration_ms", "direction",
+    "channel", "status", "outcome", "is_error", "calls",
+})
+# A tool label is model-chosen on `call_tool`, so only a plain name is kept.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,80}$")
+
+
+def _owner_names() -> dict[int, str]:
+    try:
+        from openexecutive.people.store import list_people
+
+        return {
+            int(p.id): (p.full_name or "a teammate")
+            for p in list_people(include_archived=True)
+            if p.id is not None
+        }
+    except Exception:
+        logger.exception("audit: couldn't read the roster for redacted rows")
+        return {}
+
+
+def _redact(event: Any, names: dict[int, str]) -> Any:
+    """A team member's own row as someone else reads it: the action, when and
+    in which conversation, with their words left out. The summary is rebuilt
+    from the event type and a plain tool name; the details keep only
+    ``_SAFE_DETAIL_KEYS``; ``full`` is dropped."""
+    import dataclasses
+
+    details = {
+        k: v for k, v in (event.details or {}).items()
+        if k in _SAFE_DETAIL_KEYS and isinstance(v, (int, float, bool, str))
+    }
+    tool = details.get("tool")
+    if not (isinstance(tool, str) and _TOOL_NAME_RE.match(tool)):
+        details.pop("tool", None)
+        tool = None
+    for key in ("kind", "refused", "status", "outcome", "channel", "direction", "model",
+                "specialist", "department"):
+        value = details.get(key)
+        if isinstance(value, str) and not _TOOL_NAME_RE.match(value):
+            details.pop(key)
+    if tool:
+        kind = details.get("kind")
+        action = f"{kind}:{tool}" if isinstance(kind, str) and kind and not tool.startswith(f"{kind}:") else tool
+    elif event.event_type == "chat_turn":
+        action = "Message" if event.actor == "user" else "Reply"
+    else:
+        action = event.event_type
+    if details.get("refused"):
+        action += " refused"
+    who = names.get(int(event.private_to_person), "a teammate")
+    summary = f"{action} ({who}'s conversation, details private)"
+    replace: dict[str, Any] = {"summary": summary, "details": details}
+    if hasattr(event, "full"):
+        replace["full"] = None
+    return dataclasses.replace(event, **replace)
+
+
+def _shown(events: list[Any], view: dict[str, Any]) -> list[Any]:
+    """``events`` as the caller reads them: someone else's own rows redacted."""
+    if not view.get("all_owners") or not any(e.private_to_person is not None for e in events):
+        return events
+    names = _owner_names()
+    return [_redact(e, names) if e.private_to_person is not None else e for e in events]
+
+
 class AuditLogRequest(BaseModel):
     event_type: str
     summary: str
@@ -219,8 +394,11 @@ def create_audit_log(body: AuditLogRequest, request: Request) -> dict[str, int |
 def get_audit_log(event_id: int, request: Request) -> AuditEventDetailOut:
     audit = _resolve_logger(request)
     event = audit.get(event_id)
-    if event is None:
+    view = _view(request)
+    # A row the caller may not read answers exactly like a missing one.
+    if event is None or not _may_read(event, view):
         raise HTTPException(status_code=404, detail="audit event not found")
+    [event] = _shown([event], view)
     return AuditEventDetailOut(
         id=event.id,
         ts=event.ts,
@@ -486,7 +664,7 @@ def _compute_degradations(events: list[Any]) -> list[Degradation]:
 
 
 @router.get(
-    "/audit/sessions/{session_id}",
+    "/audit/sessions/{session_id:session}",
     response_model=AuditSessionResponse,
 )
 def get_audit_session(session_id: str, request: Request) -> AuditSessionResponse:
@@ -500,7 +678,8 @@ def get_audit_session(session_id: str, request: Request) -> AuditSessionResponse
     if not _SESSION_ID_RE.match(session_id):
         raise HTTPException(status_code=400, detail="invalid session_id format")
     audit = _resolve_logger(request)
-    events = audit.query(session_id=session_id, limit=1000)
+    view = _view(request)
+    events = _shown(audit.query(session_id=session_id, limit=1000, **view), view)
     if not events:
         raise HTTPException(status_code=404, detail="no events for session_id")
     graph, channel = _build_session_graph(events)
@@ -539,6 +718,9 @@ def list_audit_logs(
     offset: int = Query(default=0, ge=0),
 ) -> AuditListResponse:
     audit = _resolve_logger(request)
+    view = _view(request)
+    if q:
+        view = _searchable(view)
     events = audit.query(
         event_type=event_type,
         session_id=session_id,
@@ -548,6 +730,7 @@ def list_audit_logs(
         until=until,
         limit=limit,
         offset=offset,
+        **view,
     )
     total = audit.count(
         event_type=event_type,
@@ -556,7 +739,9 @@ def list_audit_logs(
         q=q,
         since=since,
         until=until,
+        **view,
     )
+    events = _shown(events, view)
     return AuditListResponse(
         items=[
             AuditEventOut(
@@ -591,7 +776,9 @@ def get_audit_usage(
     so an operator can see overall token spend and where it goes.
     """
     audit = _resolve_logger(request)
-    data = audit.usage_summary(since=since, until=until)
+    data = audit.usage_summary(
+        since=since, until=until, include_private=_sees_private_rows(request)
+    )
     return UsageSummary(
         since=since,
         until=until,
@@ -599,6 +786,8 @@ def get_audit_usage(
         by_day=[UsageByDay(**d) for d in data["by_day"]],
         by_model=[UsageByModel(**m) for m in data["by_model"]],
         by_source=[UsageBySource(**s) for s in data.get("by_source", [])],
+        scripts=ScriptUsage(**data.get("scripts", {})),
+        python_jobs=PythonJobUsage(**data.get("python_jobs", {})),
     )
 
 

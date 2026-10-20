@@ -1,4 +1,5 @@
-# Publish the API and UI container images to GitHub Container Registry.
+# Publish the API and UI container images to GitHub Container Registry, and
+# on a version tag also create the GitHub Release.
 #
 # Every push to main refreshes the rolling `main` tag; pushing a `vX.Y.Z` git
 # tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) publishes the versioned
@@ -12,11 +13,18 @@
 # on main that CI has passed. The two images are separate matrix jobs, so a
 # release is not atomic — if one job fails, the other's tags still exist.
 #
-# The job is guarded to this repository: the saas fork syncs with
-# `git merge upstream/main` and would otherwise run this on every push to its
-# own main, and a third-party fork would fail with a 403 pushing to the
-# hardcoded ghcr.io/sentelabsai/* names. A fork that wants its own images
+# The job is guarded to this repository: a fork would otherwise run this on
+# every push to its own main and fail with a 403 pushing to the hardcoded
+# ghcr.io/sentelabsai/* names. A fork that wants its own images
 # changes the guard and the image names.
+#
+# Version tags normally come from merging the release PR that
+# release-please.yml maintains; that also creates the GitHub Release. For a
+# tag pushed by hand, a `vX.Y.Z` tag also creates the GitHub Release once both
+# images are published, using that version's CHANGELOG.md section as the
+# notes, so the changelog entry must be merged before the commit is tagged. A tag alone
+# never shows under Releases. If the images fail, no release is created; if a
+# release for the tag already exists (made by hand), the job leaves it alone.
 #
 # linux/amd64 only. The API image bakes torch plus two embedding-model caches
 # (see docker/Dockerfile); building that under arm64 emulation is impractically
@@ -65,13 +73,13 @@ jobs:
             dockerfile: docker/Dockerfile.ui
             image: ghcr.io/sentelabsai/openexecutive-ui
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -84,7 +92,7 @@ jobs:
       # latest=auto), never a branch push. No bare `{{major}}` tag while the
       # project is pre-1.0 — a `0` tag would be misleading.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ matrix.image }}
           tags: |
@@ -102,7 +110,7 @@ jobs:
       # provenance=false keeps each tag a plain single-platform image; the
       # default attestation manifest shows up as an `unknown/unknown` row on
       # the package page.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -113,3 +121,39 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ matrix.image }}:buildcache
           cache-to: type=registry,ref=${{ matrix.image }}:buildcache,mode=max
+
+  release:
+    name: GitHub Release
+    needs: publish
+    if: github.repository == 'SenteLabsAI/OpenExecutive' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The notes are the tag's `## [X.Y.Z]` section of CHANGELOG.md, up to
+      # the next heading or the link references at the bottom. A tag with no
+      # changelog section fails here rather than publishing an empty release.
+      - name: Create release from the changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it as is."
+            exit 0
+          fi
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md | sed '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no [$version] section"
+            exit 1
+          fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md

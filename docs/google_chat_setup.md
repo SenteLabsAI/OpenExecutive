@@ -67,7 +67,11 @@ No key file is downloaded. Your user credential impersonates the service account
 
 #### Option C — ADC direct *(for GCP-hosted deployments only)*
 
-If the server runs on **Cloud Run, GCE, or GKE**, attach the `open-executive-chat` service account to the compute resource. Set `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` to that SA's email address — the code will use the metadata server's credential directly (no key file, no personal ADC login).
+If the server runs on **Cloud Run, GCE, or GKE**, attach the `open-executive-chat` service account to the compute resource. No key file and no personal ADC login are involved.
+
+1. Grant the service account the **Service Account Token Creator** role *on itself* (**IAM & Admin → Service Accounts** → `open-executive-chat` → **Permissions** → **Grant Access**, principal = the SA's own email). With `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` set, the code impersonates that SA using the metadata server's credential, and Google requires this grant even when an SA impersonates itself. On GCE, the VM's access scopes must also allow `cloud-platform`.
+
+2. Set `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` to that SA's email address. This is **required**: the webhook returns `503 Google Chat integration not configured` unless `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` or `GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL` is set.
 
 ```
 GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL=open-executive-chat@YOUR_PROJECT_ID.iam.gserviceaccount.com
@@ -104,7 +108,7 @@ GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL=open-executive-chat@YOUR_PROJECT_ID.iam.gservi
 
 ## Step 4 — Set Environment Variables
 
-`GOOGLE_CHAT_PROJECT_NUMBER` is always required. The auth var depends on which option you chose in Step 2b:
+`GOOGLE_CHAT_PROJECT_NUMBER` is always required, plus one auth var — which one depends on the option you chose in Step 2b. With neither auth var set, the webhook returns `503`.
 
 ```bash
 # Always required
@@ -116,7 +120,8 @@ GOOGLE_CHAT_SERVICE_ACCOUNT_FILE=/absolute/path/to/google_chat_service_account.j
 # Option B (impersonation — org policy blocks key creation)
 GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL=open-executive-chat@YOUR_PROJECT_ID.iam.gserviceaccount.com
 
-# Option C (GCP-hosted) — no additional vars needed
+# Option C (GCP-hosted) — same var as Option B, set to the SA attached to the compute resource
+GOOGLE_CHAT_SERVICE_ACCOUNT_EMAIL=open-executive-chat@YOUR_PROJECT_ID.iam.gserviceaccount.com
 ```
 
 ---
@@ -136,6 +141,7 @@ The webhook endpoint is now active at `POST /webhook/google-chat`. Google Chat w
 1. In Google Chat, find your app (search by name in the **+ New chat** dialog).
 2. Send it a direct message.
 3. It should reply within a few seconds.
+   If it doesn't, open **Settings → Setup status** in the web app: the Google Chat light checks the project number and the service-account settings.
 4. To watch logs:
    ```bash
    # Docker
@@ -145,13 +151,18 @@ The webhook endpoint is now active at `POST /webhook/google-chat`. Google Chat w
    # Check the FastAPI terminal output
    ```
 
+### Files
+
+Files sent in a message (PDFs, Word, spreadsheets, text, images; up to 5 per message, 20 MB each) are read into the turn, and scanned PDFs are converted to text. They download with the same service account and `chat.bot` scope the replies use, so no extra setup is needed. Because the webhook authenticates Google rather than the sender, files are read only from people on the **People** roster, matched by their Google account email; anyone else's files are named to the Executive but never downloaded. A Google Drive file shared into a message is left to the Google Workspace (Drive) tools.
+
 ---
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `503 Google Chat integration not configured` | Env vars missing or server not restarted | Add vars to `.env` and restart |
+| `503 Google Chat integration not configured` | `GOOGLE_CHAT_PROJECT_NUMBER` or both auth vars missing, or server not restarted | Set the project number plus `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` or `_EMAIL`, and restart |
 | `401 Invalid JWT` | Wrong project number | Use the **numeric** Project Number, not the string Project ID |
 | No reply, no error in Chat | Handler exception | Check server logs for `Google Chat: handler error` — usually an `ANTHROPIC_API_KEY` issue |
 | Bot added to space but never responds | Webhook URL unreachable | Verify the URL is publicly accessible; for local dev, check ngrok is still running |
+| A file comes back as "Could not download" | The service account cannot read the message's attachment | Check server logs for `Google Chat: attachment download failed`; the app must be the one the file was sent to |

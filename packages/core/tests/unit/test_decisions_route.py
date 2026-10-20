@@ -19,6 +19,8 @@ from openexecutive.memory.episodic import initialize_db
 def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from openexecutive.alerts import store as alert_store
     from openexecutive.memory import episodic
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(episodic, "DB_PATH", db_path)
     # approve/reject/cancel clear the companion briefing alert — wire the
@@ -26,6 +28,12 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(alert_store, "DB_PATH", db_path)
     initialize_db(db_path)
     alert_store.initialize_db(db_path)
+    # Only the owner (or the approver) may resolve a decision: these requests
+    # carry no caller header, so they are the owner on this roster.
+    monkeypatch.setattr(people_store, "DB_PATH", db_path)
+    people_store.initialize_db(db_path)
+    people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
+    people_registry.invalidate()
     return db_path
 
 
@@ -163,6 +171,62 @@ def test_approve_with_edit_sets_approved_with_edit(client: TestClient, db: Path)
     assert res.json()["status"] == "approved_with_edit"
 
 
+@pytest.mark.parametrize(
+    "edits",
+    [
+        {"title": ""},
+        {"title": "x" * 201},
+        {"start": "not a time"},
+        {"start": "2025-06-15T12:00:00"},
+        {"start": "2030-01-01T12:00:00+00:00", "end": "2030-01-01T11:00:00+00:00"},
+    ],
+)
+def test_an_edit_the_tool_would_refuse_is_refused(
+    client: TestClient, db: Path, edits: dict[str, str]
+) -> None:
+    iid = _seed(db)
+    fake_gw = type("GW", (), {})()
+    fake_gw.call_tool = AsyncMock(return_value=json.dumps({"id": "evt"}))
+
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw):
+        res = client.post(f"/decisions/{iid}/approve", json={"edits": edits})
+
+    assert res.status_code == 422
+    fake_gw.call_tool.assert_not_awaited()
+
+
+def test_a_title_edit_keeps_the_proposals_naive_times(client: TestClient, db: Path) -> None:
+    """The tool reads naive times as UTC, so editing only the title of such a
+    proposal still books."""
+    iid = create_decision_instance(
+        decision_class="meeting_scheduling",
+        department="operations",
+        originating_session_id=None,
+        proposed_payload={
+            "title": "Sync", "start": "2025-06-15T10:00:00",
+            "end": "2025-06-15T11:00:00", "attendee_emails": [], "description": "",
+        },
+        idempotency_key="naive",
+        gate_mode="propose",
+        approver_person_id=None,
+        confidence=0.8,
+        db_path=db,
+    )
+    fake_gw = type("GW", (), {})()
+
+    async def _call_tool(args: dict) -> str:
+        if args.get("name") == "google_workspace__query_freebusy":
+            return json.dumps({})
+        return json.dumps({"id": "evt-naive"})
+    fake_gw.call_tool = AsyncMock(side_effect=_call_tool)
+
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw):
+        res = client.post(f"/decisions/{iid}/approve", json={"edits": {"title": "Renamed"}})
+
+    assert res.status_code == 200
+    assert res.json()["status"] == "approved_with_edit"
+
+
 def test_approve_already_approved_409(client: TestClient, db: Path) -> None:
     iid = _seed(db)
     mark_resolved(iid, "approved_unchanged", db_path=db)
@@ -248,6 +312,20 @@ def test_cancel_approved_event(client: TestClient, db: Path) -> None:
     assert res.status_code == 200
     assert res.json()["status"] == "reversed"
     fake_gw.call_tool.assert_awaited_once()
+
+
+def test_cancel_refuses_a_booking_with_no_event_id(client: TestClient, db: Path) -> None:
+    iid = _seed(db)
+    mark_resolved(iid, "approved_unchanged", db_path=db)
+    fake_gw = type("GW", (), {})()
+    fake_gw.call_tool = AsyncMock()
+
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw):
+        res = client.post(f"/decisions/{iid}/cancel")
+
+    assert res.status_code == 409
+    assert "Delete it in the calendar itself" in res.json()["detail"]
+    fake_gw.call_tool.assert_not_awaited()
 
 
 def test_cancel_unknown_404(client: TestClient) -> None:
@@ -336,4 +414,127 @@ def test_approve_with_no_linked_alert_still_succeeds(client: TestClient, db: Pat
     assert res.status_code == 200
     assert res.json()["status"] == "approved_unchanged"
 
+
+
+
+# ---------------------------------------------------------------------------
+# CALENDAR_PROVIDER=microsoft: approval books through the Outlook backend and
+# the advisory conflict check reads the Executive's calendar view
+# ---------------------------------------------------------------------------
+
+def test_approve_with_microsoft_provider(client: TestClient, db: Path) -> None:
+    iid = _seed(db)
+    calls: list[dict] = []
+
+    async def _call_tool(args: dict) -> str:
+        calls.append(args)
+        if args.get("name") == "microsoft_365__get-calendar-view":
+            return json.dumps({"value": [{"id": "busy-1", "showAs": "busy"}]})
+        return json.dumps({
+            "id": "evt-ms-approve",
+            "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/x"},
+        })
+
+    fake_gw = type("GW", (), {})()
+    fake_gw.call_tool = AsyncMock(side_effect=_call_tool)
+    from openexecutive.config import get_settings
+
+    settings = get_settings().model_copy(
+        update={"calendar_provider": "microsoft", "calendar_meet_links_enabled": True}
+    )
+
+    with (
+        patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=fake_gw),
+        patch("openexecutive.config.get_settings", return_value=settings),
+    ):
+        res = client.post(f"/decisions/{iid}/approve", json={})
+
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["status"] == "approved_unchanged"
+    assert data["external_event_id"] == "evt-ms-approve"
+    assert [c["name"] for c in calls] == [
+        "microsoft_365__get-calendar-view",
+        "microsoft_365__create-calendar-event",
+    ]
+    assert json.loads(data["final_payload_json"])["meet_link"] == "https://teams.microsoft.com/l/meetup-join/x"
+# ---------------------------------------------------------------------------
+# Who may resolve a decision
+# ---------------------------------------------------------------------------
+
+
+def _teammates() -> tuple[int, int]:
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    tia = people_store.upsert_person(full_name="Tia Teammate", email="tia@co.example")
+    sam = people_store.upsert_person(full_name="Sam Else", email="sam@co.example")
+    people_registry.invalidate()
+    return tia, sam
+
+
+def _seed_for(db: Path, approver: int | None, idem: str = "k1") -> int:
+    return create_decision_instance(
+        decision_class="meeting_scheduling",
+        department="operations",
+        originating_session_id=None,
+        proposed_payload={
+            "title": "Sync", "start": "2025-06-15T10:00:00+00:00",
+            "end": "2025-06-15T11:00:00+00:00", "attendee_emails": [], "description": "",
+        },
+        idempotency_key=idem,
+        gate_mode="propose",
+        approver_person_id=approver,
+        confidence=0.8,
+        db_path=db,
+    )
+
+
+def test_only_the_approver_or_the_owner_may_decide(client: TestClient, db: Path) -> None:
+    from openexecutive.memory.decision_ledger import get_decision_instance
+
+    tia, _sam = _teammates()
+    iid = _seed_for(db, approver=tia)
+    sam_headers = {"x-caller-email": "sam@co.example"}
+    for action in ("approve", "reject", "cancel"):
+        resp = client.post(f"/decisions/{iid}/{action}", json={}, headers=sam_headers)
+        assert resp.status_code == 403, action
+        assert "Only the person this went to for approval" in resp.json()["detail"]
+    assert get_decision_instance(iid).status == "proposed"  # type: ignore[union-attr]
+
+    resp = client.post(f"/decisions/{iid}/reject", json={}, headers={"x-caller-email": "tia@co.example"})
+    assert resp.status_code == 200
+    assert resp.json()["resolver_person_id"] == tia
+
+
+def test_the_owner_may_decide_anything_and_is_recorded(client: TestClient, db: Path) -> None:
+    from openexecutive.people import store as people_store
+
+    tia, _sam = _teammates()
+    owner = people_store.find_principal_person()
+    assert owner is not None
+    iid = _seed_for(db, approver=tia)
+    mock_gw = MagicMock()
+    mock_gw.call_tool = AsyncMock(return_value=json.dumps({"event_id": "e1"}))
+    with patch("openexecutive.orchestrator.mcp_gateway.get_active_gateway", return_value=mock_gw), \
+         patch("openexecutive.api.routes.decisions._execute_booking",
+               new=AsyncMock(return_value={"event_id": "e1"})):
+        resp = client.post(f"/decisions/{iid}/approve", json={},
+                           headers={"x-caller-email": "olivia@co.example"})
+    assert resp.status_code == 200
+    assert resp.json()["resolver_person_id"] == owner.id
+
+
+def test_a_decision_nobody_was_asked_is_the_owners(client: TestClient, db: Path) -> None:
+    _teammates()
+    iid = _seed_for(db, approver=None)
+    resp = client.post(f"/decisions/{iid}/reject", json={}, headers={"x-caller-email": "tia@co.example"})
+    assert resp.status_code == 403
+    assert client.post(f"/decisions/{iid}/reject", json={}).status_code == 200
+
+
+def test_the_reliability_card_is_the_owners(client: TestClient, db: Path) -> None:
+    _teammates()
+    assert client.get("/audit/reliability", headers={"x-caller-email": "tia@co.example"}).status_code == 403
+    assert client.get("/audit/reliability").status_code == 200
 

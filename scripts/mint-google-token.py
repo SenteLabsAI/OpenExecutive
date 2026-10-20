@@ -4,8 +4,8 @@
 workspace-mcp has no `auth` subcommand: the OAuth flow fires on the first
 authenticated tool call. This spawns the server over stdio and triggers that
 call so your browser opens for consent; the refresh-token credential is written
-to WORKSPACE_MCP_CREDENTIALS_DIR. Copy that file onto the API volume afterward
-(scripts/seed-google-workspace.sh).
+to WORKSPACE_MCP_CREDENTIALS_DIR. Copy that file onto the API volume afterward,
+into /data/google_credentials/ (see "Google Workspace credentials" in docs/deployment.md).
 
 Run in a shell where the OAuth client is exported:
 

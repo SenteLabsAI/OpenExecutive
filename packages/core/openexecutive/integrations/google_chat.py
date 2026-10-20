@@ -116,6 +116,124 @@ def send_reply(
     ).execute()
 
 
+# Per message: bounds the downloads (and OCR / model work) one message can
+# cause. Files are read only for a sender on the People roster (matched by
+# the Google account email the event carries): the webhook authenticates
+# Google, not the sender, so anyone in a space the bot is in can post.
+_MAX_ATTACHMENTS = 5
+_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _message_attachments(message: dict) -> list[dict]:
+    """The attachments on a Chat MESSAGE event, capped per message."""
+    raw = message.get("attachment")
+    if not isinstance(raw, list):
+        return []
+    return [a for a in raw if isinstance(a, dict)][:_MAX_ATTACHMENTS]
+
+
+def _attachment_name(attachment: dict) -> str:
+    return str(attachment.get("contentName") or "file")
+
+
+def _sender_on_roster(email: str) -> bool:
+    """Whether a Chat sender is a team member (not just a contact), by the
+    Google account email on the event. No email — a bot, or an event without
+    one — is not."""
+    if not email:
+        return False
+    try:
+        from openexecutive.people.store import find_person_by_email
+
+        return find_person_by_email(email) is not None
+    except Exception:
+        logger.exception("Google Chat: roster lookup failed")
+        return False
+
+
+def download_attachment(
+    resource_name: str,
+    service_account_file: str | None,
+    service_account_email: str | None = None,
+    max_bytes: int = _MAX_ATTACHMENT_BYTES,
+) -> bytes:
+    """Download an uploaded Chat attachment's bytes (``media.download``, the
+    ``chat.bot`` scope the replies already use). Raises ``ValueError`` past
+    ``max_bytes``, checked per chunk so an oversized file is never buffered
+    whole. Synchronous; call it via asyncio.to_thread()."""
+    import io
+
+    from googleapiclient.discovery import build as google_build
+    from googleapiclient.http import MediaIoBaseDownload
+
+    creds = _build_credentials(service_account_file, service_account_email)
+    service = google_build("chat", "v1", credentials=creds, cache_discovery=False)
+    request = service.media().download_media(resourceName=resource_name)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request, chunksize=_DOWNLOAD_CHUNK_BYTES)
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+        if buf.tell() > max_bytes:
+            raise ValueError("attachment too large")
+    return buf.getvalue()
+
+
+async def _read_attachments(
+    attachments: list[dict],
+    service_account_file: str | None,
+    service_account_email: str | None,
+) -> tuple[str, list[dict]]:
+    """Read a message's attachments the way the other chat channels do:
+    documents to text (a scanned PDF converted), images to vision blocks.
+
+    A Drive file shared into the message has no bytes here — it is left to
+    the Drive tools, with its id so the Executive can fetch it."""
+    from openexecutive.integrations.attachments import build_attachment_output
+
+    parts: list[str] = []
+    blocks: list[dict] = []
+    limit_mb = _MAX_ATTACHMENT_BYTES // (1024 * 1024)
+    for att in attachments:
+        name = _attachment_name(att)
+        drive = att.get("driveDataRef")
+        data_ref = att.get("attachmentDataRef")
+        if isinstance(drive, dict) and drive.get("driveFileId"):
+            parts.append(
+                f"(Attached {name}: a Google Drive file, id {drive['driveFileId']}"
+                " — read it with the Drive tools)"
+            )
+            continue
+        resource = data_ref.get("resourceName") if isinstance(data_ref, dict) else None
+        if not resource:
+            parts.append(f"(Could not download {name})")
+            continue
+        try:
+            data = await asyncio.to_thread(
+                download_attachment, str(resource), service_account_file, service_account_email
+            )
+        except ValueError:
+            parts.append(f"(Skipped {name}: file too large — limit {limit_mb} MB)")
+            continue
+        except Exception:
+            logger.exception("Google Chat: attachment download failed for %s", name)
+            parts.append(f"(Could not download {name})")
+            continue
+        try:
+            text, image_blocks = await build_attachment_output(
+                name, data, str(att.get("contentType") or "")
+            )
+        except Exception:
+            logger.exception("Google Chat: attachment processing failed for %s", name)
+            parts.append(f"(Could not process {name})")
+            continue
+        if text:
+            parts.append(text)
+        blocks.extend(image_blocks)
+    return "\n\n".join(parts), blocks
+
+
 async def _process_and_reply(
     message_text: str,
     sender_name: str,
@@ -124,6 +242,8 @@ async def _process_and_reply(
     message_name: str,
     service_account_file: str | None,
     service_account_email: str | None,
+    attachments: list[dict] | None = None,
+    sender_email: str = "",
 ) -> None:
     if not space_name:
         logger.error("Google Chat: missing space_name for message %s, cannot reply", message_name)
@@ -133,6 +253,19 @@ async def _process_and_reply(
     # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
     # with the integration_inbound row.
     session_id = f"google_chat:{space_name}:{thread_name}"
+    # The sender's People row, by the Google account email on the event (the
+    # JWT proves the event is Google's, so the email is Google's word). None
+    # for someone who isn't on People; the department gate then holds their
+    # sends and edits for approval.
+    sender_person = None
+    if sender_email:
+        try:
+            from openexecutive.people.store import find_person_by_email
+
+            sender_person = find_person_by_email(sender_email)
+        except Exception:
+            logger.exception("Google Chat: failed to look up the sender on People")
+
     from openexecutive.audit import log_event as audit_log
     audit_log(
         "integration_inbound",
@@ -145,22 +278,23 @@ async def _process_and_reply(
             "thread_name": thread_name,
             "message_name": message_name,
             "sender": sender_name,
+            # Who it is by People, not by display name: the brief tells the
+            # owner's own chat from a namesake's by this (briefing.live_signals).
+            "sender_person_id": sender_person.id if sender_person is not None else None,
             "text_len": len(message_text),
         },
     )
 
     # Fork into alert triage pipeline (fire-and-forget, same pattern as Slack/email).
     try:
-        from openexecutive.alerts.models import AlertEvent
-        from openexecutive.alerts.pipeline import schedule_evaluation
+        from openexecutive.alerts.pipeline import schedule_chat_message_evaluation
 
-        schedule_evaluation(
-            AlertEvent(
-                source="google_chat",
-                external_id=message_name,
-                body=message_text,
-                user=sender_name,
-            )
+        schedule_chat_message_evaluation(
+            source="google_chat",
+            external_id=message_name,
+            body=message_text,
+            sender=sender_person,
+            fallback_name=sender_name,
         )
     except Exception:
         logger.exception("Google Chat: failed to schedule alert evaluation")
@@ -181,24 +315,48 @@ async def _process_and_reply(
             session_id=session_id,
             company_profile=profile if not profile.is_empty() else None,
             # Names the surface for logging and the `<channel>` block. This
-            # adapter has no roster gate (the webhook authenticates Google,
-            # not the sender) and never populates trusted_alert_ids, so
+            # adapter turns no sender away (anyone in a space can post) and
+            # never populates trusted_alert_ids, so
             # `ack_alert` refuses here — matching what the channel block
             # already tells the model about this surface.
             origin_channel="google_chat",
+            # The sender's People row, for the department gate alone: this
+            # surface isn't one `people_tools` verifies, so it is never
+            # `caller_person_id` and grants nothing else.
+            gate_sender_person_id=sender_person.id if sender_person else None,
         )
-        retrieved_context = retrieve(query=message_text)
+        retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
         episodic_context = format_for_prompt()
 
+        chat_message = message_text
+        image_blocks: list[dict] = []
+        if attachments and _sender_on_roster(sender_email):
+            att_text, image_blocks = await _read_attachments(
+                attachments, service_account_file, service_account_email
+            )
+            if att_text:
+                # Before the words, as the other chat channels inline it.
+                chat_message = f"{att_text}\n\n{message_text}"
+        elif attachments:
+            names = ", ".join(map(_attachment_name, attachments))
+            chat_message = (
+                f"(Attached files, not read — files are read only from people on "
+                f"the team: {names})\n\n{message_text}"
+            )
+
         response = await Executive(mcp_gateway=get_active_gateway()).chat(
-            user_message=message_text,
+            user_message=chat_message,
             session=session,
             retrieved_context=retrieved_context,
             episodic_context=episodic_context,
             channel_context_block=build_channel_context_block("google_chat"),
+            attachment_blocks=image_blocks or None,
         )
+        from openexecutive.orchestrator.disclosure import with_chat_line
+
         await asyncio.to_thread(
-            send_reply, space_name, thread_name, response, service_account_file, service_account_email
+            send_reply, space_name, thread_name, with_chat_line(response, session_id),
+            service_account_file, service_account_email,
         )
     except Exception:
         logger.exception("Google Chat: handler error for message %s", message_name)
@@ -253,8 +411,13 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
     raw_text = message.get("text", "")
     # Strip structured @mention tokens (format: <users/USER_ID>).
     cleaned = re.sub(r"<users/\d+>", "", raw_text).strip()
-    if not cleaned:
+    attachments = _message_attachments(message)
+    if not cleaned and not attachments:
         return {}
+    if not cleaned:
+        # A file-only message: its names stand in for the words, as the web
+        # upload route records one.
+        cleaned = f"(Attached files: {', '.join(map(_attachment_name, attachments))})"
 
     background_tasks.add_task(
         _process_and_reply,
@@ -265,5 +428,7 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
         message_name=message.get("name", ""),
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
+        attachments=attachments,
+        sender_email=str(body.get("user", {}).get("email") or ""),
     )
     return {}
