@@ -390,3 +390,12 @@ def test_a_bold_line_is_not_a_bullet() -> None:
     text = "**Lease signed; Harbor Point stays off the list.**\n**Move today:** keep it off the list."
     assert drop_settled_points(text) == text
     assert drop_settled_points("* Harbor Point stays off the list.\n**Done.**") == "**Done.**"
+
+
+def test_ask_words_match_whole_words_and_sub_lines_go_with_their_bullet() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points
+
+    signed = "- **Lease** — the landlord signed, so it stays off the list."
+    assert drop_settled_points(signed) == ""
+    nested = "- **Harbor Point** stays off the list.\n  - the buyout is not offered.\n- **Lease** — signed today."
+    assert drop_settled_points(nested) == "- **Lease** — signed today."

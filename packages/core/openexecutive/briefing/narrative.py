@@ -893,8 +893,8 @@ _SETTLED_RE = re.compile(
 # A bullet that still asks something of the reader, or carries a deadline,
 # is never dropped in code.
 _ASK_RE = re.compile(
-    r"\?|\b(?:approve|decide|confirm|sign|reply|add|send|tell\s+me|until\s+you|due|before\s+\w+"
-    r"|by\s+(?:mon|tue|wed|thu|fri|sat|sun|tomorrow|today|end))",
+    r"\?|\b(?:approve|decide|confirm|sign|reply|add|send|tell\s+me|until\s+you|due|before\s+\w+)\b"
+    r"|\bby\s+(?:mon|tue|wed|thu|fri|sat|sun|tomorrow|today|end)",
     re.IGNORECASE,
 )
 
@@ -912,13 +912,18 @@ def settled_mentions(text: str) -> list[str]:
 def drop_settled_points(text: str) -> str:
     """``text`` without the bullets that only say an item is settled: a
     rewrite that kept one still never shows it."""
-    kept = []
+    kept: list[str] = []
+    dropping = False
     for line in text.splitlines():
-        if (
+        # A dropped bullet's indented continuation and sub-bullets go with it.
+        if dropping and line[:1].isspace() and line.strip():
+            continue
+        dropping = bool(
             _BULLET_RE.match(line)
             and _SETTLED_RE.search(line)
             and not _ASK_RE.search(line)
-        ):
+        )
+        if dropping:
             logger.info("brief: dropped a settled point: %s", line.strip()[:200])
             continue
         kept.append(line)
