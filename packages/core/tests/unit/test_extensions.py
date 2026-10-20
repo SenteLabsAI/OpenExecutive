@@ -310,6 +310,41 @@ def test_the_tool_decides_which_turns_it_is_offered_on() -> None:
     assert "make_widget" not in offered[0]
 
 
+def test_a_tool_asked_without_a_known_caller_needs_its_own_offered() -> None:
+    with pytest.raises(ExtensionError, match="offered"):
+        extensions.register_tool(_tool(known_caller=False))
+
+
+def test_only_a_tool_registered_for_it_is_asked_on_a_turn_with_no_known_caller() -> None:
+    # A surface that names its user without proving who is speaking: the
+    # tool's own offered decides who may have it there.
+    extensions.register_tool(_tool("open_tool", known_caller=False, offered=lambda s: s.origin_channel == "kiosk"))
+    extensions.register_tool(_tool("plain_tool", offered=lambda _s: True))
+    provider, _, offered = _run(
+        _session(caller_person_id=None, origin_channel="kiosk"), [[_use("tu-1", "open_tool", {})]]
+    )
+    assert "open_tool" in offered[0] and "plain_tool" not in offered[0]
+    assert json.loads(_results(provider, 1)["tu-1"])["status"] == "made"
+    _, _, offered = _run(_session(caller_person_id=None), [])
+    assert "open_tool" not in offered[0]
+    # Still never on an unattended or private turn.
+    for kwargs in ({"unattended": True}, {"private_to_principal": True}):
+        _, _, offered = _run(_session(caller_person_id=None, origin_channel="kiosk", **kwargs), [])
+        assert "open_tool" not in offered[0]
+
+
+def test_a_tool_can_keep_its_dispatch_row_private_and_name_its_activity() -> None:
+    from openexecutive.orchestrator.activity_labels import summarize_activity
+    from openexecutive.orchestrator.executive import _private_tool_row
+
+    extensions.register_tool(_tool(private_row=True, activity_label="Making a widget…"))
+    extensions.register_tool(_tool("open_widget"))
+    assert _private_tool_row("make_widget") and not _private_tool_row("open_widget")
+    assert extensions.activity_label("make_widget") == "Making a widget…"
+    assert extensions.activity_label("open_widget") is None
+    assert "Making a widget" in str(summarize_activity([{"id": "tu-1", "name": "make_widget", "input": {}}]))
+
+
 def test_a_failing_offered_counts_as_not_offered() -> None:
     def _boom(_s: Any) -> bool:
         raise RuntimeError("boom")
@@ -376,6 +411,17 @@ def test_no_chip_for_an_error_or_a_refusal() -> None:
 def test_a_chip_link_stays_inside_the_app(link: Any, kept: str | None) -> None:
     out = _chip({"status": "made"}, lambda _i, _p: {"summary": "Made", "target": "W", "link": link})
     assert out is not None and out["link"] == kept and out["summary"] == "Made" and out["target"] == "W"
+
+
+def test_a_chip_describes_what_its_tool_waits_on() -> None:
+    # The tool's own approval, waiting for a tap: its chip describes it, never
+    # core's generic "Waiting for approval" for a held action.
+    chip = lambda _i, _p: {"summary": "Waiting for your approval: a widget", "link": "/today"}  # noqa: E731
+    out = _chip({"status": "waiting_for_approval"}, chip)
+    assert out is not None and out["summary"] == "Waiting for your approval: a widget" and out["link"] == "/today"
+    # A chip that declines a waiting result gives none.
+    extensions._reset_for_tests()
+    assert _chip({"status": "waiting_for_approval"}, lambda _i, _p: None) is None
 
 
 def test_a_chip_that_raises_or_has_no_summary_gives_none() -> None:

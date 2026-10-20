@@ -219,9 +219,12 @@ def summarize_action(
         parsed is not None
         and parsed.get("status") == "waiting_for_approval"
         and tool_name not in ("propose_actions", "do_in_app")
+        and not extension
     ):
         # Held for someone's approval (a team member's send or change, the
-        # department gate): nothing happened yet, so no "done" chip.
+        # department gate): nothing happened yet, so no "done" chip. An
+        # extension's tool is never held there; what it waits on is its
+        # chip's to describe.
         payload["summary"] = "Waiting for approval"
         return payload
     if extension:

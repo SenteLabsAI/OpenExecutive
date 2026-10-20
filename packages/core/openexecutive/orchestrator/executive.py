@@ -836,6 +836,9 @@ def _private_tool_row(tool_name: str) -> bool:
         tool_name in DELEGATION_TOOL_NAMES
         or tool_name in FACT_TOOL_HANDLERS
         or tool_name in HISTORY_TOOL_NAMES
+        # An installed extension's tool that quotes the speaker's own data
+        # (orchestrator/extensions.py, private_row).
+        or extensions.private_row(tool_name)
     )
 
 

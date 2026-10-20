@@ -317,7 +317,12 @@ caching:
     synthesis never get them; the chat loop adds them per turn like the Act
     as me tools, never on an unattended run, a turn private to the
     principal or to a speaker not on the People list, and only where the
-    tool's offered(session) says. That
+    tool's offered(session) says. known_caller=False lifts the People-list
+    rule for that tool alone (an extension surface that names its user
+    without proving who is speaking, so the turn has no caller_person_id);
+    register_tool then requires an offered(), which decides alone. Never on
+    an unattended, private, AI-app (mcp_client) or replay turn either way.
+    That
     predicate must depend only on the kind of turn, so each kind keeps one
     cached tool list. Act as me's lockdown refuses them after a mail read
     (unclassified, fails closed), except one registered with
@@ -326,6 +331,12 @@ caching:
     existing (tool_groups.add_to_group, done at load, so the groups are
     fixed per process). Its chip goes through summarize_action's usual
     no-chip rules, and a chip link must be a path inside the app. A
+    waiting_for_approval result is the extension chip's to describe
+    (summarize_action skips its generic held-action chip for an extension
+    tool: the department gate never holds one). activity_label names the
+    chat's activity line while it runs (activity_labels._extension_label,
+    after the built-in labels), and private_row makes its dispatch audit row
+    private (executive._private_tool_row). A
     collection is a drafted artifact tagged collection:<name>: the record
     carries it, GET /artifacts returns collection / collection_label, the
     Documents page shows one filter per collection, and archive, restore and
