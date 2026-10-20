@@ -322,6 +322,8 @@ def test_settled_mentions_find_items_said_to_need_nothing() -> None:
         "- **Lease** — needs no action from you, but legal needs your sign-off."
     )
     assert settled_mentions(mixed) == []
+    ask = "- **Harbor Point** — approve my taking it off the list by Friday, or tell me to keep it."
+    assert settled_mentions(ask) == []
     assert drop_settled_points(mixed) == mixed
     assert settled_mentions("- **Lease** — the landlord signed, so I'm filing it today.") == []
     text = "**Bottom line.**\n" + point + "\n- **Lease** — signed today.\n**Move today:** file it."

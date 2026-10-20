@@ -884,7 +884,6 @@ def own_echoes(text: str) -> list[str]:
 _SETTLED_RE = re.compile(
     r"\b(?:stays?|staying|kept|keeps?|left|leaves?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
     r"(?:list|board|radar|agenda)\b"
-    r"|\boff\s+the\s+(?:[\w-]+\s+)?list\b"
     r"|\bno\s+longer\s+on\s+(?:the|your)\s+(?:[\w-]+\s+)?list\b"
     r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b",
     re.IGNORECASE,
