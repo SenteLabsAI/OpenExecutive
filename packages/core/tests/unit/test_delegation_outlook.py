@@ -499,6 +499,32 @@ def test_exchange_authenticated_reads_only_its_own_verdict() -> None:
     assert exchange_authenticated(_headers(EXCHANGE_PASS + ";compauth=pass reason=100"), "dana@northpeak.example") is False
 
 
+EXCHANGE_NO_DMARC = ("spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=northpeak.example; dkim=pass (signature was "
+                     "verified) header.d=northpeak.example;dmarc=none action=none header.from=northpeak.example;"
+                     "compauth=pass reason=102")
+
+
+def test_a_domain_without_dmarc_passes_on_its_own_dkim_only() -> None:
+    dana = "dana@northpeak.example"
+    assert exchange_authenticated(_headers(EXCHANGE_NO_DMARC), dana) is True
+    best_guess = EXCHANGE_NO_DMARC.replace("dmarc=none", "dmarc=bestguesspass")
+    assert exchange_authenticated(_headers(best_guess), dana) is True
+    # Microsoft 365's default key is the tenant's onmicrosoft.com domain: not theirs.
+    default_key = EXCHANGE_NO_DMARC.replace("header.d=northpeak.example", "header.d=northpeak.onmicrosoft.com")
+    assert exchange_authenticated(_headers(default_key), dana) is False
+    # SPF alone, a failed signature, or dmarc=none for another domain.
+    assert exchange_authenticated(_headers(EXCHANGE_NO_DMARC.replace("dkim=pass", "dkim=none")), dana) is False
+    assert exchange_authenticated(_headers(EXCHANGE_NO_DMARC.replace("dkim=pass", "dkim=fail")), dana) is False
+    other = EXCHANGE_NO_DMARC.replace("header.from=northpeak", "header.from=evil")
+    assert exchange_authenticated(_headers(other), dana) is False
+
+
+def test_mail_a_list_resent_never_passes() -> None:
+    msg = _headers(EXCHANGE_PASS)
+    msg["List-Id"] = "<all.northpeak.example>"
+    assert exchange_authenticated(msg, "dana@northpeak.example") is False
+
+
 def test_a_parsed_message_carries_the_verdict() -> None:
     raw = _msg("m1", internetMessageHeaders=[
         {"name": "From", "value": "Dana <dana@northpeak.example>"},

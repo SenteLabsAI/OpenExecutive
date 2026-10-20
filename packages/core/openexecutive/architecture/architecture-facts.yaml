@@ -2677,8 +2677,16 @@ memory:
         signature. A stamp echoing `smtp.helo=` (sender text) proves nothing
         either. Fails closed (absent header, temperror,
         dmarc=fail, no aligned DKIM, unbalanced quotes or comments, two
-        verdicts, extra text in the verdict, read failure). Anyone else: no
-        second read, never authenticated.
+        verdicts, extra text in the verdict, read failure). On an Outlook
+        mailbox the same check reads Exchange's stamp instead: Graph's
+        internetMessageHeaders for the message (get-mail-message), then
+        delegation.outlook.exchange_authenticated (topmost header with EOP's
+        compauth=, dmarc=pass for the From domain, or for dmarc=none /
+        bestguesspass a DKIM pass with header.d = that domain; Microsoft
+        365's default onmicrosoft.com key never counts, as it names the
+        tenant, not the domain; list-resent mail never passes). Outlook
+        still sends no roster acknowledgement (the grant is Gmail's).
+        Anyone else: no second read, never authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY
         address (exact; no alias / domain rule), authenticated, and not
         private_to_principal (forwarded mail and contacts stay refused).

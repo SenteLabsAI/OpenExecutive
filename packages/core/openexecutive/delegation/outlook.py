@@ -128,6 +128,9 @@ _ID_RE = re.compile(r"[A-Za-z0-9_=+/-]{1,512}")
 _TENANT_RE = re.compile(r"common|organizations|consumers|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _EMAIL_RE = re.compile(r"[\w.+\-']+@[\w\-]+(?:\.[\w\-]+)+")
 _DMARC_PASS = re.compile(r"dmarc=pass(?: action=[a-z]+)? header\.from=([a-z0-9.-]+)")
+_DMARC_NO_RECORD = re.compile(r"dmarc=(?:none|bestguesspass)(?: action=[a-z]+)? header\.from=([a-z0-9.-]+)")
+# Exchange's DKIM resinfo once its comment is stripped: "dkim=pass header.d=example.com".
+_EXCHANGE_DKIM_PASS = re.compile(r"dkim=pass header\.d=([a-z0-9.-]+)")
 _TOKEN_SLACK_SECONDS = 60
 _THREAD_LIMIT = 50
 
@@ -372,8 +375,15 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     verdict: a pass for From's own domain. It must also carry Exchange
     Online Protection's own ``compauth=`` verdict, so a header the sender
     wrote that reached the mailbox some way EOP never stamped (an on-premises
-    connector, an internal relay) doesn't count."""
-    from openexecutive.integrations.fact_confirmation import _strip_quotes_and_comments
+    connector, an internal relay) doesn't count.
+
+    A From domain with no DMARC record (``dmarc=none`` or
+    ``bestguesspass``) passes only on a DKIM signature Exchange verified for
+    exactly that domain, and mail a list or group resent never passes."""
+    from openexecutive.integrations.fact_confirmation import (
+        _relayed_by_a_list,
+        _strip_quotes_and_comments,
+    )
 
     address = normalize_email(from_addr)
     if "@" not in address:
@@ -383,7 +393,7 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
         results = headers.get_all("Authentication-Results") or []
     except Exception:  # noqa: BLE001 - an unreadable message is not authenticated.
         return False
-    if raw_from.strip().lower() != address or not results:
+    if raw_from.strip().lower() != address or not results or _relayed_by_a_list(headers):
         return False
     newest = _strip_quotes_and_comments(" ".join(str(results[0]).split()).lower())
     if newest is None or not newest.startswith("spf="):
@@ -392,8 +402,21 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     verdicts = [c for c in clauses if c.startswith("dmarc=")]
     if len(verdicts) != 1 or sum(c.startswith("compauth=") for c in clauses) != 1:
         return False
+    domain = address.rsplit("@", 1)[1]
     verdict = _DMARC_PASS.fullmatch(verdicts[0])
-    return verdict is not None and verdict.group(1) == address.rsplit("@", 1)[1]
+    if verdict is not None:
+        return verdict.group(1) == domain
+    # A domain with no DMARC record: Exchange writes dmarc=none, or
+    # bestguesspass when SPF alone would pass. Only a DKIM signature Exchange
+    # verified for exactly that domain counts (SPF passes anyone sending
+    # through the same shared servers).
+    none = _DMARC_NO_RECORD.fullmatch(verdicts[0])
+    if none is None or none.group(1) != domain:
+        return False
+    return any(
+        (m := _EXCHANGE_DKIM_PASS.fullmatch(" ".join(c.split()))) is not None and m.group(1) == domain
+        for c in clauses
+    )
 
 
 def _iso(value: object) -> str:

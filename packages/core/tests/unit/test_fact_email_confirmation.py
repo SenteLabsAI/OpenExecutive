@@ -350,7 +350,7 @@ def test_a_reply_gmail_did_not_authenticate_is_refused(
     assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.list_facts(include_inactive=True) == [] and facts.pending_confirmation_count() == 1
     [warning] = _sent(gateway)
-    assert "DMARC check" in warning["body"] and warning["to"] == OWNER
+    assert "sender check" in warning["body"] and warning["to"] == OWNER
 
 
 @pytest.mark.parametrize(
@@ -392,7 +392,7 @@ def test_a_failed_raw_read_refuses_and_tells_the_principal(
     mailbox = SimpleNamespace(call_tool=AsyncMock(side_effect=RuntimeError("gmail down")))
     assert _answer(_reply(token, "CONFIRM"), mailbox=mailbox) is True
     assert facts.pending_confirmation_count() == 1
-    assert "DMARC check" in _sent(gateway)[0]["body"]
+    assert "sender check" in _sent(gateway)[0]["body"]
 
 
 def test_a_made_up_reference_does_nothing_and_sends_nothing(gateway: AsyncMock) -> None:
@@ -806,3 +806,39 @@ def test_a_failed_principal_lookup_leaves_the_email_turn_unauthenticated_not_los
     session = captured["session"]
     assert session.email_from == OWNER and session.email_authenticated is False
     assert mailbox.call_tool.await_count == 0
+
+
+class _Outlook:
+    name = "microsoft"
+
+
+def _outlook_gateway(headers: list[dict[str, str]] | None) -> AsyncMock:
+    gw = AsyncMock()
+    gw.call_tool.return_value = json.dumps(
+        {"id": "m1", **({"internetMessageHeaders": headers} if headers is not None else {})}
+    )
+    return gw
+
+
+_EXCHANGE_PASS = (
+    "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=northwind.test; dkim=pass (signature was verified) "
+    "header.d=northwind.test;dmarc=pass action=none header.from=northwind.test;compauth=pass reason=100"
+)
+
+
+def test_an_outlook_mailbox_reads_exchanges_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.integrations.workspace import registry
+
+    monkeypatch.setattr(registry, "get_mail_provider", lambda: _Outlook())
+    good = [{"name": "From", "value": f"Olivia <{OWNER}>"}, {"name": "Authentication-Results", "value": _EXCHANGE_PASS}]
+    gw = _outlook_gateway(good)
+    assert asyncio.run(fc.sender_authenticated(gw, "m1", OWNER)) is True
+    call = gw.call_tool.await_args.args[0]
+    assert call["name"] == "microsoft_365__get-mail-message"
+    assert "internetMessageHeaders" in call["arguments"]["select"]
+    # No headers, another sender, or a failed read: not authenticated.
+    assert asyncio.run(fc.sender_authenticated(_outlook_gateway(None), "m1", OWNER)) is False
+    assert asyncio.run(fc.sender_authenticated(_outlook_gateway(good), "m1", "mallory@northwind.test")) is False
+    broken = AsyncMock()
+    broken.call_tool.side_effect = RuntimeError("down")
+    assert asyncio.run(fc.sender_authenticated(broken, "m1", OWNER)) is False

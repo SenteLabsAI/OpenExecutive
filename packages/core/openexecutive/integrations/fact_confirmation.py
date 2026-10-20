@@ -247,7 +247,11 @@ def automatic_reply(raw: str) -> bool:
     than ``no``, an out-of-office header, a bulk / auto-reply ``Precedence``,
     or an out-of-office subject. An unreadable message counts as automatic:
     nobody can be shown to have written it."""
-    headers = _raw_headers(raw)
+    return automatic_headers(_raw_headers(raw))
+
+
+def automatic_headers(headers: Message | None) -> bool:
+    """``automatic_reply`` over a message's parsed headers (None: unreadable)."""
     if headers is None:
         return True
     try:
@@ -295,9 +299,44 @@ async def read_raw(gateway: Any, message_id: str) -> str:
 
 
 async def sender_authenticated(gateway: Any, message_id: str, from_addr: str) -> bool:
-    """Whether Gmail authenticated the sender of message ``message_id``
-    (``authenticated_by_gmail`` on ``read_raw``). False on any failure."""
+    """Whether the Executive's mailbox authenticated the sender of message
+    ``message_id``: Gmail's stamp on ``read_raw`` (``authenticated_by_gmail``),
+    or on Outlook, Exchange's on the message's headers
+    (``delegation.outlook.exchange_authenticated``). False on any failure."""
+    from openexecutive.integrations.workspace.registry import get_mail_provider
+
+    if get_mail_provider().name == "microsoft":
+        headers = await read_outlook_headers(gateway, message_id)
+        if headers is None:
+            return False
+        from openexecutive.delegation.outlook import exchange_authenticated
+
+        return exchange_authenticated(headers, from_addr)
     return authenticated_by_gmail(await read_raw(gateway, message_id), from_addr)
+
+
+async def read_outlook_headers(gateway: Any, message_id: str) -> Message | None:
+    """Message ``message_id`` in the Executive's Outlook mailbox, as its
+    internet headers (Graph's ``internetMessageHeaders``, in the order the
+    message carries them). None on any failure. Never raises."""
+    from openexecutive.delegation.outlook import _header_list, _header_message
+    from openexecutive.integrations.workspace.microsoft import _PREFIX
+
+    if gateway is None or not message_id:
+        return None
+    try:
+        raw = await gateway.call_tool({
+            "name": _PREFIX + "get-mail-message",
+            "arguments": {"messageId": message_id, "select": "id,internetMessageHeaders"},
+        })
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:  # noqa: BLE001 - read as nothing, which fails closed.
+        logger.warning("fact_confirmation: reading message %s headers failed", message_id, exc_info=True)
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("internetMessageHeaders"), list):
+        return None
+    headers = _header_message(_header_list(parsed))
+    return headers if headers.get_all("From") else None
 
 
 def _audit(summary: str, details: dict[str, Any]) -> None:
@@ -454,21 +493,30 @@ async def try_email_fact_confirmation(
     # Only after a live token matched: a forged mail without one never makes
     # the Executive email the principal, or fetch anything.
     printed_auto = _auto_or_bulk_headers(raw)
-    raw_mime = "" if printed_auto else await read_raw(gateway, message_id)
-    if not printed_auto and not authenticated_by_gmail(raw_mime, from_addr):
+    from openexecutive.integrations.workspace.registry import get_mail_provider
+
+    if get_mail_provider().name == "microsoft":
+        from openexecutive.delegation.outlook import exchange_authenticated
+
+        headers = None if printed_auto else await read_outlook_headers(gateway, message_id)
+        authenticated = headers is not None and exchange_authenticated(headers, from_addr)
+    else:
+        headers = None if printed_auto else _raw_headers(await read_raw(gateway, message_id))
+        authenticated = headers is not None and headers_authenticated(headers, from_addr)
+    if not printed_auto and not authenticated:
         _audit(
             "A reply to a fact confirmation was not authenticated",
             {"message_id": message_id, "confirmation_id": conf.id, "status": "refused_unauthenticated"},
         )
         await _reply(principal, (
             "A reply to one of my confirmation emails claimed to be from you, but "
-            "I couldn't confirm it came from your mail server (Gmail's DMARC check "
-            "didn't pass, or I couldn't read it), so I didn't act on it. The change is still waiting; if it was "
+            "I couldn't confirm it came from your mail server (the mailbox's "
+            "sender check didn't pass, or I couldn't read it), so I didn't act on it. The change is still waiting; if it was "
             "you, reply again from your own mailbox.\n\n"
             f"  {conf.summary}"
         ))
         return True
-    if printed_auto or automatic_reply(raw_mime):
+    if printed_auto or automatic_headers(headers):
         # An out-of-office or vacation reply echoes the token and may say
         # "confirm" ("I'll confirm on my return"); nobody answered. Consumed
         # quietly: no reply (it would bounce between two responders), no
