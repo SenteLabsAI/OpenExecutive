@@ -599,15 +599,25 @@ _NO_DMARC_WORKSPACE = (
         # The domain's own DKIM key, still no DMARC record.
         "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
         "header.s=google header.b=AbCd; spf=pass smtp.mailfrom=owner@northwind.test",
-        # Signed by a parent of the From domain, with dmarc=none.
+        # dmarc=none for the From domain.
         "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
-        "header.s=s1 header.b=AbCd; dmarc=none header.from=mail.northwind.test",
+        "header.s=s1 header.b=AbCd; dmarc=none header.from=northwind.test",
     ],
-    ids=["workspace-default-key", "own-dkim-key", "parent-key-dmarc-none"],
+    ids=["workspace-default-key", "own-dkim-key", "dmarc-none"],
 )
 def test_a_domain_without_dmarc_passes_on_its_own_dkim(stamp: str) -> None:
-    sender = "owner@mail.northwind.test" if "mail.northwind" in stamp else OWNER
-    assert fc.authenticated_by_gmail(_raw_mime(stamp, sender=sender), sender) is True
+    assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is True
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["List-Id: <all.northwind.test>", "X-Google-Group-Id: 123456", "Mailing-list: list all@northwind.test"],
+)
+def test_mail_a_group_resent_is_not_proven(extra: str) -> None:
+    """An open group in the principal's own Workspace resends an outsider's
+    forged From under the Workspace's own signature."""
+    assert fc.authenticated_by_gmail(_raw_mime(_NO_DMARC_WORKSPACE, extra), OWNER) is False
+    assert fc.authenticated_by_gmail(_raw_mime(GMAIL_PASS, extra), OWNER) is False
 
 
 @pytest.mark.parametrize(
@@ -623,6 +633,19 @@ def test_a_domain_without_dmarc_passes_on_its_own_dkim(stamp: str) -> None:
         # Another Workspace's default key.
         "Authentication-Results: mx.google.com; dkim=pass "
         "header.i=@attacker-test.20251104.gappssmtp.com header.s=20251104 header.b=AbCd",
+        # A Google Group's bounce address: the group resent it.
+        "Authentication-Results: mx.google.com; dkim=pass "
+        "header.i=@northwind-test.20251104.gappssmtp.com header.s=20251104 header.b=AbCd; "
+        "spf=pass smtp.mailfrom=all+bncbcxyz@northwind.test; dmarc=none header.from=northwind.test",
+        # Signed by a parent: strict alignment only.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@test "
+        "header.s=s1 header.b=AbCd",
+        # dmarc=none for some other domain.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd; dmarc=none header.from=attacker.test",
+        # A HELO echo carrying a DMARC pass.
+        "Authentication-Results: mx.google.com; spf=neutral smtp.helo=x;dmarc=pass "
+        "header.from=northwind.test",
         # A failed signature naming the domain.
         "Authentication-Results: mx.google.com; dkim=fail header.i=@northwind.test "
         "header.s=s1 header.b=AbCd",
@@ -638,7 +661,8 @@ def test_a_domain_without_dmarc_passes_on_its_own_dkim(stamp: str) -> None:
         'Authentication-Results: mx.google.com; spf=pass smtp.mailfrom="x;dkim=pass '
         'header.i=@northwind.test "@attacker.test',
     ],
-    ids=["spf-only", "other-key", "other-workspace", "dkim-fail", "dmarc-fail",
+    ids=["spf-only", "other-key", "other-workspace", "group-bounce", "parent-key",
+         "dmarc-none-other-domain", "helo-echo-dmarc", "dkim-fail", "dmarc-fail",
          "helo-echo", "in-comment", "in-quotes"],
 )
 def test_a_domain_without_dmarc_needs_its_own_signature(stamp: str) -> None:

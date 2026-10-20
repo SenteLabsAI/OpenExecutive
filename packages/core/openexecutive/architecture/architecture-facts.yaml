@@ -2664,14 +2664,18 @@ memory:
         reading exactly `dmarc=pass header.from=<domain>` (Gmail may follow
         it with its own `dara=` resinfo for Gmail / Workspace senders, so
         its position is not checked). A From domain with no DMARC record
-        (no verdict, or dmarc=none) passes only on a DKIM signature Gmail
-        verified for that domain (`_dkim_aligned`): signed by the domain or
-        a parent, or by Google Workspace's default key for it
+        (no verdict, or dmarc=none for that domain) passes only on a DKIM
+        signature Gmail verified for exactly that domain (`_dkim_aligned`,
+        strict alignment), or Google Workspace's default key for it
         (`<domain-with-hyphens>.<date>.gappssmtp.com`, read back only for a
         two-label domain without hyphens, since `a-b-com` is ambiguous).
         SPF alone never counts (a domain listing Google's servers passes
-        anyone sending through Google), and a stamp echoing `smtp.helo=`
-        gets no DKIM fallback. Fails closed (absent header, temperror,
+        anyone sending through Google). On every branch, mail a list or
+        group resent (List-Id, X-Google-Group-Id, Mailing-List, or a Groups
+        `+bnc` envelope) is never proven: an open group in the domain's own
+        Workspace resends an outsider's forged From under the Workspace's
+        signature. A stamp echoing `smtp.helo=` (sender text) proves nothing
+        either. Fails closed (absent header, temperror,
         dmarc=fail, no aligned DKIM, unbalanced quotes or comments, two
         verdicts, extra text in the verdict, read failure). Residual: when Gmail
         writes NO verdict (a From domain without DMARC) and echoes an

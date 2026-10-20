@@ -85,7 +85,7 @@ _GMAIL_AUTHSERV = "mx.google.com"
 # Gmail's DMARC resinfo once its comment is stripped, e.g.
 # "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com".
 _DMARC_PASS = re.compile(r"dmarc=pass\s+header\.from=([^\s;]+)")
-_DMARC_NONE = re.compile(r"dmarc=none(?:\s+header\.from=[^\s;]+)?")
+_DMARC_NONE = re.compile(r"dmarc=none(?:\s+header\.from=([^\s;]+))?")
 # Gmail's DKIM resinfo once its comment is stripped, e.g.
 # "dkim=pass header.i=@example.com header.s=sel header.b=AbCd1234".
 _DKIM_PASS = re.compile(
@@ -166,6 +166,9 @@ def headers_authenticated(headers: Message, from_addr: str) -> bool:
         return False
     if raw_from.strip().lower() != address or not results:
         return False
+    if _relayed_by_a_list(headers):
+        # A list or group resends whoever posted under its own signature.
+        return False
     newest = _strip_quotes_and_comments(" ".join(str(results[0]).split()).lower())
     if newest is None:
         return False
@@ -175,15 +178,19 @@ def headers_authenticated(headers: Message, from_addr: str) -> bool:
     # Gmail writes one dmarc= verdict and nothing else in it; it may be
     # followed by its own dara= resinfo (mail sent from Gmail / Workspace).
     # A second verdict, or extra text in it, is sender text Gmail echoed.
-    # Residual: when Gmail writes NO verdict (a From domain without DMARC)
-    # and echoes an unsanitised ``;dmarc=pass header.from=...`` elsewhere
-    # (a HELO on null-sender mail), that echo would read as the verdict.
+    # A HELO Gmail echoes (null-sender mail, a bounce) is sender text that
+    # could read as a verdict or a signature of its own, so it proves nothing.
+    if "smtp.helo=" in rest:
+        return False
     resinfo = [c.strip() for c in rest.split(";") if c.strip()]
     domain = address.rsplit("@", 1)[1]
+    if any("+bnc" in c for c in resinfo if "smtp.mailfrom=" in c):
+        return False  # a Google Group's bounce address: resent mail.
     verdicts = [c for c in resinfo if c.startswith("dmarc=")]
     if len(verdicts) > 1:
         return False
-    if not verdicts or _DMARC_NONE.fullmatch(verdicts[0]) is not None:
+    none = _DMARC_NONE.fullmatch(verdicts[0]) if verdicts else None
+    if not verdicts or (none is not None and none.group(1) in (None, domain)):
         # The domain publishes no DMARC record: Gmail wrote no verdict, or "none".
         return _dkim_aligned(resinfo, domain)
     verdict = _DMARC_PASS.fullmatch(verdicts[0])
@@ -192,29 +199,34 @@ def headers_authenticated(headers: Message, from_addr: str) -> bool:
 
 def _dkim_aligned(resinfo: list[str], domain: str) -> bool:
     """For a From domain that publishes no DMARC record, so Gmail wrote no
-    verdict (or ``dmarc=none``): whether a DKIM signature Gmail verified belongs to ``domain``.
-    That is the DKIM half of what DMARC itself checks. A signature counts
-    when its domain is ``domain`` or a parent of it, or is the key Google
-    Workspace signs with for a domain that set up no DKIM key of its own
+    verdict (or ``dmarc=none``): whether a DKIM signature Gmail verified
+    belongs to ``domain`` itself (the DKIM half of what DMARC checks, with
+    strict alignment), or is the key Google Workspace signs with for a
+    domain that set up no DKIM key of its own
     (``thebrand-com.20250101.gappssmtp.com`` for ``thebrand.com``), which
-    Google signs only for that Workspace's own users.
+    Google signs for that Workspace's own users and for what its own groups
+    resend; group mail is refused before this.
 
     SPF is left out: a domain that lists Google's servers lets anyone sending
-    through Google pass it. Mail whose results echo a HELO (null-sender mail,
-    a bounce) is left out too: the HELO is sender text, and could read as a
-    signature of its own."""
-    if any("smtp.helo=" in c for c in resinfo):
-        return False
+    through Google pass it."""
     for c in resinfo:
         match = _DKIM_PASS.fullmatch(c)
         if match is None:
             continue
         signer = match.group(1)
-        if signer == domain or (domain.endswith("." + signer) and "." in signer):
-            return True
-        if _gapps_key_domain(signer) == domain:
+        if signer == domain or _gapps_key_domain(signer) == domain:
             return True
     return False
+
+
+def _relayed_by_a_list(headers: Message) -> bool:
+    """Whether a mailing list or group resent the message: its own headers,
+    which only make the check fail, so a sender gains nothing adding them."""
+    try:
+        names = {str(k).lower() for k in headers}
+    except Exception:  # noqa: BLE001 - unreadable counts as relayed.
+        return True
+    return bool(names & {"list-id", "x-google-group-id", "mailing-list"})
 
 
 def _gapps_key_domain(signer: str) -> str | None:
