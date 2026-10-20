@@ -243,6 +243,79 @@ async def test_a_mailbox_error_leaves_drafts_waiting() -> None:
     assert drafts.count_waiting(1, NOW.replace(hour=0)) == 1
 
 
+def _sent(subject: str, to: list[str], at: datetime) -> SimpleNamespace:
+    return SimpleNamespace(subject=subject, to=to, cc=[], bcc=[], received_at=at.isoformat())
+
+
+class _Versions:
+    """Two versions of one email still in Drafts, and their sent mail."""
+
+    def __init__(self, sent: list[SimpleNamespace], subjects: dict[str, str] | None = None) -> None:
+        self.sent = sent
+        self.subjects = subjects or {}
+        self.sent_reads = 0
+
+    async def get_draft(self, draft_id: str) -> Any:
+        subject = self.subjects.get(draft_id, "2027 budget")
+        message = SimpleNamespace(to=["Dana@example.com"], cc=[], subject=subject)
+        return SimpleNamespace(draft_id=draft_id, message=message)
+
+    async def list_sent(self, limit: int = 40) -> list[SimpleNamespace]:
+        self.sent_reads += 1
+        return self.sent
+
+
+async def test_a_draft_sent_as_another_version_stops_waiting() -> None:
+    """They redrafted it, sent one version (or wrote it fresh) and left the
+    other in Drafts: both stop waiting once the sent copy is there."""
+    _record(1, drafts.SOURCE_CHAT, None, "d1", when=NOW - timedelta(hours=3))
+    _record(1, drafts.SOURCE_CHAT, None, "d2", when=NOW - timedelta(hours=2, minutes=50))
+    box = _Versions([_sent("RE: 2027  Budget", ["dana@example.com"], NOW - timedelta(hours=2))])
+
+    assert await drafts.settle_waiting(PERSON, now=NOW, gmail=box) == 2
+    assert drafts.count_waiting(1, NOW.replace(hour=0)) == 0
+    assert box.sent_reads == 1
+
+
+async def test_a_sent_email_that_is_not_the_draft_leaves_it_waiting() -> None:
+    _record(1, drafts.SOURCE_CHAT, None, "d1", when=NOW - timedelta(hours=3))
+    box = _Versions([
+        _sent("2027 budget", ["dana@example.com"], NOW - timedelta(hours=4)),  # before the draft
+        _sent("2027 budget", ["ben@example.com"], NOW - timedelta(hours=1)),  # someone else
+        _sent("Lunch", ["dana@example.com"], NOW - timedelta(hours=1)),  # another subject
+    ])
+
+    assert await drafts.settle_waiting(PERSON, now=NOW, gmail=box) == 0
+    assert drafts.count_waiting(1, NOW.replace(hour=0)) == 1
+
+
+async def test_sent_mail_is_not_read_when_every_draft_is_gone() -> None:
+    _record(1, drafts.SOURCE_CHAT, None, "d1")
+
+    class Box(_Versions):
+        async def get_draft(self, draft_id: str) -> Any:
+            return None
+
+    box = Box([])
+    assert await drafts.settle_waiting(PERSON, now=NOW, gmail=box) == 1
+    assert box.sent_reads == 0
+
+
+async def test_one_drafts_failure_does_not_stop_the_pass() -> None:
+    _record(1, drafts.SOURCE_CHAT, None, "d1", when=NOW - timedelta(hours=1))
+    _record(1, drafts.SOURCE_CHAT, None, "d2", when=NOW - timedelta(hours=2))
+
+    class Box:
+        async def get_draft(self, draft_id: str) -> Any:
+            if draft_id == "d2":
+                raise ValueError("unexpected reply")
+            return None
+
+    # Newest first: d2's failure comes first, and d1 is still checked.
+    assert await drafts.settle_waiting(PERSON, now=NOW, gmail=Box()) == 1
+    assert [d for _, d in drafts._waiting(1, NOW - timedelta(days=1), None)] == ["d2"]
+
+
 def test_an_older_table_gets_the_gone_at_column(tmp_path: Path) -> None:
     import sqlite3
 

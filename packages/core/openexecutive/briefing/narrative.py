@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -83,7 +84,9 @@ OWN_MESSAGES_RULE = (
     "they show what the reader already knows, decided and asked for. Never "
     "report them back: never write that the reader messaged, emailed or "
     "chatted with you, how much, or that they asked, complained, pushed "
-    "back, thanked you or rated an answer, and never open with one. A "
+    "back, thanked you or rated an answer, and never open with one. Never "
+    "point to one of their chats by its title or its time (e.g. 'the 13:26 "
+    "chat'), and never write 'you asked me'. A "
     "figure or decision in them may be stated as a fact of the day. A "
     "request of theirs earns a line only while it is still open, written as "
     "what you are doing about it (e.g. 'I'm setting the offer tracker to "
@@ -828,17 +831,60 @@ async def synthesize_briefing_narrative(
             return fix_slips(text, reader)
         text = draft
         named = slips(text, reader)
-        if not named:
+        echoed = own_echoes(text)
+        if attempt == 1 and echoed:
+            logger.warning("briefing_narrative: rewrite still reports the reader's chats back")
+        if not named and (attempt == 1 or not echoed):
             return text
         if attempt == 0:
-            logger.info("briefing_narrative: draft named its reader (%d slips); rewriting", len(named))
+            logger.info(
+                "briefing_narrative: draft named its reader (%d slips) or echoed their chats (%d); rewriting",
+                len(named), len(echoed),
+            )
             messages = [
                 *messages,
                 {"role": "assistant", "content": text},
-                {"role": "user", "content": rewrite_request(named, reader)},
+                {"role": "user", "content": _rewrite_note(named, echoed, reader)},
             ]
     logger.warning("briefing_narrative: rewrite still named its reader; fixed in code")
     return fix_slips(text, reader)
+
+
+# Ways a draft reports the reader's own chats and asks back to them, which
+# OWN_MESSAGES_RULE forbids: "you asked me to", "your chat", "the 13:26 alert
+# chat". Caught in code because the rule alone did not hold (the /today header
+# wrote "the 13:26 alert chat shows the noise you asked me to deal with").
+_OWN_ECHO_RE = re.compile(
+    r"\byou\s+(?:asked|wanted|told|reminded)\s+me\b"
+    r"|\byou\s+asked\s+(?:for|about)\b"
+    r"|\b(?:our|your)\s+(?:[\w-]+\s+){0,3}?(?<!google )(?:chats?|conversations?)\b"
+    r"|\bthe\s+\d{1,2}:\d{2}\s*(?:[ap]\.?m\.?\s+)?(?:[\w-]+\s+){0,3}?(?:chats?|conversations?)\b",
+    re.IGNORECASE,
+)
+
+
+def own_echoes(text: str) -> list[str]:
+    """The phrases in ``text`` that report the reader's own chats or asks
+    back to them, as written."""
+    return sorted({m.group(0) for m in _OWN_ECHO_RE.finditer(text)})
+
+
+def _rewrite_note(named: list[str], echoed: list[str], reader: Reader | None) -> str:
+    """The note that sends a draft back for its reader slips and its echoes
+    of their own chats."""
+    notes = []
+    if echoed:
+        notes.append(
+            "Leave out every mention of the reader's own chats and asks to you ("
+            + ", ".join(f"'{e}'" for e in echoed)
+            + "): never which chat, its time, or that they asked. An ask still "
+            "open may stay only as what you are doing about it."
+        )
+    notes.append(
+        rewrite_request(named, reader) if named
+        else "Rewrite that accordingly. Change nothing else, and output only the rewrite."
+    )
+    return " ".join(notes)
 
 
 __all__ = [

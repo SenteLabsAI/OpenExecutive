@@ -206,7 +206,7 @@ def test_conversations_are_the_principals_titled_sessions(
     own = live_signals.gather_live_signals(_since(), include_private=True)
     shared = live_signals.gather_live_signals(_since(), include_private=False)
 
-    assert [line.split("] ", 1)[1] for line in own.conversations] == ["Vendor renewal question"]
+    assert own.conversations == ("Vendor renewal question",)
     assert shared.conversations == ()  # chat titles are the principal's own
 
 
