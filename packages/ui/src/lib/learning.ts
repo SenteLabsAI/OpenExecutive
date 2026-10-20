@@ -43,3 +43,42 @@ export function learningStats(
     wouldGoRight: replay.misses > 0 ? { pass: replay.would_pass, of: replay.misses } : null,
   };
 }
+
+// --- The Learning list: categories, quick picks ------------------------------
+
+/** What `memory/chat_review` says would have fixed a miss. */
+export type MissKind = "company" | "product";
+
+export const MISS_KINDS: MissKind[] = ["company", "product"];
+
+/** The two kinds in order, each with its misses, leaving out an empty one. */
+export function groupByKind<T extends { kind: MissKind }>(misses: T[]): { kind: MissKind; items: T[] }[] {
+  return MISS_KINDS.map((kind) => ({ kind, items: misses.filter((m) => m.kind === kind) })).filter(
+    (g) => g.items.length > 0,
+  );
+}
+
+/** The misses whose last nightly replay went right: safe to clear. */
+export function fixedMissIds(misses: { id: number; replay_state: string }[]): number[] {
+  return misses.filter((m) => m.replay_state === "closed").map((m) => m.id);
+}
+
+/** Live lessons whose chats so far went worse more often than fine. The
+ * review retires one on its own once it has reached enough chats; these are
+ * the ones heading that way. */
+export function unhelpfulLessonIds(
+  lessons: { id: number; retired_at: string | null; fine_after: number; miss_after: number }[],
+): number[] {
+  return lessons.filter((l) => l.retired_at === null && l.miss_after > l.fine_after).map((l) => l.id);
+}
+
+/** Every id in `ids` selected, or, when they all already are, none of them. */
+export function toggleAll(selected: ReadonlySet<number>, ids: number[]): Set<number> {
+  const next = new Set(selected);
+  const all = ids.length > 0 && ids.every((id) => next.has(id));
+  for (const id of ids) {
+    if (all) next.delete(id);
+    else next.add(id);
+  }
+  return next;
+}

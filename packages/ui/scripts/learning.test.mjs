@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isoWeek, learningStats } from "../src/lib/learning.ts";
+import { fixedMissIds, groupByKind, isoWeek, learningStats, toggleAll, unhelpfulLessonIds } from "../src/lib/learning.ts";
 
 test("isoWeek matches Python's isocalendar, across a year end", () => {
   assert.equal(isoWeek(new Date("2026-10-19T09:00:00Z")), "2026-W43");
@@ -29,4 +29,43 @@ test("a quiet week and no misses read as zero and nothing to check", () => {
   assert.equal(stats.checked, 0);
   assert.equal(stats.fellShort, 0);
   assert.equal(stats.wouldGoRight, null);
+});
+
+test("misses group by kind in a fixed order, and an empty kind is left out", () => {
+  const misses = [
+    { id: 1, kind: "product" },
+    { id: 2, kind: "company" },
+    { id: 3, kind: "product" },
+  ];
+  assert.deepEqual(
+    groupByKind(misses).map((g) => [g.kind, g.items.map((m) => m.id)]),
+    [["company", [2]], ["product", [1, 3]]],
+  );
+  assert.deepEqual(groupByKind([{ id: 4, kind: "company" }]).map((g) => g.kind), ["company"]);
+  assert.deepEqual(groupByKind([]), []);
+});
+
+test("the quick picks: misses that would go right today, lessons that aren't helping", () => {
+  assert.deepEqual(
+    fixedMissIds([
+      { id: 1, replay_state: "closed" },
+      { id: 2, replay_state: "open" },
+      { id: 3, replay_state: "evidence" },
+      { id: 4, replay_state: "closed" },
+    ]),
+    [1, 4],
+  );
+  const lesson = (id, fine_after, miss_after, retired_at = null) => ({ id, fine_after, miss_after, retired_at });
+  assert.deepEqual(
+    unhelpfulLessonIds([lesson(1, 1, 2), lesson(2, 2, 2), lesson(3, 0, 0), lesson(4, 0, 3, "2026-10-01T00:00:00Z")]),
+    [1],
+  );
+});
+
+test("select all adds the rest, and takes them all off once all are on", () => {
+  const some = toggleAll(new Set([1]), [1, 2, 3]);
+  assert.deepEqual([...some].sort(), [1, 2, 3]);
+  const none = toggleAll(new Set([1, 2, 3, 9]), [1, 2, 3]);
+  assert.deepEqual([...none], [9]);
+  assert.deepEqual([...toggleAll(new Set(), [])], []);
 });
