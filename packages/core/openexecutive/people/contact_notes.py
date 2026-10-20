@@ -156,11 +156,17 @@ def activity_key(person_id: int, db_path: Path | None = None) -> str:
 def put_activity(
     person_id: int, *, last_emailed_at: str | None, last_met_at: str | None, next_meeting_at: str | None,
     next_meeting_title: str, emailed_count: int, met_count: int, last_heard_at: str | None = None,
-    db_path: Path | None = None,
+    meetings_known: bool = True, db_path: Path | None = None,
 ) -> None:
     """Dates and counts, kept as they are when the pass doesn't know
-    (``last_heard_at`` None leaves the stored one)."""
+    (``last_heard_at`` None leaves the stored one; ``meetings_known`` False,
+    the calendar unread, leaves the next meeting and the meeting count)."""
     now = datetime.now(UTC).isoformat()
+    meetings = (
+        "next_meeting_at = excluded.next_meeting_at, next_meeting_title = excluded.next_meeting_title, "
+        "met_count = excluded.met_count, "
+        if meetings_known else ""
+    )
     with _conn(db_path) as conn:
         conn.execute(
             "INSERT INTO contact_notes (person_id, last_emailed_at, last_heard_at, last_met_at, next_meeting_at, "
@@ -169,9 +175,8 @@ def put_activity(
             "last_emailed_at = COALESCE(excluded.last_emailed_at, contact_notes.last_emailed_at), "
             "last_heard_at = COALESCE(excluded.last_heard_at, contact_notes.last_heard_at), "
             "last_met_at = COALESCE(excluded.last_met_at, contact_notes.last_met_at), "
-            "next_meeting_at = excluded.next_meeting_at, next_meeting_title = excluded.next_meeting_title, "
-            "emailed_count = excluded.emailed_count, met_count = excluded.met_count, "
-            "updated_at = excluded.updated_at",
+            + meetings
+            + "emailed_count = excluded.emailed_count, updated_at = excluded.updated_at",
             (person_id, last_emailed_at, last_heard_at, last_met_at, next_meeting_at,
              next_meeting_title[:TOPIC_MAX * 2], emailed_count, met_count, now),
         )

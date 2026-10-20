@@ -4384,6 +4384,8 @@ people:
     model calls a day (contact_note_tries counts every call, failed or
     rejected too); a note with a link, address or tag is rejected and the
     old note kept.
+    A pass whose calendar read fails keeps the stored next meeting and
+    meeting count (put_activity meetings_known=False).
     last_heard_at is read for up to HEARD_READS_PER_RUN (20) people a pass,
     independent of the note budget. Read on the principal's own turn by list_people and
     ask_about_person (contacts_reachable_now), and by GET

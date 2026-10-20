@@ -115,6 +115,8 @@ class RunResult:
     updated: int = 0
     notes: int = 0
     counts: dict[str, int] = field(default_factory=dict)
+    # False when the calendar couldn't be read: meeting dates are kept as they were.
+    meetings_read: bool = True
     # A mailbox refusal met after adds began; raised once the notes are done.
     refused: Exception | None = None
 
@@ -236,6 +238,7 @@ def _skip(address: str, own: set[str], known: set[str]) -> bool:
 
 async def gather(
     client: Any, *, own: set[str], known: set[str], now: datetime, watch: frozenset[str] = frozenset(),
+    result: RunResult | None = None,
 ) -> dict[str, Seen]:
     """Who the principal emailed and met, by address. Calendar trouble (not
     granted, or failing) leaves the meetings out. Addresses in ``watch``
@@ -278,6 +281,8 @@ async def gather(
     except Exception:
         logger.info("contact_keeper: no meetings read (calendar not granted or failing)")
         events = []
+        if result is not None:
+            result.meetings_read = False
     for event in events:
         if event.all_day or event.response not in ("organizer", "accepted"):
             continue
@@ -619,7 +624,7 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
     # Everyone but the principal, for signatures and notes: the team too.
     people = [p for p in everyone if not p.archived and p.id is not None and not p.is_principal]
     watch = frozenset(changes.norm(a) for p in people for a in [p.email, *p.email_aliases] if a)
-    seen = await gather(client, own=own, known=known, now=now, watch=watch)
+    seen = await gather(client, own=own, known=known, now=now, watch=watch, result=result)
 
     # A second address for a contact they already have, mailed at least
     # EMAILED_MIN times under their exact full name as the principal wrote
@@ -832,6 +837,7 @@ async def _refresh_notes(
                 next_meeting_at=ahead[0][1] if ahead else None,
                 next_meeting_title=ahead[0][2] if ahead else "",
                 emailed_count=len(sent), met_count=len(past), last_heard_at=heard_at,
+                meetings_known=result.meetings_read,
             )
         except Exception:
             logger.warning("contact_keeper: couldn't keep a contact's activity", exc_info=True)

@@ -617,6 +617,23 @@ def test_failed_notes_use_up_the_days_budget(owner: int, monkeypatch: pytest.Mon
     assert len(calls) == 3
 
 
+def test_a_calendar_failure_keeps_the_next_meeting(owner: int, written: list[Any]) -> None:
+    from openexecutive.people import contact_notes
+
+    pid = people_store.upsert_person(full_name="Priya Shah", email=PRIYA, kind="contact")
+    people_registry.invalidate()
+    box = FakeMailbox()
+    box.sent = [_wrote(PRIYA, "Can you price the roof?", days_ago=1)]
+    box.events = [CalendarEvent(id="e2", title="Roof walk-through", start=(NOW + timedelta(days=3)).isoformat(),
+                                end="", attendees=(f"Priya Shah <{PRIYA}>",), response="organizer")]
+    _run(box)
+    assert contact_notes.get(pid).next_meeting_title == "Roof walk-through"
+    box.calendar_error = RuntimeError("calendar down")
+    _run(box)
+    note = contact_notes.get(pid)
+    assert note.next_meeting_title == "Roof walk-through" and note.next_meeting_at
+
+
 def test_notes_are_capped_per_run(owner: int, written: list[Any]) -> None:
     from openexecutive.people import contact_notes
 
