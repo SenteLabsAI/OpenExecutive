@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -92,6 +92,8 @@ export default function ReflectionTab() {
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
   const [queue] = useState(() => new DeferredForget<Forget>(sendForget, UNDO_MS));
+  // A forget sent after leaving the screen (unmount, page close) reports nothing.
+  const mounted = useRef(true);
   const tabsId = useId();
 
   const refresh = useCallback(async () => {
@@ -111,10 +113,12 @@ export default function ReflectionTab() {
   // unmount, and when the tab closes or reloads (keepalive, since the page
   // is going away and nothing will read the answer).
   useEffect(() => {
+    mounted.current = true;
     const onPageHide = () => void queue.flush({ keepalive: true });
     window.addEventListener("pagehide", onPageHide);
     return () => {
       window.removeEventListener("pagehide", onPageHide);
+      mounted.current = false;
       void queue.flush();
     };
   }, [queue]);
@@ -134,6 +138,7 @@ export default function ReflectionTab() {
     const n = items.length;
     setToast(view === "misses" ? `Forgot ${n}.` : `Stopped saying ${n === 1 ? "it" : n}.`);
     queue.hold(items, (sent, failedSends) => {
+      if (!mounted.current) return;
       // Drop the toast unless a newer forget is waiting, then reload.
       setToast((t) => (queue.waiting.length ? t : null));
       if (failedSends > 0) window.alert("Some of them couldn't be forgotten.");
