@@ -711,5 +711,16 @@ def test_the_people_route_takes_details(owner: int) -> None:
         {"kind": "phone", "value": " +1 555 010 0100 "}, {"kind": "address", "value": ""},
     ]}).json()
     assert body["details"] == [{"kind": "phone", "value": "+1 555 010 0100"}]
-    bad = api.patch(f"/people/{pid}", headers=mine, json={"details": [{"kind": "website", "value": "not a site"}]})
+    bad = api.patch(f"/people/{pid}", headers=mine, json={
+        "role": "Changed", "details": [{"kind": "website", "value": "not a site"}],
+    })
     assert bad.status_code == 422
+    # A bad detail changes nothing: not the person, and no one is created.
+    assert people_store.get_person(pid).role == ""
+    before = len(people_store.list_people(include_contacts=True))
+    made = api.post("/people", headers=mine, json={
+        "full_name": "Ann Example", "email": "ann@x.example", "kind": "contact",
+        "details": [{"kind": "phone", "value": "abc"}],
+    })
+    assert made.status_code == 422
+    assert len(people_store.list_people(include_contacts=True)) == before

@@ -375,6 +375,8 @@ def _require_roster_owner(request: Request) -> None:
 @router.post("/people", response_model=Person, status_code=status.HTTP_201_CREATED)
 def create_person(body: PersonCreate, request: Request) -> Person:
     _require_roster_owner(request)
+    # Checked before anything is written, so a bad one changes nothing.
+    details = _checked_details(body.details)
     if body.is_principal and body.kind != "team":
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
     if body.kind != "team" and not caller_is_principal(request):
@@ -399,8 +401,8 @@ def create_person(body: PersonCreate, request: Request) -> Person:
         reports_to_person_id=body.reports_to_person_id,
         kind=body.kind,
     )
-    if body.details:
-        people_store.set_person_details(pid, _checked_details(body.details))
+    if details:
+        people_store.set_person_details(pid, details)
     if body.authority_scope:
         people_store.set_authority_scope(pid, body.authority_scope)
     if body.availability:
@@ -453,6 +455,8 @@ def _after_roster_write() -> None:
 @router.patch("/people/{person_id}", response_model=Person)
 def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
     _require_roster_owner(request)
+    # Checked before anything is written, so a bad one changes nothing.
+    details = _checked_details(body.details) if body.details is not None else None
     existing = _visible_person(person_id, request)
     if body.kind is not None and body.kind != "team" and existing.is_principal:
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
@@ -485,8 +489,8 @@ def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
             department_slugs=body.department_slugs,
             kind=body.kind,
         )
-    if body.details is not None:
-        people_store.set_person_details(person_id, _checked_details(body.details))
+    if details is not None:
+        people_store.set_person_details(person_id, details)
     if "authority_scope" in raw:
         people_store.set_authority_scope(
             person_id, body.authority_scope or []
