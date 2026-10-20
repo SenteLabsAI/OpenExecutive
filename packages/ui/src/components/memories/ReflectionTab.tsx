@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -17,6 +17,7 @@ import {
   type ReflectionWeek,
 } from "@/lib/api";
 import {
+  DeferredForget,
   fixedMissIds,
   groupByKind,
   learningStats,
@@ -67,10 +68,16 @@ const RETIRED_LABEL: Record<NonNullable<ReflectionLesson["retired_reason"]>, str
 /** How long a forget waits for Undo before it is sent. */
 const UNDO_MS = 6000;
 
-interface Pending {
+/** One forgotten row, waiting for Undo. */
+interface Forget {
   view: View;
-  ids: number[];
-  timer: ReturnType<typeof setTimeout>;
+  id: number;
+}
+
+const keyOf = (f: Forget) => `${f.view === "misses" ? "m" : "l"}:${f.id}`;
+
+function sendForget(f: Forget, keepalive: boolean): Promise<void> {
+  return f.view === "misses" ? forgetReflectionMiss(f.id, { keepalive }) : forgetReflectionLesson(f.id, { keepalive });
 }
 
 export default function ReflectionTab() {
@@ -84,7 +91,7 @@ export default function ReflectionTab() {
   // Forgotten here but not yet sent ("m:<id>" / "l:<id>"), and the toast.
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
-  const pending = useRef<Pending | null>(null);
+  const [queue] = useState(() => new DeferredForget<Forget>(sendForget, UNDO_MS));
   const tabsId = useId();
 
   const refresh = useCallback(async () => {
@@ -100,39 +107,17 @@ export default function ReflectionTab() {
     void refresh();
   }, [refresh]);
 
-  /** Send the waiting forget now. */
-  const commit = useCallback(async () => {
-    const p = pending.current;
-    if (!p) return;
-    pending.current = null;
-    clearTimeout(p.timer);
-    setToast(null);
-    const send = p.view === "misses" ? forgetReflectionMiss : forgetReflectionLesson;
-    const results = await Promise.allSettled(p.ids.map((id) => send(id)));
-    if (results.some((r) => r.status === "rejected")) window.alert("Some of them couldn't be forgotten.");
-    await refresh();
-    const prefix = p.view === "misses" ? "m:" : "l:";
-    setHidden((h) => new Set([...h].filter((k) => !p.ids.some((id) => k === `${prefix}${id}`))));
-  }, [refresh]);
-
   // Leaving the screen sends what is waiting rather than dropping it: on
   // unmount, and when the tab closes or reloads (keepalive, since the page
   // is going away and nothing will read the answer).
   useEffect(() => {
-    const onPageHide = () => {
-      const p = pending.current;
-      if (!p) return;
-      pending.current = null;
-      clearTimeout(p.timer);
-      const send = p.view === "misses" ? forgetReflectionMiss : forgetReflectionLesson;
-      for (const id of p.ids) void send(id, { keepalive: true }).catch(() => {});
-    };
+    const onPageHide = () => void queue.flush({ keepalive: true });
     window.addEventListener("pagehide", onPageHide);
     return () => {
       window.removeEventListener("pagehide", onPageHide);
-      void commit();
+      void queue.flush();
     };
-  }, [commit]);
+  }, [queue]);
 
   const pick = useCallback((next: { view?: View; category?: Category }) => {
     if (next.view !== undefined) setView(next.view);
@@ -143,25 +128,27 @@ export default function ReflectionTab() {
 
   const forgetSelected = useCallback(() => {
     if (selected.size === 0) return;
-    void commit();
-    const ids = [...selected];
-    const prefix = view === "misses" ? "m:" : "l:";
-    setHidden((h) => new Set([...h, ...ids.map((id) => `${prefix}${id}`)]));
+    const items = [...selected].map((id) => ({ view, id }));
+    setHidden((h) => new Set([...h, ...items.map(keyOf)]));
     setSelected(new Set());
-    const n = ids.length;
+    const n = items.length;
     setToast(view === "misses" ? `Forgot ${n}.` : `Stopped saying ${n === 1 ? "it" : n}.`);
-    pending.current = { view, ids, timer: setTimeout(() => void commit(), UNDO_MS) };
-  }, [commit, selected, view]);
+    queue.hold(items, (sent, failedSends) => {
+      // Drop the toast unless a newer forget is waiting, then reload.
+      setToast((t) => (queue.waiting.length ? t : null));
+      if (failedSends > 0) window.alert("Some of them couldn't be forgotten.");
+      void refresh().then(() => {
+        const done = new Set(sent.map(keyOf));
+        setHidden((h) => new Set([...h].filter((k) => !done.has(k))));
+      });
+    });
+  }, [queue, refresh, selected, view]);
 
   const undo = useCallback(() => {
-    const p = pending.current;
-    if (!p) return;
-    pending.current = null;
-    clearTimeout(p.timer);
-    const prefix = p.view === "misses" ? "m:" : "l:";
-    setHidden((h) => new Set([...h].filter((k) => !p.ids.some((id) => k === `${prefix}${id}`))));
+    const back = new Set(queue.undo().map(keyOf));
+    setHidden((h) => new Set([...h].filter((k) => !back.has(k))));
     setToast(null);
-  }, []);
+  }, [queue]);
 
   if (failed) return <Card><EmptyState message="This is unavailable right now." /></Card>;
   if (state === undefined) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
