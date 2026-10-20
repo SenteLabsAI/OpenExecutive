@@ -399,3 +399,14 @@ def test_ask_words_match_whole_words_and_sub_lines_go_with_their_bullet() -> Non
     assert drop_settled_points(signed) == ""
     nested = "- **Harbor Point** stays off the list.\n  - the buyout is not offered.\n- **Lease** — signed today."
     assert drop_settled_points(nested) == "- **Lease** — signed today."
+
+
+def test_a_person_left_off_a_list_or_an_ask_for_the_reader_is_kept() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points
+
+    for line in (
+        "- **Offsite** — Dana was left off the guest list.",
+        "- **Contract** — stays off the list; legal needs your approval.",
+        "- **Vendor** — kept off the list while it is pending.",
+    ):
+        assert drop_settled_points(line) == line

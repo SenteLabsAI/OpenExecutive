@@ -882,7 +882,7 @@ def own_echoes(text: str) -> list[str]:
 # Only list wording: "no longer open" or "needs no action" can sit beside a
 # real ask in the same bullet, and a matching bullet is dropped whole.
 _SETTLED_RE = re.compile(
-    r"\b(?:stays?|staying|kept|keeps?|left|leaves?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
+    r"\b(?:stays?|staying|kept|keeps?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
     r"(?:list|board|radar)\b"
     r"|\bno\s+longer\s+on\s+(?:the|your)\s+(?:[\w-]+\s+)?list\b"
     r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b",
@@ -893,7 +893,7 @@ _SETTLED_RE = re.compile(
 # A bullet that still asks something of the reader, or carries a deadline,
 # is never dropped in code.
 _ASK_RE = re.compile(
-    r"\?|\b(?:approve|decide|confirm|sign|reply|add|send|tell\s+me|until\s+you|due|before\s+\w+)\b"
+    r"\?|\b(?:you|approve|approval|decide|confirm|sign|reply|add|send|needs|pending|waiting|due|before\s+\w+)\b"
     r"|\bby\s+(?:mon|tue|wed|thu|fri|sat|sun|tomorrow|today|end)",
     re.IGNORECASE,
 )
