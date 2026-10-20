@@ -1,9 +1,10 @@
-"""Chat tools and document collections an install adds without changing this code.
+"""Chat tools, document collections and gateway checks an install adds without changing this code.
 
 ``OPENEXECUTIVE_EXTENSIONS`` names Python modules, comma-separated. Each has a
-``register()`` that calls ``register_tool`` and ``register_collection``; they
-are imported once, when the API starts (or the first time anything needs them
-in a process that has no API, e.g. the CLI).
+``register()`` that calls ``register_tool``, ``register_collection`` and
+``register_gateway_check``; they are imported once, when the API starts (or
+the first time anything needs them in a process that has no API, e.g. the
+CLI).
 
 An extension tool is offered only on a turn someone is in:
 
@@ -41,6 +42,24 @@ on the direct list, and may describe its chip. A collection is a kind of
 document an extension publishes as a drafted artifact tagged
 ``collection_tag(name)``: the Documents page gives it its own filter, and the
 extension hears when one is archived, restored or deleted, before it happens.
+
+A gateway check belongs to an MCP server the install configures for the
+extension (its tools are ``<server>__*``). The gateway asks it about every
+``call_tool`` to that server, after its own refusals (Act as me's lockdown,
+outside content, a turn from another AI app, saved files) and before any of
+its per-tool gates. It may refuse the call, which the gateway audits as a
+blocked outbound call, or let it through with ``outgoing``: the arguments
+actually sent, built after every gate passed and again for each send (a
+retry included), from the model's own arguments, which stay what is
+recorded. A check that raises refuses the call, and so does a call whose name
+only differs in spelling from ``<server>__`` (the proxy routes by the exact
+name). The built-in servers (``google_workspace``, ``microsoft_365``,
+``fetch``) take none: their gates are core's. If the extension then fails to
+load, its servers stay refused rather than unchecked: those it registered a
+check for, and those it names in a module-level ``GATEWAY_SERVERS`` (which
+also covers a ``register()`` that fails before reaching its check). A module
+that cannot even be imported names none, so its server should not be
+configured until it is fixed.
 """
 from __future__ import annotations
 
@@ -67,6 +86,8 @@ _MAX_WORKFLOW_NAME = 64 - len(WORKFLOW_PREFIX)
 _in_workflow_step: ContextVar[str | None] = ContextVar("extension_in_workflow_step", default=None)
 # A collection or tool group name.
 _COLLECTION_NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+# An MCP server a gateway check covers: single _ between letters and digits.
+_SERVER_NAME = re.compile(r"(?=.{1,32}$)[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 _COLLECTION_TAG_PREFIX = "collection:"
 _MAX_CHIP_SUMMARY = 120
 
@@ -121,8 +142,32 @@ class Collection:
     on_change: Callable[[str, Change], Awaitable[None]] | None = None
 
 
+@dataclass(frozen=True)
+class GatewayCall:
+    """What a gateway check decided for one call: ``refusal`` (what the model
+    is told) refuses it; otherwise it goes out, with ``outgoing(arguments)``
+    as what is sent when given (called once per send)."""
+
+    refusal: str | None = None
+    outgoing: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True)
+class GatewayCheck:
+    # The configured MCP server whose calls it checks: tools ``<server>__*``.
+    server: str
+    # (tool name, lowercased with "-" as "_"; a copy of the model's
+    # arguments) -> GatewayCall. Runs in the turn, so it may read
+    # ``schedule_tools.current_session`` to see who is asking.
+    check: Callable[[str, dict[str, Any]], GatewayCall]
+
+
+# Core's own gates cover these; an extension's check never replaces them.
+_BUILTIN_SERVERS = frozenset({"google_workspace", "microsoft_365", "fetch"})
+
 _tools: dict[str, ExtraTool] = {}
 _collections: dict[str, Collection] = {}
+_gateway_checks: dict[str, GatewayCheck] = {}
 _loaded = False
 _loading = False
 # Reentrant: a register() may read the registry (e.g. get_collection).
@@ -175,6 +220,43 @@ def register_collection(collection: Collection) -> None:
     _collections[collection.name] = collection
 
 
+def register_gateway_check(gateway_check: GatewayCheck) -> None:
+    """Add the check for one MCP server's calls (see module doc). Refuses a
+    bad name, a built-in server and a second check for the same server."""
+    server = gateway_check.server
+    if not _SERVER_NAME.fullmatch(server):
+        # A "__" anywhere, or a "_" at either end, would split as server__tool
+        # somewhere else ("shop___x" is server "shop").
+        raise ExtensionError(
+            f"server name {server!r} must be lowercase letters and digits, with single _ between them"
+        )
+    if server in _BUILTIN_SERVERS:
+        raise ExtensionError(f"server {server!r} is built in; its calls are gated by core")
+    if server in _gateway_checks:
+        raise ExtensionError(f"server {server!r} already has a gateway check")
+    _gateway_checks[server] = gateway_check
+
+
+def _held_check(module_name: str) -> Callable[[str, dict[str, Any]], GatewayCall]:
+    """The check that stands in for a server whose extension failed to load:
+    it refuses every call."""
+    refusal = GatewayCall(
+        refusal=(
+            "This tool is unavailable: the extension that checks its calls did not load "
+            f"({module_name[:80]}). Tell the user an operator needs to fix it; do not retry."
+        )
+    )
+    return lambda _tool, _arguments: refusal
+
+
+def gateway_check_for(tool_name: str) -> GatewayCheck | None:
+    """The check registered for the server ``tool_name`` (normalized, as the
+    gateway matches it) belongs to, if any."""
+    load()
+    server, sep, _ = tool_name.partition("__")
+    return _gateway_checks.get(server) if sep else None
+
+
 def load() -> None:
     """Import each module ``OPENEXECUTIVE_EXTENSIONS`` names and call its
     ``register()``, once per process. A module that fails is logged and
@@ -194,8 +276,11 @@ def load() -> None:
             names = [n for n in (getattr(get_settings(), "extensions", None) or "").split(",") if n]
             for module_name in names:
                 tools_before, collections_before = set(_tools), set(_collections)
+                checks_before = set(_gateway_checks)
+                declared: Iterable[Any] = ()
                 try:
                     module = importlib.import_module(module_name)
+                    declared = getattr(module, "GATEWAY_SERVERS", ())
                     register = getattr(module, "register", None)
                     if not callable(register):
                         raise ExtensionError(f"{module_name} has no register()")
@@ -211,6 +296,13 @@ def load() -> None:
                         _forget_tool(name)
                     for name in set(_collections) - collections_before:
                         del _collections[name]
+                    # Except its servers: they stay configured, so their calls
+                    # are refused rather than sent with no check at all.
+                    held = set(_gateway_checks) - checks_before
+                    if isinstance(declared, (list, tuple, set, frozenset)):
+                        held |= {s for s in declared if isinstance(s, str) and _SERVER_NAME.fullmatch(s)}
+                    for server in held - _BUILTIN_SERVERS:
+                        _gateway_checks[server] = GatewayCheck(server=server, check=_held_check(module_name))
             _loaded = True
         finally:
             _loading = False
@@ -368,6 +460,7 @@ def _reset_for_tests() -> None:
     for name in list(_tools):
         _forget_tool(name)
     _collections.clear()
+    _gateway_checks.clear()
     _loaded = _loading = False
 
 
@@ -376,9 +469,12 @@ __all__ = [
     "Collection",
     "ExtensionError",
     "ExtraTool",
+    "GatewayCall",
+    "GatewayCheck",
     "chip_fields",
     "collection_for_tags",
     "collection_tag",
+    "gateway_check_for",
     "get_collection",
     "has_chip",
     "in_workflow_step",
@@ -386,6 +482,7 @@ __all__ = [
     "notify",
     "offered_tools",
     "register_collection",
+    "register_gateway_check",
     "register_tool",
     "workflow_step",
     "workflow_tools",
