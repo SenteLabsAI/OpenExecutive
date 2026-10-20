@@ -534,6 +534,26 @@ def test_a_note_is_written_from_the_principals_own_words_only(owner: int, writte
     assert len(written) == 2
 
 
+def test_a_mailbox_slowdown_stops_the_reads_not_the_notes(owner: int, written: list[Any]) -> None:
+    asked: list[str] = []
+
+    class SlowBox(FakeMailbox):
+        async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
+            asked.append(address)
+            raise gmail_mod.GmailRateLimited("slow down")
+
+    box = SlowBox()
+    for i in range(2):
+        address = f"slow{i}@northwind.example"
+        people_store.upsert_person(full_name=f"Slow Person{i}", email=address, kind="contact")
+        box.sent.append(_wrote(address, f"About order {i}.", days_ago=1))
+    people_registry.invalidate()
+    result = _run(box)
+    # One signature read, one last-heard read: each stops at the first refusal.
+    assert len(asked) == 2
+    assert len(written) == 2 and result.status != "error"
+
+
 def test_notes_are_capped_per_run(owner: int, written: list[Any]) -> None:
     from openexecutive.people import contact_notes
 
@@ -730,3 +750,27 @@ def test_the_people_route_takes_details(owner: int) -> None:
     })
     assert made.status_code == 422
     assert len(people_store.list_people(include_contacts=True)) == before
+
+
+def test_a_teammates_details_go_only_to_the_principal_and_them(owner: int) -> None:
+    from openexecutive.api.routes import people as people_route
+
+    app = FastAPI()
+    app.include_router(people_route.router)
+    api = TestClient(app)
+    ben = people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example")
+    people_store.upsert_person(full_name="Cara Teammate", email="cara@co.example")
+    from openexecutive.people.models import ContactDetail
+
+    people_store.set_person_details(ben, [ContactDetail(kind="mobile", value="555 010 0142")], source="signature")
+    people_registry.invalidate()
+
+    def details(who: str, path: str) -> list[Any]:
+        body = api.get(path, headers={"x-caller-email": who}).json()
+        rows = body if isinstance(body, list) else [body]
+        return [r["details"] for r in rows if r["id"] == ben]
+
+    for path in ("/people", f"/people/{ben}"):
+        assert details(OWNER, path) == [[{"kind": "mobile", "value": "555 010 0142"}]]
+        assert details("ben@co.example", path) == [[{"kind": "mobile", "value": "555 010 0142"}]]
+        assert details("cara@co.example", path) == [[]]

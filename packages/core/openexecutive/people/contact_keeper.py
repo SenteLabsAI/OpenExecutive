@@ -711,7 +711,8 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
         try:
             message = await client.latest_from(address)
         except (GmailAuthError, GmailRateLimited):
-            raise
+            # Stop reading signatures this run; the notes still go on.
+            break
         except Exception:
             logger.info("contact_keeper: couldn't read a contact's newest mail")
             continue
@@ -807,7 +808,8 @@ async def _refresh_notes(
             try:
                 latest = await client.latest_from(changes.norm(person.email), days=int(LOOKBACK.days))
             except (GmailAuthError, GmailRateLimited):
-                raise
+                # Stop asking the mailbox this run; the notes still go on.
+                heard_reads, latest = 0, None
             except Exception:
                 latest = None
             if latest is not None and getattr(latest, "sender_authenticated", False) is True:

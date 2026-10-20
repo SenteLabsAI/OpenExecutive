@@ -140,7 +140,25 @@ def _visible_person(person_id: int, request: Request) -> Person:
     person = people_store.get_person(person_id)
     if person is None or (person.kind != "team" and not caller_is_principal(request)):
         raise HTTPException(status_code=404, detail="Person not found")
-    return person
+    return _shown([person], request)[0]
+
+
+def _shown(people: list[Person], request: Request) -> list[Person]:
+    """``people`` as the caller may see them: a person's phone, website and
+    other details (some read from their email signature) go only to the
+    principal and to that person. Fails closed."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    try:
+        caller = _resolve_caller_person_id(request)
+        principal = people_store.is_principal_or_self(caller, None)
+    except Exception:
+        logger.exception("people: caller check failed — details stay hidden")
+        caller, principal = None, False
+    if principal:
+        return people
+    return [p if not p.details or (caller is not None and p.id == caller) else p.model_copy(update={"details": []})
+            for p in people]
 
 
 class PeopleViewer(BaseModel):
@@ -156,11 +174,11 @@ class PeopleViewer(BaseModel):
 def list_people(
     request: Request, include_archived: bool = False, include_contacts: bool = False
 ) -> list[Person]:
-    return people_store.list_people(
+    return _shown(people_store.list_people(
         include_archived=include_archived,
         # Anyone but the principal gets the team, as if no contact existed.
         include_contacts=include_contacts and caller_is_principal(request),
-    )
+    ), request)
 
 
 @router.get("/people/me", response_model=PeopleViewer)
@@ -176,7 +194,7 @@ def people_viewer(request: Request) -> PeopleViewer:
 
 
 @router.get("/people/by-scope/{token}", response_model=list[Person])
-def people_by_scope(token: str) -> list[Person]:
+def people_by_scope(token: str, request: Request) -> list[Person]:
     """Return non-archived people who can approve the given scope token."""
     try:
         scope = AuthorityScope(token)
@@ -185,7 +203,7 @@ def people_by_scope(token: str) -> list[Person]:
             status_code=400,
             detail=f"Unknown scope token: {token!r}. Valid tokens: {[s.value for s in AuthorityScope]}",
         ) from exc
-    return people_store.find_approvers(scope)
+    return _shown(people_store.find_approvers(scope), request)
 
 
 # --------------------------------------------------------------------------- #
