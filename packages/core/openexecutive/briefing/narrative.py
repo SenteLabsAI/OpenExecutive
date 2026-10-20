@@ -831,7 +831,8 @@ async def synthesize_briefing_narrative(
             return fix_slips(text, reader)
         text = draft
         if attempt == 1:
-            text = drop_settled_points(text)
+            # Never down to nothing: a header of only such points stays as written.
+            text = drop_settled_points(text).strip() or text
         named = slips(text, reader)
         echoed = own_echoes(text)
         settled = settled_mentions(text)

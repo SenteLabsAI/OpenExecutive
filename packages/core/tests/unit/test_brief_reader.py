@@ -340,3 +340,14 @@ async def test_a_settled_point_is_rewritten_then_dropped_in_code(
     assert text == "**Lease signed.**"
     assert len(provider.calls) == 2
     assert "'stays off the list'" in provider.calls[1]["messages"][2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_a_header_of_only_settled_points_is_not_emptied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    only = "- **Harbor Point** — it stays off the list today."
+    text, provider = await _synth(monkeypatch, [only, only])
+
+    assert text == only
+    assert len(provider.calls) == 2
