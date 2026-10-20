@@ -874,17 +874,18 @@ def own_echoes(text: str) -> list[str]:
     return sorted({m.group(0) for m in _OWN_ECHO_RE.finditer(text)})
 
 
-# Ways a draft says an item is settled, off the list or needs nothing, which
+# Ways a draft says an item is off the list (it needs nothing), which
 # STANDING_FACTS_RULE forbids (leave such an item out entirely). The header
 # still wrote "the LP buyout is not part of the current offers, so it stays
 # off the active list for today": a point that needs nothing from the reader.
+# Only list wording: "no longer open" or "needs no action" can sit beside a
+# real ask in the same bullet, and a matching bullet is dropped whole.
 _SETTLED_RE = re.compile(
     r"\b(?:stays?|staying|kept|keeps?|left|leaves?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
     r"(?:list|board|radar|agenda)\b"
     r"|\boff\s+the\s+(?:[\w-]+\s+)?list\b"
-    r"|\bno\s+longer\s+(?:live|active|open|on\s+(?:the|your)\s+(?:[\w-]+\s+)?list)\b"
-    r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b"
-    r"|\bneeds?\s+no\s+action\b",
+    r"|\bno\s+longer\s+on\s+(?:the|your)\s+(?:[\w-]+\s+)?list\b"
+    r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b",
     re.IGNORECASE,
 )
 
@@ -913,8 +914,7 @@ def _rewrite_note(
     notes = []
     if settled:
         notes.append(
-            "Leave out entirely every item you only say is settled, off the list or "
-            "needing nothing ("
+            "Leave out entirely every item you only say is off the list ("
             + ", ".join(f"'{e}'" for e in settled)
             + "): never write that it was dropped or stays off."
         )

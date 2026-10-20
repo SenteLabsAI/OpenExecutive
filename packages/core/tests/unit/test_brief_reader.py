@@ -313,9 +313,16 @@ def test_settled_mentions_find_items_said_to_need_nothing() -> None:
         "so it stays off the active list for today."
     )
     assert settled_mentions(point) == ["stays off the active list"]
-    assert settled_mentions("That one needs no action and is no longer live.") == [
-        "needs no action", "no longer live",
+    assert settled_mentions("It was dropped from the list and is no longer on your list.") == [
+        "dropped from the list", "no longer on your list",
     ]
+    # A bullet that pairs "no longer open" or "needs no action" with a real ask stays.
+    mixed = (
+        "- **Offer** — the exclusive window is no longer open, so decide by Friday whether to counter.\n"
+        "- **Lease** — needs no action from you, but legal needs your sign-off."
+    )
+    assert settled_mentions(mixed) == []
+    assert drop_settled_points(mixed) == mixed
     assert settled_mentions("- **Lease** — the landlord signed, so I'm filing it today.") == []
     text = "**Bottom line.**\n" + point + "\n- **Lease** — signed today.\n**Move today:** file it."
     assert drop_settled_points(text) == "**Bottom line.**\n- **Lease** — signed today.\n**Move today:** file it."
