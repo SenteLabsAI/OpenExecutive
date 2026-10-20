@@ -75,7 +75,9 @@ def test_ids_are_checked_and_deduplicated() -> None:
     assert da.valid_ids([FILE_A, FILE_A, FILE_B]) == [FILE_A, FILE_B]
     assert "Not a Drive file id" in str(da.valid_ids(["../etc/passwd"]))
     assert "must list" in str(da.valid_ids([]))
-    assert "At most" in str(da.valid_ids([f"{FILE_A[:-2]}{i:02d}" for i in range(11)]))
+    # A folder of scans fits: more than a forward's ten, up to MAX_FILES.
+    assert len(da.valid_ids([f"{FILE_A[:-2]}{i:02d}" for i in range(da.MAX_FILES)])) == 15
+    assert "At most 15" in str(da.valid_ids([f"{FILE_A[:-2]}{i:02d}" for i in range(da.MAX_FILES + 1)]))
 
 
 def test_files_come_back_as_bytes_and_the_copies_are_removed(

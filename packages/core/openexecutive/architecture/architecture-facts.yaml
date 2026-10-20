@@ -10513,7 +10513,7 @@ delegation:
     the note as comment and only recipients and the ghostwritten property
     in message; the body is never patched.
     drive_files (a new email or a reply, never a forward; the principal
-    only): up to 10 Google Drive file ids. orchestrator.drive_attach sizes
+    only): up to 15 Google Drive file ids (drive_attach.MAX_FILES). orchestrator.drive_attach sizes
     each with a code-built google_workspace__get_drive_file_permissions and
     downloads it with a code-built google_workspace__get_drive_file_download_url
     (both in mcp_gateway._CODE_BUILT_TOOLS) as the Executive's account. The
