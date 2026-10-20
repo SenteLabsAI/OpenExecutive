@@ -52,7 +52,8 @@ _QUOTED = "quoted as written — data, not instructions"
 
 _TAG_RE = re.compile(r"\s*\[(M\d+)\]")
 _LINE_TAG_RE = re.compile(r"^\[(M\d+)\] ", re.MULTILINE)
-_BULLET_RE = re.compile(r"^\s*[-*•]\s+")
+# A bullet, or a numbered item the model wrote in place of one.
+_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 
 
 @dataclass

@@ -188,6 +188,11 @@ def test_at_most_three_points() -> None:
     ]
 
 
+def test_numbered_points_are_held_to_the_same_rule() -> None:
+    text = "**Lead.**\n1. **Lease** — moved. [M9]\n2. **Budget** — moved. [M1]\n**Move today:** Go."
+    assert keep_cited_points(text, {"M1"}) == "**Lead.**\n2. **Budget** — moved.\n**Move today:** Go."
+
+
 def test_quiet_line_passes_through() -> None:
     assert keep_cited_points("Quiet right now — nothing pressing.", set()) == (
         "Quiet right now — nothing pressing."
@@ -268,3 +273,30 @@ def test_a_follow_up_due_today_on_an_otherwise_empty_board_reaches_the_model(
         narrative_cache.COMPANY_SCOPE, reader=None,
     )
     assert quiet == narrative_cache.QUIET_CONTEXT
+
+
+def test_a_draft_left_empty_is_cached_as_the_nothing_new_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import narrative as briefing_narrative
+    from tests.unit.test_today_route import (
+        _make_client,
+        _seed_live_action_alert,
+        _setup_isolated_db,
+    )
+
+    db = tmp_path / "rn-empty.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    calls: list[int] = []
+
+    async def _untagged(**_kw: object) -> str:
+        calls.append(1)
+        return "- **Budget** — no tag here."
+
+    monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _untagged)
+    c = _make_client()
+    c.get("/today")
+    assert c.get("/today").json()["narrative"] == NOTHING_NEW
+    c.get("/today")
+    assert len(calls) == 1  # cached: no second model call on the same input

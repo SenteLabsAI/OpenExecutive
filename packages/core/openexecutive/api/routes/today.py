@@ -2056,9 +2056,11 @@ async def _regen_briefing_narrative_locked(
                 # 25 s for the draft, plus the rewrite's own budget.
                 timeout=25.0 + REWRITE_TIMEOUT_S,
             )
-            if viewer_desc is None:
+            if viewer_desc is None and text:
                 # Right now: a point must cite a line of what moved today.
-                text = keep_cited_points(text, tags_in(context))
+                # A draft with nothing left is still cached (as the fixed
+                # line), or every view would pay for the same draft again.
+                text = keep_cited_points(text, tags_in(context)) or NOTHING_NEW
     except Exception:
         logger.exception("today: briefing narrative regen failed (scope=%s)", expected_scope)
         return False
