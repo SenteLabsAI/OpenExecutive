@@ -166,6 +166,20 @@ def test_uncited_and_unknown_points_are_dropped_and_tags_stripped() -> None:
     assert out.endswith("**Move today:** Finish the breaker lookup.")
 
 
+def test_a_wrapped_bullet_is_judged_and_dropped_whole() -> None:
+    text = (
+        "**Lead.**\n"
+        "- **Lease** — the landlord sent terms,\n  so legal waits. [M9]\n"
+        "- **Budget** — the board meets Friday,\n  so it needs a yes today. [M1]\n"
+        "**Move today:** Approve the budget."
+    )
+    assert keep_cited_points(text, {"M1"}) == (
+        "**Lead.**\n"
+        "- **Budget** — the board meets Friday,\n  so it needs a yes today.\n"
+        "**Move today:** Approve the budget."
+    )
+
+
 def test_at_most_three_points() -> None:
     text = "**Lead.**\n" + "\n".join(f"- **P{i}** — moved. [M{i}]" for i in range(1, 6))
     out = keep_cited_points(text, {f"M{i}" for i in range(1, 6)})

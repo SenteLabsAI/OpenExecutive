@@ -273,16 +273,27 @@ def tags_in(context: str) -> frozenset[str]:
 
 def keep_cited_points(text: str, tags: frozenset[str] | set[str]) -> str:
     """``text`` with every bullet that cites no known tag dropped, the tags
-    stripped everywhere, and at most ``MAX_POINTS`` bullets kept."""
-    out: list[str] = []
-    kept = 0
+    stripped everywhere, and at most ``MAX_POINTS`` bullets kept. A bullet
+    the model wrapped onto indented lines is judged and dropped whole."""
+    # Group each bullet with its indented continuation lines.
+    blocks: list[tuple[bool, list[str]]] = []
     for raw in text.splitlines():
         if _BULLET_RE.match(raw):
-            cited = {m.group(1) for m in _TAG_RE.finditer(raw)}
-            if not cited & set(tags) or kept >= MAX_POINTS:
+            blocks.append((True, [raw]))
+        elif raw[:1].isspace() and raw.strip() and blocks and blocks[-1][0]:
+            blocks[-1][1].append(raw)
+        else:
+            blocks.append((False, [raw]))
+    known = set(tags)
+    out: list[str] = []
+    kept = 0
+    for is_bullet, lines in blocks:
+        if is_bullet:
+            cited = {m.group(1) for ln in lines for m in _TAG_RE.finditer(ln)}
+            if not cited & known or kept >= MAX_POINTS:
                 continue
             kept += 1
-        out.append(_TAG_RE.sub("", raw).rstrip())
+        out.extend(_TAG_RE.sub("", ln).rstrip() for ln in lines)
     return "\n".join(out).strip()
 
 

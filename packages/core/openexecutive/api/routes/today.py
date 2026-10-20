@@ -1797,6 +1797,10 @@ def _header_context(
 
     own = scope == narrative_cache.DEFAULT_SCOPE
     live, _window, now_label = _header_live(include_private=own)
+    if _nothing_needs_attention(today_data, mode) and live.is_empty():
+        # Nothing open and nothing live: the quiet line, without building the
+        # rail (a seven-source SQL union) for a request whose answer is fixed.
+        return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, None)
     raise_lines: list[str] = []
     leave_out = ""
@@ -1807,6 +1811,7 @@ def _header_context(
     try:
         tz = get_user_timezone()
     except Exception:
+        logger.exception("today: reading the user's time zone failed; Right now uses UTC")
         tz = UTC
     ctx = render_header_context(
         period_label=narrative_cache.local_today(),
