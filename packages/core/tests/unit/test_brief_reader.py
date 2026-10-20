@@ -410,3 +410,17 @@ def test_a_person_left_off_a_list_or_an_ask_for_the_reader_is_kept() -> None:
         "- **Vendor** — kept off the list while it is pending.",
     ):
         assert drop_settled_points(line) == line
+
+
+@pytest.mark.asyncio
+async def test_a_settled_bullet_with_an_ask_sends_no_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing.narrative import settled_mentions
+
+    ask = "- **Budget** — stays off the list until you approve the $40k spend."
+    assert settled_mentions(ask) == []
+    text, provider = await _synth(monkeypatch, ["**Lease signed.**\n" + ask])
+
+    assert text == "**Lease signed.**\n" + ask
+    assert len(provider.calls) == 1

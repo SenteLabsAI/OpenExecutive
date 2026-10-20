@@ -905,8 +905,13 @@ _BULLET_RE = re.compile(r"\s*[-*•]\s")
 
 def settled_mentions(text: str) -> list[str]:
     """The phrases in ``text`` that say an item is settled or off the list,
-    as written."""
-    return sorted({m.group(0) for m in _SETTLED_RE.finditer(text)})
+    as written. A line that still asks something of the reader is skipped,
+    as ``drop_settled_points`` keeps it, so it never sends a rewrite."""
+    return sorted({
+        m.group(0)
+        for line in text.splitlines() if not _ASK_RE.search(line)
+        for m in _SETTLED_RE.finditer(line)
+    })
 
 
 def drop_settled_points(text: str) -> str:
