@@ -390,7 +390,8 @@ def undo(change_id: int, db_path: Path | None = None) -> ContactChange:
         if person is not None and person.kind == "contact" and not person.archived:
             people_store.archive_person(change.person_id)
         block(change.email, "contact", db_path=db_path)
-    elif person is not None:
+    elif person is not None and (person.kind == "contact" or change.field == "role" or change.field in DETAIL_FIELDS):
+        # A team member's name and addresses are never the keeper's to change.
         if change.field == "email_alias":
             kept = [a for a in person.email_aliases if norm(a) != change.new_value]
             people_store.set_person_emails(change.person_id, kept, source="contact_keeper")
