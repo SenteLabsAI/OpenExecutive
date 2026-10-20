@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Literal
@@ -288,6 +289,47 @@ class BaseAgent(ABC):
             create_kwargs["max_tokens"] = max(max_tokens, 16000)
 
         provider = get_provider(model)
-        message = await provider.messages_create(**create_kwargs)
-        log_model_usage(message, model=model, actor=actor)
-        return message
+        from openexecutive.orchestrator.parallel_search import SearchRun
+
+        # Native Anthropic tools still execute server-side. Parallel tools
+        # need a bounded client loop before the caller consumes its emit tool.
+        parallel = any(t.get("name") == "web_search" and "input_schema" in t for t in tools)
+        if not parallel:
+            message = await provider.messages_create(**create_kwargs)
+            log_model_usage(message, model=model, actor=actor)
+            return message
+        search_run = SearchRun(
+            settings.research_web_search_max_uses if actor == "specialist_research" else settings.web_search_max_uses
+        )
+        from openexecutive.orchestrator.web_search_tool import build_web_fetch_tool
+
+        fetch = build_web_fetch_tool()
+        if fetch is not None:
+            create_kwargs["tools"] = [*tools, fetch]
+        # The final round has no web tools. This leaves room for a structured
+        # result even when a model keeps trying to search after its cap.
+        async with asyncio.timeout(timeout_seconds):
+            for iteration in range(search_run.max_uses + 1):
+                if iteration == search_run.max_uses:
+                    create_kwargs["tools"] = [t for t in tools if t.get("name") != "web_search"]
+                message = await provider.messages_create(**create_kwargs)
+                log_model_usage(message, model=model, actor=actor)
+                calls = [b for b in message.content if b.type == "tool_use"]
+                web_calls = [b for b in calls if b.name in {"web_search", "web_fetch"}]
+                if not web_calls:
+                    return message
+                # An emit call in the same round has not seen these search
+                # results. Answer it too, then ask for the grounded final emit.
+                results = []
+                for call in calls:
+                    text = (
+                        await search_run.call(call.name, call.input)
+                        if call.name in {"web_search", "web_fetch"}
+                        else "Please emit the final structured result after reading the web results."
+                    )
+                    results.append({"type": "tool_result", "tool_use_id": call.id, "content": text})
+                create_kwargs["messages"].extend([
+                    {"role": "assistant", "content": [b.model_dump() for b in message.content]},
+                    {"role": "user", "content": results},
+                ])
+        raise RuntimeError("Research did not finish within its web search limit")

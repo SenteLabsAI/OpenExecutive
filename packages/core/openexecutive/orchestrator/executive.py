@@ -63,7 +63,11 @@ from openexecutive.orchestrator.alert_tools import (
     CREATE_ALERT_TOOL,
     handle_create_alert,
 )
-from openexecutive.orchestrator.answer_sources import TurnSources, record_web_sources
+from openexecutive.orchestrator.answer_sources import (
+    TurnSources,
+    record_parallel_sources,
+    record_web_sources,
+)
 from openexecutive.orchestrator.app_control import (
     APP_TOOL_HANDLERS,
     APP_TOOLS,
@@ -193,6 +197,7 @@ from openexecutive.orchestrator.watchlist_tools import (
 )
 from openexecutive.orchestrator.web_search_tool import (
     WEB_SEARCH_TOOL_NAME,
+    build_web_fetch_tool,
     build_web_search_tool,
 )
 from openexecutive.orchestrator.workflow_authoring_tools import (
@@ -845,6 +850,7 @@ def builtin_tool_names() -> frozenset[str]:
         tool_groups.OPEN_TOOLS,
         tool_groups.USE_TOOL,
         WEB_SEARCH_TOOL_NAME,
+        "web_fetch",
     })
 
 
@@ -2337,6 +2343,15 @@ class Executive:
         origin = str(getattr(current_session.get(), "origin_channel", "") or "")
         if origin and not unattended_withheld and not replaying:
             take_the_lead.wake(f"a message on {origin}")
+        # A new budget for this turn, with the conversation's stable opaque ID.
+        from openexecutive.orchestrator.parallel_search import SearchRun
+
+        web_run = SearchRun.for_chat(current_session.get())
+        parallel_tools = [t for t in (build_web_search_tool(), build_web_fetch_tool()) if t and "input_schema" in t]
+        turn_handlers = {
+            **turn_handlers,
+            **({"web_search": web_run.search, "web_fetch": web_run.fetch} if parallel_tools else {}),
+        }
         current_messages = list(messages)
         if self._settings.enable_caching:
             system_blocks, current_messages = _apply_history_cache_marker(
@@ -2406,7 +2421,7 @@ class Executive:
                 t for t in filter_tools_for_workspace_mode(
                     [
                         *SPECIALIST_TOOLS, *_offered_skill_tools(), *self._mcp_tools,
-                        *self._script_tools, *delegation_tools,
+                        *self._script_tools, *delegation_tools, *parallel_tools,
                     ],
                     workspace_mode,
                 )
@@ -2418,7 +2433,7 @@ class Executive:
                 {**client_tools[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}},
             ]
             web_search_tool = build_web_search_tool()
-            if web_search_tool is not None:
+            if web_search_tool is not None and "type" in web_search_tool:
                 tools_with_cache.append(web_search_tool)
             stream_model = model or self._settings.default_model
             async with get_provider(stream_model).messages_stream(
@@ -3100,6 +3115,8 @@ class Executive:
                     result = raw
                     logger.info("← skill:%s  result=%s", tu["name"], _log_value(tu["name"], result))
                     results_by_id[tu["id"]] = result
+                    if turn_sources is not None and tu["name"] in {"web_search", "web_fetch"}:
+                        record_parallel_sources(turn_sources, result)
                     # Inline action chip for side-effecting tools. None
                     # when the tool is read-only (search_skills, load_skill,
                     # list_people, ask_about_person, lookup_person) or

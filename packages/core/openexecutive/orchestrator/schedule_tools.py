@@ -1919,6 +1919,8 @@ def unattended_withheld_error(tool_name: str) -> str:
 # (`private_turn_withholds`, `private_turn_withheld_error`), MCP tools
 # included.
 PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "web_search",
+    "web_fetch",
     "add_watchlist_entry",
     "assign_open_loop",
     "cancel_calendar_event",

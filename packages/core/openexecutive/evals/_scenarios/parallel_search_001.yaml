@@ -1,0 +1,11 @@
+id: parallel_search_001
+domain: research
+description: "Use configured keyless search for current executive research and cite its sources"
+query: "Find the latest Python release announcement and explain whether our team should schedule an upgrade review. Cite the announcement."
+expected_tool_calls:
+  - web_search
+quality_criteria:
+  searches_for_current_information: true
+  cites_returned_source_urls: true
+  distinguishes_release_facts_from_recommendations: true
+  does_not_claim_unexecuted_search_succeeded: true

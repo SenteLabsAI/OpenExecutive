@@ -139,6 +139,8 @@ _HELD: dict[str, tuple[tuple[str, ...], float]] = {}
 
 # Tools whose result is text from outside: a file on disk or the open web.
 _FETCH_TOOLS: dict[str, str] = {
+    "web_search": WEB,
+    "web_fetch": WEB,
     "read_document": DOCUMENT,
     "run_executive_research": WEB,
 }
@@ -316,6 +318,8 @@ def pending_held(session: Any) -> tuple[str, ...]:
 # shown: a gateway tool name is whatever the model asked for, and text read
 # from outside can steer it, so an unknown one gets its app's generic label.
 _STEP_WORDS: dict[str, str] = {
+    "web_search": "Search the web",
+    "web_fetch": "Open a link",
     "upsert_person": "Add or change a contact",
     "read_document": "Open a link",
     "run_executive_research": "Search the web",

@@ -21,6 +21,7 @@ timed-out replies included, and saves it with the message
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -206,6 +207,19 @@ def _key(source: AnswerSource) -> tuple[str, str]:
 
 def _web_title(title: object, url: str) -> str:
     return str(title or "") or urlsplit(url).hostname or url
+
+
+def record_parallel_sources(sources: TurnSources, text: str) -> None:
+    """Keep Parallel's source URLs in the same answer-source UI as native search."""
+    try:
+        data = json.loads(text)
+        for result in data.get("results", [])[:_RESULTS_PER_SEARCH]:
+            url = result.get("url")
+            if isinstance(url, str) and url:
+                sources.add("web", _web_title(result.get("title"), url), url)
+    except (ValueError, TypeError, AttributeError):
+        # Tool errors/non-JSON text remain visible to the model without a chip.
+        return
 
 
 def record_web_sources(sources: TurnSources, content: Iterable[Any]) -> None:

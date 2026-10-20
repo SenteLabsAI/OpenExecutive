@@ -150,7 +150,8 @@ def test_every_tool_is_classified_once() -> None:
     assert not allowed & withheld
     # A new tool fails here until someone decides which side it is on.
     assert names - (allowed | withheld) == set()
-    assert (allowed | withheld) - names == set()
+    # Built-in client web tools are assembled per turn, outside the skill registry.
+    assert (allowed | withheld) - names == {"web_search", "web_fetch"}
 
 
 def test_call_tool_runs_only_reads_and_recipient_checked_sends() -> None:
@@ -165,6 +166,7 @@ def test_call_tool_runs_only_reads_and_recipient_checked_sends() -> None:
 
 def test_only_links_scripts_workflows_posts_and_lasting_text_are_withheld() -> None:
     assert {
+        "web_search", "web_fetch",
         "read_document", "load_mcp_server", "add_watchlist_entry", "tune_watchlist_entry",
         "run_executive_research", "run_script", "run_python_job",
         "suggest_workflow", "run_workflow", "save_workflow",

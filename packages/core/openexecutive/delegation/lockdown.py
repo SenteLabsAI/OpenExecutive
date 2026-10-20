@@ -134,6 +134,8 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
 })
 
 MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "web_search",
+    "web_fetch",
     # Fetches of an outside address: a URL can carry the mail anywhere.
     "read_document",
     "load_mcp_server",

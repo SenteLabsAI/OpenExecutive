@@ -1,4 +1,7 @@
-"""Anthropic native server-side web search tool.
+"""Search provider resolution and native/client tool definitions.
+
+Fresh search configuration uses anonymous Parallel Search MCP. Explicit native
+selection retains the server-side tool described below.
 
 The `web_search_20250305` tool is executed by the Anthropic API itself — no
 client-side handler is needed. The model issues `server_tool_use` blocks
@@ -21,7 +24,7 @@ WEB_SEARCH_TOOL_NAME = "web_search"
 
 
 def build_web_search_tool(*, max_uses: int | None = None) -> dict[str, Any] | None:
-    """Return the Anthropic web_search tool dict, or None when disabled.
+    """Return the selected provider's web_search tool, or None when disabled.
 
     Read at tool-list assembly time (per turn) so toggling the env var
     without a restart takes effect on the next turn. ``max_uses`` overrides
@@ -31,6 +34,11 @@ def build_web_search_tool(*, max_uses: int | None = None) -> dict[str, Any] | No
     settings = get_settings()
     if not settings.enable_web_search:
         return None
+
+    if search_provider(settings) == "parallel":
+        from openexecutive.orchestrator.parallel_search import SEARCH_TOOL
+
+        return SEARCH_TOOL
 
     tool: dict[str, Any] = {
         "type": "web_search_20250305",
@@ -42,3 +50,30 @@ def build_web_search_tool(*, max_uses: int | None = None) -> dict[str, Any] | No
     if settings.web_search_blocked_domains:
         tool["blocked_domains"] = settings.web_search_blocked_domains
     return tool
+
+
+def search_provider(settings: Any) -> str:
+    """Resolve once from trusted settings, never on an individual tool error.
+
+    ENABLE_WEB_SEARCH previously selected native search. Preserve installations
+    that explicitly set it (including .env), along with their domain policies.
+    An inference credential alone is not a search-provider selection.
+    """
+    if settings.web_search_provider != "auto":
+        return str(settings.web_search_provider)
+    if (
+        "enable_web_search" in settings.model_fields_set
+        or settings.web_search_allowed_domains
+        or settings.web_search_blocked_domains
+    ):
+        return "anthropic"
+    return "parallel"
+
+
+def build_web_fetch_tool() -> dict[str, Any] | None:
+    settings = get_settings()
+    if settings.enable_web_search and search_provider(settings) == "parallel":
+        from openexecutive.orchestrator.parallel_search import FETCH_TOOL
+
+        return FETCH_TOOL
+    return None

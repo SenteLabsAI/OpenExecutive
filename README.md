@@ -509,9 +509,9 @@ The listed slugs appear in the **Council UI** model dropdown, so you can also ru
 a hybrid setup — keep the Executive on Claude while flipping individual
 specialists to a local model per-agent.
 
-**Caveats.** Server-side web search (`ENABLE_WEB_SEARCH`) and Anthropic prompt
-caching / extended thinking have no local equivalent and are automatically
-disabled for local models. Multi-agent routing leans heavily on tool use, so
+**Caveats.** Native server-side web search and Anthropic prompt caching /
+extended thinking have no local equivalent. Parallel's client-side search
+works with tool-capable local models (see below). Multi-agent routing leans heavily on tool use, so
 pick a model that's strong at it (e.g. Llama 3.3 70B, Qwen2.5) — small models
 may route poorly. `LOCAL_API_KEY` is only needed if your server (vLLM, or a
 gateway) requires a bearer token; Ollama and LM Studio need none.
@@ -568,9 +568,37 @@ pytest packages/core/tests/unit/ -v
 
 `evals/` contains 29 scenarios covering all 8 domains, scored by `claude-opus-5-5` as an LLM-as-judge. Each scenario defines a query, simulated company context, expected topics, required specialist routing, and a domain-specific rubric. Five scoring dimensions (persona coherence, domain accuracy, company context utilization, routing quality, actionability) are each rated 1–5. The CI gate requires ≥ 3.5/5 average; any dimension dropping > 10% vs `main` fails the PR.
 
+## Web search
+
+Chat, specialist research and standing queries can use free web search and
+page excerpts through [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp).
+Search uses Fast mode without a search account or API key. To enable it in an
+installation using `.env.example`, set:
+
+```dotenv
+ENABLE_WEB_SEARCH=true
+WEB_SEARCH_PROVIDER=parallel
+```
+
+With no search settings, Parallel is the default. `WEB_SEARCH_PROVIDER=auto`
+preserves native search when `ENABLE_WEB_SEARCH=true` was explicitly configured
+or domain filters are present. `WEB_SEARCH_PROVIDER=anthropic` explicitly selects
+the existing native search. Native search retains domain allow/block lists;
+Parallel rejects those settings. Provider errors never trigger a silent fallback.
+`ENABLE_WEB_SEARCH=false` disables both search and fetching.
+
+Parallel sends only the tool's objective, queries or URLs and an opaque
+conversation identifier to its hosted MCP endpoint. Its anonymous tier has
+service limits; failures are returned to the model. `WEB_SEARCH_MAX_USES` caps
+combined search/fetch calls per chat turn or standing-query run;
+`RESEARCH_WEB_SEARCH_MAX_USES` applies per research specialist. The normal
+mail/private-turn and outside-content controls apply: after a web read, a
+further search or fetch may require the person's next message. Model selection,
+model credentials and custom gateway MCP settings are independent of this choice.
+
 ## Privacy
 
-Everything in `company/` is gitignored — the profile YAML, uploaded documents, and the ChromaDB vector store. None of this leaves your local machine (or your own volume in cloud deployments) except as part of prompts sent to the Anthropic API. Anthropic does not train on API data.
+Everything in `company/` is gitignored — the profile YAML, uploaded documents, and the ChromaDB vector store. None of this leaves your local machine (or your own volume in cloud deployments) except as part of prompts sent to the configured model provider and web tool arguments sent to the selected search service. Anthropic does not train on API data.
 
 Inside the app, what the Executive keeps about a person is theirs: Always in the loop notes and the peer memory card are shown only to that person, the owner included.
 

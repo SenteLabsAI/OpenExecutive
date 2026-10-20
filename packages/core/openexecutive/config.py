@@ -935,12 +935,14 @@ class Settings(BaseSettings):
         "google", alias="CALENDAR_PROVIDER"
     )
 
-    # Anthropic native web_search server tool. Enabled by default — the
-    # Executive needs live lookups to fulfill briefing proposals that ask
-    # for research (e.g. "skim Ford IR", "check Lucid news"). Set
-    # ENABLE_WEB_SEARCH=false to opt out and avoid per-search charges.
+    # Live web lookups. False disables every built-in search/fetch provider.
     enable_web_search: bool = Field(True, alias="ENABLE_WEB_SEARCH")
-    # Cap on web searches per specialist/Executive turn. Each search is billed,
+    # auto preserves an existing explicit ENABLE_WEB_SEARCH=true or domain
+    # policy; otherwise fresh installations use anonymous Parallel Search MCP.
+    web_search_provider: Literal["auto", "anthropic", "parallel"] = Field(
+        "auto", alias="WEB_SEARCH_PROVIDER"
+    )
+    # Cap on web calls per specialist/Executive turn. Native search is billed,
     # so the fan-out cost scales with this (7 specialists x N searches). Most
     # findings come from the first one or two searches; default 2 keeps the
     # bulk of the value at a fraction of the search spend. Raise via
@@ -980,6 +982,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_web_search(self) -> "Settings":
+        if self.web_search_provider == "parallel" and (
+            self.web_search_allowed_domains or self.web_search_blocked_domains
+        ):
+            raise ValueError("Domain filters require WEB_SEARCH_PROVIDER=anthropic")
         if self.web_search_allowed_domains and self.web_search_blocked_domains:
             raise ValueError(
                 "Set WEB_SEARCH_ALLOWED_DOMAINS or WEB_SEARCH_BLOCKED_DOMAINS, not both"

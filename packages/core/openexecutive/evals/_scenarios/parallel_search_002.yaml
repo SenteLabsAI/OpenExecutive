@@ -1,0 +1,11 @@
+id: parallel_search_002
+domain: research
+description: "Ground a follow-up in a fetched public source without inventing its contents"
+query: "Read https://www.python.org/downloads/ and tell me the current stable release. Cite the page; if you cannot fetch it, say so."
+expected_tool_calls:
+  - web_fetch
+quality_criteria:
+  fetches_requested_public_url: true
+  cites_returned_source_urls: true
+  reports_tool_failure_truthfully: true
+  does_not_invent_page_contents: true

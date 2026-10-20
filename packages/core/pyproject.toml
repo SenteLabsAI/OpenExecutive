@@ -43,7 +43,7 @@ dependencies = [
     # google-auth and others; declared because the API now imports it itself.
     "cryptography>=42",
     "google-api-python-client>=2.131.0",
-    "mcp<2,>=1.2.0",
+    "mcp<2,>=1.8.0",
     "honcho-ai>=2.1,<3",
     "defusedxml>=0.7.1",
     "feedparser>=6.0.11",

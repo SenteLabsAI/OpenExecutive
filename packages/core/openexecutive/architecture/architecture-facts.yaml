@@ -893,26 +893,29 @@ routing:
     The UI subscribes to phase events for a stepper visual; the rest of
     the system sees only the final stream.
   web_search: |
-    `web_search` server tool (Anthropic native `web_search_20250305`) is
-    exposed by default — ENABLE_WEB_SEARCH defaults to true so briefing
-    proposals that ask for research (e.g. "skim Ford IR", "check Lucid
-    news") can actually execute instead of degrading to reasoning from
-    priors. Set ENABLE_WEB_SEARCH=false to opt out. It is executed inside
-    the Anthropic API itself — no client handler runs — and
-    `server_tool_use` + `web_search_tool_result` blocks come back inside
-    the same generation. The Executive echoes those blocks in the
-    assistant turn on the next iteration so continuity is preserved. The
-    tool is appended after the sorted client-tool list so it never
-    receives the cache_control marker. Each turn is capped at
-    `WEB_SEARCH_MAX_USES` searches (default 2) — every search is billed, so
-    this bounds per-turn search spend and, multiplied across the
-    7-specialist research fan-out, is a primary cost control.
-
-    When the selected model is non-Claude (routed via OpenRouter), the
-    feature gate strips this server tool from the request before it
-    leaves the process — OpenRouter has no equivalent server-tool
-    primitive. The Council UI does not surface this to the user; the
-    capability simply does not fire on non-Anthropic turns.
+    web_search_tool.search_provider resolves WEB_SEARCH_PROVIDER=auto|parallel|anthropic.
+    Fresh unconfigured search uses free anonymous Parallel Search MCP in Fast mode.
+    Auto preserves native search for explicit ENABLE_WEB_SEARCH=true (env or .env)
+    and domain allow/block lists. An inference key alone does not select native search.
+    False disables both search and fetch; explicit provider failures never fall back.
+    Parallel with hard domain filters is rejected; choose anthropic for those filters.
+    Parallel's client tools (web_search, web_fetch) are sorted with the cached
+    client toolkit. Native web_search_20250305 remains appended after it, with no
+    cache_control, and preserves the server_tool_use/web_search_tool_result blocks.
+    Native search keeps its existing provider-specific translation and billing.
+    Parallel's SearchRun sends JSON-RPC through MCP Streamable HTTP to
+    https://search.parallel.ai/mcp, with a project User-Agent and no credentials.
+    Each chat turn gets its own combined search/fetch budget (WEB_SEARCH_MAX_USES).
+    Its conversation UUID is reused on follow-ups; non-UUID channel sessions hold
+    a separate random UUID. Research/query runs mint their own UUID per call and
+    execute a bounded client loop in BaseAgent.analyze_with_tools before emitting
+    structured results. Research specialists use RESEARCH_WEB_SEARCH_MAX_USES.
+    All loops retain cancellation and timeouts; tool errors reach the model.
+    Parallel source URLs enter the same answer-source UI as native results.
+    Client web tools observe the mail/private-turn and outside-content gates;
+    another read after a web result can require a new user turn. The native
+    server tool retains its existing behavior. No new search uses the MCP gateway
+    or changes its configured servers, credentials or permissions.
   channel_tools: |
     `lookup_person`, `send_discord_dm`, `send_telegram_message`,
     `send_slack_dm`, and `schedule_followup` are exposed as tools so the
@@ -6346,7 +6349,7 @@ external_monitoring:
          specialist slugs (cso, cfo, cmo, coo, chro, cpo, gc). Each
          runs through `specialist_research.research_one_specialist`
          with its normal `effective_system_prompt()` + a research-mode
-         addendum (`prompts.research_addendum_for`) + the Anthropic
+         addendum (`prompts.research_addendum_for`) + the selected
          web_search tool + a structured `emit_research_findings` tool.
          Findings per specialist are capped at PER_SPECIALIST_FINDING_CAP
          (3) three ways: the prompt says so, the tool schema carries
@@ -6359,7 +6362,7 @@ external_monitoring:
          (comma-separated slugs, empty = all seven) filters the fan-out via
          `active_research_specialists` (unknown slugs are logged and
          dropped; an all-unknown value runs every specialist). The tool is
-         the basic `web_search_20250305` variant on purpose: it is accepted
+         the basic `web_search_20250305` variant when native search is selected: it is accepted
          by every Claude model the Council can pin as the research model
          (the newer dynamic-filtering variant and the web_fetch server tool
          are not — web fetch is unavailable on Opus 5 — and a research run
