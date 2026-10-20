@@ -1797,17 +1797,27 @@ def _header_context(
 
     own = scope == narrative_cache.DEFAULT_SCOPE
     live, _window, now_label = _header_live(include_private=own)
-    raise_lines: list[str] = []
-    leave_out = ""
-    if own:
-        raise_block, leave_out = brief_requests.render_parts()
-        raise_lines = [ln[2:] for ln in raise_block.splitlines() if ln.startswith("- ")]
     tz: tzinfo
     try:
         tz = get_user_timezone()
     except Exception:
         logger.exception("today: reading the user's time zone failed; Right now uses UTC")
         tz = UTC
+    # What the Executive said in a chat it would do and couldn't: news on
+    # the day it was saved, an open item after that.
+    raise_lines: list[str] = []
+    raise_older: list[str] = []
+    leave_out = ""
+    if own:
+        _raise_block, leave_out = brief_requests.render_parts()
+        owner = brief_requests._principal_id()
+        today_local = datetime.now(UTC).astimezone(tz).date()
+        for r in brief_requests.active():
+            if r.person_id != owner or r.kind != brief_requests.KIND_RAISE:
+                continue
+            created = _parse_aware(r.created_at)
+            fresh = created is not None and created.astimezone(tz).date() == today_local
+            (raise_lines if fresh else raise_older).append(r.text)
     standing_facts = render_facts_for_prompt()
 
     def render(activity: list[dict[str, Any]]) -> HeaderContext:
@@ -1821,6 +1831,7 @@ def _header_context(
             tz=tz,
             standing_facts=standing_facts,
             raise_lines=raise_lines,
+            raise_older=raise_older,
             leave_out_block=leave_out,
             reader=reader,
         )

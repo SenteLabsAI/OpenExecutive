@@ -112,6 +112,12 @@ def test_what_moved_today_is_tagged_and_the_rest_is_background() -> None:
     assert len(ctx.moved) == len(ctx.tags) - 1  # type: ignore[attr-defined]
 
 
+def test_an_older_chat_ask_is_still_open_not_news() -> None:
+    ctx = _render(raise_older=["Book the Denver flights"])
+    assert not ctx.moved  # type: ignore[attr-defined]
+    assert "I said I'd do and couldn't: Book the Denver flights" in ctx.text  # type: ignore[attr-defined]
+
+
 def test_solo_names_nobody_waiting() -> None:
     ctx = _render(
         mode="solo",
