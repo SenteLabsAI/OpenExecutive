@@ -117,14 +117,14 @@ def clean_detail(kind: str, raw: str | None) -> str:
 
 def same_site(host: str, sender_host: str) -> bool:
     """Whether a website's host is the sender's mail domain or one of its
-    subdomains (or the reverse: mail from eu.northwind.example, site
-    northwind.example). Never for a free mail domain."""
+    subdomains. Not a parent of the mail domain (mail from corp.co.uk never
+    vouches for co.uk), and never a free mail domain."""
     from openexecutive.people.identity import FREEMAIL_DOMAINS
 
     site = _site(host)
     if not site or not sender_host or sender_host in FREEMAIL_DOMAINS or site in FREEMAIL_DOMAINS:
         return False
-    return site == sender_host or site.endswith("." + sender_host) or sender_host.endswith("." + site)
+    return site == sender_host or site.endswith("." + sender_host)
 
 
 def _phone_in(phone: str, text: str) -> bool:

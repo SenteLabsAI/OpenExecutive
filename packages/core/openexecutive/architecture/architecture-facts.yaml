@@ -4372,7 +4372,7 @@ people:
     principal one contacts_kept row per day with changes.
     people.contact_notes keeps what the Executive remembers about each
     contact (contact_notes, one row per person): last emailed, last heard
-    from (newest authenticated mail, read only when the note is rewritten),
+    from (newest authenticated mail),
     last met, next meeting and its title, counts, and a note of at most 400
     characters with up to 6 topics. Why the principal's own words only: the
     note is written by one forced-tool call (ROUTING_MODEL) from their own
@@ -4380,8 +4380,10 @@ people:
     ghostwritten sends) and the titles of meetings they organised, so a
     contact's mail cannot write it, and it can be read in chat like the
     principal's own sent mail. Rewritten only when the set of those
-    messages and meetings changes (activity_key), capped 5 per pass and 20 a
-    day; notes or topics with a link, address or tag are dropped.
+    messages and meetings changes (activity_key), capped 5 per pass and 20
+    model calls a day (contact_note_tries counts every call, failed or
+    rejected too); a note with a link, address or tag is rejected and the
+    old note kept.
     last_heard_at is read for up to HEARD_READS_PER_RUN (20) people a pass,
     independent of the note budget. Read on the principal's own turn by list_people and
     ask_about_person (contacts_reachable_now), and by GET
@@ -4394,7 +4396,8 @@ people:
     website, linkedin, social, address) come from the same signature call.
     Why checked in code: each is kept only when the mail writes it (phone
     digits as one number, every word of an address, a link's host+path), a
-    website only on the sender's own non-freemail domain, a profile only on
+    website only on the sender's own non-freemail domain or its subdomains
+    (never a parent such as co.uk), a profile only on
     SOCIAL_HOSTS / linkedin.com (people.contact_info.detail_from_text). One
     per kind is the keeper's (last_applied); a newer value replaces it,
     typed ones stay. Each is a contact_changes row (field = kind) with Undo

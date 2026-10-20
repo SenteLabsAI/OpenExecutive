@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS contact_notes (
     note_written_at TEXT,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS contact_note_tries (
+    day TEXT PRIMARY KEY,
+    tries INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # The note comes only from the principal's own mail, so plain business
@@ -197,12 +201,23 @@ def forget(person_id: int, db_path: Path | None = None) -> None:
         conn.execute("DELETE FROM contact_notes WHERE person_id = ?", (person_id,))
 
 
-def notes_written_since(moment: datetime, db_path: Path | None = None) -> int:
+def note_tries_on(day: datetime, db_path: Path | None = None) -> int:
+    """How many notes were asked of the model on ``day`` (UTC), written,
+    rejected or failed alike: what NOTES_PER_DAY caps."""
     with _conn(db_path) as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS n FROM contact_notes WHERE note_written_at >= ?", (moment.isoformat(),),
+            "SELECT tries FROM contact_note_tries WHERE day = ?", (day.date().isoformat(),),
         ).fetchone()
-    return int(row["n"]) if row is not None else 0
+    return int(row["tries"]) if row is not None else 0
+
+
+def count_note_try(day: datetime, db_path: Path | None = None) -> None:
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO contact_note_tries (day, tries) VALUES (?, 1) "
+            "ON CONFLICT(day) DO UPDATE SET tries = tries + 1",
+            (day.date().isoformat(),),
+        )
 
 
 def key_for(message_ids: Iterable[str], meeting_ids: Iterable[str]) -> str:

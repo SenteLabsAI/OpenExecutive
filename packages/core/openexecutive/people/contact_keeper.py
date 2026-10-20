@@ -783,7 +783,7 @@ async def _refresh_notes(
     from openexecutive.people import contact_notes as notes
 
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    budget = min(notes.NOTES_PER_RUN, notes.NOTES_PER_DAY - notes.notes_written_since(day_start))
+    budget = min(notes.NOTES_PER_RUN, notes.NOTES_PER_DAY - notes.note_tries_on(day_start))
     # Most recently in touch first: their note matters most.
     rows: list[tuple[Any, list[tuple[str, str, str, str]], list[tuple[str, str, str]]]] = []
     for person in contacts:
@@ -842,6 +842,7 @@ async def _refresh_notes(
         if budget <= 0 or key == notes.activity_key(person_id):
             continue
         budget -= 1
+        notes.count_note_try(day_start)
         made = await notes.write_note(person.full_name, written, titled)
         if made is None:
             continue

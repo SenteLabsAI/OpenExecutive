@@ -594,6 +594,29 @@ def test_a_rejected_note_keeps_the_one_there_is(owner: int, monkeypatch: pytest.
     assert note.note == "You work with Priya on the roof bid." and contact_notes.activity_key(pid) != "old"
 
 
+def test_failed_notes_use_up_the_days_budget(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.people import contact_notes
+
+    calls: list[str] = []
+
+    async def down(name: str, *_a: Any, **_kw: Any) -> None:
+        calls.append(name)
+        return None
+
+    monkeypatch.setattr(contact_notes, "write_note", down)
+    monkeypatch.setattr(contact_notes, "NOTES_PER_DAY", 3)
+    box = FakeMailbox()
+    for i in range(2):
+        address = f"down{i}@northwind.example"
+        people_store.upsert_person(full_name=f"Down Person{i}", email=address, kind="contact")
+        box.sent.append(_wrote(address, f"About order {i}.", days_ago=1))
+    people_registry.invalidate()
+    _run(box)
+    _run(box)
+    # Two tries, then one left for the day however often it runs.
+    assert len(calls) == 3
+
+
 def test_notes_are_capped_per_run(owner: int, written: list[Any]) -> None:
     from openexecutive.people import contact_notes
 
@@ -690,6 +713,10 @@ def test_only_details_the_signature_writes_are_kept() -> None:
     # Another company's site, or any site from a free mail address: never.
     assert info.detail_from_text("website", "evil.example", SIGNATURE + " evil.example", sender) == ""
     assert info.detail_from_text("website", "gmail.com", "gmail.com", "leo@gmail.com") == ""
+    # Its own subdomain is theirs; a parent of the mail domain is not.
+    assert info.same_site("www.contoso.example", "contoso.example")
+    assert info.same_site("eu.contoso.example", "contoso.example")
+    assert not info.same_site("co.uk", "corp.co.uk")
     assert info.detail_from_text(
         "linkedin", "https://www.linkedin.com/in/leo-park-example", SIGNATURE, sender,
     ) == "https://www.linkedin.com/in/leo-park-example"
