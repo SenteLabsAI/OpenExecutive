@@ -1,6 +1,9 @@
 """Contacts the Executive keeps up to date (people/contact_keeper.py,
 people/contact_changes.py, api/routes/contacts.py): who it adds, what it
-updates, and how each change is taken back."""
+updates, and how each change is taken back. Also who may read what it keeps:
+the notes (people/contact_notes.py, GET /contacts/{id}/note, list_people and
+ask_about_person) and a person's other contact details (people/contact_info.py,
+the details on /people, /people/{id} and /people/by-scope, upsert_person)."""
 from __future__ import annotations
 
 import asyncio
@@ -415,6 +418,24 @@ def test_a_contact_added_in_chat_is_listed_with_an_undo(owner: int, monkeypatch:
     assert changes.counts_by_day() == []
 
 
+def test_details_typed_in_chat_are_checked(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import people_tools
+
+    monkeypatch.setattr(people_tools, "_refuse_unless_owner", lambda tool: None)
+    out = json.loads(asyncio.run(people_tools.handle_upsert_person({
+        "full_name": "Marco Diaz", "email": MARCO, "kind": "contact",
+        "details": [{"kind": "phone", "value": "+1 555 010 0177"}, {"kind": "website", "value": "fabrikam.example"}],
+    })))
+    stored = people_store.get_person(out["person_id"]).details
+    assert [(d.kind, d.value) for d in stored] == [("phone", "+1 555 010 0177"), ("website", "https://fabrikam.example")]
+    bad = json.loads(asyncio.run(people_tools.handle_upsert_person({
+        "full_name": "Marco Diaz", "email": MARCO, "kind": "contact",
+        "details": [{"kind": "phone", "value": "call me"}],
+    })))
+    assert "error" in bad
+    assert len(people_store.get_person(out["person_id"]).details) == 2
+
+
 def _pinned(session: Session, text: str) -> None:
     session.turn_delegation = TurnDelegation(  # type: ignore[attr-defined]
         speaker_text=text, session_id=session.session_id,
@@ -642,6 +663,8 @@ def test_the_note_route_and_removing_a_contact(client: TestClient, owner: int, w
     assert client.get(f"/contacts/{person.id}/note", headers={"x-caller-email": "ben@co.example"}).status_code == 404
     body = client.get(f"/contacts/{person.id}/note", headers={"x-caller-email": OWNER}).json()
     assert body["note"].startswith("You work with Priya")
+    # The principal's own row has no note.
+    assert client.get(f"/contacts/{owner}/note", headers={"x-caller-email": OWNER}).status_code == 404
     people_store.archive_person(person.id)
     assert client.get(f"/contacts/{person.id}/note", headers={"x-caller-email": OWNER}).status_code == 404
 

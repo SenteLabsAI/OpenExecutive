@@ -1062,16 +1062,16 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
     if isinstance(tool_input.get("details"), list):
         details = []
         for item in tool_input["details"][:20]:
-            kind = str(item.get("kind") or "") if isinstance(item, dict) else ""
+            detail_kind = str(item.get("kind") or "") if isinstance(item, dict) else ""
             raw_value = str(item.get("value") or "") if isinstance(item, dict) else ""
-            if kind not in DETAIL_KINDS:
-                return _bad(f"details: unknown kind {kind[:20]!r}")
+            if detail_kind not in DETAIL_KINDS:
+                return _bad(f"details: unknown kind {detail_kind[:20]!r}")
             if not raw_value.strip():
                 continue
-            value = contact_info.clean_detail(kind, raw_value)
+            value = contact_info.clean_detail(detail_kind, raw_value)
             if not value:
-                return _bad(f"details: that doesn't look like a {kind}")
-            details.append(ContactDetail(kind=kind, value=value))  # type: ignore[arg-type]
+                return _bad(f"details: that doesn't look like a {detail_kind}")
+            details.append(ContactDetail(kind=detail_kind, value=value))  # type: ignore[arg-type]
     kwargs: dict[str, Any] = {
         "full_name": full_name,
         "role": str(tool_input.get("role", "") or ""),
