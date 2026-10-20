@@ -364,3 +364,10 @@ async def test_an_empty_rewrite_still_drops_a_settled_point(
     ])
 
     assert text == "**Lease signed.**"
+
+
+def test_a_settled_bullet_with_an_ask_is_never_dropped() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points
+
+    ask = "- **Budget** — stays off the list until you approve the $40k spend; reply yes/no."
+    assert drop_settled_points(ask) == ask

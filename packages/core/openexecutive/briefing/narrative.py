@@ -890,6 +890,13 @@ _SETTLED_RE = re.compile(
 )
 
 
+# A bullet that still asks something of the reader is never dropped in code.
+_ASK_RE = re.compile(
+    r"\?|\b(?:approve|decide|confirm|sign|reply|tell\s+me|until\s+you|by\s+(?:mon|tue|wed|thu|fri|sat|sun|tomorrow|today|end))",
+    re.IGNORECASE,
+)
+
+
 def settled_mentions(text: str) -> list[str]:
     """The phrases in ``text`` that say an item is settled or off the list,
     as written."""
@@ -901,7 +908,11 @@ def drop_settled_points(text: str) -> str:
     rewrite that kept one still never shows it."""
     kept = [
         line for line in text.splitlines()
-        if not (line.lstrip().startswith(("-", "*", "•")) and _SETTLED_RE.search(line))
+        if not (
+            line.lstrip().startswith(("-", "*", "•"))
+            and _SETTLED_RE.search(line)
+            and not _ASK_RE.search(line)
+        )
     ]
     return "\n".join(kept)
 
