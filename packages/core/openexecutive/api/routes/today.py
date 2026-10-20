@@ -1791,17 +1791,12 @@ def _header_context(
     ``NOTHING_MOVED_CONTEXT``: open items, none of them new), so the header
     is a fixed line and no model call happens."""
     from openexecutive.briefing import brief_requests, narrative_cache
-    from openexecutive.briefing.header_context import render_header_context
+    from openexecutive.briefing.header_context import HeaderContext, render_header_context
     from openexecutive.memory.facts import render_facts_for_prompt
     from openexecutive.memory.workspace_settings import get_user_timezone
 
     own = scope == narrative_cache.DEFAULT_SCOPE
     live, _window, now_label = _header_live(include_private=own)
-    if _nothing_needs_attention(today_data, mode) and live.is_empty():
-        # Nothing open and nothing live: the quiet line, without building the
-        # rail (a seven-source SQL union) for a request whose answer is fixed.
-        return narrative_cache.QUIET_CONTEXT, None
-    activity = _narrative_activity(viewer, None)
     raise_lines: list[str] = []
     leave_out = ""
     if own:
@@ -1813,22 +1808,38 @@ def _header_context(
     except Exception:
         logger.exception("today: reading the user's time zone failed; Right now uses UTC")
         tz = UTC
-    ctx = render_header_context(
-        period_label=narrative_cache.local_today(),
-        today_data=today_data,
-        live=live,
-        activity=activity,
-        mode=mode,
-        now_label=now_label,
-        tz=tz,
-        standing_facts=render_facts_for_prompt(),
-        raise_lines=raise_lines,
-        leave_out_block=leave_out,
-        reader=reader,
+    standing_facts = render_facts_for_prompt()
+
+    def render(activity: list[dict[str, Any]]) -> HeaderContext:
+        return render_header_context(
+            period_label=narrative_cache.local_today(),
+            today_data=today_data,
+            live=live,
+            activity=activity,
+            mode=mode,
+            now_label=now_label,
+            tz=tz,
+            standing_facts=standing_facts,
+            raise_lines=raise_lines,
+            leave_out_block=leave_out,
+            reader=reader,
+        )
+
+    # Rendered first without the rail: on a board with nothing open and
+    # nothing moved, the answer is the fixed quiet line and the rail (a
+    # seven-source SQL union) is never built. Work finished today alone does
+    # not make a header there.
+    ctx = render([])
+    open_items = (
+        not _nothing_needs_attention(today_data, mode)
+        or bool(today_data.get("due_soon"))
+        or bool(today_data.get("in_flight"))
     )
+    if not ctx.moved and not open_items:
+        return narrative_cache.QUIET_CONTEXT, None
+    activity = _narrative_activity(viewer, None)
+    ctx = render(activity)
     if not ctx.moved:
-        if _nothing_needs_attention(today_data, mode):
-            return narrative_cache.QUIET_CONTEXT, None
         return narrative_cache.NOTHING_MOVED_CONTEXT, None
     return ctx.text, activity
 

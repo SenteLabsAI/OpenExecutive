@@ -245,3 +245,26 @@ def test_an_old_open_item_writes_the_nothing_new_line_without_a_model_call(
     c = _make_client()
     c.get("/today")
     assert c.get("/today").json()["narrative"] == NOTHING_NEW
+
+
+def test_a_follow_up_due_today_on_an_otherwise_empty_board_reaches_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No proposal, nobody awaiting, nothing live: a follow-up due today and
+    a watchlist signal still make the header, not the quiet line."""
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.briefing import narrative_cache
+
+    monkeypatch.setattr(today_route, "_narrative_activity", lambda *_a: [])
+    data = {
+        "departments": [], "people": [], "proposals": [],
+        "in_flight": [{"intent": "Chase Acme", "run_at": datetime.now(UTC).isoformat(), "overdue": True}],
+        "external": [{"headline": "Acme files for bankruptcy"}],
+    }
+    ctx, _ = today_route._narrative_context(data, None, None, "team", narrative_cache.COMPANY_SCOPE, reader=None)
+    assert "Chase Acme" in ctx and "Acme files for bankruptcy" in ctx
+    quiet, _ = today_route._narrative_context(
+        {"departments": [], "people": [], "proposals": []}, None, None, "team",
+        narrative_cache.COMPANY_SCOPE, reader=None,
+    )
+    assert quiet == narrative_cache.QUIET_CONTEXT
