@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Message from "./Message";
+import HeldStepsCard, { APPROVE_MESSAGE } from "./HeldStepsCard";
 import BrandMark from "./BrandMark";
 import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
 import Icon from "./Icon";
@@ -135,6 +136,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // Reset on every turn; frozen onto the message at `done` event time.
   const [streamingActions, setStreamingActions] = useState<ActionTaken[]>([]);
   const [isConsulting, setIsConsulting] = useState(false);
+  // The reply whose held steps the person put off with Not now (its index).
+  const [heldDismissed, setHeldDismissed] = useState<number | null>(null);
   const [activityLabel, setActivityLabel] = useState<string | null>(null);
   const [committeeEnabled, setCommitteeEnabled] = useState(false);
   const [committeePhase, setCommitteePhase] = useState<CommitteePhase | null>(null);
@@ -497,6 +500,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     const turnActions: ActionTaken[] = [];
     // What the reply looked at; sent once, just before `done`.
     let turnSources: AnswerSources | undefined;
+    // Steps the turn held for an outside read; sent once, just before `done`.
+    let turnHeld: string[] | undefined;
     let wasStopped = false;
     // Row id of the persisted reply, from `done`; it is what makes the reply
     // rateable with 👍/👎.
@@ -557,6 +562,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           setStreamingActions([...turnActions]);
         } else if (item.type === "sources") {
           turnSources = answerSourcesFrom(item);
+        } else if (item.type === "held_steps") {
+          turnHeld = item.steps.length > 0 ? item.steps : undefined;
         } else if (item.type === "message_added") {
           setQueued(markTaken(queuedRef.current, item.ids));
         } else if (item.type === "stopped") {
@@ -615,6 +622,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
             stopped: wasStopped || undefined,
             sources: turnSources,
             id: replyId,
+            held_steps: turnHeld,
           },
         ]);
         // Only a complete, persisted reply gets a follow-up: a stopped one
@@ -1099,6 +1107,19 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   onRetry={canRedo && i === turn.replyIndex ? () => void handleRetry() : undefined}
                   onEdit={canRedo && !editing && i === turn.userIndex ? startEdit : undefined}
                 />
+                {!member &&
+                  msg.role === "assistant" &&
+                  i === messages.length - 1 &&
+                  heldDismissed !== i &&
+                  msg.held_steps &&
+                  msg.held_steps.length > 0 && (
+                    <HeldStepsCard
+                      steps={msg.held_steps}
+                      disabled={isLoading}
+                      onApprove={() => void handleSend(APPROVE_MESSAGE)}
+                      onDismiss={() => setHeldDismissed(i)}
+                    />
+                  )}
                 </div>
               ))}
 

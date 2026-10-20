@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     # the request carries an `anthropic-workspace-id` header (#128). A
     # workspace-scoped key needs no value here.
     anthropic_workspace_id: str | None = Field(None, alias="ANTHROPIC_WORKSPACE_ID")
+    # Pydantic Logfire write token. Unset (the default) leaves request tracing
+    # off entirely; see openexecutive.observability for what a trace records.
+    logfire_token: str | None = Field(None, alias="LOGFIRE_TOKEN")
 
     default_model: str = Field("claude-sonnet-5-5", alias="DEFAULT_MODEL")
     # The model the specialists with deep reasoning on by default (CFO, legal,

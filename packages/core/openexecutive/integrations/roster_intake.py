@@ -397,8 +397,9 @@ async def send_email_ack(gateway: Any, to: str) -> None:
     Raises when the send fails, so the caller can release its claim.
 
     Gmail only: it runs only for a sender Gmail authenticated
-    (``fact_confirmation.sender_authenticated``), which is never the case on
-    an Outlook mailbox, and the grant admits only the Gmail send tool."""
+    (``fact_confirmation.sender_authenticated``) on a Gmail mailbox (the
+    poller withholds it on Outlook), and the grant admits only the Gmail
+    send tool."""
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.mcp_gateway import roster_ack_grant
     from openexecutive.orchestrator.schedule_tools import set_session

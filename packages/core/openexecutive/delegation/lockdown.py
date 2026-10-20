@@ -354,4 +354,6 @@ def mail_touched_withheld_error(label: str) -> str:
     why = CONTACT_REFUSAL if label == "upsert_person" else REFUSAL
     # Remembered for their next message, so their go runs it before a read.
     outside_content.note_held(label)
+    if why is REFUSAL:
+        why += outside_content.approve_hint()
     return json.dumps({"error": f"{label} was not run. {why}"})

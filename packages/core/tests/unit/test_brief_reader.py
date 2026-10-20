@@ -254,3 +254,52 @@ def test_the_executive_as_a_noun_phrase_is_left_alone() -> None:
     text = "The Executive team met; the Executive office closed and the Executive replied."
 
     assert fix_slips(text, PAT) == "The Executive team met; the Executive office closed and I replied."
+
+
+def test_own_echoes_find_their_chats_and_asks_reported_back() -> None:
+    from openexecutive.briefing.narrative import own_echoes
+
+    text = (
+        "- **Offer drafts** — both versions are waiting, and the 13:26 alert chat "
+        "shows the duplicate-alert noise you asked me to deal with."
+    )
+    assert own_echoes(text) == ["the 13:26 alert chat", "you asked me"]
+    assert own_echoes("As you wanted me to, I moved it after your chat.") == ["you wanted me", "your chat"]
+    assert own_echoes("In the chat with me you settled it.") == ["chat with me"]
+    # Someone else's chats, and a fact of the day, are not echoes.
+    assert own_echoes("Dana wrote in your Google Chat space that the lease is signed.") == []
+    assert own_echoes("Your customer conversations with Acme went well.") == []
+    assert own_echoes("Your team's chat channel and your sales conversations are quiet.") == []
+    assert own_echoes("After your conversation with the board, our conversation rate dropped.") == []
+    assert own_echoes("Your chat with Dana settled it.") == []
+    assert own_echoes("As our conversation showed, it moved.") == ["our conversation"]
+    assert own_echoes("**You're clear today.** I'm muting the duplicate alerts.") == []
+
+
+@pytest.mark.asyncio
+async def test_a_draft_that_reports_their_chat_back_is_rewritten_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, provider = await _synth(monkeypatch, [
+        "- **Alerts** — the 13:26 alert chat shows the noise you asked me to deal with.",
+        "- **Alerts** — I'm muting the duplicate alerts.",
+    ])
+
+    assert text == "- **Alerts** — I'm muting the duplicate alerts."
+    assert len(provider.calls) == 2
+    note = provider.calls[1]["messages"][2]["content"]
+    assert "'the 13:26 alert chat'" in note and "'you asked me'" in note
+    assert note.endswith("output only the rewrite.")
+
+
+@pytest.mark.asyncio
+async def test_a_rewrite_that_still_echoes_is_kept_after_one_try(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, provider = await _synth(monkeypatch, [
+        "**You asked me to mute alerts.**",
+        "**You asked me to mute alerts; done.**",
+    ])
+
+    assert text == "**You asked me to mute alerts; done.**"
+    assert len(provider.calls) == 2

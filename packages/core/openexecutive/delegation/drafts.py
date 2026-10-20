@@ -17,6 +17,7 @@ briefs can name the draft.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -37,6 +38,10 @@ _SOURCES = frozenset({SOURCE_CHAT, SOURCE_INBOX})
 SETTLE_WINDOW = timedelta(days=2)
 # At most this many Gmail reads per settle pass.
 _SETTLE_MAX = 20
+# How many of their latest sent messages a pass reads to find a draft they
+# sent another way (``_sent_another_way``); only when a draft is still there.
+_SENT_LOOKBACK = 15
+_SUBJECT_PREFIX_RE = re.compile(r"^\s*(?:re|fwd?|aw|wg)\s*:\s*", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -277,8 +282,10 @@ async def settle_waiting(
     stop calling them waiting. Nothing records a send made in the mailbox
     itself, and the chat drafts have no card for the inbox watcher to settle.
     A reply draft also stops waiting once they sent their own message in
-    that thread after it was saved: they answered without it, so it is not
-    theirs to review any more (the draft itself stays in their mailbox).
+    that thread after it was saved, and any draft once their sent mail has
+    the same email sent after it (another version of it, or a copy written
+    fresh): they answered without it, so it is not theirs to review any more
+    (the draft itself stays in their mailbox).
     Reads only; returns how many it marked. Never raises."""
     person_id = getattr(person, "id", None)
     email = str(getattr(person, "email", "") or "").strip().lower()
@@ -304,6 +311,8 @@ async def settle_waiting(
     # Outlook ids are longer than Gmail's: ask the client which it takes.
     valid_id = getattr(client, "valid_id", gmail_id)
     gone = 0
+    # Still in their Drafts: (row id, created_at, every recipient, subject).
+    present: list[tuple[int, str, tuple[str, ...], str]] = []
     for row_id, draft_id, created_at, thread_id in waiting:
         if not valid_id(draft_id):
             continue  # nothing to look up
@@ -314,8 +323,9 @@ async def settle_waiting(
             ):
                 message = getattr(found, "message", None)
                 recipients = [*getattr(message, "to", []), *getattr(message, "cc", [])]
-                to = tuple(str(a) for a in recipients[:5] if a)
-                _seen[(pid, row_id)] = (to, str(getattr(message, "subject", "") or ""))
+                subject = str(getattr(message, "subject", "") or "")
+                _seen[(pid, row_id)] = (tuple(str(a) for a in recipients[:5] if a), subject)
+                present.append((row_id, created_at, tuple(str(a) for a in recipients if a), subject))
                 continue
             _seen.pop((pid, row_id), None)
             mark_gone(row_id, now, db_path=db_path)
@@ -324,11 +334,75 @@ async def settle_waiting(
             # Not connected, a sign-in problem, the service down: the draft
             # counts as waiting until a later pass can tell.
             logger.info("delegation.drafts: couldn't check a draft (%s)", type(exc).__name__)
-            break
+            return gone
         except Exception:
+            # Something about this one draft: the others still get checked.
             logger.warning("delegation.drafts: checking a draft failed", exc_info=True)
-            break
+    for row_id in await _sent_another_way(client, present):
+        _seen.pop((pid, row_id), None)
+        mark_gone(row_id, now, db_path=db_path)
+        gone += 1
     return gone
+
+
+def _same_subject(subject: str) -> str:
+    """A subject without its "Re:" / "Fwd:" prefixes, casefolded."""
+    text = subject.strip()
+    while True:
+        stripped = _SUBJECT_PREFIX_RE.sub("", text, count=1)
+        if stripped == text:
+            break
+        text = stripped
+    return " ".join(text.split()).casefold()
+
+
+async def _sent_another_way(
+    client: Any, present: list[tuple[int, str, tuple[str, ...], str]]
+) -> list[int]:
+    """The drafts in ``present`` whose email they have sent anyway: a message
+    of their own sent after the draft was saved, with the same subject, to
+    one of the same people. They sent another version of it (a later redraft,
+    a copy written fresh) and left this one in Drafts. One read of their sent
+    mail, none when no draft is left. Never raises."""
+    present = [p for p in present if p[2] and _same_subject(p[3])]
+    if not present:
+        return []
+    list_sent = getattr(client, "list_sent", None)
+    if list_sent is None:
+        return []
+    try:
+        sent = await list_sent(_SENT_LOOKBACK)
+    except Exception:
+        logger.info("delegation.drafts: couldn't read sent mail", exc_info=True)
+        return []
+    out = []
+    for row_id, created_at, recipients, subject in present:
+        saved = _aware(created_at)
+        if saved is None:
+            continue
+        people = {a.strip().lower() for a in recipients}
+        for m in sent:
+            when = _aware(getattr(m, "received_at", "") or "")
+            if (
+                when is not None and when > saved
+                and _same_subject(str(getattr(m, "subject", "") or "")) == _same_subject(subject)
+                and people & {
+                    str(a).strip().lower()
+                    for field in ("to", "cc", "bcc")
+                    for a in (getattr(m, field, None) or [])
+                }
+            ):
+                out.append(row_id)
+                break
+    return out
+
+
+def _aware(iso: str) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
 async def _answered_since(client: Any, thread_id: str, own: str, created_at: str) -> bool:

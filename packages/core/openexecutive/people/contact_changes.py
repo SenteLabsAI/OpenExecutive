@@ -36,7 +36,12 @@ Mode = Literal["on", "ask", "off"]
 MODES: tuple[str, ...] = ("on", "ask", "off")
 Action = Literal["add", "update"]
 # What a change touched: the whole contact (an add), or one field of it.
-Field = Literal["contact", "full_name", "role", "email_alias"]
+Field = Literal[
+    "contact", "full_name", "role", "email_alias",
+    # Contact details (``Person.details``), one kind each.
+    "phone", "mobile", "website", "linkedin", "social", "address",
+]
+DETAIL_FIELDS = frozenset({"phone", "mobile", "website", "linkedin", "social", "address"})
 Status = Literal["applied", "suggested", "undone", "dismissed"]
 # Why: the principal emailed them, met them, asked in chat, or a name or role
 # read from the person's own mail.
@@ -385,7 +390,8 @@ def undo(change_id: int, db_path: Path | None = None) -> ContactChange:
         if person is not None and person.kind == "contact" and not person.archived:
             people_store.archive_person(change.person_id)
         block(change.email, "contact", db_path=db_path)
-    elif person is not None and person.kind == "contact":
+    elif person is not None and (person.kind == "contact" or change.field == "role" or change.field in DETAIL_FIELDS):
+        # A team member's name and addresses are never the keeper's to change.
         if change.field == "email_alias":
             kept = [a for a in person.email_aliases if norm(a) != change.new_value]
             people_store.set_person_emails(change.person_id, kept, source="contact_keeper")
@@ -393,6 +399,11 @@ def undo(change_id: int, db_path: Path | None = None) -> ContactChange:
             people_store.update_person(change.person_id, full_name=change.old_value or person.full_name)
         elif change.field == "role" and person.role == change.new_value:
             people_store.update_person(change.person_id, role=change.old_value)
+        elif change.field in DETAIL_FIELDS:
+            if people_store.remove_person_detail(change.person_id, change.field, change.new_value) and change.old_value:
+                people_store.add_person_detail(
+                    change.person_id, change.field, change.old_value, source="contact_keeper",
+                )
         block(change.email, change.field, change.new_value, db_path=db_path)
     people_registry.invalidate()
     _decide(change_id, "undone", db_path)

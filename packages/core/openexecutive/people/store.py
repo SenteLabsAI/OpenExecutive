@@ -27,9 +27,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from openexecutive.people.models import (
+    DETAIL_KINDS,
     PERSON_KINDS,
     AuthorityScope,
     AvailabilityWindow,
+    ContactDetail,
     Person,
     PersonKind,
     PreferredChannel,
@@ -160,6 +162,19 @@ def initialize_db(db_path: Path | None = None) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_person_emails_person
                 ON person_emails(person_id);
+
+            CREATE TABLE IF NOT EXISTS person_details (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                value TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL,
+                UNIQUE(person_id, kind, value),
+                FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_person_details_person
+                ON person_details(person_id);
         """)
         # Additive migration: discord_user_id added after initial schema.
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(people)")}
@@ -255,6 +270,15 @@ def _load_aliases(person_id: int, conn: sqlite3.Connection) -> list[str]:
     return [row["email"] for row in rows]
 
 
+def _load_details(person_id: int, conn: sqlite3.Connection) -> list[ContactDetail]:
+    if not _table_exists(conn, "person_details"):
+        return []
+    rows = conn.execute(
+        "SELECT kind, value FROM person_details WHERE person_id = ? ORDER BY id", (person_id,)
+    ).fetchall()
+    return [ContactDetail(kind=row["kind"], value=row["value"]) for row in rows if row["kind"] in DETAIL_KINDS]
+
+
 def _optional(row: sqlite3.Row, column: str) -> str | None:
     """A column ``initialize_db`` may not have migrated yet reads as None."""
     try:
@@ -297,6 +321,7 @@ def _row_to_person(row: sqlite3.Row, conn: sqlite3.Connection) -> Person:
         preferred_channel=row["preferred_channel"],
         last_channel=_optional(row, "last_channel"),
         last_channel_at=_optional(row, "last_channel_at"),
+        details=_load_details(person_id, conn),
         response_sla_hours=int(row["response_sla_hours"]),
         on_leave_until=on_leave,
         reports_to_person_id=row["reports_to_person_id"],
@@ -705,6 +730,62 @@ def set_person_emails(
     return clean
 
 
+MAX_DETAILS = 20
+
+
+def set_person_details(
+    person_id: int, details: list[ContactDetail], *, source: str = "manual", db_path: Path | None = None,
+) -> list[ContactDetail]:
+    """Replace ``person_id``'s contact details with ``details``, each cleaned
+    (``contact_info.clean_detail``; one that isn't plainly its kind is
+    dropped, as is a repeat). Returns the stored list."""
+    from openexecutive.people.contact_info import clean_detail
+
+    clean: list[ContactDetail] = []
+    for detail in details:
+        value = clean_detail(detail.kind, detail.value)
+        if value and (detail.kind, value) not in {(d.kind, d.value) for d in clean}:
+            clean.append(ContactDetail(kind=detail.kind, value=value))
+    clean = clean[:MAX_DETAILS]
+    now = _now()
+    with _get_conn(db_path) as conn:
+        kept = {
+            (row["kind"], row["value"]): row["source"]
+            for row in conn.execute("SELECT kind, value, source FROM person_details WHERE person_id = ?", (person_id,))
+        }
+        conn.execute("DELETE FROM person_details WHERE person_id = ?", (person_id,))
+        for detail in clean:
+            conn.execute(
+                "INSERT INTO person_details (person_id, kind, value, source, created_at) VALUES (?, ?, ?, ?, ?)",
+                (person_id, detail.kind, detail.value, kept.get((detail.kind, detail.value), source), now),
+            )
+    return clean
+
+
+def add_person_detail(
+    person_id: int, kind: str, value: str, *, source: str = "manual", db_path: Path | None = None,
+) -> bool:
+    """Add one contact detail. False when it is already theirs or they have
+    ``MAX_DETAILS``."""
+    with _get_conn(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM person_details WHERE person_id = ?", (person_id,)).fetchone()[0]
+        if count >= MAX_DETAILS:
+            return False
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO person_details (person_id, kind, value, source, created_at) VALUES (?, ?, ?, ?, ?)",
+            (person_id, kind, value, source, _now()),
+        )
+        return cursor.rowcount > 0
+
+
+def remove_person_detail(person_id: int, kind: str, value: str, db_path: Path | None = None) -> bool:
+    with _get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM person_details WHERE person_id = ? AND kind = ? AND value = ?", (person_id, kind, value),
+        )
+        return cursor.rowcount > 0
+
+
 def add_person_email(
     person_id: int,
     email: str,
@@ -909,6 +990,12 @@ def archive_person(person_id: int, db_path: Path | None = None) -> bool:
             delete_profile(person_id)
         except Exception:
             logger.warning("archive_person: dropping working style failed", exc_info=True)
+        try:
+            from openexecutive.people.contact_notes import forget
+
+            forget(person_id)
+        except Exception:
+            logger.warning("archive_person: dropping the contact note failed", exc_info=True)
     return archived
 
 

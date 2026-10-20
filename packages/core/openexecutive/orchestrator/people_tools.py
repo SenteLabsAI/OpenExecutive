@@ -22,6 +22,8 @@ from types import SimpleNamespace
 from typing import Any, ParamSpec
 
 from openexecutive.memory.honcho_client import directional_chat
+from openexecutive.people import contact_info
+from openexecutive.people.models import DETAIL_KINDS, ContactDetail
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,10 @@ LIST_PEOPLE_TOOL: dict[str, Any] = {
         "a name to a person_id before calling upsert_person, archive_person, "
         "set_department_head, create_calendar_event or message_person. The "
         "principal's contacts (`kind` \"contact\") are private to the "
-        "principal: they are listed only when the principal asks directly. "
-        "Returns a compact JSON list."
+        "principal: they are listed only when the principal asks directly, "
+        "each with what you remember about them from the principal's own mail "
+        "and meetings (`what_you_deal_with`, `topics`, `recent_activity`). "
+        "Use that to suggest who to ask or loop in. Returns a compact JSON list."
     ),
     "input_schema": {
         "type": "object",
@@ -113,6 +117,25 @@ UPSERT_PERSON_TOOL: dict[str, Any] = {
             "slack_user_id": {"type": "string"},
             "telegram_chat_id": {"type": "string"},
             "discord_user_id": {"type": "string"},
+            "details": {
+                "type": "array",
+                "description": (
+                    "Other ways to reach them, for the principal to read (never used to send): "
+                    "phone, mobile, website, linkedin, social (another profile link), address. "
+                    "REPLACES the current list; omit to leave it unchanged."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["phone", "mobile", "website", "linkedin", "social", "address"],
+                        },
+                        "value": {"type": "string"},
+                    },
+                    "required": ["kind", "value"],
+                },
+            },
             "preferred_channel": {
                 "type": "string",
                 "enum": ["email", "slack", "telegram", "discord", "any"],
@@ -218,6 +241,9 @@ ASK_ABOUT_PERSON_TOOL: dict[str, Any] = {
         "the team, and then only about how they work (no `target_person_id`). "
         "When the result says `shared: false`, tell the asker that person hasn't "
         "chosen to share it and suggest asking them directly.\n"
+        "For one of the principal's contacts, on the principal's own turn, it "
+        "returns what you remember from the principal's own mail and meetings "
+        "with them instead.\n"
         "Returns the synthesized answer, or an empty string if Honcho is disabled / no data."
     ),
     "input_schema": {
@@ -844,6 +870,13 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
         _audit("list_people", "read", False, f"list_people failed: {exc}", {"error": str(exc)[:300]})
         return json.dumps({"error": str(exc)})
 
+    from openexecutive.people import contact_notes
+
+    # What is remembered about each person, from the principal's own mail and
+    # meetings: on the principal's own turn only, for contacts and team alike.
+    notes = contact_notes.get_many(
+        p.id for p in people if p.id is not None and not p.archived and not p.is_principal
+    ) if include_contacts else {}
     out = [
         {
             "person_id": p.id,
@@ -853,10 +886,14 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
             "kind": p.kind,
             "email": p.email,
             "email_aliases": p.email_aliases,
+            # Phone numbers and addresses on the principal's own turn only,
+            # like the notes: never on a stranger's or a teammate's turn.
+            **({"details": [d.model_dump() for d in p.details]} if p.details and include_contacts else {}),
             "preferred_channel": p.preferred_channel,
             "department_slugs": p.department_slugs,
             "authority_scope": [s.value for s in p.authority_scope],
             "archived": p.archived,
+            **contact_notes.for_model(notes.get(p.id or 0)),
         }
         for p in people
     ]
@@ -1020,6 +1057,21 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         if person_id is not None
         else False
     )
+    # Other contact details: each kept only when it is plainly its kind.
+    details: list[ContactDetail] | None = None
+    if isinstance(tool_input.get("details"), list):
+        details = []
+        for item in tool_input["details"][:20]:
+            detail_kind = str(item.get("kind") or "") if isinstance(item, dict) else ""
+            raw_value = str(item.get("value") or "") if isinstance(item, dict) else ""
+            if detail_kind not in DETAIL_KINDS:
+                return _bad(f"details: unknown kind {detail_kind[:20]!r}")
+            if not raw_value.strip():
+                continue
+            value = contact_info.clean_detail(detail_kind, raw_value)
+            if not value:
+                return _bad(f"details: that doesn't look like a {detail_kind}")
+            details.append(ContactDetail(kind=detail_kind, value=value))  # type: ignore[arg-type]
     kwargs: dict[str, Any] = {
         "full_name": full_name,
         "role": str(tool_input.get("role", "") or ""),
@@ -1046,6 +1098,8 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
             people_store.set_authority_scope(new_id, authority_scopes)
         if aliases is not None:
             people_store.set_person_emails(new_id, aliases, source="chat_tool")
+        if details is not None:
+            people_store.set_person_details(new_id, details, source="chat_tool")
     except Exception as exc:
         logger.exception("upsert_person: failed")
         # Always invalidate — a partial write (e.g. row inserted but scopes
@@ -1312,6 +1366,29 @@ def _person_name(person_id: int) -> str:
     return name.split()[0] if name else "This person"
 
 
+def _contact_note_answer(person_id: int, target_person_id: int | None) -> str | None:
+    """What is remembered about one of the principal's contacts, on the
+    principal's own turn (``contact_notes``): contacts never chat, so memory
+    has nothing on them. None when ``person_id`` is not a contact or this is
+    not the principal's turn."""
+    if target_person_id is not None or not contacts_reachable_now():
+        return None
+    from openexecutive.people import contact_notes
+    from openexecutive.people import store as people_store
+
+    try:
+        person = people_store.get_person(person_id)
+    except Exception:
+        return None
+    if person is None or person.kind != "contact" or person.archived:
+        return None
+    known = contact_notes.for_model(contact_notes.get_many([person_id]).get(person_id))
+    return json.dumps(
+        {"person_id": person_id, "target_person_id": None, "found": bool(known), **known},
+        ensure_ascii=False,
+    )
+
+
 async def handle_ask_about_person(input: dict[str, Any]) -> str:
     """Query Honcho's per-person memory via the directional_chat wrapper.
 
@@ -1346,6 +1423,9 @@ async def handle_ask_about_person(input: dict[str, Any]) -> str:
     # a verified asker. Everyone else gets the same "not shared" answer,
     # whether or not anything is known.
     asker_id = _verified_asker_id()
+    contact_answer = _contact_note_answer(person_id, target_person_id)
+    if contact_answer is not None:
+        return contact_answer
     if person_id != asker_id:
         # Shared with the team: a verified teammate or the principal asking,
         # never an inbound email, an unverified chat or an unattended run.

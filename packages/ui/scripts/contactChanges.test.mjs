@@ -4,6 +4,7 @@ import {
   addedByLine,
   cardChanges,
   changeLine,
+  contactActivityLines,
   keeperBlocked,
   newlyAdded,
 } from "../src/lib/contactChanges.ts";
@@ -69,4 +70,47 @@ test("a person's page says how they were added, unless they asked", () => {
   const when = () => "Oct 19";
   assert.equal(addedByLine([change()], when), "Added by me on Oct 19. You emailed them 3 times lately.");
   assert.equal(addedByLine([change({ reason: "asked" })], when), null);
+});
+
+const note = (extra = {}) => ({
+  person_id: 7,
+  note: "",
+  topics: [],
+  last_emailed_at: null,
+  last_heard_at: null,
+  last_met_at: null,
+  next_meeting_at: null,
+  next_meeting_title: "",
+  emailed_count: 0,
+  met_count: 0,
+  note_written_at: null,
+  updated_at: "2026-10-19T12:00:00+00:00",
+  ...extra,
+});
+const day = (iso) => iso.slice(0, 10);
+
+test("activity lines say only what is known, next meeting first", () => {
+  assert.deepEqual(contactActivityLines(note(), day), []);
+  assert.deepEqual(
+    contactActivityLines(
+      note({
+        last_emailed_at: "2026-10-14T09:00:00+00:00",
+        emailed_count: 3,
+        last_heard_at: "2026-10-15T09:00:00+00:00",
+        last_met_at: "2026-10-02T15:00:00+00:00",
+        next_meeting_at: "2026-10-23T15:00:00+00:00",
+        next_meeting_title: "Roof bid review",
+      }),
+      day,
+    ),
+    [
+      "Next meeting 2026-10-23: Roof bid review",
+      "You last emailed them 2026-10-14 (3 emails in 60 days)",
+      "They last wrote to you 2026-10-15",
+      "You last met 2026-10-02",
+    ],
+  );
+  assert.deepEqual(contactActivityLines(note({ last_emailed_at: "2026-10-14", emailed_count: 1 }), day), [
+    "You last emailed them 2026-10-14",
+  ]);
 });

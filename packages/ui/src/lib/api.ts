@@ -151,6 +151,14 @@ export interface MessageAdded {
   ids: string[];
 }
 
+// The turn held steps after reading something from outside: they wait on the
+// person's go, offered as Approve / Not now under the reply.
+export interface HeldStepsEvent {
+  type: "held_steps";
+  session_id?: string;
+  steps: string[];
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
@@ -158,7 +166,8 @@ export type StreamItem =
   | FormPatch
   | Activity
   | SourcesEvent
-  | MessageAdded;
+  | MessageAdded
+  | HeldStepsEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -1377,6 +1386,11 @@ export interface ChatMessage {
   // User rows of a shared chat only: who wrote it.
   sender_person_id?: number;
   sender_name?: string;
+  // The last reply only: steps its turn held after reading something from
+  // outside, still waiting on the person's go. From the stream's
+  // `held_steps` event, or re-attached when the chat is reloaded. Shown as
+  // Approve / Not now buttons; Approve sends the go as their next message.
+  held_steps?: string[];
 }
 
 export interface Decision {
@@ -4539,6 +4553,14 @@ export interface AvailabilityWindow {
 // Executive emails or invites only when the principal asks it to directly.
 export type PersonKind = "team" | "contact";
 
+// Other ways to reach someone (people/contact_info.py), for the reader only.
+export type DetailKind = "phone" | "mobile" | "website" | "linkedin" | "social" | "address";
+
+export interface ContactDetail {
+  kind: DetailKind;
+  value: string;
+}
+
 export interface Person {
   id: number;
   full_name: string;
@@ -4553,6 +4575,8 @@ export interface Person {
   slack_user_id: string | null;
   telegram_chat_id: string | null;
   discord_user_id: string | null;
+  // Phone, website, profiles, postal address; some from their signature.
+  details?: ContactDetail[];
   preferred_channel: string;
   // The chat app they last talked to the Executive in (slack, discord or
   // telegram); with preferred_channel "any" messages go there first.
@@ -4596,7 +4620,7 @@ export interface ContactChange {
   id: number;
   person_id: number | null;
   action: "add" | "update";
-  field: "contact" | "full_name" | "role" | "email_alias";
+  field: "contact" | "full_name" | "role" | "email_alias" | DetailKind;
   email: string;
   full_name: string;
   old_value: string;
@@ -4627,6 +4651,30 @@ async function contactsCall<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getContactChanges(personId?: number): Promise<ContactChanges> {
   return contactsCall(`/changes${personId !== undefined ? `?person_id=${personId}` : ""}`);
+}
+
+// What the Executive remembers about one contact (people/contact_notes.py),
+// from the principal's own mail and meetings. null when nothing yet.
+export interface ContactNote {
+  person_id: number;
+  note: string;
+  topics: string[];
+  last_emailed_at: string | null;
+  last_heard_at: string | null;
+  last_met_at: string | null;
+  next_meeting_at: string | null;
+  next_meeting_title: string;
+  emailed_count: number;
+  met_count: number;
+  note_written_at: string | null;
+  updated_at: string;
+}
+
+export async function getContactNote(personId: number): Promise<ContactNote | null> {
+  const res = await fetch(`${API_BASE}/contacts/${personId}/note`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Request failed: ${res.statusText}`);
+  return res.json();
 }
 
 export function setContactKeeperMode(mode: ContactKeeperMode): Promise<ContactChanges> {
@@ -4716,6 +4764,8 @@ export async function createPerson(body: PersonCreate): Promise<Person> {
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
+  // A detail that isn't plainly its kind: the server names the line.
+  if (res.status === 422) throw new Error(await errorDetail(res, "Check the phone, website and more lines."));
   if (!res.ok) throw new Error(`Failed to create person: ${res.statusText}`);
   return res.json();
 }
@@ -4727,6 +4777,8 @@ export interface PersonPatch {
   email?: string | null;
   // The full list; replaces the current one.
   email_aliases?: string[];
+  // The full list; replaces the current one.
+  details?: ContactDetail[];
   slack_user_id?: string | null;
   telegram_chat_id?: string | null;
   discord_user_id?: string | null;
@@ -4747,6 +4799,8 @@ export async function updatePerson(id: number, patch: PersonPatch): Promise<Pers
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
+  // A detail that isn't plainly its kind: the server names the line.
+  if (res.status === 422) throw new Error(await errorDetail(res, "Check the phone, website and more lines."));
   if (!res.ok) throw new Error(`Failed to update person: ${res.statusText}`);
   return res.json();
 }

@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from openexecutive.audit import bind_turn, clear_turn, private_rows, set_turn
@@ -715,6 +716,26 @@ def _drive_memory_block(session: Session, person_id: int | None) -> str:
         return ""
 
 
+def _current_time_block(now: datetime | None = None) -> str:
+    """Render the body of a <current_time> hint: when this turn is, in the
+    workspace's timezone (``get_user_timezone``, as the briefs use).
+
+    Without it a chat turn carries no date at all, so the model guesses one,
+    for instance from the newest record a tool returned, and "yesterday",
+    "this week" or "overdue" resolve against the wrong day.
+    """
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    zone = get_user_timezone()
+    local = (now or datetime.now(UTC)).astimezone(zone)
+    offset = local.strftime("%z")
+    return (
+        f"{local:%A} {local.day} {local:%B %Y}, {local:%H:%M} "
+        f"({getattr(zone, 'key', None) or local.tzname()}, UTC{offset[:3]}:{offset[3:]}). "
+        "Resolve today, yesterday, this week, this month and other relative dates against this."
+    )
+
+
 def _build_current_speaker_block(person_id: int | None) -> str | None:
     """Render the body of a <current_speaker> hint naming who is in the room.
 
@@ -1034,6 +1055,17 @@ def _emit_cache_event(
     )
 
 
+def _round_separator(tail: str, text: str) -> str:
+    """What goes between the text already streamed (its last characters,
+    ``tail``) and a new round's first ``text``: a paragraph break, less what
+    either already has."""
+    if tail.endswith("\n\n") or text.startswith("\n\n"):
+        return ""
+    if tail.endswith("\n") or text.startswith("\n"):
+        return "\n"
+    return "\n\n"
+
+
 class Executive:
     """The Executive orchestrator — the single voice the user always interacts with.
 
@@ -1101,6 +1133,12 @@ class Executive:
 
         user_content_parts: list[dict[str, Any]] = []
 
+        # When this turn is, so relative dates resolve against today rather
+        # than a guess. Changes every turn, so the user turn, never a cached
+        # system block.
+        user_content_parts.append(
+            {"type": "text", "text": f"<current_time>\n{_current_time_block()}\n</current_time>"}
+        )
         # Name the human in the room first so the model never offers to loop
         # in / DM the person it is replying to. Lives in the user turn (never
         # the cached system block) since the speaker varies per request.
@@ -2315,6 +2353,11 @@ class Executive:
         # Shallow copy — the caller owns every dict up to this index.
         caller_message_count = len(current_messages)
         last_full_text = ""
+        # The end of the text this turn has streamed so far, across rounds:
+        # a round's text after an earlier round's (the model's words before a
+        # tool call, then its answer) starts a new paragraph, so the two
+        # never run together ("...stock.Yes. ITEM-1...").
+        streamed_tail = ""
         specialists_consulted: list[str] = []
         # What this turn's tool results have put in the prompt so far: every
         # one is re-sent on each later call.
@@ -2393,7 +2436,13 @@ class Executive:
                         and hasattr(event.delta, "type")
                         and event.delta.type == "text_delta"
                     ):
+                        if not full_text and streamed_tail and event.delta.text:
+                            separator = _round_separator(streamed_tail, event.delta.text)
+                            if separator:
+                                yield separator
+                                streamed_tail = separator
                         full_text += event.delta.text
+                        streamed_tail = (streamed_tail + event.delta.text)[-2:]
                         yield event.delta.text
 
                 final_msg = await stream.get_final_message()
@@ -2497,7 +2546,8 @@ class Executive:
                 current_messages.append(
                     {"role": "user", "content": [{"type": "text", "text": claim_check.nudge(claim)}]}
                 )
-                yield "\n\n"
+                # The retry's text gets its paragraph break from
+                # _round_separator, like any other round's.
                 continue
 
             # open_tools is answered here; a use_tool call becomes the call it

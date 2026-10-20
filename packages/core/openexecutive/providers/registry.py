@@ -21,6 +21,7 @@ from typing import Any, Literal, TypedDict
 from fastapi import HTTPException
 
 from openexecutive.config import get_settings
+from openexecutive.observability import wrap_provider
 from openexecutive.providers import openrouter_catalog
 from openexecutive.providers.anthropic_provider import AnthropicProvider
 from openexecutive.providers.feature_gate import FeatureSpec
@@ -468,11 +469,11 @@ def get_provider(model: str) -> LLMProvider:
     # regex so widening ``_is_claude`` can't silently re-route local traffic
     # to a hosted vendor.
     if model in _local_models(settings):
-        return _local()
+        return wrap_provider(_local(), "local")
     if _is_claude(model):
         if settings.openrouter_enabled:
-            return _openrouter()
-        return _anthropic()
+            return wrap_provider(_openrouter(), "openrouter")
+        return wrap_provider(_anthropic(), "anthropic")
     # Other non-Claude slugs require OpenRouter to be enabled.
     if not settings.openrouter_enabled:
         raise HTTPException(
@@ -484,7 +485,7 @@ def get_provider(model: str) -> LLMProvider:
                 f"from a local OpenAI-compatible backend."
             ),
         )
-    return _openrouter()
+    return wrap_provider(_openrouter(), "openrouter")
 
 
 def pdf_input_supported(model: str) -> bool:

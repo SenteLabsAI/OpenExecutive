@@ -487,7 +487,8 @@ def _conversations(
         title = _one_line(row["title"], 100)
         if title.lower() in _UNTITLED:
             continue
-        lines.append(f"[{_local_hhmm(row['updated_at'], tz, now)}] {title}")
+        # No time: the header pointed back at "the 13:26 chat" by it.
+        lines.append(title)
         keys.append(title.lower())
         if len(lines) >= _CONVERSATIONS_MAX:
             break

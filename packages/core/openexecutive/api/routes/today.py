@@ -2049,6 +2049,27 @@ async def refresh_principal_narrative() -> bool:
         return False
 
 
+# How often the principal opening the page settles their chat drafts (and
+# rewrites the header when that moved it). The scheduler's own pass runs only
+# every BRIEFING_NARRATIVE_REFRESH_MINUTES in daytime, and not at all when
+# they turned that background job off; without this a draft they sent from
+# their mailbox kept being called unsent on the page in between.
+_VIEW_SETTLE_EVERY = timedelta(minutes=2)
+_view_settled_at: datetime | None = None
+
+
+def _maybe_settle_on_view(background_tasks: BackgroundTasks, now: datetime | None = None) -> bool:
+    """Queue ``refresh_principal_narrative`` after the response, at most once
+    per ``_VIEW_SETTLE_EVERY``. True when queued."""
+    global _view_settled_at
+    now = now or datetime.now(UTC)
+    if _view_settled_at is not None and now - _view_settled_at < _VIEW_SETTLE_EVERY:
+        return False
+    _view_settled_at = now
+    background_tasks.add_task(refresh_principal_narrative)
+    return True
+
+
 def _is_principal(caller_person_id: int | None) -> bool:
     """Whether the resolved caller is the principal. Fails closed."""
     from openexecutive.people.store import is_principal_or_self
@@ -2082,6 +2103,7 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         background_tasks=background_tasks,
     )
     if principal:
+        _maybe_settle_on_view(background_tasks)
         response.held_back = _held_back(datetime.now(UTC))
         response.first_week_card = _first_week_card()
         response.first_week = response.first_week_card is not None
