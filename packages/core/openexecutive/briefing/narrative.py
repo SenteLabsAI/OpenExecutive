@@ -883,16 +883,18 @@ def own_echoes(text: str) -> list[str]:
 # real ask in the same bullet, and a matching bullet is dropped whole.
 _SETTLED_RE = re.compile(
     r"\b(?:stays?|staying|kept|keeps?|left|leaves?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
-    r"(?:list|board|radar|agenda)\b"
+    r"(?:list|board|radar)\b"
     r"|\bno\s+longer\s+on\s+(?:the|your)\s+(?:[\w-]+\s+)?list\b"
     r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b",
     re.IGNORECASE,
 )
 
 
-# A bullet that still asks something of the reader is never dropped in code.
+# A bullet that still asks something of the reader, or carries a deadline,
+# is never dropped in code.
 _ASK_RE = re.compile(
-    r"\?|\b(?:approve|decide|confirm|sign|reply|tell\s+me|until\s+you|by\s+(?:mon|tue|wed|thu|fri|sat|sun|tomorrow|today|end))",
+    r"\?|\b(?:approve|decide|confirm|sign|reply|add|send|tell\s+me|until\s+you|due|before\s+\w+"
+    r"|by\s+(?:mon|tue|wed|thu|fri|sat|sun|tomorrow|today|end))",
     re.IGNORECASE,
 )
 
@@ -906,14 +908,16 @@ def settled_mentions(text: str) -> list[str]:
 def drop_settled_points(text: str) -> str:
     """``text`` without the bullets that only say an item is settled: a
     rewrite that kept one still never shows it."""
-    kept = [
-        line for line in text.splitlines()
-        if not (
+    kept = []
+    for line in text.splitlines():
+        if (
             line.lstrip().startswith(("-", "*", "•"))
             and _SETTLED_RE.search(line)
             and not _ASK_RE.search(line)
-        )
-    ]
+        ):
+            logger.info("brief: dropped a settled point: %s", line.strip()[:200])
+            continue
+        kept.append(line)
     return "\n".join(kept)
 
 

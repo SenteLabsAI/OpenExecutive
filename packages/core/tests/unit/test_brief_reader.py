@@ -371,3 +371,14 @@ def test_a_settled_bullet_with_an_ask_is_never_dropped() -> None:
 
     ask = "- **Budget** — stays off the list until you approve the $40k spend; reply yes/no."
     assert drop_settled_points(ask) == ask
+
+
+def test_a_settled_bullet_with_a_deadline_or_task_is_never_dropped() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points, settled_mentions
+
+    # An item left off an agenda is usually something to add, not a settled one.
+    agenda = "- **Offsite** — Dana's item was left off the agenda; add it before Thursday's meeting."
+    assert settled_mentions(agenda) == []
+    assert drop_settled_points(agenda) == agenda
+    task = "- **Vendor** — kept off the list, but send the renewal notice before Friday."
+    assert drop_settled_points(task) == task
