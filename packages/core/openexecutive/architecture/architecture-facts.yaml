@@ -2677,12 +2677,8 @@ memory:
         signature. A stamp echoing `smtp.helo=` (sender text) proves nothing
         either. Fails closed (absent header, temperror,
         dmarc=fail, no aligned DKIM, unbalanced quotes or comments, two
-        verdicts, extra text in the verdict, read failure). Residual: when Gmail
-        writes NO verdict (a From domain without DMARC) and echoes an
-        unsanitised `;dmarc=pass header.from=...` elsewhere (a HELO on
-        null-sender mail), the echo would read as the verdict — unverified
-        whether Gmail echoes it; bounded by the ack caps. Anyone else: no second read, never
-        authenticated.
+        verdicts, extra text in the verdict, read failure). Anyone else: no
+        second read, never authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY
         address (exact; no alias / domain rule), authenticated, and not
         private_to_principal (forwarded mail and contacts stay refused).
