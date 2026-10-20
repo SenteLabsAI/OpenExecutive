@@ -19,11 +19,11 @@ from openexecutive.briefing.reader import Reader
 
 def test_today_header_prompt_says_what_changed_without_repeating_needs_you() -> None:
     """Right now sits above Needs you: it says what changed today and what to
-    do first, from cited lines, in zero to three points."""
+    do first, from cited lines, in one to three points."""
     for prompt in (BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM):
         assert "directly above their Needs you list" in prompt
         assert "never repeats" in prompt
-        assert "Zero to three bullets" in prompt
+        assert "One to three bullets" in prompt
         assert "[M3]" in prompt and "deleted before the reader sees it" in prompt
         assert "Move today:" in prompt
         assert "not for you" in prompt
