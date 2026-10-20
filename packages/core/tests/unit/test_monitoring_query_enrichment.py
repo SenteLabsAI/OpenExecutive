@@ -145,8 +145,8 @@ async def test_query_emits_signal_per_result_with_stable_dedup(
     signals = await src.poll(item)
 
     assert len(signals) == 2
-    # web_search tool is included alongside emit_query_results.
-    assert any(t.get("type", "").startswith("web_search_") for t in captured["tools"])
+    # The selected provider's web_search is included alongside emit_query_results.
+    assert any(t.get("name") == "web_search" for t in captured["tools"])
     # Provenance strips the query string; summary carries the label prefix.
     assert signals[0].provenance_url == "https://news.example/acme-layoffs"
     assert signals[0].normalized_summary.startswith("[Acme watch] ")
