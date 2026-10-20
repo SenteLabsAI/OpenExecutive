@@ -353,3 +353,14 @@ async def test_a_header_of_only_settled_points_is_not_emptied(
 
     assert text == only
     assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_empty_rewrite_still_drops_a_settled_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, _ = await _synth(monkeypatch, [
+        "**Lease signed.**\n- **Harbor Point** — it stays off the list today.", "",
+    ])
+
+    assert text == "**Lease signed.**"
