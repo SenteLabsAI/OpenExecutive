@@ -373,9 +373,12 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     compauth=pass …``, above every header the sender wrote, so only the
     topmost one counts, it must read that way, and it must hold one DMARC
     verdict: a pass for From's own domain. It must also carry Exchange
-    Online Protection's own ``compauth=`` verdict, so a header the sender
-    wrote that reached the mailbox some way EOP never stamped (an on-premises
-    connector, an internal relay) doesn't count.
+    Online Protection's ``compauth=`` verdict. That only checks the stamp
+    has EOP's shape (a sender can write one too): the proof rests on EOP
+    stamping every message that reaches the mailbox, which holds when the
+    domain's mail comes in through Exchange Online, not when an on-premises
+    server or another gateway delivers it without EOP's stamp. A stamp
+    echoing ``smtp.helo=`` (sender text, on null-sender mail) proves nothing.
 
     A From domain with no DMARC record (``dmarc=none`` or
     ``bestguesspass``) passes only on a DKIM signature Exchange verified for
@@ -396,7 +399,7 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     if raw_from.strip().lower() != address or not results or _relayed_by_a_list(headers):
         return False
     newest = _strip_quotes_and_comments(" ".join(str(results[0]).split()).lower())
-    if newest is None or not newest.startswith("spf="):
+    if newest is None or not newest.startswith("spf=") or "smtp.helo=" in newest:
         return False
     clauses = [c.strip() for c in newest.split(";")]
     verdicts = [c for c in clauses if c.startswith("dmarc=")]
@@ -413,10 +416,12 @@ def exchange_authenticated(headers: Message, from_addr: str) -> bool:
     none = _DMARC_NO_RECORD.fullmatch(verdicts[0])
     if none is None or none.group(1) != domain:
         return False
-    return any(
-        (m := _EXCHANGE_DKIM_PASS.fullmatch(" ".join(c.split()))) is not None and m.group(1) == domain
-        for c in clauses
-    )
+    # Exchange writes one dkim= verdict; a second is sender text it echoed.
+    signatures = [c for c in clauses if c.startswith("dkim=")]
+    if len(signatures) != 1:
+        return False
+    match = _EXCHANGE_DKIM_PASS.fullmatch(" ".join(signatures[0].split()))
+    return match is not None and match.group(1) == domain
 
 
 def _iso(value: object) -> str:

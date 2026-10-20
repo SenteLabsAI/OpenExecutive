@@ -2684,7 +2684,11 @@ memory:
         compauth=, dmarc=pass for the From domain, or for dmarc=none /
         bestguesspass a DKIM pass with header.d = that domain; Microsoft
         365's default onmicrosoft.com key never counts, as it names the
-        tenant, not the domain; list-resent mail never passes). Outlook
+        tenant, not the domain; list-resent mail never passes; a smtp.helo=
+        echo or a second dkim= verdict never passes). It assumes Exchange
+        Online stamps every message into the mailbox: a tenant whose mail
+        arrives through an on-premises server or another gateway without
+        EOP's stamp gets no real proof (compauth= only checks the shape). Outlook
         still sends no roster acknowledgement (the grant is Gmail's).
         Anyone else: no second read, never authenticated.
         `fact_tools._gate` admits one only from the principal's PRIMARY

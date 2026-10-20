@@ -493,7 +493,7 @@ def test_exchange_authenticated_reads_only_its_own_verdict() -> None:
     assert exchange_authenticated(_headers(doubled), "dana@northpeak.example") is False
     assert exchange_authenticated(_headers("mx.google.com; " + EXCHANGE_PASS), "dana@northpeak.example") is False
     assert exchange_authenticated(_headers(EXCHANGE_PASS), "other@northpeak.example") is False
-    # A header the sender wrote that EOP never stamped has no compauth verdict.
+    # A stamp without EOP's compauth= verdict is not EOP's shape.
     unstamped = "spf=pass smtp.mailfrom=northpeak.example; dmarc=pass action=none header.from=northpeak.example"
     assert exchange_authenticated(_headers(unstamped), "dana@northpeak.example") is False
     assert exchange_authenticated(_headers(EXCHANGE_PASS + ";compauth=pass reason=100"), "dana@northpeak.example") is False
@@ -517,6 +517,13 @@ def test_a_domain_without_dmarc_passes_on_its_own_dkim_only() -> None:
     assert exchange_authenticated(_headers(EXCHANGE_NO_DMARC.replace("dkim=pass", "dkim=fail")), dana) is False
     other = EXCHANGE_NO_DMARC.replace("header.from=northpeak", "header.from=evil")
     assert exchange_authenticated(_headers(other), dana) is False
+    # A HELO echo carrying a signature of its own, ahead of Exchange's real one.
+    helo = ("spf=none (sender IP is 203.0.113.9) smtp.helo=x;dkim=pass header.d=northpeak.example; "
+            "dkim=none (message not signed) header.d=none;dmarc=none action=none "
+            "header.from=northpeak.example;compauth=fail reason=001")
+    assert exchange_authenticated(_headers(helo), dana) is False
+    two = EXCHANGE_NO_DMARC.replace("dkim=pass", "dkim=none header.d=none;dkim=pass", 1)
+    assert exchange_authenticated(_headers(two), dana) is False
 
 
 def test_mail_a_list_resent_never_passes() -> None:
