@@ -851,13 +851,14 @@ async def synthesize_briefing_narrative(
 
 
 # Ways a draft reports the reader's own chats and asks back to them, which
-# OWN_MESSAGES_RULE forbids: "you asked me to", "your chat", "the 13:26 alert
+# OWN_MESSAGES_RULE forbids: "you asked me to", "your chat", "a chat with me", "the 13:26 alert
 # chat". Caught in code because the rule alone did not hold (the /today header
 # wrote "the 13:26 alert chat shows the noise you asked me to deal with").
 _OWN_ECHO_RE = re.compile(
     r"\byou\s+(?:asked|wanted|told|reminded)\s+me\b"
     r"|\byou\s+asked\s+(?:for|about)\b"
-    r"|\b(?:our|your)\s+(?:[\w-]+\s+){0,3}?(?<!google )(?:chats?|conversations?)\b"
+    r"|\b(?:our|your)\s+(?:chats?|conversations?)\b"
+    r"|\b(?:chats?|conversations?)\s+with\s+me\b"
     r"|\bthe\s+\d{1,2}:\d{2}\s*(?:[ap]\.?m\.?\s+)?(?:[\w-]+\s+){0,3}?(?:chats?|conversations?)\b",
     re.IGNORECASE,
 )

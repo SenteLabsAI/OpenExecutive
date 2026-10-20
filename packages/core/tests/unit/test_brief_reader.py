@@ -264,11 +264,12 @@ def test_own_echoes_find_their_chats_and_asks_reported_back() -> None:
         "shows the duplicate-alert noise you asked me to deal with."
     )
     assert own_echoes(text) == ["the 13:26 alert chat", "you asked me"]
-    assert own_echoes("As you wanted me to, I moved it; your vendor chat is quiet.") == [
-        "you wanted me", "your vendor chat",
-    ]
-    # Someone else's chat, and a fact of the day, are not echoes.
+    assert own_echoes("As you wanted me to, I moved it after your chat.") == ["you wanted me", "your chat"]
+    assert own_echoes("In the chat with me you settled it.") == ["chat with me"]
+    # Someone else's chats, and a fact of the day, are not echoes.
     assert own_echoes("Dana wrote in your Google Chat space that the lease is signed.") == []
+    assert own_echoes("Your customer conversations with Acme went well.") == []
+    assert own_echoes("Your team's chat channel and your sales conversations are quiet.") == []
     assert own_echoes("**You're clear today.** I'm muting the duplicate alerts.") == []
 
 
