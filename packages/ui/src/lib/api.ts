@@ -151,6 +151,14 @@ export interface MessageAdded {
   ids: string[];
 }
 
+// The turn held steps after reading something from outside: they wait on the
+// person's go, offered as Approve / Not now under the reply.
+export interface HeldStepsEvent {
+  type: "held_steps";
+  session_id?: string;
+  steps: string[];
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
@@ -158,7 +166,8 @@ export type StreamItem =
   | FormPatch
   | Activity
   | SourcesEvent
-  | MessageAdded;
+  | MessageAdded
+  | HeldStepsEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -1377,6 +1386,11 @@ export interface ChatMessage {
   // User rows of a shared chat only: who wrote it.
   sender_person_id?: number;
   sender_name?: string;
+  // The last reply only: steps its turn held after reading something from
+  // outside, still waiting on the person's go. From the stream's
+  // `held_steps` event, or re-attached when the chat is reloaded. Shown as
+  // Approve / Not now buttons; Approve sends the go as their next message.
+  held_steps?: string[];
 }
 
 export interface Decision {

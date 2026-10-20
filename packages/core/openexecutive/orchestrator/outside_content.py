@@ -181,6 +181,9 @@ class TurnOutside:
     previous: TurnOutside | None = None
     # Set by ``end_turn``: a closed turn holds nothing.
     ended: bool = False
+    # A web chat turn: what it holds gets Approve / Not now buttons under the
+    # reply (``pending_held``), so the refusal points there.
+    web: bool = False
     # Who is speaking, and whether others write into this chat: a hold is
     # remembered for the same speaker, never in a shared chat (``_held_key``).
     speaker: int | None = None
@@ -227,6 +230,7 @@ def begin_turn(
         session_id=getattr(session, "session_id", None),
         speaker=getattr(session, "caller_person_id", None),
         shared=getattr(session, "shared_chat", False) is True,
+        web=getattr(session, "from_web_chat", False) is True,
         previous=_TURN.get(),
     )
     from openexecutive.orchestrator import outside_mode
@@ -285,6 +289,95 @@ def _held_key(session: Any, state: TurnOutside) -> str | None:
     if state.shared or getattr(session, "shared_chat", False) is True or not state.session_id:
         return None
     return f"{state.session_id}|{state.speaker if state.speaker is not None else ''}"
+
+
+def pending_held(session: Any) -> tuple[str, ...]:
+    """What the last turn in ``session``'s conversation held for its speaker
+    and still waits on their go, in plain words (``step_words``). The web
+    chat shows it as Approve / Not now buttons under the reply; Approve sends
+    a go (``GO_RE``) as the person's own next message. Empty in a shared
+    chat, with no conversation, or once it has expired. Never raises."""
+    try:
+        if session is None or getattr(session, "shared_chat", False) is True:
+            return ()
+        session_id = getattr(session, "session_id", None)
+        if not session_id:
+            return ()
+        speaker = getattr(session, "caller_person_id", None)
+        stored = _HELD.get(f"{session_id}|{speaker if speaker is not None else ''}")
+        if stored is None or time.monotonic() - stored[1] >= HELD_TTL_SECONDS:
+            return ()
+        return tuple(dict.fromkeys(step_words(label) for label in stored[0]))
+    except Exception:
+        return ()
+
+
+# Held steps as a person reads them (``step_words``). Only these names are
+# shown: a gateway tool name is whatever the model asked for, and text read
+# from outside can steer it, so an unknown one gets its app's generic label.
+_STEP_WORDS: dict[str, str] = {
+    "upsert_person": "Add or change a contact",
+    "read_document": "Open a link",
+    "run_executive_research": "Search the web",
+    "run_script": "Run a script",
+    "run_python_job": "Run a script",
+    "run_workflow": "Run a workflow",
+    "save_workflow": "Save a workflow",
+    "schedule_followup": "Set a follow-up",
+    "create_goal": "Set a goal",
+    "record_decision_outcome": "Record a decision",
+    "send_department_message": "Post to a department",
+    "send_company_broadcast": "Post to everyone",
+    "google_workspace__send_gmail_message": "Send an email",
+    "google_workspace__draft_gmail_message": "Draft an email",
+    "google_workspace__modify_sheet_values": "Change a sheet",
+    "google_workspace__create_spreadsheet": "Create a sheet",
+    "google_workspace__create_doc": "Create a doc",
+    "google_workspace__modify_doc_text": "Change a doc",
+    "google_workspace__create_event": "Add a calendar event",
+    "google_workspace__modify_event": "Change a calendar event",
+    "google_workspace__delete_event": "Delete a calendar event",
+    "google_workspace__update_drive_file": "Change a Drive file",
+    "google_workspace__create_drive_file": "Create a Drive file",
+    "microsoft_365__send-mail": "Send an email",
+    "microsoft_365__create-calendar-event": "Add a calendar event",
+    "microsoft_365__update-calendar-event": "Change a calendar event",
+    "microsoft_365__delete-calendar-event": "Delete a calendar event",
+}
+_APP_STEP_WORDS: dict[str, str] = {
+    "google_workspace": "A Google Workspace step",
+    "microsoft_365": "A Microsoft 365 step",
+}
+
+
+def step_words(label: str) -> str:
+    """A held step's name as a person reads it (``_STEP_WORDS``), else its
+    app's generic label, else "A connected-app step". Never the raw name:
+    that could carry words planted in what the turn read."""
+    label = str(label or "").strip()
+    if label in _STEP_WORDS:
+        return _STEP_WORDS[label]
+    app, sep, _ = label.partition("__")
+    if sep:
+        return _APP_STEP_WORDS.get(app, "A connected-app step")
+    return "A step"
+
+
+# Added to a web chat refusal: the reply gets the buttons, so the person taps
+# rather than types.
+WEB_APPROVE_HINT = (
+    " On this screen your reply gets Approve and Not now buttons for it: tell "
+    "them to tap Approve when they're ready, not to say go."
+)
+
+
+def approve_hint() -> str:
+    """``WEB_APPROVE_HINT`` on a web chat turn whose holds the person can
+    approve; else empty."""
+    state = current()
+    if state is None or not state.web or state.shared or SENDER in state.sources:
+        return ""
+    return WEB_APPROVE_HINT
 
 
 def note_held(label: str) -> None:
@@ -912,6 +1005,8 @@ def outside_withheld_error(label: str) -> str:
     else:
         why = REFUSAL
     note_held(label)
+    if why is REFUSAL:
+        why += approve_hint()
     return json.dumps({"error": f"{label} was not run. {why}"})
 
 
