@@ -538,8 +538,8 @@ class EndOfDayDigestWorkflow(Workflow):
             step_title="Synthesize the digest",
         )
 
-        from openexecutive.agents.utility_fast import get_fast_model
         from openexecutive.audit.usage import log_model_usage
+        from openexecutive.briefing.narrative import brief_model
         from openexecutive.memory.facts import with_standing_facts
         from openexecutive.providers import get_provider
 
@@ -558,7 +558,7 @@ class EndOfDayDigestWorkflow(Workflow):
 
         system = _EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM
         try:
-            model = get_fast_model()
+            model = brief_model()
             response = await get_provider(model).messages_create(
                 model=model,
                 max_tokens=600,

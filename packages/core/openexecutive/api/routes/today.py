@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
@@ -1674,14 +1674,20 @@ def _nothing_needs_attention(today_data: dict[str, Any], mode: str = "team") -> 
 
 
 def _with_due_soon(
-    today_data: dict[str, Any], mode: str, viewer_desc: dict[str, str] | None
+    today_data: dict[str, Any],
+    mode: str,
+    viewer_desc: dict[str, str] | None,
+    scope: str | None = None,
 ) -> dict[str, Any]:
-    """``today_data`` plus, in solo and for the principal's own (whole-
-    business) view only, ``due_soon``: their open loops due this week or
-    overdue (``open_loops.principal_due_soon``). Rendered as the context's
-    DUE THIS WEEK block, so the cache key moves when one is added, closed or
-    falls due. A copy; team data is returned untouched."""
-    if mode != "solo" or viewer_desc is not None:
+    """``today_data`` plus ``due_soon``: the principal's open loops due this
+    week or overdue (``open_loops.principal_due_soon``), for their own
+    whole-business view only: in solo, and in a team on the principal's own
+    scope (Right now names what came due today). Rendered into the context,
+    so the cache key moves when one is added, closed or falls due. A copy;
+    anything else is returned untouched."""
+    from openexecutive.briefing import narrative_cache
+
+    if viewer_desc is not None or (mode != "solo" and scope != narrative_cache.DEFAULT_SCOPE):
         return today_data
     from openexecutive.attunement.open_loops import principal_due_soon
 
@@ -1741,30 +1747,24 @@ def _narrative_context(
     The single source both the cache key and the model call come from, so the
     key can never be computed over something the model did not see.
 
-    The whole-company scopes (``principal`` / ``company``) also get the live
-    blocks (`_header_live`) — what came in today, what is stuck, the rest of
-    the calendar — private rows only in the principal's own scope, and in
-    the first week nothing extra: Home's first-week card says what the week
-    is for (``briefing.first_week.first_week_card``).
+    The whole-company scopes (``principal`` / ``company``) get Right now's
+    context (`_header_context`, ``briefing.header_context``): what moved
+    today, tagged, with the live blocks (`_header_live`) private only in the
+    principal's own scope. A teammate's header keeps the older render.
 
-    On a quiet board — nothing awaiting a decision and nothing live — it
-    returns `narrative_cache.QUIET_CONTEXT` and no activity: the narrative is
-    a fixed line there, so the key must not depend on the rail, and building
-    the rail would be wasted work (it is a seven-source SQL union) on a
-    request whose answer is a constant.
+    On a quiet board it returns a fixed context (`narrative_cache.
+    QUIET_CONTEXT`, or `NOTHING_MOVED_CONTEXT` for the header when items are
+    open but none moved today) and no activity: the narrative is a fixed
+    line there, so the key must not depend on anything volatile.
     """
     from openexecutive.briefing import narrative_cache
     from openexecutive.briefing.narrative import render_briefing_context
 
-    today_data = _with_due_soon(today_data, mode, viewer_desc)
-    live = None
-    window = "today so far"
-    now_label: str | None = None
+    today_data = _with_due_soon(today_data, mode, viewer_desc, scope)
+    resolved = _narrative_reader(scope, viewer) if reader is _LOOKUP else reader
     if viewer_desc is None:
-        live, window, now_label = _header_live(
-            include_private=scope == narrative_cache.DEFAULT_SCOPE
-        )
-    if _nothing_needs_attention(today_data, mode) and (live is None or live.is_empty()):
+        return _header_context(today_data, viewer, mode, scope, resolved)  # type: ignore[arg-type]
+    if _nothing_needs_attention(today_data, mode):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)
     context = render_briefing_context(
@@ -1772,13 +1772,60 @@ def _narrative_context(
         today_data=today_data,
         activity=activity,
         mode=mode,
-        live=live,
-        live_window=window,
-        now_label=now_label,
-        brief_requests=viewer_desc is None and scope == narrative_cache.DEFAULT_SCOPE,
-        reader=_narrative_reader(scope, viewer) if reader is _LOOKUP else reader,  # type: ignore[arg-type]
+        brief_requests=False,
+        reader=resolved,  # type: ignore[arg-type]
     )
     return context, activity
+
+
+def _header_context(
+    today_data: dict[str, Any],
+    viewer: PersonBriefItem | None,
+    mode: str,
+    scope: str | None,
+    reader: Reader | None,
+) -> tuple[str, list[dict[str, Any]] | None]:
+    """Right now's context for a whole-company scope
+    (``briefing.header_context``). With nothing moved today it is one of the
+    two fixed contexts (``QUIET_CONTEXT``: nothing open either;
+    ``NOTHING_MOVED_CONTEXT``: open items, none of them new), so the header
+    is a fixed line and no model call happens."""
+    from openexecutive.briefing import brief_requests, narrative_cache
+    from openexecutive.briefing.header_context import render_header_context
+    from openexecutive.memory.facts import render_facts_for_prompt
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    own = scope == narrative_cache.DEFAULT_SCOPE
+    live, _window, now_label = _header_live(include_private=own)
+    activity = _narrative_activity(viewer, None)
+    raise_lines: list[str] = []
+    leave_out = ""
+    if own:
+        raise_block, leave_out = brief_requests.render_parts()
+        raise_lines = [ln[2:] for ln in raise_block.splitlines() if ln.startswith("- ")]
+    tz: tzinfo
+    try:
+        tz = get_user_timezone()
+    except Exception:
+        tz = UTC
+    ctx = render_header_context(
+        period_label=narrative_cache.local_today(),
+        today_data=today_data,
+        live=live,
+        activity=activity,
+        mode=mode,
+        now_label=now_label,
+        tz=tz,
+        standing_facts=render_facts_for_prompt(),
+        raise_lines=raise_lines,
+        leave_out_block=leave_out,
+        reader=reader,
+    )
+    if not ctx.moved:
+        if _nothing_needs_attention(today_data, mode):
+            return narrative_cache.QUIET_CONTEXT, None
+        return narrative_cache.NOTHING_MOVED_CONTEXT, None
+    return ctx.text, activity
 
 
 def _narrative_reader(scope: str | None, viewer: PersonBriefItem | None) -> Reader | None:
@@ -1940,7 +1987,9 @@ async def _regen_briefing_narrative_locked(
     import time
 
     from openexecutive.briefing import narrative_cache
+    from openexecutive.briefing.header_context import keep_cited_points, tags_in
     from openexecutive.briefing.narrative import (
+        NOTHING_NEW,
         QUIET_PRINCIPAL,
         QUIET_VIEWER,
         REWRITE_TIMEOUT_S,
@@ -1974,6 +2023,9 @@ async def _regen_briefing_narrative_locked(
             # write the fixed quiet line. Still cached (below) so the hot path
             # sees a fresh hash instead of re-scheduling this task forever.
             text = QUIET_VIEWER if viewer_desc is not None else QUIET_PRINCIPAL
+        elif context == narrative_cache.NOTHING_MOVED_CONTEXT:
+            # Open items, none new today: Needs you below is the whole story.
+            text = NOTHING_NEW
         else:
             text = await asyncio.wait_for(
                 synthesize_briefing_narrative(
@@ -1988,6 +2040,9 @@ async def _regen_briefing_narrative_locked(
                 # 25 s for the draft, plus the rewrite's own budget.
                 timeout=25.0 + REWRITE_TIMEOUT_S,
             )
+            if viewer_desc is None:
+                # Right now: a point must cite a line of what moved today.
+                text = keep_cited_points(text, tags_in(context))
     except Exception:
         logger.exception("today: briefing narrative regen failed (scope=%s)", expected_scope)
         return False
@@ -2008,7 +2063,7 @@ async def _regen_briefing_narrative_locked(
     logger.info(
         "today: narrative regenerated scope=%s ms=%d quiet=%s context_chars=%d",
         scope, int((time.monotonic() - started) * 1000),
-        context == narrative_cache.QUIET_CONTEXT, len(context),
+        context in (narrative_cache.QUIET_CONTEXT, narrative_cache.NOTHING_MOVED_CONTEXT), len(context),
     )
     return True
 

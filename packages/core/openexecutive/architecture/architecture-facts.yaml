@@ -2540,6 +2540,18 @@ memory:
     and decisions in them, and show an open ask as what the Executive is
     doing. Why: the header opened with "you've been messaging me heavily
     tonight" and made the reader's own complaint its headline.
+    RIGHT NOW — the whole-company header is written from
+    `briefing.header_context`: MOVED TODAY lines tagged [M1]…, COMING UP
+    TODAY (calendar), STILL OPEN and BACKGROUND (chat titles, own messages)
+    as context only. Each bullet must end with a tag; `keep_cited_points`
+    drops the rest and keeps three at most. No MOVED TODAY line means no
+    model call (the quiet line, or "Nothing new today — what's open is
+    below."). The history rail is read only for work finished today. Why:
+    chat titles and a 20-row history rail were most of its input, the prompt
+    banned the Needs you items and demanded 2–4 bullets, so it padded with
+    "I'm combining the PDFs now" and yesterday's DMs (2026-10-20). Every
+    brief uses `narrative.brief_model()`, the Executive's model, not
+    ROUTING_MODEL.
     WRITE PATH — chat tools in `orchestrator/fact_tools.py`:
       - `remember_fact(subject, statement, previous_value?, replaces_fact_id?,
         source_quote)` and `forget_fact(fact_id, rationale, source_quote)` —

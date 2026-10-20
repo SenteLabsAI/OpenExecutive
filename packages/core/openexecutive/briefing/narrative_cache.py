@@ -107,7 +107,7 @@ def initialize_db(db_path: Path | None = None) -> None:
 # into the input hash so a prompt change invalidates every cached narrative on
 # the next view — otherwise a wording fix wouldn't surface until the underlying
 # state changed (or the daily date rollover).
-NARRATIVE_PROMPT_VERSION = "8"
+NARRATIVE_PROMPT_VERSION = "9"
 
 
 # Stands in for the rendered context when nothing on the viewer's board wants
@@ -116,6 +116,9 @@ NARRATIVE_PROMPT_VERSION = "8"
 # would re-key on every activity row and re-write the identical quiet line
 # forever.
 QUIET_CONTEXT = "<nothing-needs-attention>"
+# The same for Right now when items are open but none moved today: the
+# header is the fixed "nothing new" line and Needs you below says the rest.
+NOTHING_MOVED_CONTEXT = "<nothing-moved-today>"
 
 
 def build_narrative_input_hash(
@@ -219,6 +222,7 @@ def utc_now_iso() -> str:
 __all__ = [
     "COMPANY_SCOPE",
     "DEFAULT_SCOPE",
+    "NOTHING_MOVED_CONTEXT",
     "QUIET_CONTEXT",
     "BriefingNarrative",
     "build_narrative_input_hash",

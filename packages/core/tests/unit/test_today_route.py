@@ -2208,7 +2208,7 @@ def test_inbound_today_makes_a_quiet_board_speak(
     c = _make_client()
     c.get("/today")
     assert len(contexts) == 1
-    assert "INBOUND" in contexts[0] and "vendor renewal terms" in contexts[0]
+    assert "MOVED TODAY" in contexts[0] and "vendor renewal terms" in contexts[0]
     assert "NOW:" in contexts[0]
     assert c.get("/today").json()["narrative"] == "live header"
 
@@ -2528,12 +2528,14 @@ def test_today_splits_the_header_for_right_now(
     _seed_live_action_alert(db)
 
     async def _fake(**_kw: object) -> str:
-        return _RIGHT_NOW_HEADER
+        # Right now keeps a point only when it cites a line of the context.
+        return _RIGHT_NOW_HEADER.replace("4 PM.", "4 PM. [M1]")
 
     monkeypatch.setattr(briefing_narrative, "synthesize_briefing_narrative", _fake)
     c = _make_client()
     c.get("/today")
     data = c.get("/today").json()
+    assert "[M1]" not in data["narrative"]
     assert data["narrative_lead"] == "Lakeside is the one thing to move today."
     assert data["narrative_move"] == "Send Lakeside the price."
     [point] = data["narrative_points"]
