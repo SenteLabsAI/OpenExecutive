@@ -4405,7 +4405,8 @@ people:
     person (api.routes.people._shown); anyone else gets details empty, so a
     number read from a teammate's signature isn't handed to the whole team.
     A refused mailbox read (GmailAuthError / GmailRateLimited) stops that
-    run's signature and last-heard reads but not its notes.
+    run's signature and last-heard reads but not its notes; the run is then
+    still recorded as a mailbox failure (raised after the notes).
   aliases: |
     A Person has one PRIMARY address (`Person.email`, the one they sign in
     with) and up to 10 ALIASES (`Person.email_aliases`, table

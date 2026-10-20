@@ -115,6 +115,8 @@ class RunResult:
     updated: int = 0
     notes: int = 0
     counts: dict[str, int] = field(default_factory=dict)
+    # A mailbox refusal met after adds began; raised once the notes are done.
+    refused: Exception | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -679,6 +681,9 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
 
     await _read_roles(client, mode, people, now, result)
     await _refresh_notes(client, people, seen, now, result)
+    if result.refused is not None:
+        # Recorded like any mailbox failure (run_once), after the notes.
+        raise result.refused
     return result
 
 
@@ -710,8 +715,9 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
         changes.note_read(address, now)
         try:
             message = await client.latest_from(address)
-        except (GmailAuthError, GmailRateLimited):
+        except (GmailAuthError, GmailRateLimited) as exc:
             # Stop reading signatures this run; the notes still go on.
+            result.refused = result.refused or exc
             break
         except Exception:
             logger.info("contact_keeper: couldn't read a contact's newest mail")
@@ -807,9 +813,10 @@ async def _refresh_notes(
             heard_reads -= 1
             try:
                 latest = await client.latest_from(changes.norm(person.email), days=int(LOOKBACK.days))
-            except (GmailAuthError, GmailRateLimited):
+            except (GmailAuthError, GmailRateLimited) as exc:
                 # Stop asking the mailbox this run; the notes still go on.
                 heard_reads, latest = 0, None
+                result.refused = result.refused or exc
             except Exception:
                 latest = None
             if latest is not None and getattr(latest, "sender_authenticated", False) is True:
@@ -839,6 +846,10 @@ async def _refresh_notes(
         if made is None:
             continue
         note, topics = made
+        if not note:
+            # Rejected text: keep the note there is, don't retry until new mail.
+            notes.set_key(person_id, key)
+            continue
         notes.put_note(person_id, note, topics, key)
         result.notes += 1
 

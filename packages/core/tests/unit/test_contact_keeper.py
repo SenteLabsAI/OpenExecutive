@@ -549,9 +549,28 @@ def test_a_mailbox_slowdown_stops_the_reads_not_the_notes(owner: int, written: l
         box.sent.append(_wrote(address, f"About order {i}.", days_ago=1))
     people_registry.invalidate()
     result = _run(box)
-    # One signature read, one last-heard read: each stops at the first refusal.
+    # One signature read, one last-heard read: each stops at the first refusal,
+    # the notes are written, and the run still reports the mailbox failing.
     assert len(asked) == 2
-    assert len(written) == 2 and result.status != "error"
+    assert len(written) == 2 and result.status == "error"
+
+
+def test_a_rejected_note_keeps_the_one_there_is(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.people import contact_notes
+
+    pid = people_store.upsert_person(full_name="Priya Shah", email=PRIYA, kind="contact")
+    people_registry.invalidate()
+    contact_notes.put_note(pid, "You work with Priya on the roof bid.", ["roofs"], "old")
+
+    async def rejected(*_a: Any, **_kw: Any) -> tuple[str, list[str]]:
+        return "", []
+
+    monkeypatch.setattr(contact_notes, "write_note", rejected)
+    box = FakeMailbox()
+    box.sent = [_wrote(PRIYA, "One more question.", days_ago=1)]
+    _run(box)
+    note = contact_notes.get(pid)
+    assert note.note == "You work with Priya on the roof bid." and contact_notes.activity_key(pid) != "old"
 
 
 def test_notes_are_capped_per_run(owner: int, written: list[Any]) -> None:
@@ -774,3 +793,30 @@ def test_a_teammates_details_go_only_to_the_principal_and_them(owner: int) -> No
         assert details(OWNER, path) == [[{"kind": "mobile", "value": "555 010 0142"}]]
         assert details("ben@co.example", path) == [[{"kind": "mobile", "value": "555 010 0142"}]]
         assert details("cara@co.example", path) == [[]]
+
+
+def test_details_fail_closed_and_by_scope_hides_them(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.api.routes import chat as chat_route
+    from openexecutive.api.routes import people as people_route
+    from openexecutive.people.models import AuthorityScope, ContactDetail
+
+    app = FastAPI()
+    app.include_router(people_route.router)
+    api = TestClient(app)
+    people_store.upsert_person(full_name="Cara Teammate", email="cara@co.example")
+    people_store.set_person_details(owner, [ContactDetail(kind="phone", value="555 010 0199")])
+    people_store.set_authority_scope(owner, [AuthorityScope.WILDCARD])
+    people_registry.invalidate()
+    token = AuthorityScope.WILDCARD.value
+    [mine] = [r for r in api.get(f"/people/by-scope/{token}", headers={"x-caller-email": OWNER}).json()
+              if r["id"] == owner]
+    assert mine["details"] == [{"kind": "phone", "value": "555 010 0199"}]
+    theirs = api.get(f"/people/by-scope/{token}", headers={"x-caller-email": "cara@co.example"}).json()
+    assert [r["details"] for r in theirs if r["id"] == owner] == [[]]
+
+    def broken(_request: Any) -> int:
+        raise RuntimeError("no caller")
+
+    monkeypatch.setattr(chat_route, "_resolve_caller_person_id", broken)
+    rows = api.get("/people", headers={"x-caller-email": OWNER}).json()
+    assert [r["details"] for r in rows if r["id"] == owner] == [[]]
