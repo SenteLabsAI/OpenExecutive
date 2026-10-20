@@ -72,18 +72,20 @@ class SearchRun:
     max_uses: int
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     calls: int = 0
+    conversation_id: str | None = None
 
     @classmethod
     def for_chat(cls, session: Any) -> SearchRun:
-        # Only an opaque UUID may leave the runtime; channel/email identifiers
-        # are never sent. Non-UUID sessions hold a separate random identity.
+        # Only an opaque UUID may leave the runtime. Adapters recreate Session
+        # on each message, so non-UUID channel identities need persisted state.
         try:
             identity = str(uuid.UUID(session.session_id))
         except (ValueError, TypeError, AttributeError):
-            saved_identity = getattr(session, "parallel_search_id", None)
-            identity = saved_identity if isinstance(saved_identity, str) else str(uuid.uuid4())
-            if not isinstance(saved_identity, str) and session is not None:
-                session.parallel_search_id = identity
+            key = getattr(session, "session_id", None)
+            return cls(
+                get_settings().web_search_max_uses,
+                conversation_id=key if isinstance(key, str) and key else None,
+            )
         return cls(get_settings().web_search_max_uses, identity)
 
     async def search(self, arguments: dict[str, Any]) -> str:
@@ -132,9 +134,13 @@ class SearchRun:
         if self.calls >= self.max_uses:
             return json.dumps({"error": "Web search/fetch limit reached for this turn"})
         self.calls += 1
-        params["session_id"] = self.session_id
         try:
             async with asyncio.timeout(MCP_TIMEOUT_SECONDS):
+                if self.conversation_id is not None:
+                    from openexecutive.memory.session_store import search_conversation_id
+
+                    self.session_id = await asyncio.to_thread(search_conversation_id, self.conversation_id)
+                params["session_id"] = self.session_id
                 result = await _mcp_call(name, params)
             text = "\n".join(block.text for block in result.content if block.type == "text")
             if result.isError:

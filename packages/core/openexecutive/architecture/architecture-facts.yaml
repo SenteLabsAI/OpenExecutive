@@ -906,8 +906,12 @@ routing:
     Parallel's SearchRun sends JSON-RPC through MCP Streamable HTTP to
     https://search.parallel.ai/mcp, with a project User-Agent and no credentials.
     Each chat turn gets its own combined search/fetch budget (WEB_SEARCH_MAX_USES).
-    Its conversation UUID is reused on follow-ups; non-UUID channel sessions hold
-    a separate random UUID. Research/query runs mint their own UUID per call and
+    Its conversation UUID is reused on follow-ups; non-UUID channel conversations
+    resolve a random UUID atomically through memory/session_store.search_conversation_id.
+    The lazy search_conversations SQLite table stores the complete private channel
+    conversation id and opaque search_id; session deletion removes the mapping.
+    Rehydrated sessions and concurrent worker processes resolve the same UUID,
+    and a rolling ~n/new-thread conversation resolves a new one. Research/query runs mint their own UUID per call and
     execute a bounded client loop in BaseAgent.analyze_with_tools before emitting
     structured results. Research specialists use RESEARCH_WEB_SEARCH_MAX_USES.
     All loops retain cancellation and timeouts; tool errors reach the model.

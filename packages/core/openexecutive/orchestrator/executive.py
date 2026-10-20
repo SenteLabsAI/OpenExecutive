@@ -2347,7 +2347,8 @@ class Executive:
         from openexecutive.orchestrator.parallel_search import SearchRun
 
         web_run = SearchRun.for_chat(current_session.get())
-        parallel_tools = [t for t in (build_web_search_tool(), build_web_fetch_tool()) if t and "input_schema" in t]
+        web_search_tool = build_web_search_tool()
+        parallel_tools = [t for t in (web_search_tool, build_web_fetch_tool()) if t and "input_schema" in t]
         turn_handlers = {
             **turn_handlers,
             **({"web_search": web_run.search, "web_fetch": web_run.fetch} if parallel_tools else {}),
@@ -2432,7 +2433,6 @@ class Executive:
                 *client_tools[:-1],
                 {**client_tools[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}},
             ]
-            web_search_tool = build_web_search_tool()
             if web_search_tool is not None and "type" in web_search_tool:
                 tools_with_cache.append(web_search_tool)
             stream_model = model or self._settings.default_model

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,29 @@ from typing import Any
 from openexecutive.memory.conversation_ids import is_rolling
 from openexecutive.memory.drive_reads import delete_session_drive_memory
 from openexecutive.memory.episodic import DB_PATH, _get_conn
+
+
+def search_conversation_id(conversation_id: str) -> str:
+    """One persisted opaque search UUID per full runtime conversation.
+
+    Chat adapters reconstruct Session objects on follow-ups. Their private
+    channel/thread identifiers stay in SQLite, never in search requests. An
+    atomic insert handles overlapping turns and different worker processes.
+    The table is lazy so disabled search never writes search state.
+    """
+    with _get_conn() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS search_conversations "
+            "(conversation_id TEXT PRIMARY KEY, search_id TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO search_conversations (conversation_id, search_id) VALUES (?, ?)",
+            (conversation_id, str(uuid.uuid4())),
+        )
+        row = conn.execute(
+            "SELECT search_id FROM search_conversations WHERE conversation_id = ?", (conversation_id,)
+        ).fetchone()
+        return str(row["search_id"])
 
 
 def create_session(
@@ -390,6 +414,8 @@ def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
     with _get_conn(db_path) as conn:
         conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM session_shares WHERE session_id = ?", (session_id,))
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_conversations'").fetchone():
+            conn.execute("DELETE FROM search_conversations WHERE conversation_id = ?", (session_id,))
         cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         deleted = cur.rowcount > 0
     delete_session_drive_memory(session_id, db_path)

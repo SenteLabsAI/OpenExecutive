@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -34,11 +35,12 @@ def call(name: str, arguments: dict, identity: str = "tool_1") -> dict:
 
 
 @pytest.fixture
-def mcp_http(monkeypatch):
+def mcp_http(monkeypatch, tmp_path):
     from mcp.client import streamable_http
 
     for key in ("ENABLE_WEB_SEARCH", "WEB_SEARCH_PROVIDER", "WEB_SEARCH_ALLOWED_DOMAINS", "WEB_SEARCH_BLOCKED_DOMAINS", "PARALLEL_API_KEY"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("openexecutive.memory.episodic.DB_PATH", tmp_path / "search-test.db")
     requests = []
     state = {"error": False, "raise": False}
 
@@ -340,3 +342,132 @@ async def test_actual_transport_timeout_and_cancellation(monkeypatch, mcp_http):
     assert tool_calls(requests)[0]['arguments']['session_id'] == run.session_id
     monkeypatch.setattr(parallel, 'MCP_TIMEOUT_SECONDS', 0.05)
     assert 'timed out' in await run.search(QUERY)
+
+
+@pytest.mark.parametrize('conversation', [
+    'slack:dm:U1', 'discord:dm:123', 'telegram:123',
+    'google_chat:spaces/test:threads/first', 'email:private-thread@example.com',
+])
+async def test_rehydrated_channel_conversations(monkeypatch, mcp_http, conversation):
+    from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.session import Session
+
+    requests, _ = mcp_http
+    responses = iter([
+        message(call('web_search', QUERY)), message({'type': 'text', 'text': 'Found sources'}),
+        message(call('web_fetch', {'urls': [URL]})), message({'type': 'text', 'text': 'Read source'}),
+        message(call('web_search', QUERY)), message({'type': 'text', 'text': 'New conversation'}),
+    ])
+    monkeypatch.setattr('openexecutive.orchestrator.executive.get_provider', lambda _: SimpleNamespace(messages_stream=lambda **kw: scripted_stream(next(responses))))
+    executive = Executive()
+    # Each adapter reloads Session on a later inbound message. Resolve by the
+    # complete conversation id, including rolling suffix/new thread identity.
+    await executive.chat('Find news', Session(session_id=conversation))
+    await executive.chat('Read it', Session(session_id=conversation))
+    await executive.chat('Find news', Session(session_id=conversation + '~2'))
+    identities = [c['arguments']['session_id'] for c in tool_calls(requests)]
+    assert identities[0] == identities[1] != identities[2]
+    assert all(str(uuid.UUID(identity)) == identity for identity in identities)
+    assert conversation not in json.dumps(tool_calls(requests))
+
+
+async def test_persisted_identity_concurrent_resolution_and_deletion(mcp_http):
+    import asyncio
+
+    from openexecutive.memory import episodic, session_store
+    from openexecutive.orchestrator.session import Session
+
+    conversation = 'telegram:private-channel~2'
+    runs = [SearchRun.for_chat(Session(session_id=conversation)) for _ in range(2)]
+    await asyncio.gather(*(run.search(QUERY) for run in runs))
+    assert runs[0].session_id == runs[1].session_id
+    episodic.initialize_db()
+    session_store.create_session(conversation, 'Fixture', '2026-01-01', db_path=episodic.DB_PATH)
+    assert session_store.delete_session(conversation, db_path=episodic.DB_PATH)
+    replacement = SearchRun.for_chat(Session(session_id=conversation))
+    await replacement.search(QUERY)
+    assert replacement.session_id != runs[0].session_id
+
+
+async def test_actual_research_quota_retry_and_new_run(monkeypatch, mcp_http):
+    from openexecutive.agents.strategy import StrategyAgent
+    from openexecutive.monitoring.research.specialist_research import research_one_specialist
+
+    requests, state = mcp_http
+    observed = []
+    responses = iter([
+        message(call('web_search', QUERY)), message(call('web_search', QUERY)),
+        message(call('emit_research_findings', {'findings': []})),
+        message(call('web_search', QUERY)), message(call('emit_research_findings', {'findings': []})),
+    ])
+    state['error'] = True
+
+    async def create(**kwargs):
+        observed.append(copy.deepcopy(kwargs))
+        # The first result is the explicit quota; a retry in the same model
+        # loop must retain its UUID. A new research run gets a new UUID.
+        if len(observed) == 2:
+            assert 'quota exceeded' in json.dumps(kwargs['messages'][-1])
+            state['error'] = False
+        return next(responses)
+
+    provider = SimpleNamespace(messages_create=create)
+    monkeypatch.setattr('openexecutive.agents.base.get_provider', lambda _: provider)
+    for _ in range(2):
+        assert await research_one_specialist('cso', StrategyAgent(), 'Find Python news') == []
+    identities = [c['arguments']['session_id'] for c in tool_calls(requests)]
+    assert identities[0] == identities[1] != identities[2]
+
+
+async def test_identity_failure_stops_request_and_disabled_search_writes_nothing(monkeypatch, mcp_http):
+    from openexecutive.memory import episodic
+    from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.session import Session
+
+    requests, _ = mcp_http
+    monkeypatch.setenv('ENABLE_WEB_SEARCH', 'false')
+    run = SearchRun.for_chat(Session(session_id='telegram:123'))
+    assert 'not enabled' in await run.search(QUERY)
+    assert not episodic.DB_PATH.exists()
+    monkeypatch.delenv('ENABLE_WEB_SEARCH')
+
+    def broken_mapping(_):
+        raise OSError('private database diagnostic')
+
+    monkeypatch.setattr('openexecutive.memory.session_store.search_conversation_id', broken_mapping)
+    responses = iter([message(call('web_search', QUERY)), message({'type': 'text', 'text': 'Search unavailable'})])
+    observed = []
+
+    def stream(**kwargs):
+        observed.append(copy.deepcopy(kwargs))
+        return scripted_stream(next(responses))
+
+    monkeypatch.setattr('openexecutive.orchestrator.executive.get_provider', lambda _: SimpleNamespace(messages_stream=stream))
+    await Executive().chat('Find news', Session(session_id='telegram:123'))
+    assert not requests
+    assert 'request failed' in json.dumps(observed[1]['messages'][-1])
+    assert 'private database' not in json.dumps(observed[1]['messages'][-1])
+
+
+async def test_provider_change_waits_for_next_tool_list(monkeypatch, mcp_http):
+    from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.session import Session
+
+    requests, _ = mcp_http
+    responses = iter([message(call('web_search', QUERY)), message({'type': 'text', 'text': 'Settings changed'})])
+    observed = []
+
+    def stream(**kwargs):
+        observed.append(copy.deepcopy(kwargs))
+        # A .env reload cannot append a native web_search to the already
+        # pinned client tool list in an in-flight turn. Dispatch fails closed.
+        monkeypatch.setenv('WEB_SEARCH_PROVIDER', 'anthropic')
+        return scripted_stream(next(responses))
+
+    monkeypatch.setattr('openexecutive.orchestrator.executive.get_provider', lambda _: SimpleNamespace(messages_stream=stream))
+    await Executive().chat('Find news', Session())
+    assert not requests
+    for request in observed:
+        names = [t['name'] for t in request['tools']]
+        assert names.count('web_search') == 1
+        assert not any(t.get('type') == 'web_search_20250305' for t in request['tools'])
