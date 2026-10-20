@@ -116,7 +116,9 @@ def test_unbacked_claim_gets_one_more_round_with_the_nudge() -> None:
     assert second[-2] == {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}
     nudge = second[-1]["content"][0]["text"]
     assert "“Done”" in nudge and "no tool call" in nudge
-    assert "\n\n" in items
+    # The break between the two replies comes from the next round's text
+    # (test_reply_rounds.py); the retry itself streams nothing of its own.
+    assert "\n\n" not in items
     # Checked once a turn: the second reply ends it without another check.
     assert len(calls) == 1
 

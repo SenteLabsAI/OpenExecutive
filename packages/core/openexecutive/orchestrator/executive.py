@@ -2516,7 +2516,8 @@ class Executive:
                 current_messages.append(
                     {"role": "user", "content": [{"type": "text", "text": claim_check.nudge(claim)}]}
                 )
-                yield "\n\n"
+                # The retry's text gets its paragraph break from
+                # _round_separator, like any other round's.
                 continue
 
             # open_tools is answered here; a use_tool call becomes the call it

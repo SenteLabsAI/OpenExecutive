@@ -90,3 +90,20 @@ def test_one_round_is_untouched_and_a_silent_round_adds_nothing() -> None:
         FinalMsg([TextBlock("ITEM-1 has 12.")], "end_turn"),
     ])
     assert reply == "ITEM-1 has 12."
+
+
+def test_a_claim_check_retry_starts_one_new_paragraph(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The retry round's break came twice: the loop's own "\n\n" before the
+    # retry, then _round_separator's, which never saw it (PR #562 review).
+    from openexecutive.orchestrator import claim_check
+
+    async def unbacked(model: str, turn: str) -> dict[str, Any]:
+        return {"unbacked": True, "claim": "Done"}
+
+    monkeypatch.setenv("CLAIM_CHECK_ENABLED", "true")
+    monkeypatch.setattr(claim_check, "_call_model", unbacked)
+    reply = _reply([
+        FinalMsg([TextBlock("Done.")], "end_turn"),
+        FinalMsg([TextBlock("Actually I haven't removed it yet.")], "end_turn"),
+    ])
+    assert reply == "Done.\n\nActually I haven't removed it yet."
