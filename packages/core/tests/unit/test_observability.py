@@ -32,7 +32,12 @@ class _FailingProvider:
         raise ValueError(f"Error code: 400 - messages.0.content: {SECRET}")
 
     def messages_stream(self, **kwargs: Any) -> Any:
-        raise NotImplementedError
+        @asynccontextmanager
+        async def cm() -> Any:
+            raise ValueError(f"Error code: 400 - messages.0.content: {SECRET}")
+            yield
+
+        return cm()
 
 
 class _FakeProvider:
