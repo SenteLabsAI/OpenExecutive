@@ -115,8 +115,24 @@ export default function ReflectionTab() {
     setHidden((h) => new Set([...h].filter((k) => !p.ids.some((id) => k === `${prefix}${id}`))));
   }, [refresh]);
 
-  // Leaving the screen sends what is waiting rather than dropping it.
-  useEffect(() => () => void commit(), [commit]);
+  // Leaving the screen sends what is waiting rather than dropping it: on
+  // unmount, and when the tab closes or reloads (keepalive, since the page
+  // is going away and nothing will read the answer).
+  useEffect(() => {
+    const onPageHide = () => {
+      const p = pending.current;
+      if (!p) return;
+      pending.current = null;
+      clearTimeout(p.timer);
+      const send = p.view === "misses" ? forgetReflectionMiss : forgetReflectionLesson;
+      for (const id of p.ids) void send(id, { keepalive: true }).catch(() => {});
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      void commit();
+    };
+  }, [commit]);
 
   const pick = useCallback((next: { view?: View; category?: Category }) => {
     if (next.view !== undefined) setView(next.view);

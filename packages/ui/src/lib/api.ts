@@ -2346,13 +2346,21 @@ export async function getReflection(signal?: AbortSignal): Promise<ReflectionSta
   return res.json();
 }
 
-export async function forgetReflectionMiss(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/memories/reflection/misses/${id}`, { method: "DELETE" });
+/** `keepalive` lets the request finish while the page is closing. */
+export async function forgetReflectionMiss(id: number, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/reflection/misses/${id}`, {
+    method: "DELETE",
+    keepalive: opts.keepalive,
+  });
   if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
 }
 
-export async function forgetReflectionLesson(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/memories/reflection/lessons/${id}`, { method: "DELETE" });
+/** `keepalive` lets the request finish while the page is closing. */
+export async function forgetReflectionLesson(id: number, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/reflection/lessons/${id}`, {
+    method: "DELETE",
+    keepalive: opts.keepalive,
+  });
   if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
 }
 
