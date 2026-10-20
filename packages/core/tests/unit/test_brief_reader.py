@@ -382,3 +382,11 @@ def test_a_settled_bullet_with_a_deadline_or_task_is_never_dropped() -> None:
     assert drop_settled_points(agenda) == agenda
     task = "- **Vendor** — kept off the list, but send the renewal notice before Friday."
     assert drop_settled_points(task) == task
+
+
+def test_a_bold_line_is_not_a_bullet() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points
+
+    text = "**Lease signed; Harbor Point stays off the list.**\n**Move today:** keep it off the list."
+    assert drop_settled_points(text) == text
+    assert drop_settled_points("* Harbor Point stays off the list.\n**Done.**") == "**Done.**"

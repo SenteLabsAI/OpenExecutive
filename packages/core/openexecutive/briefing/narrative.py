@@ -899,6 +899,10 @@ _ASK_RE = re.compile(
 )
 
 
+# A list marker and a space: a bold line ("**Bottom line.**") is not a bullet.
+_BULLET_RE = re.compile(r"\s*[-*•]\s")
+
+
 def settled_mentions(text: str) -> list[str]:
     """The phrases in ``text`` that say an item is settled or off the list,
     as written."""
@@ -911,7 +915,7 @@ def drop_settled_points(text: str) -> str:
     kept = []
     for line in text.splitlines():
         if (
-            line.lstrip().startswith(("-", "*", "•"))
+            _BULLET_RE.match(line)
             and _SETTLED_RE.search(line)
             and not _ASK_RE.search(line)
         ):
