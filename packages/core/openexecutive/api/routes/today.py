@@ -1789,7 +1789,10 @@ def _header_context(
     (``briefing.header_context``). With nothing moved today it is one of the
     two fixed contexts (``QUIET_CONTEXT``: nothing open either;
     ``NOTHING_MOVED_CONTEXT``: open items, none of them new), so the header
-    is a fixed line and no model call happens."""
+    is a fixed line and no model call happens. A calendar alone does not
+    count as moved, on purpose: Right now lists the meetings still ahead
+    (``calendar_next``) under that line, so a meetings-only day costs no
+    model call."""
     from openexecutive.briefing import brief_requests, narrative_cache
     from openexecutive.briefing.header_context import HeaderContext, render_header_context
     from openexecutive.memory.facts import render_facts_for_prompt

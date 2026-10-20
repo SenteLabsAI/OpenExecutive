@@ -324,3 +324,18 @@ def test_a_draft_left_empty_is_cached_as_the_nothing_new_line(
     assert c.get("/today").json()["narrative"] == NOTHING_NEW
     c.get("/today")
     assert len(calls) == 1  # cached: no second model call on the same input
+
+
+def test_a_meetings_only_day_is_quiet_without_a_model_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pinned on purpose: the card lists the meetings itself (calendar_next)."""
+    from openexecutive.api.routes import today as today_route
+    from openexecutive.briefing import narrative_cache
+
+    live = LiveSignals(calendar=("10:00–11:00 Board meeting",))
+    monkeypatch.setattr(today_route, "_header_live", lambda **_kw: (live, "today so far", "NOW"))
+    monkeypatch.setattr(today_route, "_narrative_activity", lambda *_a: [])
+    ctx, _ = today_route._narrative_context(
+        {"departments": [], "people": [], "proposals": []}, None, None, "team",
+        narrative_cache.COMPANY_SCOPE, reader=None,
+    )
+    assert ctx == narrative_cache.QUIET_CONTEXT
