@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useState } from "react";
+import { type FormEvent, Fragment, type ReactNode, useCallback, useEffect, useId, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
@@ -37,6 +37,7 @@ import {
   type WorkingStyle,
 } from "@/lib/api";
 import { assignNoticeLine } from "@/lib/assignNotice";
+import { DETAIL_LABELS, detailHref, detailsToText, detailText, textToDetails } from "@/lib/contactChanges";
 import { isContact, shouldOfferTeamMode } from "@/lib/peopleKinds";
 import { onLeaveLine, reachLine } from "@/lib/personReach";
 
@@ -568,6 +569,8 @@ export default function PersonDetailPage() {
     email: "",
     // Other addresses, one per line or comma-separated.
     email_aliases: "",
+    // Phone, website and more, one "Label: value" per line.
+    details: "",
     slack_user_id: "",
     telegram_chat_id: "",
     discord_user_id: "",
@@ -631,6 +634,7 @@ export default function PersonDetailPage() {
       kind: p.kind ?? "team",
       email: p.email ?? "",
       email_aliases: (p.email_aliases ?? []).join("\n"),
+      details: detailsToText(p.details ?? []),
       slack_user_id: p.slack_user_id ?? "",
       telegram_chat_id: p.telegram_chat_id ?? "",
       discord_user_id: p.discord_user_id ?? "",
@@ -695,6 +699,7 @@ export default function PersonDetailPage() {
         ...(person?.is_principal || !viewerIsPrincipal ? {} : { kind: form.kind }),
         email: form.email.trim() || null,
         email_aliases: form.email_aliases.split(/[\s,;]+/).map((a) => a.trim()).filter(Boolean),
+        details: textToDetails(form.details),
         slack_user_id: form.slack_user_id.trim() || null,
         telegram_chat_id: form.telegram_chat_id.trim() || null,
         discord_user_id: form.discord_user_id.trim() || null,
@@ -847,10 +852,10 @@ export default function PersonDetailPage() {
               <div {...(tabs.length > 1 ? sectionPanelProps(tabsId, activeTab) : {})}>
               {activeTab === "overview" && (
                 <>
-              {contact && viewerIsPrincipal && !editing && contactChanges.length > 0 && (
+              {viewerIsPrincipal && !editing && !person.is_principal && contactChanges.length > 0 && (
                 <PersonContactChanges changes={contactChanges} onChanged={reloadAfterUndo} />
               )}
-              {contact && viewerIsPrincipal && !editing && <PersonContactNote note={contactNote} />}
+              {viewerIsPrincipal && !editing && !person.is_principal && <PersonContactNote note={contactNote} />}
               {/* Core fields */}
               <section className="rounded-2xl border border-line bg-surface-elevated px-5">
                 {editing ? (
@@ -911,6 +916,20 @@ export default function PersonDetailPage() {
                       <span className={HINT_CLS}>
                         One per line. Mail from these reaches them, and they can be emailed
                         here. Only the address above signs in.
+                      </span>
+                    </label>
+
+                    <label className={LABEL_CLS}>
+                      Phone, website and more
+                      <textarea
+                        value={form.details}
+                        onChange={(e) => setForm((f) => ({ ...f, details: e.target.value }))}
+                        rows={3}
+                        placeholder={"Mobile: +1 555 010 0100\nWebsite: example.com\nAddress: 100 Main St, Springfield"}
+                        className={`${INPUT_CLS} h-auto py-2.5`}
+                      />
+                      <span className={HINT_CLS}>
+                        One per line: Phone, Mobile, Website, LinkedIn, Profile or Address.
                       </span>
                     </label>
 
@@ -1011,6 +1030,34 @@ export default function PersonDetailPage() {
                         </div>
                       </li>
                     ))}
+                    {(person.details ?? []).length > 0 && (
+                      <li className="flex items-start gap-3 py-3.5">
+                        <Icon name="user" size="w-4 h-4" className="mt-1 text-fg-subtle flex-shrink-0" />
+                        <dl className="min-w-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                          {(person.details ?? []).map((d) => {
+                            const href = detailHref(d);
+                            return (
+                              <Fragment key={`${d.kind}:${d.value}`}>
+                                <dt className="text-sm text-fg-subtle">{DETAIL_LABELS[d.kind]}</dt>
+                                <dd className="text-[15px] text-fg break-words min-w-0">
+                                  {href ? (
+                                    <a
+                                      href={href}
+                                      className="text-accent hover:underline"
+                                      {...(href.startsWith("https:") ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+                                    >
+                                      {detailText(d)}
+                                    </a>
+                                  ) : (
+                                    detailText(d)
+                                  )}
+                                </dd>
+                              </Fragment>
+                            );
+                          })}
+                        </dl>
+                      </li>
+                    )}
                   </ul>
                 )}
               </section>

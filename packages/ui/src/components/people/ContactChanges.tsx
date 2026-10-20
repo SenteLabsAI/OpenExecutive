@@ -23,6 +23,7 @@ import {
   changeLine,
   changeReason,
   contactActivityLines,
+  fieldLabel,
   keeperBlocked,
 } from "@/lib/contactChanges";
 
@@ -180,7 +181,7 @@ export function PersonContactChanges({
         <div key={c.id} className="flex items-start justify-between gap-3 py-3 border-t border-line first:border-t-0">
           <div className="min-w-0">
             <div className="text-[12px] font-bold uppercase tracking-wide text-fg-subtle">
-              {c.field === "role" ? "Role and company" : c.field === "full_name" ? "Name" : "Other address"}
+              {fieldLabel(c.field)}
             </div>
             <div className="text-[15px] text-fg mt-0.5 break-words">{c.new_value}</div>
             <div className="text-[13px] text-fg-subtle mt-0.5">
@@ -197,7 +198,8 @@ export function PersonContactChanges({
   );
 }
 
-/** On a contact's own page: what the Executive remembers about them, from
+/** On a person's own page (contact or teammate, for the principal only):
+ * what the Executive remembers about them, from
  * your own mail and meetings. Nothing when it knows nothing yet. */
 export function PersonContactNote({ note }: { note: ContactNote | null }) {
   if (!note) return null;

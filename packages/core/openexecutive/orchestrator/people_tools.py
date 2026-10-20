@@ -22,6 +22,8 @@ from types import SimpleNamespace
 from typing import Any, ParamSpec
 
 from openexecutive.memory.honcho_client import directional_chat
+from openexecutive.people import contact_info
+from openexecutive.people.models import DETAIL_KINDS, ContactDetail
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,25 @@ UPSERT_PERSON_TOOL: dict[str, Any] = {
             "slack_user_id": {"type": "string"},
             "telegram_chat_id": {"type": "string"},
             "discord_user_id": {"type": "string"},
+            "details": {
+                "type": "array",
+                "description": (
+                    "Other ways to reach them, for the principal to read (never used to send): "
+                    "phone, mobile, website, linkedin, social (another profile link), address. "
+                    "REPLACES the current list; omit to leave it unchanged."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["phone", "mobile", "website", "linkedin", "social", "address"],
+                        },
+                        "value": {"type": "string"},
+                    },
+                    "required": ["kind", "value"],
+                },
+            },
             "preferred_channel": {
                 "type": "string",
                 "enum": ["email", "slack", "telegram", "discord", "any"],
@@ -851,8 +872,10 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
 
     from openexecutive.people import contact_notes
 
+    # What is remembered about each person, from the principal's own mail and
+    # meetings: on the principal's own turn only, for contacts and team alike.
     notes = contact_notes.get_many(
-        p.id for p in people if p.kind == "contact" and p.id is not None and not p.archived
+        p.id for p in people if p.id is not None and not p.archived and not p.is_principal
     ) if include_contacts else {}
     out = [
         {
@@ -863,6 +886,7 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
             "kind": p.kind,
             "email": p.email,
             "email_aliases": p.email_aliases,
+            **({"details": [d.model_dump() for d in p.details]} if p.details else {}),
             "preferred_channel": p.preferred_channel,
             "department_slugs": p.department_slugs,
             "authority_scope": [s.value for s in p.authority_scope],
@@ -1031,6 +1055,21 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
         if person_id is not None
         else False
     )
+    # Other contact details: each kept only when it is plainly its kind.
+    details: list[ContactDetail] | None = None
+    if isinstance(tool_input.get("details"), list):
+        details = []
+        for item in tool_input["details"][:20]:
+            kind = str(item.get("kind") or "") if isinstance(item, dict) else ""
+            raw_value = str(item.get("value") or "") if isinstance(item, dict) else ""
+            if kind not in DETAIL_KINDS:
+                return _bad(f"details: unknown kind {kind[:20]!r}")
+            if not raw_value.strip():
+                continue
+            value = contact_info.clean_detail(kind, raw_value)
+            if not value:
+                return _bad(f"details: that doesn't look like a {kind}")
+            details.append(ContactDetail(kind=kind, value=value))  # type: ignore[arg-type]
     kwargs: dict[str, Any] = {
         "full_name": full_name,
         "role": str(tool_input.get("role", "") or ""),
@@ -1057,6 +1096,8 @@ async def handle_upsert_person(tool_input: dict[str, Any]) -> str:
             people_store.set_authority_scope(new_id, authority_scopes)
         if aliases is not None:
             people_store.set_person_emails(new_id, aliases, source="chat_tool")
+        if details is not None:
+            people_store.set_person_details(new_id, details, source="chat_tool")
     except Exception as exc:
         logger.exception("upsert_person: failed")
         # Always invalidate — a partial write (e.g. row inserted but scopes

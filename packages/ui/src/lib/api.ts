@@ -4539,6 +4539,14 @@ export interface AvailabilityWindow {
 // Executive emails or invites only when the principal asks it to directly.
 export type PersonKind = "team" | "contact";
 
+// Other ways to reach someone (people/contact_info.py), for the reader only.
+export type DetailKind = "phone" | "mobile" | "website" | "linkedin" | "social" | "address";
+
+export interface ContactDetail {
+  kind: DetailKind;
+  value: string;
+}
+
 export interface Person {
   id: number;
   full_name: string;
@@ -4553,6 +4561,8 @@ export interface Person {
   slack_user_id: string | null;
   telegram_chat_id: string | null;
   discord_user_id: string | null;
+  // Phone, website, profiles, postal address; some from their signature.
+  details?: ContactDetail[];
   preferred_channel: string;
   // The chat app they last talked to the Executive in (slack, discord or
   // telegram); with preferred_channel "any" messages go there first.
@@ -4596,7 +4606,7 @@ export interface ContactChange {
   id: number;
   person_id: number | null;
   action: "add" | "update";
-  field: "contact" | "full_name" | "role" | "email_alias";
+  field: "contact" | "full_name" | "role" | "email_alias" | DetailKind;
   email: string;
   full_name: string;
   old_value: string;
@@ -4751,6 +4761,8 @@ export interface PersonPatch {
   email?: string | null;
   // The full list; replaces the current one.
   email_aliases?: string[];
+  // The full list; replaces the current one.
+  details?: ContactDetail[];
   slack_user_id?: string | null;
   telegram_chat_id?: string | null;
   discord_user_id?: string | null;

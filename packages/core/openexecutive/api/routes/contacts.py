@@ -8,7 +8,8 @@
   suggestion.
 - ``POST /contacts/changes/seen`` — Got it: clears the card.
 - ``GET /contacts/{person_id}/note`` — what the Executive remembers about one
-  contact (``people.contact_notes``): 404 when it has nothing yet.
+  person, contact or teammate (``people.contact_notes``): 404 when it has
+  nothing yet. The principal's alone, whoever it is about.
 
 Contacts are the principal's alone, so every route answers only a caller
 that resolves to the principal (``people.caller_is_principal``): 404 for
@@ -100,7 +101,7 @@ def get_contact_note(person_id: int, request: Request) -> contact_notes.ContactN
     from openexecutive.people import store as people_store
 
     person = people_store.get_person(person_id)
-    note = contact_notes.get(person_id) if person is not None and person.kind == "contact" else None
+    note = contact_notes.get(person_id) if person is not None and not person.is_principal else None
     if note is None or person is None or person.archived:
         raise HTTPException(status_code=404, detail="Not found")
     return note

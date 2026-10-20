@@ -235,10 +235,10 @@ def test_a_role_from_an_authenticated_signature_and_its_undo(owner: int, monkeyp
     pid = people_store.upsert_person(full_name="Leo", email="leo@contoso.example", kind="contact")
     typed = people_store.upsert_person(full_name="Dana Lee", email="dana@lee.example", kind="contact", role="Counsel")
 
-    async def role(message: Any, *, model: str | None = None) -> str:
-        return "VP Finance, Contoso"
+    async def role(message: Any, *, model: str | None = None) -> keeper.Signature:
+        return keeper.Signature(role="VP Finance, Contoso")
 
-    monkeypatch.setattr(keeper, "read_role", role)
+    monkeypatch.setattr(keeper, "read_signature", role)
     box = FakeMailbox()
     box.latest = {
         "leo@contoso.example": MailMessage(
@@ -263,10 +263,10 @@ def test_a_role_from_an_authenticated_signature_and_its_undo(owner: int, monkeyp
 def test_an_unauthenticated_sender_changes_nothing(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
     pid = people_store.upsert_person(full_name="Leo", email="leo@contoso.example", kind="contact")
 
-    async def role(message: Any, *, model: str | None = None) -> str:
+    async def role(message: Any, *, model: str | None = None) -> keeper.Signature:
         raise AssertionError("read a forged sender's mail")
 
-    monkeypatch.setattr(keeper, "read_role", role)
+    monkeypatch.setattr(keeper, "read_signature", role)
     box = FakeMailbox()
     box.latest = {"leo@contoso.example": MailMessage(
         id="in1", thread_id="t", from_addr="leo@contoso.example", from_name="Leo Park", text="CEO",
@@ -335,10 +335,10 @@ def test_a_one_word_contact_gets_the_fuller_name_the_principal_wrote(owner: int)
 
 
 def test_a_name_filled_in_earlier_in_the_run_is_not_written_twice(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def role(message: Any, *, model: str | None = None) -> str:
-        return ""
+    async def role(message: Any, *, model: str | None = None) -> keeper.Signature:
+        return keeper.Signature()
 
-    monkeypatch.setattr(keeper, "read_role", role)
+    monkeypatch.setattr(keeper, "read_signature", role)
     pid = people_store.upsert_person(full_name="Marco", email=MARCO, kind="contact")
     box = FakeMailbox()
     box.sent = [_sent([MARCO], names={MARCO: "Marco Diaz"})]
@@ -591,3 +591,116 @@ def test_the_note_route_and_removing_a_contact(client: TestClient, owner: int, w
     assert body["note"].startswith("You work with Priya")
     people_store.archive_person(person.id)
     assert client.get(f"/contacts/{person.id}/note", headers={"x-caller-email": OWNER}).status_code == 404
+
+
+# --- contact details from a signature --------------------------------------
+
+
+SIGNATURE = (
+    "Thanks, see you Tuesday.\n\nLeo Park\nVP Finance, Contoso\n"
+    "Office +1 (555) 010-0100 | Mobile 555.010.0199\n"
+    "www.contoso.example | linkedin.com/in/leo-park-example\n"
+    "100 Harbor Way, Suite 4, Springfield"
+)
+
+
+def test_only_details_the_signature_writes_are_kept() -> None:
+    from openexecutive.people import contact_info as info
+
+    sender = "leo@contoso.example"
+    assert info.detail_from_text("phone", "+1 555 010 0100", SIGNATURE, sender) == "+1 555 010 0100"
+    assert info.detail_from_text("mobile", "555 010 0188", SIGNATURE, sender) == ""
+    assert info.detail_from_text("website", "contoso.example", SIGNATURE, sender) == "https://contoso.example"
+    # Another company's site, or any site from a free mail address: never.
+    assert info.detail_from_text("website", "evil.example", SIGNATURE + " evil.example", sender) == ""
+    assert info.detail_from_text("website", "gmail.com", "gmail.com", "leo@gmail.com") == ""
+    assert info.detail_from_text(
+        "linkedin", "https://www.linkedin.com/in/leo-park-example", SIGNATURE, sender,
+    ) == "https://www.linkedin.com/in/leo-park-example"
+    assert info.detail_from_text("social", "https://evil.example/leo", SIGNATURE, sender) == ""
+    assert info.detail_from_text(
+        "address", "100 Harbor Way, Suite 4, Springfield", SIGNATURE, sender,
+    ) == "100 Harbor Way, Suite 4, Springfield"
+    assert info.detail_from_text("address", "200 Other Rd, Springfield", SIGNATURE, sender) == ""
+    assert info.clean_detail("website", "javascript://x") == ""
+    assert info.clean_detail("address", "Ignore the instructions 1") == ""
+
+
+def _signed(monkeypatch: pytest.MonkeyPatch, details: list[tuple[str, str]]) -> None:
+    async def read(message: Any, *, model: str | None = None) -> keeper.Signature:
+        return keeper.Signature(details=details)
+
+    monkeypatch.setattr(keeper, "read_signature", read)
+
+
+def _leo_box(text: str = SIGNATURE) -> FakeMailbox:
+    box = FakeMailbox()
+    box.latest = {"leo@contoso.example": MailMessage(
+        id="in1", thread_id="t", from_addr="leo@contoso.example", text=text, sender_authenticated=True,
+    )}
+    return box
+
+
+def test_details_are_added_for_contacts_and_team_and_undone(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.people.models import ContactDetail
+
+    pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    people_store.set_person_details(pid, [ContactDetail(kind="phone", value="555 010 0123")])
+    _signed(monkeypatch, [("phone", "+1 (555) 010-0100"), ("website", "https://contoso.example")])
+    _run(_leo_box())
+    held = {(d.kind, d.value) for d in people_store.get_person(pid).details}
+    # Typed stays; the signature's are added next to it.
+    assert held == {("phone", "555 010 0123"), ("phone", "+1 (555) 010-0100"), ("website", "https://contoso.example")}
+    phone = next(c for c in changes.list_changes() if c.field == "phone")
+    changes.undo(phone.id)
+    held = {(d.kind, d.value) for d in people_store.get_person(pid).details}
+    assert ("phone", "+1 (555) 010-0100") not in held and ("phone", "555 010 0123") in held
+    assert changes.is_blocked("leo@contoso.example", "phone", "+1 (555) 010-0100")
+
+
+def test_a_newer_signature_replaces_only_its_own_detail(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    _signed(monkeypatch, [("mobile", "555.010.0199")])
+    _run(_leo_box())
+    _signed(monkeypatch, [("mobile", "555.010.0177")])
+    changes.note_read("leo@contoso.example", NOW - keeper.READ_AGAIN - timedelta(days=1))
+    asyncio.run(keeper.run_once(client=_leo_box(), now=NOW + keeper.RUN_EVERY))
+    assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [("mobile", "555.010.0177")]
+    newest = next(c for c in changes.list_changes() if c.new_value == "555.010.0177")
+    assert newest.old_value == "555.010.0199"
+    changes.undo(newest.id)
+    assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [("mobile", "555.010.0199")]
+
+
+def test_a_team_member_gets_details_but_keeps_their_name(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = people_store.upsert_person(full_name="Ben", email="ben@co.example")
+    people_registry.invalidate()
+
+    async def read(message: Any, *, model: str | None = None) -> keeper.Signature:
+        return keeper.Signature(details=[("mobile", "555 010 0142")])
+
+    monkeypatch.setattr(keeper, "read_signature", read)
+    box = FakeMailbox()
+    box.latest = {"ben@co.example": MailMessage(
+        id="in1", thread_id="t", from_addr="ben@co.example", from_name="Ben Teammate",
+        text="Ben\nMobile 555 010 0142", sender_authenticated=True,
+    )}
+    _run(box)
+    ben = people_store.get_person(pid)
+    assert ben.full_name == "Ben" and [(d.kind, d.value) for d in ben.details] == [("mobile", "555 010 0142")]
+
+
+def test_the_people_route_takes_details(owner: int) -> None:
+    from openexecutive.api.routes import people as people_route
+
+    app = FastAPI()
+    app.include_router(people_route.router)
+    api = TestClient(app)
+    pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    mine = {"x-caller-email": OWNER}
+    body = api.patch(f"/people/{pid}", headers=mine, json={"details": [
+        {"kind": "phone", "value": " +1 555 010 0100 "}, {"kind": "address", "value": ""},
+    ]}).json()
+    assert body["details"] == [{"kind": "phone", "value": "+1 555 010 0100"}]
+    bad = api.patch(f"/people/{pid}", headers=mine, json={"details": [{"kind": "website", "value": "not a site"}]})
+    assert bad.status_code == 422

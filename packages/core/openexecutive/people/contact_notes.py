@@ -1,4 +1,5 @@
-"""What the Executive remembers about each of the principal's contacts: a
+"""What the Executive remembers about each of the principal's contacts and
+team members (everyone but the principal): a
 short note on what they deal with each other about, and when they last
 emailed, heard from and met each other.
 
@@ -14,8 +15,11 @@ emailed, heard from and met each other.
   ``NOTES_PER_RUN`` a pass and ``NOTES_PER_DAY`` a day.
 
 It is read by the Executive on the principal's own turns (``list_people``,
-``ask_about_person``) and shown on the contact's page. Contacts are the
-principal's alone, so are these notes: the route answers only the principal.
+and ``ask_about_person`` for a contact) and shown on the person's page to the
+principal. The notes are the principal's alone, a teammate's included: they
+come from the principal's own mailbox, so the route answers only the
+principal and no other turn sees them. A teammate's own mail to the
+Executive (``teammate_mail``) and their peer memory are not read here.
 """
 from __future__ import annotations
 

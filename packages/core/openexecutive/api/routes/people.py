@@ -25,11 +25,13 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
+from openexecutive.people import contact_info
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.people.models import (
     AuthorityScope,
     AvailabilityWindow,
+    ContactDetail,
     Person,
     PersonKind,
 )
@@ -59,6 +61,8 @@ class PersonCreate(BaseModel):
     slack_user_id: str | None = None
     telegram_chat_id: str | None = None
     discord_user_id: str | None = None
+    # Phone, website, profiles, postal address (``Person.details``).
+    details: list[ContactDetail] = Field(default_factory=list, max_length=20)
     preferred_channel: str = "any"
     response_sla_hours: int = Field(default=24, ge=1, le=8760)
     on_leave_until: date | None = None
@@ -77,6 +81,8 @@ class PersonPatch(BaseModel):
     slack_user_id: str | None = None
     telegram_chat_id: str | None = None
     discord_user_id: str | None = None
+    # The full list; replaces the current one. Omit to leave it unchanged.
+    details: list[ContactDetail] | None = Field(default=None, max_length=20)
     preferred_channel: str | None = None
     response_sla_hours: int | None = Field(default=None, ge=1, le=8760)
     on_leave_until: date | None = None
@@ -90,6 +96,28 @@ class PersonPatch(BaseModel):
 # --------------------------------------------------------------------------- #
 # Who is asking (contacts are the principal's alone)
 # --------------------------------------------------------------------------- #
+
+_DETAIL_NAMES = {
+    "phone": "a phone number", "mobile": "a mobile number", "website": "a website",
+    "linkedin": "a LinkedIn profile", "social": "a profile link", "address": "an address",
+}
+
+
+def _checked_details(details: list[ContactDetail]) -> list[ContactDetail]:
+    """Each detail as stored, blanks dropped; 422 naming the first that
+    isn't plainly its kind."""
+    out: list[ContactDetail] = []
+    for detail in details:
+        if not detail.value.strip():
+            continue
+        value = contact_info.clean_detail(detail.kind, detail.value)
+        if not value:
+            raise HTTPException(
+                status_code=422, detail=f"\"{detail.value[:60]}\" doesn't look like {_DETAIL_NAMES[detail.kind]}.",
+            )
+        out.append(ContactDetail(kind=detail.kind, value=value))
+    return out
+
 
 def caller_is_principal(request: Request) -> bool:
     """Whether the caller resolves to the principal: their signed-in email is
@@ -371,6 +399,8 @@ def create_person(body: PersonCreate, request: Request) -> Person:
         reports_to_person_id=body.reports_to_person_id,
         kind=body.kind,
     )
+    if body.details:
+        people_store.set_person_details(pid, _checked_details(body.details))
     if body.authority_scope:
         people_store.set_authority_scope(pid, body.authority_scope)
     if body.availability:
@@ -455,6 +485,8 @@ def patch_person(person_id: int, body: PersonPatch, request: Request) -> Person:
             department_slugs=body.department_slugs,
             kind=body.kind,
         )
+    if body.details is not None:
+        people_store.set_person_details(person_id, _checked_details(body.details))
     if "authority_scope" in raw:
         people_store.set_authority_scope(
             person_id, body.authority_scope or []

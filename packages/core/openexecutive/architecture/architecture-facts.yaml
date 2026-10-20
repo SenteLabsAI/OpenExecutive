@@ -4385,6 +4385,20 @@ people:
     dropped. Read on the principal's own turn by list_people and
     ask_about_person (contacts_reachable_now), and by GET
     /contacts/{person_id}/note (principal only). archive_person deletes it.
+    Team members get the same note and signature read (role when empty and
+    contact details, never name or addresses: TEAM_FIELDS); a teammate's
+    note is still the principal's alone, from the principal's own mailbox,
+    never teammate_mail or their peer memory.
+    Contact details (person_details; Person.details: phone, mobile,
+    website, linkedin, social, address) come from the same signature call.
+    Why checked in code: each is kept only when the mail writes it (phone
+    digits as one number, every word of an address, a link's host+path), a
+    website only on the sender's own non-freemail domain, a profile only on
+    SOCIAL_HOSTS / linkedin.com (people.contact_info.detail_from_text). One
+    per kind is the keeper's (last_applied); a newer value replaces it,
+    typed ones stay. Each is a contact_changes row (field = kind) with Undo
+    that removes it and restores the one it replaced. Details are for the
+    reader only: never an egress channel.
   aliases: |
     A Person has one PRIMARY address (`Person.email`, the one they sign in
     with) and up to 10 ALIASES (`Person.email_aliases`, table
