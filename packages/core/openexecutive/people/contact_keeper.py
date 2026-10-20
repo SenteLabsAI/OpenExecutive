@@ -750,10 +750,12 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
         for kind, value in found.details:
             if (kind, value) in held or changes.is_blocked(address, kind, value):
                 continue
-            # One of each kind is this module's: a newer one replaces it,
-            # while what anyone typed stays.
+            # One of each kind is this module's: a newer one replaces it.
+            # A kind someone typed a value for is theirs: left alone.
             last = changes.last_applied(int(person.id or 0), kind)
             old = last.new_value if last is not None and (kind, last.new_value) in held else ""
+            if any(k == kind and v != old for k, v in held):
+                continue
             _propose(
                 mode, result, action="update", field_name=kind, reason="signature",  # type: ignore[arg-type]
                 email=address, full_name=person.full_name, person_id=person.id, old=old, new=value,

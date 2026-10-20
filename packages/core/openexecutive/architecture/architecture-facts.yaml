@@ -4400,7 +4400,7 @@ people:
     (never a parent such as co.uk), a profile only on
     SOCIAL_HOSTS / linkedin.com (people.contact_info.detail_from_text). One
     per kind is the keeper's (last_applied); a newer value replaces it,
-    typed ones stay. Each is a contact_changes row (field = kind) with Undo
+    a kind someone typed a value for is left alone. Each is a contact_changes row (field = kind) with Undo
     that removes it and restores the one it replaced. Details are for the
     reader only: never an egress channel.
     Who sees them: the people routes (GET /people, /people/{id},

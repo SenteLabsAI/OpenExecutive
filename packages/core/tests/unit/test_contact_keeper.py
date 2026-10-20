@@ -749,16 +749,16 @@ def test_details_are_added_for_contacts_and_team_and_undone(owner: int, monkeypa
     from openexecutive.people.models import ContactDetail
 
     pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
-    people_store.set_person_details(pid, [ContactDetail(kind="phone", value="555 010 0123")])
+    people_store.set_person_details(pid, [ContactDetail(kind="mobile", value="555 010 0123")])
     _signed(monkeypatch, [("phone", "+1 (555) 010-0100"), ("website", "https://contoso.example")])
     _run(_leo_box())
     held = {(d.kind, d.value) for d in people_store.get_person(pid).details}
     # Typed stays; the signature's are added next to it.
-    assert held == {("phone", "555 010 0123"), ("phone", "+1 (555) 010-0100"), ("website", "https://contoso.example")}
+    assert held == {("mobile", "555 010 0123"), ("phone", "+1 (555) 010-0100"), ("website", "https://contoso.example")}
     phone = next(c for c in changes.list_changes() if c.field == "phone")
     changes.undo(phone.id)
     held = {(d.kind, d.value) for d in people_store.get_person(pid).details}
-    assert ("phone", "+1 (555) 010-0100") not in held and ("phone", "555 010 0123") in held
+    assert ("phone", "+1 (555) 010-0100") not in held and ("mobile", "555 010 0123") in held
     assert changes.is_blocked("leo@contoso.example", "phone", "+1 (555) 010-0100")
 
 
@@ -774,6 +774,20 @@ def test_a_newer_signature_replaces_only_its_own_detail(owner: int, monkeypatch:
     assert newest.old_value == "555.010.0199"
     changes.undo(newest.id)
     assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [("mobile", "555.010.0199")]
+
+
+def test_a_typed_detail_keeps_its_kind_from_the_signature(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.people.models import ContactDetail
+
+    pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    people_store.set_person_details(pid, [ContactDetail(kind="phone", value="+1 555 010 0100")])
+    people_registry.invalidate()
+    _signed(monkeypatch, [("phone", "+1 555 010 0199"), ("mobile", "555.010.0177")])
+    _run(_leo_box())
+    # The typed phone stays alone; a kind nobody typed is filled in.
+    assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [
+        ("phone", "+1 555 010 0100"), ("mobile", "555.010.0177"),
+    ]
 
 
 def test_a_team_member_gets_details_but_keeps_their_name(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
