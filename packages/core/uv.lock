@@ -1538,9 +1538,6 @@ wheels = [
 fastapi = [
     { name = "opentelemetry-instrumentation-fastapi" },
 ]
-httpx = [
-    { name = "opentelemetry-instrumentation-httpx" },
-]
 
 [[package]]
 name = "lxml"
@@ -2270,7 +2267,7 @@ dependencies = [
     { name = "google-auth" },
     { name = "honcho-ai" },
     { name = "httpx" },
-    { name = "logfire", extra = ["fastapi", "httpx"] },
+    { name = "logfire", extra = ["fastapi"] },
     { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "opencv-python-headless" },
@@ -2329,7 +2326,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.29.0" },
     { name = "honcho-ai", specifier = ">=2.1,<3" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "logfire", extras = ["fastapi", "httpx"], specifier = ">=4" },
+    { name = "logfire", extras = ["fastapi"], specifier = ">=4" },
     { name = "markdown-it-py", specifier = ">=3.0" },
     { name = "mcp", specifier = ">=1.2.0,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
@@ -2517,22 +2514,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5d/2a/cd4125b7acbea2ed17f1d31b58c184cb0a79fcb5541ceb4de90ffc6d8c01/opentelemetry_instrumentation_fastapi-0.66b1.tar.gz", hash = "sha256:584cf9d2c4417ff8b2d6ff2bc606bfe13c8b3456018bf94f50f2cf658492505b", size = 26634, upload-time = "2026-10-06T17:36:25.157Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/75/70/676928d537978acc7bff2ac8657bd0836ba608ffc8f65455238f1fa2bd0f/opentelemetry_instrumentation_fastapi-0.66b1-py3-none-any.whl", hash = "sha256:97f8ac8fd7537517f9e6988bd0aca04bfa5aad564bcd46c245530739e2be72d1", size = 14216, upload-time = "2026-10-06T17:35:32.827Z" },
-]
-
-[[package]]
-name = "opentelemetry-instrumentation-httpx"
-version = "0.66b1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "opentelemetry-util-http" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/de/50/41544799b043d14fdfa6fe62fa2518eaba22793fce03e9abde930b92e671/opentelemetry_instrumentation_httpx-0.66b1.tar.gz", hash = "sha256:5865a72c68098c85955a271ab8744b480a36e3ee492d35b8cadb93c7c4dbb618", size = 26637, upload-time = "2026-10-06T17:36:27.265Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4f/c6/e5682b1bfb320b32505e88255c34ae1e99fe9fb220cc465c244e91967eac/opentelemetry_instrumentation_httpx-0.66b1-py3-none-any.whl", hash = "sha256:0342a4002c6dbc6c4bf22cc7e698f50f5c8b77f63325c6f40c94ab87e016bf4d", size = 17723, upload-time = "2026-10-06T17:35:36.501Z" },
 ]
 
 [[package]]

@@ -85,8 +85,12 @@ class TracedProvider:
             self._span("messages.stream", kwargs) as span,
             self._inner.messages_stream(**kwargs) as stream,
         ):
-            yield stream
-            _record_usage(span, _final_snapshot(stream))
+            # In a finally so a stream stopped early (Stop, turn deadline, an
+            # error mid-stream) still reports what it consumed.
+            try:
+                yield stream
+            finally:
+                _record_usage(span, _final_snapshot(stream))
 
     def messages_stream(self, **kwargs: Any) -> AbstractAsyncContextManager[Any]:
         return self._stream(kwargs)

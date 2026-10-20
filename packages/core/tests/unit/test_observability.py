@@ -193,3 +193,16 @@ def test_http_spans_drop_path_params_errors_and_caller_identity(exporter: TestEx
     assert doc_span["parent"] is None  # incoming traceparent ignored
     assert SECRET not in _exported_text(exporter)
     assert "testserver" not in _exported_text(exporter)
+
+
+async def test_stream_stopped_early_still_records_usage(exporter: TestExporter) -> None:
+    observability.configure_tracing(FastAPI())
+    provider = observability.wrap_provider(_FakeProvider(), "anthropic")  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError):
+        async with provider.messages_stream(model="claude-sonnet-5", messages=[]):
+            raise RuntimeError("user pressed Stop")
+
+    (span,) = exporter.exported_spans_as_dict()
+    assert span["attributes"]["exception.type"] == "RuntimeError"
+    assert span["attributes"]["gen_ai.usage.cache_read.input_tokens"] == 1000
