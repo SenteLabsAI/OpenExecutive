@@ -4764,6 +4764,8 @@ export async function createPerson(body: PersonCreate): Promise<Person> {
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
+  // A detail that isn't plainly its kind: the server names the line.
+  if (res.status === 422) throw new Error(await errorDetail(res, "Check the phone, website and more lines."));
   if (!res.ok) throw new Error(`Failed to create person: ${res.statusText}`);
   return res.json();
 }
@@ -4797,6 +4799,8 @@ export async function updatePerson(id: number, patch: PersonPatch): Promise<Pers
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
+  // A detail that isn't plainly its kind: the server names the line.
+  if (res.status === 422) throw new Error(await errorDetail(res, "Check the phone, website and more lines."));
   if (!res.ok) throw new Error(`Failed to update person: ${res.statusText}`);
   return res.json();
 }
