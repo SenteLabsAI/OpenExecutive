@@ -386,7 +386,11 @@ async def _sent_another_way(
             if (
                 when is not None and when > saved
                 and _same_subject(str(getattr(m, "subject", "") or "")) == _same_subject(subject)
-                and people & {str(a).strip().lower() for a in [*m.to, *m.cc, *getattr(m, "bcc", [])]}
+                and people & {
+                    str(a).strip().lower()
+                    for field in ("to", "cc", "bcc")
+                    for a in (getattr(m, field, None) or [])
+                }
             ):
                 out.append(row_id)
                 break

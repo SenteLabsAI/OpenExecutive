@@ -283,6 +283,7 @@ async def test_a_sent_email_that_is_not_the_draft_leaves_it_waiting() -> None:
         _sent("2027 budget", ["dana@example.com"], NOW - timedelta(hours=4)),  # before the draft
         _sent("2027 budget", ["ben@example.com"], NOW - timedelta(hours=1)),  # someone else
         _sent("Lunch", ["dana@example.com"], NOW - timedelta(hours=1)),  # another subject
+        SimpleNamespace(subject="2027 budget", to=None, received_at=NOW.isoformat()),  # no fields
     ])
 
     assert await drafts.settle_waiting(PERSON, now=NOW, gmail=box) == 0
