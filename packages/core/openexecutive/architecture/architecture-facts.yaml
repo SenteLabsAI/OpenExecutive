@@ -4381,8 +4381,9 @@ people:
     contact's mail cannot write it, and it can be read in chat like the
     principal's own sent mail. Rewritten only when the set of those
     messages and meetings changes (activity_key), capped 5 per pass and 20 a
-    day; notes or topics with a link, address, tag or instruction word are
-    dropped. Read on the principal's own turn by list_people and
+    day; notes or topics with a link, address or tag are dropped.
+    last_heard_at is read for up to HEARD_READS_PER_RUN (20) people a pass,
+    independent of the note budget. Read on the principal's own turn by list_people and
     ask_about_person (contacts_reachable_now), and by GET
     /contacts/{person_id}/note (principal only). archive_person deletes it.
     Team members get the same note and signature read (role when empty and

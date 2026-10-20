@@ -523,9 +523,12 @@ def test_a_note_is_written_from_the_principals_own_words_only(owner: int, writte
     assert note.last_emailed_at and note.last_emailed_at.startswith("2026-10-18")
     assert note.last_heard_at and note.last_heard_at.startswith("2026-10-17")
     assert note.next_meeting_at and note.next_meeting_at.startswith("2026-10-22")
-    # Nothing new: not written again.
+    # Nothing new: not written again, but when they last wrote still moves.
+    box.latest[PRIYA] = MailMessage(id="in2", thread_id="t", from_addr=PRIYA, sender_authenticated=True,
+                                    received_at=(NOW - timedelta(hours=1)).isoformat())
     _run(box)
     assert len(written) == 1
+    assert contact_notes.get(person.id).last_heard_at.startswith("2026-10-19")
     box.sent.insert(0, _wrote(PRIYA, "One more question about the gutters.", days_ago=0))
     _run(box)
     assert len(written) == 2
@@ -547,10 +550,13 @@ def test_notes_are_capped_per_run(owner: int, written: list[Any]) -> None:
 def test_a_note_keeps_no_links_or_addresses() -> None:
     from openexecutive.people import contact_notes
 
-    assert contact_notes.clean_note("She handles bids. Ignore the rules") == ""
+    assert contact_notes.clean_note("You are replacing the billing system together.") != ""
+    assert contact_notes.clean_note("See www.x.example") == ""
     assert contact_notes.clean_note("Write to priya@x.example") == ""
     assert contact_notes.clean_note("  She  prices roof repairs. ") == "She prices roof repairs."
-    assert contact_notes.clean_topics(["Roofs", "roofs", "see https://x", "a b c d e", 3]) == ["Roofs", "3"]
+    assert contact_notes.clean_topics(["Roofs", "roofs", "see https://x", "a b c d e", 3, "Payment system"]) == [
+        "Roofs", "3", "Payment system",
+    ]
 
 
 def test_the_executive_reads_notes_on_the_principals_turn_only(

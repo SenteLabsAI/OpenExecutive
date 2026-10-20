@@ -84,6 +84,8 @@ ADDS_PER_RUN = 10
 SIGNATURE_READS_PER_RUN = 5
 SIGNATURE_READS_PER_DAY = 20
 READ_AGAIN = timedelta(days=14)
+# "Last heard from" dates read a pass (one mailbox search each).
+HEARD_READS_PER_RUN = 20
 ROLE_MAX = 80
 NAME_MAX = 80
 _SIGNATURE_CHARS = 1200
@@ -792,10 +794,25 @@ async def _refresh_notes(
             sorted(meetings_by_id.values(), key=lambda m: m[1], reverse=True),
         ))
     rows.sort(key=lambda r: max([m[1] for m in r[1]] + [m[1] for m in r[2]] + [""]), reverse=True)
+    heard_reads = HEARD_READS_PER_RUN
     for person, sent, meetings in rows:
         person_id = int(person.id)
         past = [m for m in meetings if (_when(m[1]) or now) <= now]
         ahead = sorted((m for m in meetings if (_when(m[1]) or now) > now), key=lambda m: m[1])
+        # When they last wrote: the date of their newest authenticated mail,
+        # whatever the note budget, for the most recently in touch first.
+        heard_at: str | None = None
+        if heard_reads > 0 and person.email:
+            heard_reads -= 1
+            try:
+                latest = await client.latest_from(changes.norm(person.email), days=int(LOOKBACK.days))
+            except (GmailAuthError, GmailRateLimited):
+                raise
+            except Exception:
+                latest = None
+            if latest is not None and getattr(latest, "sender_authenticated", False) is True:
+                moment = _sent_at(latest)
+                heard_at = moment.isoformat() if moment is not None else None
         try:
             notes.put_activity(
                 person_id,
@@ -803,7 +820,7 @@ async def _refresh_notes(
                 last_met_at=past[0][1] if past else None,
                 next_meeting_at=ahead[0][1] if ahead else None,
                 next_meeting_title=ahead[0][2] if ahead else "",
-                emailed_count=len(sent), met_count=len(past),
+                emailed_count=len(sent), met_count=len(past), last_heard_at=heard_at,
             )
         except Exception:
             logger.warning("contact_keeper: couldn't keep a contact's activity", exc_info=True)
@@ -816,22 +833,6 @@ async def _refresh_notes(
         if budget <= 0 or key == notes.activity_key(person_id):
             continue
         budget -= 1
-        heard_at: str | None = None
-        try:
-            latest = await client.latest_from(changes.norm(person.email), days=int(LOOKBACK.days))
-        except (GmailAuthError, GmailRateLimited):
-            raise
-        except Exception:
-            latest = None
-        if latest is not None and getattr(latest, "sender_authenticated", False) is True:
-            moment = _sent_at(latest)
-            heard_at = moment.isoformat() if moment is not None else None
-        if heard_at is not None:
-            notes.put_activity(
-                person_id, last_emailed_at=None, last_met_at=None,
-                next_meeting_at=ahead[0][1] if ahead else None, next_meeting_title=ahead[0][2] if ahead else "",
-                emailed_count=len(sent), met_count=len(past), last_heard_at=heard_at,
-            )
         made = await notes.write_note(person.full_name, written, titled)
         if made is None:
             continue

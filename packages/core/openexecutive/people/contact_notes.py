@@ -66,7 +66,9 @@ CREATE TABLE IF NOT EXISTS contact_notes (
 );
 """
 
-_BANNED = re.compile(r"https?:|www\.|\b(ignore|instruction|prompt|system|assistant)\b", re.IGNORECASE)
+# The note comes only from the principal's own mail, so plain business
+# words ("billing system", "prompt payment") stay; links never do.
+_BANNED = re.compile(r"https?:|www\.", re.IGNORECASE)
 
 
 class ContactNote(BaseModel):
