@@ -284,6 +284,9 @@ def test_a_follow_up_due_today_on_an_otherwise_empty_board_reaches_the_model(
     from openexecutive.api.routes import today as today_route
     from openexecutive.briefing import narrative_cache
 
+    # Empty live signals: other tests' audit rows in the shared default DB
+    # would otherwise show up as mail in and stuck sends.
+    monkeypatch.setattr(today_route, "_header_live", lambda **_kw: (LiveSignals(), "today so far", "NOW"))
     monkeypatch.setattr(today_route, "_narrative_activity", lambda *_a: [])
     data = {
         "departments": [], "people": [], "proposals": [],
