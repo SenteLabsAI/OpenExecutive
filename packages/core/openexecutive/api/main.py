@@ -49,6 +49,7 @@ from openexecutive.api.routes import (
 )
 from openexecutive.integrations.google_chat import router as google_chat_router
 from openexecutive.integrations.telegram_bot import router as telegram_router
+from openexecutive.observability import configure_tracing
 
 if TYPE_CHECKING:
     from openexecutive.config import Settings
@@ -840,6 +841,8 @@ def create_app() -> FastAPI:
     # x-api-key. Mounting also lazily creates mcp.session_manager, which the
     # lifespan runs (see above).
     mcp_server.mount(app)
+
+    configure_tracing(app)
 
     return app
 

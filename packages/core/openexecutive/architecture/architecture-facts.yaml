@@ -16,6 +16,33 @@ system:
   stack:
     backend: Python 3.11+ · FastAPI · Anthropic Claude SDK · ChromaDB · SQLite
     frontend: Next.js 15 · React 19 · TailwindCSS · Mermaid.js
+  observability: |
+    Opt-in request tracing via Pydantic Logfire (openexecutive.observability).
+    Off unless LOGFIRE_TOKEN is set; then create_app() calls
+    configure_tracing(app), which instruments FastAPI and get_provider()
+    wraps every backend (anthropic / openrouter / local) in a tracing
+    decorator. Spans: one per HTTP request, "specialist {name}" around
+    router.route_to_specialist, "knowledge retrieve" around
+    knowledge.retriever.retrieve, and "messages.create|stream {model}" per
+    LLM call carrying gen_ai.usage.{input,output}_tokens and
+    gen_ai.usage.cache_{read,creation}.input_tokens, so latency and
+    prompt-cache hit rate are visible per turn. Invariant: no user content
+    leaves the process — Logfire's own Anthropic / httpx instrumentation is
+    deliberately NOT used (the former records message bodies on scrubber-safe
+    keys; the latter records full URLs, and the Telegram bot token sits in the
+    request path), the FastAPI argument mapper is replaced so endpoint bodies
+    are dropped, a server_request_hook rewrites the request URL to its route
+    template (path params such as /documents/{filename} never leave; query
+    string, host, client IP and user agent are blanked), exceptions are
+    recorded by type only via an exception_callback (SDK 4xx bodies echo the
+    request), and incoming traceparent / baggage are ignored
+    (distributed_tracing=False, add_baggage_to_attributes=False) so
+    unauthenticated callers cannot write into the project. LLM spans are
+    started without attaching context, because /chat pumps the streaming
+    generator from fresh tasks and an attached context could not be detached
+    across them. Tests are
+    isolated by an autouse conftest fixture so a developer's .env token never
+    turns tracing on in the suite.
   models:
     default: claude-sonnet-5
     deep_reasoning: claude-opus-5

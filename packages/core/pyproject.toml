@@ -36,6 +36,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     "feedparser>=6.0.11",
     "tzdata>=2026.4",
+    "logfire[fastapi,httpx]>=4",
 ]
 
 [project.urls]

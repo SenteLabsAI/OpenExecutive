@@ -13,6 +13,7 @@ from openexecutive.knowledge.review_store import (
     ReviewStore,
 )
 from openexecutive.knowledge.store import ChromaDBStore
+from openexecutive.observability import traced
 
 # Cosine distance threshold for the main retrieve() path. Hits with a
 # distance > this are dropped before the top-K slice. Mirrors the value
@@ -213,6 +214,7 @@ def _with_general(domains: list[str] | None) -> list[str] | None:
     return domains if GENERAL_DOMAIN in domains else [*domains, GENERAL_DOMAIN]
 
 
+@traced("knowledge retrieve")
 def retrieve(
     query: str,
     domain_filter: list[str] | None = None,

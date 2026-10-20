@@ -5,6 +5,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.agents.base import BaseAgent
+from openexecutive.observability import trace_span
 
 if TYPE_CHECKING:
     from openexecutive.orchestrator.debug_events import DebugCollector
@@ -94,15 +95,16 @@ async def route_to_specialist(
     agent = SPECIALIST_REGISTRY.get(specialist_name)
     if agent is None:
         return f"Unknown specialist: {specialist_name}"
-    return await agent.analyze(
-        query=query,
-        context=context,
-        retrieved_knowledge=retrieved_knowledge,
-        episodic_context=episodic_context,
-        failure_cases=failure_cases,
-        department_memory=department_memory,
-        actor=actor,
-    )
+    with trace_span("specialist {specialist}", specialist=specialist_name, actor=actor):
+        return await agent.analyze(
+            query=query,
+            context=context,
+            retrieved_knowledge=retrieved_knowledge,
+            episodic_context=episodic_context,
+            failure_cases=failure_cases,
+            department_memory=department_memory,
+            actor=actor,
+        )
 
 
 # Tool_result returned for consult_specialist calls past the per-turn fan-out
