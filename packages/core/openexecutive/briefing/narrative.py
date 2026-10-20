@@ -830,21 +830,25 @@ async def synthesize_briefing_narrative(
             logger.warning("briefing_narrative: rewrite came back empty; fixed in code")
             return fix_slips(text, reader)
         text = draft
+        if attempt == 1:
+            text = drop_settled_points(text)
         named = slips(text, reader)
         echoed = own_echoes(text)
+        settled = settled_mentions(text)
         if attempt == 1 and echoed:
             logger.warning("briefing_narrative: rewrite still reports the reader's chats back")
-        if not named and (attempt == 1 or not echoed):
+        if not named and (attempt == 1 or not (echoed or settled)):
             return text
         if attempt == 0:
             logger.info(
-                "briefing_narrative: draft named its reader (%d slips) or echoed their chats (%d); rewriting",
-                len(named), len(echoed),
+                "briefing_narrative: draft named its reader (%d slips), echoed their chats (%d) "
+                "or named settled items (%d); rewriting",
+                len(named), len(echoed), len(settled),
             )
             messages = [
                 *messages,
                 {"role": "assistant", "content": text},
-                {"role": "user", "content": _rewrite_note(named, echoed, reader)},
+                {"role": "user", "content": _rewrite_note(named, echoed, reader, settled)},
             ]
     logger.warning("briefing_narrative: rewrite still named its reader; fixed in code")
     return fix_slips(text, reader)
@@ -870,10 +874,50 @@ def own_echoes(text: str) -> list[str]:
     return sorted({m.group(0) for m in _OWN_ECHO_RE.finditer(text)})
 
 
-def _rewrite_note(named: list[str], echoed: list[str], reader: Reader | None) -> str:
-    """The note that sends a draft back for its reader slips and its echoes
-    of their own chats."""
+# Ways a draft says an item is settled, off the list or needs nothing, which
+# STANDING_FACTS_RULE forbids (leave such an item out entirely). The header
+# still wrote "the LP buyout is not part of the current offers, so it stays
+# off the active list for today": a point that needs nothing from the reader.
+_SETTLED_RE = re.compile(
+    r"\b(?:stays?|staying|kept|keeps?|left|leaves?)\s+off\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?"
+    r"(?:list|board|radar|agenda)\b"
+    r"|\boff\s+the\s+(?:[\w-]+\s+)?list\b"
+    r"|\bno\s+longer\s+(?:live|active|open|on\s+(?:the|your)\s+(?:[\w-]+\s+)?list)\b"
+    r"|\b(?:dropped|removed|taken)\s+(?:it\s+)?(?:off|from)\s+(?:the\s+|your\s+)?(?:[\w-]+\s+)?list\b"
+    r"|\bneeds?\s+no\s+action\b",
+    re.IGNORECASE,
+)
+
+
+def settled_mentions(text: str) -> list[str]:
+    """The phrases in ``text`` that say an item is settled or off the list,
+    as written."""
+    return sorted({m.group(0) for m in _SETTLED_RE.finditer(text)})
+
+
+def drop_settled_points(text: str) -> str:
+    """``text`` without the bullets that only say an item is settled: a
+    rewrite that kept one still never shows it."""
+    kept = [
+        line for line in text.splitlines()
+        if not (line.lstrip().startswith(("-", "*", "•")) and _SETTLED_RE.search(line))
+    ]
+    return "\n".join(kept)
+
+
+def _rewrite_note(
+    named: list[str], echoed: list[str], reader: Reader | None, settled: list[str] | None = None,
+) -> str:
+    """The note that sends a draft back for its reader slips, its echoes of
+    their own chats and the items it calls settled."""
     notes = []
+    if settled:
+        notes.append(
+            "Leave out entirely every item you only say is settled, off the list or "
+            "needing nothing ("
+            + ", ".join(f"'{e}'" for e in settled)
+            + "): never write that it was dropped or stays off."
+        )
     if echoed:
         notes.append(
             "Leave out every mention of the reader's own chats and asks to you ("

@@ -303,3 +303,33 @@ async def test_a_rewrite_that_still_echoes_is_kept_after_one_try(
 
     assert text == "**You asked me to mute alerts; done.**"
     assert len(provider.calls) == 2
+
+
+def test_settled_mentions_find_items_said_to_need_nothing() -> None:
+    from openexecutive.briefing.narrative import drop_settled_points, settled_mentions
+
+    point = (
+        "- **Harbor Point** — the buyout is not part of the current offers, "
+        "so it stays off the active list for today."
+    )
+    assert settled_mentions(point) == ["stays off the active list"]
+    assert settled_mentions("That one needs no action and is no longer live.") == [
+        "needs no action", "no longer live",
+    ]
+    assert settled_mentions("- **Lease** — the landlord signed, so I'm filing it today.") == []
+    text = "**Bottom line.**\n" + point + "\n- **Lease** — signed today.\n**Move today:** file it."
+    assert drop_settled_points(text) == "**Bottom line.**\n- **Lease** — signed today.\n**Move today:** file it."
+
+
+@pytest.mark.asyncio
+async def test_a_settled_point_is_rewritten_then_dropped_in_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, provider = await _synth(monkeypatch, [
+        "**Lease signed.**\n- **Harbor Point** — it stays off the list today.",
+        "**Lease signed.**\n- **Harbor Point** — it is kept off the list.",
+    ])
+
+    assert text == "**Lease signed.**"
+    assert len(provider.calls) == 2
+    assert "'stays off the list'" in provider.calls[1]["messages"][2]["content"]
