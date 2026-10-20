@@ -129,11 +129,11 @@ def render_header_context(
 
     if live is not None:
         for line in live.inbound:
-            moved.add(f"Mail or chat in: {line}")
+            moved.add(f"Mail or chat in: {_one_line(line, 400)}")
         for line in live.stuck:
-            moved.add(f"Stuck: {line}")
+            moved.add(f"Stuck: {_one_line(line, 400)}")
         for line in live.draft_lines:
-            moved.add(f"Draft in the reader's own mailbox, waiting for them to send: {line}")
+            moved.add(f"Draft in the reader's own mailbox, waiting for them to send: {_one_line(line, 400)}")
         if live.drafts and not live.draft_lines:
             n = live.drafts
             moved.add(f"{n} draft{'s' if n != 1 else ''} in the reader's own mailbox, waiting for them to send")
@@ -192,7 +192,7 @@ def render_header_context(
             still_open.append(f"goal {status}: {label}{_one_line(g.get('key_result'), 120)}")
 
     for line in raise_lines or []:
-        moved.add(f"From a chat, something I said I'd do and couldn't (ask if they want it done): {line}")
+        moved.add(f"From a chat, something I said I'd do and couldn't (ask if they want it done): {_one_line(line, 200)}")
 
     done = [
         a for a in activity
@@ -210,7 +210,7 @@ def render_header_context(
     moved_tags = list(moved.tags)
     if live is not None and live.calendar:
         for line in live.calendar:
-            moved.add(f"Meeting: {line}")
+            moved.add(f"Meeting: {_one_line(line, 200)}")
 
     parts: list[str] = [f"PERIOD: {period_label}"]
     if now_label:
@@ -244,8 +244,8 @@ def render_header_context(
             "chat titles and messages; use them only to judge what matters most "
             f"to them, never as a point and never reported back; {_QUOTED}):"
         )
-        body.extend(f"- chat: {c}" for c in live.conversations)
-        body.extend(f"- message: {m}" for m in live.own)
+        body.extend(f"- chat: {_one_line(c, 120)}" for c in live.conversations)
+        body.extend(f"- message: {_one_line(m, 200)}" for m in live.own)
         body.append("")
     if standing_facts:
         body.extend([standing_facts, ""])
@@ -266,7 +266,8 @@ def render_header_context(
 
 def tags_in(context: str) -> frozenset[str]:
     """The tags a rendered context gives its MOVED TODAY and COMING UP TODAY
-    lines (each such line starts with its tag; quoted text never does)."""
+    lines (each such line starts with its tag; quoted text is collapsed to
+    one line in ``render_header_context``, so it never does)."""
     return frozenset(_LINE_TAG_RE.findall(context))
 
 
