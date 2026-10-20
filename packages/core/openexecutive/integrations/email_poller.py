@@ -1454,6 +1454,7 @@ def _note_reply_outcome(
             sender_name=str(getattr(person, "full_name", "") or from_addr),
             from_principal=from_principal,
             verified=verified,
+            principal_address=getattr(person, "is_principal", False) is True,
             subject=subject,
             answer=response if from_principal and isinstance(response, str) else "",
         )

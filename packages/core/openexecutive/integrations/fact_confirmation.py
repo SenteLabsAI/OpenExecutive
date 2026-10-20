@@ -85,6 +85,15 @@ _GMAIL_AUTHSERV = "mx.google.com"
 # Gmail's DMARC resinfo once its comment is stripped, e.g.
 # "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com".
 _DMARC_PASS = re.compile(r"dmarc=pass\s+header\.from=([^\s;]+)")
+_DMARC_NONE = re.compile(r"dmarc=none(?:\s+header\.from=[^\s;]+)?")
+# Gmail's DKIM resinfo once its comment is stripped, e.g.
+# "dkim=pass header.i=@example.com header.s=sel header.b=AbCd1234".
+_DKIM_PASS = re.compile(
+    r"dkim=pass\s+header\.(?:i|d)=@?(?:[a-z0-9._+-]*@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)"
+    r"(?:\s+header\.s=[a-z0-9._-]+)?(?:\s+header\.b=[a-z0-9+/=_-]+)?"
+)
+# Google Workspace's default DKIM key domain: "<domain, dots as hyphens>.<date>.gappssmtp.com".
+_GAPPS_KEY = re.compile(r"([a-z0-9-]+)\.[0-9]{8}\.gappssmtp\.com")
 # Marks of an automatic reply (an out-of-office, a vacation responder) in the
 # raw headers. The printed headers the poller reads carry only Precedence and
 # the List-* ones, so an Exchange out-of-office — Auto-Submitted only — would
@@ -169,11 +178,56 @@ def headers_authenticated(headers: Message, from_addr: str) -> bool:
     # Residual: when Gmail writes NO verdict (a From domain without DMARC)
     # and echoes an unsanitised ``;dmarc=pass header.from=...`` elsewhere
     # (a HELO on null-sender mail), that echo would read as the verdict.
-    verdicts = [c.strip() for c in rest.split(";") if c.strip().startswith("dmarc=")]
-    if len(verdicts) != 1:
+    resinfo = [c.strip() for c in rest.split(";") if c.strip()]
+    domain = address.rsplit("@", 1)[1]
+    verdicts = [c for c in resinfo if c.startswith("dmarc=")]
+    if len(verdicts) > 1:
         return False
+    if not verdicts or _DMARC_NONE.fullmatch(verdicts[0]) is not None:
+        # The domain publishes no DMARC record: Gmail wrote no verdict, or "none".
+        return _dkim_aligned(resinfo, domain)
     verdict = _DMARC_PASS.fullmatch(verdicts[0])
-    return verdict is not None and verdict.group(1) == address.rsplit("@", 1)[1]
+    return verdict is not None and verdict.group(1) == domain
+
+
+def _dkim_aligned(resinfo: list[str], domain: str) -> bool:
+    """For a From domain that publishes no DMARC record, so Gmail wrote no
+    verdict (or ``dmarc=none``): whether a DKIM signature Gmail verified belongs to ``domain``.
+    That is the DKIM half of what DMARC itself checks. A signature counts
+    when its domain is ``domain`` or a parent of it, or is the key Google
+    Workspace signs with for a domain that set up no DKIM key of its own
+    (``thebrand-com.20250101.gappssmtp.com`` for ``thebrand.com``), which
+    Google signs only for that Workspace's own users.
+
+    SPF is left out: a domain that lists Google's servers lets anyone sending
+    through Google pass it. Mail whose results echo a HELO (null-sender mail,
+    a bounce) is left out too: the HELO is sender text, and could read as a
+    signature of its own."""
+    if any("smtp.helo=" in c for c in resinfo):
+        return False
+    for c in resinfo:
+        match = _DKIM_PASS.fullmatch(c)
+        if match is None:
+            continue
+        signer = match.group(1)
+        if signer == domain or (domain.endswith("." + signer) and "." in signer):
+            return True
+        if _gapps_key_domain(signer) == domain:
+            return True
+    return False
+
+
+def _gapps_key_domain(signer: str) -> str | None:
+    """The domain a Google Workspace default DKIM key stands for, or None.
+    Only a two-label domain without hyphens is read back: ``a-b-com`` could
+    be ``a-b.com`` or ``a.b.com``, so any other could be someone else's."""
+    match = _GAPPS_KEY.fullmatch(signer)
+    if match is None:
+        return None
+    labels = match.group(1).split("-")
+    if len(labels) != 2 or not all(labels):
+        return None
+    return ".".join(labels)
 
 
 def automatic_reply(raw: str) -> bool:

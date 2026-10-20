@@ -581,6 +581,85 @@ def test_real_gmail_stamps_still_pass(stamp: str) -> None:
     assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is True
 
 
+# A Workspace domain with no DMARC record and no DKIM key of its own: Gmail
+# writes no dmarc= verdict, and signs with Google's default key.
+_NO_DMARC_WORKSPACE = (
+    "Authentication-Results: mx.google.com;\r\n       dkim=pass "
+    "header.i=@northwind-test.20251104.gappssmtp.com header.s=20251104 header.b=UaLJG3Ri;"
+    "\r\n       spf=pass (google.com: domain of owner@northwind.test designates "
+    "209.85.220.41 as permitted sender) smtp.mailfrom=owner@northwind.test;"
+    "\r\n       dara=neutral header.i=@northwind.test"
+)
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        _NO_DMARC_WORKSPACE,
+        # The domain's own DKIM key, still no DMARC record.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=google header.b=AbCd; spf=pass smtp.mailfrom=owner@northwind.test",
+        # Signed by a parent of the From domain, with dmarc=none.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd; dmarc=none header.from=mail.northwind.test",
+    ],
+    ids=["workspace-default-key", "own-dkim-key", "parent-key-dmarc-none"],
+)
+def test_a_domain_without_dmarc_passes_on_its_own_dkim(stamp: str) -> None:
+    sender = "owner@mail.northwind.test" if "mail.northwind" in stamp else OWNER
+    assert fc.authenticated_by_gmail(_raw_mime(stamp, sender=sender), sender) is True
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        # SPF alone: any Google sender passes a domain that lists Google's servers.
+        "Authentication-Results: mx.google.com; spf=pass (google.com: domain of "
+        "owner@northwind.test designates 209.85.220.41 as permitted sender) "
+        "smtp.mailfrom=owner@northwind.test",
+        # Someone else's DKIM key.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@attacker.test "
+        "header.s=s1 header.b=AbCd; spf=pass smtp.mailfrom=owner@northwind.test",
+        # Another Workspace's default key.
+        "Authentication-Results: mx.google.com; dkim=pass "
+        "header.i=@attacker-test.20251104.gappssmtp.com header.s=20251104 header.b=AbCd",
+        # A failed signature naming the domain.
+        "Authentication-Results: mx.google.com; dkim=fail header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd",
+        # A DMARC verdict other than none still decides.
+        "Authentication-Results: mx.google.com; dkim=pass header.i=@northwind.test "
+        "header.s=s1 header.b=AbCd; dmarc=fail (p=NONE) header.from=northwind.test",
+        # A HELO echo could carry a signature of its own.
+        "Authentication-Results: mx.google.com; spf=pass smtp.helo=x;dkim=pass "
+        "header.i=@northwind.test",
+        # A signature merely mentioned inside a comment or quoted value.
+        "Authentication-Results: mx.google.com; spf=pass (x;dkim=pass "
+        "header.i=@northwind.test) smtp.mailfrom=attacker.test",
+        'Authentication-Results: mx.google.com; spf=pass smtp.mailfrom="x;dkim=pass '
+        'header.i=@northwind.test "@attacker.test',
+    ],
+    ids=["spf-only", "other-key", "other-workspace", "dkim-fail", "dmarc-fail",
+         "helo-echo", "in-comment", "in-quotes"],
+)
+def test_a_domain_without_dmarc_needs_its_own_signature(stamp: str) -> None:
+    assert fc.authenticated_by_gmail(_raw_mime(stamp), OWNER) is False
+
+
+@pytest.mark.parametrize(
+    ("signer", "domain"),
+    [
+        ("northwind-test.20251104.gappssmtp.com", "northwind.test"),
+        # Ambiguous: "a-b.com" or "a.b.com", so neither.
+        ("north-wind-test.20251104.gappssmtp.com", None),
+        ("northwind.20251104.gappssmtp.com", None),
+        ("northwind-test.gappssmtp.com", None),
+        ("northwind-test.20251104.gappssmtp.com.attacker.test", None),
+    ],
+)
+def test_the_workspace_key_is_read_back_only_when_unambiguous(signer: str, domain: str | None) -> None:
+    assert fc._gapps_key_domain(signer) == domain
+
+
 def test_a_subject_imitating_the_raw_separator_cannot_supply_the_headers() -> None:
     """Everything above the separator is sender-written header values; a
     Subject reading "--- RAW MIME ---" must not move where the raw message
