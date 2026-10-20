@@ -22,7 +22,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from openexecutive.orchestrator import extensions, tool_groups
-from openexecutive.orchestrator.extensions import Collection, ExtensionError, ExtraTool
+from openexecutive.orchestrator.extensions import (
+    Collection,
+    ExtensionError,
+    ExtraTool,
+    GatewayCall,
+    GatewayCheck,
+)
 from tests.unit.offered_tools import capture_offered
 
 
@@ -145,6 +151,7 @@ def test_a_module_that_fails_halfway_leaves_nothing_behind(monkeypatch: pytest.M
     def _register() -> None:
         extensions.register_tool(_tool("first_tool", group="halfway", group_purpose="p"))
         extensions.register_collection(Collection(name="halves", label="Halves"))
+        extensions.register_gateway_check(GatewayCheck(server="halfway", check=lambda _t, _a: GatewayCall()))
         raise RuntimeError("second one broke")
 
     half.register = _register  # type: ignore[attr-defined]
@@ -155,6 +162,29 @@ def test_a_module_that_fails_halfway_leaves_nothing_behind(monkeypatch: pytest.M
     assert extensions.offered_tools(_session()) == []
     assert extensions.get_collection("halves") is None
     assert "halfway" not in tool_groups.GROUPS and "first_tool" not in tool_groups.DEFERRED
+    # Its server stays configured: its calls are refused, never sent unchecked.
+    held = extensions.gateway_check_for("halfway__any_tool")
+    assert held is not None and "did not load" in str(held.check("halfway__any_tool", {}).refusal)
+
+
+def test_a_server_a_failed_extension_declares_stays_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    # It failed before reaching register_gateway_check: GATEWAY_SERVERS still
+    # names the server, so its calls don't go out unchecked.
+    early = types.ModuleType("oe_ext_early")
+    early.GATEWAY_SERVERS = ("early_shop", "google_workspace", "Bad Name")  # type: ignore[attr-defined]
+
+    def _register() -> None:
+        raise RuntimeError("broke first")
+
+    early.register = _register  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "oe_ext_early", early)
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: SimpleNamespace(extensions="oe_ext_early"))
+    monkeypatch.setattr(extensions, "_loaded", False)
+    extensions.load()
+    held = extensions.gateway_check_for("early_shop__get_doc")
+    assert held is not None and held.check("early_shop__get_doc", {}).refusal
+    # Never a built-in server, and never a name that isn't one.
+    assert extensions.gateway_check_for("google_workspace__send_gmail_message") is None
 
 
 def test_a_register_that_reads_the_registry_does_not_hang(monkeypatch: pytest.MonkeyPatch) -> None:

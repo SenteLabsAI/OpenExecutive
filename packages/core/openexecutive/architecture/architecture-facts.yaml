@@ -381,6 +381,29 @@ caching:
     that tool only, and the handler decides what an unattended call may do
     (it must not call other extension handlers or leave tasks running). read_only=True is the
     only way to be labelled reads-only on the review card.
+    register_gateway_check(GatewayCheck(server, check)) gates one MCP server
+    the extension brings (tools <server>__*; the name has no "__", never a
+    built-in server - google_workspace, microsoft_365, fetch - and one check
+    per server; rolled back with the rest of a failed register()).
+    mcp_gateway.call_tool asks it (_extension_server_call) after its own
+    refusals (outside_reach_refusal, mcp client turns, saved files) and
+    before every per-tool gate, with the normalized name and a deep copy of
+    the arguments (non-dict arguments are refused first). A GatewayCall with
+    refusal is returned as the error and audited integration_outbound_blocked
+    (field server_check); with outgoing, _wire_input builds what is sent
+    from the model's arguments after every gate and again for the discovery
+    retry, so a per-request token is never replayed. A check or outgoing
+    that raises or returns the wrong type refuses (fails closed). The raw
+    name's server part must equal the check's server exactly (the proxy
+    routes by exact name): a spelling that only normalizes to it is refused
+    (name-spelling), and load_mcp_server refuses a runtime name that
+    normalizes to a checked server. Strings (8+ chars) only outgoing added
+    are replaced with [redacted] in result_text (_string_leaves). Server
+    names are single-_-separated letters and digits (_SERVER_NAME: no "__",
+    no leading or trailing _). A failed register() leaves its servers held,
+    not unchecked: each registered check and each name in the module's
+    GATEWAY_SERVERS becomes _held_check, which refuses every call; a module
+    that fails to import names none.
   deferred_tool_groups: |
     The less common skill tools are not in the tool list. orchestrator.
     tool_groups.GROUPS puts them in named groups (calendar, people, memory,
