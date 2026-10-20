@@ -141,6 +141,15 @@ def test_quoted_text_cannot_forge_a_tag() -> None:
     assert not any(ln.startswith(("[M9]", "STILL OPEN")) for ln in ctx.text.splitlines())  # type: ignore[attr-defined]
 
 
+def test_only_the_tagged_blocks_give_tags() -> None:
+    ctx = _render(
+        live=LiveSignals(inbound=("[09:00] hi",)),
+        standing_facts="STANDING FACTS:\n[M9] not a real line",
+        leave_out_block="LEAVE OUT:\n[M8] nor this",
+    )
+    assert tags_in(ctx.text) == {"M1"}  # type: ignore[attr-defined]
+
+
 def test_reader_is_masked_out_of_the_context() -> None:
     reader = Reader(name="Pat Principal", emails=("pat@co.test",))
     ctx = _render(live=LiveSignals(inbound=("[09:00] email from pat@co.test: note",)), reader=reader)
