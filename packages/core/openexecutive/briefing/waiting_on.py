@@ -127,13 +127,20 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
             async with gate:
                 return await mailbox.get_thread(thread_id)
 
-        threads = await asyncio.gather(*(fetch(s.thread_id) for s, _, _ in candidates))
+        # One thread gone (deleted since it was listed) skips that thread;
+        # only a mailbox that fails on every one fails the read.
+        threads = await asyncio.gather(*(fetch(s.thread_id) for s, _, _ in candidates), return_exceptions=True)
+        failed = [t for t in threads if isinstance(t, BaseException)]
+        if failed and len(failed) == len(threads):
+            raise failed[0]
     except Exception as exc:
         # The type only: a mailbox error can carry an address.
         logger.info("waiting_on: their sent mail couldn't be read (%s)", type(exc).__name__)
         raise
     waiting: list[Waiting] = []
     for (sent, to, sent_at), thread in zip(candidates, threads, strict=True):
+        if isinstance(thread, BaseException):
+            continue
         newest = [m for m in thread.messages if "DRAFT" not in m.labels]
         if not newest or newest[-1].id != sent.id:
             continue

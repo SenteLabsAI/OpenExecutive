@@ -116,6 +116,38 @@ async def test_a_failing_mailbox_raises(monkeypatch: pytest.MonkeyPatch) -> None
         await waiting_on.read_waiting(NOW)
 
 
+async def test_a_thread_that_fails_to_open_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _OneGone(_Mailbox):
+        async def get_thread(self, thread_id: str) -> Any:
+            if thread_id == "t-gone":
+                raise LookupError("deleted")
+            return await super().get_thread(thread_id)
+
+    _use(
+        monkeypatch,
+        _OneGone(
+            [
+                _sent("gone", ["sam@co.test"], ago=timedelta(hours=2)),
+                _sent("leonard", ["leonard@svn.test"], ago=timedelta(hours=3), subject="SVN numbers"),
+            ]
+        ),
+    )
+
+    found = await waiting_on.read_waiting(NOW)
+
+    assert [w.subject for w in found or []] == ["SVN numbers"]
+
+
+async def test_every_thread_failing_fails_the_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _AllGone(_Mailbox):
+        async def get_thread(self, thread_id: str) -> Any:
+            raise LookupError("down")
+
+    _use(monkeypatch, _AllGone([_sent("leonard", ["leonard@svn.test"], ago=timedelta(hours=3))]))
+    with pytest.raises(LookupError):
+        await waiting_on.read_waiting(NOW)
+
+
 async def test_a_failed_refresh_keeps_the_last_good_read(monkeypatch: pytest.MonkeyPatch) -> None:
     good = [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
     results: list[Any] = [good, RuntimeError("503")]
