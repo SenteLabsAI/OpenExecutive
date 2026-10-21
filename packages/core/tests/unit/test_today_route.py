@@ -2670,3 +2670,61 @@ def test_brief_adds_a_row_for_goals_with_no_department(client: TestClient) -> No
 def test_brief_has_no_extra_row_when_every_goal_has_a_department(client: TestClient) -> None:
     dept_store.insert_goal("finance", period_value="2026", key_result="Runway", target="t")
     assert "" not in {d.slug for d in today_route._build_today().departments}
+
+
+def _put_stale_header(db: Path, written: datetime) -> None:
+    narrative_cache.put(
+        narrative_cache.BriefingNarrative(
+            scope=narrative_cache.COMPANY_SCOPE, input_hash="an-older-state",
+            narrative_text="**Your 14:30 call is next.**",
+            generated_at=written.isoformat(),
+        ),
+        db_path=db,
+    )
+
+
+def test_a_stale_header_hours_old_is_not_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the rewrite keeps failing (the synthesizer is stubbed to write
+    nothing), a header from hours ago is not served as Right now: it may
+    still call a finished meeting next."""
+    db = tmp_path / "old.db"
+    _setup_isolated_db(db, monkeypatch)
+    _put_stale_header(db, datetime.now(UTC) - timedelta(hours=3))
+
+    assert _make_client().get("/today").json()["narrative"] is None
+
+
+def test_a_recent_stale_header_is_served_while_it_is_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "recent.db"
+    _setup_isolated_db(db, monkeypatch)
+    _put_stale_header(db, datetime.now(UTC) - timedelta(minutes=5))
+
+    data = _make_client().get("/today").json()
+    assert data["narrative"] == "**Your 14:30 call is next.**"
+
+
+def test_a_header_is_outdated_once_a_meeting_starts_or_ends_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing import live_signals
+    from openexecutive.briefing.top_three import CalendarEvent
+
+    now = datetime(2026, 10, 21, 20, 40, tzinfo=UTC)
+    call = CalendarEvent("Update call", now - timedelta(minutes=80), now - timedelta(minutes=35), False)
+    events = [call, CalendarEvent("Offsite", None, None, True)]
+    monkeypatch.setattr(live_signals, "cached_calendar", lambda _now, _tz: events)
+
+    # Written before the call started: it may still call it next.
+    before = call.start - timedelta(minutes=20)
+    assert today_route._header_outdated(before, now, quotes_calendar=True)
+    # Written after the call ended, with nothing on the calendar since.
+    after = call.end + timedelta(minutes=10)
+    assert not today_route._header_outdated(after, now, quotes_calendar=True)
+    # A teammate's header never quotes the principal's calendar.
+    assert not today_route._header_outdated(before, now, quotes_calendar=False)
+    # Hours old is outdated whatever the calendar says.
+    assert today_route._header_outdated(now - timedelta(hours=3), now, quotes_calendar=False)

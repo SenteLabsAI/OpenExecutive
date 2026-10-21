@@ -320,6 +320,10 @@ class TargetPolicy:
     - values approved for this workflow before (``approved_targets``) — by the
       owner answering a held write, never by anything the model or a page can
       write;
+    - in a workflow that writes or reads as its creator, their own addresses
+      and the addresses in the goal of a step that emails as them
+      (``workflow_email.chosen_recipients``):
+      only that creator, verified, can save one;
     - ids a write in this run created: the top-level id / link fields
       (``id``, ``spreadsheetId``, ``webViewLink`` …) of the STRUCTURED (JSON
       object) result of a tool whose name says it creates (create / insert /
@@ -329,8 +333,8 @@ class TargetPolicy:
       otherwise plant an id — and a URL-taking tool's result is whatever the
       URL served. These survive a pause through the resume payload
       (``created``).
-    Everything else, including values written in the workflow's own text
-    (which anyone who can edit the workflow could change without a review),
+    Everything else, including values written in any other workflow's own
+    text (which anyone who can edit the workflow could change without a review),
     is asked once and then remembered.
     """
 
@@ -342,7 +346,9 @@ class TargetPolicy:
     def for_workflow(
         cls, defn: DynamicWorkflowDef, created: Iterable[str] = ()
     ) -> TargetPolicy:
-        return cls(approved=approved_values(defn.name), created=created)
+        from openexecutive.delegation.workflow_email import chosen_recipients
+
+        return cls(approved=approved_values(defn.name) | chosen_recipients(defn), created=created)
 
     def _trusted(self, value: str) -> bool:
         norm = normalize_value(value)

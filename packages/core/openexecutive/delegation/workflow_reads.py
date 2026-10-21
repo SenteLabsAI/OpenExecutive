@@ -22,11 +22,13 @@ produces can reach other people, so it is fenced in code, as chat is:
 - **The run is locked down.** As a chat turn that read the mail is for the
   rest of the turn (``delegation.lockdown``), a workflow that reads is for
   all of its steps: it may only list tools ``MAIL_TOUCHED_ALLOWED_TOOLS``
-  lets run after a read, drafts as them (``oe__draft_email_as_me``, as chat
-  may still draft after a read; never ``oe__send_email_as_me``, which mail
-  text could aim at an address already approved) and these reads; no gateway
-  tool, web search, script or workflow run; no approval gate asking anyone
-  but its creator. Checked when it is saved (``definition_refusal``) and
+  lets run after a read, email as them (``workflow_email.TOOLS``) and these
+  reads; no gateway tool, web search, script or workflow run; no approval
+  gate asking anyone but its creator. An email it sends goes without asking
+  only to an address the creator chose: their own, one written in the
+  goal of the step that emails, or one they approved for it before. The first email to any other
+  address, such as one the mail named, waits for them
+  (``action_step.TargetPolicy``), so mail text can't send their mail on. Checked when it is saved (``definition_refusal``) and
   again on every run (``run_rules``).
 - **Saved by its creator.** Like one that sends, a workflow that reads can
   only be saved or switched on by its creator, verified
@@ -66,7 +68,7 @@ def _allowed_alongside(tool: str) -> bool:
     from openexecutive.delegation.lockdown import MAIL_TOUCHED_ALLOWED_TOOLS
     from openexecutive.workflows.chat_tools import ACCESS, LEGACY_NAMES, PREFIX, USE
 
-    if tool in TOOLS or tool == workflow_email.DRAFT_TOOL:
+    if tool in TOOLS or tool in workflow_email.TOOLS:
         return True
     if not tool.startswith(PREFIX):
         return False  # gateway, extension or web search: a door outside
