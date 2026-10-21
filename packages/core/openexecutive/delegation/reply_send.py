@@ -1,11 +1,13 @@
 """Send a reply the inbox watcher drafted, when the person taps Send, or
-on its own under Handle it for me.
+on its own under Handle it for me, or an email a workflow wrote as its
+creator.
 
-The one path in Act as me that sends anything, and all it can send is the
-exact draft on a ``delegation_reply`` card, by its id
-(``DelegateGmail.send_draft`` posts ``{"id": ...}`` to ``drafts.send``;
-``DelegateOutlook.send_draft`` posts nothing to that draft's ``send``). Two
-callers reach it, and a unit test walks the code to keep it that way:
+The one path in Act as me that sends anything, and all it can send is a
+draft by its id: the exact draft on a ``delegation_reply`` card, or the one a
+workflow step just wrote (``DelegateGmail.send_draft`` posts ``{"id": ...}``
+to ``drafts.send``; ``DelegateOutlook.send_draft`` posts nothing to that
+draft's ``send``). Three callers reach it, and a unit test walks the code to
+keep it that way:
 
 - ``send_approved_reply``, after the person approved that card
   (``POST /decisions/{id}/approve``, a class only the card's own person sees
@@ -19,7 +21,17 @@ callers reach it, and a unit test walks the code to keep it that way:
   anything the tap path would ask a second yes for.
   The watcher runs inside the scheduler's pause gate, so a pause stops it.
 
-No model, chat turn, workflow or MCP call can reach either.
+- ``send_for_workflow``, called only by ``workflow_email``'s
+  ``oe__send_email_as_me``: a workflow its creator saved, from a session the
+  API knows is theirs, with that tool in it (``workflow_email.save_refusal``),
+  sending the draft it wrote a moment ago to the people it was written to.
+  It checks again that Act as me is on, the API can tie a save to a person
+  (``handle_it.signing_ok``), no client slot is active, and the draft is
+  unchanged, addressed as written, from their own address and never to the
+  Executive's.
+
+No model, chat turn or MCP call can reach any of them, and no workflow but
+through ``oe__send_email_as_me``.
 
 At send time it checks again, in this order:
 
@@ -571,3 +583,57 @@ def _note_sent(person_id: int, message: Any, thread: Any, recipients: list[str],
         task.add_done_callback(_NOTE_TASKS.discard)
     except Exception as exc:
         logger.warning("delegation.reply_send: couldn't start noting a sent reply (%s)", type(exc).__name__)
+
+
+async def send_for_workflow(person: Any, client: Any, *, draft_id: str, recipients: list[str]) -> str:
+    """Send the draft ``draft_id`` a workflow step just wrote as ``person``,
+    to exactly ``recipients``. Returns the sent message's id; raises
+    ``SendRefused`` (``send_unconfirmed`` when the mailbox didn't say whether
+    it went). The caller (``workflow_email``) checked who and the limits."""
+    from openexecutive.config import get_settings
+    from openexecutive.delegation import handle_it
+    from openexecutive.delegation.gmail import (
+        STATUS_MESSAGES,
+        GmailAuthError,
+        GmailError,
+        normalize_email,
+    )
+    from openexecutive.delegation.inbox import _client_slot_active
+    from openexecutive.delegation.settings import can_delegate, is_enabled
+    from openexecutive.delegation.threads import MAX_RECIPIENTS
+
+    if person is None or person.id is None or not person.email or not can_delegate(person):
+        raise SendRefused(403, "not_yours", _NOT_YOURS)
+    if not is_enabled(person.id):
+        raise SendRefused(409, "act_as_me_off", "Act as me is off.")
+    if not handle_it.signing_ok():
+        raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
+    if _client_slot_active():
+        raise SendRefused(409, "client_slot", "Sending is paused while a client is active.")
+    email = normalize_email(person.email)
+    try:
+        draft = await client.get_draft(draft_id)
+        own = {email, *(normalize_email(a) for a in await client.send_as_addresses())}
+    except GmailError as exc:
+        raise SendRefused(502, "gmail_error", "Couldn't read the draft in their mailbox.") from exc
+    if draft is None:
+        raise SendRefused(409, "draft_gone", "The draft isn't in their mailbox any more.")
+    sent_to = sorted({normalize_email(a) for a in [*draft.message.to, *draft.message.cc, *draft.message.bcc]})
+    exec_address = normalize_email(get_settings().exec_email_address)
+    if not sent_to or sent_to != sorted({normalize_email(a) for a in recipients}):
+        raise SendRefused(409, "recipients_changed", "The draft's recipients aren't the ones it was written to.")
+    if len(sent_to) > MAX_RECIPIENTS:
+        raise SendRefused(409, "too_many_recipients", f"At most {MAX_RECIPIENTS} recipients.")
+    if exec_address and exec_address in sent_to:
+        raise SendRefused(409, "executive_recipient", "It is addressed to the Executive's own mailbox.")
+    if normalize_email(draft.message.from_addr) not in own:
+        raise SendRefused(409, "not_from_you", "The draft isn't from one of their own addresses.")
+    try:
+        sent = await client.send_draft(draft_id)
+    except GmailError as exc:
+        if exc.maybe_done:
+            raise SendRefused(502, "send_unconfirmed", "Their mailbox didn't confirm it was sent.") from exc
+        if isinstance(exc, GmailAuthError):
+            raise SendRefused(409, "gmail_needs_reconnect", STATUS_MESSAGES["needs_reconnect"]) from exc
+        raise SendRefused(502, "gmail_error", "Their mailbox refused to send it. Nothing was sent.") from exc
+    return str(sent.id or "")

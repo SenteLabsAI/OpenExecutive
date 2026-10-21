@@ -390,10 +390,27 @@ def _chat_specs() -> dict[str, tuple[ToolInfo, Handler]]:
         return {}
 
 
+def _email_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    """Email as the workflow's creator (Act as me): a draft for them to send,
+    or sent as them (``delegation.workflow_email``)."""
+    from openexecutive.delegation import workflow_email as we
+
+    return {
+        we.DRAFT_TOOL: (
+            ToolInfo(we.DRAFT_TOOL, we.DRAFT_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin"),
+            we.handle_draft_email_as_me,
+        ),
+        we.SEND_TOOL: (
+            ToolInfo(we.SEND_TOOL, we.SEND_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin"),
+            we.handle_send_email_as_me,
+        ),
+    }
+
+
 def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     # The chat's tools (workflows.chat_tools) win a name clash with an
     # extension's.
-    return {**_extension_specs(), **_chat_specs()}
+    return {**_extension_specs(), **_chat_specs(), **_email_as_me_specs()}
 
 
 def builtin_tools() -> list[ToolInfo]:

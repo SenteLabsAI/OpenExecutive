@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 
 SOURCE_CHAT = "chat"
 SOURCE_INBOX = "inbox"
-_SOURCES = frozenset({SOURCE_CHAT, SOURCE_INBOX})
+# Written and sent by a workflow as its creator (delegation.workflow_email);
+# a workflow's drafts for the person to send are SOURCE_CHAT, like a chat draft.
+SOURCE_WORKFLOW_SENT = "workflow_sent"
+_SOURCES = frozenset({SOURCE_CHAT, SOURCE_INBOX, SOURCE_WORKFLOW_SENT})
 
 # How far back ``settle_waiting`` looks for chat drafts still open. The
 # briefs only name drafts from their own window (today, or since the last

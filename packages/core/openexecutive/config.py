@@ -1223,6 +1223,12 @@ class Settings(BaseSettings):
     delegation_handle_it_max_sends_per_day: int = Field(
         20, alias="DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", ge=1, le=500
     )
+    # Workflows that send email as their creator (delegation.workflow_email,
+    # oe__send_email_as_me): the most such emails a day per person, within
+    # the drafts limit above. Past it the step is told to stop.
+    delegation_workflow_max_sends_per_day: int = Field(
+        20, alias="DELEGATION_WORKFLOW_MAX_SENDS_PER_DAY", ge=1, le=500
+    )
     # Whether the owner may let team members use Act as me for themselves
     # (Delegate → Act as me → "Let team members use it", off until they turn
     # it on). Off: the owner alone, as before (delegation.settings).

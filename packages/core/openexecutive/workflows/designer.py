@@ -209,8 +209,30 @@ def _one_line(text: str, limit: int) -> str:
     return flat[:limit]
 
 
-def build_context_block() -> str:
+def _email_as_line(as_me: bool) -> str:
+    """How this user's workflow emails can go."""
+    from openexecutive.delegation.workflow_email import DRAFT_TOOL, SEND_TOOL
+
+    if as_me:
+        return (
+            "Email as the user: their own mailbox is connected (Act as me). When an "
+            f"email should come from them, in their voice, use {DRAFT_TOOL} (saves a "
+            f"draft in their mailbox for them to send) or {SEND_TOOL} (sends it as "
+            "them). When it should come from the Executive, use the gateway's email "
+            "tools. If it isn't clear which of the three they want, ask."
+        )
+    return (
+        "Email as the user: not available, since they haven't connected their own "
+        f"mailbox under Act as me. Do not use {DRAFT_TOOL} or {SEND_TOOL}; emails "
+        "come from the Executive's own address through the gateway's email tools."
+    )
+
+
+def build_context_block(*, as_me: bool = False) -> str:
     """Render the live facts the designer needs, for the FIRST user turn.
+
+    ``as_me``: the person designing it may have its emails written as them
+    (``workflow_email.available_for``).
 
     Read once per session by the route and stored, so the replayed first turn
     stays identical across the conversation. Every source degrades to an
@@ -278,6 +300,7 @@ def build_context_block() -> str:
         "Built-in tools (always available; the oe__ tools are the same tools "
         "the Executive uses in chat, so anything it did in chat a step can "
         "do too):\n" + "\n".join(builtins) + "\n\n"
+        + _email_as_line(as_me) + "\n\n"
         "Workflow names already taken (do not reuse): " + ", ".join(taken)
     )
 

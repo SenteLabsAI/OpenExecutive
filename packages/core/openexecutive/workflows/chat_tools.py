@@ -214,6 +214,12 @@ def in_workflow(workflow_name: str, creator_id: int | None) -> Iterator[None]:
         _chain.reset(chain)
 
 
+def running() -> tuple[tuple[str, ...], int | None]:
+    """The workflows running in this task, outermost first, and the creator
+    of the innermost one (``in_workflow``)."""
+    return _chain.get(), _creator.get()
+
+
 def _error(message: str) -> str:
     return json.dumps({"error": message})
 

@@ -308,3 +308,52 @@ def test_tool_describe_ignores_malformed_and_duplicate_names(
         params={"names": "srv__a,srv__a,has space,semi;colon," + "x" * 70},
     )
     assert searched == ["srv__a"]
+
+
+@pytest.fixture
+def creator_check(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The send-as-creator save check, recording what it was asked: refuses
+    a sending workflow unless ``state["ok"]``."""
+    from openexecutive.delegation import workflow_email
+
+    state: dict[str, Any] = {"ok": False, "owners": []}
+
+    def refusal(defn: Any, caller: Any, owner_id: int | None) -> str | None:
+        if not workflow_email.sends(defn):
+            return None
+        state["owners"].append(owner_id)
+        return None if state["ok"] else "Only the person who created this workflow can."
+
+    monkeypatch.setattr(workflow_email, "save_refusal", refusal)
+    monkeypatch.setattr("openexecutive.api.routes.chat._resolve_caller_person_id", lambda request: 1)
+    return state
+
+
+def test_only_its_verified_creator_saves_a_workflow_that_sends_as_them(
+    client: TestClient, creator_check: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = _action_definition(["oe__send_email_as_me"])
+    r = client.post("/workflows/custom", json=send)
+    assert r.status_code == 403 and "created" in r.json()["detail"]
+    assert creator_check["owners"] == [1]
+    # A drafts-only workflow isn't checked.
+    assert client.post("/workflows/custom", json=_action_definition(["oe__draft_email_as_me"])).status_code == 201
+    client.delete("/workflows/custom/file_bills")
+
+    creator_check["ok"] = True
+    assert client.post("/workflows/custom", json=send).status_code == 201, client.get("/workflows/custom").text
+
+    # Someone else can't change it, even to take the send out, or switch it on.
+    creator_check["ok"] = False
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: 1)
+    assert client.put("/workflows/custom/file_bills", json=send).status_code == 403
+    assert client.put(
+        "/workflows/custom/file_bills", json=_action_definition(["oe__draft_email_as_me"]),
+    ).status_code == 403
+    assert client.post("/workflows/custom/file_bills/activate", json={"is_active": False}).status_code == 200
+    stored = client.get("/workflows/custom/file_bills").json()
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": stored})
+    assert r.status_code == 403
+    creator_check["ok"] = True
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": stored})
+    assert r.status_code == 200, r.text

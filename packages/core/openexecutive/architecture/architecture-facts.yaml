@@ -7251,6 +7251,27 @@ workflows:
     list_saved_tools is allowed under the Act as me lockdown (local read)
     and withheld on a turn private to the principal, like run_script.
 
+    Email as the creator (delegation/workflow_email.py): two built-ins,
+    oe__draft_email_as_me (draft in the creator's mailbox, recorded as a
+    chat draft) and oe__send_email_as_me (sent through
+    reply_send.send_for_workflow, the third door). Written only as the
+    workflow's owner; refused when someone else started the run by hand, the
+    speaker is unrostered, or another person's workflow is in the chain
+    (chat_tools.running). Needs Act as me allowed + on + own mailbox
+    connected, else the step is told to use the Executive's email. to/cc are
+    write targets (first email to a new address is held). Caps:
+    DELEGATION_MAX_DRAFTS_PER_DAY for every email, plus
+    DELEGATION_WORKFLOW_MAX_SENDS_PER_DAY (default 20) for sends, counted
+    from delegation_drafts rows with source workflow_sent written before
+    the send. A workflow with the send tool is created/changed/activated only
+    by its creator per verified.caller_refusal (403 from POST/PUT
+    /workflows/custom, save-edit, activate; save_refusal). At send:
+    is_enabled, handle_it.signing_ok, no client slot, draft unchanged
+    (recipients exactly as written, from an own address, <=10, never the
+    Executive's). Results and the run report carry to/subject, never the
+    body; audit rows are private to the creator. The designer gets an
+    "Email as the user" line (build_context_block(as_me=...)).
+
     Chat's tools in action steps (workflows/chat_tools.py): one list,
     `ACCESS`, labels every tool chat offers — use (a step may call it as
     oe__<name>), as_me (Act as me; chat-only for now), covered (the step
@@ -11276,7 +11297,8 @@ delegation:
     in_a_row (last own message in the thread was an auto-send),
     daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY, default 20).
     The watcher then calls reply_send.send_on_its_own — the second door
-    into _send, pinned by an AST test to delegation/inbox.py — which runs
+    into _send, pinned by an AST test to delegation/inbox.py (the third,
+    send_for_workflow, is pinned to delegation/workflow_email.py) — which runs
     every send-time check with no caller and adds: gate_mode auto_execute,
     the switch on and the mode still allowing that sender (follows_up for
     a follow-up card), signing_ok, and the draft
