@@ -10,8 +10,9 @@ Both write in the creator's voice (``ghostwriter.compose``, as chat's
 
 - **Whose mailbox.** Always the workflow's creator (``dynamic_store.get_owner``),
   never an address the step names. Nothing is written on a run someone else
-  started by hand, by a speaker the roster can't place, or when another
-  person's workflow started this one (``chat_tools.running``): the email
+  started by hand, by a speaker the roster can't place, by one of the
+  Executive's own unattended passes (``chat_tools.started_by_a_pass``), or
+  when another person's workflow started this one (``chat_tools.running``): the email
   would be in the creator's name on someone else's say-so. A scheduled run
   (nobody's) writes as the creator.
 - **Only when they turned it on.** The creator may use Act as me
@@ -157,12 +158,14 @@ def _addresses(raw: Any, field: str) -> list[str] | str:
 
 def _someone_else(creator_id: int, chain: tuple[str, ...]) -> bool:
     """Whether someone other than the creator is behind this run: a run they
-    started by hand, a speaker the roster can't place, or another person's
-    workflow that started this one."""
+    started by hand, a speaker the roster can't place, one of the
+    Executive's own unattended passes (its context is inbound or stored text
+    with nobody watching), or another person's workflow that started this one."""
     from openexecutive.orchestrator.artifact_records import runs_refused_for_nobody, turn_owner
+    from openexecutive.workflows.chat_tools import started_by_a_pass
     from openexecutive.workflows.dynamic_store import get_owner
 
-    if runs_refused_for_nobody():
+    if runs_refused_for_nobody() or started_by_a_pass():
         return True
     runner = turn_owner()
     if runner is not None and runner != creator_id:

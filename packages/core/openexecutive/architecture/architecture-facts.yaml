@@ -7256,8 +7256,9 @@ workflows:
     chat draft) and oe__send_email_as_me (sent through
     reply_send.send_for_workflow, the third door). Written only as the
     workflow's owner; refused when someone else started the run by hand, the
-    speaker is unrostered, or another person's workflow is in the chain
-    (chat_tools.running). Needs Act as me allowed + on + own mailbox
+    speaker is unrostered, an unattended Executive pass started the
+    outermost run (chat_tools.started_by_a_pass), or another person's
+    workflow is in the chain (chat_tools.running). Needs Act as me allowed + on + own mailbox
     connected, else the step is told to use the Executive's email. to/cc are
     write targets (first email to a new address is held). Caps:
     DELEGATION_MAX_DRAFTS_PER_DAY for every email, plus
@@ -7265,7 +7266,8 @@ workflows:
     from delegation_drafts rows with source workflow_sent written before
     the send. A workflow with the send tool is created/changed/activated only
     by its creator per verified.caller_refusal (403 from POST/PUT
-    /workflows/custom, save-edit, activate; save_refusal). At send:
+    /workflows/custom, save-edit, activate; save_refusal); chat's
+    save_workflow refuses to replace one at all. At send:
     is_enabled, handle_it.signing_ok, no client slot, draft unchanged
     (recipients exactly as written, from an own address, <=10, never the
     Executive's). Results and the run report carry to/subject, never the

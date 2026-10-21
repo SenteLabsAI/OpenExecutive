@@ -200,11 +200,21 @@ def workflow_name_for(chat_name: str) -> str:
 # the innermost one (set by ``action_step._dispatch``).
 _chain: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("workflow_chain", default=())
 _creator: contextvars.ContextVar[int | None] = contextvars.ContextVar("workflow_tool_creator", default=None)
+# Whether the outermost of them was started by one of the Executive's own
+# unattended passes (the reflection, research, a proactive run): their
+# context is stored or inbound text with nobody watching.
+_by_a_pass: contextvars.ContextVar[bool] = contextvars.ContextVar("workflow_started_by_a_pass", default=False)
 
 
 @contextlib.contextmanager
 def in_workflow(workflow_name: str, creator_id: int | None) -> Iterator[None]:
     """Run the block as a step of ``workflow_name``, created by ``creator_id``."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    outermost = not _chain.get()
+    by_a_pass = _by_a_pass.set(
+        bool(getattr(current_session.get(), "unattended", False)) if outermost else _by_a_pass.get()
+    )
     chain = _chain.set((*_chain.get(), workflow_name))
     creator = _creator.set(creator_id)
     try:
@@ -212,12 +222,19 @@ def in_workflow(workflow_name: str, creator_id: int | None) -> Iterator[None]:
     finally:
         _creator.reset(creator)
         _chain.reset(chain)
+        _by_a_pass.reset(by_a_pass)
 
 
 def running() -> tuple[tuple[str, ...], int | None]:
     """The workflows running in this task, outermost first, and the creator
     of the innermost one (``in_workflow``)."""
     return _chain.get(), _creator.get()
+
+
+def started_by_a_pass() -> bool:
+    """Whether the outermost running workflow was started by one of the
+    Executive's unattended passes rather than a person or its schedule."""
+    return _by_a_pass.get()
 
 
 def _error(message: str) -> str:

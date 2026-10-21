@@ -374,3 +374,40 @@ def test_a_sending_workflow_needs_signed_sign_ins(people, monkeypatch: pytest.Mo
         _defn([workflow_email.SEND_TOOL]), SimpleNamespace(kind="open", email=OWNER), owner_id,
     )
     assert "signed sign-ins" in str(refused)
+
+
+def test_refused_when_one_of_the_executives_own_passes_started_it(on, composed) -> None:
+    """The reflection or research running the workflow: inbound text with
+    nobody watching chose its inputs. A nested workflow inherits that."""
+    mailbox = FakeMailbox()
+    token = current_session.set(SimpleNamespace(unattended=True))
+    try:
+        result = _run(INPUT, mailbox, creator=on, send=True, chain=("wf", "inner"))
+    finally:
+        current_session.reset(token)
+
+    assert "someone else is behind this run" in result["error"] and mailbox.sent == []
+    assert chat_tools.started_by_a_pass() is False
+
+
+def test_chat_cannot_replace_a_workflow_that_sends(people, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import workflow_authoring_tools as wat
+
+    existing = SimpleNamespace(is_active=False, steps=[SimpleNamespace(tools=[workflow_email.SEND_TOOL])])
+    monkeypatch.setattr(dynamic_store, "get_definition", lambda name: existing)
+    monkeypatch.setattr(wat, "_canonical_token", lambda definition: "tok")
+    saved: list[Any] = []
+    monkeypatch.setattr(dynamic_store, "save_if_unchanged", lambda *a, **k: saved.append(a))
+    definition = {
+        "name": "weekly_update", "title": "Weekly update",
+        "steps": [
+            {"kind": "specialist", "id": "numbers", "title": "S", "specialist": "cfo", "goal": "Numbers."},
+            {"kind": "synthesis", "id": "assemble", "title": "A"},
+        ],
+    }
+
+    out = json.loads(asyncio.run(wat.handle_save_workflow(
+        {"definition": definition, "confirm_token": "tok", "overwrite": True},
+    )))
+
+    assert "can't be replaced from chat" in out["error"] and saved == []

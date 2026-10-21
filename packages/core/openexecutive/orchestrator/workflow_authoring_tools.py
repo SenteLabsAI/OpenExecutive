@@ -291,6 +291,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
     from openexecutive.delegation.lockdown import outside_reach_refusal
+    from openexecutive.delegation.workflow_email import sends as sends_as_creator
     from openexecutive.workflows.dynamic_store import get_definition, save_if_unchanged
 
     if (refused := outside_reach_refusal("save_workflow")) is not None:
@@ -317,6 +318,15 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     approved_error = _approved_tool_workflow_error(defn.name, existing)
     if approved_error is not None:
         return json.dumps({"error": approved_error})
+    if existing is not None and sends_as_creator(existing):
+        # Only its creator, verified, may change one (workflow_email.save_refusal),
+        # and chat can't verify anyone.
+        base = get_settings().ui_base_url.rstrip("/")
+        return json.dumps({"error": (
+            f"{defn.name!r} sends email as the person who created it, so it can't be "
+            "replaced from chat. Pick a different name, or tell the user to edit it at "
+            f"{base}/jobs/new?edit={defn.name}"
+        )})
 
     overwrite = bool(tool_input.get("overwrite", False))
     if existing is not None and not overwrite:
