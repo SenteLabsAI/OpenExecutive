@@ -21,7 +21,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -41,6 +41,12 @@ TIME_LIMIT_SECONDS = 20.0
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 # What was typed: a domain or an address, nothing longer.
 MAX_INPUT_CHARS = 300
+# A page's label (host and path), as it appears in the setup transcript.
+MAX_LABEL_CHARS = 120
+# What a path may keep as is: everything else is percent-encoded, so a link
+# can't carry markup or prose into a label (e.g. "</untrusted_content>").
+_PATH_SAFE = "/-._~%!$&'()*+,;=:@"
+
 # Text shorter than this is a script shell or an empty page, not content.
 MIN_PAGE_CHARS = 200
 
@@ -98,7 +104,11 @@ def normalize_url(raw: str) -> str:
     host = (parts.hostname or "").rstrip(".")
     if parts.scheme not in ("http", "https") or "." not in host or parts.username or port:
         raise WebsiteError("That doesn't look like a website address.")
-    return urlunsplit((parts.scheme, host, parts.path or "/", parts.query, ""))
+    return urlunsplit((parts.scheme, host, _clean_path(parts.path), quote(parts.query, safe="=&"), ""))
+
+
+def _clean_path(path: str) -> str:
+    return quote(path, safe=_PATH_SAFE) or "/"
 
 
 def _site(host: str) -> str:
@@ -107,10 +117,12 @@ def _site(host: str) -> str:
 
 
 def label_for(url: str) -> str:
-    """``https://www.example.com/team/`` → ``example.com/team``."""
+    """``https://www.example.com/team/`` → ``example.com/team``: the host and
+    a percent-encoded path, capped. It sits outside the untrusted block in the
+    transcript, so nothing from the page may reach it unencoded."""
     parts = urlsplit(url)
-    path = parts.path.rstrip("/")
-    return f"{_site(parts.hostname or '')}{path}"
+    path = _clean_path(parts.path).rstrip("/")
+    return f"{_site(parts.hostname or '')}{path}"[:MAX_LABEL_CHARS]
 
 
 class _Links(HTMLParser):
@@ -158,7 +170,7 @@ def pick_pages(home_url: str, html: str, limit: int = MAX_EXTRA_PAGES) -> list[s
             continue
         if parts.path.lower().endswith(_SKIPPED_EXTENSIONS):
             continue
-        clean = urlunsplit((parts.scheme, parts.hostname or "", parts.path or "/", "", ""))
+        clean = urlunsplit((parts.scheme, parts.hostname or "", _clean_path(parts.path), "", ""))
         key = label_for(clean)
         if key == home or key in seen:
             continue
