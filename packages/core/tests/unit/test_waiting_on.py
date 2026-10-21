@@ -187,6 +187,14 @@ def test_turning_act_as_me_off_forgets_the_read(tmp_path: Any) -> None:
     assert waiting_on._cache is None
 
 
+def test_turning_act_as_me_on_drops_the_empty_read(tmp_path: Any) -> None:
+    from openexecutive.delegation import settings as delegation_settings
+
+    waiting_on._cache = (0.0, None)  # read while it was off
+    delegation_settings.set_enabled(1, True, updated_by="test", db_path=tmp_path / "s.db")
+    assert waiting_on._cache is None
+
+
 async def test_a_cached_read_stops_once_act_as_me_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _read(now: Any = None) -> list[waiting_on.Waiting]:
         return [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]

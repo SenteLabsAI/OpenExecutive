@@ -284,11 +284,11 @@ def set_enabled(
         conn.commit()
     finally:
         conn.close()
-    if not enabled:
-        # Right now's read of the principal's sent mail goes with it.
-        from openexecutive.briefing import waiting_on
+    # Right now's read of the principal's sent mail goes with it when they
+    # turn it off, and is read again soon after they turn it on.
+    from openexecutive.briefing import waiting_on
 
-        waiting_on.reset_cache()
+    waiting_on.reset_cache()
 
 
 def _principal() -> Person | None:
