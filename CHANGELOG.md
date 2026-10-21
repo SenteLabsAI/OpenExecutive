@@ -9,6 +9,26 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.2...v0.6.3) (2026-10-21)
+
+
+### Added
+
+* **delegation:** attach up to 15 Drive files to a draft ([#581](https://github.com/SenteLabsAI/OpenExecutive/issues/581)) ([3558823](https://github.com/SenteLabsAI/OpenExecutive/commit/3558823bd21dd0259e0b35bcd5d2dca343e63266))
+* **memory:** file each Learning miss under a finer cause ([#590](https://github.com/SenteLabsAI/OpenExecutive/issues/590)) ([bcdc874](https://github.com/SenteLabsAI/OpenExecutive/commit/bcdc874aba6d6da6d9784d7ba783bfe20cc3c4ae))
+* **observability:** add opt-in Logfire request tracing ([#584](https://github.com/SenteLabsAI/OpenExecutive/issues/584)) ([3acb995](https://github.com/SenteLabsAI/OpenExecutive/commit/3acb995716d89f4792c8acc2ac66914505ab8a5b))
+* **orchestrator:** add activity, private-row and caller options to extension tools ([#576](https://github.com/SenteLabsAI/OpenExecutive/issues/576)) ([7677540](https://github.com/SenteLabsAI/OpenExecutive/commit/767754007f0de5d4266cc591a0aa8dbdb27edbaf))
+* **ui:** split Learning by category and forget several at once ([#588](https://github.com/SenteLabsAI/OpenExecutive/issues/588)) ([d4c84bc](https://github.com/SenteLabsAI/OpenExecutive/commit/d4c84bc6896cd11408162e4923af41e4a7862d51))
+
+
+### Fixed
+
+* **briefing:** read the owner's own calendar in the briefs too ([#591](https://github.com/SenteLabsAI/OpenExecutive/issues/591)) ([57c059a](https://github.com/SenteLabsAI/OpenExecutive/commit/57c059a5f4c26150bac1438e109690ed12665ca6))
+* **briefing:** stop calling sent drafts unsent and stop echoing the reader's chats ([#585](https://github.com/SenteLabsAI/OpenExecutive/issues/585)) ([36f45dd](https://github.com/SenteLabsAI/OpenExecutive/commit/36f45ddb73afa6b55142cf922ce0f2e2bc4dc3be))
+* **briefing:** write Right now from what moved today, with cited points ([#589](https://github.com/SenteLabsAI/OpenExecutive/issues/589)) ([ce9b06b](https://github.com/SenteLabsAI/OpenExecutive/commit/ce9b06b94125a662d71c73318d3b405b4ecb7901))
+* **chat:** tell the model the current date and time on every chat turn ([#580](https://github.com/SenteLabsAI/OpenExecutive/issues/580)) ([1196957](https://github.com/SenteLabsAI/OpenExecutive/commit/1196957372f22bb02fea94276c3b52e17c3df913))
+* **email:** prove senders on domains without DMARC and on Outlook mailboxes ([#583](https://github.com/SenteLabsAI/OpenExecutive/issues/583)) ([26a39ff](https://github.com/SenteLabsAI/OpenExecutive/commit/26a39ffd7650c203a6d3951a14bdc2badd88a612))
+
 ## [0.6.2](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.1...v0.6.2) (2026-10-20)
 
 
