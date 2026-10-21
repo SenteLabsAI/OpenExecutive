@@ -14,7 +14,10 @@ always decided for workflows too:
   the Executive believes or who is on the team, which chat keeps to a turn
   the person is in (most are ``schedule_tools.UNATTENDED_WITHHELD_TOOLS``). A
   workflow reads outside text (mail, pages), and a line in it must not
-  quietly rewrite memory with nobody watching.
+  quietly rewrite memory with nobody watching. Goal progress and the
+  watchlist are the exception, by the owner's choice: keeping them current
+  is what a scheduled workflow is for, the step has to be given the tool by
+  name when the workflow is saved, and each change is audited.
 
 **How a chat tool runs in a step.** The step's call goes through the usual
 checks first (the allowlist, the budget, the first-write target hold in
@@ -28,7 +31,8 @@ and a tool the workspace mode doesn't offer is refused
 calls: a saved workflow is its creator's own instruction, approved tool by
 tool when they saved it, as for the gateway tools. A workflow a team member
 created goes through their department's approval level, as their own chat
-turn would (``department_gate``).
+turn would (``department_gate``). One with no creator on record (saved
+before creators were) runs as the principal's, as its tools always did.
 
 **Long and nested runs.** ``run_workflow`` and ``run_executive_research``
 get a longer timeout than other calls (``TIMEOUT_S``), and a workflow may not

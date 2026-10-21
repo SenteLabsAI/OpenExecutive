@@ -330,3 +330,39 @@ async def test_a_chat_tool_step_runs_inside_its_workflow(
     assert chains == [("wf",)]
     result = provider.calls[1]["messages"][-1]["content"][0]
     assert result["content"] == "Ana" and result["is_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_paused_web_searches_do_not_use_up_the_steps_turns(
+    monkeypatch: pytest.MonkeyPatch, step_env: None
+) -> None:
+    search = _Block(type="server_tool_use", id="srv_1", name="web_search", input={"query": "q"})
+    paused = SimpleNamespace(content=[search], stop_reason="pause_turn")
+    done = SimpleNamespace(content=[SimpleNamespace(type="text", text="Found it.")], stop_reason="end_turn")
+    # max_tool_calls 1 gives 4 turns; 5 pauses then the answer still finishes.
+    provider = _Provider([paused] * act._MAX_PAUSES + [done])
+    monkeypatch.setattr("openexecutive.providers.registry.get_provider", lambda model: provider)
+    step = ActionStepSpec.model_validate(
+        {"id": "s", "title": "S", "goal": "Find it.", "tools": ["oe__web_search"], "max_tool_calls": 1}
+    )
+    out = [
+        item async for item in act.run_action_step(
+            step, workflow_name="wf", workflow_title="WF", goal=step.goal,
+            values={}, company_block="", prior_outputs={}, policy=None,
+        )
+    ]
+    assert out[-1][0] == "output" and "Found it." in out[-1][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("too_many", [False, True])
+async def test_an_empty_or_endless_pause_fails_the_step(
+    monkeypatch: pytest.MonkeyPatch, step_env: None, too_many: bool
+) -> None:
+    search = _Block(type="server_tool_use", id="srv_1", name="web_search", input={"query": "q"})
+    if too_many:
+        responses = [SimpleNamespace(content=[search], stop_reason="pause_turn")] * (act._MAX_PAUSES + 1)
+    else:
+        responses = [SimpleNamespace(content=[], stop_reason="pause_turn")]
+    out = await _run_step(monkeypatch, _Provider(responses), ["oe__web_search"])
+    assert out[-1][0] == "error" and "kept pausing" in out[-1][1]

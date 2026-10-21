@@ -55,6 +55,9 @@ _MAX_TOKENS = 4096
 # Model turns allowed beyond the tool budget: one for the final report, a
 # little slack for a turn that only talks.
 _EXTRA_TURNS = 3
+# A long web search can pause the model's turn (``pause_turn``); a paused
+# turn is not one of the step's turns, but at most this many are carried on.
+_MAX_PAUSES = 5
 _TOOL_CALL_TIMEOUT_S = 120.0
 _MAX_INPUT_CHARS = 2_000
 _MAX_PRIOR_OUTPUT_CHARS = 6_000
@@ -677,7 +680,9 @@ async def run_action_step(
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
     fanout_hinted = False
-    for turn in range(max_turns):
+    turn = 0
+    pauses = 0
+    while turn < max_turns:
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "max_tokens": _MAX_TOKENS,
@@ -703,10 +708,15 @@ async def run_action_step(
 
         blocks = [b for b in (_block_to_dict(b) for b in getattr(response, "content", []) or []) if b]
         tool_uses = [b for b in blocks if b["type"] == "tool_use"]
-        if getattr(response, "stop_reason", None) == "pause_turn" and blocks:
+        if getattr(response, "stop_reason", None) == "pause_turn":
             # A long web search paused mid-turn: send it back to carry on.
+            pauses += 1
+            if not blocks or pauses > _MAX_PAUSES:
+                yield ("error", f"step {step.id!r} stopped: its web search kept pausing without an answer")
+                return
             _append_assistant(messages, blocks)
             continue
+        turn += 1
         if not tool_uses:
             paused = messages[-1]["content"] if messages[-1]["role"] == "assistant" else []
             report = "\n".join(
