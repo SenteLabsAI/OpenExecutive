@@ -90,6 +90,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_reply_dismissed",   # they dismissed a card; details.draft says whether the draft was deleted
     "delegation_reply_closed",      # a card closed because Gmail settled it (sent, deleted, replied, expired)
     "delegation_reply_sent",        # the person tapped Send and their draft went, exactly as it was in Gmail
+    "delegation_chat_draft_sent",   # the person tapped Send under a draft chat wrote as them, and it went as written
     "delegation_reminder_set",      # remind_me stored a reminder for the person who asked (no text in the row)
     "delegation_reminder_sent",     # a reminder went to the person who set it, as its stored text
     "delegation_actions_proposed",  # propose_actions left a person a card of actions to approve (kinds only)

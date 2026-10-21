@@ -26,6 +26,18 @@ export interface ActionTaken {
   // An approval card's id (propose_actions): the chat shows the card itself
   // under the message.
   decision_id?: number;
+  // A draft written as you (ghostwrite_email): the chat shows it under the
+  // message with a Send button.
+  draft?: ChatDraft;
+}
+
+export interface ChatDraft {
+  row: number;
+  to: string[];
+  cc: string[];
+  subject: string;
+  // The start of the draft's text, as saved.
+  preview: string;
 }
 
 // Names the round of tool calls currently in flight, so the progress line can
@@ -2593,6 +2605,26 @@ export async function sendReplyCard(
   const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
   const message = typeof detail.message === "string" ? detail.message : "Couldn't send that reply.";
   const code = typeof detail.code === "string" ? detail.code : res.status === 404 ? "draft_gone" : "error";
+  if (res.status === 409 && code === "confirm") {
+    return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
+  }
+  throw new ReplySendError(message, code);
+}
+
+// Send a draft the chat wrote as you, exactly as it was written (POST
+// /delegation/drafts/{row}/send). `threadMovedOn` is your second yes when a
+// newer message arrived in that conversation.
+export async function sendChatDraft(row: number, threadMovedOn = false): Promise<SendReplyResult> {
+  const res = await fetch(`${API_BASE}/delegation/drafts/${row}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_moved_on: threadMovedOn }),
+  });
+  if (res.ok) return { status: "sent" };
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
+  const message = typeof detail.message === "string" ? detail.message : "Couldn't send that email.";
+  const code = typeof detail.code === "string" ? detail.code : "error";
   if (res.status === 409 && code === "confirm") {
     return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
   }

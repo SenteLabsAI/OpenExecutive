@@ -140,6 +140,72 @@ def mark_sent(
         conn.close()
 
 
+@dataclass(frozen=True)
+class DraftRow:
+    """One ``delegation_drafts`` row, as Send from chat reads it."""
+
+    id: int
+    person_id: int
+    source: str
+    thread_id: str
+    draft_id: str
+    message_id: str
+    sent_message_id: str
+    created_at: str
+    gone_at: str
+
+
+def get_row(row_id: int, *, db_path: Path | None = None) -> DraftRow | None:
+    """The row ``row_id``, or None."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, person_id, source, thread_id, draft_id, message_id, sent_message_id, "
+            f"created_at, gone_at FROM {DRAFTS_TABLE} WHERE id = ?",  # noqa: S608 — constant table name
+            (row_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return DraftRow(
+        id=int(row[0]), person_id=int(row[1]), source=str(row[2] or ""), thread_id=str(row[3] or ""),
+        draft_id=str(row[4] or ""), message_id=str(row[5] or ""), sent_message_id=str(row[6] or ""),
+        created_at=str(row[7] or ""), gone_at=str(row[8] or ""),
+    )
+
+
+def claim_send(row_id: int, now: datetime, *, db_path: Path | None = None) -> bool:
+    """Take a chat draft for sending (compare-and-set): False when it is
+    already sent, gone or being sent, so a double tap sends once. A claimed
+    draft no longer counts as waiting."""
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET gone_at = ? "  # noqa: S608 — constant table name
+            "WHERE id = ? AND gone_at IS NULL AND sent_message_id IS NULL",
+            (now.isoformat(), row_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def release_send(row_id: int, *, db_path: Path | None = None) -> None:
+    """Hand back a claim whose send shows nothing went: it waits again."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET gone_at = NULL "  # noqa: S608 — constant table name
+            "WHERE id = ? AND sent_message_id IS NULL",
+            (row_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def rename(
     person_id: int, old_draft_id: str, draft_id: str, message_id: str, *, db_path: Path | None = None
 ) -> bool:
