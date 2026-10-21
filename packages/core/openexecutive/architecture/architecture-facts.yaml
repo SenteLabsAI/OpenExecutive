@@ -7260,7 +7260,10 @@ workflows:
     outermost run (chat_tools.started_by_a_pass), or another person's
     workflow is in the chain (chat_tools.running). Needs Act as me allowed + on + own mailbox
     connected, else the step is told to use the Executive's email. to/cc are
-    write targets (first email to a new address is held). Caps:
+    write targets: the creator's own addresses and the addresses written in
+    the saved workflow (workflow_email.chosen_recipients, trusted by
+    TargetPolicy.for_workflow only when the running definition matches the
+    saved one) go unasked; the first email to any other address is held. Caps:
     DELEGATION_MAX_DRAFTS_PER_DAY for every email, plus
     DELEGATION_WORKFLOW_MAX_SENDS_PER_DAY (default 20) for sends, counted
     from delegation_drafts rows with source workflow_sent written before
@@ -7290,7 +7293,8 @@ workflows:
     anyone else; chat's run_workflow needs the turn's Act as me pin to be the
     creator and marks the turn touched_mail/read_mail first). Locked down for
     all steps (definition_refusal at save, run_rules at each step): tools
-    only the reads, oe__draft_email_as_me (never the send tool) and oe__ chat tools in
+    only the reads, the email-as-me tools (sends unasked only to chosen
+    recipients, so an address the mail named is held) and oe__ chat tools in
     MAIL_TOUCHED_ALLOWED_TOOLS; no run_script; approval gates and cadence
     only to the creator. Saved/changed/activated only by its verified
     creator (save_refusal covers reads too); chat never replaces one.

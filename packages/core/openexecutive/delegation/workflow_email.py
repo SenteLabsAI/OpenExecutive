@@ -25,9 +25,12 @@ Both write in the creator's voice (``ghostwriter.compose``, as chat's
   reply card uses), and nobody else may change it. At send time the API must
   still be able to tie a save to a person (``handle_it.signing_ok``), and the
   draft goes through ``reply_send.send_for_workflow``, the one send path.
-- **First email to a new address asks once.** ``to`` and ``cc`` are write
-  targets, so a step's first email to an address waits for the creator's
-  approval (``action_step.TargetPolicy``), then is remembered.
+- **Recipients they chose go without asking.** ``to`` and ``cc`` are write
+  targets (``action_step.TargetPolicy``). Their own addresses and the
+  addresses written in the workflow (``chosen_recipients``: only its
+  verified creator saves such a workflow) go straight out; the first email
+  to any other address waits for the creator's approval, then is
+  remembered. So mail a step read can't add a recipient that goes unasked.
 - **Capped.** Every draft counts against ``DELEGATION_MAX_DRAFTS_PER_DAY``
   (shared with chat and the inbox, ``caps``), and sends against
   ``DELEGATION_WORKFLOW_MAX_SENDS_PER_DAY`` as well.
@@ -121,6 +124,37 @@ def as_creator(defn: Any) -> bool:
     from openexecutive.delegation.workflow_reads import reads
 
     return sends(defn) or reads(defn)
+
+
+def _saved_part(defn: Any) -> dict[str, Any]:
+    dumped: dict[str, Any] = defn.model_dump(exclude={"is_active", "created_at", "updated_at"})
+    return dumped
+
+
+def chosen_recipients(defn: Any) -> set[str]:
+    """The addresses a workflow that writes or reads as its creator may email
+    without asking: the creator's own, and those written in the workflow
+    itself as saved. Only the creator, verified, saves such a workflow
+    (``save_refusal``), so these are their choice, never something a run
+    read. Empty for any other workflow, or one not saved as it runs. Never
+    raises."""
+    from openexecutive.people.store import get_person
+    from openexecutive.workflows.dynamic_store import get_definition, get_owner
+
+    try:
+        stored = get_definition(defn.name)
+        if stored is None or not as_creator(stored) or _saved_part(stored) != _saved_part(defn):
+            return set()
+        owner_id = get_owner(defn.name)
+        owner = get_person(owner_id) if owner_id is not None else None
+        if owner is None:
+            return set()
+        written = json.dumps(_saved_part(stored), default=str)
+    except Exception:
+        logger.warning("workflow email: couldn't read the chosen recipients", exc_info=True)
+        return set()
+    own = {a.strip().lower() for a in [owner.email, *owner.email_aliases] if a}
+    return own | {a.lower() for a in _EMAIL_RE.findall(written)}
 
 
 def save_refusal(defn: Any, caller: Any, owner_id: int | None, *, check_tools: bool = True) -> str | None:
