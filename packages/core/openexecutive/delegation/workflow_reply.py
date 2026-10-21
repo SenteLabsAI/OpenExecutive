@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +30,9 @@ from openexecutive.delegation.workflow_email import REPLY_TOOL
 logger = logging.getLogger(__name__)
 
 TOOL = REPLY_TOOL
+# Gmail's and Outlook's thread ids: letters, digits and a few marks.
+_MAX_THREAD_ID = 300
+_THREAD_ID_RE = re.compile(r"[A-Za-z0-9_\-=+/.:]+")
 
 # The classifier, composer and last look, plus the mailbox calls.
 TIMEOUT_S = 300.0
@@ -93,6 +97,8 @@ async def handle_answer_email_as_me(tool_input: dict[str, Any], *, mailbox: Any 
     thread_id = str(tool_input.get("thread_id") or "").strip()
     if not thread_id:
         return _error("Pass `thread_id`: the email thread to answer.")
+    if len(thread_id) > _MAX_THREAD_ID or not _THREAD_ID_RE.fullmatch(thread_id):
+        return _error("That isn't a thread id from their mailbox.")
     writer = await creator_mailbox(mailbox=mailbox)
     if isinstance(writer, str):
         return writer

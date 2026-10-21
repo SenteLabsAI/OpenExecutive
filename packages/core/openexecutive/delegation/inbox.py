@@ -1132,29 +1132,37 @@ async def answer_thread(person: Any, client: Any, thread_id: str, *, now: dateti
     ``card``, ``not_needed``, ``skipped``, ``theirs_last`` (nothing to
     answer), ``backlog_full``, ``busy`` or ``not_now`` (too new, already
     looked at, or a limit). Raises a Gmail error as a scan does."""
+    from openexecutive.audit import rows_for_person
     from openexecutive.config import get_settings
 
-    if person.id in _SCANNING:
+    if person.id in _SCANNING or _client_slot_active():
         return "busy"
     # Taken like a scan: the daily and per-thread counts Handle it for me
-    # checks are check-then-act, so one person's answers go one at a time.
+    # checks are check-then-act, so one person's answers go one at a time,
+    # and every row it writes is theirs alone, as a scan's are.
     _SCANNING.add(person.id)
     try:
-        email = (person.email or "").strip().lower()
-        own = {email, *(a.strip().lower() for a in await client.send_as_addresses())}
-        exec_address = (get_settings().exec_email_address or "").strip().lower()
-        if len(open_cards(person.id)) >= OPEN_CARDS_MAX:
-            return "backlog_full"
-        thread = await client.get_thread(thread_id)
-        shown = [m for m in thread.messages if "DRAFT" not in m.labels]
-        if not shown or shown[-1].from_addr in own:
-            return "theirs_last"
-        result = ScanResult("ok")
-        # Only staleness bounds it: the step named this thread, whenever the
-        # watcher started watching (if it does at all).
-        await _consider(person, client, shown[-1].id, thread.id, own, exec_address, now - STALE, now, result)
+        with rows_for_person(person.id):
+            return await _answer(person, client, thread_id, now=now, exec_address=(
+                get_settings().exec_email_address or ""
+            ).strip().lower())
     finally:
         _SCANNING.discard(person.id)
+
+
+async def _answer(person: Any, client: Any, thread_id: str, *, now: datetime, exec_address: str) -> str:
+    email = (person.email or "").strip().lower()
+    own = {email, *(a.strip().lower() for a in await client.send_as_addresses())}
+    if len(open_cards(person.id)) >= OPEN_CARDS_MAX:
+        return "backlog_full"
+    thread = await client.get_thread(thread_id)
+    shown = [m for m in thread.messages if "DRAFT" not in m.labels]
+    if not shown or shown[-1].from_addr in own:
+        return "theirs_last"
+    result = ScanResult("ok")
+    # Only staleness bounds it: the step named this thread, whenever the
+    # watcher started watching (if it does at all).
+    await _consider(person, client, shown[-1].id, thread.id, own, exec_address, now - STALE, now, result)
     if result.handled:
         return "sent"
     if result.drafted:

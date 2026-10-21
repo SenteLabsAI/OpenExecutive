@@ -153,3 +153,31 @@ def test_one_answer_at_a_time_per_person(owner: Any, models: dict[str, Any]) -> 
 
     assert sorted(asyncio.run(both())) == ["busy", "sent"]
     assert owner.id not in inbox._SCANNING
+
+
+def test_every_row_it_writes_is_theirs_alone(db, owner: Any, models: dict[str, Any]) -> None:
+    import sqlite3
+
+    handle_it.set_(owner.id, enabled=True, mode=None, updated_by="test")
+    with sqlite3.connect(db) as conn:
+        before = conn.execute("SELECT COALESCE(MAX(id), 0) FROM audit_log").fetchone()[0]
+
+    assert _answer(owner, _mailbox()) == "sent"
+
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT event_type, private_to_principal FROM audit_log WHERE id > ?", (before,)
+        ).fetchall()
+    assert rows and all(private == 1 for _, private in rows), rows
+
+
+def test_it_waits_while_a_client_holds_the_mailbox(owner: Any, models: dict[str, Any], monkeypatch) -> None:
+    monkeypatch.setattr(inbox, "_client_slot_active", lambda: True)
+    mailbox = _mailbox()
+
+    assert _answer(owner, mailbox) == "busy" and models["classified"] == []
+
+
+def test_the_step_takes_only_a_thread_id(owner: Any, models: dict[str, Any], at_now: None) -> None:
+    for bad in ("t1 OR in:sent", "x" * 400, "t1;drop"):
+        assert "thread id" in _run(owner.id, {"thread_id": bad}, _mailbox(), runner=owner.id)["error"]
