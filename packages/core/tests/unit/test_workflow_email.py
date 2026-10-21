@@ -449,3 +449,28 @@ def test_email_tools_get_more_than_the_default_step_timeout() -> None:
     tools = {t.name: t for t in tool_catalog.builtin_tools()}
     for name in workflow_email.TOOLS:
         assert (tools[name].timeout_s or 0) > action_step._TOOL_CALL_TIMEOUT_S
+
+
+def test_chat_cannot_add_a_send_to_someone_elses_workflow(people, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Saved over an existing workflow, the send would go as its creator,
+    # not as whoever asked in chat.
+    from openexecutive.orchestrator import workflow_authoring_tools as wat
+
+    existing = SimpleNamespace(is_active=False, steps=[SimpleNamespace(tools=[])])
+    incoming = SimpleNamespace(name="weekly_update", steps=[SimpleNamespace(tools=[workflow_email.SEND_TOOL])])
+    monkeypatch.setattr(dynamic_store, "get_definition", lambda name: existing)
+
+    async def build(definition: Any) -> tuple[Any, None]:
+        return incoming, None
+
+    monkeypatch.setattr(wat, "_build_def", build)
+    monkeypatch.setattr(wat, "_canonical_token", lambda definition: "tok")
+    monkeypatch.setattr(wat, "_approved_tool_workflow_error", lambda name, existing: None)
+    saved: list[Any] = []
+    monkeypatch.setattr(dynamic_store, "save_if_unchanged", lambda *a, **k: saved.append(a))
+
+    out = json.loads(asyncio.run(wat.handle_save_workflow(
+        {"definition": {"name": "weekly_update"}, "confirm_token": "tok", "overwrite": True},
+    )))
+
+    assert "can't be replaced from chat" in out["error"] and saved == []

@@ -318,12 +318,14 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     approved_error = _approved_tool_workflow_error(defn.name, existing)
     if approved_error is not None:
         return json.dumps({"error": approved_error})
-    if existing is not None and sends_as_creator(existing):
-        # Only its creator, verified, may change one (workflow_email.save_refusal),
-        # and chat can't verify anyone.
+    if existing is not None and (sends_as_creator(existing) or sends_as_creator(defn)):
+        # Only its creator, verified, may change one that sends
+        # (workflow_email.save_refusal), and chat can't verify anyone: nor
+        # may chat add a send to an existing one, which would send as its
+        # creator, not as whoever asked.
         base = get_settings().ui_base_url.rstrip("/")
         return json.dumps({"error": (
-            f"{defn.name!r} sends email as the person who created it, so it can't be "
+            f"{defn.name!r} would send email as the person who created it, so it can't be "
             "replaced from chat. Pick a different name, or tell the user to edit it at "
             f"{base}/jobs/new?edit={defn.name}"
         )})
