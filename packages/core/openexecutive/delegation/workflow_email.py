@@ -123,12 +123,13 @@ def as_creator(defn: Any) -> bool:
     return sends(defn) or reads(defn)
 
 
-def save_refusal(defn: Any, caller: Any, owner_id: int | None) -> str | None:
+def save_refusal(defn: Any, caller: Any, owner_id: int | None, *, check_tools: bool = True) -> str | None:
     """Why ``caller`` may not save or switch on ``defn`` with its creator
     ``owner_id``, or None. Only a workflow that sends as its creator or reads
     their mail is checked: then the caller must be that creator, and the API
     must know it (``verified.caller_refusal``), and one that reads must keep
-    to what a run may do after reading mail (``workflow_reads.definition_refusal``).
+    to what a run may do after reading mail (``workflow_reads.definition_refusal``,
+    skipped with ``check_tools`` False for the stored copy an edit replaces).
     Never raises; a lookup that fails refuses."""
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
@@ -138,7 +139,7 @@ def save_refusal(defn: Any, caller: Any, owner_id: int | None) -> str | None:
     if not as_creator(defn):
         return None
     try:
-        unsafe = definition_refusal(defn, owner_id)
+        unsafe = definition_refusal(defn, owner_id) if check_tools else None
     except Exception:
         logger.warning("workflow email: couldn't check what the workflow reads", exc_info=True)
         unsafe = "Couldn't check this workflow's tools just now. Try again."

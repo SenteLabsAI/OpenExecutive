@@ -217,6 +217,9 @@ def test_only_the_verified_creator_saves_one(people, monkeypatch: pytest.MonkeyP
     assert workflow_email.save_refusal(READING, object(), owner_id) is None
     outside = _defn(_step([SEARCH, "oe__web_search"]))
     assert "oe__web_search" in str(workflow_email.save_refusal(outside, object(), owner_id))
+    # The stored copy an edit replaces is checked for who, not what it lists,
+    # so an edit can take out a tool it may no longer use.
+    assert workflow_email.save_refusal(outside, object(), owner_id, check_tools=False) is None
 
 
 def test_chat_cannot_draft_one_that_reaches_outside(people, monkeypatch: pytest.MonkeyPatch) -> None:

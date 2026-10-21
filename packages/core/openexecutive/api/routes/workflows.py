@@ -289,13 +289,17 @@ def _with_owner(defn: DynamicWorkflowDef) -> dict[str, Any]:
     return {**defn.model_dump(), "owner_person_id": get_owner(defn.name)}
 
 
-def _refuse_unless_creator(defn: DynamicWorkflowDef, request: Request, owner_id: int | None) -> None:
+def _refuse_unless_creator(
+    defn: DynamicWorkflowDef, request: Request, owner_id: int | None, *, stored: bool = False,
+) -> None:
     """403 when ``defn`` sends email as its creator or reads their mail and
     the caller isn't that creator, verified, or it reads and does what a run
     may not after reading mail (``workflow_email.save_refusal``)."""
     from openexecutive.delegation.workflow_email import save_refusal
 
-    refused = save_refusal(defn, api_caller.caller(request), owner_id)
+    # The copy being replaced: only who may change it (an edit may be what
+    # takes out a tool it may no longer list).
+    refused = save_refusal(defn, api_caller.caller(request), owner_id, check_tools=not stored)
     if refused is not None:
         raise HTTPException(status_code=403, detail=refused)
 
@@ -358,7 +362,7 @@ async def update_custom_workflow(name: str, request: Request) -> dict[str, Any]:
     _refuse_unless_creator(defn, request, owner)
     current = get_definition(name)
     if current is not None:
-        _refuse_unless_creator(current, request, owner)
+        _refuse_unless_creator(current, request, owner, stored=True)
     stored = upsert_definition(defn)
     _sync_cadence(stored)
     return stored.model_dump()
@@ -453,7 +457,7 @@ async def save_designer_edit(name: str, request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail=errors)
         owner = get_owner(name)
         _refuse_unless_creator(defn, request, owner)
-        _refuse_unless_creator(original, request, owner)
+        _refuse_unless_creator(original, request, owner, stored=True)
         stored = save_if_unchanged(defn, original)
         if stored is None:
             raise HTTPException(

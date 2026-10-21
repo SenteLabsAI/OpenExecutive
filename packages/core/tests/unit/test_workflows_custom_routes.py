@@ -318,7 +318,7 @@ def creator_check(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     state: dict[str, Any] = {"ok": False, "owners": []}
 
-    def refusal(defn: Any, caller: Any, owner_id: int | None) -> str | None:
+    def refusal(defn: Any, caller: Any, owner_id: int | None, *, check_tools: bool = True) -> str | None:
         if not workflow_email.sends(defn):
             return None
         state["owners"].append(owner_id)
