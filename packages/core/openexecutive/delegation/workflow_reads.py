@@ -131,6 +131,29 @@ def owns_runs(workflow_name: str) -> int | None:
         return None
 
 
+def run_refusal(creator_id: int, runner_id: int | None, caller: Any) -> str | None:
+    """Why ``caller`` (on the roster as ``runner_id``) may not start, from the
+    API, a run of a workflow that reads ``creator_id``'s mail, or None: only
+    its creator, verified the way a save of it is (``verified.caller_refusal``).
+    Never raises; a lookup that fails refuses."""
+    from openexecutive.delegation.gmail import normalize_email
+    from openexecutive.delegation.verified import caller_refusal
+    from openexecutive.people.store import get_person
+
+    only_them = "This workflow reads its creator's email, so only they can run it."
+    if runner_id != creator_id:
+        return only_them
+    try:
+        creator = get_person(creator_id)
+        refused = caller_refusal(caller, normalize_email(creator.email)) if creator is not None else "no"
+    except Exception:
+        logger.warning("workflow reads: couldn't check who is running it", exc_info=True)
+        refused = "error"
+    if refused is None:
+        return None
+    return only_them + " Running it needs signed sign-ins on this server, so nobody else can in their name."
+
+
 def chat_run_refusal(workflow_name: str) -> str | None:
     """Before chat's ``run_workflow`` starts ``workflow_name``: None when it
     doesn't read its creator's mail. When it does, the person chatting must be

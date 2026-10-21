@@ -369,7 +369,18 @@ def test_only_its_creator_runs_a_workflow_that_reads_their_mail(
     r = client.post("/workflows/file_bills/runs", json={})
 
     assert r.status_code == 403 and "creator" in r.json()["detail"]
-    # Its creator gets past it (to whatever the run needs next).
+    # Its creator, only once the API knows it is them (as a save needs).
+    from types import SimpleNamespace
+
+    from openexecutive.delegation import verified
+
     monkeypatch.setattr("openexecutive.api.routes.workflows._caller_person_id", lambda request: 1)
+    monkeypatch.setattr(
+        "openexecutive.people.store.get_person", lambda pid: SimpleNamespace(email="olivia@co.example", is_principal=False, archived=False),
+    )
+    monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: verified.SIGNING_REQUIRED)
+    r = client.post("/workflows/file_bills/runs", json={})
+    assert r.status_code == 403 and "signed sign-ins" in r.json()["detail"]
+    monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: None)
     r = client.post("/workflows/file_bills/runs", json={})
     assert r.status_code != 403, r.text

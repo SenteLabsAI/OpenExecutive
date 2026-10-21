@@ -584,14 +584,15 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
         raise HTTPException(
             status_code=403, detail="Runs are kept for people on the People list."
         )
-    from openexecutive.delegation.workflow_reads import owns_runs
+    from openexecutive.delegation.workflow_reads import owns_runs, run_refusal
 
     reader = owns_runs(workflow.name)
-    if reader is not None and reader != owner_person_id:
-        raise HTTPException(
-            status_code=403,
-            detail="This workflow reads its creator's email, so only they can run it.",
-        )
+    if reader is not None:
+        # Its creator, verified as a save of it is: the stream carries what
+        # their mail said.
+        refused = run_refusal(reader, owner_person_id, api_caller.caller(request))
+        if refused is not None:
+            raise HTTPException(status_code=403, detail=refused)
     from openexecutive.orchestrator.artifact_records import (
         NOBODY,
         pinned_viewer,
