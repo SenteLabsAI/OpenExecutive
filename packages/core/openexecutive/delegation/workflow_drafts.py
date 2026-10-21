@@ -238,7 +238,11 @@ async def handle_draft_email_as_me(tool_input: dict[str, Any], *, mailbox: Any =
         return _error(f"At most {MAX_RECIPIENTS} recipients.")
 
     email = normalize_email(person.email)
-    client = mailbox if mailbox is not None else gmail_for(email)
+    try:
+        client = mailbox if mailbox is not None else gmail_for(email)
+    except Exception:
+        logger.warning("workflow draft: couldn't open the mailbox", exc_info=True)
+        return _error("Couldn't open their mailbox just now." + _FALL_BACK)
     status = await gmail_status(email, gmail=client)
     if status != "connected":
         return _error(STATUS_MESSAGES[status] + _FALL_BACK, status=status)
@@ -280,6 +284,10 @@ async def handle_draft_email_as_me(tool_input: dict[str, Any], *, mailbox: Any =
     except (GmailError, ComposeError):
         logger.warning("workflow draft: drafting failed", exc_info=True)
         return _error("Couldn't write the draft just now. Try again later.")
+    except Exception:
+        # The composer's model call and the voice/notes reads raise their own errors.
+        logger.warning("workflow draft: drafting failed unexpectedly", exc_info=True)
+        return _error("Couldn't write the draft just now. Try again later." + _FALL_BACK)
     finally:
         caps.release(person.id, saved=saved)
 
@@ -291,7 +299,11 @@ async def handle_draft_email_as_me(tool_input: dict[str, Any], *, mailbox: Any =
     except Exception:
         logger.warning("workflow draft: couldn't record the draft", exc_info=True)
     flags = list(composed.flags)
-    _audit(person.id, {"draft_id": draft.draft_id, "recipients": len(recipients), "flags": flags})
+    try:
+        _audit(person.id, {"draft_id": draft.draft_id, "recipients": len(recipients), "flags": flags})
+    except Exception:
+        # The draft is saved: an error here would only invite a second one.
+        logger.warning("workflow draft: couldn't audit the draft", exc_info=True)
     outside = [a for a in recipients if a not in roster]
     return json.dumps({
         "status": "drafted",

@@ -182,6 +182,34 @@ def test_bad_input_writes_nothing(people, composed, tool_input) -> None:
     assert mailbox.drafts == []
 
 
+def test_a_composer_failure_is_an_error_not_a_raise(people, monkeypatch: pytest.MonkeyPatch) -> None:
+    owner_id, _ = people
+    dsettings.set_enabled(owner_id, True, updated_by=OWNER)
+
+    async def boom(**kwargs: Any) -> gw.ComposedDraft:
+        raise TimeoutError
+
+    monkeypatch.setattr(gw, "compose", boom)
+    mailbox = FakeMailbox()
+
+    result = _run(owner_id, INPUT, mailbox)
+
+    assert "Executive's own email" in result["error"]
+    assert mailbox.drafts == [] and caps._IN_FLIGHT.get(owner_id, 0) == 0
+
+
+def test_a_failed_audit_still_reports_the_saved_draft(people, composed, monkeypatch: pytest.MonkeyPatch) -> None:
+    owner_id, _ = people
+    dsettings.set_enabled(owner_id, True, updated_by=OWNER)
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(workflow_drafts, "_audit", boom)
+
+    assert _run(owner_id, INPUT, FakeMailbox())["status"] == "drafted"
+
+
 def test_unrostered_address_is_named(people, composed) -> None:
     owner_id, _ = people
     dsettings.set_enabled(owner_id, True, updated_by=OWNER)
