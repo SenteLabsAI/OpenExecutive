@@ -397,11 +397,17 @@ def _email_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
 
     return {
         we.DRAFT_TOOL: (
-            ToolInfo(we.DRAFT_TOOL, we.DRAFT_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin"),
+            ToolInfo(
+                we.DRAFT_TOOL, we.DRAFT_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin",
+                timeout_s=we.TIMEOUT_S,
+            ),
             we.handle_draft_email_as_me,
         ),
         we.SEND_TOOL: (
-            ToolInfo(we.SEND_TOOL, we.SEND_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin"),
+            ToolInfo(
+                we.SEND_TOOL, we.SEND_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin",
+                timeout_s=we.TIMEOUT_S,
+            ),
             we.handle_send_email_as_me,
         ),
     }

@@ -411,3 +411,41 @@ def test_chat_cannot_replace_a_workflow_that_sends(people, monkeypatch: pytest.M
     )))
 
     assert "can't be replaced from chat" in out["error"] and saved == []
+
+
+def test_a_step_timeout_cannot_cut_a_send_short(on, composed) -> None:
+    # The step's wait_for cancels the call mid-send; the send still finishes,
+    # is recorded, and frees the send slot.
+    mailbox = FakeMailbox()
+    sending = asyncio.Event()
+    release = asyncio.Event()
+    plain_send = mailbox.send_draft
+
+    async def slow_send(draft_id: str) -> SentMessage:
+        sending.set()
+        await release.wait()
+        return await plain_send(draft_id)
+
+    mailbox.send_draft = slow_send  # type: ignore[method-assign]
+
+    async def go() -> None:
+        with chat_tools.in_workflow("wf", on):
+            call = asyncio.ensure_future(workflow_email.handle_send_email_as_me(INPUT, mailbox=mailbox))
+            await sending.wait()
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            release.set()
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+    asyncio.run(go())
+
+    assert mailbox.sent == ["d1"] and workflow_email._SENDING == {}
+    assert ddrafts.sent_message_ids(on) == {"sent1"}
+
+
+def test_email_tools_get_more_than_the_default_step_timeout() -> None:
+    tools = {t.name: t for t in tool_catalog.builtin_tools()}
+    for name in workflow_email.TOOLS:
+        assert (tools[name].timeout_s or 0) > action_step._TOOL_CALL_TIMEOUT_S

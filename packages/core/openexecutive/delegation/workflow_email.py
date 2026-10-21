@@ -37,6 +37,7 @@ Both write in the creator's voice (``ghostwriter.compose``, as chat's
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -46,6 +47,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The composer's model call plus the mailbox calls; longer than a step's
+# default so a slow composer doesn't cut a send short.
+TIMEOUT_S = 300.0
 DRAFT_TOOL = "oe__draft_email_as_me"
 SEND_TOOL = "oe__send_email_as_me"
 TOOLS = frozenset({DRAFT_TOOL, SEND_TOOL})
@@ -385,10 +389,26 @@ async def _write(ask: _Ask, *, sending: bool) -> str:
             )
     sent_id = ""
     if sending:
+
+        async def send_and_record() -> str:
+            try:
+                sent = await send_for_workflow(
+                    person, ask.client, draft_id=draft.draft_id, recipients=[*ask.to, *ask.cc],
+                )
+                if sent:
+                    try:
+                        drafts.mark_sent(person.id, draft.draft_id, sent)
+                    except Exception:
+                        logger.warning("workflow email: couldn't record the send", exc_info=True)
+                return sent
+            finally:
+                _send_done(person.id)
+
         try:
-            sent_id = await send_for_workflow(
-                person, ask.client, draft_id=draft.draft_id, recipients=[*ask.to, *ask.cc],
-            )
+            # Shielded: a step timeout must not cancel between the mailbox
+            # accepting the send and recording it, or the email goes while
+            # the step sees a plain timeout and may write it again.
+            sent_id = await asyncio.shield(asyncio.ensure_future(send_and_record()))
         except SendRefused as exc:
             _safe_audit(person.id, "delegation_workflow_send_refused", f"A workflow email as person {person.id} wasn't sent", {
                 "draft_id": draft.draft_id, "code": exc.code,
@@ -401,13 +421,6 @@ async def _write(ask: _Ask, *, sending: bool) -> str:
             return _error(
                 f"The email wasn't sent: {exc.message} It is waiting in their Drafts; say so in your report."
             )
-        finally:
-            _send_done(person.id)
-        if sent_id:
-            try:
-                drafts.mark_sent(person.id, draft.draft_id, sent_id)
-            except Exception:
-                logger.warning("workflow email: couldn't record the send", exc_info=True)
 
     details = {"draft_id": draft.draft_id, "recipients": len(recipients), "flags": list(composed.flags)}
     if sending:
