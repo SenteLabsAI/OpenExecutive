@@ -1136,19 +1136,25 @@ async def answer_thread(person: Any, client: Any, thread_id: str, *, now: dateti
 
     if person.id in _SCANNING:
         return "busy"
-    email = (person.email or "").strip().lower()
-    own = {email, *(a.strip().lower() for a in await client.send_as_addresses())}
-    exec_address = (get_settings().exec_email_address or "").strip().lower()
-    if len(open_cards(person.id)) >= OPEN_CARDS_MAX:
-        return "backlog_full"
-    thread = await client.get_thread(thread_id)
-    shown = [m for m in thread.messages if "DRAFT" not in m.labels]
-    if not shown or shown[-1].from_addr in own:
-        return "theirs_last"
-    result = ScanResult("ok")
-    # Only staleness bounds it: the step named this thread, whenever the
-    # watcher started watching (if it does at all).
-    await _consider(person, client, shown[-1].id, thread.id, own, exec_address, now - STALE, now, result)
+    # Taken like a scan: the daily and per-thread counts Handle it for me
+    # checks are check-then-act, so one person's answers go one at a time.
+    _SCANNING.add(person.id)
+    try:
+        email = (person.email or "").strip().lower()
+        own = {email, *(a.strip().lower() for a in await client.send_as_addresses())}
+        exec_address = (get_settings().exec_email_address or "").strip().lower()
+        if len(open_cards(person.id)) >= OPEN_CARDS_MAX:
+            return "backlog_full"
+        thread = await client.get_thread(thread_id)
+        shown = [m for m in thread.messages if "DRAFT" not in m.labels]
+        if not shown or shown[-1].from_addr in own:
+            return "theirs_last"
+        result = ScanResult("ok")
+        # Only staleness bounds it: the step named this thread, whenever the
+        # watcher started watching (if it does at all).
+        await _consider(person, client, shown[-1].id, thread.id, own, exec_address, now - STALE, now, result)
+    finally:
+        _SCANNING.discard(person.id)
     if result.handled:
         return "sent"
     if result.drafted:

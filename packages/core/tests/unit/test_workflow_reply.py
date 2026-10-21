@@ -139,3 +139,17 @@ def test_naming_a_thread_is_no_write_target() -> None:
 
     # The recipients come from the thread itself, so nothing is held to ask.
     assert action_step.resource_targets({"thread_id": "18c2f0a9b7"}) == ([], True)
+
+
+def test_one_answer_at_a_time_per_person(owner: Any, models: dict[str, Any]) -> None:
+    handle_it.set_(owner.id, enabled=True, mode=None, updated_by="test")
+    mailbox = _mailbox(_msg("m1", "t1"), _msg("m2", "t2", minutes_ago=40))
+
+    async def both() -> list[str]:
+        return list(await asyncio.gather(
+            inbox.answer_thread(owner, mailbox, "t1", now=NOW),
+            inbox.answer_thread(owner, mailbox, "t2", now=NOW),
+        ))
+
+    assert sorted(asyncio.run(both())) == ["busy", "sent"]
+    assert owner.id not in inbox._SCANNING
