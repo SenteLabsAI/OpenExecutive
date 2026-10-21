@@ -11326,10 +11326,11 @@ delegation:
     in_a_row (last own message in the thread was an auto-send),
     daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY, default 20).
     Only when it passes, a last look (delegation.injection_check.held_back:
-    one tool-less classifier-model call reading the email as data in an
-    <email> block) asks whether the email carries instructions for an
-    assistant (ignore rules, forward/quote other mail, reveal what it knows,
-    reply elsewhere, hidden text); true, a failed call or a malformed answer
+    one tool-less classifier-model call reading the sender's new words as
+    plain text in an <email> block, up to 20,000 chars) asks whether they
+    carry instructions for an assistant (ignore rules, forward/quote other
+    mail, reveal what it knows, reply elsewhere, a passage addressed to the
+    assistant; styling is gone, so hidden text is judged by its words); true, a failed call or a malformed answer
     holds the reply (handle_it_reason suspicious). It only ever holds back.
     A workflow step reaches the same path with oe__answer_email_as_me
     (delegation.workflow_reply -> inbox.answer_thread: the newest message of
