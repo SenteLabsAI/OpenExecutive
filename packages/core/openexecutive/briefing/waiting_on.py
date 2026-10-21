@@ -171,8 +171,22 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
 
 
 def cached() -> list[Waiting] | None:
-    """The last read, or None (none yet, or too old). Never calls out."""
+    """The last read, or None (none yet, too old, or Act as me no longer
+    allowed and on for the principal: checked on every call, so a switch
+    turned off by any path stops it at once). Never calls out."""
     if _cache is None or time.monotonic() - _cache[0] > _HARD_MAX_AGE_SECONDS:
+        return None
+    try:
+        from openexecutive.delegation import settings as delegation_settings
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+        if principal is None or not (
+            delegation_settings.can_delegate(principal) and delegation_settings.is_enabled(principal.id)
+        ):
+            return None
+    except Exception:
+        logger.exception("waiting_on: checking Act as me failed")
         return None
     return _cache[1]
 

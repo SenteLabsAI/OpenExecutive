@@ -45,9 +45,19 @@ class _Mailbox:
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("EXEC_EMAIL_ADDRESS", "exec@braden.test")
+    _act_as_me(monkeypatch, on=True)
     waiting_on.reset_cache()
     yield
     waiting_on.reset_cache()
+
+
+def _act_as_me(monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
+    from openexecutive.delegation import settings as delegation_settings
+    from openexecutive.people import store
+
+    monkeypatch.setattr(store, "find_principal_person", lambda: SimpleNamespace(id=1, email=ME, email_aliases=[]))
+    monkeypatch.setattr(delegation_settings, "can_delegate", lambda p: True)
+    monkeypatch.setattr(delegation_settings, "is_enabled", lambda pid: on)
 
 
 def _use(monkeypatch: pytest.MonkeyPatch, mailbox: Any) -> None:
@@ -172,3 +182,14 @@ def test_turning_act_as_me_off_forgets_the_read(tmp_path: Any) -> None:
     waiting_on._cache = (0.0, [])
     delegation_settings.set_enabled(1, False, updated_by="test", db_path=tmp_path / "s.db")
     assert waiting_on._cache is None
+
+
+async def test_a_cached_read_stops_once_act_as_me_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+        return [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
+
+    monkeypatch.setattr(waiting_on, "read_waiting", _read)
+    await waiting_on.refresh()
+    assert waiting_on.cached()
+    _act_as_me(monkeypatch, on=False)  # turned off without going through set_enabled
+    assert waiting_on.cached() is None
