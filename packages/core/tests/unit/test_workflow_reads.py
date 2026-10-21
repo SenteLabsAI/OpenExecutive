@@ -42,6 +42,9 @@ READING = _defn(_step([SEARCH, "oe__message_person"]))
 
 @pytest.fixture(autouse=True)
 def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    # Import what the tools reach before DB_PATH is patched: modules that bind
+    # it at import (approved_targets, ...) would keep this test's path.
+    tool_catalog.builtin_tools()
     path = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", path)
     monkeypatch.setattr(people_store, "DB_PATH", path)
@@ -300,3 +303,24 @@ def test_a_scheduled_run_is_the_creators_and_reports_to_them(people, monkeypatch
     assert seen == {"owner_person_id": owner_id, "run_owner": owner_id}
     # Delivered to them alone, privately: no row on the shared activity rail.
     assert [(d["person_id"], d["private"], d["rows_owner"]) for d in dms] == [(owner_id, True, owner_id)]
+
+
+def test_a_resumed_run_stays_private(people, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.audit.context import rows_owner, rows_private
+    from openexecutive.workflows import resumer
+
+    owner_id, _ = people
+    seen: list[tuple[bool, int | None, int | None]] = []
+
+    async def drive(row: Any, claim: str, db_path: Any = None) -> bool:
+        seen.append((rows_private(), rows_owner(), turn_owner()))
+        return True
+
+    monkeypatch.setattr(resumer, "_drive_resume", drive)
+    monkeypatch.setattr(
+        resumer._wf_persistence, "get_run",
+        lambda run_id, db_path=None: {"owner_person_id": owner_id, "workflow_name": "inbox_digest"},
+    )
+
+    assert asyncio.run(resumer._execute_resume({"run_id": "r1"}, "c1")) is True
+    assert seen == [(True, owner_id, owner_id)]

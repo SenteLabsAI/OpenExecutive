@@ -369,3 +369,7 @@ def test_only_its_creator_runs_a_workflow_that_reads_their_mail(
     r = client.post("/workflows/file_bills/runs", json={})
 
     assert r.status_code == 403 and "creator" in r.json()["detail"]
+    # Its creator gets past it (to whatever the run needs next).
+    monkeypatch.setattr("openexecutive.api.routes.workflows._caller_person_id", lambda request: 1)
+    r = client.post("/workflows/file_bills/runs", json={})
+    assert r.status_code != 403, r.text
