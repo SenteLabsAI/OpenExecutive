@@ -412,6 +412,15 @@ export interface OnboardDepartmentDraft {
   authority_level: string;
 }
 
+/** One of this year's goals. owner_name is a drafted person's name (blank =
+ * the owner of the workspace); department_title names a drafted department. */
+export interface OnboardGoalDraft {
+  title: string;
+  target: string;
+  owner_name: string;
+  department_title: string;
+}
+
 export interface OnboardTurn {
   session_id: string;
   phase: "question" | "draft";
@@ -419,9 +428,12 @@ export interface OnboardTurn {
   max_questions: number;
   question: string | null;
   question_hint: string | null;
+  /** Suggested answers, shown as buttons to tap. */
+  question_options: string[];
   draft: CompanyProfile | null;
   draft_people: OnboardPersonDraft[];
   draft_departments: OnboardDepartmentDraft[];
+  draft_goals: OnboardGoalDraft[];
   confidence_notes: string[];
   summary: string | null;
 }
@@ -459,7 +471,7 @@ export async function startOnboardInterview(
 }
 
 // What the first free-text description already says. Every field is null when
-// the text does not say; the confirm step asks for those.
+// the text does not say; the interview asks for what matters.
 export interface OnboardUnderstanding {
   mode: WorkspaceMode | null;
   role_kind: RoleKind | null;
@@ -539,6 +551,7 @@ export async function commitOnboardDraft(
   profile: CompanyProfile,
   people: OnboardPersonDraft[],
   departments: OnboardDepartmentDraft[],
+  goals: OnboardGoalDraft[],
   /** The principal's sign-in email, confirmed on the review screen. Blank = don't set one. */
   ownerEmail = ""
 ): Promise<CompanyProfile> {
@@ -550,6 +563,7 @@ export async function commitOnboardDraft(
       profile,
       people,
       departments,
+      goals,
       owner_email: ownerEmail.trim() || null,
     }),
   });

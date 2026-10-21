@@ -704,9 +704,8 @@ providers:
   executive_voices: |
     The Executive's voice persona (personas/builtin/*.md, shadowed by
     voice_personas rows) is substituted into block 0 at {VOICE_PERSONA}.
-    Three general voices are offered by the shared VoicePicker in setup
-    (/onboard, after the workspace choice and solo role step) and Settings ->
-    Executive, saving voice_persona_slug through PATCH /agents/executive:
+    Three general voices are offered by the VoicePicker in Settings ->
+    Executive (setup no longer asks; it ends on Home), saving voice_persona_slug through PATCH /agents/executive:
     Direct (slug ``default``, stored as no override), Supportive and
     Analytical. Frontmatter ``description`` / ``sample`` feed the picker;
     ``legacy: true`` marks the named-executive voices, hidden from the picker
@@ -9716,9 +9715,17 @@ company_onboarding:
   module: openexecutive.onboarding (interview.py, commit.py, wizard.py) + api.routes.onboarding
   intent: |
     First-run company setup. The user describes their business in their own
-    words (optionally attaching a deck, one-pager or brief); an LLM asks
-    clarifying questions, then drafts a company profile, a leadership roster
-    and a department list that the user reviews, edits inline, and saves.
+    words (optionally attaching a deck, one-pager or brief); an LLM asks at
+    most four quick questions, each with two to four suggested answers to tap
+    (Question.options, MAX_OPTIONS), never about departments or finances, then
+    drafts a company profile, the people, this year's goals with owners
+    (GoalDraft) and departments only when the user's words already listed
+    people by department. The user reviews, edits inline, and saves.
+    Personal or Team is never asked: understand.py reads it (Team when the
+    text names colleagues at the user's company, Personal when only the user
+    or outsiders are named, Personal when unclear) and the UI saves it before
+    the interview; the review shows it on one line with a Change link. Save
+    goes to Home; there is no done screen or voice step in setup.
     Deliberately shaped like the /demo and /clients/generate draft-then-review
     flows rather than like a form.
   api: |
@@ -9752,7 +9759,8 @@ company_onboarding:
     tool partway through a conversation invalidates the cached tool prefix on
     every subsequent turn (the same invariant orchestrator/form_tools.py
     documents). tool_choice flips to the forced emit tool exactly once, on the
-    turn where the question budget (8) or the transcript ceiling (120k chars)
+    turn where the question budget (MAX_QUESTIONS, 4) or the transcript
+    ceiling (MAX_TRANSCRIPT_CHARS)
     is reached, or when the user clicks "draft it now". That single call misses
     the tools cache; one miss per setup session is the accepted price of a
     bounded interview. Do NOT "fix" it by making the tools conditional.
@@ -9766,7 +9774,10 @@ company_onboarding:
     Two stages, mirroring fixtures.generator: Pydantic model_validate, then
     interview.validate_draft for referential integrity — exactly one
     is_principal, unique person names, every department head_person_name
-    matching a person (or empty), distinct department titles. A failure of
+    matching a person (or empty), distinct department titles, and every goal
+    named, within MAX_GOALS / MAX_GOAL_CHARS, its owner_name a drafted person
+    (or empty) and its department_title a drafted department (or empty).
+    The commit re-runs the same check on the body. A failure of
     either feeds the errors back as a follow-up user turn and retries ONCE
     with the emit tool forced.
   error_contract: |
@@ -9811,8 +9822,13 @@ company_onboarding:
     (commit.check_owner_email), (2) reject an empty name,
     (3) profile.save_to_yaml (write-then-rename, O_EXCL, fsync), (4) mark the
     session saved, (5) seed people, then link the owner email to the
-    principal (best-effort), (6) reconcile departments, (7) fire the
-    post-onboarding research workflow. A failure at 1-3 leaves the session
+    principal (best-effort), (6) reconcile departments, then save the goals
+    (commit.save_onboarding_goals: period "year", no department unless one
+    drafted is named, owner the named person else explicitly the principal,
+    skipping any worded like an existing goal so a re-run adds none; their
+    titles also become strategic_priorities.current_year in step 3's
+    profile via derive_org_structure), (7) fire the post-onboarding research
+    workflow. A failure at 1-3 leaves the session
     untouched, so the user edits the draft and retries. This replaces the
     deepcopy-snapshot rollback the wizard needs (process_answer mutates state
     before the build can fail). A second commit returns 409, preserving the

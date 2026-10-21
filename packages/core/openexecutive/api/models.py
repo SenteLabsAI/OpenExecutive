@@ -517,6 +517,19 @@ class OnboardDepartmentDraft(BaseModel):
     authority_level: str = "propose_only"
 
 
+class OnboardGoalDraft(BaseModel):
+    """One of this year's goals: saved with an owner (a drafted person's
+    name, empty = the owner of the workspace) and, when departments were
+    drafted, optionally inside one."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+    target: str = ""
+    owner_name: str = ""
+    department_title: str = ""
+
+
 class OnboardTranscriptTurn(BaseModel):
     role: str
     text: str
@@ -530,9 +543,12 @@ class OnboardTurnResponse(BaseModel):
     max_questions: int
     question: str | None = None
     question_hint: str | None = None
+    # Suggested answers to the question, shown as buttons to tap.
+    question_options: list[str] = Field(default_factory=list)
     draft: CompanyProfileResponse | None = None
     draft_people: list[OnboardPersonDraft] = Field(default_factory=list)
     draft_departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+    draft_goals: list[OnboardGoalDraft] = Field(default_factory=list)
     confidence_notes: list[str] = Field(default_factory=list)
     summary: str | None = None
 
@@ -549,6 +565,7 @@ class OnboardCommitRequest(BaseModel):
     profile: CompanyProfileUpdateRequest
     people: list[OnboardPersonDraft] = Field(default_factory=list)
     departments: list[OnboardDepartmentDraft] = Field(default_factory=list)
+    goals: list[OnboardGoalDraft] = Field(default_factory=list)
     # The principal's sign-in email, confirmed by the user on the review
     # screen (pre-filled from their own login). The one contact detail setup
     # saves: without it the signed-in owner matches no Person, so their chat

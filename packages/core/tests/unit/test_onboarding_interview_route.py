@@ -110,10 +110,16 @@ def client(
         "openexecutive.onboarding.commit.reconcile_onboarding_departments",
         lambda d, ids: {"updated": 0, "created": 0},
     )
+    saved_goals: list[Any] = []
+    monkeypatch.setattr(
+        "openexecutive.onboarding.commit.save_onboarding_goals",
+        lambda goals, ids, principal_id: saved_goals.append((goals, principal_id)) or len(goals),
+    )
     app = FastAPI()
     app.include_router(route.router)
     c = TestClient(app)
     c.fired = fired  # type: ignore[attr-defined]
+    c.saved_goals = saved_goals  # type: ignore[attr-defined]
     return c
 
 
@@ -1491,3 +1497,62 @@ def test_a_failed_revise_never_rolls_back_a_turn_added_meanwhile(
     assert resp.status_code == 502
     assert held.transcript[-1].text == "added meanwhile"
     assert held.transcript[0].text == "We are Northwind."
+
+
+# ── quick questions and goals ────────────────────────────────────────────────
+
+
+def test_a_question_comes_back_with_its_suggested_answers(
+    client: TestClient, seeded: list[Any]
+) -> None:
+    seeded.append(iv.Question(question="Who is it for?", options=["Small teams", "Enterprises"]))
+    resp = client.post("/onboard/interview/start", data={"description": "We sell tools."})
+    assert resp.json()["question_options"] == ["Small teams", "Enterprises"]
+    sid = resp.json()["session_id"]
+    # Kept across a refresh, and gone once a draft replaces the question.
+    assert client.get(f"/onboard/interview/{sid}").json()["question_options"] == [
+        "Small teams",
+        "Enterprises",
+    ]
+    seeded.append(_draft())
+    drafted = client.post("/onboard/interview/message", json={"session_id": sid, "message": "Small teams"})
+    assert drafted.json()["question_options"] == []
+
+
+def test_a_draft_shows_its_goals(client: TestClient, seeded: list[Any]) -> None:
+    seeded.append(_draft(goals=[{"title": "Launch same-day delivery", "owner_name": "Sam Okafor"}]))
+    resp = client.post("/onboard/interview/start", data={"description": "We sell tools."})
+    assert resp.json()["draft_goals"] == [
+        {
+            "title": "Launch same-day delivery",
+            "target": "",
+            "owner_name": "Sam Okafor",
+            "department_title": "",
+        }
+    ]
+
+
+def test_commit_saves_the_goals(client: TestClient, seeded: list[Any], profile_path: Path) -> None:
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["goals"] = [{"title": "Launch same-day delivery"}, {"title": "Cut returns"}]
+    assert client.post("/onboard/interview/commit", json=body).status_code == 200
+    ((goals, _principal),) = client.saved_goals  # type: ignore[attr-defined]
+    assert [g.title for g in goals] == ["Launch same-day delivery", "Cut returns"]
+    saved = CompanyProfile.load_from_yaml(profile_path)
+    assert saved.strategic_priorities.current_year == ["Launch same-day delivery", "Cut returns"]
+
+
+def test_commit_rejects_a_goal_owned_by_a_stranger_without_echoing(
+    client: TestClient, seeded: list[Any], profile_path: Path
+) -> None:
+    seeded.append(_draft())
+    sid = _start(client)
+    body = _commit_body(sid)
+    body["goals"] = [{"title": "Launch", "owner_name": "Zed Secretname"}]
+    resp = client.post("/onboard/interview/commit", json=body)
+    assert resp.status_code == 422
+    assert "Secretname" not in resp.text
+    assert not profile_path.exists()
+    assert client.saved_goals == []  # type: ignore[attr-defined]

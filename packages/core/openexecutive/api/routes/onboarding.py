@@ -24,6 +24,7 @@ from openexecutive.api.models import (
     OnboardAnswerRequest,
     OnboardCommitRequest,
     OnboardDepartmentDraft,
+    OnboardGoalDraft,
     OnboardMessageRequest,
     OnboardPersonDraft,
     OnboardReviseRequest,
@@ -294,6 +295,8 @@ class InterviewSession:
     # Hint for the LATEST question only. Lives on the session (not a side
     # dict) so it is swept with everything else and cannot leak.
     last_hint: str = ""
+    # Suggested answers for the LATEST question only, like last_hint.
+    last_options: list[str] = field(default_factory=list)
     saved: bool = False
     last_touched: float = field(default_factory=time.monotonic)
     # Wall-clock time of the stored copy this one matches (interview_store).
@@ -386,6 +389,7 @@ def _turn_response(session_id: str, session: InterviewSession) -> OnboardTurnRes
                 )
                 for dep in d.departments
             ],
+            draft_goals=[OnboardGoalDraft(**g.model_dump()) for g in d.goals],
             confidence_notes=list(d.confidence_notes),
             summary=d.summary,
         )
@@ -401,6 +405,7 @@ def _turn_response(session_id: str, session: InterviewSession) -> OnboardTurnRes
         max_questions=MAX_QUESTIONS,
         question=question or OPENING_PROMPT,
         question_hint=session.last_hint or None,
+        question_options=list(session.last_options),
     )
 
 
@@ -435,6 +440,7 @@ async def _advance_interview(
     if isinstance(result, CompanyDraft):
         session.draft = result
         session.last_hint = ""
+        session.last_options = []
         # Record the draft as an assistant turn. Without it the transcript ends
         # on a user turn, and the next message would make two user turns in a
         # row — which the Messages API rejects, bricking the session.
@@ -452,6 +458,7 @@ async def _advance_interview(
         session.transcript.append(Turn(role="assistant", text=result.question))
         session.questions_asked += 1
         session.last_hint = result.hint
+        session.last_options = list(result.options)
     _persist_interview(session_id, session)
     return _turn_response(session_id, session)
 
@@ -638,12 +645,14 @@ async def interview_revise(body: OnboardReviseRequest, request: Request) -> Onbo
         questions_asked=sum(1 for t in kept if t.role == "assistant"),
         draft=None,
         last_hint="",
+        last_options=[],
     )
     response = await _advance_interview(body.session_id, trial)
     session.transcript = trial.transcript
     session.questions_asked = trial.questions_asked
     session.draft = trial.draft
     session.last_hint = trial.last_hint
+    session.last_options = trial.last_options
     session.stored_at = trial.stored_at
     if session.discarded:
         # Start over landed while this turn was running: don't keep it.
@@ -708,9 +717,10 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
         owner_change_blocked,
         owner_email_blocked,
         reconcile_onboarding_departments,
+        save_onboarding_goals,
         save_onboarding_people,
     )
-    from openexecutive.onboarding.interview import DepartmentDraft, PersonDraft
+    from openexecutive.onboarding.interview import DepartmentDraft, GoalDraft, PersonDraft
 
     session = _get_interview(body.session_id, request)
     if session.saved:
@@ -736,6 +746,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     try:
         people = [PersonDraft(**p.model_dump()) for p in body.people]
         departments = [DepartmentDraft(**d.model_dump()) for d in body.departments]
+        goals = [GoalDraft(**g.model_dump()) for g in body.goals]
         merged = CompanyProfile().model_copy(update=update_data)
         profile = CompanyProfile.model_validate(merged.model_dump())
     except Exception as exc:
@@ -757,7 +768,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     # all — find_principal_person() then returns None and caller resolution,
     # alert routing and the scheduler's brief have nobody to target.
     errors = validate_draft(
-        CompanyDraft(profile=profile, people=people, departments=departments)
+        CompanyDraft(profile=profile, people=people, departments=departments, goals=goals)
     )
     if errors:
         # .safe, never .detail — the detailed rendering quotes the rejected
@@ -814,7 +825,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
             ),
         )
 
-    profile = derive_org_structure(profile, people, departments)
+    profile = derive_org_structure(profile, people, departments, goals)
 
     # 2. is_empty() keys off the name — a nameless profile is invisible to
     #    every consumer, including the health check that gates onboarding.
@@ -847,6 +858,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     if owner_email and principal_id is not None:
         link_owner_email(principal_id, owner_email)
     reconcile_onboarding_departments(departments, person_ids)
+    save_onboarding_goals(goals, person_ids, principal_id)
 
     # 7. Same post-onboarding research fire the wizard does, same dedup set.
     if body.session_id not in _onboarding_research_fired:

@@ -3,12 +3,13 @@
 Setup now starts with the free-text box. Before the interview begins, this one
 model call reads that text (and any attached files, already extracted to text)
 and reports what it can already tell: personal or team, the user's role, who
-they report to, the company and this year's focus. The UI shows it for
-confirmation and the interview then asks only about what is missing.
+they report to, the company and this year's focus. Nobody is asked "who is
+this for?": the UI saves the mode read here (Personal when it is unclear) and
+the role through PUT /workspace, and the review screen offers a Change link.
 
 Same epistemics as the interviewer: extract, never invent. Anything the text
-does not say comes back null and the UI asks for it. Nothing here writes
-anything; the UI saves the confirmed values through PUT /workspace.
+does not say comes back null, and the interview asks for what matters. Nothing
+here writes anything.
 """
 from __future__ import annotations
 
@@ -41,10 +42,10 @@ SYSTEM = (
     f"{TOOL_NAME} exactly once.\n\n"
     "Rules:\n"
     "- Extract, never invent. A field the text does not state is null.\n"
-    "- mode: 'solo' when the user is setting this up for their own work "
-    "(an individual, a manager, an advisor, a founder describing themselves); "
-    "'team' when they describe setting it up for a whole company with "
-    "several people or departments. null when unclear.\n"
+    "- mode: 'team' when the text names colleagues at the user's own company "
+    "(people with roles there, a team or a department list). 'solo' when it "
+    "is only the user, or the only people named are outside their team (a "
+    "boss they report to, clients, partners, advisors). null when unclear.\n"
     "- role_kind: 'owner' (their own business), 'in_house' (leads a function "
     "or team in an organisation they do not own), 'independent' (advises or "
     "leads for clients), 'other', or null.\n"
