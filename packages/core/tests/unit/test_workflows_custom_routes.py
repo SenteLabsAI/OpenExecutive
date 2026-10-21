@@ -270,7 +270,7 @@ def test_tool_search_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert client.get("/workflows/tools/search").json() == {"tools": []}
     tools = client.get("/workflows/tools/search", params={"q": "read a file"}).json()["tools"]
     assert tools[0] == {
-        "name": "oe__read_file",
+        "name": "oe__read_document",
         "description": tools[0]["description"],
         "read_only": True,
         "source": "builtin",

@@ -69,7 +69,7 @@ DEFINITION_SCHEMA: dict[str, Any] = {
                 "advisor; playbook = name of an existing playbook the step follows), "
                 "'action' {id,title,goal,tools,max_tool_calls?} (gets something done with "
                 "tools — 'tools' is the exact list of tool names the step may call, e.g. "
-                "'google_workspace__append_table_rows' or 'oe__read_file'. The tools you "
+                "'google_workspace__append_table_rows' or 'oe__read_document'. The tools you "
                 "use in chat are available to steps as 'oe__<name>', e.g. "
                 "'oe__send_slack_dm', 'oe__web_search' or 'oe__run_workflow'; max_tool_calls "
                 "is optional — omit it for the default budget), "

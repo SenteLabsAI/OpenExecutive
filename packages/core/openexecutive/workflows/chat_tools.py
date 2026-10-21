@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import dataclasses
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterator
@@ -146,6 +147,10 @@ ACCESS: dict[str, tuple[str, str]] = {
 }
 
 # Calls that run a whole job: longer than action_step's default timeout.
+# Workflow tool names saved workflows may still list, and the chat tool each
+# now runs. Not offered for new steps.
+LEGACY_NAMES: dict[str, str] = {"oe__read_file": "read_document"}
+
 TIMEOUT_S: dict[str, float] = {"run_workflow": 900.0, "run_executive_research": 900.0}
 MAX_DEPTH = 3
 
@@ -300,19 +305,36 @@ async def run_chat_tool(name: str, tool_input: dict[str, Any]) -> str:
         current_session.reset(token)
 
 
-def workflow_specs() -> dict[str, tuple[Any, Callable[[dict[str, Any]], Awaitable[str]]]]:
-    """``{oe__name: (ToolInfo, handler)}`` for every ``USE`` chat tool this
-    instance offers (channels it has no token for left out)."""
+def _usable_definitions() -> list[dict[str, Any]]:
+    definitions = chat_tool_definitions()
+    return [definitions[n] for n, (lbl, _) in ACCESS.items() if lbl == USE and n in definitions]
+
+
+def not_offered() -> set[str]:
+    """Workflow tool names that resolve but aren't shown for new steps: the
+    old names, and channel tools this instance has no token for (a call
+    would only error)."""
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.schedule_tools import filter_tools_for_configured_channels
-    from openexecutive.workflows.tool_catalog import ToolInfo, read_only_label
 
-    definitions = chat_tool_definitions()
-    usable = [definitions[n] for n, (lbl, _) in ACCESS.items() if lbl == USE and n in definitions]
+    usable = _usable_definitions()
     try:
-        usable = filter_tools_for_configured_channels(usable, get_settings())
+        kept = {t["name"] for t in filter_tools_for_configured_channels(usable, get_settings())}
     except Exception:
         logger.warning("workflow chat tools: couldn't read the configured channels", exc_info=True)
+        kept = {t["name"] for t in usable}
+    dropped = {workflow_name_for(str(t["name"])) for t in usable if t["name"] not in kept}
+    return set(LEGACY_NAMES) | dropped
+
+
+def workflow_specs() -> dict[str, tuple[Any, Callable[[dict[str, Any]], Awaitable[str]]]]:
+    """``{oe__name: (ToolInfo, handler)}`` for every ``USE`` chat tool, plus
+    the old names in ``LEGACY_NAMES``. All of them resolve, so a saved
+    workflow keeps validating; ``not_offered`` says which to leave out of
+    what new steps are shown."""
+    from openexecutive.workflows.tool_catalog import ToolInfo, read_only_label
+
+    usable = _usable_definitions()
     specs: dict[str, tuple[Any, Callable[[dict[str, Any]], Awaitable[str]]]] = {}
     for tool in usable:
         chat_name = str(tool["name"])
@@ -332,6 +354,10 @@ def workflow_specs() -> dict[str, tuple[Any, Callable[[dict[str, Any]], Awaitabl
             ),
             run,
         )
+    for legacy, chat_name in LEGACY_NAMES.items():
+        if workflow_name_for(chat_name) in specs:
+            info, handler = specs[workflow_name_for(chat_name)]
+            specs[legacy] = (dataclasses.replace(info, name=legacy), handler)
     from openexecutive.orchestrator.web_search_tool import build_web_search_tool
 
     if build_web_search_tool() is not None:

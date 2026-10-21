@@ -492,7 +492,7 @@ def test_a_workflow_tool_joins_the_step_catalog_under_the_built_in_prefix() -> N
     assert names["oe__read_widgets"].read_only is True and names["oe__read_widgets"].source == "builtin"
     # Not saying it only reads means it may change something.
     assert names["oe__make_widget"].read_only is None
-    assert "oe__chat_only" not in names and "oe__read_file" in names
+    assert "oe__chat_only" not in names and "oe__read_document" in names
     found = asyncio.run(tool_catalog.resolve(["oe__read_widgets", "oe__chat_only"]))
     assert set(found) == {"oe__read_widgets"}
     handler_for = tool_catalog.builtin_handler("oe__read_widgets")
@@ -506,8 +506,11 @@ def test_a_workflow_tool_joins_the_step_catalog_under_the_built_in_prefix() -> N
 def test_a_workflow_tool_cannot_shadow_a_built_in_step_tool() -> None:
     from openexecutive.workflows import tool_catalog
 
-    extensions.register_tool(_tool("read_file", workflow=True))
-    info = {t.name: t for t in tool_catalog.builtin_tools()}["oe__read_file"]
+    # Every built-in step tool is a chat tool, whose name an extension can't
+    # take; and should one get through, the chat's tool wins the clash.
+    with pytest.raises(ExtensionError, match="already taken"):
+        extensions.register_tool(_tool("read_document", workflow=True))
+    info = {t.name: t for t in tool_catalog.builtin_tools()}["oe__read_document"]
     assert "PDF" in info.description
 
 

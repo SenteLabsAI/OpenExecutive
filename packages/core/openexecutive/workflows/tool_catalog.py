@@ -355,89 +355,6 @@ def resolve_readable_file(
     return resolved
 
 
-async def _read_file(tool_input: dict[str, Any]) -> str:
-    """Extract text from a file a previous tool call downloaded.
-
-    A scanned PDF is converted (``knowledge.pdf_reader``) rather than
-    reported as unreadable.
-    """
-    from openexecutive.knowledge.loader import read_document_text
-
-    resolved = resolve_readable_file(str(tool_input.get("path") or "").strip())
-    if isinstance(resolved, str):
-        return _err(resolved)
-    try:
-        result = await read_document_text(resolved)
-    except Exception as exc:
-        logger.warning("oe__read_file: extraction failed (%s)", type(exc).__name__)
-        return _err("could not read that file")
-    if not result.text.strip():
-        return _err(result.note or "no text could be extracted")
-    text = result.text
-    cap = get_settings().tool_result_max_chars
-    return text if len(text) <= cap else text[:cap] + "\n…[truncated]"
-
-
-async def _message_person(tool_input: dict[str, Any]) -> str:
-    from openexecutive.orchestrator.schedule_tools import handle_message_person
-
-    return await handle_message_person(tool_input)
-
-
-async def _create_alert(tool_input: dict[str, Any]) -> str:
-    from openexecutive.orchestrator.alert_tools import handle_create_alert
-
-    return await handle_create_alert(tool_input)
-
-
-def _builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
-    from openexecutive.orchestrator.alert_tools import CREATE_ALERT_TOOL
-    from openexecutive.orchestrator.schedule_tools import MESSAGE_PERSON_TOOL
-
-    return {
-        "oe__read_file": (
-            ToolInfo(
-                name="oe__read_file",
-                description=(
-                    "Read the text of a PDF, Word, Excel, CSV, Markdown or text "
-                    "file that another tool downloaded (e.g. an email "
-                    "attachment). Pass the file path that tool returned."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Absolute file path."}
-                    },
-                    "required": ["path"],
-                },
-                read_only=True,
-                source="builtin",
-            ),
-            _read_file,
-        ),
-        "oe__message_person": (
-            ToolInfo(
-                name="oe__message_person",
-                description=MESSAGE_PERSON_TOOL["description"],
-                input_schema=MESSAGE_PERSON_TOOL["input_schema"],
-                read_only=None,
-                source="builtin",
-            ),
-            _message_person,
-        ),
-        "oe__create_alert": (
-            ToolInfo(
-                name="oe__create_alert",
-                description=CREATE_ALERT_TOOL["description"],
-                input_schema=CREATE_ALERT_TOOL["input_schema"],
-                read_only=None,
-                source="builtin",
-            ),
-            _create_alert,
-        ),
-    }
-
-
 def _extension_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     from openexecutive.orchestrator import extensions
 
@@ -474,14 +391,22 @@ def _chat_specs() -> dict[str, tuple[ToolInfo, Handler]]:
 
 
 def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
-    # Our own built-ins win a name clash (oe__message_person and
-    # oe__create_alert keep their workflow handlers), then the chat's tools
-    # (workflows.chat_tools), then an extension's.
-    return {**_extension_specs(), **_chat_specs(), **_builtin_specs()}
+    # The chat's tools (workflows.chat_tools) win a name clash with an
+    # extension's.
+    return {**_extension_specs(), **_chat_specs()}
 
 
 def builtin_tools() -> list[ToolInfo]:
-    return [info for info, _ in _all_builtin_specs().values()]
+    """The built-ins to offer for new steps (``chat_tools.not_offered``
+    still resolve, for saved workflows, but aren't shown)."""
+    from openexecutive.workflows.chat_tools import not_offered
+
+    try:
+        hidden = not_offered()
+    except Exception:
+        logger.warning("workflow tools: couldn't tell which to hide", exc_info=True)
+        hidden = set()
+    return [info for name, (info, _) in _all_builtin_specs().items() if name not in hidden]
 
 
 def builtin_handler(name: str) -> Handler | None:

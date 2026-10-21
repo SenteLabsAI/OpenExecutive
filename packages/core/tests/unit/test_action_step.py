@@ -247,12 +247,12 @@ async def test_builtin_tools_run_locally(
         seen.append(tool_input)
         return "Invoice total 42"
 
-    monkeypatch.setattr(tc, "builtin_handler", lambda name: _fake_read if name == "oe__read_file" else None)
+    monkeypatch.setattr(tc, "builtin_handler", lambda name: _fake_read if name == "oe__read_document" else None)
     provider = _ScriptedProvider(
-        [_resp(_use("oe__read_file", {"path": "/x/bill.pdf"}, "tu_1")), _resp(_text("Read it."))]
+        [_resp(_use("oe__read_document", {"path": "/x/bill.pdf"}, "tu_1")), _resp(_text("Read it."))]
     )
     _install(monkeypatch, provider)
-    await _run(_step(tools=["oe__read_file"]))
+    await _run(_step(tools=["oe__read_document"]))
     assert seen == [{"path": "/x/bill.pdf"}]
     assert gateway.calls == []
 

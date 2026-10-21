@@ -57,12 +57,32 @@ def test_usable_tools_are_offered_to_workflows(monkeypatch: pytest.MonkeyPatch) 
             assert ct.workflow_name_for(chat_name) not in names, chat_name
 
 
-def test_existing_workflow_builtins_keep_their_own_handlers() -> None:
-    """oe__message_person / oe__create_alert / oe__read_file predate the
-    shared list; their workflow versions win so saved workflows don't change."""
-    specs = tc._builtin_specs()
+@pytest.mark.asyncio
+async def test_workflow_tool_names_from_before_run_the_chat_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """oe__message_person / oe__create_alert are the chat tools now, under the
+    same names; oe__read_file (saved workflows may list it) runs read_document
+    but isn't offered for new steps."""
+    ran: list[tuple[str, dict[str, Any]]] = []
+
+    async def run_chat_tool(name: str, tool_input: dict[str, Any]) -> str:
+        ran.append((name, tool_input))
+        return "ok"
+
+    monkeypatch.setattr(ct, "run_chat_tool", run_chat_tool)
     for name in ("oe__message_person", "oe__create_alert", "oe__read_file"):
-        assert tc.builtin_handler(name) is specs[name][1]
+        handler = tc.builtin_handler(name)
+        assert handler is not None, name
+        await handler({"x": name})
+    assert ran == [
+        ("message_person", {"x": "oe__message_person"}),
+        ("create_alert", {"x": "oe__create_alert"}),
+        ("read_document", {"x": "oe__read_file"}),
+    ]
+    offered = {t.name for t in tc.builtin_tools()}
+    assert "oe__read_file" not in offered and "oe__read_document" in offered
+    assert (await tc.resolve(["oe__read_file"]))["oe__read_file"].read_only is True
 
 
 def test_long_running_tools_get_a_longer_timeout() -> None:

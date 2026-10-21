@@ -595,7 +595,7 @@ def test_context_block_reports_gateway_and_builtins(monkeypatch: pytest.MonkeyPa
     )
     monkeypatch.setattr(wd.tool_catalog, "gateway_available", lambda: False)
     block = wd.build_context_block()
-    assert "NOT running" in block and "oe__read_file" in block
+    assert "NOT running" in block and "oe__read_document" in block
     monkeypatch.setattr(wd.tool_catalog, "gateway_available", lambda: True)
     assert "connected" in wd.build_context_block()
 

@@ -10,7 +10,7 @@ deployment reaches it directly, local OCR otherwise — instead of coming back
 empty.
 
 Reads are confined to the tool download folders (``tool_catalog.
-resolve_readable_file``, the same check ``oe__read_file`` uses) and the
+resolve_readable_file``, the same check workflow steps use) and the
 company documents folder. The tool is withheld on turns private to the
 principal (``schedule_tools.PRIVATE_TURN_WITHHELD_TOOLS``): those come from a
 contact's email, whose own attachments the poller has already read, and must

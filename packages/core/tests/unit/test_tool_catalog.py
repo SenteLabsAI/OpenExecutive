@@ -1,5 +1,5 @@
 """The workflow tool catalog: gateway search parsing, exact-name resolution,
-save-time availability checks, and the ``oe__read_file`` built-in's
+save-time availability checks, and the ``oe__read_document`` built-in's
 confinement to the download folders."""
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ async def test_search_merges_builtins_and_gateway(monkeypatch: pytest.MonkeyPatc
     )
     _use_gateway(monkeypatch, gateway)
     names = [t.name for t in await tc.search("read a downloaded file")]
-    assert names[0] == "oe__read_file"
+    assert names[0] == "oe__read_document"
     assert "fetch__fetch" in names
 
 
@@ -188,7 +188,14 @@ async def test_validate_tools_says_when_gateway_is_down(monkeypatch: pytest.Monk
     assert "gateway" in err and "not running" in err
 
 
-# --- oe__read_file -----------------------------------------------------------
+# --- oe__read_document (and saved workflows' oe__read_file) ------------------
+
+
+async def _read_file(tool_input: dict[str, Any]) -> str:
+    """What a step's oe__read_file / oe__read_document runs: chat's read_document."""
+    from openexecutive.orchestrator.document_tools import handle_read_document
+
+    return await handle_read_document(tool_input)
 
 
 def _minimal_pdf(text: str) -> bytes:
@@ -229,14 +236,14 @@ def download_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 async def test_read_file_extracts_pdf_text(download_dir: Path) -> None:
     pdf = download_dir / "bill.pdf"
     pdf.write_bytes(_minimal_pdf("Acme Power invoice total 123.45"))
-    out = await tc._read_file({"path": str(pdf)})
+    out = await _read_file({"path": str(pdf)})
     assert "Acme Power invoice total 123.45" in out
 
 
 @pytest.mark.asyncio
 async def test_read_file_reads_text_files(download_dir: Path) -> None:
     (download_dir / "notes.csv").write_text("vendor,amount\nAcme,10\n")
-    assert "Acme,10" in await tc._read_file({"path": str(download_dir / "notes.csv")})
+    assert "Acme,10" in await _read_file({"path": str(download_dir / "notes.csv")})
 
 
 @pytest.mark.asyncio
@@ -246,7 +253,7 @@ async def test_read_file_refuses_paths_outside_the_download_dirs(
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP SECRET")
     for path in (str(secret), str(download_dir / ".." / "secret.txt")):
-        out = await tc._read_file({"path": path})
+        out = await _read_file({"path": path})
         assert "outside the folders" in out and "TOP SECRET" not in out
 
 
@@ -256,24 +263,24 @@ async def test_read_file_refuses_symlink_escape(download_dir: Path, tmp_path: Pa
     secret.write_text("TOP SECRET")
     link = download_dir / "innocent.txt"
     link.symlink_to(secret)
-    out = await tc._read_file({"path": str(link)})
+    out = await _read_file({"path": str(link)})
     assert "outside the folders" in out and "TOP SECRET" not in out
 
 
 @pytest.mark.asyncio
 async def test_read_file_rejects_bad_input(download_dir: Path) -> None:
     (download_dir / "run.sh").write_text("echo hi")
-    assert "path is required" in await tc._read_file({})
-    assert "not found" in await tc._read_file({"path": str(download_dir / "nope.pdf")})
-    assert "unsupported file type" in await tc._read_file({"path": str(download_dir / "run.sh")})
-    assert "not a file" in await tc._read_file({"path": str(download_dir)})
+    assert "pass `path`" in await _read_file({})
+    assert "not found" in await _read_file({"path": str(download_dir / "nope.pdf")})
+    assert "unsupported file type" in await _read_file({"path": str(download_dir / "run.sh")})
+    assert "not a file" in await _read_file({"path": str(download_dir)})
 
 
 @pytest.mark.asyncio
 async def test_read_file_size_cap(download_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tc, "_MAX_READ_FILE_BYTES", 10)
     (download_dir / "big.txt").write_text("x" * 11)
-    assert "larger than" in await tc._read_file({"path": str(download_dir / "big.txt")})
+    assert "larger than" in await _read_file({"path": str(download_dir / "big.txt")})
 
 
 @pytest.mark.asyncio
@@ -293,7 +300,7 @@ async def test_read_file_converts_a_scanned_pdf(
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
     (download_dir / "scan.pdf").write_bytes(b"%PDF-scan")
 
-    assert await tc._read_file({"path": str(download_dir / "scan.pdf")}) == "Invoice total 123.45"
+    assert (await _read_file({"path": str(download_dir / "scan.pdf")})).endswith("\nInvoice total 123.45")
     # The path, not the bytes: the reader's child process opens the file.
     assert seen == [download_dir / "scan.pdf"]
 
@@ -310,7 +317,7 @@ async def test_read_file_reports_why_a_pdf_is_unreadable(
     monkeypatch.setattr(pdf_reader, "read_pdf_text", fake_read)
     (download_dir / "scan.pdf").write_bytes(b"%PDF-scan")
 
-    out = json.loads(await tc._read_file({"path": str(download_dir / "scan.pdf")}))
+    out = json.loads(await _read_file({"path": str(download_dir / "scan.pdf")}))
     assert out == {"error": "no text could be read: OCR is off"}
 
 
