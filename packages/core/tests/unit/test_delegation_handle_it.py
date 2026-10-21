@@ -779,3 +779,37 @@ def test_handled_route_lists_the_callers_own(client: TestClient, owner: Any, mod
     replies = client.get("/delegation/handled", headers=HEADERS).json()["replies"]
     assert len(replies) == 1 and replies[0]["to_email"] == DANA
     assert replies[0]["gmail_link"]
+
+
+# ── the last look for an email that steers an assistant ──────────────────────
+
+
+def test_an_email_that_steers_an_assistant_waits_for_them(owner: Any, models: dict[str, Any]) -> None:
+    _on(owner)
+    models["steers"] = True
+    mailbox, result = _scan_one(owner)
+    assert result.drafted == 1 and result.handled == 0 and mailbox.sent == []
+    card = _only_card(owner)
+    assert card.gate_mode == "propose" and inbox.card_payload(card)["handle_it_reason"] == "suspicious"
+    assert "suspicious" in handle_it.REASONS
+    # It read the email as data, in its own block.
+    assert models["checked"] and "<email>" in models["checked"][0]
+
+
+def test_a_check_that_fails_holds_the_reply(owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import injection_check
+
+    async def broken(model: str, turn: str) -> dict[str, Any]:
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(injection_check, "_call_model", broken)
+    _on(owner)
+    mailbox, result = _scan_one(owner)
+    assert result.handled == 0 and mailbox.sent == []
+    assert inbox.card_payload(_only_card(owner))["handle_it_reason"] == "suspicious"
+
+
+def test_the_check_runs_only_when_a_reply_would_go(owner: Any, models: dict[str, Any]) -> None:
+    # Handle it for me off: every reply waits anyway, so nothing is checked.
+    _scan_one(owner)
+    assert models["checked"] == []

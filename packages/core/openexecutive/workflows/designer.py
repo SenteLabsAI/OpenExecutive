@@ -211,7 +211,7 @@ def _one_line(text: str, limit: int) -> str:
 
 def _email_as_line(as_me: bool) -> str:
     """How this user's workflow emails can go."""
-    from openexecutive.delegation.workflow_email import DRAFT_TOOL, SEND_TOOL
+    from openexecutive.delegation.workflow_email import DRAFT_TOOL, REPLY_TOOL, SEND_TOOL
     from openexecutive.delegation.workflow_reads import TOOLS as READ_TOOLS
 
     reads = ", ".join(sorted(READ_TOOLS))
@@ -225,14 +225,16 @@ def _email_as_line(as_me: bool) -> str:
             "who an email as them goes to, write those addresses into the step's goal: "
             "emails to them, or to the user, go without asking, and the first email to "
             "any other address waits for the user's approval. To read their own mail or "
-            f"calendar, use {reads}. A workflow that reads them runs only for them and "
+            f"calendar, use {reads}. To answer an email in their inbox the way their "
+            f"Handle it for me does (sent on its own when its rules allow, otherwise a card "
+            f"for them), use {REPLY_TOOL} with the thread from those reads. A workflow that reads them runs only for them and "
             "reports only to them, and none of its steps may use web search, gateway "
             "tools, scripts or other workflows: if they want those too, suggest a "
             "separate workflow."
         )
     return (
         "Email as the user: not available, since they haven't connected their own "
-        f"mailbox under Act as me. Do not use {DRAFT_TOOL}, {SEND_TOOL} or {reads}; "
+        f"mailbox under Act as me. Do not use {DRAFT_TOOL}, {SEND_TOOL}, {REPLY_TOOL} or {reads}; "
         "emails come from the Executive's own address through the gateway's email tools."
     )
 
