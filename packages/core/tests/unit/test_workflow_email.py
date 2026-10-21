@@ -479,14 +479,15 @@ def test_chat_cannot_add_a_send_to_someone_elses_workflow(people, monkeypatch: p
 # ── Who an email goes to without asking ──────────────────────────────────────
 
 
-def _saved(goal: str, tools: list[str]) -> Any:
+def _saved(goal: str, tools: list[str], *, read_goal: str = "Read the inbox") -> Any:
     from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
 
     return DynamicWorkflowDef.model_validate({
         "name": "weekly_update", "title": "Weekly update",
         "steps": [
+            {"kind": "action", "id": "s0", "title": "Read", "goal": read_goal, "tools": ["oe__search_my_email"]},
             {"kind": "action", "id": "s1", "title": "Write", "goal": goal, "tools": tools},
-            {"kind": "synthesis", "id": "s2", "title": "Report"},
+            {"kind": "synthesis", "id": "s2", "title": "Report", "instructions": "Never copy cfo@co.example"},
         ],
     })
 
@@ -511,6 +512,16 @@ def test_an_email_to_someone_they_chose_goes_without_asking(people, monkeypatch)
     assert policy.unapproved(targets) == []
     # Mail a step read can't add a recipient that goes unasked.
     assert policy.unapproved([("to", "eve@evil.example")]) == [("to", "eve@evil.example")]
+
+
+def test_only_the_goal_of_a_step_that_emails_names_who(people, monkeypatch) -> None:
+    defn = _saved(f"Email it to {TEAM}", [workflow_email.SEND_TOOL], read_goal="Skip anything from ceo@co.example")
+
+    policy = _send_policy(monkeypatch, defn, defn)
+
+    assert policy.unapproved([("to", TEAM)]) == []
+    for elsewhere in ("ceo@co.example", "cfo@co.example"):
+        assert policy.unapproved([("to", elsewhere)]) == [("to", elsewhere)]
 
 
 def test_only_the_saved_copy_of_a_workflow_that_writes_as_them_names_who(people, monkeypatch) -> None:

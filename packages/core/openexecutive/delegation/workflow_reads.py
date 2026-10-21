@@ -26,7 +26,7 @@ produces can reach other people, so it is fenced in code, as chat is:
   reads; no gateway tool, web search, script or workflow run; no approval
   gate asking anyone but its creator. An email it sends goes without asking
   only to an address the creator chose: their own, one written in the
-  workflow, or one they approved for it before. The first email to any other
+  goal of the step that emails, or one they approved for it before. The first email to any other
   address, such as one the mail named, waits for them
   (``action_step.TargetPolicy``), so mail text can't send their mail on. Checked when it is saved (``definition_refusal``) and
   again on every run (``run_rules``).

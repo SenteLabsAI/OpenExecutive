@@ -7260,8 +7260,9 @@ workflows:
     outermost run (chat_tools.started_by_a_pass), or another person's
     workflow is in the chain (chat_tools.running). Needs Act as me allowed + on + own mailbox
     connected, else the step is told to use the Executive's email. to/cc are
-    write targets: the creator's own addresses and the addresses written in
-    the saved workflow (workflow_email.chosen_recipients, trusted by
+    write targets: the creator's own addresses and the addresses in the
+    saved goal of a step listing an email-as-me tool (nowhere else in the
+    definition; workflow_email.chosen_recipients, trusted by
     TargetPolicy.for_workflow only when the running definition matches the
     saved one) go unasked; the first email to any other address is held. Caps:
     DELEGATION_MAX_DRAFTS_PER_DAY for every email, plus

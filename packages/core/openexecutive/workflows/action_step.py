@@ -321,7 +321,8 @@ class TargetPolicy:
       owner answering a held write, never by anything the model or a page can
       write;
     - in a workflow that writes or reads as its creator, their own addresses
-      and the addresses written in it (``workflow_email.chosen_recipients``):
+      and the addresses in the goal of a step that emails as them
+      (``workflow_email.chosen_recipients``):
       only that creator, verified, can save one;
     - ids a write in this run created: the top-level id / link fields
       (``id``, ``spreadsheetId``, ``webViewLink`` …) of the STRUCTURED (JSON

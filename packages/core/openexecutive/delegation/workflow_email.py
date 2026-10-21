@@ -27,7 +27,7 @@ Both write in the creator's voice (``ghostwriter.compose``, as chat's
   draft goes through ``reply_send.send_for_workflow``, the one send path.
 - **Recipients they chose go without asking.** ``to`` and ``cc`` are write
   targets (``action_step.TargetPolicy``). Their own addresses and the
-  addresses written in the workflow (``chosen_recipients``: only its
+  addresses in the goal of a step that emails as them (``chosen_recipients``: only its
   verified creator saves such a workflow) go straight out; the first email
   to any other address waits for the creator's approval, then is
   remembered. So mail a step read can't add a recipient that goes unasked.
@@ -44,7 +44,6 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -132,21 +131,10 @@ def _saved_part(defn: Any) -> dict[str, Any]:
     return dumped
 
 
-def _strings(node: Any) -> Iterator[str]:
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for value in node.values():
-            yield from _strings(value)
-    elif isinstance(node, list | tuple):
-        for item in node:
-            yield from _strings(item)
-
-
 def chosen_recipients(defn: Any) -> set[str]:
     """The addresses a workflow that writes or reads as its creator may email
-    without asking: the creator's own, and those written in the workflow
-    itself as saved. Only the creator, verified, saves such a workflow
+    without asking: the creator's own, and those written in the goal of a
+    step that emails as them, as saved. Only the creator, verified, saves such a workflow
     (``save_refusal``), so these are their choice, never something a run
     read. Empty for any other workflow, or one not saved as it runs. Never
     raises."""
@@ -161,7 +149,10 @@ def chosen_recipients(defn: Any) -> set[str]:
         owner = get_person(owner_id) if owner_id is not None else None
         if owner is None:
             return set()
-        written = list(_strings(_saved_part(stored)))
+        written = [
+            str(getattr(step, "goal", "") or "") for step in stored.steps
+            if TOOLS & set(getattr(step, "tools", None) or [])
+        ]
     except Exception:
         logger.warning("workflow email: couldn't read the chosen recipients", exc_info=True)
         return set()
