@@ -612,14 +612,20 @@ def test_start_tells_the_designer_whether_the_caller_can_have_drafts_as_them(
     assert as_me_seen == [expected]
 
 
-@pytest.mark.parametrize(("owner", "expected"), [(7, True), (None, False)])
-def test_edit_tells_the_designer_whether_the_creator_can_have_drafts_as_them(
+@pytest.mark.parametrize(
+    ("owner", "caller", "expected"),
+    [(7, 7, True), (7, 9, False), (None, 7, False)],
+)
+def test_edit_offers_drafts_as_the_creator_only_to_the_creator(
     client: TestClient, seeded: _Queue, as_me_seen: list[bool], monkeypatch: pytest.MonkeyPatch,
-    owner: int | None, expected: bool,
+    owner: int | None, caller: int, expected: bool,
 ) -> None:
+    from openexecutive.api.routes import chat as chat_route
+
     _save(client)
     as_me_seen.clear()
     monkeypatch.setattr(dynamic_store, "get_owner", lambda name: owner)
+    monkeypatch.setattr(chat_route, "_resolve_caller_person_id", lambda request: caller)
     resp = client.post("/workflows/designer/edit", json={"name": "weekly_competitor_digest"})
     assert resp.status_code == 200, resp.text
     assert as_me_seen == [expected]

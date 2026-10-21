@@ -291,7 +291,7 @@ async def start_designer(body: WorkflowDesignerStartRequest, request: Request) -
 
 
 @router.post("/workflows/designer/edit", response_model=WorkflowDesignerTurnResponse)
-async def edit_designer(body: WorkflowDesignerEditRequest) -> WorkflowDesignerTurnResponse:
+async def edit_designer(body: WorkflowDesignerEditRequest, request: Request) -> WorkflowDesignerTurnResponse:
     """Open a design session on a saved workflow, to change it by conversation.
 
     No model call: the session starts with the stored definition as its draft
@@ -305,11 +305,14 @@ async def edit_designer(body: WorkflowDesignerEditRequest) -> WorkflowDesignerTu
     if original is None:
         raise HTTPException(status_code=404, detail="Workflow not found.")
 
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
     from openexecutive.delegation.workflow_drafts import available_for
     from openexecutive.workflows.dynamic_store import get_owner
 
     session_id = uuid.uuid4().hex
-    as_me = available_for(get_owner(original.name))
+    # Its steps draft as its creator: offered only when that is who is editing.
+    owner = get_owner(original.name)
+    as_me = owner is not None and owner == _resolve_caller_person_id(request) and available_for(owner)
     _designer_sessions[session_id] = DesignerSession(
         context_block=f"{build_context_block(as_me=as_me)}\n\n{build_edit_note(original.name)}",
         draft=WorkflowDraft(definition=original),
