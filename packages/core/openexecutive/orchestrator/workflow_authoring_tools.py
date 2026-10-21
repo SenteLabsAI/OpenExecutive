@@ -75,7 +75,12 @@ DEFINITION_SCHEMA: dict[str, Any] = {
                 "the user (only when they turned on Act as me and connected their "
                 "mailbox): 'oe__draft_email_as_me' saves a draft for them to send, "
                 "'oe__send_email_as_me' sends it as them; ask which they want, or the "
-                "Executive's own email, when it isn't clear; max_tool_calls "
+                "Executive's own email, when it isn't clear. To read their own mail or "
+                "calendar (the same condition): 'oe__search_my_email', "
+                "'oe__read_my_email', 'oe__my_email_awaiting_reply', 'oe__my_calendar'; "
+                "a workflow that reads them runs only for them, reports only to them, "
+                "and can't also use web search, scripts, gateway tools or other "
+                "workflows; max_tool_calls "
                 "is optional — omit it for the default budget), "
                 "'approval_gate' {id,title,person_id,question,timeout_hours?,on_timeout?}, "
                 "or 'synthesis' {id,title,instructions?,specialist?}. "
@@ -196,6 +201,14 @@ def _session_caller_id() -> int | None:
     return session_caller_id(session) if session is not None else None
 
 
+def _reads_refusal(defn: Any) -> str | None:
+    """Why ``defn``, saved now by the person chatting, may not read their mail
+    as it stands (``workflow_reads.definition_refusal``), or None."""
+    from openexecutive.delegation.workflow_reads import definition_refusal
+
+    return definition_refusal(defn, _session_caller_id())
+
+
 def _needs_review(defn: Any) -> bool:
     """True when the workflow has tool-using steps, which a person must approve.
 
@@ -254,6 +267,8 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
     defn, error = await _build_def(tool_input.get("definition"))
     if error is None:
         error = _approved_tool_workflow_error(defn.name, get_definition(defn.name))
+    if error is None:
+        error = _reads_refusal(defn)
     if error is not None:
         return json.dumps({"error": error})
     token = _canonical_token(tool_input["definition"])
@@ -291,7 +306,7 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
     from openexecutive.delegation.lockdown import outside_reach_refusal
-    from openexecutive.delegation.workflow_email import sends as sends_as_creator
+    from openexecutive.delegation.workflow_email import as_creator
     from openexecutive.workflows.dynamic_store import get_definition, save_if_unchanged
 
     if (refused := outside_reach_refusal("save_workflow")) is not None:
@@ -318,17 +333,19 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     approved_error = _approved_tool_workflow_error(defn.name, existing)
     if approved_error is not None:
         return json.dumps({"error": approved_error})
-    if existing is not None and (sends_as_creator(existing) or sends_as_creator(defn)):
-        # Only its creator, verified, may change one that sends
-        # (workflow_email.save_refusal), and chat can't verify anyone: nor
-        # may chat add a send to an existing one, which would send as its
-        # creator, not as whoever asked.
+    if existing is not None and (as_creator(existing) or as_creator(defn)):
+        # Only its creator, verified, may change one that sends or reads as
+        # them (workflow_email.save_refusal), and chat can't verify anyone:
+        # nor may chat add a send or a read to an existing one, which would
+        # act as its creator, not as whoever asked.
         base = get_settings().ui_base_url.rstrip("/")
         return json.dumps({"error": (
-            f"{defn.name!r} would send email as the person who created it, so it can't be "
-            "replaced from chat. Pick a different name, or tell the user to edit it at "
-            f"{base}/jobs/new?edit={defn.name}"
+            f"{defn.name!r} would send or read email as the person who created it, so it "
+            "can't be replaced from chat. Pick a different name, or tell the user to edit "
+            f"it at {base}/jobs/new?edit={defn.name}"
         )})
+    if (refused := _reads_refusal(defn)) is not None:
+        return json.dumps({"error": refused})
 
     overwrite = bool(tool_input.get("overwrite", False))
     if existing is not None and not overwrite:

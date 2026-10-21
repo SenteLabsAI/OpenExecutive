@@ -212,19 +212,25 @@ def _one_line(text: str, limit: int) -> str:
 def _email_as_line(as_me: bool) -> str:
     """How this user's workflow emails can go."""
     from openexecutive.delegation.workflow_email import DRAFT_TOOL, SEND_TOOL
+    from openexecutive.delegation.workflow_reads import TOOLS as READ_TOOLS
 
+    reads = ", ".join(sorted(READ_TOOLS))
     if as_me:
         return (
             "Email as the user: their own mailbox is connected (Act as me). When an "
             f"email should come from them, in their voice, use {DRAFT_TOOL} (saves a "
             f"draft in their mailbox for them to send) or {SEND_TOOL} (sends it as "
             "them). When it should come from the Executive, use the gateway's email "
-            "tools. If it isn't clear which of the three they want, ask."
+            "tools. If it isn't clear which of the three they want, ask. To read their "
+            f"own mail or calendar, use {reads}. A workflow that reads them runs only "
+            "for them and reports only to them, and none of its steps may use web "
+            "search, gateway tools, scripts or other workflows: if they want those "
+            "too, suggest a separate workflow."
         )
     return (
         "Email as the user: not available, since they haven't connected their own "
-        f"mailbox under Act as me. Do not use {DRAFT_TOOL} or {SEND_TOOL}; emails "
-        "come from the Executive's own address through the gateway's email tools."
+        f"mailbox under Act as me. Do not use {DRAFT_TOOL}, {SEND_TOOL} or {reads}; "
+        "emails come from the Executive's own address through the gateway's email tools."
     )
 
 

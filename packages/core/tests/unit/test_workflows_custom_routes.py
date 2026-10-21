@@ -357,3 +357,15 @@ def test_only_its_verified_creator_saves_a_workflow_that_sends_as_them(
     creator_check["ok"] = True
     r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": stored})
     assert r.status_code == 200, r.text
+
+
+def test_only_its_creator_runs_a_workflow_that_reads_their_mail(
+    client: TestClient, creator_check: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert client.post("/workflows/custom", json=_action_definition(["oe__search_my_email"])).status_code == 201
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: 1)
+    monkeypatch.setattr("openexecutive.api.routes.workflows._caller_person_id", lambda request: 2)
+
+    r = client.post("/workflows/file_bills/runs", json={})
+
+    assert r.status_code == 403 and "creator" in r.json()["detail"]

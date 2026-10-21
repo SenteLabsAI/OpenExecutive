@@ -366,6 +366,12 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     if runs_refused_for_nobody():
         return _err("run_workflow", "runs are kept for people on the People list, and the person you are talking with is not on it", kind="write")
 
+    from openexecutive.delegation.workflow_reads import chat_run_refusal
+
+    # One that reads its creator's mail runs only for them, and marks this turn.
+    if (refused := chat_run_refusal(name)) is not None:
+        return _err("run_workflow", refused, kind="write")
+
     raw_inputs = tool_input.get("inputs")
     if raw_inputs is None:
         raw_inputs = {}

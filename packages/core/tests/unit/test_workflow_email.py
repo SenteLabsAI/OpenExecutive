@@ -336,7 +336,7 @@ def test_designer_is_told_whether_it_can_write_as_them(people) -> None:
 
     yes = build_context_block(as_me=True)
     assert "their own mailbox is connected" in yes and workflow_email.SEND_TOOL in yes
-    assert "Do not use oe__draft_email_as_me or oe__send_email_as_me" in build_context_block(as_me=False)
+    assert "Do not use oe__draft_email_as_me, oe__send_email_as_me or" in build_context_block(as_me=False)
 
 
 # ── Saving a workflow that sends ─────────────────────────────────────────────

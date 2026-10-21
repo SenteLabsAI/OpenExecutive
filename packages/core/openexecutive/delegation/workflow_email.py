@@ -115,17 +115,35 @@ def sends(defn: Any) -> bool:
     return any(SEND_TOOL in (getattr(step, "tools", None) or []) for step in getattr(defn, "steps", []))
 
 
+def as_creator(defn: Any) -> bool:
+    """Whether a workflow definition sends as its creator or reads their mail
+    (``workflow_reads``): only its creator, verified, may save or switch it on."""
+    from openexecutive.delegation.workflow_reads import reads
+
+    return sends(defn) or reads(defn)
+
+
 def save_refusal(defn: Any, caller: Any, owner_id: int | None) -> str | None:
     """Why ``caller`` may not save or switch on ``defn`` with its creator
-    ``owner_id``, or None. Only a workflow that sends as its creator is
-    checked: then the caller must be that creator, and the API must know it
-    (``verified.caller_refusal``). Never raises; a lookup that fails refuses."""
+    ``owner_id``, or None. Only a workflow that sends as its creator or reads
+    their mail is checked: then the caller must be that creator, and the API
+    must know it (``verified.caller_refusal``), and one that reads must keep
+    to what a run may do after reading mail (``workflow_reads.definition_refusal``).
+    Never raises; a lookup that fails refuses."""
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
+    from openexecutive.delegation.workflow_reads import definition_refusal
     from openexecutive.people.store import get_person
 
-    if not sends(defn):
+    if not as_creator(defn):
         return None
+    try:
+        unsafe = definition_refusal(defn, owner_id)
+    except Exception:
+        logger.warning("workflow email: couldn't check what the workflow reads", exc_info=True)
+        unsafe = "Couldn't check this workflow's tools just now. Try again."
+    if unsafe is not None:
+        return unsafe
     try:
         owner = get_person(owner_id) if owner_id is not None else None
         refused = caller_refusal(caller, normalize_email(owner.email)) if owner is not None else NOT_YOURS
@@ -137,7 +155,12 @@ def save_refusal(defn: Any, caller: Any, owner_id: int | None) -> str | None:
     if refused == NOT_YOURS:
         return (
             "Only the person who created this workflow can save or switch on a workflow "
-            "that sends email as them."
+            "that reads their email or sends email as them."
+        )
+    if not sends(defn):
+        return (
+            "A workflow that reads your email needs signed sign-ins on this server, so "
+            "nobody else can save one in your name."
         )
     return (
         "A workflow that sends email as you needs signed sign-ins on this server, so "

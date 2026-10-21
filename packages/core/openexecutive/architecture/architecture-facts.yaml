@@ -7274,6 +7274,24 @@ workflows:
     body; audit rows are private to the creator. The designer gets an
     "Email as the user" line (build_context_block(as_me=...)).
 
+    Reads as the creator (delegation/workflow_reads.py): oe__search_my_email,
+    oe__read_my_email, oe__my_email_awaiting_reply and oe__my_calendar run
+    chat's mail_read_tools handlers with the creator as the writer
+    (mail_read_tools.AS_CREATOR; no conversation is marked private, the run
+    is theirs). Read only when the run is the creator's (turn_owner ==
+    creator), in the outermost workflow (chain length 1), not started by an
+    unattended pass, with Act as me allowed + on + mailbox connected. A
+    workflow that reads: every run is its creator's (scheduler creates the
+    scheduled run with owner_person_id = creator, pins the viewer, and
+    delivers the report and failure card to the creator; the run route 403s
+    anyone else; chat's run_workflow needs the turn's Act as me pin to be the
+    creator and marks the turn touched_mail/read_mail first). Locked down for
+    all steps (definition_refusal at save, run_rules at each step): tools
+    only the reads, the email-as-me tools and oe__ chat tools in
+    MAIL_TOUCHED_ALLOWED_TOOLS; no run_script; approval gates and cadence
+    only to the creator. Saved/changed/activated only by its verified
+    creator (save_refusal covers reads too); chat never replaces one.
+
     Chat's tools in action steps (workflows/chat_tools.py): one list,
     `ACCESS`, labels every tool chat offers — use (a step may call it as
     oe__<name>), as_me (Act as me; chat-only for now), covered (the step

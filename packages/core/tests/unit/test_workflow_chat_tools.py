@@ -52,9 +52,15 @@ def test_usable_tools_are_offered_to_workflows(monkeypatch: pytest.MonkeyPatch) 
     for chat_name, (lbl, _) in ct.ACCESS.items():
         if lbl == ct.USE and chat_name != ct.WEB_SEARCH:
             assert ct.workflow_name_for(chat_name) in names, chat_name
+    # The creator's own reads run through delegation.workflow_reads instead.
+    from openexecutive.delegation import workflow_reads
+
     for chat_name, (lbl, _) in ct.ACCESS.items():
-        if lbl != ct.USE:
-            assert ct.workflow_name_for(chat_name) not in names, chat_name
+        name = ct.workflow_name_for(chat_name)
+        if name in workflow_reads.TOOLS:
+            assert lbl == ct.AS_ME and name in names, chat_name
+        elif lbl != ct.USE:
+            assert name not in names, chat_name
 
 
 @pytest.mark.asyncio

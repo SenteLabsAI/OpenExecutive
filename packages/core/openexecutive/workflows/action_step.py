@@ -622,11 +622,20 @@ async def run_action_step(
         )
         return
 
+    from openexecutive.delegation import workflow_reads
+
+    # A workflow that reads its creator's mail is locked down for all of its
+    # steps (delegation.workflow_reads): checked again here, and no scripts.
+    reads_mail, refused = workflow_reads.run_rules(workflow_name)
+    if refused is not None:
+        yield ("error", f"step {step.id!r} cannot run: {refused}")
+        return
+
     settings = get_settings()
     agent = WorkflowActorAgent()
     resolved_model = model if model is not None else agent.effective_model()
     provider = get_provider(resolved_model)
-    scripts = settings.workflow_step_scripts and step_script.available()
+    scripts = settings.workflow_step_scripts and step_script.available() and not reads_mail
     tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools if resolved[name].source != "server"]
     if scripts:
         tool_defs.append(

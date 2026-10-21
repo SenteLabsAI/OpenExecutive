@@ -413,10 +413,21 @@ def _email_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     }
 
 
+def _reads_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    """The creator's own mailbox and calendar, read as them (Act as me,
+    ``delegation.workflow_reads``)."""
+    from openexecutive.delegation import workflow_reads
+
+    return {
+        name: (ToolInfo(name, description, schema, True, "builtin"), handler)
+        for name, (_, description, schema, handler) in workflow_reads.specs().items()
+    }
+
+
 def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     # The chat's tools (workflows.chat_tools) win a name clash with an
     # extension's.
-    return {**_extension_specs(), **_chat_specs(), **_email_as_me_specs()}
+    return {**_extension_specs(), **_chat_specs(), **_email_as_me_specs(), **_reads_as_me_specs()}
 
 
 def builtin_tools() -> list[ToolInfo]:
