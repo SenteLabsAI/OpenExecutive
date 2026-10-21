@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from openexecutive.briefing import waiting_on
+from openexecutive.delegation.gmail import GmailNotFound, GmailRateLimited
 
 NOW = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
 ME = "john@braden.test"
@@ -120,7 +121,7 @@ async def test_a_thread_that_fails_to_open_is_skipped(monkeypatch: pytest.Monkey
     class _OneGone(_Mailbox):
         async def get_thread(self, thread_id: str) -> Any:
             if thread_id == "t-gone":
-                raise LookupError("deleted")
+                raise GmailNotFound("deleted")
             return await super().get_thread(thread_id)
 
     _use(
@@ -138,13 +139,24 @@ async def test_a_thread_that_fails_to_open_is_skipped(monkeypatch: pytest.Monkey
     assert [w.subject for w in found or []] == ["SVN numbers"]
 
 
-async def test_every_thread_failing_fails_the_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _AllGone(_Mailbox):
+async def test_one_thread_failing_otherwise_fails_the_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _OneBusy(_Mailbox):
         async def get_thread(self, thread_id: str) -> Any:
-            raise LookupError("down")
+            if thread_id == "t-busy":
+                raise GmailRateLimited("slow down")
+            return await super().get_thread(thread_id)
 
-    _use(monkeypatch, _AllGone([_sent("leonard", ["leonard@svn.test"], ago=timedelta(hours=3))]))
-    with pytest.raises(LookupError):
+    _use(
+        monkeypatch,
+        _OneBusy(
+            [
+                _sent("busy", ["sam@co.test"], ago=timedelta(hours=2)),
+                _sent("leonard", ["leonard@svn.test"], ago=timedelta(hours=3)),
+            ]
+        ),
+    )
+    # A partial list would replace the last good read with items missing.
+    with pytest.raises(GmailRateLimited):
         await waiting_on.read_waiting(NOW)
 
 

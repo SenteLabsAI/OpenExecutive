@@ -89,7 +89,7 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
     from openexecutive.config import get_settings
     from openexecutive.delegation.follow_ups import recipients
     from openexecutive.delegation.ghostwriter import one_line
-    from openexecutive.delegation.gmail import normalize_email
+    from openexecutive.delegation.gmail import GmailNotFound, normalize_email
     from openexecutive.delegation.threads import MAX_RECIPIENTS
     from openexecutive.integrations.email_poller import sender_new_text
 
@@ -127,19 +127,20 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
             async with gate:
                 return await mailbox.get_thread(thread_id)
 
-        # One thread gone (deleted since it was listed) skips that thread;
-        # only a mailbox that fails on every one fails the read.
+        # A thread deleted since it was listed is skipped. Any other failure
+        # fails the read, so ``refresh`` keeps the last good one rather than
+        # storing a list with real items missing.
         threads = await asyncio.gather(*(fetch(s.thread_id) for s, _, _ in candidates), return_exceptions=True)
-        failed = [t for t in threads if isinstance(t, BaseException)]
-        if failed and len(failed) == len(threads):
-            raise failed[0]
+        for t in threads:
+            if isinstance(t, BaseException) and not isinstance(t, GmailNotFound):
+                raise t
     except Exception as exc:
         # The type only: a mailbox error can carry an address.
         logger.info("waiting_on: their sent mail couldn't be read (%s)", type(exc).__name__)
         raise
     waiting: list[Waiting] = []
     for (sent, to, sent_at), thread in zip(candidates, threads, strict=True):
-        if isinstance(thread, BaseException):
+        if isinstance(thread, BaseException):  # gone: any other failure raised above
             continue
         newest = [m for m in thread.messages if "DRAFT" not in m.labels]
         if not newest or newest[-1].id != sent.id:
