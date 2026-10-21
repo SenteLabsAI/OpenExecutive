@@ -38,7 +38,10 @@ _HARD_MAX_AGE_SECONDS = 3 * 60 * 60
 _SENT_LOOKED_AT = 40
 _CANDIDATES = 8
 _FETCH_CONCURRENCY = 4
-_TIMEOUT_SECONDS = 30.0
+_TIMEOUT_SECONDS = 20.0
+# After a failed read, calls in this window skip the mailbox and serve the
+# last good read, so a slow mailbox doesn't hold every scheduler tick.
+_RETRY_AFTER_SECONDS = 5 * 60
 _SUBJECT_MAX = 120
 
 
@@ -145,6 +148,7 @@ _lock: asyncio.Lock | None = None
 # Bumped by ``reset_cache``: a read that was running when Act as me went off
 # must not store what it read.
 _generation = 0
+_failed_at: float | None = None
 
 
 async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECONDS) -> list[Waiting] | None:
@@ -152,21 +156,24 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
     /today hot path. A read that fails keeps the last good one (until it is
     ``_HARD_MAX_AGE_SECONDS`` old) and is tried again on the next call.
     Never raises."""
-    global _cache, _lock
+    global _cache, _lock, _failed_at
     if _lock is None:
         _lock = asyncio.Lock()
     async with _lock:
         if _cache is not None and time.monotonic() - _cache[0] < max_age:
             return _cache[1]
+        if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_AFTER_SECONDS:
+            return cached()
         started = _generation
         try:
             items = await asyncio.wait_for(read_waiting(now), timeout=_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.info("waiting_on: refresh failed (%s)", type(exc).__name__)
+            _failed_at = time.monotonic()
             return cached()
         if started != _generation:
             return None
-        _cache = (time.monotonic(), items)
+        _cache, _failed_at = (time.monotonic(), items), None
         return items
 
 
@@ -194,8 +201,8 @@ def cached() -> list[Waiting] | None:
 def reset_cache() -> None:
     """Forget the cached read, and any read still running (tests; Act as me
     turned off)."""
-    global _cache, _generation
-    _cache = None
+    global _cache, _generation, _failed_at
+    _cache = _failed_at = None
     _generation += 1
 
 

@@ -130,6 +130,9 @@ async def test_a_failed_refresh_keeps_the_last_good_read(monkeypatch: pytest.Mon
     assert await waiting_on.refresh() == good
     assert await waiting_on.refresh(max_age=0) == good
     assert waiting_on.cached() == good
+    # Right after a failure the mailbox isn't asked again.
+    assert await waiting_on.refresh(max_age=0) == good
+    assert results == []
 
 
 async def test_the_read_is_cached_until_it_is_old(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -714,13 +714,16 @@ def gather_live_signals(
     calendar_key = ""
     if events is not None:
         try:
-            met_today = tuple(_met_today_lines(events, now, tz))
             calendar_lines = tuple(_calendar_lines(events, now, tz))
             calendar_key = hashlib.sha256(
                 json.dumps(list(calendar_lines)).encode("utf-8")
             ).hexdigest()[:16]
         except Exception:
             logger.exception("live_signals: calendar render failed")
+        try:
+            met_today = tuple(_met_today_lines(events, now, tz))
+        except Exception:
+            logger.exception("live_signals: ended meetings render failed")
 
     waiting: tuple[str, ...] = ()
     if include_private:
