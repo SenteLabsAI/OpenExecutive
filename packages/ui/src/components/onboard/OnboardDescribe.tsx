@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
-import { inferredMode, understoodRole } from "@/lib/onboardSetup";
+import { inferredMode, siteName, understoodRole, websiteNote } from "@/lib/onboardSetup";
 import {
   startOnboardInterview,
   understandOnboarding,
@@ -13,8 +13,10 @@ import {
   type WorkspaceMode,
 } from "@/lib/api";
 
-// First run: describe your work in one box (and optional files), then the
-// interview starts. Nothing is asked in between.
+// First run: your website (optional), then describe your work in one box (and
+// optional files), then the interview starts. Nothing is asked in between.
+// The server reads the website itself (onboarding/website.py), so it works
+// with any model; a site it can't read just leaves the box to go on from.
 //
 // Continue reads the text once (POST /onboard/interview/understand) and saves
 // what it can tell straight away: Personal or Team (Personal when it can't
@@ -40,6 +42,8 @@ export interface DescribeResult {
   mode: WorkspaceMode;
   turn: OnboardTurn;
   turns: { role: "user" | "assistant"; text: string }[];
+  /** What was read from the website, or that it couldn't be; null without one. */
+  websiteNote: string | null;
 }
 
 interface DescribeProps {
@@ -52,11 +56,15 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
   const { refresh } = useWorkspace();
   // What was typed survives a refresh until Continue starts the interview.
   const [text, setText] = useState(() => recall(STORAGE_KEYS.description) ?? "");
+  // Never guessed from the sign-in email: a work address's domain is often
+  // not the company's site.
+  const [website, setWebsite] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const hasInput = text.trim().length > 0 || files.length > 0;
+  const hasInput = text.trim().length > 0 || files.length > 0 || website.trim().length > 0;
+  const site = siteName(website);
 
   useEffect(() => {
     remember(STORAGE_KEYS.description, text.trim() ? text : null);
@@ -89,19 +97,23 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
       let understood: OnboardUnderstanding | null = null;
       if (read) {
         // Not fatal: without it setup starts Personal and the review says so.
-        understood = await understandOnboarding(text.trim(), files).catch(() => null);
+        understood = await understandOnboarding(text.trim(), files, website).catch(() => null);
       }
       const mode = await saveWorkspace(understood);
       const description = read ? text.trim() : "";
-      const turn = await startOnboardInterview(description, read ? files : []);
+      const turn = await startOnboardInterview(description, read ? files : [], read ? website : "");
+      const pages = turn.website_pages ?? [];
       const turns: DescribeResult["turns"] = [];
-      // Files alone still make the opening answer (the server's first turn),
-      // so the answers line up with the server's when one is edited.
-      if (description || (read && files.length > 0)) turns.push({ role: "user", text: description });
+      // Files or website pages alone still make the opening answer (the
+      // server's first turn), so the answers line up with the server's when
+      // one is edited.
+      if (description || (read && (files.length > 0 || pages.length > 0))) {
+        turns.push({ role: "user", text: description });
+      }
       if (turn.phase === "question" && turn.question) {
         turns.push({ role: "assistant", text: turn.question });
       }
-      onReady({ mode, turn, turns });
+      onReady({ mode, turn, turns, websiteNote: read ? websiteNote(website, pages) : null });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start setup.");
       setBusy(false);
@@ -115,15 +127,35 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
         Tell me about your work in your own words. I&apos;ll work out the rest and ask a few
         quick questions about anything that&apos;s missing.
       </p>
+      <label className="mt-6 block text-sm font-medium text-fg" htmlFor="onboard-website">
+        Your website <span className="font-normal text-fg-muted">(optional)</span>
+      </label>
+      <input
+        id="onboard-website"
+        type="text"
+        inputMode="url"
+        autoComplete="url"
+        value={website}
+        onChange={(e) => setWebsite(e.target.value)}
+        disabled={busy}
+        autoFocus
+        placeholder="example.com"
+        className="mt-1.5 w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-colors disabled:opacity-50"
+      />
+      {site && (
+        <p className="mt-6 text-sm font-medium text-fg">
+          Anything the website doesn&apos;t say?{" "}
+          <span className="font-normal text-fg-muted">Your role, this year&apos;s goals, anything private.</span>
+        </p>
+      )}
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={7}
-        autoFocus
         disabled={busy}
         placeholder={EXAMPLE}
-        aria-label="Describe your work"
-        className="mt-6 w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors disabled:opacity-50"
+        aria-label={site ? "Anything the website doesn't say" : "Describe your work"}
+        className={`${site ? "mt-2" : "mt-6"} w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors disabled:opacity-50`}
       />
       <div className="mt-2 flex items-center gap-3">
         <label className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer transition-colors">
@@ -148,7 +180,7 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
           disabled={!hasInput || busy}
           className="px-5 py-2.5 rounded-lg text-sm font-medium bg-indigo-500 hover:bg-indigo-600 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {busy ? "Reading…" : "Continue"}
+          {busy ? (site ? `Reading ${site}…` : "Reading…") : "Continue"}
         </button>
         <button
           type="button"

@@ -255,6 +255,7 @@ function usePendingSection(
 
 function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: SectionComponentProps) {
   const [name, setName] = useState(profile.name);
+  const [website, setWebsite] = useState(profile.website ?? "");
   const [industry, setIndustry] = useState(profile.industry);
   const [stage, setStage] = useState(profile.stage);
   const [foundingYear, setFoundingYear] = useState(profile.founding_year?.toString() ?? "");
@@ -262,7 +263,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: Sectio
   const [arr, setArr] = useState(profile.annual_revenue_arr?.toString() ?? "");
 
   useEffect(() => {
-    setName(profile.name); setIndustry(profile.industry); setStage(profile.stage);
+    setName(profile.name); setWebsite(profile.website ?? ""); setIndustry(profile.industry); setStage(profile.stage);
     setFoundingYear(profile.founding_year?.toString() ?? "");
     setHeadcount(profile.headcount?.toString() ?? "");
     setArr(profile.annual_revenue_arr?.toString() ?? "");
@@ -284,7 +285,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: Sectio
       onEditingChange={setEditing}
       saving={saving}
       onSave={() => onSave({
-        name, industry, stage,
+        name, website: website.trim(), industry, stage,
         founding_year: foundingYear ? parseInt(foundingYear) : null,
         headcount: headcount ? parseInt(headcount) : null,
         annual_revenue_arr: arr ? parseFloat(arr) : null,
@@ -292,6 +293,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: Sectio
       viewContent={
         <div className="grid grid-cols-2 gap-x-6 gap-y-4">
           <div><FieldLabel>Name</FieldLabel><FieldValue>{profile.name}</FieldValue></div>
+          <div><FieldLabel>Website</FieldLabel><FieldValue>{profile.website || undefined}</FieldValue></div>
           <div><FieldLabel>Industry</FieldLabel><FieldValue>{profile.industry}</FieldValue></div>
           <div><FieldLabel>Stage</FieldLabel><FieldValue>{profile.stage}</FieldValue></div>
           <div><FieldLabel>Founded</FieldLabel><FieldValue>{profile.founding_year?.toString()}</FieldValue></div>
@@ -302,6 +304,7 @@ function CompanyBasicsSection({ profile, saving, onSave, pending, copy }: Sectio
       editContent={
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div><FieldLabel>Name</FieldLabel><Input value={name} onChange={setName} placeholder="Acme Corp" /></div>
+          <div><FieldLabel>Website</FieldLabel><Input value={website} onChange={setWebsite} placeholder="acme.com" /></div>
           <div><FieldLabel>Industry</FieldLabel><Input value={industry} onChange={setIndustry} placeholder="B2B SaaS" /></div>
           <div><FieldLabel>Stage</FieldLabel><Input value={stage} onChange={setStage} placeholder="Series A" /></div>
           <div><FieldLabel>Founded</FieldLabel><Input value={foundingYear} onChange={setFoundingYear} type="number" placeholder="2022" /></div>

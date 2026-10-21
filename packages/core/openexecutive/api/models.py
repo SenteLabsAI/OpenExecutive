@@ -332,6 +332,7 @@ class FinancialsData(BaseModel):
 
 class CompanyProfileResponse(BaseModel):
     name: str
+    website: str = ""
     industry: str
     stage: str
     founding_year: int | None
@@ -351,6 +352,7 @@ class CompanyProfileResponse(BaseModel):
 
 class CompanyProfileUpdateRequest(BaseModel):
     name: str | None = None
+    website: str | None = Field(default=None, max_length=300)
     industry: str | None = None
     stage: str | None = None
     founding_year: int | None = None
@@ -551,6 +553,9 @@ class OnboardTurnResponse(BaseModel):
     draft_goals: list[OnboardGoalDraft] = Field(default_factory=list)
     confidence_notes: list[str] = Field(default_factory=list)
     summary: str | None = None
+    # The website pages setup read for this session (e.g. "example.com/team"),
+    # on the opening turn only. Empty with a website given: it couldn't be read.
+    website_pages: list[str] = Field(default_factory=list)
 
 
 class OnboardSessionResponse(OnboardTurnResponse):

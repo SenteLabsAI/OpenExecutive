@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -41,6 +43,12 @@ MAX_PAGE_BYTES = 2 * 1024 * 1024
 MAX_INPUT_CHARS = 300
 # Text shorter than this is a script shell or an empty page, not content.
 MIN_PAGE_CHARS = 200
+
+# A read is kept briefly so setup's two calls (understand, then start) read
+# the site once. Per process: another worker just reads it again.
+CACHE_SECONDS = 600.0
+_CACHE_MAX = 32
+_cache: OrderedDict[tuple[str, int, int], tuple[float, list[WebsitePage]]] = OrderedDict()
 
 # Link paths or texts worth reading for a company profile, best first.
 _WANTED = (
@@ -183,6 +191,11 @@ async def read_website(
     Empty when nothing could be read in time. Raises ``WebsiteError`` only
     for input that is not an address at all."""
     home_url = normalize_url(raw)
+    key = (home_url, max_chars_per_page, max_total_chars)
+    now = time.monotonic()
+    hit = _cache.get(key)
+    if hit is not None and now - hit[0] < CACHE_SECONDS:
+        return list(hit[1])
     pages: list[WebsitePage] = []
 
     async def _read() -> None:
@@ -211,4 +224,10 @@ async def read_website(
             break
         kept.append(WebsitePage(page.label, page.text[:left]))
         left -= len(kept[-1].text)
+    # An empty read is not kept: the site may be back in a minute.
+    if kept:
+        _cache[key] = (now, kept)
+        _cache.move_to_end(key)
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
     return kept

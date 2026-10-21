@@ -90,3 +90,32 @@ export function goalsToSave(
         : "",
     }));
 }
+
+/** What was typed in the website field, as people say it: "example.com". */
+export function siteName(typed: string): string {
+  return typed
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+    .replace(/^www\./i, "")
+    .replace(/[/?#].*$/, "")
+    .toLowerCase();
+}
+
+/** A page label from the server ("example.com/about-us") as a name: "About us",
+ * or "Home" for the site itself. */
+export function pageName(label: string): string {
+  const slash = label.indexOf("/");
+  if (slash === -1) return "Home";
+  const last = label.slice(slash + 1).split("/").filter(Boolean).pop() ?? "";
+  const words = last.replace(/[-_]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Home";
+}
+
+/** The line the questions open with when a website was given: what was read,
+ * or that it couldn't be (setup then goes on from what was written). */
+export function websiteNote(typed: string, pages: string[]): string | null {
+  const site = siteName(typed);
+  if (!site) return null;
+  if (pages.length === 0) return `I couldn't read ${site}, so I'll ask instead.`;
+  return `Read ${site}: ${pages.map(pageName).join(", ")}.`;
+}

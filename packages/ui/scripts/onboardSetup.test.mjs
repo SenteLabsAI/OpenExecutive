@@ -6,7 +6,10 @@ import {
   goalsToSave,
   inferredMode,
   modeLine,
+  pageName,
+  siteName,
   understoodRole,
+  websiteNote,
 } from "../src/lib/onboardSetup.ts";
 
 const profile = (over = {}) => ({
@@ -73,4 +76,25 @@ test("goals drop blanks and owners or departments no longer on the review", () =
     { title: "Launch", target: "", owner_name: "dan", department_title: "Engineering" },
     { title: "Win customers", target: "", owner_name: "", department_title: "" },
   ]);
+});
+
+test("siteName is the address as people say it", () => {
+  assert.equal(siteName("https://www.ForeActLabs.com/about?x=1"), "foreactlabs.com");
+  assert.equal(siteName(" example.com "), "example.com");
+  assert.equal(siteName(""), "");
+});
+
+test("pageName reads a page label as a name", () => {
+  assert.equal(pageName("example.com"), "Home");
+  assert.equal(pageName("example.com/about-us"), "About us");
+  assert.equal(pageName("example.com/company/team"), "Team");
+});
+
+test("websiteNote says what was read, or that it couldn't be", () => {
+  assert.equal(websiteNote("", []), null);
+  assert.equal(websiteNote("example.com", []), "I couldn't read example.com, so I'll ask instead.");
+  assert.equal(
+    websiteNote("https://example.com", ["example.com", "example.com/team"]),
+    "Read example.com: Home, Team.",
+  );
 });

@@ -436,6 +436,9 @@ export interface OnboardTurn {
   draft_goals: OnboardGoalDraft[];
   confidence_notes: string[];
   summary: string | null;
+  /** The website pages read for this setup (e.g. "example.com/team"), on the
+   * opening turn only. Empty with a website given: it couldn't be read. */
+  website_pages?: string[];
 }
 
 export interface OnboardTranscriptTurn {
@@ -457,10 +460,12 @@ async function onboardError(res: Response, fallback: string): Promise<Error> {
 
 export async function startOnboardInterview(
   description: string,
-  files: File[] = []
+  files: File[] = [],
+  website = ""
 ): Promise<OnboardTurn> {
   const form = new FormData();
   form.append("description", description);
+  if (website.trim()) form.append("website", website.trim());
   for (const file of files) form.append("files", file);
   const res = await fetch(`${API_BASE}/onboard/interview/start`, {
     method: "POST",
@@ -483,10 +488,12 @@ export interface OnboardUnderstanding {
 
 export async function understandOnboarding(
   description: string,
-  files: File[] = []
+  files: File[] = [],
+  website = ""
 ): Promise<OnboardUnderstanding> {
   const form = new FormData();
   form.append("description", description);
+  if (website.trim()) form.append("website", website.trim());
   for (const file of files) form.append("files", file);
   const res = await fetch(`${API_BASE}/onboard/interview/understand`, {
     method: "POST",
@@ -573,6 +580,8 @@ export async function commitOnboardDraft(
 
 export interface CompanyProfile {
   name: string;
+  /** The company's own site, as setup read it. Absent from older servers. */
+  website?: string;
   industry: string;
   stage: string;
   founding_year: number | null;

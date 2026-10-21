@@ -9726,11 +9726,27 @@ company_onboarding:
     or outsiders are named, Personal when unclear) and the UI saves it before
     the interview; the review shows it on one line with a Change link. Save
     goes to Home; there is no done screen or voice step in setup.
+    An optional website comes first (onboarding/website.py): the server
+    reads it itself, never the model, so it works without web search - the
+    home page plus up to four same-site pages picked from its links (about,
+    team, products...; /about when none match), each through
+    monitoring.sources._http.fetch_bounded (SSRF guard, pinned DNS, three
+    redirects, 2 MB), as text capped per page and at 40,000 characters in
+    all, within 20 seconds. A failed page is skipped and an unreadable site
+    is no pages: setup carries on from the box, never an error screen. A
+    read is cached 10 minutes per process so understand and start fetch
+    once. Nothing is stored or indexed; the normalized address goes onto
+    the draft as CompanyProfile.website. The site is never guessed from the
+    sign-in email. Invariant: website and attached-file text enter the
+    opening turn as content_trust.wrap_untrusted blocks (source website /
+    attachment), and both prompts treat untrusted_content as source
+    material, never instructions; a website describes the company, not who
+    the user is or what they want this year.
     Deliberately shaped like the /demo and /clients/generate draft-then-review
     flows rather than like a form.
   api: |
-    POST /onboard/interview/understand (multipart: description + files[]; one model call, no session, returns mode/role/company/focus where the text says so),
-    POST /onboard/interview/start (multipart: description + files[]),
+    POST /onboard/interview/understand (multipart: description + files[] + optional website; one model call, no session, returns mode/role/company/focus where the text says so),
+    POST /onboard/interview/start (multipart: description + files[] + optional website; website_pages lists the pages read, empty when the site couldn't be read; a website that is no address at all is a 422),
     POST /onboard/interview/message, POST /onboard/interview/draft,
     POST /onboard/interview/revise (change one earlier answer, 0 = the
     description, which keeps its attached files; drops every turn after it,

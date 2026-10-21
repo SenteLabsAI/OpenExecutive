@@ -66,6 +66,9 @@ function OnboardFlow() {
   // Resuming: the remembered session is being fetched.
   const [resuming, setResuming] = useState(() => recall(STORAGE_KEYS.session) !== null);
   const [resumed, setResumed] = useState(false);
+  // What was read from the website on the first step, shown once over the
+  // questions or the draft (not kept across a refresh).
+  const [siteNote, setSiteNote] = useState<string | null>(null);
   // Bumped by Start over, so the conversation starts again from empty.
   const [restarts, setRestarts] = useState(0);
   // Bumped by each redraft from an edited answer, so the review starts afresh.
@@ -129,9 +132,16 @@ function OnboardFlow() {
     setConversationTurn(null);
     setResumeTurns([]);
     setResumed(false);
+    setSiteNote(null);
     setChosenHere(null);
     setRestarts((n) => n + 1);
   }
+
+  const siteLine = siteNote && (
+    <p className="mb-4 text-sm text-fg-muted" role="status">
+      {siteNote}
+    </p>
+  );
 
   const resumedBanner = resumed && (
     <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-accent/25 bg-accent/5 px-4 py-3 text-sm text-fg-muted">
@@ -164,7 +174,8 @@ function OnboardFlow() {
     return (
       <OnboardDescribe
         onLater={later}
-        onReady={({ mode: picked, turn: first, turns }) => {
+        onReady={({ mode: picked, turn: first, turns, websiteNote }) => {
+          setSiteNote(websiteNote);
           remember(STORAGE_KEYS.session, first.session_id);
           remember(STORAGE_KEYS.description, null);
           setResumeTurns(turns);
@@ -196,6 +207,7 @@ function OnboardFlow() {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 w-full">
         {resumedBanner}
+        {siteLine}
         <OnboardDraftReview
           // A redraft after an edited answer starts the review afresh.
           key={redrafts}
@@ -245,6 +257,7 @@ function OnboardFlow() {
       </div>
 
       {resumedBanner}
+      {conversationTurn && siteLine}
 
       <OnboardConversation
         key={restarts}
