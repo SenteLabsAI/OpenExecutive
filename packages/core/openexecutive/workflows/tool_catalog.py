@@ -116,7 +116,11 @@ class ToolInfo:
     # True: only reads. None: may change something (unknown). Never False —
     # we can't prove a tool writes, only that its name says it reads.
     read_only: bool | None = None
-    source: str = "mcp"  # "mcp" | "builtin"
+    # "mcp" | "builtin" | "server" (the model's own tool: web search, added to
+    # the model's tools rather than called; ``workflows.chat_tools``)
+    source: str = "mcp"
+    # A call's timeout when it runs a whole job (None: the step's default).
+    timeout_s: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -187,6 +191,11 @@ def _read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> b
     if _has_word(_name_words(name), _WRITE_WORDS):
         return None
     return True if name.split("__", 1)[-1].lower().startswith(_READ_VERBS) else None
+
+
+def read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> bool | None:
+    """True when ``name`` only reads (see ``_read_only_label``), else None."""
+    return _read_only_label(name, input_schema)
 
 
 # ── MCP: parse the gateway's search_tools output ────────────────────────────
@@ -454,9 +463,21 @@ def _extension_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     return specs
 
 
+def _chat_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    from openexecutive.workflows import chat_tools
+
+    try:
+        return chat_tools.workflow_specs()
+    except Exception:
+        logger.warning("tool_catalog: chat tools unavailable", exc_info=True)
+        return {}
+
+
 def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
-    # Our own built-ins win a name clash.
-    return {**_extension_specs(), **_builtin_specs()}
+    # Our own built-ins win a name clash (oe__message_person and
+    # oe__create_alert keep their workflow handlers), then the chat's tools
+    # (workflows.chat_tools), then an extension's.
+    return {**_extension_specs(), **_chat_specs(), **_builtin_specs()}
 
 
 def builtin_tools() -> list[ToolInfo]:
@@ -474,10 +495,15 @@ def builtin_handler(name: str) -> Handler | None:
 async def search(query: str) -> list[ToolInfo]:
     """Tools matching a plain-language query: built-ins first, then the gateway."""
     words = [w for w in re.split(r"\W+", query.lower()) if len(w) > 2]
-    builtins = [
-        t for t in builtin_tools()
-        if not words or any(w in f"{t.name} {t.description}".lower() for w in words)
-    ]
+    def hits(t: ToolInfo) -> int:
+        text = f"{t.name} {t.description}".lower()
+        return sum(w in text for w in words)
+
+    # Best match first: there are dozens of built-ins now that chat's tools
+    # are among them (workflows.chat_tools).
+    builtins = sorted(
+        (t for t in builtin_tools() if not words or hits(t)), key=lambda t: -hits(t)
+    )
     gateway = _gateway()
     mcp = await _gateway_search(gateway, query, _SEARCH_TOP_K) if gateway else []
     return [*builtins, *mcp]

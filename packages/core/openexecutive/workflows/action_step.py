@@ -153,7 +153,20 @@ def _block_to_dict(block: Any) -> dict[str, Any] | None:
             "name": getattr(block, "name", ""),
             "input": getattr(block, "input", {}) or {},
         }
+    if kind in ("server_tool_use", "web_search_tool_result"):
+        # The model's own web search: echoed back as-is so it keeps what it
+        # searched (orchestrator.web_search_tool).
+        dump = getattr(block, "model_dump", None)
+        return dump(exclude_none=True) if callable(dump) else None
     return None
+
+
+def _append_assistant(messages: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> None:
+    """Add the model's turn, joined to the one before when that one paused."""
+    if messages and messages[-1]["role"] == "assistant":
+        messages[-1]["content"] = [*messages[-1]["content"], *blocks]
+    else:
+        messages.append({"role": "assistant", "content": blocks})
 
 
 # Argument keys that say WHERE a call acts (which sheet, which recipient,
@@ -400,19 +413,26 @@ def _audit(
 async def _dispatch(
     name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo, workflow_name: str,
 ) -> str:
-    if info.source == "builtin":
+    if info.source in ("builtin", "server"):
         handler = tool_catalog.builtin_handler(name)
         if handler is None:  # resolve() only returns names with handlers
             return json.dumps({"error": "tool is not available"})
-        if name == "oe__create_alert":
-            # An alert a team member's saved workflow raises is theirs, as
-            # it would be from their chat (orchestrator.alert_tools).
-            from openexecutive.orchestrator.alert_tools import raised_for_workflow_owner
-            from openexecutive.workflows.dynamic_store import get_owner
+        if info.source == "server":
+            return json.dumps({"error": "this tool is used by the model as it writes; it can't be called"})
+        from openexecutive.workflows import chat_tools
+        from openexecutive.workflows.dynamic_store import get_owner
 
-            with raised_for_workflow_owner(get_owner(workflow_name)):
-                return await handler(arguments)
-        return await handler(arguments)
+        owner = get_owner(workflow_name)
+        # A chat tool runs as a step of this workflow (workflows.chat_tools).
+        with chat_tools.in_workflow(workflow_name, owner):
+            if name == "oe__create_alert":
+                # An alert a team member's saved workflow raises is theirs, as
+                # it would be from their chat (orchestrator.alert_tools).
+                from openexecutive.orchestrator.alert_tools import raised_for_workflow_owner
+
+                with raised_for_workflow_owner(owner):
+                    return await handler(arguments)
+            return await handler(arguments)
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 
     gateway = get_active_gateway()
@@ -433,7 +453,8 @@ async def _call_tool(
     """Run one approved tool call. Returns (result text, is_error); never raises."""
     try:
         content = await asyncio.wait_for(
-            _dispatch(name, arguments, info, workflow_name), timeout=_TOOL_CALL_TIMEOUT_S
+            _dispatch(name, arguments, info, workflow_name),
+            timeout=info.timeout_s or _TOOL_CALL_TIMEOUT_S,
         )
     except TimeoutError:
         return json.dumps({"error": "the tool timed out"}), True
@@ -603,7 +624,7 @@ async def run_action_step(
     resolved_model = model if model is not None else agent.effective_model()
     provider = get_provider(resolved_model)
     scripts = settings.workflow_step_scripts and step_script.available()
-    tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools]
+    tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools if resolved[name].source != "server"]
     if scripts:
         tool_defs.append(
             step_script.tool_definition(
@@ -615,6 +636,13 @@ async def run_action_step(
             )
         )
     tools = sorted(tool_defs, key=lambda t: t["name"])
+    # The model's own server tools (web search) go after the sorted list.
+    if any(resolved[name].source == "server" for name in step.tools):
+        from openexecutive.orchestrator.web_search_tool import build_web_search_tool
+
+        web_search = build_web_search_tool()
+        if web_search is not None:
+            tools.append(web_search)
     system = [
         {"type": "text", "text": agent.effective_system_prompt(), "cache_control": {"type": "ephemeral"}}
     ]
@@ -675,12 +703,19 @@ async def run_action_step(
 
         blocks = [b for b in (_block_to_dict(b) for b in getattr(response, "content", []) or []) if b]
         tool_uses = [b for b in blocks if b["type"] == "tool_use"]
+        if getattr(response, "stop_reason", None) == "pause_turn" and blocks:
+            # A long web search paused mid-turn: send it back to carry on.
+            _append_assistant(messages, blocks)
+            continue
         if not tool_uses:
-            report = "\n".join(b["text"] for b in blocks if b["type"] == "text").strip()
+            paused = messages[-1]["content"] if messages[-1]["role"] == "assistant" else []
+            report = "\n".join(
+                b["text"] for b in [*paused, *blocks] if b["type"] == "text"
+            ).strip()
             yield ("output", _format_output(report, actions))
             return
 
-        messages.append({"role": "assistant", "content": blocks})
+        _append_assistant(messages, blocks)
         results: list[dict[str, Any]] = []
         for use in tool_uses:
             name = str(use["name"])

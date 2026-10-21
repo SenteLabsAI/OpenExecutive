@@ -7251,6 +7251,26 @@ workflows:
     list_saved_tools is allowed under the Act as me lockdown (local read)
     and withheld on a turn private to the principal, like run_script.
 
+    Chat's tools in action steps (workflows/chat_tools.py): one list,
+    `ACCESS`, labels every tool chat offers — use (a step may call it as
+    oe__<name>), as_me (Act as me; chat-only for now), covered (the step
+    already has its own path: gateway tools, run_script, specialist steps) or
+    chat_only (it changes what the Executive knows or who is on the team, or
+    acts on the person's screen). A unit test fails when a new chat tool has
+    no label, so a new chat tool can't skip the decision. A "use" tool runs
+    through the SAME chat handler, as an unattended chat turn would: an
+    unattended Session bound as current_session, the workspace-mode filter
+    (solo withholds department/broadcast tools), and, when a team member
+    created the workflow, their department gate. Channels the instance has no
+    token for are not offered. A saved workflow is the person's permission, so
+    Take the lead's approval gates and the solo principal-only rules are not
+    applied (no change for workflows that worked before). run_workflow refuses
+    a workflow already in its own chain and nests at most 3 deep;
+    run_workflow / run_executive_research get a 15-minute call timeout.
+    oe__web_search is the model's own server search (appended after the sorted
+    tools; paused turns are sent back as-is). oe__message_person,
+    oe__create_alert and oe__read_file keep their workflow-specific handlers.
+
     Action steps (workflows that act): `ActionStepSpec` {goal, tools,
     max_tool_calls 1-50, default 20} in dynamic_models. `tools` is an allowlist
     of exact names — MCP gateway tools (`server__tool`) and built-ins

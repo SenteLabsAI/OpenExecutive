@@ -62,6 +62,7 @@ MAX_OPTION_CHARS = 80
 # name cannot smuggle a block of instructions into the context.
 MAX_ROSTER_NAME_CHARS = 80
 MAX_ROSTER_ROLE_CHARS = 80
+MAX_TOOL_DESCRIPTION_CHARS = 240
 
 _MAX_TOKENS = 8000
 _REPAIR_ECHO_CHARS = 4000
@@ -254,7 +255,9 @@ def build_context_block() -> str:
 
     sections = [f"- {s.value}" for s in WorkflowSection]
 
-    builtins = [f"- {t.name}: {t.description}" for t in tool_catalog.builtin_tools()]
+    builtins = [
+        f"- {t.name}: {_first_sentence(t.description)}" for t in tool_catalog.builtin_tools()
+    ]
     gateway = (
         "connected — use search_available_tools to find its tools"
         if tool_catalog.gateway_available()
@@ -272,9 +275,22 @@ def build_context_block() -> str:
         f"The user's timezone: {get_user_timezone().key}. Cadences are in UTC.\n\n"
         "Sections:\n" + "\n".join(sections) + "\n\n"
         f"External tool gateway (email, sheets, files, etc.): {gateway}.\n"
-        "Built-in tools (always available):\n" + "\n".join(builtins) + "\n\n"
+        "Built-in tools (always available; the oe__ tools are the same tools "
+        "the Executive uses in chat, so anything it did in chat a step can "
+        "do too):\n" + "\n".join(builtins) + "\n\n"
         "Workflow names already taken (do not reuse): " + ", ".join(taken)
     )
+
+
+def _first_sentence(text: str) -> str:
+    """The first sentence of a tool description, kept to one short line.
+
+    Chat tools carry long descriptions written for chat; the designer only
+    needs enough to pick the right one.
+    """
+    line = _one_line(text, MAX_TOOL_DESCRIPTION_CHARS)
+    end = line.find(". ")
+    return line[: end + 1] if end > 0 else line
 
 
 def _name_taken(name: str) -> bool:
