@@ -174,6 +174,7 @@ def test_not_when_the_workflow_reaches_outside(on, monkeypatch: pytest.MonkeyPat
 @pytest.mark.parametrize("tool", [
     "oe__web_search", "oe__run_workflow", "oe__read_document", "oe__send_company_broadcast",
     "oe__create_alert", "google_workspace__send_gmail_message", "notion__create_page",
+    "oe__send_email_as_me",
 ])
 def test_nothing_that_reaches_outside_alongside_a_read(tool: str) -> None:
     refused = workflow_reads.definition_refusal(_defn(_step([SEARCH]), _step([tool])), 1)
@@ -182,7 +183,7 @@ def test_nothing_that_reaches_outside_alongside_a_read(tool: str) -> None:
 
 def test_what_may_run_alongside_a_read() -> None:
     defn = _defn(_step([
-        *sorted(workflow_reads.TOOLS), *sorted(workflow_email.TOOLS),
+        *sorted(workflow_reads.TOOLS), workflow_email.DRAFT_TOOL,
         "oe__message_person", "oe__draft_artifact", "oe__list_people", "oe__create_calendar_event",
     ]))
     assert workflow_reads.definition_refusal(defn, 1) is None

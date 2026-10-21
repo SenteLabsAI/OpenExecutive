@@ -224,8 +224,8 @@ def _email_as_line(as_me: bool) -> str:
             "tools. If it isn't clear which of the three they want, ask. To read their "
             f"own mail or calendar, use {reads}. A workflow that reads them runs only "
             "for them and reports only to them, and none of its steps may use web "
-            "search, gateway tools, scripts or other workflows: if they want those "
-            "too, suggest a separate workflow."
+            f"search, gateway tools, scripts, other workflows or {SEND_TOOL} (it may "
+            f"still use {DRAFT_TOOL}): if they want those too, suggest a separate workflow."
         )
     return (
         "Email as the user: not available, since they haven't connected their own "

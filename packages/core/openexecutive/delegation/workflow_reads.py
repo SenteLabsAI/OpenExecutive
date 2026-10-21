@@ -22,7 +22,9 @@ produces can reach other people, so it is fenced in code, as chat is:
 - **The run is locked down.** As a chat turn that read the mail is for the
   rest of the turn (``delegation.lockdown``), a workflow that reads is for
   all of its steps: it may only list tools ``MAIL_TOUCHED_ALLOWED_TOOLS``
-  lets run after a read, the email-as-me tools and these reads; no gateway
+  lets run after a read, drafts as them (``oe__draft_email_as_me``, as chat
+  may still draft after a read; never ``oe__send_email_as_me``, which mail
+  text could aim at an address already approved) and these reads; no gateway
   tool, web search, script or workflow run; no approval gate asking anyone
   but its creator. Checked when it is saved (``definition_refusal``) and
   again on every run (``run_rules``).
@@ -64,7 +66,7 @@ def _allowed_alongside(tool: str) -> bool:
     from openexecutive.delegation.lockdown import MAIL_TOUCHED_ALLOWED_TOOLS
     from openexecutive.workflows.chat_tools import ACCESS, LEGACY_NAMES, PREFIX, USE
 
-    if tool in TOOLS or tool in workflow_email.TOOLS:
+    if tool in TOOLS or tool == workflow_email.DRAFT_TOOL:
         return True
     if not tool.startswith(PREFIX):
         return False  # gateway, extension or web search: a door outside

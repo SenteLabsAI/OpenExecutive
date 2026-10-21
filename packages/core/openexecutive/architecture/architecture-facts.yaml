@@ -7290,7 +7290,7 @@ workflows:
     anyone else; chat's run_workflow needs the turn's Act as me pin to be the
     creator and marks the turn touched_mail/read_mail first). Locked down for
     all steps (definition_refusal at save, run_rules at each step): tools
-    only the reads, the email-as-me tools and oe__ chat tools in
+    only the reads, oe__draft_email_as_me (never the send tool) and oe__ chat tools in
     MAIL_TOUCHED_ALLOWED_TOOLS; no run_script; approval gates and cadence
     only to the creator. Saved/changed/activated only by its verified
     creator (save_refusal covers reads too); chat never replaces one.
