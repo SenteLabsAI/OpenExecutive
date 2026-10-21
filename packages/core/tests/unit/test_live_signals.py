@@ -230,6 +230,42 @@ def test_calendar_lists_what_is_left_of_today() -> None:
     assert not any("Standup" in line for line in signals.calendar)
 
 
+def test_meetings_that_ended_today_are_kept_apart() -> None:
+    now = datetime(2026, 9, 28, 14, 0, tzinfo=UTC)
+    events = [
+        CalendarEvent("Standup", now - timedelta(hours=5), now - timedelta(hours=4)),
+        CalendarEvent("Update call", now - timedelta(hours=2), now - timedelta(hours=1)),
+        CalendarEvent("Later", now + timedelta(hours=1), now + timedelta(hours=2)),
+    ]
+
+    signals = live_signals.gather_live_signals(_since(), now=now, include_private=True, calendar=events)
+
+    assert signals.met_today == ("12:00–13:00 Update call", "09:00–10:00 Standup")
+    assert signals.calendar == ("15:00–16:00 Later",)
+
+
+def test_unanswered_mail_reaches_only_the_principal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.briefing import waiting_on
+
+    now = datetime(2026, 9, 28, 14, 0, tzinfo=UTC)
+    items = [
+        waiting_on.Waiting(("leonard@co.test",), "SVN numbers", now - timedelta(hours=3)),
+        waiting_on.Waiting(("andrew@co.test", "b@co.test"), "Proposal", now - timedelta(days=3)),
+    ]
+    monkeypatch.setattr(waiting_on, "cached", lambda: items)
+
+    own = live_signals.gather_live_signals(_since(), now=now, include_private=True)
+    shared = live_signals.gather_live_signals(_since(), now=now, include_private=False)
+
+    assert own.waiting == (
+        "to leonard@co.test, sent today at 11:00, no reply yet: SVN numbers",
+        "to andrew@co.test, b@co.test, sent 3 days ago (Fri 25 Sep), no reply yet: Proposal",
+    )
+    assert shared.waiting == ()
+    # The briefs don't read it: it never makes the window non-empty.
+    assert own.is_empty()
+
+
 async def test_calendar_is_read_once_and_served_from_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

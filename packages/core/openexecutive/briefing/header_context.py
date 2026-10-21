@@ -9,7 +9,9 @@ that, not around everything the Executive can see:
   decisions raised or re-raised today, the reader's items due today or
   overdue, the Executive's own follow-ups due today or overdue, replies
   overdue from people it is waiting on, work it finished today, things it
-  could not do from a chat, and today's monitoring signals.
+  could not do from a chat, and today's monitoring signals. For the
+  principal also the emails of theirs nobody has answered yet (their own
+  sent mail, ``briefing.waiting_on``) and the meetings that ended today.
 - **COMING UP TODAY**: the rest of the calendar, tagged the same way.
 - **STILL OPEN**: what is already on the list below and did not move today.
   Background for ranking, never a point.
@@ -140,6 +142,10 @@ def render_header_context(
         if live.drafts and not live.draft_lines:
             n = live.drafts
             moved.add(f"{n} draft{'s' if n != 1 else ''} in the reader's own mailbox, waiting for them to send")
+        for line in live.waiting:
+            moved.add(f"The reader's own email, waiting on an answer: {_one_line(line, 300)}")
+        for line in live.met_today:
+            moved.add(f"Meeting that ended today: {_one_line(line, 200)}")
 
     for p in today_data.get("proposals") or []:
         headline = _one_line(p.get("headline"), 160)
