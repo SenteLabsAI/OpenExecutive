@@ -61,6 +61,7 @@ PRINCIPAL = {"x-caller-email": "ceo@example.com"}
 # company domain until one is set).
 NO_ROLE: dict[str, Any] = {
     **dict.fromkeys(ws.ROLE_FIELDS), "company_domains": [], "company_domains_custom": False,
+    "has_departments": False,
 }
 
 
@@ -70,6 +71,14 @@ def test_get_defaults_before_onboarding(client: TestClient) -> None:
     assert resp.json() == {
         "mode": "team", "timezone": None, "effective_timezone": "UTC", **NO_ROLE,
     }
+
+
+def test_get_says_whether_any_department_exists(client: TestClient) -> None:
+    """The UI shows the Departments tab only once a department exists."""
+    assert client.get("/workspace").json()["has_departments"] is False
+    dept_store.create_department("Sales")
+    dept_registry.invalidate()
+    assert client.get("/workspace").json()["has_departments"] is True
 
 
 def test_get_reports_the_fallback_zone(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

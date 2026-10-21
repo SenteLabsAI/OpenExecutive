@@ -1829,6 +1829,9 @@ export interface WorkspaceSettings extends PrincipalRole {
   // principal's addresses unless `company_domains_custom`.
   company_domains?: string[];
   company_domains_custom?: boolean;
+  // Whether any department exists; the Departments tab shows only then.
+  // Optional so an older API build reads as "yes" (the tab stays).
+  has_departments?: boolean;
 }
 
 // Partial update: only the fields present change. `timezone: null` (or "")
@@ -4385,7 +4388,10 @@ export type PeriodType = "week" | "month" | "quarter" | "year" | "ongoing";
 
 export interface Goal {
   id: number | null;
-  department_slug: string;
+  // Null for a goal with no department: it stands on its own.
+  department_slug: string | null;
+  // Who it is on when set; null = its department's lead, else the principal.
+  owner_person_id?: number | null;
   period_type: PeriodType;
   period_value: string;
   key_result: string;
@@ -4485,6 +4491,22 @@ export interface GoalCreate {
   target?: string;
   current?: string;
   status?: Goal["status"];
+  owner_person_id?: number | null;
+}
+
+/** A goal as GET /goals returns it: its owner and department resolved. */
+export interface GoalView extends Goal {
+  // Its own owner, else its department's lead, else the principal.
+  owner_id: number | null;
+  owner_name: string;
+  department_title: string | null;
+}
+
+/** Every goal, with or without a department. */
+export async function listGoals(): Promise<GoalView[]> {
+  const res = await fetch(`${API_BASE}/goals`, { cache: "no-store" });
+  if (!res.ok) throw await goalError(res, "Couldn't load goals");
+  return res.json();
 }
 
 // The server's reason when it gives one — a string `detail`, or the first
@@ -4511,8 +4533,8 @@ export async function createGoal(slug: string, body: GoalCreate): Promise<Goal> 
   return res.json();
 }
 
-/** Add a goal by area name: an existing area by slug or title, else a new
- * one of that name, else (blank) "General". For a workspace with no areas. */
+/** Add a goal, naming its department in words: an existing one by slug or
+ * title, else a new one of that name. Blank = no department. */
 export async function createGoalInArea(area: string, body: GoalCreate): Promise<Goal> {
   const res = await fetch(`${API_BASE}/goals`, {
     method: "POST",
@@ -4530,6 +4552,25 @@ export interface GoalPatch {
   target?: string;
   current?: string;
   status?: Goal["status"];
+  // Only through updateAnyGoal. null clears: no owner of its own / no department.
+  owner_person_id?: number | null;
+  department_slug?: string | null;
+}
+
+/** Edit a goal wherever it is, including its owner and department. */
+export async function updateAnyGoal(goalId: number, patch: GoalPatch): Promise<Goal> {
+  const res = await fetch(`${API_BASE}/goals/${goalId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await goalError(res, "Couldn't save the goal");
+  return res.json();
+}
+
+export async function deleteAnyGoal(goalId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/goals/${goalId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete Goal: ${res.statusText}`);
 }
 
 export async function updateGoal(slug: string, goalId: number, patch: GoalPatch): Promise<Goal> {
@@ -5022,9 +5063,14 @@ export interface GoalBrief {
   current: string;
   target: string;
   status: string; // "at_risk" | "off_track"
+  // Who it is on (its own owner, else the department's lead, else the
+  // principal). Optional for older API builds.
+  owner_id?: number | null;
+  owner_name?: string;
 }
 
 export interface DepartmentBriefItem {
+  // "" for the row holding the goals with no department ("Other goals").
   slug: string;
   title: string;
   authority_level: string;

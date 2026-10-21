@@ -27,7 +27,12 @@ PeriodType = Literal["week", "month", "quarter", "year", "ongoing"]
 
 
 class Goal(BaseModel):
-    """A single Goal row for one department, scoped to a period.
+    """A single Goal, scoped to a period.
+
+    A goal stands on its own: ``department_slug`` is optional (None = no
+    department) and ``owner_person_id`` names who it is on. An unset owner
+    means the department's lead, or the principal when there is no lead or
+    no department (``departments.goals.effective_owner_id``).
 
     `period_type` says how to interpret `period_value`:
       • week → e.g. "Week of May 18"
@@ -38,7 +43,8 @@ class Goal(BaseModel):
     """
 
     id: int | None = None
-    department_slug: str
+    department_slug: str | None = None
+    owner_person_id: int | None = None
     period_type: PeriodType = "quarter"
     period_value: str
     key_result: str

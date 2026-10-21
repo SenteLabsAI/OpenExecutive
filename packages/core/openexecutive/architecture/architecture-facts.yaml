@@ -1255,6 +1255,35 @@ routing:
     and `contacts_reachable_now()`, decides whether a turn may reach a
     contact at all (egress, calendar attendees, `message_person` and the
     raw DM tools) — see `integrations.channel_access`.
+  standalone_goals: |
+    A goal has an owner and, optionally, a department
+    (departments.models.Goal: `department_slug` and `owner_person_id` are
+    both nullable). Why: departments are heavyweight (a lead, authority,
+    a channel, a check-in) and most small teams and solo users never want
+    them, but every goal still needs someone it is on and a weekly check.
+    The owner is resolved at read time (`departments.goals.
+    effective_owner_id`): own owner, else the department's head, else the
+    principal; storing NULL keeps a goal following its department when the
+    head changes. Coverage: a department with a specialist grades its own
+    goals in its check-in; every other goal (no department, or a department
+    with no specialist) is graded weekly by the `goal_review` scheduled kind
+    (`departments.goal_review`, `GOAL_REVIEW_TIME`, default
+    weekly@mon@09:00, both modes) with `cso` (`goals.FALLBACK_REVIEWER`),
+    reusing the check-in's verdict contract and `persist_goal_verdicts`.
+    It skips goals graded within six days and unedited since, so a quiet
+    week costs no model call. Deleting a department detaches its goals
+    (an unowned goal takes the head as owner first) instead of deleting
+    them. Migration `_migrate_goals_stand_alone` rebuilds the table once to
+    drop NOT NULL, then adds `owner_person_id` (no backfill). Routes:
+    `GET /goals` (with owner name and department title), `POST /goals`
+    (blank area = no department), `PATCH`/`DELETE /goals/{id}`. The org
+    block renders goals with no department with their goal_id (team:
+    `## Goals With No Department`; solo: `### No area`); the brief adds an
+    "Other goals" row (slug "") shaped like a department so every reader of
+    `departments` counts them, and attention goals carry the owner. The UI
+    shows the Departments tab only when `GET /workspace` reports
+    `has_departments`, and adding a teammate while solo switches the
+    workspace to team mode without asking.
   department_tools: |
     `list_department_goals` and `update_department_goal`
     (openexecutive.orchestrator.department_tools) let the Executive
@@ -1262,8 +1291,11 @@ routing:
     a chat turn — used when the user reports progress ("we shipped
     the migration") or a setback ("we lost the deal"). Phase B —
     closes the loop opened by `department_check_in` workflow in Phase
-    A (see `departments.goal_review_persistence`). Both tools require
-    `department_slug`; `update_department_goal` requires `goal_id` +
+    A (see `departments.goal_review_persistence`). Neither needs a
+    department: `list_department_goals` without `department_slug` lists
+    every goal with its owner and department, and `update_department_goal`
+    names a goal by `goal_id` alone (a `department_slug` it is given must
+    match the goal's department). `update_department_goal` requires `goal_id` +
     `rationale` and at least one of `status`/`current`. `rationale` is
     stored in the audit log (never on the goal row) so future readers
     see the provenance of every chat-driven change. The handler enforces
@@ -1341,7 +1373,12 @@ routing:
     stable tool prefix. The solo persona teaches it (`_SOLO_CREATE_GOAL`);
     team mode learns it from the tool description, so the team persona
     stays byte-identical.
-    Evals: `department_goal_update_005`.
+    Goals stand on their own: `create_goal` leaves `area` out unless the
+    principal names one (a goal with no area creates no department) and
+    takes an optional `owner_person_id` (a non-archived team member, else
+    refused). The duplicate check and the 8-goal cap apply to the goals
+    with no department as one group.
+    Evals: `department_goal_update_005`, `department_goal_update_006`.
     `record_decision_outcome` (orchestrator/decision_tools.py, both modes)
     records how a past decision turned out. The weekly review lists up to
     three decisions older than 30 days with an empty outcome as

@@ -48,6 +48,13 @@ interface BuildOpts {
    * but the principal).
    */
   roleKind?: RoleKind | null;
+  /**
+   * Whether any department exists. A team's Departments tab shows only then:
+   * goals stand on their own, so a team may never need one (it is reached
+   * from the Goals page's "Add a department"). Defaults to true, so a caller
+   * that doesn't know keeps the tab.
+   */
+  hasDepartments?: boolean;
 }
 
 // What the profile at /company-profile is called. A team's is its company.
@@ -111,19 +118,24 @@ const GOALS_ITEM: NavItem = {
 
 // The Company hub's tabs in a team: who's on it, what you're aiming for,
 // how it's organised, and the profile.
-function companyTabs(isOnboarded: boolean): NavItem[] {
+function companyTabs(isOnboarded: boolean, hasDepartments: boolean): NavItem[] {
   return [
     { href: "/people", label: "People", icon: "users", description: PEOPLE_DESCRIPTION },
     {
       ...GOALS_ITEM,
-      description: "Every department's goals in one place — add, update and close them.",
+      description: "Every goal in one place, by owner, department or status — add, update and close them.",
     },
-    {
-      href: "/departments",
-      label: "Departments",
-      icon: "grid",
-      description: "Your departments, their goals, how much each may decide on its own, and the expert behind each.",
-    },
+    ...(hasDepartments
+      ? [
+          {
+            href: "/departments",
+            label: "Departments",
+            icon: "grid",
+            description:
+              "Your departments, their goals, how much each may decide on its own, and the expert behind each.",
+          } satisfies NavItem,
+        ]
+      : []),
     profileItem("company", isOnboarded),
   ];
 }
@@ -210,6 +222,7 @@ export function buildHubs({
   isOnboarded = true,
   mode = "team",
   roleKind = null,
+  hasDepartments = true,
 }: BuildOpts = {}): Hub[] {
   const work: Hub = {
     key: "work",
@@ -232,7 +245,7 @@ export function buildHubs({
           label: "Company",
           icon: "building",
           description: "People, goals, departments and the company profile.",
-          tabs: companyTabs(isOnboarded),
+          tabs: companyTabs(isOnboarded, hasDepartments),
         };
   const delegate: Hub = {
     key: "delegate",
@@ -246,8 +259,11 @@ export function buildHubs({
 
 // The hub a page belongs to, or null for a page that isn't in one.
 export function hubForPath(pathname: string, opts: BuildOpts = {}): Hub | null {
+  // On the Departments pages the tab shows even before the first department
+  // exists: that is where it gets added.
+  const withTab = isNavActive("/departments", pathname) ? { ...opts, hasDepartments: true } : opts;
   return (
-    buildHubs(opts).find((hub) => hub.tabs.some((tab) => isNavActive(tab.href, pathname))) ?? null
+    buildHubs(withTab).find((hub) => hub.tabs.some((tab) => isNavActive(tab.href, pathname))) ?? null
   );
 }
 
@@ -274,8 +290,9 @@ export function buildDestinations({
   reviewBadge = 0,
   mode = "team",
   roleKind = null,
+  hasDepartments = true,
 }: BuildOpts = {}): Destination[] {
-  const hubs = buildHubs({ isOnboarded, mode, roleKind });
+  const hubs = buildHubs({ isOnboarded, mode, roleKind, hasDepartments });
   const hubEntry = (hub: Hub): Destination => ({
     key: hub.key,
     href: hub.tabs[0].href,

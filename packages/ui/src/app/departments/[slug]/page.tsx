@@ -180,7 +180,7 @@ export default function DepartmentDetailPage() {
   const params = useParams();
   const slug = params?.slug as string;
   const router = useRouter();
-  const { mode, effectiveTimezone } = useWorkspace();
+  const { mode, effectiveTimezone, refresh: refreshWorkspace } = useWorkspace();
 
   const [dept, setDept] = useState<DepartmentDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -363,12 +363,15 @@ export default function DepartmentDetailPage() {
   async function removeDepartment() {
     if (!dept) return;
     if (!window.confirm(
-      `Delete "${dept.config.title}"? This will also remove all its Goals and cannot be undone.`
+      `Delete "${dept.config.title}"? Its goals stay on the Goals page with no department, ` +
+        "each on its owner (or on the department's lead). This cannot be undone."
     )) return;
     setDeleting(true);
     setDeleteErr(null);
     try {
       await deleteDepartment(slug);
+      // The Departments tab hides once the last department is gone.
+      void refreshWorkspace();
       router.push("/departments");
     } catch (e) {
       setDeleteErr(e instanceof Error ? e.message : "Delete failed");

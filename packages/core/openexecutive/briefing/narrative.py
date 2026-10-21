@@ -407,7 +407,10 @@ def _goal_line(goal: dict[str, Any]) -> str:
     current, target = goal.get("current"), goal.get("target")
     if current or target:
         line += f": {_one_line(current, 30)} of {_one_line(target, 30)}"
-    return line + ")"
+    line += ")"
+    if goal.get("owner_name"):
+        line += f" — owner: {_one_line(goal['owner_name'], 60)}"
+    return line
 
 
 def _quoted_lines(text: str, *, max_lines: int = 12) -> list[str]:

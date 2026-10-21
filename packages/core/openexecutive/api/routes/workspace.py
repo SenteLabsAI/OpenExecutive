@@ -45,8 +45,18 @@ def _response(*, with_role: bool = True) -> WorkspaceResponse:
         effective_timezone=workspace_settings.get_user_timezone().key,
         company_domains=domains,
         company_domains_custom=with_role and bool(ws.company_domains),
+        has_departments=_has_departments(),
         **role.model_dump(),
     )
+
+
+def _has_departments() -> bool:
+    from openexecutive.departments import registry
+
+    try:
+        return bool(registry.list_states())
+    except Exception:  # noqa: BLE001 - an unreadable table reads as none.
+        return False
 
 
 @router.get("/workspace", response_model=WorkspaceResponse)

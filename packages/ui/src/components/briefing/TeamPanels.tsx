@@ -27,7 +27,8 @@ export function DeptCard({
     <ClickableBriefingItem
       onContinue={onContinue}
       prompt={prompt}
-      href={`/departments/${dept.slug}`}
+      // The row of goals with no department (slug "") lives on /goals.
+      href={dept.slug ? `/departments/${dept.slug}` : "/goals"}
       className={`block group rounded-xl -mx-2 px-2 py-3.5 hover:bg-surface-overlay transition-colors${dimmed ? " opacity-60 hover:opacity-100" : ""}`}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -60,6 +61,7 @@ export function DeptCard({
                 {(g.current || g.target) && (
                   <span className="text-fg-subtle"> — {g.current || "—"} vs {g.target || "—"}</span>
                 )}
+                {g.owner_name && <span className="text-fg-subtle"> · {g.owner_name}</span>}
               </span>
             </div>
           ))}

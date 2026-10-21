@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { GoalStatusPill } from "@/components/goals/GoalEditor";
 import Button from "@/components/ui/Button";
 import SidePanel from "@/components/ui/SidePanel";
+import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   createDepartment,
   listDepartments,
@@ -107,6 +108,7 @@ export default function DepartmentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addingDept, setAddingDept] = useState(false);
+  const { refresh: refreshWorkspace } = useWorkspace();
 
   useEffect(() => {
     listDepartments()
@@ -180,6 +182,8 @@ export default function DepartmentsPage() {
           onCreated={(dept) => {
             setDepts((prev) => [...prev, dept]);
             setAddingDept(false);
+            // The first department brings the Departments tab.
+            void refreshWorkspace();
           }}
           onCancel={() => setAddingDept(false)}
         />

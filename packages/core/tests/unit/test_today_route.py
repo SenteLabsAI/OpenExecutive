@@ -2645,3 +2645,28 @@ def test_morning_brief_today_only_serves_todays_non_empty_brief(
 
     monkeypatch.setattr(brief_state, "last_delivered", lambda _kind: None)
     assert today_route._morning_brief_today() is None
+
+
+# --------------------------------------------------------------------------- #
+# Goals with no department: their own row, with owners
+# --------------------------------------------------------------------------- #
+
+
+def test_brief_adds_a_row_for_goals_with_no_department(client: TestClient) -> None:
+    principal = people_store.upsert_person(full_name="Rufus", is_principal=True)
+    dan = people_store.upsert_person(full_name="Dan")
+    dept_store.update_department("finance", head_person_id=dan)
+    dept_store.insert_goal("finance", period_value="2026", key_result="Runway", target="t", status="off_track")
+    dept_store.insert_goal(None, period_value="2026", key_result="Launch", target="t", status="at_risk")
+    dept_store.insert_goal(None, period_value="2026", key_result="Hire", target="t", owner_person_id=dan)
+    rows = {d.slug: d for d in today_route._build_today().departments}
+    assert rows["finance"].attention_goals[0].owner_name == "Dan"
+    loose = rows[""]
+    assert loose.title == today_route.UNASSIGNED_GOALS_TITLE
+    assert (loose.goal_count, loose.at_risk_count, loose.awaiting_count) == (2, 1, 0)
+    assert [(g.key_result, g.owner_id) for g in loose.attention_goals] == [("Launch", principal)]
+
+
+def test_brief_has_no_extra_row_when_every_goal_has_a_department(client: TestClient) -> None:
+    dept_store.insert_goal("finance", period_value="2026", key_result="Runway", target="t")
+    assert "" not in {d.slug for d in today_route._build_today().departments}

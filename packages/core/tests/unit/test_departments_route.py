@@ -528,17 +528,17 @@ def empty_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def test_goal_with_no_area_named_goes_under_general(empty_client: TestClient) -> None:
+def test_goal_with_no_area_named_has_no_department(empty_client: TestClient) -> None:
+    """Goals stand on their own: naming no area creates no department."""
     resp = empty_client.post("/goals", json={"key_result": "Launch the product", "area": "  "})
     assert resp.status_code == 201, resp.text
     assert resp.json()["key_result"] == "Launch the product"
-    areas = empty_client.get("/departments").json()
-    assert [a["config"]["title"] for a in areas] == ["General"]
-    assert areas[0]["goals"][0]["id"] == resp.json()["id"]
-    # A second goal with no area joins it rather than making "General 2".
+    assert resp.json()["department_slug"] is None
     assert empty_client.post("/goals", json={"key_result": "Hire a designer"}).status_code == 201
-    areas = empty_client.get("/departments").json()
-    assert len(areas) == 1 and len(areas[0]["goals"]) == 2
+    assert empty_client.get("/departments").json() == []
+    listed = empty_client.get("/goals").json()
+    assert [g["key_result"] for g in listed] == ["Launch the product", "Hire a designer"]
+    assert all(g["department_slug"] is None and g["department_title"] is None for g in listed)
 
 
 def test_goal_names_a_new_area_or_matches_an_existing_one(empty_client: TestClient) -> None:

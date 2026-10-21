@@ -390,6 +390,9 @@ class WorkspaceResponse(BaseModel):
     # only to the principal, like the role; empty for anyone else.
     company_domains: list[str] = Field(default_factory=list)
     company_domains_custom: bool = False
+    # Whether any department exists. The UI shows the Departments tab only
+    # then: goals stand on their own, so a workspace may never need one.
+    has_departments: bool = False
 
 
 class WorkspaceUpdateRequest(BaseModel):

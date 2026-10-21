@@ -21,6 +21,9 @@ interface WorkspaceContextValue {
   effectiveTimezone: string | null;
   /** The principal's role (solo mode reads it); every field null until set. */
   role: PrincipalRole;
+  /** Whether any department exists (the Departments tab shows only then).
+   * True while loading, so a team with departments never loses the tab. */
+  hasDepartments: boolean;
   /** True until the first request settles (either way). */
   loading: boolean;
   /** Re-read the settings, e.g. after Settings or onboarding changed them. */
@@ -43,6 +46,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [timezone, setTimezone] = useState<string | null>(null);
   const [effectiveTimezone, setEffectiveTimezone] = useState<string | null>(null);
   const [role, setRole] = useState<PrincipalRole>(NO_ROLE);
+  const [hasDepartments, setHasDepartments] = useState(true);
   const [loading, setLoading] = useState(true);
   // Only the latest request may write: a slow first read must not overwrite
   // the answer to a refresh() issued after a change.
@@ -56,6 +60,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setMode(ws.mode === "solo" ? "solo" : "team");
       setTimezone(ws.timezone);
       setEffectiveTimezone(ws.effective_timezone);
+      setHasDepartments(ws.has_departments ?? true);
       setRole({
         role_kind: ws.role_kind ?? null,
         role_title: ws.role_title ?? null,
@@ -81,8 +86,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, [authStatus, refresh]);
 
   const value = useMemo(
-    () => ({ mode, timezone, effectiveTimezone, role, loading, refresh }),
-    [mode, timezone, effectiveTimezone, role, loading, refresh],
+    () => ({ mode, timezone, effectiveTimezone, role, hasDepartments, loading, refresh }),
+    [mode, timezone, effectiveTimezone, role, hasDepartments, loading, refresh],
   );
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

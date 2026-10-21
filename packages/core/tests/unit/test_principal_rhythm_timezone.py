@@ -41,12 +41,14 @@ def _local_hhmm(run_at: str, zone: str) -> tuple[int, int]:
 
 def test_default_times_follow_the_workspace_zone() -> None:
     ws.restore_workspace_settings(ws.WorkspaceSettings(timezone="America/Los_Angeles"))
-    assert runner.seed_principal_briefs() == 4
+    assert runner.seed_principal_briefs() == 5
     expected = {
         "principal_brief_morning": (8, 0),
         "principal_brief_eod": (18, 0),
         "executive_reflection": (7, 30),
         "chat_replay": (3, 30),
+        # Weekly, Monday 09:00 in the same zone.
+        runner.GOAL_REVIEW_KIND: (9, 0),
     }
     for kind, hhmm in expected.items():
         (row,) = _pending(kind)

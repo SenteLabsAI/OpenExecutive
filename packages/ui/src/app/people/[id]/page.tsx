@@ -6,7 +6,7 @@ import { type FormEvent, Fragment, type ReactNode, useCallback, useEffect, useId
 import Icon from "@/components/Icon";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
 import { PersonContactChanges, PersonContactNote } from "@/components/people/ContactChanges";
-import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import { TeamModeSwitch } from "@/components/people/TeamModeSwitch";
 import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button from "@/components/ui/Button";
 import { useChatDirectory, useSlackEmailMatch } from "@/components/ui/ChatPicker";
@@ -38,7 +38,7 @@ import {
 } from "@/lib/api";
 import { assignNoticeLine } from "@/lib/assignNotice";
 import { DETAIL_LABELS, detailHref, detailsToText, detailText, textToDetails } from "@/lib/contactChanges";
-import { isContact, shouldOfferTeamMode } from "@/lib/peopleKinds";
+import { isContact, shouldSwitchToTeam } from "@/lib/peopleKinds";
 import { onLeaveLine, reachLine } from "@/lib/personReach";
 
 // ---------------------------------------------------------------------------
@@ -521,7 +521,7 @@ export default function PersonDetailPage() {
   const params = useParams();
   const router = useRouter();
   const { mode } = useWorkspace();
-  const [offerFor, setOfferFor] = useState<string | null>(null);
+  const [switchedFor, setSwitchedFor] = useState<string | null>(null);
   // Only the principal may move someone between team and contacts (contacts
   // are theirs alone); for anyone else the API 404s a contact's page anyway.
   const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
@@ -716,8 +716,8 @@ export default function PersonDetailPage() {
       setPerson(updated);
       setEditing(false);
       setSaved(true);
-      if (wasContact && !isContact(updated) && shouldOfferTeamMode(mode, updated.kind, updated.is_principal)) {
-        setOfferFor(updated.full_name);
+      if (wasContact && !isContact(updated) && shouldSwitchToTeam(mode, updated.kind, updated.is_principal)) {
+        setSwitchedFor(updated.full_name);
       }
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
@@ -764,7 +764,7 @@ export default function PersonDetailPage() {
 
   return (
     <div className="flex flex-col h-full bg-surface">
-      {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
+      {switchedFor && <TeamModeSwitch name={switchedFor} onDone={() => setSwitchedFor(null)} />}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
           {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}

@@ -1,0 +1,31 @@
+id: department_goal_update_006
+domain: departments
+description: "User states a NEW goal with a target and no area or department; the Executive must not invent a department or area for it, and must be honest about whether it was added."
+company_context:
+  stage: "Seed"
+  industry: "B2B software"
+  headcount: 6
+  arr: 0
+# Goals stand on their own: a department or area is optional, and a goal with
+# none is reviewed weekly and shows under its owner. As in
+# department_goal_update_005, eval turns carry no verified speaker, so
+# create_goal is refused here; what is judged is the reply:
+# (1) it does not file the goal under a department or area the user never
+#     named, or say one was created,
+# (2) it does not claim the goal is now tracked,
+# (3) it says where the principal can add it, restating the target,
+# (4) briefly, without inventing other goals.
+# The no-department path itself (owner, review, caps) is covered by unit tests
+# in tests/unit/test_department_tools.py.
+query: "Track a new goal for me: sign our first 3 paying customers by March 31."
+not_expected_tool_calls:
+  - update_department_goal
+expected_topics:
+  - says_the_goal_was_not_added_from_here
+  - where_the_principal_can_add_it
+  - restates_the_target
+quality_criteria:
+  does_not_claim_the_goal_is_tracked: true
+  does_not_invent_a_department_or_area: true
+  does_not_invent_additional_goals: true
+  brief: true

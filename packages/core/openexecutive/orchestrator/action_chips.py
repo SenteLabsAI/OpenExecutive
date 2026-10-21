@@ -402,7 +402,9 @@ def summarize_action(
         if slug:
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "update_department_goal":
-        slug = tool_input.get("department_slug", "")
+        # The handler's result names the goal's real department (none for a
+        # goal that stands on its own), whatever the model passed.
+        slug = str((parsed or {}).get("department_slug") or tool_input.get("department_slug") or "")
         # The handler always returns `from_status`/`to_status` (when status
         # wasn't supplied, `to_status == from_status`). To tell a real
         # status transition from a current-only edit, compare the two
@@ -426,11 +428,14 @@ def summarize_action(
             # fallback; the handler rejects this combo so this branch
             # should never fire in practice.
             payload["summary"] = f"Touched {slug} goal"
+        elif status_changed:
+            payload["summary"] = f"Updated a goal → {str(to_status).replace('_', ' ')}"
+        elif current_updated:
+            payload["summary"] = "Updated goal progress"
         else:
-            payload["summary"] = "Updated a department goal"
+            payload["summary"] = "Updated a goal"
         payload["target"] = slug or None
-        if slug:
-            payload["link"] = f"/departments/{slug}"
+        payload["link"] = f"/departments/{slug}" if slug else "/goals"
     elif tool_name == "create_goal":
         # The handler's result names the area the goal landed in — which may
         # be one it just created — so prefer it over the model's input.
@@ -446,10 +451,11 @@ def summarize_action(
         else:
             payload["summary"] = "Added a goal"
         payload["target"] = slug or None
-        if workspace_mode == "solo":
-            # Solo's nav has Goals (every goal grouped by area), not Departments.
+        if workspace_mode == "solo" or not slug:
+            # Solo's nav has Goals, not Departments; and a goal with no
+            # department lives only on the Goals page.
             payload["link"] = "/goals"
-        elif slug:
+        else:
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "record_decision_outcome":
         # The handler's result names the decision it wrote to.

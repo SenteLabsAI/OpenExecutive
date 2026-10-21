@@ -39,6 +39,7 @@ from openexecutive.clients.cockpit import ClientCockpitCard, format_practice_for
 if TYPE_CHECKING:
     from openexecutive.alerts.models import Alert
     from openexecutive.briefing.reader import Reader
+    from openexecutive.departments.models import Goal
     from openexecutive.people.models import Person
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,10 @@ StaleInsight = tuple["Person", dict[str, Any], str]
 # Most attention-worthy (off-track/at-risk) goals shown inline on a Department
 # card before the card defers the rest to the department page.
 _DEPT_ATTENTION_GOAL_CAP = 3
+# The briefing row that holds the goals with no department (slug ""). It is
+# shaped like a department so every reader of `departments` (the narrative,
+# the header, the digest, the fingerprint) counts its at-risk goals too.
+UNASSIGNED_GOALS_TITLE = "Other goals"
 
 router = APIRouter()
 
@@ -68,9 +73,14 @@ class GoalBrief(BaseModel):
     current: str
     target: str
     status: str  # "at_risk" | "off_track" (the only statuses surfaced here)
+    # Who the goal is on: its own owner, else the department's lead, else the
+    # principal (``departments.goals.effective_owner_id``). Additive.
+    owner_id: int | None = None
+    owner_name: str = ""
 
 
 class DepartmentBriefItem(BaseModel):
+    # "" for the row of goals with no department (UNASSIGNED_GOALS_TITLE).
     slug: str
     title: str
     authority_level: str
@@ -743,38 +753,55 @@ def _build_today(
         if slug:
             dept_awaiting[slug] = dept_awaiting.get(slug, 0) + 1
 
-    dept_items = []
-    for ds in depts:
-        cfg = ds.config
-        at_risk = sum(1 for g in ds.goals if g.status == "at_risk")
-        off_track = sum(1 for g in ds.goals if g.status == "off_track")
+    from openexecutive.departments.goals import list_goal_views
+
+    try:
+        views = list_goal_views()
+    except Exception:
+        logger.warning("today: goal owners unreadable", exc_info=True)
+        views = []
+    owner_by_goal = {v.goal.id: (v.owner_id, v.owner_name) for v in views}
+
+    def _brief_row(
+        slug: str, title: str, authority_level: str, goals: list[Goal]
+    ) -> DepartmentBriefItem:
         # Surface the actual problem goals inline on the card — off_track
         # (worse) before at_risk, capped so a department with many goals can't
         # blow out the card. Goals already loaded, so no extra query. The id
         # tiebreaker makes intra-tier order deterministic regardless of how
-        # ds.goals was loaded (today it's ORDER BY id; this pins it).
+        # the goals were loaded (today it's ORDER BY id; this pins it).
         attention = sorted(
-            (g for g in ds.goals if g.status in ("off_track", "at_risk")),
+            (g for g in goals if g.status in ("off_track", "at_risk")),
             key=lambda g: (0 if g.status == "off_track" else 1, g.id or 0),
         )[:_DEPT_ATTENTION_GOAL_CAP]
-        dept_items.append(DepartmentBriefItem(
-            slug=cfg.slug,
-            title=cfg.title,
-            authority_level=cfg.authority_level.value,
-            goal_count=len(ds.goals),
-            at_risk_count=at_risk,
-            off_track_count=off_track,
-            awaiting_count=dept_awaiting.get(cfg.slug, 0),
+        return DepartmentBriefItem(
+            slug=slug,
+            title=title,
+            authority_level=authority_level,
+            goal_count=len(goals),
+            at_risk_count=sum(1 for g in goals if g.status == "at_risk"),
+            off_track_count=sum(1 for g in goals if g.status == "off_track"),
+            awaiting_count=dept_awaiting.get(slug, 0) if slug else 0,
             attention_goals=[
                 GoalBrief(
                     key_result=g.key_result,
                     current=g.current,
                     target=g.target,
                     status=g.status,
+                    owner_id=owner_by_goal.get(g.id, (None, ""))[0],
+                    owner_name=owner_by_goal.get(g.id, (None, ""))[1],
                 )
                 for g in attention
             ],
-        ))
+        )
+
+    dept_items = [
+        _brief_row(ds.config.slug, ds.config.title, ds.config.authority_level.value, ds.goals)
+        for ds in depts
+    ]
+    unassigned = [v.goal for v in views if not v.goal.department_slug]
+    if unassigned:
+        dept_items.append(_brief_row("", UNASSIGNED_GOALS_TITLE, "", unassigned))
 
     # Per-person insight notes only earn their model call when the brief has a
     # roster to show: the UI renders the People sidebar only for more than one
@@ -1566,7 +1593,19 @@ def _viewer_slice(response: TodayResponse, viewer: PersonBriefItem) -> dict[str,
         p for p in _action_proposals(response.proposals)
         if p.routed_to_person_id == viewer.id
     ]
-    departments = [d for d in response.departments if d.slug in depts]
+    departments = [d for d in response.departments if d.slug and d.slug in depts]
+    # Of the goals with no department, only the ones on this teammate.
+    for d in response.departments:
+        if d.slug:
+            continue
+        mine = [g for g in d.attention_goals if g.owner_id == viewer.id]
+        if mine:
+            departments.append(d.model_copy(update={
+                "goal_count": len(mine),
+                "at_risk_count": sum(1 for g in mine if g.status == "at_risk"),
+                "off_track_count": sum(1 for g in mine if g.status == "off_track"),
+                "attention_goals": mine,
+            }))
     return {
         "departments": [d.model_dump() for d in departments],
         "people": [],

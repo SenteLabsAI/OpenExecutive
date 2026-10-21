@@ -1137,6 +1137,10 @@ async def _execute_action(
         await _run_take_the_lead_wake(action, now)
         return
 
+    if action.kind == GOAL_REVIEW_KIND:
+        await _run_goal_review(action, now)
+        return
+
     if action.kind == CHAT_REPLAY_KIND:
         await _run_chat_replay(action, now, gateway)
         return
@@ -1667,6 +1671,10 @@ _DEFAULT_REPLAY_TIME = "03:30"
 # other pinned times.
 WEEKLY_REVIEW_KIND = "principal_weekly_review"
 _DEFAULT_WEEKLY_REVIEW_SPEC = "weekly@fri@16:00"
+# The weekly grading of goals no department check-in covers
+# (departments.goal_review): Monday morning in the user's zone, both modes.
+GOAL_REVIEW_KIND = "goal_review"
+_DEFAULT_GOAL_REVIEW_SPEC = "weekly@mon@09:00"
 
 
 def _rotation_pause_active() -> bool:
@@ -1750,9 +1758,10 @@ _RECURRING_KIND_ENV: dict[str, tuple[str, str]] = {
     # Solo only (see _SOLO_ONLY_KINDS): seeded in solo, cancelled on a switch
     # to team, retired without running if one fires in team anyway.
     WEEKLY_REVIEW_KIND: ("PRINCIPAL_WEEKLY_REVIEW_TIME", _DEFAULT_WEEKLY_REVIEW_SPEC),
+    GOAL_REVIEW_KIND: ("GOAL_REVIEW_TIME", _DEFAULT_GOAL_REVIEW_SPEC),
 }
 # Kinds that recur weekly (the rest are daily).
-_WEEKLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND})
+_WEEKLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND, GOAL_REVIEW_KIND})
 # Kinds that exist only in a solo workspace.
 _SOLO_ONLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND})
 # The recurring principal kinds that run a workflow and deliver its artifact
@@ -2788,6 +2797,22 @@ async def _run_executive_reflection(
     # kill the recurring rhythm.
     mark_action_done(action.id)
     _enqueue_next_principal_brief("executive_reflection", after=_chain_after(action))
+
+
+async def _run_goal_review(action: ScheduledAction, now: datetime) -> None:
+    """Grade the goals no department check-in covers (departments.goal_review),
+    then chain next week's, like the reflection: a failed week never breaks
+    the rhythm. Nothing is delivered; at-risk goals reach the brief."""
+    from openexecutive.departments import goal_review
+
+    assert action.id is not None
+    try:
+        with unscoped_audit_rows():
+            await goal_review.run_review(now)
+    except Exception:
+        logger.exception("scheduler: goal_review failed")
+    mark_action_done(action.id)
+    _enqueue_next_principal_brief(GOAL_REVIEW_KIND, after=_chain_after(action))
 
 
 # Take the lead as the Executive: new mail or chat wakes the reflection early
