@@ -96,13 +96,30 @@ async def test_no_mailbox_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None
     assert await waiting_on.read_waiting(NOW) is None
 
 
-async def test_a_failing_mailbox_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failing_mailbox_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Broken(_Mailbox):
         async def list_sent(self, limit: int = 40) -> list[Any]:
             raise RuntimeError("boom for leonard@svn.test")
 
     _use(monkeypatch, _Broken([]))
-    assert await waiting_on.read_waiting(NOW) is None
+    with pytest.raises(RuntimeError):
+        await waiting_on.read_waiting(NOW)
+
+
+async def test_a_failed_refresh_keeps_the_last_good_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    good = [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
+    results: list[Any] = [good, RuntimeError("503")]
+
+    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+        result = results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(waiting_on, "read_waiting", _read)
+    assert await waiting_on.refresh() == good
+    assert await waiting_on.refresh(max_age=0) == good
+    assert waiting_on.cached() == good
 
 
 async def test_the_read_is_cached_until_it_is_old(monkeypatch: pytest.MonkeyPatch) -> None:

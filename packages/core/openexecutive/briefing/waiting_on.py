@@ -80,8 +80,9 @@ async def _open_mailbox() -> tuple[Any, set[str]] | None:
 
 
 async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
-    """Their unanswered sent mail, newest first, or None when their mailbox
-    can't be read. Never raises."""
+    """Their unanswered sent mail, newest first, or None when there is no
+    mailbox of theirs to read (Act as me off, not connected). A mailbox that
+    fails to answer raises, so ``refresh`` keeps the last good read."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.follow_ups import recipients
     from openexecutive.delegation.ghostwriter import one_line
@@ -127,7 +128,7 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
     except Exception as exc:
         # The type only: a mailbox error can carry an address.
         logger.info("waiting_on: their sent mail couldn't be read (%s)", type(exc).__name__)
-        return None
+        raise
     waiting: list[Waiting] = []
     for (sent, to, sent_at), thread in zip(candidates, threads, strict=True):
         newest = [m for m in thread.messages if "DRAFT" not in m.labels]
@@ -148,7 +149,9 @@ _generation = 0
 
 async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECONDS) -> list[Waiting] | None:
     """``read_waiting``, at most once per ``max_age`` seconds, cached for the
-    /today hot path. Never raises."""
+    /today hot path. A read that fails keeps the last good one (until it is
+    ``_HARD_MAX_AGE_SECONDS`` old) and is tried again on the next call.
+    Never raises."""
     global _cache, _lock
     if _lock is None:
         _lock = asyncio.Lock()
@@ -160,7 +163,7 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
             items = await asyncio.wait_for(read_waiting(now), timeout=_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.info("waiting_on: refresh failed (%s)", type(exc).__name__)
-            items = None
+            return cached()
         if started != _generation:
             return None
         _cache = (time.monotonic(), items)
