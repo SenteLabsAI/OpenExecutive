@@ -2190,9 +2190,8 @@ async def refresh_principal_narrative() -> bool:
         principal = find_principal_person()
         if principal is None or principal.id is None:
             return False
-        await refresh_calendar()
-        await waiting_on.refresh()
-        await settle_principal_drafts()
+        # Independent reads, so a slow mailbox delays none of the others.
+        await asyncio.gather(refresh_calendar(), waiting_on.refresh(), settle_principal_drafts())
         mode = get_workspace().mode
         snapshot = _build_today(include_private=True)
         scope, today_data, desc, viewer = _narrative_inputs(snapshot, principal.id)
