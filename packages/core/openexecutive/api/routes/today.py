@@ -1929,6 +1929,39 @@ def _regen_lock(scope: str) -> asyncio.Lock:
     return lock
 
 
+# A stale header older than this is not served: the rewrite runs at least
+# hourly (the NOW line moves the key), so one this old means it has been
+# failing, and its "next meeting" or "due in an hour" no longer holds.
+_STALE_HEADER_MAX_AGE = timedelta(hours=2)
+
+
+def _header_outdated(written: datetime, now: datetime, *, quotes_calendar: bool) -> bool:
+    """Whether a header written at ``written`` can no longer be shown as now:
+    it is over ``_STALE_HEADER_MAX_AGE`` old, or (``quotes_calendar``: the
+    principal's own header) a meeting on today's cached calendar started or
+    ended since it was written, so it may call that meeting next or say there
+    is time to prepare. Only asked of a stale header, whose rewrite is
+    already scheduled. Never raises."""
+    if now - written > _STALE_HEADER_MAX_AGE:
+        return True
+    if not quotes_calendar:
+        return False
+    from openexecutive.briefing.live_signals import cached_calendar
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    try:
+        events = cached_calendar(now, get_user_timezone()) or []
+        return any(
+            edge is not None and written < edge <= now
+            for e in events
+            if not e.all_day
+            for edge in (e.start, e.end)
+        )
+    except Exception:
+        logger.exception("today: checking the header against the calendar failed")
+        return False
+
+
 def _attach_narrative(
     response: TodayResponse,
     *,
@@ -1943,7 +1976,9 @@ def _attach_narrative(
     say how old the text is and re-poll until the regeneration lands. A row
     written on an earlier local day is never served as today's: the page
     shows nothing until today's is written (a few seconds) rather than
-    yesterday's read as if it were current."""
+    yesterday's read as if it were current, and the same goes for a stale
+    one a meeting has started or ended since, or that is hours old
+    (``_header_outdated``): it may still call a finished call next."""
     from openexecutive.briefing import narrative_cache
     from openexecutive.memory.workspace_settings import get_workspace
 
@@ -1957,7 +1992,14 @@ def _attach_narrative(
         age_s: int | None = None
         if cached is not None:
             written = _parse_aware(cached.generated_at)
-            if written is not None and narrative_cache.local_today(written) == narrative_cache.local_today():
+            if (
+                written is not None
+                and narrative_cache.local_today(written) == narrative_cache.local_today()
+                and not (is_stale and _header_outdated(
+                    written, datetime.now(UTC),
+                    quotes_calendar=scope == narrative_cache.DEFAULT_SCOPE,
+                ))
+            ):
                 response.narrative = cached.narrative_text
                 response.narrative_generated_at = cached.generated_at
                 age_s = int((datetime.now(UTC) - written).total_seconds())
