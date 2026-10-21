@@ -314,6 +314,89 @@ def test_uses_primary_when_the_executive_is_signed_in_as_the_principal(
     assert gw.calls[0]["arguments"]["calendar_id"] == "primary"
 
 
+class _OwnMailbox:
+    def __init__(self, events: list[Any]) -> None:
+        self.events = events
+        self.calls: list[tuple[datetime, datetime]] = []
+
+    async def list_events(self, start: datetime, end: datetime, *, max_results: int = 100) -> list[Any]:
+        self.calls.append((start, end))
+        return self.events
+
+
+def _own_calendar(monkeypatch: pytest.MonkeyPatch, events: list[Any] | None) -> _OwnMailbox:
+    """Read my calendar on, through a stub mailbox; None turns it off."""
+    from openexecutive.delegation import calendar as own_cal
+    from openexecutive.delegation import gmail as own_gmail
+    from openexecutive.delegation import settings as own_settings
+
+    box = _OwnMailbox(events or [])
+
+    async def _connected(_email: str, *, gmail: Any = None) -> str:
+        return "connected"
+
+    monkeypatch.setattr(own_settings, "can_delegate", lambda _p: True)
+    monkeypatch.setattr(own_settings, "is_enabled", lambda _pid: True)
+    monkeypatch.setattr(own_cal, "enabled", lambda _pid, **_kw: events is not None)
+    monkeypatch.setattr(own_gmail, "gmail_for", lambda _email: box)
+    monkeypatch.setattr(own_gmail, "gmail_status", _connected)
+    return box
+
+
+def _own(title: str, start: str, end: str, *, all_day: bool = False, response: str = "accepted") -> Any:
+    from openexecutive.delegation.gmail import CalendarEvent as OwnEvent
+
+    return OwnEvent(id=title, title=title, start=start, end=end, all_day=all_day, response=response)
+
+
+def test_the_principals_own_calendar_is_read_when_the_executive_has_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _connect(monkeypatch, None)
+    _principal()
+    box = _own_calendar(monkeypatch, [
+        _own("Board prep", "2026-09-25T09:00:00+00:00", "2026-09-25T10:00:00+00:00"),
+        _own("Skipped sync", "2026-09-25T11:00:00+00:00", "2026-09-25T11:30:00+00:00", response="declined"),
+        _own("Holiday", "2026-09-25", "2026-09-26", all_day=True),
+    ])
+    events = asyncio.run(top_three.read_todays_calendar(NOW, UTC_ZONE))
+    assert events is not None
+    assert [e.title for e in events] == ["Board prep", "Holiday"]
+    assert events[1].all_day and events[0].start == datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
+    (window,) = box.calls
+    assert window[0] == datetime(2026, 9, 25, 0, 0, tzinfo=UTC_ZONE)
+
+
+def test_both_calendars_are_merged_and_a_shared_meeting_is_listed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _connect(monkeypatch, _Gateway(_TEXT_REPLY))
+    _principal()
+    tz = ZoneInfo("Europe/Stockholm")
+    _own_calendar(monkeypatch, [
+        _own("Client call", "2026-09-25T08:00:00+00:00", "2026-09-25T09:00:00+00:00"),
+        _own("Dentist", "2026-09-25T15:00:00+00:00", "2026-09-25T16:00:00+00:00"),
+    ])
+    events = asyncio.run(top_three.read_todays_calendar(NOW, tz))
+    assert events is not None
+    titles = [e.title for e in events]
+    assert titles.count("Client call") == 1
+    assert "Dentist" in titles and "Offsite" in titles
+    assert len(events) == 4
+
+
+def test_the_own_calendar_is_left_out_when_not_asked_for_or_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _connect(monkeypatch, None)
+    _principal()
+    box = _own_calendar(monkeypatch, [_own("Dentist", "2026-09-25T15:00:00+00:00", "2026-09-25T16:00:00+00:00")])
+    assert asyncio.run(top_three.read_todays_calendar(NOW, UTC_ZONE, include_own=False)) is None
+    assert box.calls == []
+    _own_calendar(monkeypatch, None)
+    assert asyncio.run(top_three.read_todays_calendar(NOW, UTC_ZONE)) is None
+
+
 def test_the_log_never_carries_calendar_text(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

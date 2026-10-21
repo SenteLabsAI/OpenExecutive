@@ -232,7 +232,7 @@ class MorningBriefWorkflow(Workflow):
             # active projects, each with a free slot when a calendar can be
             # read (one short call). Never raises; without a calendar there
             # are no slots and no calendar block.
-            top_three, calendar = await build_top_three(today_data["due_soon"])
+            top_three, calendar = await build_top_three(today_data["due_soon"], include_own=private_ok)
             if top_three:
                 today_data["top_three"] = top_three
             if calendar is not None:

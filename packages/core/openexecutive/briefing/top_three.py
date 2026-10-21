@@ -12,7 +12,10 @@ When the Executive can read a calendar (the MCP gateway is up and the Google
 Workspace server is one it runs), one ``get_events`` call lists today's events
 on the principal's calendar — their address as the calendar id, read with the
 Executive's account, so it works when the principal shared their calendar with
-it or signed the Executive in as themselves. On a business day (Monday to
+it or signed the Executive in as themselves. When the principal has Act as
+me and Read my calendar on, their own calendar is read too, through their own
+sign-in (``delegation.calendar``, Gmail or Outlook), and the two are merged
+with a meeting on both listed once. On a business day (Monday to
 Friday, ``calendar_tools.is_business_day``) each item then gets a free block
 inside working hours (``CALENDAR_BUSINESS_HOURS_START`` / ``_END``). Without a
 calendar, or at the weekend, there are no slot suggestions (a weekend still
@@ -308,9 +311,90 @@ def _calendar_id(principal_email: str) -> str:
     return "primary" if own and own == principal_email.strip().lower() else principal_email
 
 
-async def read_todays_calendar(now: datetime, tz: tzinfo) -> list[CalendarEvent] | None:
-    """Today's events on the principal's calendar, or None when there is no
-    calendar to read. One tool call with a short timeout; never raises."""
+async def read_todays_calendar(
+    now: datetime, tz: tzinfo, *, include_own: bool = True
+) -> list[CalendarEvent] | None:
+    """Today's events on the principal's calendars, or None when there is no
+    calendar to read: the one the Executive reads with its own account
+    (:func:`_read_executive_calendar`) and, with ``include_own``, the
+    principal's own calendar under Read my calendar
+    (:func:`_read_own_calendar`). The two are read at once, each with a short
+    timeout, and merged: an event on both (a calendar shared with the
+    Executive is the same calendar) is listed once. None only when neither
+    could be read. Never raises."""
+    reads = [_read_executive_calendar(now, tz)]
+    if include_own:
+        reads.append(_read_own_calendar(now, tz))
+    found = await asyncio.gather(*reads)
+    if all(events is None for events in found):
+        return None
+    return merge_events(*(events or [] for events in found))
+
+
+def merge_events(*sources: list[CalendarEvent]) -> list[CalendarEvent]:
+    """The events of every source in order, each listed once: the same title
+    at the same times on two calendars is one meeting."""
+    seen: set[tuple[str, datetime | None, datetime | None, bool]] = set()
+    merged: list[CalendarEvent] = []
+    for events in sources:
+        for event in events:
+            key = (event.title.strip().casefold(), event.start, event.end, event.all_day)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(event)
+    return merged
+
+
+async def _read_own_calendar(now: datetime, tz: tzinfo) -> list[CalendarEvent] | None:
+    """Today's events on the principal's own calendar, read through their
+    own sign-in (``delegation.calendar``, Gmail or Outlook), or None unless
+    they have Act as me and Read my calendar on and their mailbox opens as
+    theirs. Events they declined are left out. Never raises."""
+    try:
+        from openexecutive.delegation import calendar
+        from openexecutive.delegation import settings as delegation_settings
+        from openexecutive.delegation.gmail import gmail_for, gmail_status
+        from openexecutive.people.store import find_principal_person
+
+        principal = await asyncio.to_thread(find_principal_person)
+        if principal is None or principal.id is None or not principal.email:
+            return None
+        if not (delegation_settings.can_delegate(principal) and delegation_settings.is_enabled(principal.id)):
+            return None
+        if not await asyncio.to_thread(calendar.enabled, principal.id):
+            return None
+        mailbox = gmail_for(principal.email)
+        if await gmail_status(principal.email, gmail=mailbox) != "connected":
+            return None
+        local_day = now.astimezone(tz).date()
+        start = datetime(local_day.year, local_day.month, local_day.day, tzinfo=tz)
+        raw = await asyncio.wait_for(
+            calendar.events_for(mailbox, start, start + timedelta(days=1), max_results=_MAX_EVENTS * 2),
+            timeout=CALENDAR_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        # The type only, as for the Executive's read.
+        logger.info("top_three: own calendar unavailable for the brief (%s)", type(exc).__name__)
+        return None
+    events: list[CalendarEvent] = []
+    for item in raw:
+        if getattr(item, "response", "") == "declined":
+            continue
+        if getattr(item, "all_day", False):
+            title = _clean(getattr(item, "title", ""), _TITLE_MAX) or "(untitled)"
+            events.append(CalendarEvent(title=title, start=None, end=None, all_day=True))
+            continue
+        event = _event(getattr(item, "title", ""), getattr(item, "start", ""), getattr(item, "end", ""), tz)
+        if event is not None:
+            events.append(event)
+    return events[:_MAX_EVENTS]
+
+
+async def _read_executive_calendar(now: datetime, tz: tzinfo) -> list[CalendarEvent] | None:
+    """Today's events on the principal's calendar as the Executive's own
+    account reads it, or None when there is none to read. One tool call
+    with a short timeout; never raises."""
     try:
         from openexecutive.config import get_settings
         from openexecutive.integrations.workspace.registry import get_calendar_provider
@@ -484,7 +568,7 @@ def render_events(events: list[CalendarEvent], tz: tzinfo) -> list[dict[str, str
 
 
 async def build_top_three(
-    due_soon: list[dict[str, Any]], *, now: datetime | None = None
+    due_soon: list[dict[str, Any]], *, now: datetime | None = None, include_own: bool = True
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """``(items, calendar)`` for the solo morning brief. Never raises.
 
@@ -492,7 +576,8 @@ async def build_top_three(
     only when a calendar was read on a business day. ``calendar``:
     ``{"events": [...], "hash": str}`` when one was read (at the weekend
     too), else None. The calendar is read only when there is something to
-    place.
+    place. ``include_own`` adds the principal's own calendar (Read my
+    calendar) to the read: only on a delivery to them alone.
     """
     try:
         from openexecutive.memory.workspace_settings import get_user_timezone
@@ -508,7 +593,7 @@ async def build_top_three(
         return [], None
     if not items:
         return [], None
-    events = await read_todays_calendar(now, tz)
+    events = await read_todays_calendar(now, tz, include_own=include_own)
     if events is None:
         return items, None
     try:
@@ -528,6 +613,7 @@ async def build_top_three(
 
 
 __all__ = [
+    "merge_events",
     "CALENDAR_TIMEOUT_SECONDS",
     "CALENDAR_TOOL",
     "TOP_THREE_MAX",
