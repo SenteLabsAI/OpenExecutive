@@ -10404,7 +10404,9 @@ delegation:
     it writes an email in their voice and saves it as a DRAFT in their own
     Gmail for them to review and send. The only thing it ever sends is one of
     those inbox drafts, exactly as it is in Gmail, when the person taps Send
-    on its card (delegation.send); chat never sends. The principal may turn
+    on its card (delegation.send), or a draft chat wrote as them when they
+    tap Send under it in the chat (delegation.send_chat_draft); no tool
+    sends. The principal may turn
     it on, and each team member once the owner lets them. Off by default; off changes nothing —
     prompts, tool lists and prompt caches are byte-identical to an install
     without it.
@@ -11257,6 +11259,30 @@ delegation:
     else adds the flag thread_moved_on. A card being sent right now
     (inbox.SENDING, this process) is left alone; one left executing by an
     unconfirmed send is settled (see send).
+  send_chat_draft: |
+    delegation.reply_send.send_chat_draft, reached only from POST
+    /delegation/drafts/{row}/send (an AST test pins it). ghostwrite_email
+    returns its delegation_drafts row id (draft_row); the chat chip carries
+    it with the draft as saved (to, cc, subject, the first 800 characters)
+    and the web chat shows an "Email as you" card with Send. The person's
+    own tap is the permission, like a card's Send, so it needs no daily send
+    cap. At send time: the row is the caller's own and source chat (else
+    404 draft_not_found); verified.caller_refusal (409
+    caller_signing_required on a server without signed sign-ins); Act as me
+    on (Draft replies to my inbox not needed); no client slot; mailbox
+    connected; the draft still there (draft_gone marks the row gone) and
+    its message id the one recorded when chat wrote it (draft_changed: an
+    edited draft is sent from the mailbox, never from here); recipients
+    1-10, never the Executive's address, from a send-as address; for a
+    reply, the person's own SENT message in the thread since closes it
+    (you_replied) and a newer message from someone else needs a second yes
+    (409 confirm, then thread_moved_on true). Then drafts.claim_send sets
+    gone_at where it is NULL and sent_message_id is NULL (compare-and-set:
+    a double tap sends once), one more get_draft must show the same
+    version, and send_draft. Nothing went → release_send; maybe_done →
+    claim kept, never resent. Records sent_message_id, a private
+    delegation_chat_draft_sent row, and a history note when Always in the
+    loop is on. may_do's chat_drafts row reads "Drafts, sent on your tap".
   send: |
     delegation.reply_send.send_approved_reply — the approve hook of
     delegation_reply, the only caller of DelegateGmail.send_draft, reached

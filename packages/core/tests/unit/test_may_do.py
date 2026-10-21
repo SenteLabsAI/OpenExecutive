@@ -85,7 +85,7 @@ def test_drafts_and_the_inbox_without_handle_it_wait_for_a_tap(ids: dict[str, in
     set_enabled(pid, True, updated_by="t")
     inbox.set_watch(pid, True, updated_by="t")
     rows = _rows(_you(pid))
-    assert rows["chat_drafts"].outcome == "drafts"
+    assert rows["chat_drafts"].outcome == "drafts" and rows["chat_drafts"].then == "Drafts, sent on your tap"
     assert rows["replies_known"].outcome == "waits" and "Handle it for me is off" in rows["replies_known"].why
     assert rows["follow_ups"].outcome == "waits"
     assert rows["actions"].outcome == "waits"

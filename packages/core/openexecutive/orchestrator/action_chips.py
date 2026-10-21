@@ -147,6 +147,29 @@ def _humanize_iso(iso_ts: str) -> str:
     return f"in {int(delta_s // 86_400)}d"
 
 
+def _draft_fields(parsed: dict[str, Any]) -> dict[str, Any]:
+    """What the chat shows under a draft written as the speaker, with its
+    Send button: the draft's row (what the tap names, never the model), who
+    it goes to, its subject and the start of its text, all from the draft
+    as saved. Nothing when the row wasn't kept: then it is sent from the
+    mailbox only."""
+    row = parsed.get("draft_row")
+    if not isinstance(row, int) or isinstance(row, bool) or row <= 0:
+        return {}
+
+    def addresses(key: str) -> list[str]:
+        value = parsed.get(key)
+        return [str(a) for a in value if isinstance(a, str)] if isinstance(value, list) else []
+
+    return {"draft": {
+        "row": row,
+        "to": addresses("to"),
+        "cc": addresses("cc"),
+        "subject": str(parsed.get("subject") or ""),
+        "preview": str(parsed.get("preview") or ""),
+    }}
+
+
 def summarize_action(
     *,
     tool_name: str,
@@ -264,6 +287,7 @@ def summarize_action(
         # Built server-side from a fixed prefix (delegation.gmail.mailbox_link).
         if isinstance(link, str) and link.startswith(MAILBOX_LINK_PREFIXES):
             payload["link"] = link
+        payload.update(_draft_fields(parsed or {}))
     elif tool_name == "save_my_email_attachment":
         # Only a saved copy earns a chip. No link or name: the link opens
         # outside the app, and the name is whatever the sender called it.

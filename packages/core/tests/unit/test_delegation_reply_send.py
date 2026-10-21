@@ -412,14 +412,17 @@ def _importers(module: str) -> set[str]:
     return set(_index()[1].get(module, set()))
 
 
-def test_only_the_send_path_sends_and_only_its_three_doors_reach_it() -> None:
-    """Three doors and no more: the person's tap (the approve route), Handle
-    it for me (the inbox watcher, under the person's own switch), and a
-    workflow its creator saved to send as them (``oe__send_email_as_me``)."""
+def test_only_the_send_path_sends_and_only_its_four_doors_reach_it() -> None:
+    """Four doors and no more: the person's tap on a card (the approve
+    route), Handle it for me (the inbox watcher, under the person's own
+    switch), a workflow its creator saved to send as them
+    (``oe__send_email_as_me``), and the person's tap under a chat draft (the
+    chat draft send route)."""
     assert _uses("send_draft") == {"delegation/reply_send.py"}
     assert _uses("send_approved_reply") == {"api/routes/decisions.py"}
     assert _uses("send_on_its_own") == {"delegation/inbox.py"}
     assert _uses("send_for_workflow") == {"delegation/workflow_email.py"}
+    assert _uses("send_chat_draft") == {"api/routes/delegation.py"}
     assert _uses("handle_send_email_as_me") == {"workflows/tool_catalog.py"}
     # card_drafts, answers and the edit routes use its refusals and caller check only.
     assert _importers("openexecutive.delegation.reply_send") == {
@@ -427,7 +430,7 @@ def test_only_the_send_path_sends_and_only_its_three_doors_reach_it() -> None:
         "delegation/answers.py", "delegation/workflow_email.py",
     }
     assert _importers("openexecutive.delegation.reply_send.SendRefused") >= {"delegation/answers.py"}
-    assert not ({"send_draft", "send_approved_reply", "send_on_its_own", "send_for_workflow"} & {
+    assert not ({"send_draft", "send_approved_reply", "send_on_its_own", "send_for_workflow", "send_chat_draft"} & {
         n for n, files in _index()[0].items() if "delegation/answers.py" in files
     })
 

@@ -168,13 +168,22 @@ def as_you(person_id: int, *, can_have_it: bool, signing: bool, is_principal: bo
     rows: list[Row] = []
     notes: list[str] = []
 
-    # Emails it writes when asked in chat: always a draft.
+    # Emails it writes when asked in chat: always a draft, sent only on the
+    # person's own tap (Send under it in the chat, or from their mailbox).
+    if not drafts_on:
+        chat_why = "Write drafts as me is off, so it writes as itself."
+    elif signing:
+        chat_why = "Nothing goes until you tap Send under it in the chat, or send it from your Drafts."
+    else:
+        chat_why = (
+            "They wait in your Drafts for you to send. Send in the chat needs signed sign-ins, "
+            "which are off on this server."
+        )
     rows.append(Row(
         "chat_drafts", "Emails you ask for in chat.",
         "drafts" if drafts_on else "off",
-        "Drafts only" if drafts_on else "Off",
-        "They wait in your Drafts for you to send."
-        if drafts_on else "Write drafts as me is off, so it writes as itself.",
+        "Drafts, sent on your tap" if drafts_on else "Off",
+        chat_why,
         SETTING_ACT_AS_ME,
     ))
 
