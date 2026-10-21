@@ -32,7 +32,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from openexecutive.api.models import (
     WORKFLOW_DESIGNER_MESSAGE_MAX_CHARS,
@@ -267,14 +267,16 @@ async def _advance(
 
 
 @router.post("/workflows/designer/start", response_model=WorkflowDesignerTurnResponse)
-async def start_designer(body: WorkflowDesignerStartRequest) -> WorkflowDesignerTurnResponse:
+async def start_designer(body: WorkflowDesignerStartRequest, request: Request) -> WorkflowDesignerTurnResponse:
     """Open a design session from the user's description of the workflow."""
     text = _check_message(body.message, None)
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.delegation.workflow_drafts import available_for
 
     session_id = uuid.uuid4().hex
     session = DesignerSession(
         transcript=[Turn(role="user", text=text)],
-        context_block=build_context_block(),
+        context_block=build_context_block(as_me=available_for(_resolve_caller_person_id(request))),
     )
     _designer_sessions[session_id] = session
     # Sweep AFTER inserting so the cap holds on what is stored.
@@ -303,9 +305,13 @@ async def edit_designer(body: WorkflowDesignerEditRequest) -> WorkflowDesignerTu
     if original is None:
         raise HTTPException(status_code=404, detail="Workflow not found.")
 
+    from openexecutive.delegation.workflow_drafts import available_for
+    from openexecutive.workflows.dynamic_store import get_owner
+
     session_id = uuid.uuid4().hex
+    as_me = available_for(get_owner(original.name))
     _designer_sessions[session_id] = DesignerSession(
-        context_block=f"{build_context_block()}\n\n{build_edit_note(original.name)}",
+        context_block=f"{build_context_block(as_me=as_me)}\n\n{build_edit_note(original.name)}",
         draft=WorkflowDraft(definition=original),
         editing=original.name,
         original=original,

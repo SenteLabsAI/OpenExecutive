@@ -85,7 +85,7 @@ def client(
     dynamic_store.initialize_dynamic_workflows_db(db_path)
     monkeypatch.setattr(dynamic_store, "DB_PATH", db_path)
     monkeypatch.setattr(route, "_designer_sessions", OrderedDict())
-    monkeypatch.setattr(route, "build_context_block", lambda: "CTX")
+    monkeypatch.setattr(route, "build_context_block", lambda **_: "CTX")
     monkeypatch.delenv("BACKEND_SHARED_SECRET", raising=False)
     with TestClient(create_app()) as c:
         yield c

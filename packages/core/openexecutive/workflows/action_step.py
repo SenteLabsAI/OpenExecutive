@@ -412,6 +412,13 @@ async def _dispatch(
 
             with raised_for_workflow_owner(get_owner(workflow_name)):
                 return await handler(arguments)
+        if name == "oe__draft_email_as_me":
+            # Written as the workflow's creator, never as anyone the step names.
+            from openexecutive.delegation.workflow_drafts import writing_for
+            from openexecutive.workflows.dynamic_store import get_owner
+
+            with writing_for(get_owner(workflow_name)):
+                return await handler(arguments)
         return await handler(arguments)
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 

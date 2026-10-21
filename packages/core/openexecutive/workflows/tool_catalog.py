@@ -375,6 +375,12 @@ async def _message_person(tool_input: dict[str, Any]) -> str:
     return await handle_message_person(tool_input)
 
 
+async def _draft_email_as_me(tool_input: dict[str, Any]) -> str:
+    from openexecutive.delegation.workflow_drafts import handle_draft_email_as_me
+
+    return await handle_draft_email_as_me(tool_input)
+
+
 async def _create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.orchestrator.alert_tools import handle_create_alert
 
@@ -382,6 +388,7 @@ async def _create_alert(tool_input: dict[str, Any]) -> str:
 
 
 def _builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    from openexecutive.delegation import workflow_drafts
     from openexecutive.orchestrator.alert_tools import CREATE_ALERT_TOOL
     from openexecutive.orchestrator.schedule_tools import MESSAGE_PERSON_TOOL
 
@@ -425,6 +432,16 @@ def _builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
                 source="builtin",
             ),
             _create_alert,
+        ),
+        workflow_drafts.TOOL_NAME: (
+            ToolInfo(
+                name=workflow_drafts.TOOL_NAME,
+                description=workflow_drafts.TOOL_DESCRIPTION,
+                input_schema=workflow_drafts.TOOL_INPUT_SCHEMA,
+                read_only=None,
+                source="builtin",
+            ),
+            _draft_email_as_me,
         ),
     }
 
