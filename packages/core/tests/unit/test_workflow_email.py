@@ -503,7 +503,7 @@ def _send_policy(monkeypatch: pytest.MonkeyPatch, defn: Any, stored: Any) -> act
 def test_an_email_to_someone_they_chose_goes_without_asking(people, monkeypatch) -> None:
     owner_id, _ = people
     people_store.add_person_email(owner_id, "liv@co.example")
-    defn = _saved(f"Email the summary to Ben.Teammate@co.example and {TEAM}", [workflow_email.SEND_TOOL])
+    defn = _saved(f"Email the summary to Ben.Teammate@co.example and\n{TEAM}", [workflow_email.SEND_TOOL])
 
     policy = _send_policy(monkeypatch, defn, defn)
     targets = [("to", "ben.teammate@co.example"), ("to", TEAM), ("cc", OWNER.upper()), ("cc", "liv@co.example")]

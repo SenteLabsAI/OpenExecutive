@@ -44,6 +44,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -131,6 +132,17 @@ def _saved_part(defn: Any) -> dict[str, Any]:
     return dumped
 
 
+def _strings(node: Any) -> Iterator[str]:
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list | tuple):
+        for item in node:
+            yield from _strings(item)
+
+
 def chosen_recipients(defn: Any) -> set[str]:
     """The addresses a workflow that writes or reads as its creator may email
     without asking: the creator's own, and those written in the workflow
@@ -149,12 +161,12 @@ def chosen_recipients(defn: Any) -> set[str]:
         owner = get_person(owner_id) if owner_id is not None else None
         if owner is None:
             return set()
-        written = json.dumps(_saved_part(stored), default=str)
+        written = list(_strings(_saved_part(stored)))
     except Exception:
         logger.warning("workflow email: couldn't read the chosen recipients", exc_info=True)
         return set()
     own = {a.strip().lower() for a in [owner.email, *owner.email_aliases] if a}
-    return own | {a.lower() for a in _EMAIL_RE.findall(written)}
+    return own | {a.lower() for text in written for a in _EMAIL_RE.findall(text)}
 
 
 def save_refusal(defn: Any, caller: Any, owner_id: int | None, *, check_tools: bool = True) -> str | None:
