@@ -135,6 +135,9 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
 # (monotonic read time, items or None when there is no mailbox to read).
 _cache: tuple[float, list[Waiting] | None] | None = None
 _lock: asyncio.Lock | None = None
+# Bumped by ``reset_cache``: a read that was running when Act as me went off
+# must not store what it read.
+_generation = 0
 
 
 async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECONDS) -> list[Waiting] | None:
@@ -146,11 +149,14 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
     async with _lock:
         if _cache is not None and time.monotonic() - _cache[0] < max_age:
             return _cache[1]
+        started = _generation
         try:
             items = await asyncio.wait_for(read_waiting(now), timeout=_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.info("waiting_on: refresh failed (%s)", type(exc).__name__)
             items = None
+        if started != _generation:
+            return None
         _cache = (time.monotonic(), items)
         return items
 
@@ -163,9 +169,11 @@ def cached() -> list[Waiting] | None:
 
 
 def reset_cache() -> None:
-    """Forget the cached read (tests; Act as me turned off)."""
-    global _cache
+    """Forget the cached read, and any read still running (tests; Act as me
+    turned off)."""
+    global _cache, _generation
     _cache = None
+    _generation += 1
 
 
 __all__ = ["MAX_AGE_SECONDS", "WINDOW", "Waiting", "cached", "read_waiting", "refresh", "reset_cache"]

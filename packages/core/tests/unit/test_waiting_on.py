@@ -120,6 +120,18 @@ async def test_the_read_is_cached_until_it_is_old(monkeypatch: pytest.MonkeyPatc
     assert len(calls) == 2
 
 
+async def test_a_read_running_when_act_as_me_goes_off_is_not_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+        waiting_on.reset_cache()  # turned off while the read runs
+        return [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
+
+    monkeypatch.setattr(waiting_on, "read_waiting", _read)
+    assert await waiting_on.refresh() is None
+    assert waiting_on.cached() is None
+
+
 async def test_without_act_as_me_the_mailbox_stays_shut(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.delegation import gmail
     from openexecutive.delegation import settings as delegation_settings
