@@ -5,8 +5,10 @@ people and was waiting on both, because nothing it read looked at the mail
 they send from their own mailbox. This reads it, in the background only
 (the scheduler's tick and a view's settle pass, ``today.
 refresh_principal_narrative``), never on the request: the principal's sent
-mail from the last ``WINDOW`` that went to at most ``threads.MAX_RECIPIENTS``
-people besides the Executive and is still the last message in its thread.
+mail from the last ``WINDOW`` that asked something (a question mark in their
+own words, as ``follow_ups.unanswered`` asks), went to at most
+``threads.MAX_RECIPIENTS`` people besides the Executive and is still the last
+message in its thread.
 
 - **Theirs alone.** Only while they have Act as me on and their own mailbox
   opens (the gate ``top_three._read_own_calendar`` uses), and only into the
@@ -85,6 +87,7 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
     from openexecutive.delegation.ghostwriter import one_line
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.threads import MAX_RECIPIENTS
+    from openexecutive.integrations.email_poller import sender_new_text
 
     now = now or datetime.now(UTC)
     try:
@@ -104,6 +107,9 @@ async def read_waiting(now: datetime | None = None) -> list[Waiting] | None:
             if sent_at is None or not (now - WINDOW <= sent_at <= now - MIN_AGE):
                 continue
             if sent.from_addr not in own or "SENT" not in sent.labels or sent.calendar_invite:
+                continue
+            # A thank-you or an FYI waits on nobody. The body is read here only.
+            if "?" not in sender_new_text(sent.text or ""):
                 continue
             going = recipients(sent, own, exec_address)
             if not going or len(going) > MAX_RECIPIENTS:

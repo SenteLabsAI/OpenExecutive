@@ -18,7 +18,7 @@ def _sent(mid: str, to: list[str], *, ago: timedelta, thread: str | None = None,
     return SimpleNamespace(
         id=mid, thread_id=thread or f"t-{mid}", from_addr=ME, to=to, cc=[], labels=["SENT"],
         subject=kw.get("subject", f"About {mid}"), received_at=(NOW - ago).isoformat(),
-        calendar_invite=False,
+        calendar_invite=False, text=kw.get("text", "Can you send the numbers?"),
     )
 
 
@@ -66,6 +66,7 @@ async def test_only_their_unanswered_mail_is_waiting(monkeypatch: pytest.MonkeyP
             _sent("to-exec", ["exec@braden.test"], ago=timedelta(days=1)),
             _sent("crowd", [f"p{i}@co.test" for i in range(11)], ago=timedelta(days=1)),
             _sent("old", ["sam@co.test"], ago=timedelta(days=9)),
+            _sent("thanks", ["kim@co.test"], ago=timedelta(days=1), text="Thanks, sounds good."),
         ],
         replied={"t-answered"},
     )
