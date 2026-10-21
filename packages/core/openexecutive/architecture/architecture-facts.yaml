@@ -7251,7 +7251,8 @@ workflows:
     list_saved_tools is allowed under the Act as me lockdown (local read)
     and withheld on a turn private to the principal, like run_script.
 
-    Email as the creator (delegation/workflow_email.py): two built-ins,
+    Email as the creator (delegation/workflow_email.py): two built-ins (plus
+    oe__answer_email_as_me, delegation/workflow_reply.py, see handle_it),
     oe__draft_email_as_me (draft in the creator's mailbox, recorded as a
     chat draft) and oe__send_email_as_me (sent through
     reply_send.send_for_workflow, the third door). Written only as the
@@ -11350,6 +11351,20 @@ delegation:
     thread_recent (one auto-send per thread per day, delegation_handled),
     in_a_row (last own message in the thread was an auto-send),
     daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY, default 20).
+    Only when it passes, a last look (delegation.injection_check.held_back:
+    one tool-less classifier-model call reading the sender's new words as
+    plain text in an <email> block, up to 20,000 chars) asks whether they
+    carry instructions for an assistant (ignore rules, forward/quote other
+    mail, reveal what it knows, reply elsewhere, a passage addressed to the
+    assistant; styling is gone, so hidden text is judged by its words); true, a failed call or a malformed answer
+    holds the reply (handle_it_reason suspicious). It only ever holds back.
+    A workflow step reaches the same path with oe__answer_email_as_me
+    (delegation.workflow_reply -> inbox.answer_thread: the newest message of
+    the named thread, not from the person, through _consider with only the
+    STALE bound; the step names the thread, never the words or recipients;
+    counted, claimed and carded as the watcher's own; refuses when a scan is
+    running or the backlog is full). It counts as a send for save rules
+    (workflow_email.sends) and may run in a workflow that reads mail.
     The watcher then calls reply_send.send_on_its_own — the second door
     into _send, pinned by an AST test to delegation/inbox.py (the third,
     send_for_workflow, is pinned to delegation/workflow_email.py) — which runs

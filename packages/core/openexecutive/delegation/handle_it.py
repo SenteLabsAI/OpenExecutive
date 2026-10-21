@@ -48,7 +48,9 @@ with the reason recorded.
   (``executive_on_thread``) is fine: it is never a recipient of the reply;
 - it already sent one in this thread in the last day, or the last thing the
   person "said" in this thread was itself sent on its own;
-- the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached.
+- the day's limit (``DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY``) is reached;
+- after all of these pass, the last look (``injection_check``) finds the
+  email trying to steer an assistant, or can't tell.
 
 Never sent on its own whatever the setting: anything with an attachment (the
 watcher's drafts have none), a new recipient, or a sensitive topic.
@@ -174,6 +176,8 @@ REASONS: dict[str, str] = {
     "in_a_row": "Its last message in this conversation was sent on its own too.",
     "daily_limit": "Today's limit of replies sent on its own is reached.",
     "uncountable": "It couldn't count today's replies, so it asked instead.",
+    # Found by the last look before it sends (delegation.injection_check).
+    "suspicious": "The email reads like it's trying to give an assistant instructions.",
     # Found just before sending (reply_send.send_on_its_own).
     "draft_changed": "You changed the draft in your mailbox, so it's yours to send.",
     "handle_it_off": "Handle it for me was off by the time it came to send.",

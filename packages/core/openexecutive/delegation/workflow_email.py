@@ -55,7 +55,9 @@ logger = logging.getLogger(__name__)
 TIMEOUT_S = 300.0
 DRAFT_TOOL = "oe__draft_email_as_me"
 SEND_TOOL = "oe__send_email_as_me"
-TOOLS = frozenset({DRAFT_TOOL, SEND_TOOL})
+# Answers an email in their inbox as Handle it for me would (delegation.workflow_reply).
+REPLY_TOOL = "oe__answer_email_as_me"
+TOOLS = frozenset({DRAFT_TOOL, SEND_TOOL, REPLY_TOOL})
 MAX_INTENT_CHARS = 4000
 _EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+")
 
@@ -114,8 +116,11 @@ def available_for(person_id: int | None) -> bool:
 
 
 def sends(defn: Any) -> bool:
-    """Whether a workflow definition has a step that sends as its creator."""
-    return any(SEND_TOOL in (getattr(step, "tools", None) or []) for step in getattr(defn, "steps", []))
+    """Whether a workflow definition has a step that sends as its creator,
+    or answers their email (which may go on its own)."""
+    return any(
+        {SEND_TOOL, REPLY_TOOL} & set(getattr(step, "tools", None) or []) for step in getattr(defn, "steps", [])
+    )
 
 
 def as_creator(defn: Any) -> bool:
@@ -277,8 +282,10 @@ class _Ask:
     intent: str
 
 
-async def _ask(tool_input: dict[str, Any], *, mailbox: Any) -> _Ask | str:
-    """Who writes, to whom, and what: or the error result."""
+async def creator_mailbox(*, mailbox: Any) -> tuple[Any, str, Any] | str:
+    """The workflow's creator, their address and their mailbox's client, when
+    this run may write as them: or the error result. ``mailbox`` replaces
+    their own client (tests)."""
     from openexecutive.delegation.gmail import (
         STATUS_MESSAGES,
         gmail_for,
@@ -286,7 +293,6 @@ async def _ask(tool_input: dict[str, Any], *, mailbox: Any) -> _Ask | str:
         normalize_email,
     )
     from openexecutive.delegation.settings import can_delegate, is_enabled
-    from openexecutive.delegation.threads import MAX_RECIPIENTS
     from openexecutive.people.store import get_person
     from openexecutive.workflows.chat_tools import running
 
@@ -307,6 +313,21 @@ async def _ask(tool_input: dict[str, Any], *, mailbox: Any) -> _Ask | str:
         return _error("Its creator hasn't turned on Act as me (writing email as them)." + _FALL_BACK)
     if person is None or person.id is None:  # can_delegate checked both; for the type checker
         return _error("I can't tell whose mailbox this is.")
+    email = normalize_email(person.email)
+    try:
+        client = mailbox if mailbox is not None else gmail_for(email)
+    except Exception:
+        logger.warning("workflow email: couldn't open the mailbox", exc_info=True)
+        return _error("Couldn't open their mailbox just now." + _FALL_BACK)
+    status = await gmail_status(email, gmail=client)
+    if status != "connected":
+        return _error(STATUS_MESSAGES[status] + _FALL_BACK, status=status)
+    return person, email, client
+
+
+async def _ask(tool_input: dict[str, Any], *, mailbox: Any) -> _Ask | str:
+    """Who writes, to whom, and what: or the error result."""
+    from openexecutive.delegation.threads import MAX_RECIPIENTS
 
     intent = str(tool_input.get("intent") or "").strip()
     if not intent:
@@ -324,16 +345,10 @@ async def _ask(tool_input: dict[str, Any], *, mailbox: Any) -> _Ask | str:
         return _error("Pass `to`: who the email is for.")
     if len(to) + len(cc) > MAX_RECIPIENTS:
         return _error(f"At most {MAX_RECIPIENTS} recipients.")
-
-    email = normalize_email(person.email)
-    try:
-        client = mailbox if mailbox is not None else gmail_for(email)
-    except Exception:
-        logger.warning("workflow email: couldn't open the mailbox", exc_info=True)
-        return _error("Couldn't open their mailbox just now." + _FALL_BACK)
-    status = await gmail_status(email, gmail=client)
-    if status != "connected":
-        return _error(STATUS_MESSAGES[status] + _FALL_BACK, status=status)
+    writer = await creator_mailbox(mailbox=mailbox)
+    if isinstance(writer, str):
+        return writer
+    person, email, client = writer
     return _Ask(person=person, email=email, client=client, to=to, cc=cc, intent=intent)
 
 

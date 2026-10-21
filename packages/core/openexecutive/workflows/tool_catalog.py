@@ -392,8 +392,10 @@ def _chat_specs() -> dict[str, tuple[ToolInfo, Handler]]:
 
 def _email_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     """Email as the workflow's creator (Act as me): a draft for them to send,
-    or sent as them (``delegation.workflow_email``)."""
+    sent as them (``delegation.workflow_email``), or an email in their inbox
+    answered as Handle it for me would (``delegation.workflow_reply``)."""
     from openexecutive.delegation import workflow_email as we
+    from openexecutive.delegation import workflow_reply as wr
 
     return {
         we.DRAFT_TOOL: (
@@ -409,6 +411,13 @@ def _email_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
                 timeout_s=we.TIMEOUT_S,
             ),
             we.handle_send_email_as_me,
+        ),
+        wr.TOOL: (
+            ToolInfo(
+                wr.TOOL, wr.DESCRIPTION, wr.INPUT_SCHEMA, None, "builtin",
+                timeout_s=wr.TIMEOUT_S,
+            ),
+            wr.handle_answer_email_as_me,
         ),
     }
 
