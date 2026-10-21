@@ -9825,7 +9825,8 @@ company_onboarding:
     principal (best-effort), (6) reconcile departments, then save the goals
     (commit.save_onboarding_goals: period "year", no department unless one
     drafted is named, owner the named person else explicitly the principal,
-    skipping any worded like an existing goal so a re-run adds none; their
+    skipping any worded like a goal already set for this year or
+    ongoing, so a re-run adds none; their
     titles also become strategic_priorities.current_year in step 3's
     profile via derive_org_structure), (7) fire the post-onboarding research
     workflow. A failure at 1-3 leaves the session

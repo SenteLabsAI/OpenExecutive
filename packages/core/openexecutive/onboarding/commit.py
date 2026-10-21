@@ -499,9 +499,9 @@ def save_onboarding_goals(
 ) -> int:
     """Add the drafted goals for this year. Returns how many were created.
 
-    Additive like the departments: a goal whose wording matches one that
-    already exists (any department, case-insensitive) is left alone, so
-    re-running setup does not duplicate goals. A goal's owner is the named
+    Additive like the departments: a goal whose wording matches one already
+    set for this year or ongoing (any department, case-insensitive) is left
+    alone, so re-running setup does not duplicate goals. A goal's owner is the named
     person, else the principal; its department is the drafted one it names,
     matched the way reconcile_onboarding_departments matched it, else none.
     Best-effort: logs the exception type only and keeps what was saved.
@@ -524,9 +524,16 @@ def save_onboarding_goals(
             return 0
         init_departments_db()
         known = [d.config for d in list_departments()]
-        seen = {g.key_result.strip().lower() for g in list_all_goals()}
-        ids = {name.strip().lower(): pid for name, pid in person_ids.items()}
         year = str(datetime.now(get_user_timezone()).year)
+        # Only this year's goals (any period label naming the year, e.g.
+        # "2026", "Q3 2026") and ongoing ones count: last year's goal with
+        # the same wording is a new goal this year.
+        seen = {
+            g.key_result.strip().lower()
+            for g in list_all_goals()
+            if g.period_type == "ongoing" or year in g.period_value
+        }
+        ids = {name.strip().lower(): pid for name, pid in person_ids.items()}
 
         for draft in named:
             title = draft.title.strip()

@@ -793,6 +793,15 @@ def test_rerunning_setup_does_not_duplicate_goals(empty_dept_db: Path) -> None:
     ]
 
 
+def test_last_years_goal_does_not_block_this_years(empty_dept_db: Path) -> None:
+    dept_store.insert_goal(
+        None, period_type="year", period_value="2001", key_result="Launch", target=""
+    )
+    assert save_onboarding_goals([GoalDraft(title="launch")], {}, principal_id=1) == 1
+    assert sorted(g.period_value for g in dept_store.list_all_goals())[0] == "2001"
+    assert len(dept_store.list_all_goals()) == 2
+
+
 def test_goal_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(*a: object, **k: object) -> None:
         raise sqlite3.OperationalError("disk I/O error")
