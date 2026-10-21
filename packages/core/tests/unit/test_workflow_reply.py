@@ -132,3 +132,10 @@ def test_it_is_a_send_and_offered_to_steps() -> None:
     assert workflow_email.sends(defn)
     info = {t.name: t for t in tool_catalog.builtin_tools()}[workflow_email.REPLY_TOOL]
     assert info.read_only is not True and (info.timeout_s or 0) >= 300
+
+
+def test_naming_a_thread_is_no_write_target() -> None:
+    from openexecutive.workflows import action_step
+
+    # The recipients come from the thread itself, so nothing is held to ask.
+    assert action_step.resource_targets({"thread_id": "18c2f0a9b7"}) == ([], True)
