@@ -9,6 +9,28 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.4](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.3...v0.6.4) (2026-10-21)
+
+
+### Added
+
+* **briefing:** show the replies you're waiting on in Right now ([#606](https://github.com/SenteLabsAI/OpenExecutive/issues/606)) ([823b230](https://github.com/SenteLabsAI/OpenExecutive/commit/823b230600ecefe65c075689673d6a869abaf630))
+* **delegation:** let a workflow answer an email as Handle it for me would, behind an injection check ([#605](https://github.com/SenteLabsAI/OpenExecutive/issues/605)) ([653d80e](https://github.com/SenteLabsAI/OpenExecutive/commit/653d80e2d85e2c1cc7c8ce0ce4e90e34f68f3609))
+* **delegation:** send a chat draft written as you on your tap ([#604](https://github.com/SenteLabsAI/OpenExecutive/issues/604)) ([211a484](https://github.com/SenteLabsAI/OpenExecutive/commit/211a484deb2e62f9edfa9bebd8976b0ffeec3331))
+* **departments:** let goals stand on their own with an owner ([#594](https://github.com/SenteLabsAI/OpenExecutive/issues/594)) ([3efcb09](https://github.com/SenteLabsAI/OpenExecutive/commit/3efcb0938b615a0a5c813c8adc69f4e858894f2b))
+* **onboarding:** choose Personal or Team automatically and save goals with owners ([#595](https://github.com/SenteLabsAI/OpenExecutive/issues/595)) ([b1f6a1c](https://github.com/SenteLabsAI/OpenExecutive/commit/b1f6a1c3bbb18d5e343ff67ed1cd3d8a86c8ee70))
+* **onboarding:** draft setup from the company's website ([#597](https://github.com/SenteLabsAI/OpenExecutive/issues/597)) ([af9f387](https://github.com/SenteLabsAI/OpenExecutive/commit/af9f387d96b9316b45a2a0b0f01902773353381e))
+* **workflows:** let a workflow email as its creator, as a draft or sent ([#600](https://github.com/SenteLabsAI/OpenExecutive/issues/600)) ([21e14e4](https://github.com/SenteLabsAI/OpenExecutive/commit/21e14e407eece6562763a2d3505e7e1f704faabe))
+* **workflows:** let a workflow read its creator's mail and calendar ([#601](https://github.com/SenteLabsAI/OpenExecutive/issues/601)) ([cf86c89](https://github.com/SenteLabsAI/OpenExecutive/commit/cf86c89a6767d05244809ecd8369857f29f41921))
+* **workflows:** let a workflow that reads mail send to recipients its creator chose ([#602](https://github.com/SenteLabsAI/OpenExecutive/issues/602)) ([384a024](https://github.com/SenteLabsAI/OpenExecutive/commit/384a024a16c3ee531c72adc2a4f254e5d638a635))
+* **workflows:** let action steps use the Executive's chat tools ([#599](https://github.com/SenteLabsAI/OpenExecutive/issues/599)) ([18449b7](https://github.com/SenteLabsAI/OpenExecutive/commit/18449b7b9f2d0b5c82c8a3b1b0ee639e1413864e))
+
+
+### Fixed
+
+* **briefing:** skip a sent-mail thread that fails to open in waiting-on ([#607](https://github.com/SenteLabsAI/OpenExecutive/issues/607)) ([5012783](https://github.com/SenteLabsAI/OpenExecutive/commit/50127833a0d5726317c5ad5618e1bc9f2a9d308f))
+* **briefing:** stop serving a Right now that a meeting has overtaken ([#603](https://github.com/SenteLabsAI/OpenExecutive/issues/603)) ([f174588](https://github.com/SenteLabsAI/OpenExecutive/commit/f1745889230c0c459dcb3b67a872e905362ebb16))
+
 ## [0.6.3](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.2...v0.6.3) (2026-10-21)
 
 
