@@ -32,9 +32,11 @@ produces can reach other people, so it is fenced in code, as chat is:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -164,6 +166,18 @@ def chat_run_refusal(workflow_name: str) -> str | None:
     if not _keep_conversation_private(_Writer(pinned, person, "", None)):
         return "I couldn't keep this conversation private, so I didn't run it. Try again."
     return None
+
+
+def private_run(workflow_name: str) -> AbstractContextManager[None]:
+    """Wrap a whole run of ``workflow_name`` (its steps, its report's
+    delivery, a pause's question): when it reads its creator's mail, every
+    audit row written in it is theirs alone and no send reaches the shared
+    activity rail (``audit.context.rows_for_person``), as on a chat turn that
+    read their mail. Otherwise nothing changes."""
+    from openexecutive.audit.context import rows_for_person
+
+    owner = owns_runs(workflow_name)
+    return rows_for_person(owner) if owner is not None else contextlib.nullcontext()
 
 
 def _error(message: str, **extra: Any) -> str:

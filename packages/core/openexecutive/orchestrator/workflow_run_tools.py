@@ -421,42 +421,45 @@ async def handle_run_workflow(tool_input: dict[str, Any]) -> str:
     last_error = ""
     private_to_principal = False
     awaiting: dict[str, Any] | None = None
-    try:
-        async for event in workflow.run(inputs=wf_inputs, store=store):
-            # An approval-gate step yields a WaitForHumanEvent (not a
-            # WorkflowEvent): checkpoint the run and stop. Mirrors
-            # api/routes/workflows.py — the resumer applies the timeout policy
-            # and the inbound resolver records the human's reply.
-            if isinstance(event, WaitForHumanEvent):
-                # Delivery + checkpoint live in `workflows.gate`, shared with
-                # the HTTP route and the resumer. Deliberately NOT suppressed:
-                # if the checkpoint can't be written the run must NOT be
-                # reported as awaiting_human — a silently-dropped checkpoint
-                # would orphan the run in 'running' where the resumer and the
-                # inbound resolver can never find it. Let the failure fall
-                # through to the outer handler, which fails the run.
-                pause = await checkpoint_gate(
-                    run_id=run_id,
-                    event=event,
-                    workflow_title=workflow.title,
-                )
-                awaiting = {
-                    "person_id": pause.person_id,
-                    "question": pause.question,
-                    "awaiting_until": pause.awaiting_until.isoformat(),
-                    "delivery": pause.delivery,
-                    "resumable": pause.resumable,
-                }
-                break
-            if event.type == "artifact" and event.content:
-                artifact = event.content
-            elif event.type == "result" and event.data and event.data.get("private_to_principal"):
-                private_to_principal = True
-            elif event.type == "error" and event.message:
-                last_error = event.message
-    except Exception as exc:
-        logger.exception("run_workflow: workflow.run crashed")
-        last_error = str(exc)[:_EXC_SNIPPET_MAXLEN]
+    from openexecutive.delegation.workflow_reads import private_run
+
+    with private_run(name):
+        try:
+            async for event in workflow.run(inputs=wf_inputs, store=store):
+                # An approval-gate step yields a WaitForHumanEvent (not a
+                # WorkflowEvent): checkpoint the run and stop. Mirrors
+                # api/routes/workflows.py — the resumer applies the timeout policy
+                # and the inbound resolver records the human's reply.
+                if isinstance(event, WaitForHumanEvent):
+                    # Delivery + checkpoint live in `workflows.gate`, shared with
+                    # the HTTP route and the resumer. Deliberately NOT suppressed:
+                    # if the checkpoint can't be written the run must NOT be
+                    # reported as awaiting_human — a silently-dropped checkpoint
+                    # would orphan the run in 'running' where the resumer and the
+                    # inbound resolver can never find it. Let the failure fall
+                    # through to the outer handler, which fails the run.
+                    pause = await checkpoint_gate(
+                        run_id=run_id,
+                        event=event,
+                        workflow_title=workflow.title,
+                    )
+                    awaiting = {
+                        "person_id": pause.person_id,
+                        "question": pause.question,
+                        "awaiting_until": pause.awaiting_until.isoformat(),
+                        "delivery": pause.delivery,
+                        "resumable": pause.resumable,
+                    }
+                    break
+                if event.type == "artifact" and event.content:
+                    artifact = event.content
+                elif event.type == "result" and event.data and event.data.get("private_to_principal"):
+                    private_to_principal = True
+                elif event.type == "error" and event.message:
+                    last_error = event.message
+        except Exception as exc:
+            logger.exception("run_workflow: workflow.run crashed")
+            last_error = str(exc)[:_EXC_SNIPPET_MAXLEN]
 
     if awaiting is not None:
         _audit(

@@ -7283,7 +7283,10 @@ workflows:
     unattended pass, with Act as me allowed + on + mailbox connected. A
     workflow that reads: every run is its creator's (scheduler creates the
     scheduled run with owner_person_id = creator, pins the viewer, and
-    delivers the report and failure card to the creator; the run route 403s
+    delivers the report and failure card to the creator; every path that
+    runs it (scheduler, run route, chat run_workflow, resumer) wraps the run
+    in private_run = rows_for_person(creator), so its audit rows and sends
+    stay off the shared activity rail; the run route 403s
     anyone else; chat's run_workflow needs the turn's Act as me pin to be the
     creator and marks the turn touched_mail/read_mail first). Locked down for
     all steps (definition_refusal at save, run_rules at each step): tools

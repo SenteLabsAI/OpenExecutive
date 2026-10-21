@@ -287,7 +287,9 @@ def test_a_scheduled_run_is_the_creators_and_reports_to_them(people, monkeypatch
     dms: list[dict[str, Any]] = []
 
     async def dm(payload: dict[str, Any]) -> str:
-        dms.append(payload)
+        from openexecutive.audit.context import rows_owner, rows_private
+
+        dms.append({**payload, "private": rows_private(), "rows_owner": rows_owner()})
         return "{}"
 
     monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", dm)
@@ -296,4 +298,5 @@ def test_a_scheduled_run_is_the_creators_and_reports_to_them(people, monkeypatch
     asyncio.run(runner._run_dynamic_workflow(action, now=__import__("datetime").datetime.now()))  # type: ignore[arg-type]
 
     assert seen == {"owner_person_id": owner_id, "run_owner": owner_id}
-    assert [d["person_id"] for d in dms] == [owner_id]
+    # Delivered to them alone, privately: no row on the shared activity rail.
+    assert [(d["person_id"], d["private"], d["rows_owner"]) for d in dms] == [(owner_id, True, owner_id)]

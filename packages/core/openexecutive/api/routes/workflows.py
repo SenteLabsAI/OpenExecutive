@@ -709,7 +709,9 @@ async def start_workflow_run(name: str, request: Request) -> StreamingResponse:
     async def owned_stream():
         # The run's steps read and draft as its owner (nobody for a team
         # run), so no one else's documents reach its output.
-        with pinned_viewer(run_viewer):
+        from openexecutive.delegation.workflow_reads import private_run
+
+        with pinned_viewer(run_viewer), private_run(workflow.name):
             async for chunk in event_stream():
                 yield chunk
 

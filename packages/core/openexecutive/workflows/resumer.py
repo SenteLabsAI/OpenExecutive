@@ -362,6 +362,7 @@ async def _execute_resume(
     its steps read and draft is theirs (`artifact_records.pinned_viewer`),
     and nobody's for a team run, so no one's documents reach the run's
     history that someone else may read."""
+    from openexecutive.delegation.workflow_reads import private_run
     from openexecutive.orchestrator.artifact_records import (
         NOBODY,
         pinned_viewer,
@@ -370,7 +371,10 @@ async def _execute_resume(
 
     run = _wf_persistence.get_run(row["run_id"], db_path=db_path) or {}
     owner = run.get("owner_person_id")
-    with pinned_viewer(viewer_for_person(owner) if owner is not None else NOBODY):
+    with (
+        pinned_viewer(viewer_for_person(owner) if owner is not None else NOBODY),
+        private_run(str(run.get("workflow_name") or "")),
+    ):
         return await _drive_resume(row, claim, db_path=db_path)
 
 
