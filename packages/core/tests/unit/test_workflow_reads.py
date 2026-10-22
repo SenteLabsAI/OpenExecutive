@@ -247,8 +247,12 @@ def test_a_chat_run_needs_the_creator_and_marks_the_turn(people, monkeypatch: py
     theirs = dsettings.TurnDelegation(enabled=True, offered=True, person_id=owner_id)
     monkeypatch.setattr(dsettings, "turn_delegation", lambda session: theirs)
 
+    theirs.mail_vetted = True  # an earlier read this turn was checked and clean
     assert workflow_reads.chat_run_refusal("inbox_digest") is None
     assert theirs.read_mail and theirs.touched_mail
+    # What the workflow brings back from the mail isn't checked: the whole
+    # lockdown holds for the rest of the turn at Balanced too.
+    assert theirs.mail_held and not theirs.mail_vetted
 
     someone = dsettings.TurnDelegation(enabled=True, offered=True, person_id=teammate)
     monkeypatch.setattr(dsettings, "turn_delegation", lambda session: someone)

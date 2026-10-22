@@ -373,19 +373,23 @@ def mail_lock_holds(pinned: Any, *, reading_now: bool = False) -> bool:
         return True
 
 
-def mail_turn_withholds(tool_name: str, tool_input: Any, *, reading_now: bool = False) -> bool:
+def mail_turn_withholds(
+    tool_name: str, tool_input: Any, *, reading_now: bool = False, pinned: Any = None,
+) -> bool:
     """Whether a call to ``tool_name`` is refused on the turn in progress for
     the owner's mail it read (or reads this round, ``reading_now``): what
     ``mail_touched_withholds`` refuses while the lockdown holds
     (``mail_lock_holds``), and at every level the posts to everyone and the
-    roster changes (``MAIL_PRIVATE_WITHHELD_TOOLS``). Never raises; fails
-    closed."""
+    roster changes (``MAIL_PRIVATE_WITHHELD_TOOLS``). ``pinned`` is the
+    turn's ``TurnDelegation`` when the caller has it (the chat loop), else the
+    bound session's. Never raises; fails closed."""
     from openexecutive.delegation.settings import turn_delegation
     from openexecutive.orchestrator.schedule_tools import current_session
 
     try:
-        pinned = turn_delegation(current_session.get())
-        if pinned is None or not (pinned.read_mail or reading_now):
+        if pinned is None:
+            pinned = turn_delegation(current_session.get())
+        if pinned is None or not (getattr(pinned, "read_mail", False) is True or reading_now):
             return False
         if mail_lock_holds(pinned, reading_now=reading_now):
             return mail_touched_withholds(tool_name, tool_input)

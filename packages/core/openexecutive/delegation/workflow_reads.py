@@ -190,6 +190,11 @@ def chat_run_refusal(workflow_name: str) -> str | None:
             "conversation that is theirs alone (or from its page)."
         )
     pinned.touched_mail = pinned.read_mail = True
+    # What the workflow brings back from the mail isn't checked
+    # (outside_content.check_mail_read), so the whole lockdown holds for the
+    # rest of the turn (delegation.lockdown.mail_lock_holds).
+    pinned.mail_vetted = False
+    pinned.mail_held = True
     if not _keep_conversation_private(_Writer(pinned, person, "", None)):
         return "I couldn't keep this conversation private, so I didn't run it. Try again."
     return None

@@ -2689,7 +2689,9 @@ class Executive:
             if pinned_delegation is not None and (pinned_delegation.read_mail or reads_mail_now):
                 mail_touched_uses = [
                     tu for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
-                    if mail_turn_withholds(tu["name"], tu["input"], reading_now=reads_mail_now)
+                    if mail_turn_withholds(
+                        tu["name"], tu["input"], reading_now=reads_mail_now, pinned=pinned_delegation
+                    )
                 ]
             if mail_touched_uses:
                 skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
@@ -3379,6 +3381,13 @@ class Executive:
                         probe_name, probe_input
                     ):
                         return outside_content.outside_withheld_error(tool[:200]), True
+                    # The owner's mail this turn read holds what a direct call
+                    # would hold (delegation.lockdown.mail_turn_withholds):
+                    # an alert or a roster change at any level.
+                    if pinned_delegation is not None and mail_turn_withholds(
+                        probe_name, probe_input, pinned=pinned_delegation
+                    ):
+                        return mail_touched_withheld_error(tool[:200]), True
                     if not own:
                         await outside_content.vet_reads(
                             [{"name": probe_name, "input": probe_input}], self._mcp_gateway

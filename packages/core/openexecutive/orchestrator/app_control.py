@@ -336,10 +336,13 @@ def _turn_read_outside(session: Any) -> bool:
     # The mail it read holds as the safety level says (Careful: a
     # conversation that read it; Balanced: a read the check flagged or
     # hasn't checked yet; Hands-off: nothing).
-    state = outside_content.current()
-    if getattr(pinned, "touched_mail", False) is True and (state is None or state.mode == outside_mode.ASK):
+    try:
+        state = outside_content.current()
+        if getattr(pinned, "touched_mail", False) is True and (state is None or state.mode == outside_mode.ASK):
+            return True
+        return mail_lock_holds(pinned)
+    except Exception:
         return True
-    return mail_lock_holds(pinned)
 
 
 # --------------------------------------------------------------------------- #
