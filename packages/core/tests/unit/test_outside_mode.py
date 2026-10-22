@@ -681,6 +681,17 @@ def test_the_owner_sets_a_channel_through_the_route(
     assert http.put("/executive/outside-content", json={"mode": "ask", "channels": {"web": "maybe"}}).status_code == 422
 
 
+def test_nobody_else_may_set_a_channel(
+    client: tuple[TestClient, list[str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http, events = client
+    monkeypatch.setattr(executive_route, "_is_principal", lambda request: False)
+    res = http.put("/executive/outside-content", json={"mode": "outsiders", "channels": {"slack": "trust"}})
+    assert res.status_code == 403
+    assert outside_mode.stored_channels() == {}
+    assert events == []
+
+
 def test_the_same_synced_read_is_checked_once_a_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
     seen = _check_says(monkeypatch, content_scan.CLEAN)

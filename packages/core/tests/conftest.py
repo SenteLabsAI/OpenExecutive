@@ -73,9 +73,10 @@ def _outside_content_asks(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(autouse=True)
 def _content_scan_unchecked(monkeypatch: pytest.MonkeyPatch):
     """Keep the content check (orchestrator.content_scan) from calling a
-    model: every read comes back unchecked, which holds like a flag under
-    Balanced and adds no notice to a result. test_content_scan.py and the
-    level tests give it verdicts of their own."""
+    model: every read comes back unchecked, which holds under Careful (the
+    suite's level, ``_outside_content_asks``) and, below it, holds nothing
+    and puts ``UNCHECKED_NOTICE`` before the result. test_content_scan.py
+    and the level tests give it verdicts of their own."""
     from openexecutive.orchestrator import content_scan
 
     async def unchecked(content: object, *, model: str | None = None) -> content_scan.Verdict:

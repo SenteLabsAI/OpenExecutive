@@ -3322,12 +3322,17 @@ class Executive:
                 # (call_tool input, result text, the exception if the call
                 # raised); an own tool's input is {"name", "arguments", "own": True}.
                 made: list[tuple[dict[str, Any], str, BaseException | None]] = []
+                # The safety check's notices on the script's reads: shown to
+                # the model above the script's result, never put into the
+                # text the script parses.
+                notices: list[str] = []
 
                 async def _script_call(
                     tool: str,
                     arguments: dict[str, Any],
                     _call: Any = script_call,
                     _made: list[tuple[dict[str, Any], str, BaseException | None]] = made,
+                    _notices: list[str] = notices,
                     _own: frozenset[str] = script_own,
                     _handlers: dict[str, Any] = turn_handlers,
                     _counts: dict[str, int] = script_counts,
@@ -3402,11 +3407,16 @@ class Executive:
                         text = _tool_error_result(tool, exc)
                         _made.append((call_input, text, exc))
                         if source is not None:
-                            outside_content.mark(source)
+                            # The error can carry what the tool read: checked
+                            # like any read.
+                            notice = await outside_content.mark_read(source, probe_input, text, self._mcp_gateway)
+                            if notice:
+                                _notices.append(notice)
                         return text, True
                     if source is not None:
                         notice = await outside_content.mark_read(source, probe_input, text, self._mcp_gateway)
-                        text = notice + text
+                        if notice:
+                            _notices.append(notice)
                     _made.append((call_input, text, None))
                     return text, looks_like_error(text)
 
@@ -3428,6 +3438,7 @@ class Executive:
                     script_result = json.dumps({"error": "the script did not finish"})
                     script_failed = True
                     script_stats: dict[str, Any] = {}
+                    notices.clear()
                     # aclosing: a stopped turn closes the script, and with it
                     # the Monty worker, instead of leaving it to the GC.
                     async with contextlib.aclosing(
@@ -3549,7 +3560,7 @@ class Executive:
                             elif kind == "done":
                                 script_result, script_failed = payload
                     logger.info("← run_script  result=%s", _trunc(script_result))
-                    results_by_id[tu["id"]] = script_result
+                    results_by_id[tu["id"]] = "".join(dict.fromkeys(notices)) + script_result
                     # Agent Activity: the built tool as one card, with the
                     # calls it made (the result lists them, capped). Sent by
                     # the round's event replay below, like specialist events.
