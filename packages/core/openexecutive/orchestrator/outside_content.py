@@ -57,8 +57,8 @@ fixed at the start of each turn (``TurnOutside.mode``), and every read is
 checked for attempts to steer the Executive (``orchestrator.content_scan``)
 whatever the level. Under Careful (``ask``) every read marks the turn. Under
 Balanced (``outsiders``) a read marks it only when the check flags it
-(``Verdict.holds``) or finds it too big to read whole (padding is how content
-would dodge the check); any other it couldn't check goes on unmarked, its result
+(``Verdict.holds``) or finds it too big to read whole or past the turn's
+budget of checks (padding or a pile of reads is how content would dodge it); any other it couldn't check goes on unmarked, its result
 behind a notice that it is data (``UNCHECKED_NOTICE``), and so does a web
 search, with no notice (its results arrive encrypted inside the model's own
 response, so nothing can check them or go before them; ``mark``). A Gmail search's list of ids, a Gmail message
@@ -582,7 +582,9 @@ async def _check(state: TurnOutside, content: Any) -> Any:
     from openexecutive.orchestrator import content_scan
 
     if state.scans >= content_scan.MAX_PER_TURN:
-        return content_scan.UNCHECKED
+        # Past the budget a read goes unchecked, and it holds like content
+        # too big to check: otherwise the read after the budget is a way past.
+        return content_scan.TOO_BIG
     state.scans += 1
     return await content_scan.scan(content)
 

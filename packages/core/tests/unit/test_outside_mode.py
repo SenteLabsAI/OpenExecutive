@@ -463,13 +463,15 @@ def test_a_turn_checks_only_so_many_reads(monkeypatch: pytest.MonkeyPatch) -> No
         try:
             for i in range(content_scan.MAX_PER_TURN):
                 await oc.mark_read(oc.DOCUMENT, {}, f"page {i}")
-            notice = await oc.mark_read(oc.DOCUMENT, {}, "one more")
             assert not oc.read_outside()
+            notice = await oc.mark_read(oc.DOCUMENT, {}, "one more")
+            assert oc.read_outside()
             return notice
         finally:
             oc.end_turn(state)
 
-    # Past its budget a read goes unchecked: on, behind the notice.
+    # Past its budget a read goes unchecked and holds, like one too big to
+    # check: a pile of harmless reads is no way past the check.
     assert asyncio.run(go()) == oc.UNCHECKED_NOTICE
     assert len(seen) == content_scan.MAX_PER_TURN
 

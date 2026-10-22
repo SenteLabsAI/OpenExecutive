@@ -23,8 +23,9 @@ long to read whole (``MAX_CHARS``; an attachment's files are bounded apart,
 ``MAX_MEDIA_BLOCKS`` / ``MAX_MEDIA_CHARS``), or a turn past its budget of checks
 (``MAX_PER_TURN``, kept by the caller) is ``unchecked``: it holds nothing
 below Careful, and its result reaches the model behind a notice that it is
-data. Content too big to read whole (``TOO_BIG``) is the exception, since
-padding is how content would dodge the check: Balanced holds it like a flag. The same content is checked once per process (``_CACHE``, by
+data. Content too big to read whole, or read past the turn's budget
+(``TOO_BIG``), is the exception, since padding or a pile of harmless reads is
+how content would dodge the check: Balanced holds it like a flag. The same content is checked once per process (``_CACHE``, by
 hash). Plain code around one model call; never raises.
 """
 from __future__ import annotations
@@ -57,8 +58,8 @@ MAX_CHARS = 60_000
 # bounded apart from its text: past either, the item counts as unchecked.
 MAX_MEDIA_BLOCKS = 5
 MAX_MEDIA_CHARS = 8_000_000
-# Checks one turn may make; past it, a read counts as unchecked.
-MAX_PER_TURN = 12
+# Checks one turn may make; past it, a read holds like one too big to check.
+MAX_PER_TURN = 30
 _MAX_TOKENS = 200
 _CACHE_SIZE = 2000
 
@@ -110,8 +111,9 @@ class Verdict:
     flagged: bool = False
     unchecked: bool = False
     categories: tuple[str, ...] = field(default_factory=tuple)
-    # Unchecked because it is too big to read whole (``TOO_BIG``): padding is
-    # how content would dodge the check, so Balanced holds it like a flag.
+    # Unchecked because it is too big to read whole, or past the turn's
+    # budget (``TOO_BIG``): padding or a pile of reads is how content would
+    # dodge the check, so Balanced holds it like a flag.
     too_big: bool = False
 
     @property
