@@ -129,9 +129,13 @@ def stored_mode(*, db_path: Path | None = None) -> str:
 
 def stored_channels(*, db_path: Path | None = None) -> dict[str, str]:
     """The channels set apart from the company's level: channel -> mode.
-    Empty when none is, or when the store can't be read (logged): every
-    channel then follows the level, which ``stored_mode`` reads as ``ask``
-    when the store is unreadable."""
+    Empty when none is, or when the store can't be read (logged); a turn's
+    level then reads as ``ask`` (``channel_mode``)."""
+    return _read_channels(db_path) or {}
+
+
+def _read_channels(db_path: Path | None = None) -> dict[str, str] | None:
+    """``stored_channels``, or None when the store can't be read."""
     path = _db_path(db_path)
     if not path.exists():
         return {}
@@ -142,25 +146,35 @@ def stored_channels(*, db_path: Path | None = None) -> dict[str, str]:
         finally:
             conn.close()
     except sqlite3.OperationalError as exc:
-        if "no such table" not in str(exc) and "no such column" not in str(exc):
-            logger.warning("outside_mode: couldn't read the channels (%s)", exc)
-        return {}
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            return {}
+        logger.warning("outside_mode: couldn't read the channels (%s)", exc)
+        return None
     except Exception:
         logger.warning("outside_mode: couldn't read the channels", exc_info=True)
-        return {}
+        return None
     try:
         parsed = json.loads(row[0]) if row is not None and row[0] else {}
     except (TypeError, ValueError):
-        return {}
+        logger.warning("outside_mode: the stored channels aren't readable")
+        return None
     if not isinstance(parsed, dict):
-        return {}
+        logger.warning("outside_mode: the stored channels aren't readable")
+        return None
     return {c: m for c, m in parsed.items() if c in CHANNELS and m in MODES}
 
 
 def channel_mode(channel: str | None) -> str:
     """The level a turn on ``channel`` starts from: the channel's own when
-    it has one, else the company's (``get_mode``)."""
-    own = stored_channels().get(channel or "") if channel else None
+    it has one, else the company's (``get_mode``). Channels that can't be
+    read are ``ask``, like an unreadable level, so a channel set to Careful
+    never runs looser."""
+    if not channel:
+        return get_mode()
+    stored = _read_channels()
+    if stored is None:
+        return ASK
+    own = stored.get(channel)
     return own if own is not None else get_mode()
 
 

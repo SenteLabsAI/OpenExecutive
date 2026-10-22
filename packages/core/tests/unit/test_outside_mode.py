@@ -635,10 +635,26 @@ def test_a_column_another_worker_just_added_is_fine(tmp_path: Path) -> None:
     assert "channels" in {row[1] for row in conn.execute(f"PRAGMA table_info({outside_mode.TABLE})")}
 
 
+def test_unreadable_channels_are_careful(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+
+    _use(monkeypatch, outside_mode.TRUST)
+    db = tmp_path / "e.db"
+    outside_mode.set_mode(outside_mode.TRUST, updated_by="o", channels={"slack": outside_mode.ASK}, db_path=db)
+    conn = sqlite3.connect(str(db))
+    conn.execute(f"UPDATE {outside_mode.TABLE} SET channels = 'not json'")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(outside_mode, "_db_path", lambda _p: db)
+    assert outside_mode.stored_channels() == {}
+    assert outside_mode.channel_mode("slack") == outside_mode.ASK
+    assert outside_mode.channel_mode(None) == outside_mode.TRUST
+
+
 def test_a_turn_takes_its_channels_level(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
     monkeypatch.setattr(
-        outside_mode, "stored_channels", lambda **_: {"slack": outside_mode.TRUST, "web": outside_mode.ASK},
+        outside_mode, "_read_channels", lambda *_: {"slack": outside_mode.TRUST, "web": outside_mode.ASK},
     )
     assert outside_mode.for_turn(Session(origin_channel="slack")) == outside_mode.TRUST
     assert outside_mode.for_turn(Session(from_web_chat=True)) == outside_mode.ASK
