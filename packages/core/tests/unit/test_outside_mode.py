@@ -679,3 +679,24 @@ def test_the_owner_sets_a_channel_through_the_route(
     assert res.json()["channels"] == {}
     assert http.put("/executive/outside-content", json={"mode": "ask", "channels": {"fax": "ask"}}).status_code == 422
     assert http.put("/executive/outside-content", json={"mode": "ask", "channels": {"web": "maybe"}}).status_code == 422
+
+
+def test_the_same_synced_read_is_checked_once_a_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    seen = _check_says(monkeypatch, content_scan.CLEAN)
+    ctx = "### From your company documents:\nour plan\n\n### Synced Google Drive (unreviewed)\ndrive page"
+
+    async def go() -> None:
+        state = oc.begin_turn(Session(), user_message="hi", retrieved_context=ctx)
+        try:
+            # The retriever queues the same sections the turn started with.
+            oc.mark_pending(oc.SYNCED, oc.synced_sections(ctx))
+            oc.mark_pending(oc.SYNCED, "### Synced Notion wiki (unreviewed)\nanother page")
+            await oc.settle()
+            oc.mark_pending(oc.SYNCED, oc.synced_sections(ctx))
+            await oc.settle()
+        finally:
+            oc.end_turn(state)
+
+    asyncio.run(go())
+    assert seen == ["### Synced Google Drive (unreviewed)\ndrive page", "### Synced Notion wiki (unreviewed)\nanother page"]

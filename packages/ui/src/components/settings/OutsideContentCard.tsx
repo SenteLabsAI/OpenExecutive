@@ -21,7 +21,7 @@ const OPTIONS: { value: OutsideContentMode; title: string; short: string; text: 
     value: "outsiders",
     title: "Balanced",
     short: "Balanced",
-    text: "I go ahead with normal content and ask only when something looks off.",
+    text: "I go ahead with normal content and ask only when something looks off. Web search results aren't checked, so pick Careful if those should wait for you too.",
     recommended: true,
   },
   {

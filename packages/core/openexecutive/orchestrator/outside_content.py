@@ -96,6 +96,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import hashlib
 import json
 import re
 import time
@@ -218,6 +219,8 @@ class TurnOutside:
     # remembered for the same speaker, never in a shared chat (``_held_key``).
     speaker: int | None = None
     shared: bool = False
+    # What was queued for a check this turn, by content hash (``_queue``).
+    queued: set[str] = field(default_factory=set)
     # Tools refused this turn for what it read (``note_held``), kept for the
     # conversation's next turn.
     held: list[str] = field(default_factory=list)
@@ -565,6 +568,12 @@ def _queue(state: TurnOutside, source: str, content: Any) -> None:
 
     if state.mode == outside_mode.ASK:
         state.sources.add(source)
+    # The same text read twice in a turn (the turn's own retrieval and a
+    # specialist's) is checked once.
+    key = hashlib.sha256(json.dumps([source, content], sort_keys=True, default=str).encode()).hexdigest()
+    if key in state.queued:
+        return
+    state.queued.add(key)
     state.pending.append((source, content))
 
 
