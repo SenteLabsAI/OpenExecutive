@@ -362,11 +362,28 @@ def test_dont_ask_lifts_the_hold_after_reading_their_own_mail(monkeypatch: pytes
     from openexecutive.delegation import settings as delegation_settings
     from openexecutive.orchestrator import app_control
 
-    monkeypatch.setattr(delegation_settings, "turn_delegation", lambda session: SimpleNamespace(touched_mail=True))
+    def pin(**kw: Any) -> None:
+        monkeypatch.setattr(delegation_settings, "turn_delegation", lambda session: SimpleNamespace(**kw))
+
+    def waits() -> bool:
+        return bool(_turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())))
+
+    # This turn read their mail, and the check hasn't cleared it.
+    pin(touched_mail=True, read_mail=True, mail_vetted=False, mail_held=False)
     _use(monkeypatch, outside_mode.TRUST)
-    assert _turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())) is False
+    assert waits() is False
     _use(monkeypatch, outside_mode.OUTSIDERS)
-    assert _turn(Session(caller_person_id=1), lambda state: app_control._turn_read_outside(Session())) is True
+    assert waits() is True
+    # Balanced: mail the check cleared waits for nothing; mail it flagged does.
+    pin(touched_mail=True, read_mail=True, mail_vetted=True, mail_held=False)
+    assert waits() is False
+    pin(touched_mail=True, read_mail=True, mail_vetted=True, mail_held=True)
+    assert waits() is True
+    # A later turn of a conversation that read their mail: only Careful waits.
+    pin(touched_mail=True, read_mail=False)
+    assert waits() is False
+    _use(monkeypatch, outside_mode.ASK)
+    assert waits() is True
 
 
 def test_the_team_is_teammates_and_the_executive_not_contacts(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -30,6 +30,19 @@ Every tool the Executive can be offered is classified here, in exactly one of
 until a new tool is), and anything unclassified is withheld, except an
 extension tool registered with ``after_mail_read`` (``orchestrator.extensions``).
 
+How much of this holds is the owner's safety level
+(``orchestrator.outside_mode``), like any other read, because every mail
+read is checked for attempts to steer the Executive
+(``outside_content.check_mail_read``, ``orchestrator.content_scan``):
+Careful holds all of it after any mail read; Balanced holds all of it only
+once a mail read was flagged or too big to check, or while a read waits for
+its check (``mail_lock_holds``); Hands-off holds none of it on the
+principal's own turn. Whatever the level, a mail read still keeps the posts
+to everyone and the roster and authority changes shut
+(``MAIL_PRIVATE_WITHHELD_TOOLS``): they would spread the owner's private mail
+or change what every send check trusts, whether or not a mail tried to steer
+anything.
+
 The dispatch guard in ``orchestrator.executive`` refuses a withheld call
 without changing the offered tool list (the cached prefix stays the same all
 turn), and treats a round that calls any of them as already touched,
@@ -164,6 +177,19 @@ MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "send_department_message",
     "send_company_broadcast",
     "create_alert",
+})
+
+# What a mail read keeps shut at every safety level (``mail_turn_withholds``):
+# posts to everyone, which would spread the owner's private mail, and who is
+# on the roster or holds authority, which every send check trusts. A contact
+# the speaker named stays allowed (``speaker_named_contact``).
+MAIL_PRIVATE_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    "send_department_message",
+    "send_company_broadcast",
+    "create_alert",
+    "archive_person",
+    "set_department_head",
+    "resolve_roster_request",
 })
 
 REFUSAL = (
@@ -320,17 +346,65 @@ def mail_touched_withholds(tool_name: str, tool_input: Any) -> bool:
     return not allowed_after_mail_read(tool_name)
 
 
+def mail_lock_holds(pinned: Any, *, reading_now: bool = False) -> bool:
+    """Whether the whole lockdown (``mail_touched_withholds``) holds for the
+    turn ``pinned`` is for, by the owner's safety level: Careful after any
+    mail read, Balanced only once a read was flagged or too big to check or
+    while one waits for its check (``reading_now``: this round reads mail),
+    Hands-off never on the principal's own turn. A turn with no safety state
+    (a workflow, a script outside chat) holds it after any read. Never
+    raises; fails closed."""
+    from openexecutive.orchestrator import outside_content, outside_mode
+
+    try:
+        if pinned is None or not (getattr(pinned, "read_mail", False) is True or reading_now):
+            return False
+        state = outside_content.current()
+        if state is None or state.mode == outside_mode.ASK:
+            return True
+        if outside_content.trusted_turn():
+            return False
+        return bool(
+            reading_now
+            or getattr(pinned, "mail_held", False) is True
+            or getattr(pinned, "mail_vetted", False) is not True
+        )
+    except Exception:
+        return True
+
+
+def mail_turn_withholds(tool_name: str, tool_input: Any, *, reading_now: bool = False) -> bool:
+    """Whether a call to ``tool_name`` is refused on the turn in progress for
+    the owner's mail it read (or reads this round, ``reading_now``): what
+    ``mail_touched_withholds`` refuses while the lockdown holds
+    (``mail_lock_holds``), and at every level the posts to everyone and the
+    roster changes (``MAIL_PRIVATE_WITHHELD_TOOLS``). Never raises; fails
+    closed."""
+    from openexecutive.delegation.settings import turn_delegation
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    try:
+        pinned = turn_delegation(current_session.get())
+        if pinned is None or not (pinned.read_mail or reading_now):
+            return False
+        if mail_lock_holds(pinned, reading_now=reading_now):
+            return mail_touched_withholds(tool_name, tool_input)
+        if tool_name == "upsert_person":
+            return not speaker_named_contact(tool_input)
+        return tool_name in MAIL_PRIVATE_WITHHELD_TOOLS
+    except Exception:
+        return True
+
+
 def outside_reach_refusal(label: str, tool_input: Any = None, tool_name: str = "") -> str | None:
     """For a handler that can reach an outside address: the refusal when this
     turn read the owner's mail, or read anything from outside the team and
     ``outside_content.outside_withholds`` the call, else None. ``tool_name`` and ``tool_input``
     (for ``call_tool``) narrow it to what ``mail_touched_withholds`` refuses;
     by default ``label`` is the tool. Never raises; fails closed."""
-    from openexecutive.delegation.settings import turn_read_delegate_mail
-
     name = tool_name or label
     try:
-        if turn_read_delegate_mail() and mail_touched_withholds(name, tool_input):
+        if mail_turn_withholds(name, tool_input):
             return mail_touched_withheld_error(label)
     except Exception:
         return mail_touched_withheld_error(label)

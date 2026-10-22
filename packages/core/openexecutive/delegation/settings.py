@@ -97,6 +97,14 @@ class TurnDelegation:
     # Never carried into the next turn: what the mail said reaches a later
     # turn only as the Executive's own reply, which the person has read.
     read_mail: bool = False
+    # What the safety check made of the mail this turn read
+    # (``outside_content.check_mail_read``), which decides how much of the
+    # lockdown applies under Balanced (``delegation.lockdown.mail_lock_holds``):
+    # ``mail_vetted`` once every mail read so far was checked, ``mail_held``
+    # once one was flagged or too big to check. A read not yet checked
+    # leaves ``mail_vetted`` false, so the whole lockdown holds.
+    mail_vetted: bool = False
+    mail_held: bool = False
     # Who sent the mail this turn read, address to display name
     # (``mail_read_tools``): a new contact's address may be one of them, when
     # its name or address matches the contact's, never one the mail's text

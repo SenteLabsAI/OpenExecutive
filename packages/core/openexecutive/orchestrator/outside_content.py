@@ -114,6 +114,10 @@ APP = "app"
 SENDER = "sender"
 # A read of one of the company's own Drive items (``vet_reads``).
 COMPANY = "company"
+# A read of the owner's own mailbox or notes (Act as me): checked like any
+# read (``check_mail_read``), but it decides the Act as me lockdown
+# (``delegation.lockdown.mail_lock_holds``), never ``TurnOutside.sources``.
+MAIL = "mail"
 
 # Shut on such a turn on top of the outside-content hold: a person's own turn
 # keeps these after reading outside content because the person is the one
@@ -519,6 +523,7 @@ _SOURCE_WORDS: dict[str, str] = {
     ATTACHMENT: "A file in your message",
     SYNCED: "A synced document",
     APP: "Something I read in a connected app",
+    MAIL: "An email I read",
 }
 
 # Put before a read's result under Hands-off when the check couldn't read it:
@@ -845,6 +850,41 @@ def _graph_organizers_on_team(result: Any) -> bool:
         return True
     except Exception:
         return False
+
+
+async def check_mail_read(pinned: Any, result: Any) -> str:
+    """Check what a read of the owner's own mail returned and record it on
+    ``pinned`` (the turn's ``TurnDelegation``): ``mail_held`` under Careful,
+    and under Balanced when the check flags it or finds it too big to check;
+    Hands-off holds nothing. A flag is remembered for the person at every
+    level. ``check_mail_reads_done`` then marks the round's reads checked.
+    Returns the notice to put before the result, as ``mark_read`` does."""
+    from openexecutive.orchestrator import content_scan, outside_mode
+
+    state = current()
+    if state is None or pinned is None:
+        return ""
+    try:
+        verdict = await _check(state, result)
+    except Exception:
+        verdict = content_scan.UNCHECKED
+    if verdict.flagged:
+        state.flags.append((MAIL, tuple(verdict.categories)))
+    if state.mode == outside_mode.ASK or (state.mode == outside_mode.OUTSIDERS and verdict.holds):
+        pinned.mail_held = True
+    if verdict.flagged:
+        return FLAG_NOTICE.format(what=content_scan.describe(verdict.categories))
+    if verdict.unchecked and state.mode != outside_mode.ASK:
+        return UNCHECKED_NOTICE
+    return ""
+
+
+def check_mail_reads_done(pinned: Any) -> None:
+    """Every mail read this turn has made so far has been checked
+    (``check_mail_read``): from the next round on, Balanced holds the
+    lockdown only if one of them held it."""
+    if pinned is not None and pinned.read_mail:
+        pinned.mail_vetted = True
 
 
 async def mark_read(source: str, tool_input: Any, result: Any, gateway: Any = None) -> str:
