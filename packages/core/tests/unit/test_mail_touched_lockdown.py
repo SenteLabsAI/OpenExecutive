@@ -751,6 +751,8 @@ def test_the_lockdown_follows_the_safety_level(
         # This round reads mail: its reads aren't checked yet.
         if mode != "trust":
             assert lockdown.mail_turn_withholds("read_document", {}, reading_now=True)
+            # So no script runs beside an unchecked read.
+            assert lockdown.mail_turn_withholds("run_script", {}, reading_now=True)
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)
@@ -806,6 +808,25 @@ def test_a_mail_read_the_loop_did_not_check_puts_the_hold_back(monkeypatch: pyte
         history_tools._keep_private(session, SimpleNamespace(id="p1"))
         assert lockdown.mail_lock_holds(pinned)
         assert lockdown.outside_reach_refusal("read_document") is not None
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
+
+
+@pytest.mark.parametrize("mode", ["ask", "outsiders"])
+def test_posts_to_everyone_stay_held_whatever_the_lockdown_allows(
+    monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    # Even if the lockdown's own list later lets one of them through.
+    from openexecutive.orchestrator import content_trust, outside_content
+
+    monkeypatch.setattr(content_trust, "principal_only_withheld", lambda session: frozenset())
+    monkeypatch.setattr(lockdown, "mail_touched_withholds", lambda *a, **k: False)
+    session, token, state = _pinned_turn(mode)
+    try:
+        assert lockdown.mail_lock_holds(session.turn_delegation)  # type: ignore[attr-defined]
+        for tool in lockdown.MAIL_PRIVATE_WITHHELD_TOOLS:
+            assert lockdown.mail_turn_withholds(tool, {}), tool
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)

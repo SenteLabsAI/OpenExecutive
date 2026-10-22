@@ -3659,7 +3659,14 @@ class Executive:
                     )
                     if notice:
                         results_by_id[tu["id"]] = _with_notice(results_by_id.get(tu["id"], ""), notice)
-                outside_content.check_mail_reads_done(pinned_delegation)
+                # A script that ran beside the read may have read mail the
+                # loop never checks: the turn stays unvetted.
+                ran_script = any(
+                    tu["name"] in (step_script.RUN_SCRIPT_TOOL, "run_python_job")
+                    for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
+                )
+                if not ran_script:
+                    outside_content.check_mail_reads_done(pinned_delegation)
 
             current_messages.append({"role": "assistant", "content": response_content})
             # Cap here, at the single point every result reaches the model,

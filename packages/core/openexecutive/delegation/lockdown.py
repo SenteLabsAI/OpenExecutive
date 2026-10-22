@@ -392,7 +392,7 @@ def mail_turn_withholds(
         if pinned is None or not (getattr(pinned, "read_mail", False) is True or reading_now):
             return False
         if mail_lock_holds(pinned, reading_now=reading_now):
-            return mail_touched_withholds(tool_name, tool_input)
+            return mail_touched_withholds(tool_name, tool_input) or tool_name in MAIL_PRIVATE_WITHHELD_TOOLS
         if tool_name == "upsert_person":
             return not speaker_named_contact(tool_input)
         return tool_name in MAIL_PRIVATE_WITHHELD_TOOLS
