@@ -23,7 +23,8 @@ long to read whole (``MAX_CHARS``; an attachment's files are bounded apart,
 ``MAX_MEDIA_BLOCKS`` / ``MAX_MEDIA_CHARS``), or a turn past its budget of checks
 (``MAX_PER_TURN``, kept by the caller) is ``unchecked``: it holds nothing
 below Careful, and its result reaches the model behind a notice that it is
-data. The same content is checked once per process (``_CACHE``, by
+data. Content too big to read whole (``TOO_BIG``) is the exception, since
+padding is how content would dodge the check: Balanced holds it like a flag. The same content is checked once per process (``_CACHE``, by
 hash). Plain code around one model call; never raises.
 """
 from __future__ import annotations
@@ -109,16 +110,21 @@ class Verdict:
     flagged: bool = False
     unchecked: bool = False
     categories: tuple[str, ...] = field(default_factory=tuple)
+    # Unchecked because it is too big to read whole (``TOO_BIG``): padding is
+    # how content would dodge the check, so Balanced holds it like a flag.
+    too_big: bool = False
 
     @property
     def holds(self) -> bool:
-        """Whether Balanced holds the turn after this read: only a flag. An
-        unchecked read goes on behind ``outside_content.UNCHECKED_NOTICE``."""
-        return self.flagged
+        """Whether Balanced holds the turn after this read: a flag, or content
+        too big to check. Any other unchecked read goes on behind
+        ``outside_content.UNCHECKED_NOTICE``."""
+        return self.flagged or self.too_big
 
 
 CLEAN = Verdict()
 UNCHECKED = Verdict(unchecked=True)
+TOO_BIG = Verdict(unchecked=True, too_big=True)
 
 _CACHE: OrderedDict[str, Verdict] = OrderedDict()
 
@@ -219,7 +225,7 @@ async def scan(content: Any, *, model: str | None = None) -> Verdict:
         if content is None or (isinstance(content, str) and not content.strip()):
             return CLEAN
         if _too_big(content):
-            return UNCHECKED
+            return TOO_BIG
         key = _key(content)
         if key in _CACHE:
             _CACHE.move_to_end(key)

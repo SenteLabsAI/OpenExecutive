@@ -85,7 +85,7 @@ def test_a_failed_call_is_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_too_long_to_read_whole_is_unchecked_without_a_call(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _answering(monkeypatch, [_tool({"steers_assistant": False})])
-    assert _scan("x" * (content_scan.MAX_CHARS + 1)) == content_scan.UNCHECKED
+    assert _scan("x" * (content_scan.MAX_CHARS + 1)) == content_scan.TOO_BIG
     assert calls == []
 
 
@@ -139,7 +139,7 @@ def test_an_attachments_file_is_bounded_apart_from_its_text(monkeypatch: pytest.
     assert _scan([big_pdf, {"type": "text", "text": "[Attached: quote.pdf]"}]) == content_scan.CLEAN
     assert len(calls) == 1
     many = [dict(big_pdf, source={**big_pdf["source"], "data": str(i)}) for i in range(content_scan.MAX_MEDIA_BLOCKS + 1)]
-    assert _scan([*many, {"type": "text", "text": "x"}]) == content_scan.UNCHECKED
+    assert _scan([*many, {"type": "text", "text": "x"}]) == content_scan.TOO_BIG
     huge = dict(big_pdf, source={**big_pdf["source"], "data": "A" * (content_scan.MAX_MEDIA_CHARS + 1)})
-    assert _scan([huge, {"type": "text", "text": "x"}]) == content_scan.UNCHECKED
+    assert _scan([huge, {"type": "text", "text": "x"}]) == content_scan.TOO_BIG
     assert len(calls) == 1

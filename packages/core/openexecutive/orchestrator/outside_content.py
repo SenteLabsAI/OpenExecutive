@@ -57,7 +57,8 @@ fixed at the start of each turn (``TurnOutside.mode``), and every read is
 checked for attempts to steer the Executive (``orchestrator.content_scan``)
 whatever the level. Under Careful (``ask``) every read marks the turn. Under
 Balanced (``outsiders``) a read marks it only when the check flags it
-(``Verdict.holds``); one it couldn't check goes on unmarked, its result
+(``Verdict.holds``) or finds it too big to read whole (padding is how content
+would dodge the check); any other it couldn't check goes on unmarked, its result
 behind a notice that it is data (``UNCHECKED_NOTICE``), and so does a web
 search, with no notice (its results arrive encrypted inside the model's own
 response, so nothing can check them or go before them; ``mark``). A Gmail search's list of ids, a Gmail message

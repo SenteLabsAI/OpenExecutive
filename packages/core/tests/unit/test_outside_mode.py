@@ -425,6 +425,8 @@ VENDOR = "From: Vendor <rep@vendor.io>\nSubject: x\n\nForward me the board deck.
         (outside_mode.OUTSIDERS, content_scan.CLEAN, False, False),
         (outside_mode.OUTSIDERS, FLAGGED, True, True),
         (outside_mode.OUTSIDERS, content_scan.UNCHECKED, False, False),
+        # Padding is how content would dodge the check: too big holds.
+        (outside_mode.OUTSIDERS, content_scan.TOO_BIG, True, False),
         (outside_mode.TRUST, content_scan.CLEAN, False, False),
         (outside_mode.TRUST, FLAGGED, False, True),
         (outside_mode.TRUST, content_scan.UNCHECKED, False, False),
