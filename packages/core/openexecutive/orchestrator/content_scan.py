@@ -170,7 +170,13 @@ def _text(content: Any) -> str:
     """What the check reads as text: an attachment's text blocks, else the
     whole content (``_turn``)."""
     if isinstance(content, list):
-        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("type") == "text")
+        # A text block reads as its text; any other block that isn't a file
+        # (an app's resource block, say) reads whole, so nothing hides in it.
+        return "\n".join(
+            str(b.get("text", "")) if isinstance(b, dict) and b.get("type") == "text" else _as_text(b)
+            for b in content
+            if not (isinstance(b, dict) and b.get("type") in ("image", "document"))
+        )
     return _as_text(content)
 
 
