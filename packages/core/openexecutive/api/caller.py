@@ -39,6 +39,16 @@ Each is good for one request: that method, that path and query exactly as the
 API receives them, at most ``MAX_LIFETIME_S`` seconds, and its ``jti`` once
 (this process remembers them; the API runs as one). The API holds only public
 keys, so its environment cannot mint one. With no keys set nothing changes.
+
+**Surface.** A call that a host origin's page made (``OE_HOST_ORIGINS`` on the
+web app: another app that frames Open Executive and calls the short list of
+routes it may, docs/auth.md) reaches the API marked ``surface`` ``host``. The
+proxy strips any client-sent copy and sets it itself: in the signed assertion
+(an optional ``surface`` claim), and as ``x-caller-surface``. With signed
+callers on, only the verified claim counts and the header must agree with it;
+without them the header is read like ``x-caller-email``, and any value in it
+means ``host``, the narrower surface. A chat turn on that surface only reads and
+advises (``Session.from_host``).
 """
 from __future__ import annotations
 
@@ -61,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 CALLER_EMAIL_HEADER = "x-caller-email"
 CALLER_ASSERTION_HEADER = "x-caller-assertion"
+CALLER_SURFACE_HEADER = "x-caller-surface"
 PUBLIC_KEYS_ENV = "CALLER_ASSERTION_PUBLIC_KEYS"
 
 # Audit rows name the caller by email, cut to this length.
@@ -84,6 +95,10 @@ _RAW_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=?")
 _EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+")
 
 CallerKind = Literal["open", "user", "operator", "service"]
+# "" for the web app's own pages (and every caller that isn't the web app);
+# "host" for a call a host origin's page made through the proxy.
+CallerSurface = Literal["", "host"]
+HOST_SURFACE: CallerSurface = "host"
 
 
 @dataclass(frozen=True)
@@ -92,6 +107,8 @@ class Caller:
     # The signed-in person's email, stripped and lowercased; "" when the
     # request names no one.
     email: str = ""
+    # Where the call came from: "host" for a host origin's page.
+    surface: CallerSurface = ""
 
     @property
     def defaults_to_principal(self) -> bool:
@@ -106,7 +123,15 @@ def caller(request: Any) -> Caller:
     if isinstance(verified, Caller):
         return verified
     raw = request.headers.get(CALLER_EMAIL_HEADER) or ""
-    return Caller("open", raw.strip().lower())
+    # Open mode takes the header at its word, as it does the email. Any value
+    # is the host surface: an unknown one narrows, never widens.
+    surface: CallerSurface = HOST_SURFACE if (request.headers.get(CALLER_SURFACE_HEADER) or "").strip() else ""
+    return Caller("open", raw.strip().lower(), surface)
+
+
+def from_host(request: Any) -> bool:
+    """Whether a host origin's page made this call (``Caller.surface``)."""
+    return caller(request).surface == HOST_SURFACE
 
 
 def person_id_for(who: Caller) -> int | None:
@@ -329,11 +354,18 @@ def verify_assertion(
     jti, kind, sub = claims.get("jti"), claims.get("kind"), claims.get("sub")
     if not isinstance(jti, str) or not _JTI_RE.fullmatch(jti) or not isinstance(sub, str):
         raise AssertionRefused("malformed")
+    # Optional: absent is the web app's own pages. Present, it must name a
+    # surface this API knows.
+    surface: CallerSurface = ""
+    if "surface" in claims:
+        if claims["surface"] != HOST_SURFACE:
+            raise AssertionRefused("surface")
+        surface = HOST_SURFACE
     who: Caller
     if kind == "user" and _plausible_email(sub):
-        who = Caller("user", sub)
+        who = Caller("user", sub, surface)
     elif kind == "operator" and sub == "":
-        who = Caller("operator")
+        who = Caller("operator", "", surface)
     else:
         raise AssertionRefused("subject")
     ledger.claim(jti, exp, now)
@@ -374,11 +406,13 @@ def caller_gate(keys: Mapping[str, Ed25519PublicKey]) -> _Gate:
             return await call_next(request)
         emails = request.headers.getlist(CALLER_EMAIL_HEADER)
         tokens = request.headers.getlist(CALLER_ASSERTION_HEADER)
-        if len(emails) > 1 or len(tokens) > 1:
+        surfaces = request.headers.getlist(CALLER_SURFACE_HEADER)
+        if len(emails) > 1 or len(tokens) > 1 or len(surfaces) > 1:
             return refuse(request, "duplicate_header")
         email = emails[0].strip().lower() if emails else ""
+        surface_header = surfaces[0].strip() if surfaces else ""
         if not tokens:
-            if email:
+            if email or surface_header:
                 return refuse(request, "required")
             request.state.caller = Caller("service")
             return await call_next(request)
@@ -395,6 +429,10 @@ def caller_gate(keys: Mapping[str, Ed25519PublicKey]) -> _Gate:
             return refuse(request, exc.reason)
         if email and email != who.email:
             return refuse(request, "email_mismatch")
+        # The header is only ever a copy of the signed claim: never a way to
+        # add a surface the signer didn't, or drop one it did.
+        if surface_header != who.surface:
+            return refuse(request, "surface_mismatch")
         request.state.caller = who
         return await call_next(request)
 

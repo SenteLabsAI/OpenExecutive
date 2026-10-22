@@ -7,6 +7,8 @@ import {
   type CallerSigner,
 } from "@/lib/callerAssertion";
 import { isCrossSiteWrite } from "@/lib/crossSite";
+import { HOST_CALLS, HOST_ORIGINS } from "@/lib/hostConfig";
+import { corsHeaders, isBrowserOriginHeader, judgeHostRequest } from "@/lib/hostOrigins";
 import { localLoginSessionAllowed } from "@/lib/localLogin";
 import { upstreamSegment } from "@/lib/proxySegments";
 
@@ -38,13 +40,34 @@ try {
 }
 
 async function proxy(req: NextRequest, params: { path: string[] }): Promise<Response> {
+  // A host origin's page (lib/hostOrigins.ts) may call the host list and
+  // nothing else; the middleware judged it already, and this is the same
+  // rule on the segments as this route got them.
+  const verdict = judgeHostRequest(
+    {
+      origin: req.headers.get("origin"),
+      secFetchSite: req.headers.get("sec-fetch-site"),
+      method: req.method,
+      segments: params.path,
+    },
+    HOST_ORIGINS,
+    HOST_CALLS,
+  );
+  const cors = verdict.kind === "own" ? {} : corsHeaders(verdict.origin);
+  const refuse = (status: number, body: Record<string, string>) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json", ...cors },
+    });
+  if (verdict.kind === "refused") {
+    return refuse(403, { error: "not available from this page", code: verdict.reason });
+  }
+  const fromHost = verdict.kind === "host";
   // Another page on this site (any localhost port counts) must not be able to
   // make the browser post here with the user's cookie — see lib/crossSite.ts.
-  if (isCrossSiteWrite(req.method, req.headers.get("sec-fetch-site"))) {
-    return new Response(JSON.stringify({ error: "cross-site request refused" }), {
-      status: 403,
-      headers: { "content-type": "application/json" },
-    });
+  // A host call is a same-site write the host list allows, and only that.
+  if (!fromHost && isCrossSiteWrite(req.method, req.headers.get("sec-fetch-site"))) {
+    return refuse(403, { error: "cross-site request refused" });
   }
 
   // Belt-and-suspenders: middleware should have already rejected unauthenticated
@@ -59,16 +82,10 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
     ? localLoginSessionAllowed(LOCAL_LOGIN, req.headers.get("host"))
     : Boolean(callerEmail);
   if (!allowed) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
+    return refuse(401, { error: "unauthorized" });
   }
   if (CALLER_SIGNER_BROKEN) {
-    return new Response(JSON.stringify({ error: "caller signing is misconfigured" }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
+    return refuse(500, { error: "caller signing is misconfigured" });
   }
 
   // An id holding a slash goes on as one segment (proxySegments.ts).
@@ -91,10 +108,17 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
       lower === "host" ||
       lower === "connection" ||
       lower === "cookie" ||
+      // Next.js copies a session cookie the middleware refreshed onto the
+      // request it passes on; the API has no use for the session token.
+      lower === "set-cookie" ||
       lower === "authorization" ||
       lower === "x-api-key" ||
       lower.startsWith("x-caller-") ||
-      lower.startsWith("x-forwarded-")
+      lower.startsWith("x-forwarded-") ||
+      // A host call's own Origin and Sec-Fetch-* stop here: it was judged
+      // above, and its surface below tells the API what it needs to know
+      // (its local-login rule would refuse the same-site write).
+      (fromHost && isBrowserOriginHeader(lower))
     ) {
       return;
     }
@@ -115,6 +139,12 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
   if (callerEmail && !session?.localLogin) {
     headers.set("x-caller-email", callerEmail);
   }
+  // A host origin's call is the `host` surface: the API holds it to what a
+  // host may do (a chat turn only reads and advises). Set here only, from the
+  // verdict above; a client's copy was stripped with the x-caller-* family.
+  if (fromHost) {
+    headers.set("x-caller-surface", "host");
+  }
 
   // Sign it: a local-login session is the operator (the owner at this
   // computer, naming no one), anyone else the email above. Bound to this
@@ -127,6 +157,7 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
         email: session?.localLogin ? "" : (callerEmail ?? ""),
         method: req.method,
         target: `${url.pathname}${url.search}`,
+        ...(fromHost ? { surface: "host" as const } : {}),
       }),
     );
   }
@@ -159,6 +190,13 @@ async function proxy(req: NextRequest, params: { path: string[] }): Promise<Resp
     /no-store/i.test(upstreamCache) ? "no-store, no-transform" : "no-cache, no-transform"
   );
   respHeaders.set("X-Accel-Buffering", "no");
+  for (const [name, value] of Object.entries(cors)) respHeaders.set(name, value);
+  // An answer with no policy of its own (JSON, the API's HTML docs, an error
+  // page) is data, never a page: nothing in it runs on this origin and no
+  // one may frame it. Downloads keep the API's own sandbox policy.
+  if (!respHeaders.has("content-security-policy")) {
+    respHeaders.set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox");
+  }
 
   return new Response(upstream.body, {
     status: upstream.status,

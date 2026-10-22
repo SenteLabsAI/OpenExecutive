@@ -1,4 +1,4 @@
-.PHONY: dev stop test test-changed lint check eval docker clean install discord
+.PHONY: dev stop test test-changed lint check eval docker clean install discord embed-outputs
 
 install:
 	cd packages/core && uv sync
@@ -41,6 +41,15 @@ dev:
 	fi; \
 	(cd packages/core && exec uv run uvicorn openexecutive.api.main:app --reload --port 8000) & \
 	cd packages/ui && exec npm run dev -- $$ui_host
+
+# What a host app checks itself against (docs/auth.md, "Host origins"):
+# the navigation, the host list and the API description, written without
+# running the app or holding its secrets.
+EMBED_OUT ?= dist/embed
+embed-outputs:
+	cd packages/ui && node --no-warnings --experimental-strip-types scripts/embed-outputs.mjs ../../$(EMBED_OUT)
+	cd packages/core && uv run python ../../scripts/export-openapi.py ../../$(EMBED_OUT)/openapi.json
+	@echo "Wrote $(EMBED_OUT)/embed-manifest.json, host-list.json and openapi.json"
 
 stop:
 	@lsof -ti :8000 -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true

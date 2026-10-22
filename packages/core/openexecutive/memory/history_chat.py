@@ -100,8 +100,10 @@ def verified_speaker(session: Any, person: Any) -> bool:
             or bool(getattr(session, "email_from", None))
             or isinstance(getattr(session, "delegation_override", None), DelegationOverride)
             # Another AI app's text, even on a turn allowed to act: never
-            # noted as the person's own words.
+            # noted as the person's own words. Nor a host origin's turn,
+            # which a script on that host's page could have written.
             or getattr(session, "from_mcp_client", False) is True
+            or getattr(session, "from_host", False) is True
         ):
             return False
         if getattr(session, "caller_person_id", None) != person.id:

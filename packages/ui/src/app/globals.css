@@ -1,6 +1,19 @@
 @import "tailwindcss";
 @config "../../tailwind.config.ts";
 
+/* `dark:` follows the system, as Tailwind's default does, unless a host's
+ * frame set <html data-theme> (embedded mode): then that. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:not(:where([data-theme="light"], [data-theme="light"] *)) {
+      @slot;
+    }
+  }
+}
+
 /* Design tokens. Values are space-separated RGB triplets so Tailwind's
  * `<alpha-value>` interpolation can apply opacity modifiers like
  * `bg-surface-overlay/60`. Dark is the default; light flips via
@@ -51,6 +64,55 @@
     --scrollbar-thumb: #d4d4d8;
     --scrollbar-thumb-hover: #a1a1aa;
   }
+}
+
+/* A host's frame (embedded mode, components/embed/EmbedProvider.tsx) says
+ * light or dark on <html data-theme>, whatever the system prefers; its own
+ * colours, when it sends them, are set inline on top. */
+:root[data-theme="dark"] {
+  --surface-base: 9 9 11;          /* zinc-950 */
+  --surface-elevated: 17 17 19;
+  --surface-overlay: 24 24 27;     /* zinc-900 */
+  --surface-input: 39 39 42;       /* zinc-800 */
+  --surface-hover: 31 31 35;
+
+  --border-default: 39 39 42;
+  --border-strong: 63 63 70;
+  --border-subtle: 24 24 27;
+
+  --fg: 250 250 250;
+  --fg-muted: 161 161 170;
+  --fg-subtle: 113 113 122;
+  --fg-inverse: 24 24 27;
+
+  --accent: 129 140 248;
+  --accent-strong: 99 102 241;
+
+  --scrollbar-thumb: #3f3f46;
+  --scrollbar-thumb-hover: #52525b;
+}
+
+:root[data-theme="light"] {
+  --surface-base: 250 250 250;
+  --surface-elevated: 255 255 255;
+  --surface-overlay: 244 244 245;
+  --surface-input: 228 228 231;
+  --surface-hover: 244 244 245;
+
+  --border-default: 228 228 231;
+  --border-strong: 161 161 170;
+  --border-subtle: 244 244 245;
+
+  --fg: 24 24 27;
+  --fg-muted: 82 82 91;
+  --fg-subtle: 113 113 122;
+  --fg-inverse: 250 250 250;
+
+  --accent: 79 70 229;
+  --accent-strong: 67 56 202;
+
+  --scrollbar-thumb: #d4d4d8;
+  --scrollbar-thumb-hover: #a1a1aa;
 }
 
 @layer base {

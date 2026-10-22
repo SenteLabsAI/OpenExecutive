@@ -316,6 +316,11 @@ def initialize_db(db_path: Path | None = None) -> None:
             # what their working-style profile learns from; the principal
             # rating someone else's session is not that person's reaction.
             ("feedback_by_person_id", "INTEGER"),
+            # Where a user message was written: "host" for a host origin's
+            # page (api.caller.from_host), else NULL. A conversation holding
+            # such a line stays read-only on every surface
+            # (session_store.host_wrote).
+            ("sender_surface", "TEXT"),
         ):
             if col not in _cm_existing:
                 try:
@@ -466,6 +471,17 @@ def initialize_db(db_path: Path | None = None) -> None:
             try:
                 conn.execute(
                     "ALTER TABLE sessions ADD COLUMN caller_person_id INTEGER"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        # Host origins: 1 once a host origin's page wrote a line here
+        # (session_store.host_wrote). Never cleared, rewinding included: the
+        # line's words could otherwise be sent again as the person's own.
+        if "host_wrote" not in _sessions_existing:
+            try:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN host_wrote INTEGER NOT NULL DEFAULT 0"
                 )
             except sqlite3.OperationalError as exc:
                 if "duplicate column" not in str(exc).lower():

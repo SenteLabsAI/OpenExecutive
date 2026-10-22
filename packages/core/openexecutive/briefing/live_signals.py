@@ -491,6 +491,8 @@ def _conversations(
         rows = conn.execute(
             "SELECT title, updated_at FROM sessions "
             "WHERE caller_person_id = ? AND updated_at >= ? "
+            # A host origin's page wrote the title of one it started.
+            "  AND host_wrote = 0 "
             "ORDER BY updated_at DESC LIMIT ?",
             (principal.id, since.isoformat(), _CONVERSATIONS_MAX * 3),
         ).fetchall()

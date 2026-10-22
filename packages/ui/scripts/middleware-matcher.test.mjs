@@ -1,7 +1,9 @@
-// Which paths the auth middleware skips.
+// Which paths the middleware skips, and which it lets through without a
+// session.
 //
 // `config.matcher` in src/middleware.ts is a negative lookahead: every entry
-// in it is a path the session check never sees. An entry with no terminator
+// in it is a path the middleware never sees (and so gets neither the session
+// check nor the pages' security headers). An entry with no terminator
 // excludes every path that merely *starts with* it — `api/auth` used to skip
 // `/api/authorizations`, and `favicon.ico` skipped `/favicon.icoX` and (the dot
 // being unescaped) `/faviconXico` — so a future route with such a prefix would
@@ -18,6 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { SESSION_FREE_PATH } from "../src/lib/middlewarePaths.ts";
 
 const require = createRequire(import.meta.url);
 const { getMiddlewareMatchers } = require("next/dist/build/analysis/get-page-static-info.js");
@@ -31,18 +34,26 @@ assert.ok(literal, "could not find a single string literal in middleware.ts conf
 const matcher = getMiddlewareRouteMatcher(getMiddlewareMatchers([JSON.parse(literal[1])], {}));
 const runsMiddleware = (pathname) => matcher(pathname, { headers: {}, cookies: {} }, {});
 
-test("Auth.js routes, static assets and the sign-in page skip the middleware", () => {
+const gated = (pathname) => runsMiddleware(pathname) && !SESSION_FREE_PATH.test(pathname);
+
+test("static assets skip the middleware", () => {
+  for (const path of ["/favicon.ico", "/_next/static/chunks/main.js", "/_next/image"]) {
+    assert.equal(runsMiddleware(path), false, path);
+  }
+});
+
+test("Auth.js routes and the sign-in page need no session but still get the middleware", () => {
   for (const path of [
     "/api/auth",
     "/api/auth/",
     "/api/auth/session",
     "/api/auth/providers",
     "/api/auth/callback/google",
-    "/favicon.ico",
-    "/_next/static/chunks/main.js",
     "/signin",
+    "/signin/",
   ]) {
-    assert.equal(runsMiddleware(path), false, path);
+    assert.equal(runsMiddleware(path), true, path);
+    assert.equal(gated(path), false, path);
   }
 });
 
@@ -55,13 +66,14 @@ test("a path that only starts with an excluded entry is still gated", () => {
     "/faviconXico",
     "/favicon.ico/x",
     "/signin-help",
+    "/signin/done",
   ]) {
-    assert.equal(runsMiddleware(path), true, path);
+    assert.equal(gated(path), true, path);
   }
 });
 
 test("ordinary pages and API routes are gated", () => {
   for (const path of ["/", "/settings", "/api/backend/health"]) {
-    assert.equal(runsMiddleware(path), true, path);
+    assert.equal(gated(path), true, path);
   }
 });

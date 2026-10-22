@@ -80,13 +80,29 @@ def _verify(token: str, *, method: str = "GET", target: str = "/x", now: int | N
 def test_the_shared_vectors_sign_and_verify(case: dict[str, Any]) -> None:
     """The script signs exactly what the web app signs (the UI's test checks
     the same tokens), and the API reads them back."""
+    surface = case.get("surface", "")
     token = _mint(case["kind"], case["email"], case["method"], case["target"],
-                  now_ms=case["now_ms"], jti=case["jti"])
+                  now_ms=case["now_ms"], jti=case["jti"], surface=surface)
     assert token == case["token"]
     who = _verify(token, method=case["method"].upper(), target=case["target"],
                   now=case["now_ms"] // 1000)
-    expected = Caller("user", case["email"].lower()) if case["kind"] == "user" else Caller("operator")
+    expected = (
+        Caller("user", case["email"].lower(), surface) if case["kind"] == "user"
+        else Caller("operator", "", surface)
+    )
     assert who == expected
+
+
+def test_an_assertion_without_a_surface_names_none() -> None:
+    """Every assertion signed before surfaces existed reads as the web app's
+    own pages, and a surface the API doesn't know is refused."""
+    assert _verify(_mint()).surface == ""
+    assert _verify(_mint(surface="host")).surface == "host"
+    with pytest.raises(AssertionRefused) as refused:
+        _verify(_signed(_claims(surface="desk")))
+    assert refused.value.reason == "surface"
+    with pytest.raises(ValueError):
+        _mint(surface="desk")
 
 
 def test_the_constants_match_the_script() -> None:
@@ -293,6 +309,10 @@ def client(principal: int) -> TestClient:
         who = api_caller.caller(request)
         return {"kind": who.kind, "email": who.email}
 
+    @app.get("/surface")
+    def surface(request: Request) -> dict[str, bool]:
+        return {"host": api_caller.from_host(request)}
+
     return TestClient(app)
 
 
@@ -353,6 +373,35 @@ def test_duplicate_caller_headers_are_refused(client: TestClient) -> None:
     token = _mint(target="/whoami")
     resp = client.get("/whoami", headers=[("x-caller-assertion", token), ("x-caller-assertion", token)])
     assert resp.status_code == 401
+
+
+def test_the_surface_comes_from_the_assertion_only(client: TestClient) -> None:
+    """A host origin's call is marked in what the proxy signed; the header is
+    only a copy of it, and can neither add the surface nor drop it."""
+    host = {"x-caller-assertion": _mint(target="/surface", surface="host"), "x-caller-surface": "host"}
+    assert client.get("/surface", headers=host).json() == {"host": True}
+    own = client.get("/surface", headers=_as(target="/surface"))
+    assert own.json() == {"host": False}
+    added = client.get("/surface", headers={**_as(target="/surface"), "x-caller-surface": "host"})
+    assert added.status_code == 401
+    dropped = client.get("/surface", headers={"x-caller-assertion": _mint(target="/surface", surface="host")})
+    assert dropped.status_code == 401
+    alone = client.get("/surface", headers={"x-caller-surface": "host"})
+    assert alone.status_code == 401
+    assert alone.json()["code"] == "caller_assertion_required"
+
+
+def test_open_mode_reads_the_surface_header_and_any_value_narrows() -> None:
+    app = FastAPI()
+
+    @app.get("/surface")
+    def surface(request: Request) -> dict[str, bool]:
+        return {"host": api_caller.from_host(request)}
+
+    open_client = TestClient(app)
+    assert open_client.get("/surface").json() == {"host": False}
+    assert open_client.get("/surface", headers={"x-caller-surface": "host"}).json() == {"host": True}
+    assert open_client.get("/surface", headers={"x-caller-surface": "other"}).json() == {"host": True}
 
 
 def test_preflight_passes_untouched(client: TestClient) -> None:

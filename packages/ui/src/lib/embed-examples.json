@@ -1,0 +1,150 @@
+{
+  "about": "The oe-embed/v1 contract (src/lib/embed.ts) as examples: what the host sends and what the frame must make of it (null: dropped whole), and what the frame sends. Checked by packages/ui/scripts/embed.test.mjs and by the host's own tests, so the two sides can't drift. Change it only with a contract change on both sides.",
+  "host_to_frame": [
+    {
+      "name": "a full init",
+      "message": {
+        "protocol": "oe-embed/v1",
+        "type": "init",
+        "contract": 1,
+        "theme": {
+          "mode": "light",
+          "tokens": { "surface-base": "#ffffff", "fg": "#1f272e", "accent": "rgb(36, 144, 239)", "border-default": "#ededed" }
+        },
+        "font": "Inter, -apple-system, \"Segoe UI\", sans-serif",
+        "productName": "Northwind",
+        "userHint": "Olivia@Co.Example",
+        "nativePaths": ["/", "/chats", "/watchlist"]
+      },
+      "expect": {
+        "type": "init",
+        "init": {
+          "theme": {
+            "mode": "light",
+            "tokens": { "surface-base": "255 255 255", "fg": "31 39 46", "accent": "36 144 239", "border-default": "237 237 237" }
+          },
+          "font": "Inter, -apple-system, \"Segoe UI\", sans-serif",
+          "productName": "Northwind",
+          "userHint": "olivia@co.example",
+          "nativePaths": ["/", "/chats", "/watchlist"]
+        }
+      }
+    },
+    {
+      "name": "a minimal init",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "dark" }, "productName": "Northwind" },
+      "expect": {
+        "type": "init",
+        "init": { "theme": { "mode": "dark", "tokens": {} }, "font": null, "productName": "Northwind", "userHint": null, "nativePaths": [] }
+      }
+    },
+    {
+      "name": "a token this version doesn't know is left out",
+      "message": {
+        "protocol": "oe-embed/v1", "type": "init", "contract": 1,
+        "theme": { "mode": "dark", "tokens": { "fg": "#fff", "glow": "#000" } }, "productName": "Northwind"
+      },
+      "expect": {
+        "type": "init",
+        "init": { "theme": { "mode": "dark", "tokens": { "fg": "255 255 255" } }, "font": null, "productName": "Northwind", "userHint": null, "nativePaths": [] }
+      }
+    },
+    {
+      "name": "a theme switch",
+      "message": { "protocol": "oe-embed/v1", "type": "theme", "theme": { "mode": "dark", "tokens": { "surface-base": "#171717" } } },
+      "expect": { "type": "theme", "theme": { "mode": "dark", "tokens": { "surface-base": "23 23 23" } } }
+    },
+    {
+      "name": "another contract version",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 2, "theme": { "mode": "dark" }, "productName": "Northwind" },
+      "expect": null
+    },
+    {
+      "name": "another protocol",
+      "message": { "protocol": "oe-embed/v2", "type": "init", "contract": 1, "theme": { "mode": "dark" }, "productName": "Northwind" },
+      "expect": null
+    },
+    {
+      "name": "a colour that is CSS, not a colour",
+      "message": {
+        "protocol": "oe-embed/v1", "type": "init", "contract": 1,
+        "theme": { "mode": "light", "tokens": { "fg": "red; background: url(https://evil.example/x)" } }, "productName": "Northwind"
+      },
+      "expect": null
+    },
+    {
+      "name": "a colour out of range",
+      "message": { "protocol": "oe-embed/v1", "type": "theme", "theme": { "mode": "light", "tokens": { "fg": "rgb(300, 0, 0)" } } },
+      "expect": null
+    },
+    {
+      "name": "an unknown theme mode",
+      "message": { "protocol": "oe-embed/v1", "type": "theme", "theme": { "mode": "sepia" } },
+      "expect": null
+    },
+    {
+      "name": "a font stack that escapes into CSS",
+      "message": {
+        "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" },
+        "font": "Inter; } body { display: none", "productName": "Northwind"
+      },
+      "expect": null
+    },
+    {
+      "name": "a product name with markup",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" }, "productName": "<img src=x onerror=alert(1)>" },
+      "expect": null
+    },
+    {
+      "name": "a product name too long",
+      "message": {
+        "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" },
+        "productName": "Northwind Northwind Northwind Northwind Northwind"
+      },
+      "expect": null
+    },
+    {
+      "name": "no product name",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" } },
+      "expect": null
+    },
+    {
+      "name": "a user hint that is no email",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" }, "productName": "Northwind", "userHint": "Administrator" },
+      "expect": null
+    },
+    {
+      "name": "a native path that is no route here",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" }, "productName": "Northwind", "nativePaths": ["/desk/home"] },
+      "expect": null
+    },
+    {
+      "name": "a native path that is another site",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" }, "productName": "Northwind", "nativePaths": ["//evil.example/chats"] },
+      "expect": null
+    },
+    {
+      "name": "a card's own page can't be native",
+      "message": { "protocol": "oe-embed/v1", "type": "init", "contract": 1, "theme": { "mode": "light" }, "productName": "Northwind", "nativePaths": ["/cards"] },
+      "expect": null
+    },
+    {
+      "name": "a message type the frame doesn't take",
+      "message": { "protocol": "oe-embed/v1", "type": "navigate", "path": "/settings" },
+      "expect": null
+    },
+    {
+      "name": "not an object",
+      "message": "oe-embed/v1 init",
+      "expect": null
+    }
+  ],
+  "frame_to_host": [
+    { "name": "ready", "message": { "protocol": "oe-embed/v1", "type": "ready", "contract": 1, "version": "0.6.1" } },
+    { "name": "route", "message": { "protocol": "oe-embed/v1", "type": "route", "path": "/jobs", "query": "?tab=runs", "title": "Workflows" } },
+    { "name": "open a host route", "message": { "protocol": "oe-embed/v1", "type": "open", "kind": "host", "route": "/app/orders/SO-0001" } },
+    { "name": "open a native screen", "message": { "protocol": "oe-embed/v1", "type": "open", "kind": "native", "path": "/chats/abc" } },
+    { "name": "badge", "message": { "protocol": "oe-embed/v1", "type": "badge", "counts": { "knowledge-review": 3 } } },
+    { "name": "signed in", "message": { "protocol": "oe-embed/v1", "type": "signed-in" } }
+  ]
+}

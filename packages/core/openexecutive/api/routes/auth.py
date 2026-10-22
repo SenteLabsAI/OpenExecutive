@@ -12,15 +12,25 @@ through the environment (issue #132).
 This route is still gated by the shared-secret middleware — the UI's
 server-side fetch carries ``x-api-key`` so an unauthenticated caller
 can't enumerate emails.
+
+``GET /auth/me`` returns the email this request is made as
+(``api.caller``), so a host origin's own page (docs/auth.md, "Host
+origins") can warn when the session signed in here is someone else's, as
+the framed pages do with the session they hold.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from openexecutive.people import store as people_store
 
 router = APIRouter()
+
+
+class SignedInAs(BaseModel):
+    # Lowercased; "" when the request names no one.
+    email: str
 
 
 class AllowedEmail(BaseModel):
@@ -47,3 +57,14 @@ def allowed_emails() -> list[AllowedEmail]:
         for p in people_store.list_people()
         if p.email and p.id is not None
     ]
+
+
+@router.get("/auth/me", response_model=SignedInAs)
+def signed_in_as(request: Request) -> SignedInAs:
+    """The email this request is made as: the signed-in person's for a call
+    through the web app (verified when signed callers are on), else what
+    the caller header names. Nothing about them beyond what the caller
+    already sent."""
+    from openexecutive.api.caller import caller
+
+    return SignedInAs(email=caller(request).email)

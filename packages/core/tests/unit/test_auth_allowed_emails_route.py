@@ -1,4 +1,5 @@
-"""GET /auth/allowed-emails returns non-archived people with non-null email."""
+"""GET /auth/allowed-emails returns non-archived people with non-null email;
+GET /auth/me the email the request is made as."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -56,3 +57,11 @@ def test_emails_normalized_to_lowercase(db: Path) -> None:
     people_store.upsert_person(full_name="Alex", email="Alex@Example.COM")
     rows = _client().get("/auth/allowed-emails").json()
     assert rows[0]["email"] == "alex@example.com"
+
+
+def test_me_names_the_callers_own_email_and_no_one_else() -> None:
+    client = _client()
+    assert client.get("/auth/me", headers={"x-caller-email": " Alex@Example.COM "}).json() == {
+        "email": "alex@example.com"
+    }
+    assert client.get("/auth/me").json() == {"email": ""}

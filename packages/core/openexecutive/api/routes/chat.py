@@ -199,9 +199,42 @@ def _stop_owner_key(request: Request, caller_person_id: int | None) -> str:
     direct curl against a local API, where there is no identity to separate
     (``api.caller.identity_key``).
     """
-    if caller_person_id is not None:
-        return f"person:{caller_person_id}"
-    return api_caller.identity_key(request)
+    key = f"person:{caller_person_id}" if caller_person_id is not None else api_caller.identity_key(request)
+    # A host origin's page (api.caller.from_host) stops and adds to its own
+    # turns only, and the person's own pages to theirs: a script on the host
+    # can't put words into a turn that may act.
+    return f"{key}|host" if api_caller.from_host(request) else key
+
+
+# Conversations a host origin's page has written in, as this process saw it
+# happen: the stored mark (session_store.host_wrote) can fail to write, and a
+# turn running alongside must be held all the same. The API runs as one
+# process.
+_host_sessions: set[str] = set()
+
+
+def _host_wrote(session_id: str) -> bool:
+    from openexecutive.memory.session_store import host_wrote
+
+    return session_id in _host_sessions or host_wrote(session_id)
+
+
+def _host_wrote_quietly(session_id: str) -> bool:
+    """``_host_wrote``, answering yes when it can't be read (fails closed)."""
+    try:
+        return _host_wrote(session_id)
+    except Exception:
+        logger.warning("chat.host_mark_unreadable session_id=%s", session_id, exc_info=True)
+        return True
+
+
+def _exists_without_host(session_id: str) -> bool:
+    """Whether ``session_id`` is a stored conversation that a host origin's
+    page has never written in. (A new one has no row yet: the turn writes it
+    after this check.)"""
+    from openexecutive.memory.session_store import get_session_metadata
+
+    return get_session_metadata(session_id) is not None and not _host_wrote(session_id)
 
 
 def _sweep_stale_stops() -> None:
@@ -1120,6 +1153,18 @@ async def _run_chat_turn(
             raise
     try:
         session = await _get_or_create_session(requested_id, request)
+        # A host origin's page writes only in a conversation it started or
+        # already wrote in: one line from it holds the conversation read-only
+        # for good, so it must not reach one of the person's own.
+        if (
+            api_caller.from_host(request)
+            and requested_id is not None
+            and await asyncio.to_thread(_exists_without_host, requested_id)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This conversation was started in Open Executive. Continue it there.",
+            )
     except BaseException:
         _release_stop(client_turn_id, turn_id)
         if lock_key is not None:
@@ -1133,6 +1178,20 @@ async def _run_chat_turn(
     # proxy stamps x-caller-email from it). A header-less request resolves to
     # the principal but is no sign-in, so it never gets Act as me.
     session.web_caller_signed_in = api_caller.signed_in(request)
+    # Per turn too: a host origin's page sent it, or wrote earlier in this
+    # conversation (Session.from_host). Then it only reads and advises,
+    # whichever page asks now: the host's lines stay in what the model reads.
+    # A conversation whose lines can't be read is held the same way.
+    host_call = api_caller.from_host(request)
+    if host_call:
+        session.from_host = True
+    else:
+        try:
+            session.from_host = await asyncio.to_thread(_host_wrote, session.session_id)
+        except Exception:
+            logger.exception("chat.host_lines_unreadable session_id=%s", session.session_id)
+            session.from_host = True
+    line_surface = "host" if host_call else None
     is_first_turn = len(session.conversation_history) == 0
 
     # A chat its owner shared (``chat_people``): everyone in it reads every
@@ -1234,6 +1293,17 @@ async def _run_chat_turn(
         )
     except Exception:  # pragma: no cover - DB write should not block the turn
         logger.exception("chat.session_persist_failed turn_id=%s", turn_id)
+    if host_call:
+        # Now, not when the turn is saved: a turn from the person's own page
+        # in this conversation, even one running alongside, is held too
+        # (here first, so a failed write below still holds it).
+        _host_sessions.add(session.session_id)
+        try:
+            from openexecutive.memory.session_store import mark_host_wrote
+
+            mark_host_wrote(session.session_id)
+        except Exception:
+            logger.exception("chat.host_mark_failed session_id=%s", session.session_id)
 
     # Fan out the three context-fetching steps in parallel. Each one is a few
     # hundred ms to a few seconds on its own and they are mutually independent,
@@ -1537,14 +1607,16 @@ async def _run_chat_turn(
                 if not is_first_turn:
                     update_session_timestamp(session.session_id)
                 save_message(
-                    session.session_id, "user", message, sender_person_id=caller_person_id
+                    session.session_id, "user", message, sender_person_id=caller_person_id,
+                    sender_surface=line_surface,
                 )
                 # Messages sent while it worked and folded into this reply,
                 # in the order they arrived, before the reply that answers
                 # them.
                 for added_text in added_texts:
                     save_message(
-                        session.session_id, "user", added_text, sender_person_id=caller_person_id
+                        session.session_id, "user", added_text, sender_person_id=caller_person_id,
+                        sender_surface=line_surface,
                     )
                 persisted["assistant_message_id"] = save_message(
                     session.session_id,
@@ -2604,7 +2676,12 @@ async def get_suggested_prompts(request: Request) -> dict[str, Any]:
         logger.exception("suggested_prompts: session list failed")
         sessions = []
 
-    recent_titles = [s["title"] for s in sessions[:5] if s.get("title")]
+    # Not a chat a host origin's page wrote in: its title is that page's
+    # words, and a starter prompt is sent as the person's own.
+    recent_titles = [
+        s["title"] for s in sessions[:5]
+        if s.get("title") and not _host_wrote_quietly(str(s.get("session_id") or ""))
+    ]
     latest_session_id = sessions[0]["session_id"] if sessions else None
 
     key = _cache_key(profile, latest_session_id, caller_person_id)
