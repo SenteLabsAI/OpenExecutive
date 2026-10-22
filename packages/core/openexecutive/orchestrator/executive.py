@@ -681,7 +681,10 @@ def _with_notice(result: Any, notice: str) -> Any:
     blocks get it as a first text block."""
     if isinstance(result, list):
         return [{"type": "text", "text": notice}, *result]
-    return notice + str(result)
+    if isinstance(result, str):
+        return notice + result
+    # Anything else as the JSON the model would read without the notice.
+    return notice + json.dumps(result, default=str)
 
 
 def _tool_error_result(tool_name: str, exc: BaseException) -> str:
