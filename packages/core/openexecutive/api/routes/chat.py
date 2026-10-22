@@ -1789,6 +1789,12 @@ async def _run_chat_turn(
             if held_steps:
                 held_evt = {"type": "held_steps", "session_id": session.session_id, "steps": list(held_steps)}
                 yield f"data: {json.dumps(held_evt)}\n\n"
+            # What the content check flagged this turn, in plain words
+            # (orchestrator.content_scan): shown under the reply.
+            flags = outside_content.pending_flags(session) if not (stopped or timed_out) else ()
+            if flags:
+                flags_evt = {"type": "flags", "session_id": session.session_id, "flags": list(flags)}
+                yield f"data: {json.dumps(flags_evt)}\n\n"
 
             if stopped:
                 # Not an `error` event — a stop is a user decision, not a

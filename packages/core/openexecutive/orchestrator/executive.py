@@ -675,6 +675,15 @@ def _apply_loop_cache_marker(
     return bool(markable)
 
 
+def _with_notice(result: Any, notice: str) -> Any:
+    """``result`` with the content check's notice before it
+    (``outside_content.FLAG_NOTICE``): text gets it as a prefix, content
+    blocks get it as a first text block."""
+    if isinstance(result, list):
+        return [{"type": "text", "text": notice}, *result]
+    return notice + str(result)
+
+
 def _tool_error_result(tool_name: str, exc: BaseException) -> str:
     """Render a crashed tool handler as a JSON tool_result the model can read.
 
@@ -2682,8 +2691,13 @@ class Executive:
             # round's other such calls too, since a round's tools run
             # together; the reads themselves run, and mark the turn once the
             # round is done. The offered list stays as it is, as above.
+            # Reads queued for their check (an attachment, a synced excerpt)
+            # are checked first, so the owner's safety level can decide
+            # whether they hold this round (outside_content.settle). Under
+            # Hands-off a read in this round holds nothing either.
+            await outside_content.settle()
             read_before_round = outside_content.read_outside()
-            round_sources = [
+            round_sources = [] if outside_content.trusted_turn() else [
                 (tu, source) for tu in dispatch_uses
                 if (source := outside_content.source_of(tu["name"], tu["input"])) is not None
             ]
@@ -3343,6 +3357,7 @@ class Executive:
                     probe_name, probe_input = (
                         (tool, arguments) if own else ("call_tool", {"name": tool, "arguments": arguments})
                     )
+                    await outside_content.settle()
                     if outside_content.read_outside() and outside_content.outside_withholds(
                         probe_name, probe_input
                     ):
@@ -3386,7 +3401,8 @@ class Executive:
                             outside_content.mark(source)
                         return text, True
                     if source is not None:
-                        await outside_content.mark_read(source, probe_input, text, self._mcp_gateway)
+                        notice = await outside_content.mark_read(source, probe_input, text, self._mcp_gateway)
+                        text = notice + text
                     _made.append((call_input, text, None))
                     return text, looks_like_error(text)
 
@@ -3587,11 +3603,18 @@ class Executive:
 
             # What this round read from outside reaches the model with its
             # results: from the next round on the turn is held.
-            for tu, source in round_sources:
+            # The check sees each read's result first (orchestrator.content_scan):
+            # a flagged one reaches the model behind a notice not to follow it.
+            for tu, source in [
+                (tu, source) for tu in dispatch_uses
+                if (source := outside_content.source_of(tu["name"], tu["input"])) is not None
+            ]:
                 if tu not in outside_uses and tu not in mail_touched_uses and tu not in withheld_uses:
-                    await outside_content.mark_read(
+                    notice = await outside_content.mark_read(
                         source, tu["input"], results_by_id.get(tu["id"], ""), self._mcp_gateway
                     )
+                    if notice:
+                        results_by_id[tu["id"]] = _with_notice(results_by_id.get(tu["id"], ""), notice)
 
             current_messages.append({"role": "assistant", "content": response_content})
             # Cap here, at the single point every result reaches the model,

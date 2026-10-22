@@ -1,38 +1,43 @@
-"""The owner's "When I read outside content" setting: how much a read of
-someone else's text holds a turn (``orchestrator.outside_content``).
+"""The owner's safety level (Settings -> Safety, "When should I check with
+you?"): how much a read of someone else's text holds a turn
+(``orchestrator.outside_content``). Every outside read is checked for
+attempts to steer the Executive (``orchestrator.content_scan``) at every
+level; the level decides what a read, and a flag, then hold.
 
-Three settings, one per company:
+Three levels, one per company, each channel able to differ (``CHANNELS``,
+stored beside it; a channel not set follows the company's level):
 
-- ``ask`` (Ask every time): any read of a connected app, an attachment, a web
-  page, a synced folder or a vendor app holds the turn's writes, as before.
-- ``outsiders`` (Only for outsiders, the default): reads whose text came
-  from the team hold nothing. That is a Gmail search's list of ids, a Gmail message
-  Gmail authenticated as a teammate's (contacts are outside), and a detailed
+- ``ask`` (Careful): any read of a connected app, an attachment, a web
+  page, a synced folder or a vendor app holds the turn's writes.
+- ``outsiders`` (Balanced, the default): a read holds the turn only when the
+  check flags it or can't check it (a web search's results arrive encrypted,
+  so they are never checked). Reads whose text came from the team are not
+  even checked: a Gmail search's list of ids, a Gmail message Gmail
+  authenticated as a teammate's (contacts are outside), and a detailed
   calendar read of events the Executive itself organized, naming only the
-  team (``outside_content.mark_read``). Attachments and synced folders (a
-  file carries whoever wrote it), web pages, documents fetched by address,
-  vendor apps, Outlook mail, a plain
-  event listing (it doesn't say who made each event) and anything showing
-  anyone else still hold.
-- ``trust`` (Don't ask): on the principal's own turn on an interactive
+  team (``outside_content.mark_read``).
+- ``trust`` (Hands-off): on the principal's own turn on an interactive
   surface (``content_trust.principal_only_withheld`` offers them everything),
-  no read holds. Anyone else's turn falls back to ``outsiders``.
+  no read holds; a flagged one is still flagged to them, and the model is
+  told not to follow it. Anyone else's turn falls back to ``outsiders``.
 
 Whatever the setting, a turn answering mail from someone not in People is
 held from the start, a shared chat or another AI app's turn is ``ask``,
 mail and messages still go only to people on People, and someone added to
 People this turn is reached no earlier than the next one.
 
-What "Only for outsiders" trusts rests on Gmail's sender authentication and
+What Balanced trusts without checking rests on Gmail's sender authentication and
 on the Executive's own address: a company whose domain doesn't enforce DMARC
 (``p=reject`` or ``quarantine``) leaves room for an invite forged as the
-Executive's own event to pass as the team's. Choose "Ask every time" there.
+Executive's own event to pass as the team's. Choose Careful there.
 
-Stored in the episodic database (``TABLE``, one row). Plain code, never
-raises: an unreadable store is ``ask``, a missing row is ``DEFAULT``.
+Stored in the episodic database (``TABLE``, one row: the level and the
+channels set apart from it). Plain code, never raises: an unreadable store is
+``ask``, a missing row is ``DEFAULT``.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -47,15 +52,32 @@ TRUST = "trust"
 MODES: tuple[str, ...] = (ASK, OUTSIDERS, TRUST)
 DEFAULT = OUTSIDERS
 
+# The levels by the names the person reads (Settings -> Safety, the API).
+LEVELS: dict[str, str] = {ASK: "careful", OUTSIDERS: "balanced", TRUST: "hands_off"}
+MODE_OF_LEVEL: dict[str, str] = {level: mode for mode, level in LEVELS.items()}
+
+# The channels a level can be set on apart from the company's, by the
+# session's ``origin_channel`` (``web`` is the web app's chat). A turn on any
+# other surface follows the company's level.
+CHANNELS: tuple[str, ...] = ("web", "slack", "google_chat", "telegram", "discord", "email")
+
 TABLE = "outside_content_mode"
 _DDL = (
     f"CREATE TABLE IF NOT EXISTS {TABLE} ("
     "  id INTEGER PRIMARY KEY CHECK (id = 1),"
     "  mode TEXT NOT NULL,"
     "  updated_at TEXT,"
-    "  updated_by TEXT"
+    "  updated_by TEXT,"
+    "  channels TEXT"
     ")"
 )
+
+
+def _ensure(conn: sqlite3.Connection) -> None:
+    conn.execute(_DDL)
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({TABLE})")}
+    if "channels" not in columns:
+        conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN channels TEXT")
 
 
 def _db_path(db_path: Path | None) -> Path:
@@ -98,22 +120,98 @@ def stored_mode(*, db_path: Path | None = None) -> str:
     return row[0] if row[0] in MODES else ASK
 
 
-def set_mode(mode: str, *, updated_by: str, db_path: Path | None = None) -> None:
-    """Store the setting. Callers authorize first (the route)."""
+def stored_channels(*, db_path: Path | None = None) -> dict[str, str]:
+    """The channels set apart from the company's level: channel -> mode.
+    Empty when none is, or when the store can't be read (logged): every
+    channel then follows the level, which ``stored_mode`` reads as ``ask``
+    when the store is unreadable."""
+    path = _db_path(db_path)
+    if not path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(path))
+        try:
+            row = conn.execute(f"SELECT channels FROM {TABLE} WHERE id = 1").fetchone()  # noqa: S608 — constant table name
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc) and "no such column" not in str(exc):
+            logger.warning("outside_mode: couldn't read the channels (%s)", exc)
+        return {}
+    except Exception:
+        logger.warning("outside_mode: couldn't read the channels", exc_info=True)
+        return {}
+    try:
+        parsed = json.loads(row[0]) if row is not None and row[0] else {}
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {c: m for c, m in parsed.items() if c in CHANNELS and m in MODES}
+
+
+def channel_mode(channel: str | None) -> str:
+    """The level a turn on ``channel`` starts from: the channel's own when
+    it has one, else the company's (``get_mode``)."""
+    own = stored_channels().get(channel or "") if channel else None
+    return own if own is not None else get_mode()
+
+
+def set_mode(
+    mode: str,
+    *,
+    updated_by: str,
+    channels: dict[str, str | None] | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Store the level and, when given, channel changes (a channel set to
+    None follows the level again). Callers authorize first (the route)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
-    conn = sqlite3.connect(str(_db_path(db_path)))
+    for channel, value in (channels or {}).items():
+        if channel not in CHANNELS:
+            raise ValueError(f"channel must be one of {', '.join(CHANNELS)}")
+        if value is not None and value not in MODES:
+            raise ValueError(f"mode must be one of {', '.join(MODES)}")
+    conn = sqlite3.connect(str(_db_path(db_path)), isolation_level=None)
     try:
-        conn.execute(_DDL)
+        _ensure(conn)
+        # Read the channels and write them back in one transaction, so two
+        # changes at once can't drop each other's channel.
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(f"SELECT channels FROM {TABLE} WHERE id = 1").fetchone()  # noqa: S608 — constant table name
+        try:
+            parsed = json.loads(row[0]) if row is not None and row[0] else {}
+        except (TypeError, ValueError):
+            parsed = {}
+        current = {c: m for c, m in (parsed if isinstance(parsed, dict) else {}).items() if c in CHANNELS and m in MODES}
+        for channel, value in (channels or {}).items():
+            if value is None:
+                current.pop(channel, None)
+            else:
+                current[channel] = value
         conn.execute(
-            f"INSERT INTO {TABLE} (id, mode, updated_at, updated_by) VALUES (1, ?, ?, ?) "  # noqa: S608 — constant table name
+            f"INSERT INTO {TABLE} (id, mode, updated_at, updated_by, channels) VALUES (1, ?, ?, ?, ?) "  # noqa: S608 — constant table name
             "ON CONFLICT(id) DO UPDATE SET mode = excluded.mode, "
-            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-            (mode, datetime.now(UTC).isoformat(), updated_by),
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by, "
+            "channels = excluded.channels",
+            (mode, datetime.now(UTC).isoformat(), updated_by, json.dumps(current, sort_keys=True)),
         )
-        conn.commit()
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
     finally:
         conn.close()
+
+
+def channel_of(session: Any) -> str | None:
+    """The channel a turn arrived on (``CHANNELS``), or None."""
+    if getattr(session, "from_web_chat", False) is True:
+        return "web"
+    channel = str(getattr(session, "origin_channel", "") or "")
+    return channel if channel in CHANNELS else None
 
 
 def for_turn(session: Any) -> str:
@@ -128,7 +226,7 @@ def for_turn(session: Any) -> str:
             return ASK
         if getattr(session, "from_mcp_client", False) is True:
             return ASK
-        mode = get_mode()
+        mode = channel_mode(channel_of(session))
         if mode != TRUST:
             return mode
         from openexecutive.orchestrator.content_trust import principal_only_withheld

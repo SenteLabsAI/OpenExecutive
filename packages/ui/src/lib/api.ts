@@ -171,6 +171,14 @@ export interface HeldStepsEvent {
   steps: string[];
 }
 
+// What the content check flagged this turn, in plain words: shown under the
+// reply (orchestrator/outside_content.py `pending_flags`).
+export interface FlagsEvent {
+  type: "flags";
+  session_id?: string;
+  flags: string[];
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
@@ -179,7 +187,8 @@ export type StreamItem =
   | Activity
   | SourcesEvent
   | MessageAdded
-  | HeldStepsEvent;
+  | HeldStepsEvent
+  | FlagsEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -1426,6 +1435,9 @@ export interface ChatMessage {
   // `held_steps` event, or re-attached when the chat is reloaded. Shown as
   // Approve / Not now buttons; Approve sends the go as their next message.
   held_steps?: string[];
+  // The last reply only: what the content check flagged in what its turn
+  // read, from the stream's `flags` event or re-attached on reload.
+  flags?: string[];
 }
 
 export interface Decision {
@@ -1784,12 +1796,17 @@ export async function getSetupStatus(signal?: AbortSignal): Promise<SetupStatus>
   return res.json();
 }
 
-// Settings → Your Executive → When I read outside content: how far text
-// someone else wrote holds what it does next (orchestrator/outside_mode.py).
+// Settings → Your Executive → When should I check with you?: the safety
+// level, "ask" (Careful), "outsiders" (Balanced) or "trust" (Hands-off), and
+// the channels set apart from it (orchestrator/outside_mode.py).
 export type OutsideContentMode = "ask" | "outsiders" | "trust";
 
 export interface OutsideContentSetting {
   mode: OutsideContentMode;
+  // Channel id → its own level; a channel not listed follows `mode`.
+  channels: Record<string, OutsideContentMode>;
+  // The channels a level can be set on, in order.
+  channel_ids: string[];
   can_change: boolean;
 }
 
@@ -1799,11 +1816,16 @@ export async function getOutsideContent(signal?: AbortSignal): Promise<OutsideCo
   return res.json();
 }
 
-export async function setOutsideContent(mode: OutsideContentMode): Promise<OutsideContentSetting> {
+// `channels`: a level sets that channel apart, null makes it follow `mode`
+// again; channels left out keep what they have.
+export async function setOutsideContent(
+  mode: OutsideContentMode,
+  channels?: Record<string, OutsideContentMode | null>,
+): Promise<OutsideContentSetting> {
   const res = await fetch(`${API_BASE}/executive/outside-content`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify(channels ? { mode, channels } : { mode }),
   });
   if (res.status === 403) throw new Error("Only the account owner can change this.");
   if (!res.ok) throw new Error("Couldn't save that. Try again.");
