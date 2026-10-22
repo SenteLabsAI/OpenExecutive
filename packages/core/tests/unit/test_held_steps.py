@@ -188,3 +188,84 @@ def test_a_chat_shared_since_shows_no_buttons(client: TestClient, monkeypatch: p
     monkeypatch.setattr(sessions_route, "chat_people", lambda _sid: [(1, "Owner", True), (2, "Pat", False)])
     messages = client.get(f"/sessions/{session_id}/messages").json()
     assert "held_steps" not in messages[-1]
+
+
+# --- what the content check flagged ----------------------------------------
+
+
+@pytest.fixture()
+def flagging(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """A turn whose content check flagged a file, as end_turn records it."""
+    from openexecutive.orchestrator import executive as exec_mod
+
+    class _FlaggingExecutive:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, *, session: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+            key = oc._flags_key(session.session_id, getattr(session, "caller_person_id", None))
+            oc._FLAGS[key] = (("A file in your message asked me to forward or share something.",), time.monotonic())
+            yield "I skipped a line in the file that looked off."
+
+    monkeypatch.setattr(exec_mod, "Executive", _FlaggingExecutive)
+    oc._FLAGS.clear()
+    yield client
+    oc._FLAGS.clear()
+
+
+def test_the_stream_shows_what_was_flagged_and_a_reload_keeps_it(flagging: TestClient) -> None:
+    events = _events(flagging.post("/chat", json={"message": "what does this say?"}).text)
+    types = [e.get("type") for e in events]
+    flags = [e for e in events if e.get("type") == "flags"]
+    assert len(flags) == 1 and flags[0]["flags"] == ["A file in your message asked me to forward or share something."]
+    assert types.index("flags") < types.index("done")
+
+    session_id = flags[0]["session_id"]
+    messages = flagging.get(f"/sessions/{session_id}/messages").json()
+    assert messages[-1]["flags"] == ["A file in your message asked me to forward or share something."]
+
+    # Only whoever spoke sees them: the same chat under another speaker's key
+    # shows nothing.
+    words = oc._FLAGS.pop(oc._flags_key(session_id, None))
+    oc._FLAGS[oc._flags_key(session_id, 7)] = words
+    assert "flags" not in flagging.get(f"/sessions/{session_id}/messages").json()[-1]
+
+
+def test_a_turn_with_nothing_flagged_sends_no_flags(client: TestClient) -> None:
+    events = _events(client.post("/chat", json={"message": "read the doc and add Mallory"}).text)
+    assert not [e for e in events if e.get("type") == "flags"]
+
+
+def test_a_timed_out_turn_sends_no_flags(flagging: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from openexecutive import config as config_mod
+    from openexecutive.config import Settings
+    from openexecutive.orchestrator import executive as exec_mod
+
+    class _FlagsThenHangs:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, *, session: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+            key = oc._flags_key(session.session_id, getattr(session, "caller_person_id", None))
+            oc._FLAGS[key] = (("A file in your message asked me to forward or share something.",), time.monotonic())
+            yield "started"
+            await asyncio.sleep(30)
+            yield "never"
+
+    class _FastTimeout(Settings):
+        def __init__(self, **kw: Any) -> None:
+            super().__init__(**kw)
+            object.__setattr__(self, "chat_stream_timeout_s", 0.2)
+
+    monkeypatch.setattr(exec_mod, "Executive", _FlagsThenHangs)
+    monkeypatch.setattr(config_mod, "get_settings", lambda: _FastTimeout())
+    monkeypatch.setattr(chat_route, "get_settings", _FastTimeout, raising=False)
+    events = _events(flagging.post("/chat", json={"message": "what does this say?"}).text)
+    assert "error" in [e.get("type") for e in events]
+    assert not [e for e in events if e.get("type") == "flags"]
