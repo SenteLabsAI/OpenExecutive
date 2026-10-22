@@ -1546,11 +1546,14 @@ class Executive:
         # people's mail, so should_extract refuses the empty text and every
         # other pass below is skipped outright.
         own_text = with_added(_speaker_text(memory_text, user_message), inbox)
-        speaker_text = "" if touched_mail else own_text
+        # A host-surface turn (Session.from_host) is kept nowhere either: its
+        # words may be a script's on the host's page, never the person's own.
+        host_words = getattr(session, "from_host", False) is True
+        speaker_text = "" if touched_mail or host_words else own_text
         # A replay of a graded turn (memory.replay) is kept nowhere: no open
         # loops, style, review or mirror of it (should_extract and
         # schedule_chat_notes refuse a replay session themselves).
-        kept = not touched_mail and not chat_replay.is_replay(session)
+        kept = not touched_mail and not host_words and not chat_replay.is_replay(session)
 
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
@@ -2101,10 +2104,13 @@ class Executive:
         # memory alike — none for a turn that touched their mailbox; see
         # stream_chat.
         own_text = with_added(_speaker_text(memory_text, user_message), inbox)
-        speaker_text = "" if touched_mail else own_text
+        # A host-surface turn (Session.from_host) is kept nowhere either: its
+        # words may be a script's on the host's page, never the person's own.
+        host_words = getattr(session, "from_host", False) is True
+        speaker_text = "" if touched_mail or host_words else own_text
         # private_rows: see stream_chat — the scheduled passes copy it.
         # A replay (memory.replay) is kept nowhere — see stream_chat.
-        kept = not touched_mail and not chat_replay.is_replay(session)
+        kept = not touched_mail and not host_words and not chat_replay.is_replay(session)
         with private_rows(touched_mail):
             if should_extract(speaker_text, session=session):
                 schedule_extraction(

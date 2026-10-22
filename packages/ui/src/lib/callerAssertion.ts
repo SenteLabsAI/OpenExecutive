@@ -31,6 +31,9 @@ export type CallerClaims = {
   method: string;
   // The path and query exactly as the proxy sends them upstream.
   target: string;
+  // "host" for a call a host origin's page made (lib/hostOrigins.ts); left
+  // out of the claims otherwise, so such an assertion is as it always was.
+  surface?: "host";
 };
 
 /**
@@ -70,6 +73,9 @@ export function mintCallerAssertion(
   if (claims.kind === "operator" && claims.email.trim()) {
     throw new Error("the operator names no one");
   }
+  if (claims.surface !== undefined && claims.surface !== "host") {
+    throw new Error("the surface is host or none");
+  }
   const iat = Math.floor(nowMs / 1000);
   // Keys in sorted order and no spaces: byte for byte what
   // scripts/mint-caller-assertion.py signs, so the test vectors match.
@@ -83,6 +89,7 @@ export function mintCallerAssertion(
     m: claims.method.toUpperCase(),
     p: claims.target,
     sub,
+    ...(claims.surface ? { surface: claims.surface } : {}),
   };
   const body = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const signingInput = `${ASSERTION_VERSION}.${body}`;

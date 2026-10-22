@@ -184,6 +184,9 @@ function refuse(request: NextRequest): Response {
   }
   const signInUrl = new URL("/signin", request.nextUrl.origin);
   signInUrl.searchParams.set("callbackUrl", request.nextUrl.pathname + request.nextUrl.search);
+  // A page in a host's frame (lib/embed.ts) keeps its embedded mode on the
+  // sign-in page, which then offers sign-in in a popup.
+  if (request.nextUrl.searchParams.get("embed") === "1") signInUrl.searchParams.set("embed", "1");
   return Response.redirect(signInUrl);
 }
 

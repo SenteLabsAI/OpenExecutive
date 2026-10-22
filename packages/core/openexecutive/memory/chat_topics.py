@@ -263,7 +263,8 @@ def ungroup_topic(owner: int, topic_id: int, db_path: Path = DB_PATH) -> bool:
 def owner_only(session_id: str, owner: int, db_path: Path = DB_PATH) -> bool:
     """Whether only the owner has written in this chat and it is shared with
     no one, so a prompt may carry the owner's topic names and its title may
-    show them: anyone else could steer the call into echoing them."""
+    show them: anyone else could steer the call into echoing them. A line a
+    host origin's page sent is someone else's."""
     with _get_conn(db_path) as conn:
         if conn.execute(
             "SELECT 1 FROM session_shares WHERE session_id = ? LIMIT 1", (session_id,)
@@ -271,8 +272,12 @@ def owner_only(session_id: str, owner: int, db_path: Path = DB_PATH) -> bool:
             return False
         other = conn.execute(
             "SELECT 1 FROM chat_messages WHERE session_id = ? AND role = 'user' "
-            "AND sender_person_id IS NOT NULL AND sender_person_id != ? LIMIT 1",
+            "AND ((sender_person_id IS NOT NULL AND sender_person_id != ?) "
+            "OR sender_surface IS NOT NULL) LIMIT 1",
             (session_id, owner),
+        ).fetchone() or conn.execute(
+            # A host line taken back and sent again is saved as the owner's.
+            "SELECT 1 FROM sessions WHERE session_id = ? AND host_wrote = 1", (session_id,)
         ).fetchone()
     return other is None
 

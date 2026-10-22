@@ -149,6 +149,7 @@ with "no company profile" on a fresh volume is expected, not a fault.
 | `CALLER_ASSERTION_PUBLIC_KEYS` (API), `CALLER_ASSERTION_PRIVATE_KEY` (UI) | Signed callers: the UI signs who is signed in and the API checks it, so the shared secret alone can't act as the owner. Recommended. Make the pair with `scripts/make-caller-keys.py`; see [auth.md](auth.md#signed-callers). |
 | `OE_PUBLIC_DEPLOYMENT=1` | **Set this on every internet-reachable instance.** See below. |
 | `BACKEND_ALLOWED_ORIGINS` | Comma-separated UI origins allowed through CORS, e.g. `https://exec.example.com`. With `OE_PUBLIC_DEPLOYMENT` set these are the only ones: the `localhost:3000` origins `make dev` uses are dropped. |
+| `OE_HOST_ORIGINS` (UI) | Optional. Origins of other apps that may frame the UI and call its short host list from their pages, e.g. `https://app.example.com`. Unset, only the UI frames itself. See [below](#showing-open-executive-inside-another-app-oe_host_origins). |
 | `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_OIDC_ISSUER`, `AUTH_OIDC_ID`, `AUTH_OIDC_SECRET`, `AUTH_URL`, `ALLOWED_EMAILS` | UI sign-in (Google and/or SSO). See [auth.md](auth.md). |
 
 Integrations (Slack, Discord, email, Google Workspace, Microsoft 365) are all
@@ -168,6 +169,48 @@ With it set and no shared secret, `create_app()` raises at startup instead of
 booting an open API. The check is deliberately fail-safe — any value other than
 `0`/`false`/`no`/`off`/empty arms it, so a typo requires the secret rather than
 skipping the check.
+
+### Showing Open Executive inside another app (`OE_HOST_ORIGINS`)
+
+A host app (another web app that frames Open Executive's pages and calls a short list of
+its routes, [auth.md](auth.md#host-origins-showing-open-executive-inside-another-app)) is
+listed on the **UI** by its exact origin:
+
+```
+OE_HOST_ORIGINS=https://app.example.com
+```
+
+Host it like this:
+
+- **A sibling host, one site.** Serve the UI at the root of its own host under the host
+  app's registrable domain (`exec.example.com` beside `app.example.com`), never under a
+  path of the host app and never on an unrelated domain: the session cookie is
+  `SameSite=Lax`, so a host on another site would get no cookie in its frame or with its
+  calls (Safari and Firefox block third-party cookies).
+- **Its own server block** (or its own proxy), not a location inside the host app's, with
+  its own TLS, buffering off for `/api/backend/` (streamed chat), and a body limit of
+  55 MB (the largest upload the API takes, with room). A header added inside a location
+  can drop the server's other headers; keep the UI's own `Content-Security-Policy` as it
+  sends it.
+- **A fixed sign-in address.** Set `AUTH_URL=https://exec.example.com` and leave
+  `AUTH_TRUST_HOST` unset, so no request's `Host` header steers where sign-in returns.
+  The sign-in provider's client returns to that host.
+- **Internal ports stay internal.** The API, the UI's own port and the host app's
+  application port are reachable only from their proxies.
+- **Nothing else on the domain serves outsiders' content.** Every host under the same
+  registrable domain can make same-site requests that carry both apps' cookies. Keep a
+  public website, a customer portal or uploaded files off this domain, or accept that a
+  script on one of them can make same-site requests to both apps. Each app's own checks
+  still stand: the UI's proxy refuses every same-site write except the host list from the
+  exact host origin.
+
+Never list the UI's own origin: its pages' writes would then be judged as a host's and
+refused.
+
+Removing an origin from `OE_HOST_ORIGINS` (and restarting the UI) stops that host's
+framing and every call from its pages at once. `make embed-outputs` writes the files a
+host app checks itself against (`embed-manifest.json`, `host-list.json`,
+`openapi.json`).
 
 ---
 

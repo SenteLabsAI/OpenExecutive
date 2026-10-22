@@ -5,6 +5,7 @@ import { GOOGLE_SIGN_IN, LOCAL_LOGIN, OIDC, auth, sessionStillAllowed, signIn } 
 import { LOCAL_LOGIN_PROVIDER_ID } from "@/lib/localLogin";
 import { OIDC_PROVIDER_ID } from "@/lib/oidc";
 import BrandMark from "@/components/BrandMark";
+import EmbedSignIn, { EmbedProductName } from "@/components/embed/EmbedSignIn";
 
 type SearchParams = Promise<{ callbackUrl?: string; error?: string }>;
 
@@ -37,8 +38,10 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
     <main className="min-h-screen flex items-center justify-center px-6">
       <div className="w-full max-w-sm rounded-2xl border border-line bg-surface/60 p-8 shadow-xl">
         <h1 className="flex items-center gap-2.5 font-display text-2xl font-extrabold tracking-tight text-fg">
-          <BrandMark size="sm" />
-          Open Executive
+          <EmbedProductName>
+            <BrandMark size="sm" />
+            Open Executive
+          </EmbedProductName>
         </h1>
         <p className="mt-2 text-sm text-fg-muted">
           {LOCAL_LOGIN
@@ -83,7 +86,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
             </p>
           </>
         ) : (
-          <>
+          <EmbedSignIn destination={safeDest}>
             {OIDC && (
               <form
                 action={async () => {
@@ -121,7 +124,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
                 <p className="mt-2 text-xs text-fg-muted">If that’s you: see docs/auth.md.</p>
               </div>
             )}
-          </>
+          </EmbedSignIn>
         )}
       </div>
     </main>

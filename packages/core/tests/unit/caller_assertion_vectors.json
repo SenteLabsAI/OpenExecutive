@@ -29,6 +29,16 @@
       "now_ms": 1790000120000,
       "jti": "unicode_vector_0000002",
       "token": "v1.eyJhdWQiOiJvcGVuZXhlY3V0aXZlLWFwaSIsImV4cCI6MTc5MDAwMDE1MCwiaWF0IjoxNzkwMDAwMTIwLCJqdGkiOiJ1bmljb2RlX3ZlY3Rvcl8wMDAwMDAyIiwia2lkIjoicmZjODAzMi10ZXN0MSIsImtpbmQiOiJ1c2VyIiwibSI6IkRFTEVURSIsInAiOiIvZG9jdW1lbnRzL015JTIwRG9jLnBkZiIsInN1YiI6Inpvw6tAY28uZXhhbXBsZSJ9.yc36WbV97YZypG3QQuH9agW82u2svVDuAlFCnE40y8aK1QZYVqOGrkF0HvQJIpQ2JSflIQDmOOzMQ0uQ7MmPDw"
+    },
+    {
+      "kind": "user",
+      "email": "olivia@co.example",
+      "method": "POST",
+      "target": "/chat",
+      "now_ms": 1790000180000,
+      "jti": "host_surface_vector_0003",
+      "surface": "host",
+      "token": "v1.eyJhdWQiOiJvcGVuZXhlY3V0aXZlLWFwaSIsImV4cCI6MTc5MDAwMDIxMCwiaWF0IjoxNzkwMDAwMTgwLCJqdGkiOiJob3N0X3N1cmZhY2VfdmVjdG9yXzAwMDMiLCJraWQiOiJyZmM4MDMyLXRlc3QxIiwia2luZCI6InVzZXIiLCJtIjoiUE9TVCIsInAiOiIvY2hhdCIsInN1YiI6Im9saXZpYUBjby5leGFtcGxlIiwic3VyZmFjZSI6Imhvc3QifQ.UmAe5JH2ldXiYS4WQdk9D1QGTcloJwYxtP2PQoq2VAE8iXLOiYrzkc6fOvzlw0xUIsR2M6izKopyMgquxqaWBQ"
     }
   ]
 }

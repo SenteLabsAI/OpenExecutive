@@ -7959,6 +7959,111 @@ auth:
       - Parity: packages/core/tests/unit/caller_assertion_vectors.json
         (the public RFC 8032 test key) is signed byte-identically by the
         script and by the UI (scripts/callerAssertion.test.mjs).
+  host_origins: |
+    Optional. OE_HOST_ORIGINS on the UI lists other apps' exact origins
+    (https, or http under localhost; a bad entry refuses all, lib/
+    hostOrigins.ts) that may frame the pages and call the host list
+    (packages/ui/src/lib/host-list.json) from their own pages with the
+    session cookie. They must be sibling hosts under the UI's registrable
+    domain (SameSite=Lax). Why: a host app runs code Open Executive
+    doesn't control (its administrators' scripts, installed apps), so
+    what its origin can do is fixed here, not by the host.
+
+    The host list: GETs of /auth/me (the email the call is made as, so a
+    host's native screens can warn when this session is someone else's,
+    as EmbeddedShell's UserHintWarning does in the frame; never
+    /auth/allowed-emails), /today*, /decisions, /decisions/{id},
+    /alerts/approvals/{id}, /sessions*, /watchlist*, /chat/voice,
+    /chat/suggested-prompts; alerts ack/snooze/reopen/bulk-ack/review;
+    POST /chat, /chat/stop, /chat/add, /chat/upload, /chat/transcribe;
+    the watch list's describe/add/edit/delete/approve/decline. Never a
+    card's approve/reject/cancel, prepare, Act as me, delegation,
+    settings, People (tests/unit/test_host_list.py checks each entry is
+    a real route and that rule).
+
+    Enforcement (src/middleware.ts, app/api/backend/[...path]/route.ts):
+      - Origin exactly a listed host + Sec-Fetch-Site same-site: only
+        host-list calls, CORS for that origin with credentials; anything
+        else naming a host origin 403 (with CORS). {name} is one plain
+        segment (no . .. / \ ? # % or space).
+      - Preflight answered before the session check; a listed call with
+        no session is 401 with CORS, not the sign-in redirect.
+      - The proxy drops Origin, Referer and Sec-Fetch-* of a host call
+        (api/main.py _OWN_PAGE_FETCH_SITES would refuse its write), and
+        sets the host surface: x-caller-surface: host and the optional
+        signed claim "surface": "host" (after sub in key order; absent
+        otherwise, so older assertions are byte-identical). With signed
+        callers the API reads only the claim and 401s a header that
+        disagrees (surface_mismatch) or comes without an assertion; in
+        open mode any header value means host (narrows, never widens).
+        api.caller.from_host answers it.
+      - Everything else: lib/crossSite.ts as before.
+
+    The host surface: chat sets Session.from_host per turn; it is a
+    read_only_turn (MCP_CLIENT_WITHHELD_TOOLS, gateway reads only, no Act
+    as me / recall_history / scripts / extensions), principal-only tools
+    withheld, refusals say HOST_REFUSAL, never noted as the person's own
+    words (history_chat.verified_speaker), and _stop_owner_key adds
+    "|host" so it stops/adds to its own turns only. Each user line saves
+    chat_messages.sender_surface ("host" or NULL); a conversation with any
+    host line (session_store.host_wrote) holds EVERY later turn to the same
+    rules, own page included, failing closed when unreadable: the line stays
+    in the model's context and could plant an instruction for the person's
+    next full-power turn. A host call into an existing conversation it
+    never wrote in is a 409 (it would turn the person's own chat read-only).
+    delegation.settings._offered refuses host turns. In a frame, chat sends
+    (/chat, /chat/upload, /chat/add) ask like any change: the framed
+    page's turn is the person's own; typing notices pass. A host turn
+    teaches nothing: content_trust.principal_speaking and
+    people_tools._is_verified_speaker_surface answer False for from_host,
+    both post-turn blocks clear speaker_text and kept (no extraction, open
+    loops, style, notes, review, Honcho), and attunement.style skips
+    sender_surface rows. sessions.host_wrote makes the mark sticky across a
+    rewind (Try again / Edit). Frame input also counts drop, paste and a
+    Yes in the window; chat sends always ask in a frame, and the window
+    shows the message. A host turn marks a new conversation as soon as its
+    session row exists (session_store.mark_host_wrote), so an own-page turn
+    running alongside is held too; briefing.live_signals leaves such
+    conversations' titles (the host's words) out of the brief. The
+    cross-chat readers of "the person's own words" skip host lines too:
+    session_store.own_messages_since (a scheduled follow-up's "since"
+    block, which can stand it down), own_conversation_since (the
+    end-of-day digest; whole host-written conversations) and
+    chat_topics.owner_only. A failed mark still holds the chat through the
+    in-process chat._host_sessions set. Suggested starter prompts skip
+    host-written chats' titles (fail closed); the Markdown export labels
+    host lines "(from another app's page)".
+    In any frame, card actions and any other change off the host list made
+    within 10 s of a trusted click/key are confirmed in a popup of the app's
+    own (/confirm, oe-confirm/v1 same-origin messages with a nonce): an
+    in-frame dialog can be beaten by two lured clicks on an invisible frame.
+
+    Pages (all, host origins set or not): Content-Security-Policy
+    script-src 'self' 'nonce-…' 'strict-dynamic' (+ 'unsafe-eval' on the
+    dev server only), object-src 'none', base-uri 'self', frame-ancestors
+    'self' + host origins. The root layout awaits connection() so every
+    page renders per request and gets its nonce.
+
+    Embedded mode (lib/embed.ts, components/embed/): ?embed=1, a parent
+    window, a listed origin and a valid oe-embed/v1 init (contract 1;
+    colours, font pattern, bounded product name, email hint, native
+    paths under the app's routes). AppShell then drops AppSidebar,
+    TopBar, MobileBottomNav and AskOEPanel, keeping HubTabs,
+    PausedBanner and the page. Messages ready/init/theme/route/open/
+    badge/signed-in, examples in lib/embed-examples.json shared with the
+    host's tests. /signin offers a popup ending at /signin/done, which
+    posts signed-in to its opener (own origin and each host origin) and
+    closes. In ANY frame card actions (decisions approve/reject/cancel,
+    alerts approve, workflow decisions, roster requests), and other
+    changes off the host list after a click, wait for a Yes in the
+    /confirm popup (fetch is checked against lib/cardActions.ts); each
+    card has /cards/<id>.
+
+    What remains (docs/auth.md): a host's scripts can read what the
+    host list allows (briefing, conversations and replies, watch list)
+    and start read-only chat turns as whoever has it open and is signed
+    in here; they can't approve, send, change settings or People, or
+    read/click into the frame.
 
 integrations:
   chat_directory: |
