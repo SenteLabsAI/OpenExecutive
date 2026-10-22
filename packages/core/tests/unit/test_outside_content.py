@@ -402,6 +402,18 @@ def test_an_attachment_holds_writes_from_the_first_round(upserts: list[dict[str,
     assert upserts == [] and gateway.calls == []
 
 
+def test_a_reply_with_no_tool_call_still_flags_the_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import content_scan
+
+    async def flagged(content: Any, *, model: str | None = None) -> content_scan.Verdict:
+        return content_scan.Verdict(flagged=True, categories=("forward_or_share",))
+
+    monkeypatch.setattr(content_scan, "scan", flagged)
+    session = Session(session_id="s-no-tools", caller_person_id=1)
+    _run(message="[Attached: invoice.pdf]\nWhat does this say?", session=session)
+    assert oc.pending_flags(session) == ("A file in your message asked me to forward or share something.",)
+
+
 def test_a_scripts_writes_after_its_reads_are_refused() -> None:
     gateway = _Gateway()
     script = 'for f in drive__list_items(folder="x"):\n    drive__move_file(file_id=f["id"], folder_id="y")'

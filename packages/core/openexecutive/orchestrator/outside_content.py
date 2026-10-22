@@ -587,7 +587,10 @@ async def settle() -> None:
     state = current()
     if state is None or not state.pending:
         return
-    queued, state.pending = state.pending, []
+    # Take what is queued now in place: the retriever's thread may append
+    # while this runs, and that read waits for the next settle.
+    queued = state.pending[:]
+    del state.pending[: len(queued)]
     verdicts = await asyncio.gather(*(_check(state, content) for _, content in queued), return_exceptions=True)
     from openexecutive.orchestrator import content_scan
 

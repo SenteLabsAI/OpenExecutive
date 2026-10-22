@@ -77,7 +77,12 @@ def _ensure(conn: sqlite3.Connection) -> None:
     conn.execute(_DDL)
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({TABLE})")}
     if "channels" not in columns:
-        conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN channels TEXT")
+        try:
+            conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN channels TEXT")
+        except sqlite3.OperationalError as exc:
+            # Another worker added it between the check and here.
+            if "duplicate column" not in str(exc).lower():
+                raise
 
 
 def _db_path(db_path: Path | None) -> Path:

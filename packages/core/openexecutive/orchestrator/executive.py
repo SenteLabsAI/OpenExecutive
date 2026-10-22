@@ -2528,6 +2528,10 @@ class Executive:
                     )
 
             if final_msg.stop_reason != "tool_use":
+                # A reply with no tool call still gets the queued files and
+                # synced excerpts checked, so what they tried is flagged to
+                # the person (outside_content.settle).
+                await outside_content.settle()
                 # Do what it says: a reply that claims a change no call this
                 # turn made gets one more round to make it or say it can't.
                 if claim_checked or iteration >= max_iterations:

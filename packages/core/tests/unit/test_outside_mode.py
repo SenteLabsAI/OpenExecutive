@@ -553,6 +553,26 @@ def test_an_older_table_gains_the_channels(tmp_path: Path) -> None:
     assert outside_mode.stored_channels(db_path=db) == {"web": outside_mode.ASK}
 
 
+def test_a_column_another_worker_just_added_is_fine(tmp_path: Path) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(str(tmp_path / "e.db"))
+    conn.execute(f"CREATE TABLE {outside_mode.TABLE} (id INTEGER PRIMARY KEY, mode TEXT NOT NULL, updated_at TEXT, updated_by TEXT)")
+
+    class Racing:
+        """Reports the older table, as if read just before another worker's ALTER."""
+
+        def execute(self, sql: str, *args: Any) -> Any:
+            if sql.startswith("PRAGMA"):
+                rows = list(conn.execute(sql))
+                conn.execute(f"ALTER TABLE {outside_mode.TABLE} ADD COLUMN channels TEXT")
+                return rows
+            return conn.execute(sql, *args)
+
+    outside_mode._ensure(Racing())  # type: ignore[arg-type]
+    assert "channels" in {row[1] for row in conn.execute(f"PRAGMA table_info({outside_mode.TABLE})")}
+
+
 def test_a_turn_takes_its_channels_level(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
     monkeypatch.setattr(
