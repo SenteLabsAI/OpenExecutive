@@ -9794,8 +9794,10 @@ company_onboarding:
     (GoalDraft) and departments only when the user's words already listed
     people by department. The user reviews, edits inline, and saves.
     Personal or Team is never asked: understand.py reads it (Team when the
-    text names colleagues at the user's company, Personal when only the user
-    or outsiders are named, Personal when unclear) and the UI saves it before
+    text names colleagues at the user's company, or the website the user gave
+    has a team page, even before the interview asks which of them the user
+    is; Personal when only the user or outsiders are named, Personal when
+    unclear) and the UI saves it before
     the interview; the review shows it on one line with a Change link. Save
     goes to Home; there is no done screen or voice step in setup.
     An optional website comes first (onboarding/website.py): the server

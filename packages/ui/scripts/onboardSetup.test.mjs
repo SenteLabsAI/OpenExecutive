@@ -7,6 +7,7 @@ import {
   inferredMode,
   modeLine,
   pageName,
+  setupSteps,
   siteName,
   understoodRole,
   websiteNote,
@@ -97,4 +98,23 @@ test("websiteNote says what was read, or that it couldn't be", () => {
     websiteNote("https://example.com", ["example.com", "example.com/team"]),
     "Read example.com: Home, Team.",
   );
+});
+
+test("Continue shows its steps, the website first", () => {
+  const steps = (stage, opts) => setupSteps(stage, opts).map((s) => `${s.state}: ${s.label}`);
+  assert.deepEqual(steps("reading", { read: true, site: "example.com", wrote: true, files: 0 }), [
+    "active: Reading example.com and what you wrote: what you do and who's on the team",
+    "waiting: Getting your first question ready",
+  ]);
+  assert.deepEqual(steps("reading", { read: true, site: "example.com", wrote: true, files: 1 })[0],
+    "active: Reading example.com, what you wrote and your files: what you do and who's on the team");
+  assert.deepEqual(steps("reading", { read: true, site: "example.com", wrote: false, files: 0 })[0],
+    "active: Reading example.com: what you do and who's on the team");
+  assert.deepEqual(steps("starting", { read: true, site: "", wrote: true, files: 2 }), [
+    "done: Reading what you wrote and your files",
+    "active: Getting your first question ready",
+  ]);
+  assert.deepEqual(steps("starting", { read: false, site: "example.com", wrote: true, files: 0 }), [
+    "active: Getting your first question ready",
+  ]);
 });

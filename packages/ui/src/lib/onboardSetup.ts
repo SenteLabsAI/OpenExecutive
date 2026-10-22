@@ -119,3 +119,38 @@ export function websiteNote(typed: string, pages: string[]): string | null {
   if (pages.length === 0) return `I couldn't read ${site}, so I'll ask instead.`;
   return `Read ${site}: ${pages.map(pageName).join(", ")}.`;
 }
+
+/** Where Continue has got to: reading what was given (the understand call,
+ * which also reads the website), then opening the questions (the interview's
+ * first turn). */
+export type SetupStage = "reading" | "starting";
+
+export interface SetupStep {
+  label: string;
+  state: "done" | "active" | "waiting";
+}
+
+/** The steps shown under Continue while it works, so a dimmed button is never
+ * all there is to see. Skip has nothing to read, so it shows only the last. */
+export function setupSteps(
+  stage: SetupStage,
+  opts: { read: boolean; site: string; wrote: boolean; files: number },
+): SetupStep[] {
+  const labels: string[] = [];
+  if (opts.read) {
+    // One step, not two: the server reads the site and then the model reads
+    // it all in one call, so there is no moment to tick the site off.
+    const sources = [opts.site, opts.wrote ? "what you wrote" : "", opts.files > 0 ? "your files" : ""].filter(
+      Boolean,
+    );
+    const read =
+      sources.length > 1 ? `${sources.slice(0, -1).join(", ")} and ${sources[sources.length - 1]}` : (sources[0] ?? "what you gave");
+    labels.push(opts.site ? `Reading ${read}: what you do and who's on the team` : `Reading ${read}`);
+  }
+  labels.push("Getting your first question ready");
+  const active = stage === "starting" ? labels.length - 1 : 0;
+  return labels.map((label, i) => ({
+    label,
+    state: i < active ? "done" : i === active ? "active" : "waiting",
+  }));
+}

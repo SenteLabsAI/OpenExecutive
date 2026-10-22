@@ -3,7 +3,14 @@
 import { useEffect, useState } from "react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { recall, remember, STORAGE_KEYS } from "@/lib/firstRun";
-import { inferredMode, siteName, understoodRole, websiteNote } from "@/lib/onboardSetup";
+import {
+  inferredMode,
+  setupSteps,
+  siteName,
+  understoodRole,
+  websiteNote,
+  type SetupStage,
+} from "@/lib/onboardSetup";
 import {
   startOnboardInterview,
   understandOnboarding,
@@ -60,7 +67,10 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
   // not the company's site.
   const [website, setWebsite] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [busy, setBusy] = useState(false);
+  // What Continue (or Skip) is doing, shown as steps under the buttons; null
+  // when idle. `read` is false for Skip, which has nothing to read.
+  const [progress, setProgress] = useState<{ stage: SetupStage; read: boolean } | null>(null);
+  const busy = progress !== null;
   const [error, setError] = useState<string | null>(null);
 
   const hasInput = text.trim().length > 0 || files.length > 0 || website.trim().length > 0;
@@ -91,7 +101,7 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
 
   async function begin(read: boolean) {
     if (busy || (read && !hasInput)) return;
-    setBusy(true);
+    setProgress({ stage: "reading", read });
     setError(null);
     try {
       let understood: OnboardUnderstanding | null = null;
@@ -99,6 +109,7 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
         // Not fatal: without it setup starts Personal and the review says so.
         understood = await understandOnboarding(text.trim(), files, website).catch(() => null);
       }
+      setProgress({ stage: "starting", read });
       const mode = await saveWorkspace(understood);
       const description = read ? text.trim() : "";
       const turn = await startOnboardInterview(description, read ? files : [], read ? website : "");
@@ -116,7 +127,7 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
       onReady({ mode, turn, turns, websiteNote: read ? websiteNote(website, pages) : null });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start setup.");
-      setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -180,7 +191,7 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
           disabled={!hasInput || busy}
           className="px-5 py-2.5 rounded-lg text-sm font-medium bg-indigo-500 hover:bg-indigo-600 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {busy ? (site ? `Reading ${site}…` : "Reading…") : "Continue"}
+          {progress?.read ? "Working…" : "Continue"}
         </button>
         <button
           type="button"
@@ -191,6 +202,36 @@ export default function OnboardDescribe({ onReady, onLater }: DescribeProps) {
           Skip, I&apos;ll answer questions instead
         </button>
       </div>
+      {progress && (
+        <ol className="mt-4 flex flex-col gap-1.5 text-sm" aria-live="polite">
+          {setupSteps(progress.stage, {
+            read: progress.read,
+            site,
+            wrote: text.trim().length > 0,
+            files: files.length,
+          }).map((step) => (
+            <li
+              key={step.label}
+              className={`flex items-center gap-2 ${step.state === "waiting" ? "text-fg-subtle" : step.state === "done" ? "text-fg-muted" : "text-fg"}`}
+            >
+              {step.state === "active" ? (
+                <span
+                  className="w-3.5 h-3.5 shrink-0 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"
+                  aria-hidden
+                />
+              ) : (
+                <span className="w-3.5 shrink-0 text-center" aria-hidden>
+                  {step.state === "done" ? "✓" : "○"}
+                </span>
+              )}
+              <span>
+                {step.label}
+                {step.state === "active" ? "…" : ""}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
       {onLater && (
         <p className="mt-10 text-sm text-fg-subtle">
           Not now?{" "}
