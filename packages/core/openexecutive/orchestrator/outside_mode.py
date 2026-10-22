@@ -10,8 +10,9 @@ stored beside it; a channel not set follows the company's level):
 - ``ask`` (Careful): any read of a connected app, an attachment, a web
   page, a synced folder or a vendor app holds the turn's writes.
 - ``outsiders`` (Balanced, the default): a read holds the turn only when the
-  check flags it or can't check it (a web search's results arrive encrypted,
-  so they are never checked). Reads whose text came from the team are not
+  check flags it. One it can't check goes on behind a notice that it is data,
+  and a web search (its results arrive encrypted, so nothing checks them or
+  carries a notice) holds nothing: the owner's call, to cut friction. Reads whose text came from the team are not
   even checked: a Gmail search's list of ids, a Gmail message Gmail
   authenticated as a teammate's (contacts are outside), and a detailed
   calendar read of events the Executive itself organized, naming only the

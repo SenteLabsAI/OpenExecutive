@@ -381,6 +381,18 @@ def test_a_web_search_in_the_same_response_holds_its_writes() -> None:
     assert "outside the team" in json.loads(_result(provider, "tu1"))["error"]
 
 
+def test_balanced_lets_a_write_beside_a_web_search_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The owner's call: a web search can't be checked (its results arrive
+    # encrypted), so under Balanced it holds nothing; mail still goes only to
+    # People at the gateway.
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.OUTSIDERS)
+    gateway = _Gateway()
+    _run([_WebResult(), ToolUseBlock("tu1", "call_tool", SEND)], gateway=gateway)
+    assert gateway.calls == [SEND]
+
+
 def test_no_contact_is_added_after_a_read(upserts: list[dict[str, Any]]) -> None:
     gateway = _Gateway()
     provider = _run(

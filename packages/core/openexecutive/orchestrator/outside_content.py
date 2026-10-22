@@ -57,9 +57,10 @@ fixed at the start of each turn (``TurnOutside.mode``), and every read is
 checked for attempts to steer the Executive (``orchestrator.content_scan``)
 whatever the level. Under Careful (``ask``) every read marks the turn. Under
 Balanced (``outsiders``) a read marks it only when the check flags it
-(``Verdict.holds``); one it couldn't check, or a web search (its results
-arrive encrypted), goes on unmarked, its result behind a notice that it is
-data (``UNCHECKED_NOTICE``). A Gmail search's list of ids, a Gmail message
+(``Verdict.holds``); one it couldn't check goes on unmarked, its result
+behind a notice that it is data (``UNCHECKED_NOTICE``), and so does a web
+search, with no notice (its results arrive encrypted inside the model's own
+response, so nothing can check them or go before them; ``mark``). A Gmail search's list of ids, a Gmail message
 Gmail authenticated as a teammate's, or a calendar read naming only the team
 is not even checked. Under Hands-off (``trust``), on the principal's own
 turn, nothing but mail from someone not in People marks it, and an attachment
