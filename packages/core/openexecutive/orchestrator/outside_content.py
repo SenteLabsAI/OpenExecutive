@@ -56,14 +56,15 @@ How much a read holds is the owner's safety level (``orchestrator.outside_mode``
 fixed at the start of each turn (``TurnOutside.mode``), and every read is
 checked for attempts to steer the Executive (``orchestrator.content_scan``)
 whatever the level. Under Careful (``ask``) every read marks the turn. Under
-Balanced (``outsiders``) a read marks it only when the check flags it or
-can't check it (``Verdict.holds``); a Gmail search's list of ids, a Gmail
-message Gmail authenticated as a teammate's, or a calendar read naming only
-the team is not even checked, and a web search (its results arrive
-encrypted) always marks. Under Hands-off (``trust``), on the principal's own
+Balanced (``outsiders``) a read marks it only when the check flags it
+(``Verdict.holds``); one it couldn't check, or a web search (its results
+arrive encrypted), goes on unmarked, its result behind a notice that it is
+data (``UNCHECKED_NOTICE``). A Gmail search's list of ids, a Gmail message
+Gmail authenticated as a teammate's, or a calendar read naming only the team
+is not even checked. Under Hands-off (``trust``), on the principal's own
 turn, nothing but mail from someone not in People marks it, and an attachment
-or synced excerpt the check didn't clear (the model read it before its check,
-so no notice could reach it first). A flagged read is
+or synced excerpt the check flagged (the model read it before its check, so
+no notice could reach it first; Balanced holds it too). A flagged read is
 remembered for the person at every level (``TurnOutside.flags``, shown under
 the web chat's reply: ``pending_flags``) and its result reaches the model
 behind a notice not to follow it (``FLAG_NOTICE``). A read whose text is in
@@ -588,7 +589,7 @@ def _apply(state: TurnOutside, source: str, verdict: Any, *, warned: bool) -> No
     """Mark the turn by the level and the verdict. ``warned``: the model
     reads the result behind a notice (``mark_read``); a queued read
     (an attachment, a synced excerpt) was in front of it before its check, so
-    under Hands-off one the check didn't clear holds the turn too."""
+    under Hands-off one the check flagged holds the turn too."""
     from openexecutive.orchestrator import outside_mode
 
     if verdict.flagged:
@@ -622,14 +623,16 @@ async def settle() -> None:
 
 
 def mark(source: str) -> None:
-    """Record that the turn in progress read outside content. No turn bound,
-    or "Don't ask" on the principal's own turn: nothing to mark."""
+    """Record that the turn in progress read outside content it can't check
+    (a web search, a read that failed). Only Careful marks the turn for it;
+    mail from someone not in People marks it at every level. No turn bound:
+    nothing to mark."""
     from openexecutive.orchestrator import outside_mode
 
     state = current()
     if state is None:
         return
-    if state.mode == outside_mode.TRUST and source != SENDER:
+    if state.mode != outside_mode.ASK and source != SENDER:
         return
     state.sources.add(source)
 
@@ -835,7 +838,8 @@ async def mark_read(source: str, tool_input: Any, result: Any, gateway: Any = No
     """Check a read whose result is in hand and mark the turn by the level
     (``_apply``): under Balanced or Hands-off, a read that is the team's own
     (``from_the_team``) is neither checked nor marked. Returns the notice to
-    put before a flagged result (``FLAG_NOTICE``), else empty."""
+    put before a flagged result (``FLAG_NOTICE``) or, below Careful, an
+    unchecked one (``UNCHECKED_NOTICE``), else empty."""
     from openexecutive.orchestrator import content_scan, outside_mode
 
     state = current()
@@ -854,7 +858,7 @@ async def mark_read(source: str, tool_input: Any, result: Any, gateway: Any = No
     _apply(state, source, verdict, warned=True)
     if verdict.flagged:
         return FLAG_NOTICE.format(what=content_scan.describe(verdict.categories))
-    if verdict.unchecked and state.mode == outside_mode.TRUST:
+    if verdict.unchecked and state.mode != outside_mode.ASK:
         return UNCHECKED_NOTICE
     return ""
 

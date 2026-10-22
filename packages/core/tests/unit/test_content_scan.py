@@ -70,7 +70,8 @@ def test_a_yes_with_no_categories_is_other(monkeypatch: pytest.MonkeyPatch) -> N
 def test_anything_but_a_clear_answer_is_unchecked(monkeypatch: pytest.MonkeyPatch, content: list[Any]) -> None:
     _answering(monkeypatch, content)
     verdict = _scan("hello")
-    assert verdict.unchecked and verdict.holds and not verdict.flagged
+    # Unchecked holds nothing below Careful: only a flag does.
+    assert verdict.unchecked and not verdict.holds and not verdict.flagged
 
 
 def test_a_failed_call_is_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
