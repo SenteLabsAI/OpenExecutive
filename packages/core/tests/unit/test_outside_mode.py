@@ -477,6 +477,22 @@ def test_only_the_file_is_checked_not_the_speakers_own_words(monkeypatch: pytest
     assert seen == [[pdf, {"type": "text", "text": ""}], [{"type": "text", "text": "[Attached: a.txt]\nhello"}]]
 
 
+def test_only_the_synced_sections_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    seen = _check_says(monkeypatch, content_scan.CLEAN)
+    ctx = (
+        "### From your company documents:\nour plan\n\n"
+        "### Synced Google Drive (unreviewed)\ndrive page\n\n"
+        "### From executive knowledge base:\nframeworks\n\n"
+        "### Synced Notion wiki (unreviewed)\nnotion page"
+    )
+    _started(Session(), user_message="hi", retrieved_context=ctx)
+    assert seen == ["### Synced Google Drive (unreviewed)\ndrive page\n\n### Synced Notion wiki (unreviewed)\nnotion page"]
+    seen.clear()
+    _started(Session(), user_message="hi", retrieved_context="### From your company documents:\nour plan")
+    assert seen == []
+
+
 def test_the_retriever_queues_what_it_read_from_a_synced_folder(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
     seen = _check_says(monkeypatch, FLAGGED)

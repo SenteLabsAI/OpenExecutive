@@ -131,6 +131,21 @@ SYNCED_HEADINGS: tuple[str, ...] = (
     "### Synced Confluence wiki",
 )
 
+def synced_sections(retrieved_context: str) -> str:
+    """The synced folders' sections of a turn's retrieved context (each from
+    its ``SYNCED_HEADINGS`` line to the next ``### `` heading): what is
+    checked, never the company's own documents or the built-in knowledge
+    beside them."""
+    kept: list[str] = []
+    keeping = False
+    for line in (retrieved_context or "").splitlines():
+        if line.startswith("### "):
+            keeping = line.startswith(SYNCED_HEADINGS)
+        if keeping:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
 # The person's next message saying go to what a turn held (``begin_turn``):
 # the whole message is a short yes ("ok", "yes please", "go ahead"), or it
 # opens with go / do it / go ahead / proceed as its own sentence or clause
@@ -266,8 +281,9 @@ def begin_turn(
     if attachment_blocks or marked:
         excerpt = (user_message or "")[marked.start():] if marked else ""
         _queue(state, ATTACHMENT, [*(attachment_blocks or []), {"type": "text", "text": excerpt}])
-    if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS):
-        _queue(state, SYNCED, retrieved_context)
+    synced = synced_sections(retrieved_context)
+    if synced:
+        _queue(state, SYNCED, synced)
     key = _held_key(session, state)
     if key:
         stored = _HELD.pop(key, None)
