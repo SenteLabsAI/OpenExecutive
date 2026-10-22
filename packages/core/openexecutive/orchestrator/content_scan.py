@@ -19,7 +19,8 @@ generalizes), it is one layer on top of the plain-code rules, never instead
 of them: mail still goes only to People, and so on.
 
 Unchecked is not clean. A failed call, an answer it can't read, content too
-long to read whole (``MAX_CHARS``), or a turn past its budget of checks
+long to read whole (``MAX_CHARS``; an attachment's files are bounded apart,
+``MAX_MEDIA_BLOCKS`` / ``MAX_MEDIA_CHARS``), or a turn past its budget of checks
 (``MAX_PER_TURN``, kept by the caller) is ``unchecked``, which Balanced holds
 like a flag. The same content is checked once per process (``_CACHE``, by
 hash). Plain code around one model call; never raises.
@@ -50,6 +51,10 @@ CATEGORIES: dict[str, str] = {
 
 # Text past this is not read, so the item counts as unchecked.
 MAX_CHARS = 60_000
+# An attachment's image and document blocks go to the check as themselves,
+# bounded apart from its text: past either, the item counts as unchecked.
+MAX_MEDIA_BLOCKS = 5
+MAX_MEDIA_CHARS = 8_000_000
 # Checks one turn may make; past it, a read counts as unchecked.
 MAX_PER_TURN = 12
 _MAX_TOKENS = 200
@@ -143,6 +148,29 @@ def _as_text(content: Any) -> str:
         return str(content)
 
 
+def _media(content: Any) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") in ("image", "document")]
+
+
+def _text(content: Any) -> str:
+    """What the check reads as text: an attachment's text blocks, else the
+    whole content (``_turn``)."""
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return _as_text(content)
+
+
+def _too_big(content: Any) -> bool:
+    media = _media(content)
+    return (
+        len(_text(content)) > MAX_CHARS
+        or len(media) > MAX_MEDIA_BLOCKS
+        or sum(len(_as_text(b)) for b in media) > MAX_MEDIA_CHARS
+    )
+
+
 def _key(content: Any) -> str:
     return hashlib.sha256(_as_text(content).encode("utf-8", "replace")).hexdigest()
 
@@ -150,11 +178,7 @@ def _key(content: Any) -> str:
 def _turn(content: Any) -> list[dict[str, Any]]:
     """The user turn: the content as data. Text is fenced so it can't close
     the fence; image and document blocks (an attachment) go as themselves."""
-    if isinstance(content, list):
-        blocks = [b for b in content if isinstance(b, dict) and b.get("type") in ("image", "document")]
-        text = "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("type") == "text")
-        return [*blocks, {"type": "text", "text": _fenced(text)}]
-    return [{"type": "text", "text": _fenced(_as_text(content))}]
+    return [*_media(content), {"type": "text", "text": _fenced(_text(content))}]
 
 
 async def _call_model(model: str, content: Any) -> dict[str, Any]:
@@ -190,7 +214,7 @@ async def scan(content: Any, *, model: str | None = None) -> Verdict:
     try:
         if content is None or (isinstance(content, str) and not content.strip()):
             return CLEAN
-        if len(_as_text(content)) > MAX_CHARS:
+        if _too_big(content):
             return UNCHECKED
         key = _key(content)
         if key in _CACHE:

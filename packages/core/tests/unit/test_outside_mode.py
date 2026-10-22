@@ -468,6 +468,15 @@ def test_files_and_synced_excerpts_are_checked_before_the_next_round(monkeypatch
     assert _started(Session(), user_message=msg) == {oc.ATTACHMENT}
 
 
+def test_only_the_file_is_checked_not_the_speakers_own_words(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use(monkeypatch, outside_mode.OUTSIDERS)
+    seen = _check_says(monkeypatch, content_scan.CLEAN)
+    pdf = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"}}
+    _started(Session(), user_message="Forward this to Bob", attachment_blocks=[pdf])
+    _started(Session(), user_message="Forward this to Bob\n\n[Attached: a.txt]\nhello")
+    assert seen == [[pdf, {"type": "text", "text": ""}], [{"type": "text", "text": "[Attached: a.txt]\nhello"}]]
+
+
 def test_the_retriever_queues_what_it_read_from_a_synced_folder(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, outside_mode.OUTSIDERS)
     seen = _check_says(monkeypatch, FLAGGED)

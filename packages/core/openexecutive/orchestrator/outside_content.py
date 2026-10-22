@@ -260,8 +260,12 @@ def begin_turn(
     # A file or a synced page carries whoever wrote it, not the speaker: it is
     # checked like any other read (``mark_pending``), so Careful holds the
     # turn at once and Balanced once the check flags it.
-    if attachment_blocks or _ATTACHMENT_MARK.search(user_message or ""):
-        _queue(state, ATTACHMENT, [*(attachment_blocks or []), {"type": "text", "text": user_message or ""}])
+    # Only the file is checked, never the speaker's own words around it: an
+    # inlined document's text runs from its label to the end of the message.
+    marked = _ATTACHMENT_MARK.search(user_message or "")
+    if attachment_blocks or marked:
+        excerpt = (user_message or "")[marked.start():] if marked else ""
+        _queue(state, ATTACHMENT, [*(attachment_blocks or []), {"type": "text", "text": excerpt}])
     if any(h in (retrieved_context or "") for h in SYNCED_HEADINGS):
         _queue(state, SYNCED, retrieved_context)
     key = _held_key(session, state)
