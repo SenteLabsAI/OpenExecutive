@@ -320,6 +320,7 @@ async def _open_mailbox(writer: _Writer) -> str | None:
     from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
 
     writer.pinned.touched_mail = writer.pinned.read_mail = True
+    writer.pinned.mail_vetted = False  # re-vetted only by the loop's check_mail_read
     if not _keep_conversation_private(writer):
         return _error("I couldn't keep this conversation private, so I didn't open your mailbox. Try again.")
     status = await gmail_status(writer.email, gmail=writer.mailbox)

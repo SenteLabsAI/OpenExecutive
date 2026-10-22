@@ -377,6 +377,7 @@ async def _open_creators_mailbox(writer: Any) -> str | None:
     from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
 
     writer.pinned.touched_mail = writer.pinned.read_mail = True
+    writer.pinned.mail_vetted = False  # re-vetted only by the loop's check_mail_read
     status = await gmail_status(writer.email, gmail=writer.mailbox)
     if status != "connected":
         return _error(STATUS_MESSAGES[status], status=status)

@@ -787,3 +787,25 @@ def test_check_mail_read_records_the_flag_for_the_person(monkeypatch: pytest.Mon
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)
+
+
+def test_a_mail_read_the_loop_did_not_check_puts_the_hold_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Balanced, mail already checked clean; a script's call_tool then reads
+    # mail (or notes) again, which the loop never checks: the hold is back.
+    from types import SimpleNamespace
+
+    from openexecutive.memory import session_store
+    from openexecutive.orchestrator import content_trust, history_tools, outside_content
+
+    monkeypatch.setattr(content_trust, "principal_only_withheld", lambda session: frozenset())
+    monkeypatch.setattr(session_store, "mark_mail_private", lambda *a, **k: "p1")
+    session, token, state = _pinned_turn("outsiders", mail_vetted=True)
+    try:
+        pinned = session.turn_delegation  # type: ignore[attr-defined]
+        assert not lockdown.mail_lock_holds(pinned)
+        history_tools._keep_private(session, SimpleNamespace(id="p1"))
+        assert lockdown.mail_lock_holds(pinned)
+        assert lockdown.outside_reach_refusal("read_document") is not None
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
