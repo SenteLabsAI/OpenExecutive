@@ -241,10 +241,14 @@ async def scan(content: Any, *, model: str | None = None) -> Verdict:
         payload = await _call_model(model or scan_model(), content)
     except Exception as exc:
         # The provider refusing the content itself (a 4xx on its blocks) is
-        # content that switches the check off, so it holds like content too
-        # big to check; an outage or rate limit is only unchecked.
+        # content that switches the check off, and a check that can't sign
+        # in (401/403) is a check switched off for good: both hold like
+        # content too big to check. An outage or rate limit is only unchecked.
         status = getattr(exc, "status_code", None)
-        if isinstance(status, int) and 400 <= status < 500 and status not in (401, 403, 408, 409, 429):
+        if status in (401, 403):
+            logger.error("content_scan: the check can't sign in (%s) — holding every read until it can", status)
+            return TOO_BIG
+        if isinstance(status, int) and 400 <= status < 500 and status not in (408, 409, 429):
             logger.warning("content_scan: the provider refused the content (%s) — holding it", status)
             return TOO_BIG
         logger.warning("content_scan: the check failed — counting the content as unchecked", exc_info=True)

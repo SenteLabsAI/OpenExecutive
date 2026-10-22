@@ -85,6 +85,7 @@ def test_a_failed_call_is_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(("status", "verdict"), [
     (400, content_scan.TOO_BIG), (413, content_scan.TOO_BIG),
+    (401, content_scan.TOO_BIG), (403, content_scan.TOO_BIG),
     (429, content_scan.UNCHECKED), (500, content_scan.UNCHECKED), (None, content_scan.UNCHECKED),
 ])
 def test_content_the_provider_refuses_holds_but_an_outage_does_not(
