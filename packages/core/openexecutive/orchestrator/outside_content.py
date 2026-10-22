@@ -869,9 +869,11 @@ def trusted_turn() -> bool:
 
 
 def read_outside() -> bool:
-    """Whether the turn in progress has read outside content."""
+    """Whether the turn in progress has read outside content. A read still
+    waiting for its check (``mark_pending``) counts until ``settle`` clears
+    it, so a write later in the same round is held, never let through."""
     state = current()
-    return state is not None and state.read
+    return state is not None and (state.read or bool(state.pending))
 
 
 def note_added_person(person_id: int, person: Any = None) -> None:
