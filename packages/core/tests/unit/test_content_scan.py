@@ -83,6 +83,24 @@ def test_a_failed_call_is_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _scan("hello") == content_scan.UNCHECKED
 
 
+@pytest.mark.parametrize(("status", "verdict"), [
+    (400, content_scan.TOO_BIG), (413, content_scan.TOO_BIG),
+    (429, content_scan.UNCHECKED), (500, content_scan.UNCHECKED), (None, content_scan.UNCHECKED),
+])
+def test_content_the_provider_refuses_holds_but_an_outage_does_not(
+    monkeypatch: pytest.MonkeyPatch, status: int | None, verdict: content_scan.Verdict,
+) -> None:
+    class Refused(Exception):
+        status_code = status
+
+    class Provider:
+        async def messages_create(self, **kwargs: Any) -> Any:
+            raise Refused("no")
+
+    monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: Provider())
+    assert _scan("hello") == verdict
+
+
 def test_too_long_to_read_whole_is_unchecked_without_a_call(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _answering(monkeypatch, [_tool({"steers_assistant": False})])
     assert _scan("x" * (content_scan.MAX_CHARS + 1)) == content_scan.TOO_BIG

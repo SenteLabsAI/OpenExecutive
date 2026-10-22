@@ -233,7 +233,14 @@ async def scan(content: Any, *, model: str | None = None) -> Verdict:
             _CACHE.move_to_end(key)
             return _CACHE[key]
         payload = await _call_model(model or scan_model(), content)
-    except Exception:
+    except Exception as exc:
+        # The provider refusing the content itself (a 4xx on its blocks) is
+        # content that switches the check off, so it holds like content too
+        # big to check; an outage or rate limit is only unchecked.
+        status = getattr(exc, "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500 and status not in (401, 403, 408, 409, 429):
+            logger.warning("content_scan: the provider refused the content (%s) — holding it", status)
+            return TOO_BIG
         logger.warning("content_scan: the check failed — counting the content as unchecked", exc_info=True)
         return UNCHECKED
     steers = payload.get("steers_assistant")
