@@ -968,7 +968,11 @@ def _capture_dms(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         sent.append(payload)
         return "{}"
 
+    async def _message(**kw: str) -> str:
+        return f"About {kw['title']}: {kw['artifact']}"
+
     monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", _send)
+    monkeypatch.setattr("openexecutive.workflows.run_message.message_for_run", _message)
     return sent
 
 
@@ -981,7 +985,8 @@ def test_resumed_scheduled_run_dms_its_artifact(monkeypatch: pytest.MonkeyPatch)
     _resolved(resume_state=_scheduled_resume_state())
     _install_stub(monkeypatch, _real_workflow())
     assert asyncio.run(_process_resumable(datetime.now(UTC))) == 1
-    assert sent == [{"person_id": 11, "text": "# Final artifact"}]
+    assert len(sent) == 1 and sent[0]["person_id"] == 11
+    assert sent[0]["text"].endswith(": # Final artifact")
 
     # A run with no scheduled recipient delivers nothing.
     sent.clear()

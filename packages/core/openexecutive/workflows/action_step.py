@@ -121,11 +121,14 @@ def _user_turn(
 ) -> str:
     from openexecutive.memory.workspace_settings import get_user_timezone
 
+    tz = get_user_timezone()
     parts = [
         f"Workflow: {workflow_title}",
         f"Step: {step.title}",
         f"Today: {datetime.now(UTC).date().isoformat()} (UTC). "
-        f"The user's timezone: {get_user_timezone().key}.",
+        f"The user's timezone: {tz.key}. Now there: "
+        f"{datetime.now(tz).strftime('%a %Y-%m-%d %H:%M')}. In your report, "
+        "give times in their timezone, never UTC.",
         "",
         "Goal:",
         goal.strip(),
@@ -928,7 +931,7 @@ async def run_held_calls(
         _audit(
             workflow_name, step.id, call.tool, f"held → {outcome}", _target_digest(call.arguments)
         )
-        lines.append(f"- `{call.tool}` → {where} — {outcome}")
+        lines.append(f"- {plain_tool_name(call.tool)} → {where} — {outcome}")
     return "\n".join(lines)
 
 
@@ -949,13 +952,41 @@ def held_question(workflow_title: str, held: list[HeldCall]) -> str:
     ]
     for call in held:
         where = ", ".join(describe_target(k, v) for k, v in call.targets) or "a new target"
-        lines.append(f"- {where} (via {call.tool})")
+        lines.append(f"- {where} (via {plain_tool_name(call.tool)})")
     lines.append(
         "Reply yes to allow all of the above — they run now, and future runs "
         "can write to these with any of this workflow's tools without asking — "
         "or no to skip them."
     )
     return "\n".join(lines)
+
+
+# The words a server prefix reads as: "google_workspace" is "Google
+# Workspace", not "Google workspace".
+_ACRONYMS = frozenset({"api", "crm", "csv", "hr", "mcp", "pdf", "url"})
+
+
+def _words(name: str) -> str:
+    return " ".join(name.replace("-", "_").split("_")).strip()
+
+
+def plain_tool_name(name: str) -> str:
+    """A tool's name in plain words for the person reading a run: an app's
+    tool reads "Google Workspace: get events", a built-in one "Send telegram
+    message", never ``google_workspace__get_events``."""
+    from openexecutive.workflows.tool_catalog import BUILTIN_PREFIX
+
+    if name.startswith(BUILTIN_PREFIX):
+        return _words(name[len(BUILTIN_PREFIX):]).capitalize()
+    if name == step_script.RUN_SCRIPT_TOOL:
+        return "Script"
+    server, sep, tool = name.partition("__")
+    if not sep:
+        return _words(name).capitalize()
+    app = " ".join(
+        w.upper() if w.lower() in _ACRONYMS else w.capitalize() for w in _words(server).split()
+    )
+    return f"{app}: {_words(tool)}"
 
 
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:
@@ -967,7 +998,7 @@ def _format_output(report: str, actions: list[tuple[str, str]]) -> str:
         for action in actions:
             counts[action] = counts.get(action, 0) + 1
         lines += [
-            f"- `{name}` — {outcome}" + (f" (×{n})" if n > 1 else "")
+            f"- {plain_tool_name(name)} — {outcome}" + (f" (×{n})" if n > 1 else "")
             for (name, outcome), n in counts.items()
         ]
     else:

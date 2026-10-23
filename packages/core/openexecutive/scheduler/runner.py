@@ -2518,8 +2518,17 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
                     from openexecutive.orchestrator.schedule_tools import (
                         handle_message_person,
                     )
+                    from openexecutive.workflows.run_message import message_for_run
 
-                    await handle_message_person({"person_id": deliver_to, "text": artifact})
+                    # A few plain lines for the reader, or none when the run
+                    # had nothing for them; the full report stays on its page.
+                    message = await message_for_run(
+                        title=getattr(defn, "title", "") or name,
+                        description=getattr(defn, "description", "") or "",
+                        artifact=artifact, person_id=deliver_to,
+                    )
+                    if message:
+                        await handle_message_person({"person_id": deliver_to, "text": message})
                 except Exception:
                     logger.exception(
                         "scheduler: dynamic_workflow %r artifact delivery failed "

@@ -145,7 +145,7 @@ async def test_happy_path_calls_tools_and_reports(
     assert [k for k, _ in out] == ["progress", "progress", "output"]
     report = out[-1][1]
     assert report.startswith("Added 1 bill (Acme, $10) to Bill tracker.")
-    assert f"`{READ}` — ok" in report and f"`{APPEND}` — ok" in report
+    assert "- Sheets: read values — ok" in report and "- Sheets: append rows — ok" in report
     assert [c["name"] for c in gateway.calls] == [READ, APPEND]
     assert gateway.calls[1]["arguments"] == {"rows": [["Acme", "10"]]}
 
@@ -196,7 +196,7 @@ async def test_tool_outside_the_allowlist_is_refused(
     assert gateway.calls == []  # never reached the gateway
     result = provider.calls[1]["messages"][-1]["content"][0]
     assert result["is_error"] is True and "not one of this step's tools" in result["content"]
-    assert "`gmail__send_message` — refused: not allowed" in out[-1][1]
+    assert "- Gmail: send message — refused: not allowed" in out[-1][1]
     assert audit[0]["details"]["outcome"] == "refused: not allowed"
 
 
@@ -234,7 +234,7 @@ async def test_tool_errors_go_back_to_the_model(
     _install(monkeypatch, provider)
     out = await _run(_step())
     assert provider.calls[1]["messages"][-1]["content"][0]["is_error"] is True
-    assert f"`{APPEND}` — error" in out[-1][1]
+    assert "- Sheets: append rows — error" in out[-1][1]
 
 
 @pytest.mark.asyncio
@@ -372,7 +372,7 @@ async def test_workflow_with_action_step_produces_an_artifact(
     progress = next(e for e in events if e.type == "progress")
     assert progress.step_id == "file_bills" and APPEND in (progress.summary or "")
     artifact = next(e for e in events if e.type == "artifact").content or ""
-    assert "Filed 1 bill." in artifact and f"`{APPEND}` — ok" in artifact
+    assert "Filed 1 bill." in artifact and "Sheets: append rows — ok" in artifact
 
 
 @pytest.mark.asyncio

@@ -244,10 +244,11 @@ async def test_a_slow_rewrite_keeps_the_first_draft_fixed_in_code(
 async def test_an_empty_rewrite_keeps_the_first_draft_fixed_in_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    text, provider = await _synth(monkeypatch, ["**Pat Owner is waiting on the offer.**", "  "])
+    text, provider = await _synth(monkeypatch, ["**Pat Owner is waiting on the offer.**", "  ", ""])
 
     assert text == "**You are waiting on the offer.**"
-    assert len(provider.calls) == 2
+    # The empty rewrite is asked for once more with more room, then given up on.
+    assert len(provider.calls) == 3
 
 
 def test_the_executive_as_a_noun_phrase_is_left_alone() -> None:

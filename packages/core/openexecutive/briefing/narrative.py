@@ -370,6 +370,51 @@ def brief_model() -> str:
     return get_settings().default_model
 
 
+# Room for the model's own thinking as well as the brief. The 5.5 models think
+# unless told not to, some can't be told, and thinking counts against
+# max_tokens: at 600 a brief came back empty (and was sent as the quiet-day
+# line) or cut off. The prompts set how long a brief is, not this cap.
+BRIEF_MAX_TOKENS = 4000
+
+
+class BriefNotWritten(RuntimeError):
+    """The model ran out of room or wrote nothing: there is no brief to send.
+    Never a quiet day: the prompts say that in words."""
+
+
+async def create_brief_text(
+    model: str,
+    *,
+    system: str,
+    messages: list[dict[str, Any]],
+    actor: str,
+) -> str:
+    """One brief written by ``model``, as text. A response cut off at
+    max_tokens, or with no text, is asked for once more with twice the room;
+    after that it raises :class:`BriefNotWritten` rather than hand back a
+    half brief or an empty one."""
+    from openexecutive.audit.usage import log_model_usage
+    from openexecutive.providers import get_provider
+
+    for max_tokens in (BRIEF_MAX_TOKENS, 2 * BRIEF_MAX_TOKENS):
+        response = await get_provider(model).messages_create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+        )
+        log_model_usage(response, model=model, actor=actor)
+        text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
+        text = text_blocks[0].text.strip() if text_blocks else ""
+        if text and getattr(response, "stop_reason", None) != "max_tokens":
+            return text
+        logger.warning(
+            "%s: %s came back %s at max_tokens=%d",
+            actor, model, "cut off" if text else "empty", max_tokens,
+        )
+    raise BriefNotWritten(f"{model} wrote no complete brief")
+
+
 def _due_label(item: dict[str, Any]) -> str:
     """"OVERDUE (was due 2026-09-23)" / "due today (2026-09-25)" /
     "due Mon 2026-09-28" for one DUE THIS WEEK row."""
@@ -741,7 +786,9 @@ async def synthesize_briefing_narrative(
     reflection_flags: str = "",
     reader: Reader | None = None,
 ) -> str:
-    """Synthesize the briefing narrative. Returns Markdown, or "" when empty.
+    """Synthesize the briefing narrative as Markdown. Raises
+    :class:`BriefNotWritten` when the model writes none (an empty draft is
+    never a quiet day: the prompts have the quiet line for that).
 
     ``reader`` is who it is written for (``briefing.reader``). A draft that
     still names them (their name, an address, "the reader", "the principal")
@@ -768,9 +815,6 @@ async def synthesize_briefing_narrative(
     provider failure so the caller can decide how to surface it (the morning-
     brief workflow yields an error event; the page regen logs and moves on).
     """
-    from openexecutive.audit.usage import log_model_usage
-    from openexecutive.providers import get_provider
-
     solo = mode == "solo"
     if standalone:
         system = STANDALONE_BRIEF_SOLO_SYSTEM if solo else STANDALONE_BRIEF_SYSTEM
@@ -801,30 +845,24 @@ async def synthesize_briefing_narrative(
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
     text = ""
     for attempt in range(2):
-        call = get_provider(model).messages_create(
-            model=model,
-            max_tokens=600,
-            system=system,
-            messages=messages,
+        call = create_brief_text(
+            model, system=system, messages=messages, actor="briefing_narrative",
         )
         if attempt == 0:
-            response = await call
+            text = await call
         else:
-            # The rewrite has its own short budget: a slow one keeps the
-            # first draft, fixed in code, instead of losing the whole header.
+            # The rewrite has its own short budget: a slow or unwritten one
+            # keeps the first draft, fixed in code, instead of losing the
+            # whole header.
             try:
-                response = await asyncio.wait_for(call, timeout=REWRITE_TIMEOUT_S)
+                draft = await asyncio.wait_for(call, timeout=REWRITE_TIMEOUT_S)
             except TimeoutError:
                 logger.warning("briefing_narrative: rewrite timed out; fixed in code")
                 return fix_slips(text, reader)
-        log_model_usage(response, model=model, actor="briefing_narrative")
-        text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
-        draft = text_blocks[0].text.strip() if text_blocks else ""
-        if attempt == 1 and not draft:
-            # An empty rewrite keeps the first draft, fixed in code.
-            logger.warning("briefing_narrative: rewrite came back empty; fixed in code")
-            return fix_slips(text, reader)
-        text = draft
+            except BriefNotWritten:
+                logger.warning("briefing_narrative: rewrite came back empty; fixed in code")
+                return fix_slips(text, reader)
+            text = draft
         named = slips(text, reader)
         echoed = own_echoes(text)
         if attempt == 1 and echoed:
@@ -889,6 +927,8 @@ __all__ = [
     "GROUNDING_RULE",
     "NOTHING_NEW",
     "BRIEFING_NARRATIVE_SYSTEM",
+    "BRIEF_MAX_TOKENS",
+    "BriefNotWritten",
     "DATES_RULE",
     "OWN_MESSAGES_RULE",
     "QUIET_PRINCIPAL",
@@ -899,6 +939,7 @@ __all__ = [
     "STANDALONE_BRIEF_SOLO_SYSTEM",
     "STANDALONE_BRIEF_SYSTEM",
     "brief_model",
+    "create_brief_text",
     "render_briefing_context",
     "synthesize_briefing_narrative",
 ]

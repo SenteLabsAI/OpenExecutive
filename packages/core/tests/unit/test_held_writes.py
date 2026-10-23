@@ -323,7 +323,7 @@ def test_run_pauses_after_the_step_and_asks_the_owner(
     pause = events[-1]
     assert isinstance(pause, WaitForHumanEvent)
     assert pause.person_id == 7 and pause.on_timeout == "auto_proceed"
-    assert OTHER in pause.question and APPEND in pause.question
+    assert OTHER in pause.question and "Sheets: append rows" in pause.question
     state = pause.resume_state
     assert state is not None and state.kind == "held_writes"
     assert state.gate_step_id == "file_bills" and state.gate_step_index == 0
@@ -382,7 +382,7 @@ def test_approve_runs_exactly_the_held_call_and_remembers_it(
         {"name": APPEND, "arguments": {"spreadsheet_id": OTHER, "rows": [["x"]]}}
     ]
     artifact = next(e for e in events if e.type == "artifact").content or ""
-    assert f'`{APPEND}` → spreadsheet_id "{OTHER}" — done' in artifact
+    assert f'Sheets: append rows → spreadsheet_id "{OTHER}" — done' in artifact
     assert OTHER in at.approved_values("file_bills_wf")
     # The next run writes there without asking.
     _install(monkeypatch, _ScriptedProvider(
@@ -657,9 +657,21 @@ def test_resumer_delivers_a_scheduled_runs_artifact(monkeypatch: pytest.MonkeyPa
         sent.append(payload)
         return "{}"
 
+    written: list[dict[str, Any]] = []
+
+    async def _message(**kw: Any) -> str:
+        written.append(kw)
+        return "" if kw["artifact"] == "# Nothing found" else "Filed 2 bills."
+
     monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", _send)
-    asyncio.run(resumer._deliver_artifact("run-1", 11, "# Report"))
-    assert sent == [{"person_id": 11, "text": "# Report"}]
+    monkeypatch.setattr("openexecutive.workflows.run_message.message_for_run", _message)
+    monkeypatch.setattr("openexecutive.workflows.dynamic_store.get_definition", lambda name: None)
+    asyncio.run(resumer._deliver_artifact("run-1", "file_bills", 11, "# Report"))
+    # What the run came to, not its full report; nothing when it had nothing.
+    assert sent == [{"person_id": 11, "text": "Filed 2 bills."}]
+    assert written[0]["title"] == "file_bills" and written[0]["artifact"] == "# Report"
+    asyncio.run(resumer._deliver_artifact("run-2", "file_bills", 11, "# Nothing found"))
+    assert len(sent) == 1
 
 
 def test_held_call_model_round_trips_through_resume_json() -> None:

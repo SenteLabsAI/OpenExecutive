@@ -303,6 +303,11 @@ def test_a_scheduled_run_is_the_creators_and_reports_to_them(people, monkeypatch
         return "{}"
 
     monkeypatch.setattr("openexecutive.orchestrator.schedule_tools.handle_message_person", dm)
+
+    async def message(**kw: Any) -> str:
+        return kw["artifact"]
+
+    monkeypatch.setattr("openexecutive.workflows.run_message.message_for_run", message)
     action = SimpleNamespace(id=3, channel_ref="inbox_digest", assigned_to_person_id=teammate, scope_key=None)
 
     asyncio.run(runner._run_dynamic_workflow(action, now=__import__("datetime").datetime.now()))  # type: ignore[arg-type]
