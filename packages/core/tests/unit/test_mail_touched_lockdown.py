@@ -1009,3 +1009,13 @@ def test_a_misnumbered_search_flag_flags_the_whole_list(monkeypatch: pytest.Monk
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)
+
+
+@pytest.mark.parametrize("subject", ["Re: Pilot", "FW: Pilot", "Fwd: Pilot", "AW: Pilot", "Enc: Pilot", "I: Pilot",
+                                     "Doorst: Pilot", "RE[2]: Pilot"])
+def test_a_reply_or_forward_subject_is_someone_elses(subject: str) -> None:
+    from openexecutive.orchestrator import outside_content
+
+    assert outside_content._CARRIED_SUBJECT.match(subject)
+    assert not outside_content._CARRIED_SUBJECT.match("Index: Pilot")
+    assert not outside_content._CARRIED_SUBJECT.match("For Pat: offers")
