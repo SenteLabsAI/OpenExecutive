@@ -822,7 +822,9 @@ def test_a_search_leaves_out_only_the_flagged_thread(
 
     async def says_of_list(entries: list[Any], *, model: str | None = None) -> Any:
         seen.append(entries)
-        return content_scan.Verdict(flagged=True, categories=("forward_or_share",), items=(2,))
+        if any("evil" in str(e.get("subject")) for e in entries):
+            return content_scan.Verdict(flagged=True, categories=("forward_or_share",), items=(2,))
+        return content_scan.CLEAN
 
     _level(monkeypatch, mode, content_scan.CLEAN)
     logged: list[tuple[str, str, dict[str, Any]]] = []
@@ -835,8 +837,10 @@ def test_a_search_leaves_out_only_the_flagged_thread(
     try:
         pinned = session.turn_delegation  # type: ignore[attr-defined]
         result, notice = asyncio.run(outside_content.check_mail_read(pinned, SEARCH))
-        # Each thread went to the check as its own entry.
+        # Each thread went to the check as its own entry, and what was left
+        # was checked again.
         assert [e["thread_id"] for e in seen[0]] == ["t1", "t2"]
+        assert len(seen) == 2 and seen[1][1]["subject"] == "(left out)"
         threads = json.loads(result)["threads"]
         assert threads[0]["subject"] == "Final offers"
         assert threads[1] == {"thread_id": "t2", "subject": "(left out)", "from": "eve@evil.example", "date": "Oct 22"}
@@ -910,6 +914,32 @@ def test_posts_to_everyone_stay_held_whatever_the_lockdown_allows(
         assert lockdown.mail_lock_holds(session.turn_delegation)  # type: ignore[attr-defined]
         for tool in lockdown.MAIL_PRIVATE_WITHHELD_TOOLS:
             assert lockdown.mail_turn_withholds(tool, {}), tool
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
+
+
+def test_a_misnumbered_search_flag_flags_the_whole_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The check names thread 1 but the text is in thread 2: the second check
+    # still flags what is left, so nothing is let through.
+    from openexecutive.orchestrator import content_scan, content_trust, outside_content
+
+    monkeypatch.setattr(content_trust, "principal_only_withheld", lambda session: frozenset())
+
+    async def misnumbers(entries: list[Any], *, model: str | None = None) -> Any:
+        if any("evil" in str(e.get("subject")) for e in entries):
+            return content_scan.Verdict(flagged=True, categories=("forward_or_share",), items=(1,))
+        return content_scan.CLEAN
+
+    _level(monkeypatch, "outsiders", content_scan.CLEAN)
+    monkeypatch.setattr(content_scan, "scan_list", misnumbers)
+    session, token, state = _pinned_turn("outsiders")
+    try:
+        pinned = session.turn_delegation  # type: ignore[attr-defined]
+        result, notice = asyncio.run(outside_content.check_mail_read(pinned, SEARCH))
+        assert result == SEARCH
+        assert notice.startswith("[Safety check: this content looks like")
+        assert pinned.mail_held
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)

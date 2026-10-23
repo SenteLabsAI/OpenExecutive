@@ -951,7 +951,8 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
     A search's list of threads is checked entry by entry
     (``content_scan.scan_list``): a flagged entry's subject and sender name
     are taken out, so the model never reads them, and the rest of the list
-    passes as clean. Returns the result to give the model and the notice to
+    passes once a second check finds it clean; otherwise the whole list is
+    flagged. Returns the result to give the model and the notice to
     put before it, as ``mark_read`` does."""
     from openexecutive.orchestrator import content_scan, outside_mode
 
@@ -969,16 +970,26 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
     if verdict.flagged and verdict.items and listed is not None:
         parsed, key = listed
         entries = parsed[key]
-        for n in verdict.items:
-            entry = entries[n - 1]
-            _flag(state, MAIL, tuple(verdict.categories), _mail_label(entry))
-            entries[n - 1] = {
+        trimmed = [
+            {
                 **entry,
                 **{f: (_sender_address(entry.get(f)) if f == "from" else _LEFT_OUT) for f in _ENTRY_TEXT if f in entry},
-            }
-        if state.mode == outside_mode.ASK:
-            pinned.mail_held = True
-        return json.dumps(parsed), LEFT_OUT_NOTICE.format(count=len(verdict.items))
+            } if n in verdict.items else entry
+            for n, entry in enumerate(entries, 1)
+        ]
+        # What is left is checked again, so an answer that named the wrong
+        # entry can't let the real one through: anything but clean flags the
+        # whole list, as before.
+        try:
+            again = await _check_list(state, trimmed)
+        except Exception:
+            again = content_scan.UNCHECKED
+        if not again.flagged and not again.unchecked:
+            for n in verdict.items:
+                _flag(state, MAIL, tuple(verdict.categories), _mail_label(entries[n - 1]))
+            if state.mode == outside_mode.ASK:
+                pinned.mail_held = True
+            return json.dumps({**parsed, key: trimmed}), LEFT_OUT_NOTICE.format(count=len(verdict.items))
     if verdict.flagged:
         _flag(state, MAIL, tuple(verdict.categories), _mail_label(_parsed(result)))
     if state.mode == outside_mode.ASK or (state.mode == outside_mode.OUTSIDERS and verdict.holds):
