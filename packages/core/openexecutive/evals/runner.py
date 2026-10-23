@@ -181,8 +181,9 @@ def _make_run_one(
         return _make_inbox_runner(sem, queue, passed, total, cancel_event)
     if kind == "workflow":
         return _make_workflow_runner(store, sem, queue, passed, total, cancel_event)
-    # chat (default) and mcp both go through Executive.chat
-    return _make_chat_runner(sem, queue, passed, total, cancel_event)
+    # chat (default) and mcp both go through Executive.chat; mcp with the
+    # API's running gateway, so its scenarios can reach their tools.
+    return _make_chat_runner(sem, queue, passed, total, cancel_event, with_mcp=kind == "mcp")
 
 
 def _is_canceled(cancel_event: asyncio.Event | None) -> bool:
@@ -467,21 +468,47 @@ def _make_workflow_runner(
     return run_one
 
 
+# Why an mcp scenario fails when the API has no running gateway (no
+# mcp_servers.json, or it failed to start): judged without tools, it would
+# measure nothing.
+NO_MCP_GATEWAY = "no MCP gateway is running, so this mcp scenario can't reach its tools"
+
+
 def _make_chat_runner(
     sem: asyncio.Semaphore,
     queue: asyncio.Queue[dict[str, Any] | None],
     passed: list[int],
     total: int,
     cancel_event: asyncio.Event | None,
+    *,
+    with_mcp: bool = False,
 ) -> RunOne:
     from openexecutive.memory.company_profile import CompanyProfile
     from openexecutive.orchestrator.debug_events import DebugCollector
     from openexecutive.orchestrator.executive import Executive
+    from openexecutive.orchestrator.mcp_gateway import get_active_gateway
     from openexecutive.orchestrator.session import Session
 
     # Shared Executive — confirmed safe: no mutable instance state on the
     # hot path; chat()/stream_chat() route all per-call state through Session.
-    executive = Executive()
+    # An mcp scenario needs the gateway: without one the Executive offers no
+    # MCP tools, and the scenario would be judged on a turn that can't reach
+    # them. The gateway is read again for each scenario, so a long run follows
+    # a gateway the API replaced, and a scenario with none fails instead.
+    current_gateway = get_active_gateway() if with_mcp else None
+    executive = Executive(mcp_gateway=current_gateway)
+
+    def executive_for_scenario() -> Executive:
+        nonlocal current_gateway, executive
+        if not with_mcp:
+            return executive
+        gateway = get_active_gateway()
+        if gateway is None:
+            raise RuntimeError(NO_MCP_GATEWAY)
+        if gateway is not current_gateway:
+            current_gateway = gateway
+            executive = Executive(mcp_gateway=gateway)
+        return executive
 
     async def run_one(i: int, scenario: dict[str, Any]) -> None:
         if _is_canceled(cancel_event):
@@ -500,6 +527,7 @@ def _make_chat_runner(
                     }
                 )
                 try:
+                    scenario_executive = executive_for_scenario()
                     ctx = scenario.get("company_context", {})
                     profile = CompanyProfile(
                         name=ctx.get("name", "Eval Company"),
@@ -526,7 +554,7 @@ def _make_chat_runner(
                     # Records which specialists the turn consulted, for
                     # the scenario's routing expectation (routing_check).
                     collector = DebugCollector()
-                    response = await executive.chat(
+                    response = await scenario_executive.chat(
                         user_message=query,
                         session=session,
                         debug_collector=collector,
