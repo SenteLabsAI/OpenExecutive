@@ -3654,9 +3654,10 @@ class Executive:
                 for tu in dispatch_uses:
                     if tu["name"] not in MAILBOX_TOOL_NAMES and tu["name"] not in HISTORY_TOOL_NAMES:
                         continue
-                    notice = await outside_content.check_mail_read(
+                    checked, notice = await outside_content.check_mail_read(
                         pinned_delegation, results_by_id.get(tu["id"], "")
                     )
+                    results_by_id[tu["id"]] = checked
                     if notice:
                         results_by_id[tu["id"]] = _with_notice(results_by_id.get(tu["id"], ""), notice)
                 # A script that ran beside the read may have read mail the

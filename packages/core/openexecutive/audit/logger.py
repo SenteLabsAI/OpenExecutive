@@ -110,6 +110,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "fact_reviewed",                # the principal approved or declined a teammate's proposed standing fact
     "fact_approval_changed",        # the principal turned "needs my approval" on or off for a teammate's standing facts
     "fact_confirmation",            # an emailed standing-fact change held, confirmed, cancelled or refused (integrations/fact_confirmation.py)
+    "content_flagged",  # the content check flagged something a chat turn read (orchestrator/outside_content.py), with which item it was
     "grounding",  # unattended prose held back / refused / rewritten for naming people or figures not in its inputs
 )
 
