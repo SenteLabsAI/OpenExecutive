@@ -3654,6 +3654,8 @@ class Executive:
                 for tu in dispatch_uses:
                     if tu["name"] not in MAILBOX_TOOL_NAMES and tu["name"] not in HISTORY_TOOL_NAMES:
                         continue
+                    if tu["id"] not in results_by_id:
+                        continue  # never ran (not offered): no mail was read
                     checked, notice = await outside_content.check_mail_read(
                         pinned_delegation, results_by_id.get(tu["id"], "")
                     )
