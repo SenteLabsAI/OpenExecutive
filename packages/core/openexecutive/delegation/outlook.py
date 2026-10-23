@@ -825,7 +825,7 @@ class DelegateOutlook:
             data = await self._get(client, "/messages", {
                 "$search": f'"{text}"',
                 "$top": 25,
-                "$select": "id,conversationId,subject,from,receivedDateTime",
+                "$select": "id,conversationId,subject,from,receivedDateTime,isDraft,internetMessageHeaders",
             })
         summaries: dict[str, ThreadSummary] = {}
         for raw in data.get("value") or []:
@@ -840,6 +840,8 @@ class DelegateOutlook:
                 subject=_hide_tokens(str(raw.get("subject") or "")),
                 sender=f"{name} <{addr}>" if name else addr,
                 date=_iso(raw.get("receivedDateTime")),
+                sender_authenticated=raw.get("isDraft") is not True
+                and exchange_authenticated(_header_message(_header_list(raw)), addr),
             )
             if len(summaries) >= max(1, min(max_results, 10)):
                 break

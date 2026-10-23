@@ -938,7 +938,7 @@ def _parsed(result: Any) -> Any:
 
 # A subject that carries someone else's: a reply or forward keeps the
 # subject of the mail it answers, which anyone could have written.
-_CARRIED_SUBJECT = re.compile(r"^\s*(re|fwd?|aw|wg|sv|vs|tr|rv|antw)\s*(\[\d+\])?\s*:", re.IGNORECASE)
+_CARRIED_SUBJECT = re.compile(r"^\s*(re|fwd?|aw|wg|sv|vs|tr|rv|antw|enc|doorst|i)\s*(\[\d+\])?\s*:", re.IGNORECASE)
 
 
 def _executive_sent(pinned: Any, entries: list[Any]) -> set[int]:

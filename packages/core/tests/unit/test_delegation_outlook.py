@@ -449,6 +449,25 @@ def test_search_threads_lists_each_conversation_once() -> None:
     assert asyncio.run(graph.client().search_threads("in:inbox")) == []
 
 
+def test_search_threads_proves_each_sender() -> None:
+    def found(address: str, **extra: Any) -> dict[str, Any]:
+        return {"conversationId": f"c-{len(graph.listing)}", "subject": "Pilot",
+                "from": {"emailAddress": {"name": "Dana", "address": address}},
+                "internetMessageHeaders": [
+                    {"name": "From", "value": f"Dana <{address}>"},
+                    {"name": "Authentication-Results", "value": EXCHANGE_PASS},
+                ], **extra}
+
+    graph = FakeGraph()
+    graph.listing = []
+    graph.listing.append(found("dana@northpeak.example"))
+    graph.listing.append(found("dana@elsewhere.example"))  # a verdict for another domain
+    graph.listing.append(found("dana@northpeak.example", isDraft=True))
+    proven = asyncio.run(graph.client().search_threads("pilot"))
+    assert [t.sender_authenticated for t in proven] == [True, False, False]
+    assert "internetMessageHeaders" in graph.graph_calls()[-1].url.params["$select"]
+
+
 def test_list_sent_reads_sent_items_as_sent() -> None:
     graph = FakeGraph()
     graph.listing = [_msg("s1", sender=EMAIL, parentFolderId=SENT_FOLDER)]
