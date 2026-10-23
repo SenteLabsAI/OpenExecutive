@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -200,11 +201,17 @@ async def run_triage_eval(scenario: dict) -> dict:
     }
 
 
-async def _start_gateway():
-    """An MCP gateway from the configured mcp_servers.json, made the active
-    one (approval cards and the brief read the active gateway, as in the
-    API); exits when there is no config, since an mcp run without tools would
-    judge nothing real."""
+@contextlib.asynccontextmanager
+async def _eval_gateway(enabled: bool):
+    """For an mcp run, an MCP gateway from the configured mcp_servers.json,
+    made the active one (approval cards and the brief read the active
+    gateway, as in the API); ``None`` otherwise. Exits when there is no
+    config, since an mcp run without tools would judge nothing real. The
+    gateway is closed and the active one reset on every way out, including a
+    start that fails or times out after spawning some servers."""
+    if not enabled:
+        yield None
+        return
     from openexecutive.config import get_settings
     from openexecutive.orchestrator.mcp_gateway import MCPGateway, set_active_gateway
 
@@ -212,10 +219,14 @@ async def _start_gateway():
     if not config_path.exists():
         sys.exit(f"--mcp needs an MCP config at {config_path} (MCP_SERVERS_CONFIG_PATH)")
     gateway = MCPGateway()
-    await asyncio.wait_for(gateway.start(config_path), timeout=120)
-    set_active_gateway(gateway)
-    print(f"MCP gateway started from {config_path}")
-    return gateway
+    try:
+        await asyncio.wait_for(gateway.start(config_path), timeout=120)
+        set_active_gateway(gateway)
+        print(f"MCP gateway started from {config_path}")
+        yield gateway
+    finally:
+        set_active_gateway(None)
+        await gateway.close()
 
 
 async def main() -> None:
@@ -372,8 +383,7 @@ async def main() -> None:
         # Executive offers no MCP tools at all).
         from openexecutive.orchestrator.executive import Executive
 
-        gateway = await _start_gateway() if target_kind == "mcp" else None
-        try:
+        async with _eval_gateway(target_kind == "mcp") as gateway:
             executive = Executive(mcp_gateway=gateway)
             for scenario in scenarios:
                 print(f"  [{scenario['id']}] {scenario['description']}")
@@ -388,12 +398,6 @@ async def main() -> None:
                 except Exception as e:
                     print(f"    → ERROR: {e}")
                     results.append({"id": scenario["id"], "error": str(e), "passed": False})
-        finally:
-            if gateway is not None:
-                from openexecutive.orchestrator.mcp_gateway import set_active_gateway
-
-                set_active_gateway(None)
-                await gateway.close()
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"eval_results_{target_kind}_{timestamp}.json"
