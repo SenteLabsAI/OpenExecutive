@@ -4060,12 +4060,14 @@ class MCPGateway:
         def _wire_input() -> dict[str, Any] | str:
             # Built again for each send: an extension's server check may put
             # something in what goes out that is good for one request only.
+            # From wire_arguments, so outgoing() sees what every gate above
+            # left (a rewrite or a redaction), never the model's raw input.
             if server_call is None or server_call.outgoing is None:
                 return {"tool_name": tool_input["name"], "arguments": wire_arguments}
-            outgoing = _extension_outgoing(tool_name, server_call, arguments)
+            outgoing = _extension_outgoing(tool_name, server_call, wire_arguments)
             if isinstance(outgoing, str):
                 return outgoing
-            added_values.update(_string_leaves(outgoing) - _string_leaves(arguments))
+            added_values.update(_string_leaves(outgoing) - _string_leaves(wire_arguments))
             return {"tool_name": tool_input["name"], "arguments": outgoing}
 
         wire_input = _wire_input()
