@@ -3,8 +3,9 @@
 
 The check sees every call to its server and may refuse it, which is audited
 as a blocked outbound call; otherwise ``outgoing`` builds what is sent, after
-every gate and again for each send, from the model's own arguments. A check
-that fails refuses the call. Calls to any other server never reach it.
+every gate and again for each send, from the arguments as those gates left
+them. A check that fails refuses the call. Calls to any other server never
+reach it.
 """
 from __future__ import annotations
 
@@ -125,6 +126,34 @@ def test_outgoing_builds_what_is_sent_from_the_model_arguments() -> None:
     assert _call(gateway, "kiosk__show_menu", {"table": 4}) == {"ok": True}
     sent.assert_awaited_once_with(
         "call_tool", {"tool_name": "kiosk__show_menu", "arguments": {"table": 4, "_signed": "token-1"}}
+    )
+
+
+def test_outgoing_gets_the_arguments_a_later_gate_rewrote(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The gates after the check (the disclosure line, today on the built-in
+    # mail tools only) rewrite what goes out. outgoing() must build on their
+    # version, never on the model's raw input, or the rewrite is lost.
+    seen: list[dict[str, Any]] = []
+
+    def outgoing(arguments: dict[str, Any]) -> dict[str, Any]:
+        seen.append(arguments)
+        return {**arguments, "_signed": "token-1"}
+
+    def rewrite(_tool: Any, _normalized: str, arguments: dict[str, Any], **_k: Any) -> dict[str, Any]:
+        return {**arguments, "body": "[cleaned by a later gate]"}
+
+    _register(lambda _t, _a: GatewayCall(outgoing=outgoing))
+    monkeypatch.setattr(gw_module, "_GATED_GMAIL_TOOLS", frozenset({"kiosk__send"}))
+    monkeypatch.setattr(gw_module, "_with_disclosure", rewrite)
+    # The mail gates before it pass: this test is about what comes after them.
+    monkeypatch.setattr(gw_module, "_check_gmail_recipients", lambda *_a, **_k: None)
+    monkeypatch.setattr(gw_module, "_record_email_outbound_context", lambda *_a, **_k: None)
+    gateway, sent = _gateway('{"ok": true}')
+    assert _call(gateway, "kiosk__send", {"body": "raw words"}) == {"ok": True}
+    assert seen == [{"body": "[cleaned by a later gate]"}]
+    sent.assert_awaited_once_with(
+        "call_tool",
+        {"tool_name": "kiosk__send", "arguments": {"body": "[cleaned by a later gate]", "_signed": "token-1"}},
     )
 
 

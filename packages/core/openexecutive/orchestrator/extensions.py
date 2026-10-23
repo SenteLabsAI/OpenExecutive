@@ -162,7 +162,8 @@ class Collection:
 class GatewayCall:
     """What a gateway check decided for one call: ``refusal`` (what the model
     is told) refuses it; otherwise it goes out, with ``outgoing(arguments)``
-    as what is sent when given (called once per send)."""
+    as what is sent when given (called once per send, with the arguments as
+    the gateway's gates left them)."""
 
     refusal: str | None = None
     outgoing: Callable[[dict[str, Any]], dict[str, Any]] | None = None
