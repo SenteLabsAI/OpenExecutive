@@ -384,9 +384,10 @@ async def _open_creators_mailbox(writer: Any) -> str | None:
     return None
 
 
-async def _recent_inbox(mailbox: Any, days: int, limit: int) -> list[dict[str, str]]:
+async def _recent_inbox(mailbox: Any, days: int, limit: int) -> list[tuple[dict[str, str], str]]:
     """The newest thread of each of the last ``limit`` messages that reached
-    their inbox in ``days`` days (their own left out)."""
+    their inbox in ``days`` days (their own left out), each with its sender's
+    address when the mail service authenticated it (``_verified``)."""
     from openexecutive.delegation.ghostwriter import one_line
 
     listed = await mailbox.inbox_message_ids(
@@ -409,14 +410,25 @@ async def _recent_inbox(mailbox: Any, days: int, limit: int) -> list[dict[str, s
 
     messages = await asyncio.gather(*(fetch(i) for i in picked))
     return [
-        {
-            "thread_id": m.thread_id,
-            "subject": one_line(m.subject, 160),
-            "from": one_line(_sender(m), 160),
-            "date": one_line(m.date or m.received_at, 60),
-        }
+        (
+            {
+                "thread_id": m.thread_id,
+                "subject": one_line(m.subject, 160),
+                "from": one_line(_sender(m), 160),
+                "date": one_line(m.date or m.received_at, 60),
+            },
+            _verified(m.from_addr, m.sender_authenticated),
+        )
         for m in messages
     ]
+
+
+def _verified(sender: str, authenticated: Any) -> str:
+    """The sender's address when the mail service authenticated it, else empty."""
+    from email.utils import parseaddr
+
+    address = parseaddr(str(sender or ""))[1].strip().lower()
+    return address if authenticated is True and "@" in address else ""
 
 
 async def handle_search_my_email(tool_input: dict[str, Any]) -> str:
@@ -429,17 +441,26 @@ async def handle_search_my_email(tool_input: dict[str, Any]) -> str:
     async def read(writer: Any) -> str:
         if query:
             found = await writer.mailbox.search_threads(query, max_results=limit)
-            threads = [
-                {
-                    "thread_id": t.id,
-                    "subject": one_line(t.subject, 160),
-                    "from": one_line(t.sender, 160),
-                    "date": one_line(t.date, 60),
-                }
+            listed = [
+                (
+                    {
+                        "thread_id": t.id,
+                        "subject": one_line(t.subject, 160),
+                        "from": one_line(t.sender, 160),
+                        "date": one_line(t.date, 60),
+                    },
+                    _verified(t.sender, getattr(t, "sender_authenticated", False)),
+                )
                 for t in found
             ]
         else:
-            threads = await _recent_inbox(writer.mailbox, days, limit)
+            listed = await _recent_inbox(writer.mailbox, days, limit)
+        threads = [entry for entry, _ in listed]
+        for entry, address in listed:
+            if address:
+                writer.pinned.mail_verified[entry["thread_id"]] = address
+            else:
+                writer.pinned.mail_verified.pop(entry["thread_id"], None)
         _note_senders(writer, [t["from"] for t in threads])
         if not threads:
             return json.dumps({

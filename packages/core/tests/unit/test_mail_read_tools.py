@@ -196,6 +196,24 @@ def test_a_search_returns_one_line_summaries(roster: SimpleNamespace) -> None:
     assert "\n" not in full["threads"][1]["subject"]
 
 
+def test_a_search_remembers_which_senders_the_mail_service_authenticated(roster: SimpleNamespace) -> None:
+    mailbox = Mailbox(search=[
+        ThreadSummary(id="t1", subject="Pilot", sender="Exec <Exec@Co.Example>", date="Mon",
+                      sender_authenticated=True),
+        ThreadSummary(id="t2", subject="Pilot II", sender="Exec <exec@co.example>", date="Tue"),
+    ])
+    session = _session(mailbox)
+    session.turn_delegation.mail_verified["t2"] = "exec@co.example"  # a stale mark from an earlier read
+    assert _search(session, {"query": "pilot"})["status"] == "ok"
+    assert session.turn_delegation.mail_verified == {"t1": "exec@co.example"}
+    # The recent inbox reads it off each message.
+    mailbox.inbox = [("m1", "t1")]
+    mailbox.messages = {"m1": replace(_msg(1, DANA, "Hi", received_at=_ago(hours=1)), sender_authenticated=True)}
+    session = _session(mailbox)
+    _search(session, {})
+    assert session.turn_delegation.mail_verified == {"t1": DANA.lower()}
+
+
 def test_no_match_is_not_found(roster: SimpleNamespace) -> None:
     assert _search(_session(Mailbox()), {"query": "nothing"})["status"] == "not_found"
 

@@ -110,6 +110,11 @@ class TurnDelegation:
     # its name or address matches the contact's, never one the mail's text
     # only mentions (``delegation.lockdown.speaker_named_contact``).
     mail_senders: dict[str, str] = field(default_factory=dict)
+    # Threads a search this turn listed whose newest message's sender the mail
+    # service authenticated, thread id to that address (``mail_read_tools``):
+    # the Executive's own mail among them skips the safety check
+    # (``outside_content.check_mail_read``).
+    mail_verified: dict[str, str] = field(default_factory=dict)
     # Drafts made this turn, against the per-turn cap.
     drafts: int = 0
     # Searches and thread reads of their mailbox this turn, against the

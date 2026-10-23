@@ -629,6 +629,37 @@ def test_what_the_watcher_reads_off_a_message() -> None:
     assert parse_message(raw).sender_authenticated is False
 
 
+def test_a_search_proves_each_threads_sender() -> None:
+    signed = {
+        "From": "Dana <dana@northpeak.example>", "Subject": "Pilot", "Date": "Mon",
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@northpeak.example; "
+        "spf=pass smtp.mailfrom=dana@northpeak.example; "
+        "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=northpeak.example",
+    }
+    threads = {
+        "t1": signed,
+        "t2": {**signed, "From": "Dana <dana@elsewhere.example>"},  # a verdict for another domain
+        "t3": {**signed, "List-Id": "<team.northpeak.example>"},  # resent by a list
+    }
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": " ".join(gm.SCOPES)})
+        path = request.url.path
+        if path.endswith("/threads"):
+            return httpx.Response(200, json={"threads": [{"id": t} for t in threads]})
+        headers = threads[path.rsplit("/", 1)[1]]
+        return httpx.Response(200, json={"messages": [_message(headers, plain="")]})
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    found = asyncio.run(client.search_threads("pilot"))
+    assert [(t.id, t.sender_authenticated) for t in found] == [("t1", True), ("t2", False), ("t3", False)]
+    asked = seen[-1].url.params.get_list("metadataHeaders")
+    assert {"Authentication-Results", "List-Id", "X-Google-Group-Id", "Mailing-List"} <= set(asked)
+
+
 def test_bounces_and_invites_are_marked() -> None:
     bounce = _message({"From": "Mail Delivery Subsystem <mailer-daemon@googlemail.com>"}, plain="Failed")
     assert parse_message(bounce).delivery_report is True
