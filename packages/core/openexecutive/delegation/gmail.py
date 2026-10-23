@@ -353,6 +353,17 @@ class ThreadSummary:
     subject: str
     sender: str
     date: str
+    # The mail service found the sender's domain authenticated
+    # (``MailMessage.sender_authenticated``); False when it can't tell.
+    sender_authenticated: bool = False
+
+
+# The headers a search reads of each thread's newest message: what it lists,
+# and what proving its sender takes (``headers_authenticated``, which a list's
+# own headers make fail).
+_SUMMARY_HEADERS = (
+    "Subject", "From", "Date", "Authentication-Results", "List-Id", "X-Google-Group-Id", "Mailing-List",
+)
 
 
 @dataclass
@@ -1040,6 +1051,8 @@ class DelegateGmail:
     async def search_threads(self, query: str, *, max_results: int = 5) -> list[ThreadSummary]:
         """Threads matching a Gmail search, newest first: subject, sender and
         date only (no body text)."""
+        from openexecutive.integrations.fact_confirmation import headers_authenticated
+
         async with self._client() as client:
             data = await self._get(
                 client, "/threads", {"q": query[:300], "maxResults": max(1, min(max_results, 10))}
@@ -1050,16 +1063,22 @@ class DelegateGmail:
                 meta = await self._get(
                     client,
                     f"/threads/{thread_id}",
-                    [("format", "metadata"), ("metadataHeaders", "Subject"),
-                     ("metadataHeaders", "From"), ("metadataHeaders", "Date")],
+                    [("format", "metadata"),
+                     *(("metadataHeaders", name) for name in _SUMMARY_HEADERS)],
                 )
                 messages = [m for m in meta.get("messages") or [] if isinstance(m, dict)]
-                headers = _headers(messages[-1].get("payload") or {}) if messages else {}
+                payload = (messages[-1].get("payload") or {}) if messages else {}
+                headers = _headers(payload)
+                sender = getaddresses([headers.get("from", "")])
+                from_addr = sender[0][1] if sender else ""
                 summaries.append(ThreadSummary(
                     id=thread_id,
                     subject=_hide_tokens(headers.get("subject", "")),
                     sender=headers.get("from", ""),
                     date=headers.get("date", ""),
+                    sender_authenticated=headers_authenticated(
+                        _header_message(payload), normalize_email(from_addr)
+                    ),
                 ))
         return summaries
 

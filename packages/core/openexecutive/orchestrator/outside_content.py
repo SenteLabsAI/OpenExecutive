@@ -936,6 +936,29 @@ def _parsed(result: Any) -> Any:
         return None
 
 
+# A subject that carries someone else's: a reply or forward keeps the
+# subject of the mail it answers, which anyone could have written.
+_CARRIED_SUBJECT = re.compile(r"^\s*(re|fwd?|aw|wg|sv|vs|tr|rv|antw)\s*(\[\d+\])?\s*:", re.IGNORECASE)
+
+
+def _executive_sent(pinned: Any, entries: list[Any]) -> set[int]:
+    """The places (from 0) in a search's list of the threads whose newest
+    message the Executive itself sent: from its own address, which the mail
+    service authenticated (``TurnDelegation.mail_verified``), under a subject
+    of its own (not a reply's or forward's). Whatever is in them, it wrote."""
+    exec_address = _exec_address()
+    verified = getattr(pinned, "mail_verified", None)
+    if not exec_address or not isinstance(verified, dict):
+        return set()
+    return {
+        n
+        for n, entry in enumerate(entries)
+        if verified.get(str(entry.get("thread_id") or "")) == exec_address
+        and _sender_address(entry.get("from")).lower() == exec_address
+        and not _CARRIED_SUBJECT.match(str(entry.get("subject") or ""))
+    }
+
+
 def _sender_address(value: Any) -> str:
     match = _ADDRESS.search(str(value or ""))
     return match.group(0) if match else _LEFT_OUT
@@ -960,9 +983,13 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
     if state is None or pinned is None:
         return result, ""
     listed = _mail_list(result)
+    # The Executive's own mail in a search's list isn't checked: what it
+    # wrote can't be instructions to it (``_executive_sent``).
+    own = _executive_sent(pinned, listed[0][listed[1]]) if listed is not None else set()
     try:
         if listed is not None:
-            verdict = await _check_list(state, listed[0][listed[1]])
+            rest = [e for n, e in enumerate(listed[0][listed[1]]) if n not in own]
+            verdict = await _check_list(state, rest) if rest else content_scan.CLEAN
         else:
             verdict = await _check(state, result)
     except Exception:
@@ -970,26 +997,29 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
     if verdict.flagged and verdict.items and listed is not None:
         parsed, key = listed
         entries = parsed[key]
+        # The checked entries' places in the whole list, in order.
+        places = [n for n in range(len(entries)) if n not in own]
+        flagged = {places[n - 1] for n in verdict.items}
         trimmed = [
             {
                 **entry,
                 **{f: (_sender_address(entry.get(f)) if f == "from" else _LEFT_OUT) for f in _ENTRY_TEXT if f in entry},
-            } if n in verdict.items else entry
-            for n, entry in enumerate(entries, 1)
+            } if n in flagged else entry
+            for n, entry in enumerate(entries)
         ]
         # What is left is checked again, so an answer that named the wrong
         # entry can't let the real one through: anything but clean flags the
         # whole list, as before.
         try:
-            again = await _check_list(state, trimmed)
+            again = await _check_list(state, [trimmed[n] for n in places])
         except Exception:
             again = content_scan.UNCHECKED
         if not again.flagged and not again.unchecked:
-            for n in verdict.items:
-                _flag(state, MAIL, tuple(verdict.categories), _mail_label(entries[n - 1]))
+            for n in sorted(flagged):
+                _flag(state, MAIL, tuple(verdict.categories), _mail_label(entries[n]))
             if state.mode == outside_mode.ASK:
                 pinned.mail_held = True
-            return json.dumps({**parsed, key: trimmed}), LEFT_OUT_NOTICE.format(count=len(verdict.items))
+            return json.dumps({**parsed, key: trimmed}), LEFT_OUT_NOTICE.format(count=len(flagged))
     if verdict.flagged:
         _flag(state, MAIL, tuple(verdict.categories), _mail_label(_parsed(result)))
     if state.mode == outside_mode.ASK or (state.mode == outside_mode.OUTSIDERS and verdict.holds):
