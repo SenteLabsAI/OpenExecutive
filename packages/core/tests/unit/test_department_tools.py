@@ -89,9 +89,23 @@ def test_list_department_goals_empty_dept() -> None:
     assert result["goals"] == []
 
 
-def test_list_department_goals_missing_slug() -> None:
+def test_list_department_goals_without_a_slug_lists_every_goal() -> None:
+    """Omitting the department lists every goal, those with none included."""
+    dept_goal = _seed_engineering_goal()
+    loose = dept_store.insert_goal(
+        None, period_type="year", period_value="2026",
+        key_result="Win our first customers", target="3 paying",
+    )
     result = _call(handle_list_department_goals, {})
-    assert "error" in result
+    assert result["department_slug"] is None
+    by_id = {g["id"]: g for g in result["goals"]}
+    assert set(by_id) == {dept_goal, loose}
+    assert by_id[loose]["department_slug"] is None
+    assert by_id[dept_goal]["department_slug"] == "engineering"
+    assert "owner" in by_id[loose] and "owner_person_id" in by_id[loose]
+    # A department narrows it, as before.
+    narrowed = _call(handle_list_department_goals, {"department_slug": "engineering"})
+    assert [g["id"] for g in narrowed["goals"]] == [dept_goal]
 
 
 # --------------------------------------------------------------------------- #
@@ -467,7 +481,6 @@ def test_create_goal_defaults_the_period_to_the_current_one(monkeypatch: pytest.
 @pytest.mark.parametrize(
     ("overrides", "fragment"),
     [
-        ({"area": "  "}, "area is required"),
         ({"key_result": ""}, "key_result and target"),
         ({"target": None}, "key_result and target"),
         ({"rationale": " "}, "rationale is required"),
@@ -761,7 +774,7 @@ def test_store_failures_reach_the_model_as_the_type_only(monkeypatch: pytest.Mon
         raise RuntimeError(secret)
 
     goal_id = _seed_engineering_goal()
-    monkeypatch.setattr(dept_store, "list_goals", boom)
+    monkeypatch.setattr(dept_store, "list_all_goals", boom)
     monkeypatch.setattr(dept_store, "update_goal", boom)
     monkeypatch.setattr(dept_store, "insert_goal", boom)
     results = [

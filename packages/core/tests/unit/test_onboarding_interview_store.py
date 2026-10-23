@@ -32,6 +32,7 @@ def _session() -> InterviewSession:
         questions_asked=1,
         draft=draft,
         last_hint="A name.",
+        last_options=["Sam Okafor", "Nobody yet"],
     )
 
 
@@ -42,6 +43,7 @@ def test_round_trip_keeps_every_field() -> None:
     assert [t.text for t in back.transcript] == ["We sell tools.", "Who runs ops?"]
     assert back.questions_asked == 1
     assert back.last_hint == "A name."
+    assert back.last_options == ["Sam Okafor", "Nobody yet"]
     assert back.saved is False
     assert back.draft is not None
     assert back.draft.profile.name == "Northwind Tools"

@@ -1,8 +1,9 @@
 """Conversational company setup — the interview loop behind ``/onboard``.
 
 The user describes their business in their own words; this module asks
-clarifying questions until it can draft a company profile, a leadership
-roster, and a department list. Nothing is written anywhere: ``advance``
+a few quick questions (each with suggested answers to tap) until it can draft
+a company profile, the people, this year's goals with an owner on each, and
+departments when the user's own words already list people by department. Nothing is written anywhere: ``advance``
 returns either a ``Question`` or a ``CompanyDraft``, and the route owns both
 the session state and the single write (see ``onboarding/commit.py``).
 
@@ -53,8 +54,8 @@ from openexecutive.utils.slug import DEPARTMENT_SLUG_FALLBACK, slugify
 logger = logging.getLogger(__name__)
 
 # Budgets. The user can always short-circuit with force_draft, so these only
-# bound a runaway model.
-MAX_QUESTIONS = 5
+# bound a runaway model. Setup asks two to four quick questions.
+MAX_QUESTIONS = 4
 # Must stay above what a single legal /start can produce — a 20k description
 # plus 8 attachments at 15k extracted chars each is ~140k. A lower ceiling
 # locked the user out of the conversation on turn one for doing exactly what
@@ -79,6 +80,13 @@ _MAX_TOKENS = 8000
 _REPAIR_ECHO_CHARS = 2000
 
 _MAX_PROSE_QUESTION_CHARS = 1000
+
+# Suggested answers shown under a question as buttons to tap.
+MAX_OPTIONS = 4
+MAX_OPTION_CHARS = 120
+# This year's goals in a draft. More than this is a plan, not setup.
+MAX_GOALS = 12
+MAX_GOAL_CHARS = 300
 
 ASK_TOOL_NAME = "ask_clarifying_question"
 EMIT_TOOL_NAME = "emit_company_draft"
@@ -143,10 +151,30 @@ class DepartmentDraft(BaseModel):
     authority_level: AuthorityLevel = AuthorityLevel.PROPOSE_ONLY
 
 
+class GoalDraft(BaseModel):
+    """One of this year's goals. Saved with an owner and, only when the
+    draft has departments, optionally inside one (see commit.py)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+    target: str = ""
+    # A person's full_name from the draft; empty = the principal.
+    owner_name: str = ""
+    # A drafted department's title; empty = no department.
+    department_title: str = ""
+
+    @field_validator("target", "owner_name", "department_title", mode="before")
+    @classmethod
+    def _no_null(cls, value: Any) -> Any:
+        return "" if value is None else value
+
+
 class CompanyDraft(BaseModel):
     profile: CompanyProfile
     people: list[PersonDraft] = Field(default_factory=list)
     departments: list[DepartmentDraft] = Field(default_factory=list)
+    goals: list[GoalDraft] = Field(default_factory=list)
     confidence_notes: list[str] = Field(default_factory=list)
     summary: str = ""
 
@@ -154,6 +182,8 @@ class CompanyDraft(BaseModel):
 class Question(BaseModel):
     question: str
     hint: str = ""
+    # Suggested answers the user can tap instead of typing.
+    options: list[str] = Field(default_factory=list)
 
     @field_validator("hint", mode="before")
     @classmethod
@@ -161,6 +191,20 @@ class Question(BaseModel):
         # Models sometimes send "hint": null for "no example"; that is not a
         # reason to throw the whole question away.
         return "" if value is None else value
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _tidy_options(cls, value: Any) -> Any:
+        # Lenient like the hint: a bad option list costs the buttons, never
+        # the question. Blank, overlong and repeated options are dropped.
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            text = item.strip() if isinstance(item, str) else ""
+            if text and len(text) <= MAX_OPTION_CHARS and text not in out:
+                out.append(text)
+        return out[:MAX_OPTIONS]
 
 
 @dataclass(frozen=True)
@@ -180,10 +224,10 @@ class DraftError:
 _ASK_TOOL: dict[str, Any] = {
     "name": ASK_TOOL_NAME,
     "description": (
-        "Ask the user ONE clarifying question about their company. Use this "
-        "only while something material is still missing — the user reviews and "
-        "edits the draft before it is saved, so an early draft beats a long "
-        "interview."
+        "Ask the user ONE quick question about their company, with suggested "
+        "answers they can tap. Use this only while something material is "
+        "still missing — the user reviews and edits the draft before it is "
+        "saved, so an early draft beats a long interview."
     ),
     "input_schema": {
         "type": "object",
@@ -200,6 +244,16 @@ _ASK_TOOL: dict[str, Any] = {
                     "you're asking, or an example answer."
                 ),
             },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": MAX_OPTIONS,
+                "description": (
+                    "Two to four short suggested answers, shown as buttons to "
+                    "tap. Base them on what the user already said. The user "
+                    "can always type their own answer or skip."
+                ),
+            },
         },
     },
 }
@@ -207,12 +261,12 @@ _ASK_TOOL: dict[str, Any] = {
 _EMIT_TOOL: dict[str, Any] = {
     "name": EMIT_TOOL_NAME,
     "description": (
-        "Emit the draft company profile, leadership roster, and department "
-        "list for the user to review and edit. Exactly one person must have "
-        "is_principal=true (the user). Every department's head_person_name "
-        "must exactly match a person's full_name or be empty. Leave anything "
-        "the user did not state null or empty and name it in confidence_notes "
-        "— never guess a number."
+        "Emit the draft company profile, people, this year's goals and (only "
+        "when the user listed people by department) departments for the user "
+        "to review and edit. Exactly one person must have is_principal=true "
+        "(the user). Every head_person_name and owner_name must exactly match "
+        "a person's full_name or be empty. Leave anything the user did not "
+        "state null or empty — never guess a number."
     ),
     "input_schema": {
         "type": "object",
@@ -330,7 +384,8 @@ _EMIT_TOOL: dict[str, Any] = {
             "departments": {
                 "type": "array",
                 "description": (
-                    "The functions this business actually runs. Titles must be distinct. "
+                    "Only when the user's own words or files already list people "
+                    "by department; otherwise empty. Titles must be distinct. "
                     "head_person_name must match a person's full_name exactly, or be empty."
                 ),
                 "items": {
@@ -348,10 +403,49 @@ _EMIT_TOOL: dict[str, Any] = {
                     },
                 },
             },
+            "goals": {
+                "type": "array",
+                "maxItems": MAX_GOALS,
+                "description": (
+                    "What the user wants to achieve this year, one goal per item, "
+                    "in their words. Also list them in "
+                    "profile.strategic_priorities.current_year."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {
+                        "title": {"type": "string", "description": "e.g. 'Launch the hosted version'."},
+                        "target": {
+                            "type": "string",
+                            "description": "How they will know it is done, if they said. Else empty.",
+                        },
+                        "owner_name": {
+                            "type": "string",
+                            "description": (
+                                "The person's full_name who owns it. Empty means the "
+                                "user. Name someone else only when the user did."
+                            ),
+                        },
+                        "department_title": {
+                            "type": "string",
+                            "description": (
+                                "A drafted department's title when the goal clearly "
+                                "belongs to it. Else empty."
+                            ),
+                        },
+                    },
+                },
+            },
             "confidence_notes": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "One short line per field you could not determine, saying what is missing.",
+                "description": (
+                    "Things the user should check after reading the draft, one plain "
+                    "sentence each (e.g. 'I guessed your main competitors from your "
+                    "site.'). Never use field names. Leave out anything the user chose "
+                    "not to share."
+                ),
             },
             "summary": {
                 "type": "string",
@@ -432,6 +526,25 @@ def validate_draft(draft: CompanyDraft) -> list[DraftError]:
             )
 
     names = {n.lower() for n in all_names}
+    titles = {d.title.strip().lower() for d in draft.departments if d.title.strip()}
+    if len(draft.goals) > MAX_GOALS:
+        add(f"That's a lot of goals for setup (limit {MAX_GOALS}). Keep the main ones.")
+    for g in draft.goals:
+        if not g.title.strip():
+            add("Every goal needs a name.", "every goal needs a non-empty title")
+        if len(g.title) > MAX_GOAL_CHARS or len(g.target) > MAX_GOAL_CHARS:
+            add(f"A goal is too long (limit {MAX_GOAL_CHARS} characters).")
+        if g.owner_name.strip() and g.owner_name.strip().lower() not in names:
+            add(
+                "A goal is owned by someone who isn't on the team list.",
+                f"goal '{g.title}' owner_name '{g.owner_name}' is not in the roster",
+            )
+        if g.department_title.strip() and g.department_title.strip().lower() not in titles:
+            add(
+                "A goal is in a department that isn't on the list.",
+                f"goal '{g.title}' department_title '{g.department_title}' "
+                "is not a drafted department",
+            )
     for d in draft.departments:
         if not d.title.strip():
             add("Every department needs a name.", "every department needs a non-empty title")
@@ -526,7 +639,8 @@ def replay_transcript(
 # interpolated into them.
 _SOLO_DRAFT_RULE = (
     "In the draft, `people` must hold only them — exactly one person, with "
-    "is_principal true — and `departments` must be empty."
+    "is_principal true — `departments` must be empty, and every goal's "
+    "owner_name is empty (theirs)."
 )
 
 # No role given (or "other"): find out which kind of principal this is.
@@ -548,8 +662,8 @@ SOLO_ROLE_HINTS: dict[str, str] = {
         "they own and run the business. "
         + _SOLO_DRAFT_RULE
         + " Do not ask about a leadership team or departments; ask instead "
-        "about what they offer, who their customers are, their pricing, their "
-        "cash and runway, and their top goals."
+        "about what they offer, who their customers are, their pricing, and "
+        "their top goals."
     ),
     "in_house": (
         "This person is setting up Open Executive just for themselves. They "

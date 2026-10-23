@@ -38,13 +38,15 @@ export default function MemoryList({ view }: { view: MemoryView }) {
   const [historyAvailable, setHistoryAvailable] = useState(true);
   const onHistoryAvailable = useCallback((available: boolean) => setHistoryAvailable(available), []);
 
+  // Learning lays out its own cards: its numbers, then the list.
+  if (view === "reflection") return <ReflectionTab />;
+
   return (
     <div className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5 py-1">
       {view === "decisions" && <DecisionsTab onCount={ignoreCount} />}
       {view === "initiatives" && <InitiativesTab onCount={ignoreCount} />}
       {view === "advice" && <AdviceTab onCount={ignoreCount} />}
       {view === "corrections" && <CorrectionsTab onCount={ignoreCount} />}
-      {view === "reflection" && <ReflectionTab />}
       {view === "history" &&
         (historyAvailable ? (
           <HistoryTab onCount={ignoreCount} onAvailable={onHistoryAvailable} />

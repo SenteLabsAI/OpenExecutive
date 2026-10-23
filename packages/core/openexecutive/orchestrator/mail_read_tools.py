@@ -30,6 +30,8 @@ so they are fenced the same way:
 - **Attachments are read, never kept.** A file's text comes back in an
   untrusted block, parsed in an isolated worker (``knowledge.loader``); unlike
   a file sent to the Executive, it is never added to the company knowledge.
+- **In a workflow** they read its creator's mailbox instead, on the creator's
+  own run (``delegation.workflow_reads``, through ``AS_CREATOR``).
 - **Other people's words are data.** Each message someone else wrote comes
   back inside an ``<untrusted_content>`` block (``content_trust``); the
   speaker's own sent mail (``threads.mine``: SENT, from their address) is
@@ -42,6 +44,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -78,6 +81,12 @@ _AWAITING_CANDIDATES = 15
 # Sent less than this long ago isn't waiting yet.
 _AWAITING_MIN_AGE = timedelta(days=1)
 _FETCH_CONCURRENCY = 4
+
+# Set by ``delegation.workflow_reads`` for one call of a workflow's read: the
+# workflow's creator (a ``_Writer``), already checked there, read in place of
+# the chat turn's speaker. Their run is theirs alone, so no conversation is
+# marked private.
+AS_CREATOR: ContextVar[Any] = ContextVar("mail_read_as_creator", default=None)
 
 _DATA_NOTE = (
     "From their own mailbox. Subjects, senders and message text are what other "
@@ -341,7 +350,8 @@ async def _run(
     from openexecutive.delegation.gmail import STATUS_MESSAGES, GmailAuthError, GmailError
     from openexecutive.orchestrator.delegation_tools import _open_mailbox, _writer
 
-    writer = _writer(tool_name)
+    creator = AS_CREATOR.get()
+    writer = creator if creator is not None else _writer(tool_name)
     if isinstance(writer, str):
         return writer
     refused = check(writer) if check is not None else None
@@ -351,7 +361,7 @@ async def _run(
     if refused is not None:
         return refused
     try:
-        refused = await _open_mailbox(writer)
+        refused = await (_open_creators_mailbox(writer) if creator is not None else _open_mailbox(writer))
         if refused is not None:
             return refused
         return await read(writer)
@@ -360,6 +370,18 @@ async def _run(
     except GmailError:
         logger.warning("%s: reading the mailbox failed", tool_name, exc_info=True)
         return _error("Couldn't read their mailbox just now. Try again in a moment.")
+
+
+async def _open_creators_mailbox(writer: Any) -> str | None:
+    """``_open_mailbox`` for a workflow's creator (``AS_CREATOR``)."""
+    from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
+
+    writer.pinned.touched_mail = writer.pinned.read_mail = True
+    writer.pinned.mail_vetted = False  # re-vetted only by the loop's check_mail_read
+    status = await gmail_status(writer.email, gmail=writer.mailbox)
+    if status != "connected":
+        return _error(STATUS_MESSAGES[status], status=status)
+    return None
 
 
 async def _recent_inbox(mailbox: Any, days: int, limit: int) -> list[dict[str, str]]:

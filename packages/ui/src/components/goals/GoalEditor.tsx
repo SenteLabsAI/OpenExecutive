@@ -8,16 +8,21 @@ import OverflowMenu from "@/components/ui/OverflowMenu";
 import {
   createGoal,
   createGoalInArea,
+  deleteAnyGoal,
   deleteGoal,
+  updateAnyGoal,
   updateGoal,
   type Goal,
+  type GoalPatch,
   type PeriodType,
 } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/relativeTime";
 
 // Goal rows (view / edit / delete) and the add-goal form, shared by a
-// department's page and /goals. Goals belong to a department — an "area" in
-// solo mode — and every call here is scoped by its slug.
+// department's page and /goals. A goal has an owner and, optionally, a
+// department (an "area" in solo mode). On a department's page every call is
+// scoped by its slug; on /goals (slug null) they go to the department-free
+// goal routes, which can also change a goal's owner and department.
 
 // "Last reviewed >N days ago" → render the row with a stale accent.
 // A new department checks in weekly (`weekly@mon@09:00`), so a healthy goal
@@ -89,9 +94,31 @@ function formKeys(onSubmit: () => void, onCancel: () => void, saving: boolean) {
 // Goal row — view or edit
 // ---------------------------------------------------------------------------
 
-interface GoalRowProps {
+/** A person a goal can be on, for the owner pickers. */
+export interface OwnerOption {
+  id: number;
+  name: string;
+}
+
+/** A department a goal can be in, for the department pickers. */
+export interface DepartmentOption {
   slug: string;
+  title: string;
+}
+
+interface GoalRowProps {
+  /** The department whose page this is, or null on /goals. */
+  slug: string | null;
   goal: Goal;
+  /** One line under the goal, e.g. "Dan · Sales" (on /goals). */
+  meta?: string;
+  /** With slug null: the edit form also picks the owner and department. */
+  owners?: OwnerOption[];
+  /** The goal's owner as shown (its own, else its lead's or the principal's). */
+  ownerId?: number | null;
+  departments?: DepartmentOption[];
+  /** "Department" (team) or "Area" (solo). */
+  departmentLabel?: string;
   onSaved: (updated: Goal) => void;
   onDeleted: (id: number) => void;
   // Surface edit-mode transitions so the parent can pause polling — a
@@ -111,7 +138,18 @@ export function formatGoalProgress(g: Pick<Goal, "target" | "current">): string 
   return g.current ? `Current: ${g.current}` : "";
 }
 
-export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: GoalRowProps) {
+export function GoalRow({
+  slug,
+  goal,
+  meta,
+  owners,
+  ownerId = null,
+  departments,
+  departmentLabel = "Department",
+  onSaved,
+  onDeleted,
+  onEditingChange,
+}: GoalRowProps) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -124,6 +162,10 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
     current: goal.current,
     status: goal.status as GoalStatus,
   });
+  // Owner and department, editable on /goals only. "" = no department.
+  const [owner, setOwner] = useState<number | null>(ownerId);
+  const [dept, setDept] = useState(goal.department_slug ?? "");
+  const canMove = slug === null;
 
   // Centralise the editing transition so save/cancel/enter all notify
   // the parent — avoids forgetting the call in one branch.
@@ -159,7 +201,8 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
       setDeleting(true);
       setErr(null);
       try {
-        await deleteGoal(slug, goal.id!);
+        if (slug === null) await deleteAnyGoal(goal.id!);
+        else await deleteGoal(slug, goal.id!);
         onDeleted(goal.id!);
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Delete failed");
@@ -176,6 +219,7 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
         <div className="flex-1 min-w-0">
           <div className="text-base text-fg font-medium leading-snug">{goal.key_result}</div>
           {progress && <div className="text-[15px] text-fg-muted mt-1">{progress}</div>}
+          {meta && <div className="text-sm text-fg-muted mt-1">{meta}</div>}
           <div className="text-sm text-fg-subtle mt-2 flex items-center gap-x-2 gap-y-1.5 flex-wrap">
             <GoalStatusPill status={goal.status} />
             <span>{formatGoalPeriod(goal)}</span>
@@ -214,6 +258,8 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
       current: goal.current,
       status: goal.status as GoalStatus,
     });
+    setOwner(ownerId);
+    setDept(goal.department_slug ?? "");
     setEditingAndNotify(false);
     setErr(null);
   }
@@ -223,13 +269,22 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
     setSaving(true);
     setErr(null);
     try {
-      const updated = await updateGoal(slug, goal.id!, {
+      const patch: GoalPatch = {
         ...form,
         key_result: form.key_result.trim(),
         period_value: form.period_value.trim(),
         target: form.target.trim(),
         current: form.current.trim(),
-      });
+      };
+      let updated: Goal;
+      if (slug === null) {
+        // Only what changed, so an untouched owner keeps following its lead.
+        if (owner !== ownerId) patch.owner_person_id = owner;
+        if (dept !== (goal.department_slug ?? "")) patch.department_slug = dept || null;
+        updated = await updateAnyGoal(goal.id!, patch);
+      } else {
+        updated = await updateGoal(slug, goal.id!, patch);
+      }
       onSaved(updated);
       setEditingAndNotify(false);
     } catch (e) {
@@ -259,6 +314,36 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
         onChange={(pt, pv) => setForm((f) => ({ ...f, period_type: pt, period_value: pv }))}
         size="compact"
       />
+      {canMove && owners && owners.length > 1 && (
+        <label className={LABEL_CLS}>
+          Owner
+          <select
+            value={owner ?? ""}
+            onChange={(e) => setOwner(e.target.value ? Number(e.target.value) : null)}
+            className={INPUT_CLS}
+          >
+            {owner == null && <option value="">No owner yet</option>}
+            {owners.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {canMove && departments && departments.length > 0 && (
+        <label className={LABEL_CLS}>
+          {departmentLabel}
+          <select value={dept} onChange={(e) => setDept(e.target.value)} className={INPUT_CLS}>
+            <option value="">None</option>
+            {departments.map((d) => (
+              <option key={d.slug} value={d.slug}>
+                {d.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className={LABEL_CLS}>
         Status
         <select
@@ -311,26 +396,44 @@ export function GoalRow({ slug, goal, onSaved, onDeleted, onEditingChange }: Goa
 // ---------------------------------------------------------------------------
 
 interface AddGoalFormProps {
-  /** The department (area) the goal is added to — the picker's first choice
-   * when `areas` is set. Null when there is no area yet: the form then asks
-   * for one by name and the save creates it. */
+  /** The department whose page this is: the goal goes there. Null on /goals,
+   * where the form picks an owner and, optionally, a department. */
   slug: string | null;
-  /** When set, a picker over these lets the user choose where the goal goes. */
-  areas?: { slug: string; title: string }[];
-  /** The picker's label: "Area" (solo) or "Department" (team). */
+  /** /goals: the departments to pick from ("None" and "New…" are added). */
+  departments?: DepartmentOption[];
+  /** /goals: the people a goal can be on; the picker shows for two or more. */
+  owners?: OwnerOption[];
+  /** /goals: the owner picked at first (the viewer). */
+  defaultOwnerId?: number | null;
+  /** The department picker's label: "Area" (solo) or "Department" (team). */
   areaLabel?: string;
+  /** Titled as the first goal, with a line on how little it takes. */
+  first?: boolean;
   onCreated: (goal: Goal) => void;
   /** Omitted when the form is the page's only content (no Cancel then). */
   onCancel?: () => void;
 }
 
+// The "New…" choice in the department picker.
+const NEW_DEPARTMENT = "__new__";
+
 // One thing to type — the goal. The timeframe is a chip (this quarter by
 // default), target and current are optional, and a new goal starts on track
-// until the department's check-in grades it.
-export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCancel }: AddGoalFormProps) {
-  const [areaSlug, setAreaSlug] = useState(slug);
-  // Typed area name, used only when there is no area to pick from.
-  const [areaName, setAreaName] = useState("");
+// until its check-in (or the weekly goal review) grades it.
+export function AddGoalForm({
+  slug,
+  departments = [],
+  owners = [],
+  defaultOwnerId = null,
+  areaLabel = "Department",
+  first = false,
+  onCreated,
+  onCancel,
+}: AddGoalFormProps) {
+  // "" = no department; NEW_DEPARTMENT = the typed name below.
+  const [deptChoice, setDeptChoice] = useState("");
+  const [newDept, setNewDept] = useState("");
+  const [ownerId, setOwnerId] = useState<number | null>(defaultOwnerId ?? owners[0]?.id ?? null);
   const [form, setForm] = useState<{
     period_type: PeriodType;
     period_value: string;
@@ -352,7 +455,10 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
     firstRef.current?.focus();
   }, []);
 
-  const canSubmit = !saving && form.key_result.trim() !== "";
+  const canSubmit =
+    !saving &&
+    form.key_result.trim() !== "" &&
+    (deptChoice !== NEW_DEPARTMENT || newDept.trim() !== "");
 
   async function submit() {
     if (!canSubmit) return;
@@ -368,7 +474,16 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
         ...(target && { target }),
         ...(current && { current }),
       };
-      const goal = areaSlug ? await createGoal(areaSlug, body) : await createGoalInArea(areaName.trim(), body);
+      let goal: Goal;
+      if (slug) {
+        goal = await createGoal(slug, body);
+      } else {
+        const area = deptChoice === NEW_DEPARTMENT ? newDept.trim() : deptChoice;
+        goal = await createGoalInArea(area, {
+          ...body,
+          ...(owners.length > 1 && ownerId != null && { owner_person_id: ownerId }),
+        });
+      }
       onCreated(goal);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Create failed");
@@ -381,13 +496,15 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
 
   return (
     <div className="py-5 space-y-4">
-      {slug ? (
-        <div className="text-base font-semibold text-fg">New goal</div>
-      ) : (
+      {first ? (
         <div>
           <div className="text-base font-semibold text-fg">Add your first goal</div>
-          <p className="mt-1 text-[15px] text-fg-muted">Just type it. The timeframe defaults to this quarter.</p>
+          <p className="mt-1 text-[15px] text-fg-muted">
+            Just type it. The timeframe defaults to this quarter, and I&apos;ll check it weekly.
+          </p>
         </div>
+      ) : (
+        <div className="text-base font-semibold text-fg">New goal</div>
       )}
       <label className={LABEL_CLS}>
         What&apos;s the goal?
@@ -401,35 +518,50 @@ export function AddGoalForm({ slug, areas, areaLabel = "Area", onCreated, onCanc
           placeholder={GOAL_PLACEHOLDER}
         />
       </label>
-      {!areaSlug && (
-        <label className={LABEL_CLS}>
-          {areaLabel} (optional)
-          <input
-            value={areaName}
-            onChange={(e) => setAreaName(e.target.value)}
-            onKeyDown={onKeyDown}
-            maxLength={80}
-            className={INPUT_CLS}
-            placeholder="e.g. Sales or Product"
-          />
-          <span className="mt-1 block text-sm text-fg-muted">Left blank, it goes under General.</span>
-        </label>
-      )}
-      {areas && areas.length > 1 && (
-        <label className={LABEL_CLS}>
-          {areaLabel}
-          <select
-            value={areaSlug ?? ""}
-            onChange={(e) => setAreaSlug(e.target.value)}
-            className={INPUT_CLS}
-          >
-            {areas.map((a) => (
-              <option key={a.slug} value={a.slug}>
-                {a.title}
-              </option>
-            ))}
-          </select>
-        </label>
+      {!slug && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {owners.length > 1 && (
+            <label className={LABEL_CLS}>
+              Owner
+              <select
+                value={ownerId ?? ""}
+                onChange={(e) => setOwnerId(e.target.value ? Number(e.target.value) : null)}
+                className={INPUT_CLS}
+              >
+                {owners.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className={LABEL_CLS}>
+            {areaLabel} (optional)
+            <select value={deptChoice} onChange={(e) => setDeptChoice(e.target.value)} className={INPUT_CLS}>
+              <option value="">None</option>
+              {departments.map((d) => (
+                <option key={d.slug} value={d.slug}>
+                  {d.title}
+                </option>
+              ))}
+              <option value={NEW_DEPARTMENT}>New {areaLabel.toLowerCase()}…</option>
+            </select>
+          </label>
+          {deptChoice === NEW_DEPARTMENT && (
+            <label className={cls(LABEL_CLS, "sm:col-span-2")}>
+              New {areaLabel.toLowerCase()}&apos;s name
+              <input
+                value={newDept}
+                onChange={(e) => setNewDept(e.target.value)}
+                onKeyDown={onKeyDown}
+                maxLength={80}
+                className={INPUT_CLS}
+                placeholder="e.g. Sales or Product"
+              />
+            </label>
+          )}
+        </div>
       )}
       <TimeframeChips
         periodType={form.period_type}

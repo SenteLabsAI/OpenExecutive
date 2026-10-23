@@ -213,7 +213,8 @@ def their_last_words(thread: Any, message: Any, own: set[str]) -> str:
 
 
 def render_email(
-    message: Any, *, relation: str, addressed: Addressing | None = None, earlier: str = ""
+    message: Any, *, relation: str, addressed: Addressing | None = None, earlier: str = "",
+    max_body_chars: int = MAX_BODY_CHARS,
 ) -> str:
     """The user turn: a few header lines and the sender's own new words, as
     data in one ``<email>`` block, after the person's own ``earlier`` words
@@ -222,7 +223,7 @@ def render_email(
     from openexecutive.integrations.email_poller import sender_new_text
     from openexecutive.utils.prompt_blocks import no_tags, scrub_block_line
 
-    body = sender_new_text(getattr(message, "text", "") or "")[:MAX_BODY_CHARS]
+    body = sender_new_text(getattr(message, "text", "") or "")[:max_body_chars]
     others = len({*getattr(message, "to", []), *getattr(message, "cc", [])})
     header = [
         f"From: {one_line(getattr(message, 'from_name', '') or '', 80)} "

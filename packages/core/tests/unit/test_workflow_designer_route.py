@@ -85,7 +85,7 @@ def client(
     dynamic_store.initialize_dynamic_workflows_db(db_path)
     monkeypatch.setattr(dynamic_store, "DB_PATH", db_path)
     monkeypatch.setattr(route, "_designer_sessions", OrderedDict())
-    monkeypatch.setattr(route, "build_context_block", lambda: "CTX")
+    monkeypatch.setattr(route, "build_context_block", lambda **_: "CTX")
     monkeypatch.delenv("BACKEND_SHARED_SECRET", raising=False)
     with TestClient(create_app()) as c:
         yield c
@@ -580,3 +580,52 @@ def test_save_edit_refusals(client: TestClient, seeded: _Queue) -> None:
     seeded.append(_draft(name="brand_new_workflow"))
     create_sid = _start(client)["session_id"]
     assert client.post(url, json={"session_id": create_sid}).status_code == 409
+
+
+@pytest.fixture()
+def as_me_seen(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Record what the route tells the designer about drafting as the user.
+    Act as me is on for person 7 only."""
+    from openexecutive.delegation import workflow_email
+
+    seen: list[bool] = []
+
+    def _context(*, as_me: bool = False) -> str:
+        seen.append(as_me)
+        return "CTX"
+
+    monkeypatch.setattr(route, "build_context_block", _context)
+    monkeypatch.setattr(workflow_email, "available_for", lambda person_id: person_id == 7)
+    return seen
+
+
+@pytest.mark.parametrize(("caller", "expected"), [(7, True), (8, False), (None, False)])
+def test_start_tells_the_designer_whether_the_caller_can_have_drafts_as_them(
+    client: TestClient, seeded: _Queue, as_me_seen: list[bool], monkeypatch: pytest.MonkeyPatch,
+    caller: int | None, expected: bool,
+) -> None:
+    from openexecutive.api.routes import chat as chat_route
+
+    monkeypatch.setattr(chat_route, "_resolve_caller_person_id", lambda request: caller)
+    seeded.append(wd.DesignerQuestion(question="Which competitors?"))
+    _start(client)
+    assert as_me_seen == [expected]
+
+
+@pytest.mark.parametrize(
+    ("owner", "caller", "expected"),
+    [(7, 7, True), (7, 9, False), (None, 7, False)],
+)
+def test_edit_offers_drafts_as_the_creator_only_to_the_creator(
+    client: TestClient, seeded: _Queue, as_me_seen: list[bool], monkeypatch: pytest.MonkeyPatch,
+    owner: int | None, caller: int, expected: bool,
+) -> None:
+    from openexecutive.api.routes import chat as chat_route
+
+    _save(client)
+    as_me_seen.clear()
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: owner)
+    monkeypatch.setattr(chat_route, "_resolve_caller_person_id", lambda request: caller)
+    resp = client.post("/workflows/designer/edit", json={"name": "weekly_competitor_digest"})
+    assert resp.status_code == 200, resp.text
+    assert as_me_seen == [expected]

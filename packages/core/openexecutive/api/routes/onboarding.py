@@ -15,6 +15,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from openexecutive.api import caller as api_caller
 from openexecutive.api.intake_uploads import (
     _INTAKE_GEN_CHARS_PER_FILE,
+    _INTAKE_MAX_DOC_CHARS,
     _gather_intake_attachments,
 )
 from openexecutive.api.models import (
@@ -24,6 +25,7 @@ from openexecutive.api.models import (
     OnboardAnswerRequest,
     OnboardCommitRequest,
     OnboardDepartmentDraft,
+    OnboardGoalDraft,
     OnboardMessageRequest,
     OnboardPersonDraft,
     OnboardReviseRequest,
@@ -46,12 +48,19 @@ from openexecutive.onboarding.interview import (
     transcript_chars,
     validate_draft,
 )
+from openexecutive.onboarding.website import (
+    WebsiteError,
+    WebsitePage,
+    normalize_url,
+    read_website,
+)
 from openexecutive.onboarding.wizard import (
     WizardState,
     get_current_question,
     get_step,
     process_answer,
 )
+from openexecutive.orchestrator.content_trust import wrap_untrusted
 from openexecutive.workflows.gate import ensure_workflow_event
 
 logger = logging.getLogger(__name__)
@@ -294,6 +303,10 @@ class InterviewSession:
     # Hint for the LATEST question only. Lives on the session (not a side
     # dict) so it is swept with everything else and cannot leak.
     last_hint: str = ""
+    # Suggested answers for the LATEST question only, like last_hint.
+    last_options: list[str] = field(default_factory=list)
+    # The company website setup read (normalized), saved on the draft profile.
+    website: str = ""
     saved: bool = False
     last_touched: float = field(default_factory=time.monotonic)
     # Wall-clock time of the stored copy this one matches (interview_store).
@@ -304,7 +317,43 @@ class InterviewSession:
 
 # Where an attached file's text starts in the opening turn. An edit to the
 # description (POST /onboard/interview/revise) replaces only what is before it.
+# The website's pages follow the files under the same marker.
 ATTACHED_MARKER = "\n\n=== Attached: "
+
+
+def _opening_text(
+    description: str,
+    extracted: list[tuple[str, str]],
+    pages: list[WebsitePage],
+) -> str:
+    """The opening turn: what was typed, then each file and website page as
+    untrusted content (someone else's words, never instructions)."""
+    text = description.strip()
+    for name, body in extracted:
+        wrapped = wrap_untrusted(body[:_INTAKE_GEN_CHARS_PER_FILE], source="attachment", author=name)
+        text += f"{ATTACHED_MARKER}{name} ===\n{wrapped}"
+    for page in pages:
+        wrapped = wrap_untrusted(page.text, source="website", author=page.label)
+        text += f"{ATTACHED_MARKER}{page.label} (website) ===\n{wrapped}"
+    return text
+
+
+async def _read_site(website: str) -> tuple[str, list[WebsitePage]]:
+    """The normalized address and its readable pages; ("", []) when none was
+    given. A typo that is no address at all is a 422; a site that can't be
+    read is just no pages, and setup goes on from the text."""
+    if not website.strip():
+        return "", []
+    try:
+        url = normalize_url(website)
+    except WebsiteError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    pages = await read_website(
+        url,
+        max_chars_per_page=_INTAKE_GEN_CHARS_PER_FILE,
+        max_total_chars=_INTAKE_MAX_DOC_CHARS,
+    )
+    return url, pages
 
 # The working table of this process, with a TTL and cap. Every turn is also
 # written through to SQLite (onboarding/interview_store.py), so a restart or
@@ -368,12 +417,14 @@ def _turn_response(session_id: str, session: InterviewSession) -> OnboardTurnRes
     """Render a session's current state. Phase is driven by draft presence."""
     if session.draft is not None:
         d = session.draft
+        profile = d.profile.model_dump()
+        profile["website"] = profile.get("website") or session.website
         return OnboardTurnResponse(
             session_id=session_id,
             phase="draft",
             questions_asked=session.questions_asked,
             max_questions=MAX_QUESTIONS,
-            draft=CompanyProfileResponse(**d.profile.model_dump()),
+            draft=CompanyProfileResponse(**profile),
             draft_people=[
                 OnboardPersonDraft(**p.model_dump()) for p in d.people
             ],
@@ -386,6 +437,7 @@ def _turn_response(session_id: str, session: InterviewSession) -> OnboardTurnRes
                 )
                 for dep in d.departments
             ],
+            draft_goals=[OnboardGoalDraft(**g.model_dump()) for g in d.goals],
             confidence_notes=list(d.confidence_notes),
             summary=d.summary,
         )
@@ -401,6 +453,7 @@ def _turn_response(session_id: str, session: InterviewSession) -> OnboardTurnRes
         max_questions=MAX_QUESTIONS,
         question=question or OPENING_PROMPT,
         question_hint=session.last_hint or None,
+        question_options=list(session.last_options),
     )
 
 
@@ -435,6 +488,7 @@ async def _advance_interview(
     if isinstance(result, CompanyDraft):
         session.draft = result
         session.last_hint = ""
+        session.last_options = []
         # Record the draft as an assistant turn. Without it the transcript ends
         # on a user turn, and the next message would make two user turns in a
         # row — which the Messages API rejects, bricking the session.
@@ -452,6 +506,7 @@ async def _advance_interview(
         session.transcript.append(Turn(role="assistant", text=result.question))
         session.questions_asked += 1
         session.last_hint = result.hint
+        session.last_options = list(result.options)
     _persist_interview(session_id, session)
     return _turn_response(session_id, session)
 
@@ -460,14 +515,17 @@ async def _advance_interview(
 async def start_interview(
     request: Request,
     description: str = Form(""),
+    website: str = Form(""),
     files: list[UploadFile] = File(  # noqa: B008 — FastAPI multipart marker, mirrors chat.py
         default_factory=list
     ),
 ) -> OnboardTurnResponse:
-    """Open a setup session from a free-text description plus optional files.
+    """Open a setup session from a free-text description, an optional
+    website and optional files.
 
-    Returns the fixed opening prompt when no description is given — that path
-    costs no model call and cannot fail.
+    Returns the fixed opening prompt when there is nothing to read (nothing
+    typed, no files, a site that couldn't be read) — that path costs no model
+    call and cannot fail. ``website_pages`` says which pages were read.
     """
     if len(description) > ONBOARD_MESSAGE_MAX_CHARS:
         raise HTTPException(
@@ -480,18 +538,18 @@ async def start_interview(
     # doing it first means a rejected upload cannot leave an orphan session
     # behind — 50 of those would evict every live session via the cap sweep.
     extracted = await _gather_intake_attachments(files or [])
+    site_url, pages = await _read_site(website)
+    page_labels = [p.label for p in pages]
 
     session_id = str(uuid.uuid4())
-    session = InterviewSession(owner_key=api_caller.identity_key(request))
+    session = InterviewSession(owner_key=api_caller.identity_key(request), website=site_url)
     _interview_sessions[session_id] = session
     # Sweep AFTER inserting: the cap is an invariant on what is stored, and
     # sweeping first would let the dict sit one over the cap until the next
     # request touched it.
     _sweep_interview_sessions()
 
-    opening = description.strip()
-    for name, text in extracted:
-        opening += f"{ATTACHED_MARKER}{name} ===\n{text[:_INTAKE_GEN_CHARS_PER_FILE]}"
+    opening = _opening_text(description, extracted, pages)
 
     if not opening.strip():
         # Nothing to work with yet — ask the opening question without a model
@@ -503,7 +561,8 @@ async def start_interview(
     # which an edit of the description (revise) relies on to keep the files.
     session.transcript.append(Turn(role="user", text=opening.rstrip()))
     try:
-        return await _advance_interview(session_id, session)
+        turn = await _advance_interview(session_id, session)
+        return turn.model_copy(update={"website_pages": page_labels})
     except HTTPException:
         # The error body carries no session_id, so the client can never resume
         # this one — leaving it in the dict would orphan it until the TTL, and
@@ -515,6 +574,7 @@ async def start_interview(
 @router.post("/onboard/interview/understand", response_model=OnboardUnderstandingResponse)
 async def understand_description(
     description: str = Form(""),
+    website: str = Form(""),
     files: list[UploadFile] = File(  # noqa: B008 — FastAPI multipart marker, as in start_interview
         default_factory=list
     ),
@@ -534,9 +594,8 @@ async def understand_description(
             detail=f"Description is too long (limit {ONBOARD_MESSAGE_MAX_CHARS:,} characters).",
         )
     extracted = await _gather_intake_attachments(files or [])
-    text = description.strip()
-    for name, body in extracted:
-        text += f"{ATTACHED_MARKER}{name} ===\n{body[:_INTAKE_GEN_CHARS_PER_FILE]}"
+    _, pages = await _read_site(website)
+    text = _opening_text(description, extracted, pages)
     if not text.strip():
         raise HTTPException(status_code=422, detail="Tell me a little about your work first.")
     try:
@@ -638,12 +697,14 @@ async def interview_revise(body: OnboardReviseRequest, request: Request) -> Onbo
         questions_asked=sum(1 for t in kept if t.role == "assistant"),
         draft=None,
         last_hint="",
+        last_options=[],
     )
     response = await _advance_interview(body.session_id, trial)
     session.transcript = trial.transcript
     session.questions_asked = trial.questions_asked
     session.draft = trial.draft
     session.last_hint = trial.last_hint
+    session.last_options = trial.last_options
     session.stored_at = trial.stored_at
     if session.discarded:
         # Start over landed while this turn was running: don't keep it.
@@ -708,9 +769,10 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
         owner_change_blocked,
         owner_email_blocked,
         reconcile_onboarding_departments,
+        save_onboarding_goals,
         save_onboarding_people,
     )
-    from openexecutive.onboarding.interview import DepartmentDraft, PersonDraft
+    from openexecutive.onboarding.interview import DepartmentDraft, GoalDraft, PersonDraft
 
     session = _get_interview(body.session_id, request)
     if session.saved:
@@ -736,6 +798,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     try:
         people = [PersonDraft(**p.model_dump()) for p in body.people]
         departments = [DepartmentDraft(**d.model_dump()) for d in body.departments]
+        goals = [GoalDraft(**g.model_dump()) for g in body.goals]
         merged = CompanyProfile().model_copy(update=update_data)
         profile = CompanyProfile.model_validate(merged.model_dump())
     except Exception as exc:
@@ -757,7 +820,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     # all — find_principal_person() then returns None and caller resolution,
     # alert routing and the scheduler's brief have nobody to target.
     errors = validate_draft(
-        CompanyDraft(profile=profile, people=people, departments=departments)
+        CompanyDraft(profile=profile, people=people, departments=departments, goals=goals)
     )
     if errors:
         # .safe, never .detail — the detailed rendering quotes the rejected
@@ -814,7 +877,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
             ),
         )
 
-    profile = derive_org_structure(profile, people, departments)
+    profile = derive_org_structure(profile, people, departments, goals)
 
     # 2. is_empty() keys off the name — a nameless profile is invisible to
     #    every consumer, including the health check that gates onboarding.
@@ -847,6 +910,7 @@ async def commit_interview(body: OnboardCommitRequest, request: Request) -> Comp
     if owner_email and principal_id is not None:
         link_owner_email(principal_id, owner_email)
     reconcile_onboarding_departments(departments, person_ids)
+    save_onboarding_goals(goals, person_ids, principal_id)
 
     # 7. Same post-onboarding research fire the wizard does, same dedup set.
     if body.session_id not in _onboarding_research_fired:

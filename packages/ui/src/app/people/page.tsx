@@ -6,7 +6,7 @@ import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 
 import { useAskOEFormContext } from "@/components/askoe/AskOEContext";
 import { ChatAppPickers } from "@/components/people/ChatAppPickers";
 import { ContactChangesCard, ContactKeeperSwitch } from "@/components/people/ContactChanges";
-import { TeamModeOffer } from "@/components/people/TeamModeOffer";
+import { TeamModeSwitch } from "@/components/people/TeamModeSwitch";
 import Button from "@/components/ui/Button";
 import { useChatDirectory, useSlackEmailMatch } from "@/components/ui/ChatPicker";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
@@ -31,7 +31,7 @@ import {
   isContact,
   peopleForTab,
   personCardStatus,
-  shouldOfferTeamMode,
+  shouldSwitchToTeam,
   tabsFor,
   type PeopleTab,
 } from "@/lib/peopleKinds";
@@ -572,7 +572,7 @@ export default function PeoplePage() {
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [tab, setTab] = useState<PeopleTab | null>(null);
-  const [offerFor, setOfferFor] = useState<string | null>(null);
+  const [switchedFor, setSwitchedFor] = useState<string | null>(null);
   // Contacts are private to the principal. Until the viewer is known (or if
   // the check fails) nobody is offered them; the API enforces it regardless.
   const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
@@ -637,12 +637,12 @@ export default function PeoplePage() {
             setShowAdd(false);
             // Show the new row where it lives.
             setTab(isContact(p) ? "contacts" : "team");
-            if (shouldOfferTeamMode(mode, p.kind ?? "team", p.is_principal)) setOfferFor(p.full_name);
+            if (shouldSwitchToTeam(mode, p.kind ?? "team", p.is_principal)) setSwitchedFor(p.full_name);
           }}
           onClose={() => setShowAdd(false)}
         />
       )}
-      {offerFor && <TeamModeOffer name={offerFor} onDone={() => setOfferFor(null)} />}
+      {switchedFor && <TeamModeSwitch name={switchedFor} onDone={() => setSwitchedFor(null)} />}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between mb-6">

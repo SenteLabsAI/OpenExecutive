@@ -62,6 +62,7 @@ MAX_OPTION_CHARS = 80
 # name cannot smuggle a block of instructions into the context.
 MAX_ROSTER_NAME_CHARS = 80
 MAX_ROSTER_ROLE_CHARS = 80
+MAX_TOOL_DESCRIPTION_CHARS = 240
 
 _MAX_TOKENS = 8000
 _REPAIR_ECHO_CHARS = 4000
@@ -208,8 +209,41 @@ def _one_line(text: str, limit: int) -> str:
     return flat[:limit]
 
 
-def build_context_block() -> str:
+def _email_as_line(as_me: bool) -> str:
+    """How this user's workflow emails can go."""
+    from openexecutive.delegation.workflow_email import DRAFT_TOOL, REPLY_TOOL, SEND_TOOL
+    from openexecutive.delegation.workflow_reads import TOOLS as READ_TOOLS
+
+    reads = ", ".join(sorted(READ_TOOLS))
+    if as_me:
+        return (
+            "Email as the user: their own mailbox is connected (Act as me). When an "
+            f"email should come from them, in their voice, use {DRAFT_TOOL} (saves a "
+            f"draft in their mailbox for them to send) or {SEND_TOOL} (sends it as "
+            "them). When it should come from the Executive, use the gateway's email "
+            "tools. If it isn't clear which of the three they want, ask. When they say "
+            "who an email as them goes to, write those addresses into the step's goal: "
+            "emails to them, or to the user, go without asking, and the first email to "
+            "any other address waits for the user's approval. To read their own mail or "
+            f"calendar, use {reads}. To answer an email in their inbox the way their "
+            f"Handle it for me does (sent on its own when its rules allow, otherwise a card "
+            f"for them), use {REPLY_TOOL} with the thread from those reads. A workflow that reads them runs only for them and "
+            "reports only to them, and none of its steps may use web search, gateway "
+            "tools, scripts or other workflows: if they want those too, suggest a "
+            "separate workflow."
+        )
+    return (
+        "Email as the user: not available, since they haven't connected their own "
+        f"mailbox under Act as me. Do not use {DRAFT_TOOL}, {SEND_TOOL}, {REPLY_TOOL} or {reads}; "
+        "emails come from the Executive's own address through the gateway's email tools."
+    )
+
+
+def build_context_block(*, as_me: bool = False) -> str:
     """Render the live facts the designer needs, for the FIRST user turn.
+
+    ``as_me``: the person designing it may have its emails written as them
+    (``workflow_email.available_for``).
 
     Read once per session by the route and stored, so the replayed first turn
     stays identical across the conversation. Every source degrades to an
@@ -254,7 +288,9 @@ def build_context_block() -> str:
 
     sections = [f"- {s.value}" for s in WorkflowSection]
 
-    builtins = [f"- {t.name}: {t.description}" for t in tool_catalog.builtin_tools()]
+    builtins = [
+        f"- {t.name}: {_first_sentence(t.description)}" for t in tool_catalog.builtin_tools()
+    ]
     gateway = (
         "connected — use search_available_tools to find its tools"
         if tool_catalog.gateway_available()
@@ -272,9 +308,23 @@ def build_context_block() -> str:
         f"The user's timezone: {get_user_timezone().key}. Cadences are in UTC.\n\n"
         "Sections:\n" + "\n".join(sections) + "\n\n"
         f"External tool gateway (email, sheets, files, etc.): {gateway}.\n"
-        "Built-in tools (always available):\n" + "\n".join(builtins) + "\n\n"
+        "Built-in tools (always available; the oe__ tools are the same tools "
+        "the Executive uses in chat, so anything it did in chat a step can "
+        "do too):\n" + "\n".join(builtins) + "\n\n"
+        + _email_as_line(as_me) + "\n\n"
         "Workflow names already taken (do not reuse): " + ", ".join(taken)
     )
+
+
+def _first_sentence(text: str) -> str:
+    """The first sentence of a tool description, kept to one short line.
+
+    Chat tools carry long descriptions written for chat; the designer only
+    needs enough to pick the right one.
+    """
+    line = _one_line(text, MAX_TOOL_DESCRIPTION_CHARS)
+    end = line.find(". ")
+    return line[: end + 1] if end > 0 else line
 
 
 def _name_taken(name: str) -> bool:

@@ -26,6 +26,18 @@ export interface ActionTaken {
   // An approval card's id (propose_actions): the chat shows the card itself
   // under the message.
   decision_id?: number;
+  // A draft written as you (ghostwrite_email): the chat shows it under the
+  // message with a Send button.
+  draft?: ChatDraft;
+}
+
+export interface ChatDraft {
+  row: number;
+  to: string[];
+  cc: string[];
+  subject: string;
+  // The start of the draft's text, as saved.
+  preview: string;
 }
 
 // Names the round of tool calls currently in flight, so the progress line can
@@ -151,6 +163,22 @@ export interface MessageAdded {
   ids: string[];
 }
 
+// The turn held steps after reading something from outside: they wait on the
+// person's go, offered as Approve / Not now under the reply.
+export interface HeldStepsEvent {
+  type: "held_steps";
+  session_id?: string;
+  steps: string[];
+}
+
+// What the content check flagged this turn, in plain words: shown under the
+// reply (orchestrator/outside_content.py `pending_flags`).
+export interface FlagsEvent {
+  type: "flags";
+  session_id?: string;
+  flags: string[];
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
@@ -158,7 +186,9 @@ export type StreamItem =
   | FormPatch
   | Activity
   | SourcesEvent
-  | MessageAdded;
+  | MessageAdded
+  | HeldStepsEvent
+  | FlagsEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
@@ -403,6 +433,15 @@ export interface OnboardDepartmentDraft {
   authority_level: string;
 }
 
+/** One of this year's goals. owner_name is a drafted person's name (blank =
+ * the owner of the workspace); department_title names a drafted department. */
+export interface OnboardGoalDraft {
+  title: string;
+  target: string;
+  owner_name: string;
+  department_title: string;
+}
+
 export interface OnboardTurn {
   session_id: string;
   phase: "question" | "draft";
@@ -410,11 +449,17 @@ export interface OnboardTurn {
   max_questions: number;
   question: string | null;
   question_hint: string | null;
+  /** Suggested answers, shown as buttons to tap. */
+  question_options: string[];
   draft: CompanyProfile | null;
   draft_people: OnboardPersonDraft[];
   draft_departments: OnboardDepartmentDraft[];
+  draft_goals: OnboardGoalDraft[];
   confidence_notes: string[];
   summary: string | null;
+  /** The website pages read for this setup (e.g. "example.com/team"), on the
+   * opening turn only. Empty with a website given: it couldn't be read. */
+  website_pages?: string[];
 }
 
 export interface OnboardTranscriptTurn {
@@ -436,10 +481,12 @@ async function onboardError(res: Response, fallback: string): Promise<Error> {
 
 export async function startOnboardInterview(
   description: string,
-  files: File[] = []
+  files: File[] = [],
+  website = ""
 ): Promise<OnboardTurn> {
   const form = new FormData();
   form.append("description", description);
+  if (website.trim()) form.append("website", website.trim());
   for (const file of files) form.append("files", file);
   const res = await fetch(`${API_BASE}/onboard/interview/start`, {
     method: "POST",
@@ -450,7 +497,7 @@ export async function startOnboardInterview(
 }
 
 // What the first free-text description already says. Every field is null when
-// the text does not say; the confirm step asks for those.
+// the text does not say; the interview asks for what matters.
 export interface OnboardUnderstanding {
   mode: WorkspaceMode | null;
   role_kind: RoleKind | null;
@@ -462,10 +509,12 @@ export interface OnboardUnderstanding {
 
 export async function understandOnboarding(
   description: string,
-  files: File[] = []
+  files: File[] = [],
+  website = ""
 ): Promise<OnboardUnderstanding> {
   const form = new FormData();
   form.append("description", description);
+  if (website.trim()) form.append("website", website.trim());
   for (const file of files) form.append("files", file);
   const res = await fetch(`${API_BASE}/onboard/interview/understand`, {
     method: "POST",
@@ -530,6 +579,7 @@ export async function commitOnboardDraft(
   profile: CompanyProfile,
   people: OnboardPersonDraft[],
   departments: OnboardDepartmentDraft[],
+  goals: OnboardGoalDraft[],
   /** The principal's sign-in email, confirmed on the review screen. Blank = don't set one. */
   ownerEmail = ""
 ): Promise<CompanyProfile> {
@@ -541,6 +591,7 @@ export async function commitOnboardDraft(
       profile,
       people,
       departments,
+      goals,
       owner_email: ownerEmail.trim() || null,
     }),
   });
@@ -550,6 +601,8 @@ export async function commitOnboardDraft(
 
 export interface CompanyProfile {
   name: string;
+  /** The company's own site, as setup read it. Absent from older servers. */
+  website?: string;
   industry: string;
   stage: string;
   founding_year: number | null;
@@ -1377,6 +1430,14 @@ export interface ChatMessage {
   // User rows of a shared chat only: who wrote it.
   sender_person_id?: number;
   sender_name?: string;
+  // The last reply only: steps its turn held after reading something from
+  // outside, still waiting on the person's go. From the stream's
+  // `held_steps` event, or re-attached when the chat is reloaded. Shown as
+  // Approve / Not now buttons; Approve sends the go as their next message.
+  held_steps?: string[];
+  // The last reply only: what the content check flagged in what its turn
+  // read, from the stream's `flags` event or re-attached on reload.
+  flags?: string[];
 }
 
 export interface Decision {
@@ -1735,12 +1796,17 @@ export async function getSetupStatus(signal?: AbortSignal): Promise<SetupStatus>
   return res.json();
 }
 
-// Settings → Your Executive → When I read outside content: how far text
-// someone else wrote holds what it does next (orchestrator/outside_mode.py).
+// Settings → Your Executive → When should I check with you?: the safety
+// level, "ask" (Careful), "outsiders" (Balanced) or "trust" (Hands-off), and
+// the channels set apart from it (orchestrator/outside_mode.py).
 export type OutsideContentMode = "ask" | "outsiders" | "trust";
 
 export interface OutsideContentSetting {
   mode: OutsideContentMode;
+  // Channel id → its own level; a channel not listed follows `mode`.
+  channels: Record<string, OutsideContentMode>;
+  // The channels a level can be set on, in order.
+  channel_ids: string[];
   can_change: boolean;
 }
 
@@ -1750,11 +1816,16 @@ export async function getOutsideContent(signal?: AbortSignal): Promise<OutsideCo
   return res.json();
 }
 
-export async function setOutsideContent(mode: OutsideContentMode): Promise<OutsideContentSetting> {
+// `channels`: a level sets that channel apart, null makes it follow `mode`
+// again; channels left out keep what they have.
+export async function setOutsideContent(
+  mode: OutsideContentMode,
+  channels?: Record<string, OutsideContentMode | null>,
+): Promise<OutsideContentSetting> {
   const res = await fetch(`${API_BASE}/executive/outside-content`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
+    body: JSON.stringify(channels ? { mode, channels } : { mode }),
   });
   if (res.status === 403) throw new Error("Only the account owner can change this.");
   if (!res.ok) throw new Error("Couldn't save that. Try again.");
@@ -1815,6 +1886,9 @@ export interface WorkspaceSettings extends PrincipalRole {
   // principal's addresses unless `company_domains_custom`.
   company_domains?: string[];
   company_domains_custom?: boolean;
+  // Whether any department exists; the Departments tab shows only then.
+  // Optional so an older API build reads as "yes" (the tab stays).
+  has_departments?: boolean;
 }
 
 // Partial update: only the fields present change. `timezone: null` (or "")
@@ -2266,6 +2340,10 @@ export interface ReflectionMiss {
   /** `company`: something only this workspace knows would have fixed it;
    * `product`: it couldn't have done it with what it has. */
   kind: "company" | "product";
+  /** The finer reason within the kind: `term`, `fact`, `preference`,
+   * `specialist`, `do_it` (company) or `tool`, `cant` (product); null on a
+   * miss graded before causes, or when the grader gave none. */
+  cause: string | null;
   signals: string[];
   /** How its nightly replays went: "open" until one passes, "closed" (it
    * would go right today), "evidence" (depends on what that day held). */
@@ -2332,13 +2410,21 @@ export async function getReflection(signal?: AbortSignal): Promise<ReflectionSta
   return res.json();
 }
 
-export async function forgetReflectionMiss(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/memories/reflection/misses/${id}`, { method: "DELETE" });
+/** `keepalive` lets the request finish while the page is closing. */
+export async function forgetReflectionMiss(id: number, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/reflection/misses/${id}`, {
+    method: "DELETE",
+    keepalive: opts.keepalive,
+  });
   if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
 }
 
-export async function forgetReflectionLesson(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/memories/reflection/lessons/${id}`, { method: "DELETE" });
+/** `keepalive` lets the request finish while the page is closing. */
+export async function forgetReflectionLesson(id: number, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/reflection/lessons/${id}`, {
+    method: "DELETE",
+    keepalive: opts.keepalive,
+  });
   if (!res.ok) throw await delegationError(res, "Couldn't forget it.");
 }
 
@@ -2541,6 +2627,26 @@ export async function sendReplyCard(
   const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
   const message = typeof detail.message === "string" ? detail.message : "Couldn't send that reply.";
   const code = typeof detail.code === "string" ? detail.code : res.status === 404 ? "draft_gone" : "error";
+  if (res.status === 409 && code === "confirm") {
+    return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
+  }
+  throw new ReplySendError(message, code);
+}
+
+// Send a draft the chat wrote as you, exactly as it was written (POST
+// /delegation/drafts/{row}/send). `threadMovedOn` is your second yes when a
+// newer message arrived in that conversation.
+export async function sendChatDraft(row: number, threadMovedOn = false): Promise<SendReplyResult> {
+  const res = await fetch(`${API_BASE}/delegation/drafts/${row}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_moved_on: threadMovedOn }),
+  });
+  if (res.ok) return { status: "sent" };
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
+  const message = typeof detail.message === "string" ? detail.message : "Couldn't send that email.";
+  const code = typeof detail.code === "string" ? detail.code : "error";
   if (res.status === 409 && code === "confirm") {
     return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
   }
@@ -4359,7 +4465,10 @@ export type PeriodType = "week" | "month" | "quarter" | "year" | "ongoing";
 
 export interface Goal {
   id: number | null;
-  department_slug: string;
+  // Null for a goal with no department: it stands on its own.
+  department_slug: string | null;
+  // Who it is on when set; null = its department's lead, else the principal.
+  owner_person_id?: number | null;
   period_type: PeriodType;
   period_value: string;
   key_result: string;
@@ -4459,6 +4568,22 @@ export interface GoalCreate {
   target?: string;
   current?: string;
   status?: Goal["status"];
+  owner_person_id?: number | null;
+}
+
+/** A goal as GET /goals returns it: its owner and department resolved. */
+export interface GoalView extends Goal {
+  // Its own owner, else its department's lead, else the principal.
+  owner_id: number | null;
+  owner_name: string;
+  department_title: string | null;
+}
+
+/** Every goal, with or without a department. */
+export async function listGoals(): Promise<GoalView[]> {
+  const res = await fetch(`${API_BASE}/goals`, { cache: "no-store" });
+  if (!res.ok) throw await goalError(res, "Couldn't load goals");
+  return res.json();
 }
 
 // The server's reason when it gives one — a string `detail`, or the first
@@ -4485,8 +4610,8 @@ export async function createGoal(slug: string, body: GoalCreate): Promise<Goal> 
   return res.json();
 }
 
-/** Add a goal by area name: an existing area by slug or title, else a new
- * one of that name, else (blank) "General". For a workspace with no areas. */
+/** Add a goal, naming its department in words: an existing one by slug or
+ * title, else a new one of that name. Blank = no department. */
 export async function createGoalInArea(area: string, body: GoalCreate): Promise<Goal> {
   const res = await fetch(`${API_BASE}/goals`, {
     method: "POST",
@@ -4504,6 +4629,25 @@ export interface GoalPatch {
   target?: string;
   current?: string;
   status?: Goal["status"];
+  // Only through updateAnyGoal. null clears: no owner of its own / no department.
+  owner_person_id?: number | null;
+  department_slug?: string | null;
+}
+
+/** Edit a goal wherever it is, including its owner and department. */
+export async function updateAnyGoal(goalId: number, patch: GoalPatch): Promise<Goal> {
+  const res = await fetch(`${API_BASE}/goals/${goalId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw await goalError(res, "Couldn't save the goal");
+  return res.json();
+}
+
+export async function deleteAnyGoal(goalId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/goals/${goalId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete Goal: ${res.statusText}`);
 }
 
 export async function updateGoal(slug: string, goalId: number, patch: GoalPatch): Promise<Goal> {
@@ -4539,6 +4683,14 @@ export interface AvailabilityWindow {
 // Executive emails or invites only when the principal asks it to directly.
 export type PersonKind = "team" | "contact";
 
+// Other ways to reach someone (people/contact_info.py), for the reader only.
+export type DetailKind = "phone" | "mobile" | "website" | "linkedin" | "social" | "address";
+
+export interface ContactDetail {
+  kind: DetailKind;
+  value: string;
+}
+
 export interface Person {
   id: number;
   full_name: string;
@@ -4553,6 +4705,8 @@ export interface Person {
   slack_user_id: string | null;
   telegram_chat_id: string | null;
   discord_user_id: string | null;
+  // Phone, website, profiles, postal address; some from their signature.
+  details?: ContactDetail[];
   preferred_channel: string;
   // The chat app they last talked to the Executive in (slack, discord or
   // telegram); with preferred_channel "any" messages go there first.
@@ -4596,7 +4750,7 @@ export interface ContactChange {
   id: number;
   person_id: number | null;
   action: "add" | "update";
-  field: "contact" | "full_name" | "role" | "email_alias";
+  field: "contact" | "full_name" | "role" | "email_alias" | DetailKind;
   email: string;
   full_name: string;
   old_value: string;
@@ -4627,6 +4781,30 @@ async function contactsCall<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getContactChanges(personId?: number): Promise<ContactChanges> {
   return contactsCall(`/changes${personId !== undefined ? `?person_id=${personId}` : ""}`);
+}
+
+// What the Executive remembers about one contact (people/contact_notes.py),
+// from the principal's own mail and meetings. null when nothing yet.
+export interface ContactNote {
+  person_id: number;
+  note: string;
+  topics: string[];
+  last_emailed_at: string | null;
+  last_heard_at: string | null;
+  last_met_at: string | null;
+  next_meeting_at: string | null;
+  next_meeting_title: string;
+  emailed_count: number;
+  met_count: number;
+  note_written_at: string | null;
+  updated_at: string;
+}
+
+export async function getContactNote(personId: number): Promise<ContactNote | null> {
+  const res = await fetch(`${API_BASE}/contacts/${personId}/note`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Request failed: ${res.statusText}`);
+  return res.json();
 }
 
 export function setContactKeeperMode(mode: ContactKeeperMode): Promise<ContactChanges> {
@@ -4716,6 +4894,8 @@ export async function createPerson(body: PersonCreate): Promise<Person> {
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
+  // A detail that isn't plainly its kind: the server names the line.
+  if (res.status === 422) throw new Error(await errorDetail(res, "Check the phone, website and more lines."));
   if (!res.ok) throw new Error(`Failed to create person: ${res.statusText}`);
   return res.json();
 }
@@ -4727,6 +4907,8 @@ export interface PersonPatch {
   email?: string | null;
   // The full list; replaces the current one.
   email_aliases?: string[];
+  // The full list; replaces the current one.
+  details?: ContactDetail[];
   slack_user_id?: string | null;
   telegram_chat_id?: string | null;
   discord_user_id?: string | null;
@@ -4747,6 +4929,8 @@ export async function updatePerson(id: number, patch: PersonPatch): Promise<Pers
   });
   if (res.status === 403) throw new Error(PEOPLE_PRINCIPAL_ONLY);
   if (res.status === 409) throw new Error(await errorDetail(res, "That address is already on another person."));
+  // A detail that isn't plainly its kind: the server names the line.
+  if (res.status === 422) throw new Error(await errorDetail(res, "Check the phone, website and more lines."));
   if (!res.ok) throw new Error(`Failed to update person: ${res.statusText}`);
   return res.json();
 }
@@ -4956,9 +5140,14 @@ export interface GoalBrief {
   current: string;
   target: string;
   status: string; // "at_risk" | "off_track"
+  // Who it is on (its own owner, else the department's lead, else the
+  // principal). Optional for older API builds.
+  owner_id?: number | null;
+  owner_name?: string;
 }
 
 export interface DepartmentBriefItem {
+  // "" for the row holding the goals with no department ("Other goals").
   slug: string;
   title: string;
   authority_level: string;

@@ -111,6 +111,7 @@ def _keep_private(session: Any, person: Any) -> bool:
     if pinned is None:
         return False
     pinned.touched_mail = pinned.read_mail = True
+    pinned.mail_vetted = False  # re-vetted only by the loop's check_mail_read
     session_id = getattr(session, "session_id", None)
     if not session_id:
         return False

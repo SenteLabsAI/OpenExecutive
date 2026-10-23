@@ -380,9 +380,9 @@ async def test_solo_hint_follows_the_role_kind(
 
 
 def test_solo_hints_are_role_neutral_where_they_should_be() -> None:
-    """Only the owner hint asks about cash and runway; the neutral and the
-    in-house hints ask about the role; every hint keeps the one-person,
-    no-departments draft rule."""
+    """No hint asks about cash or runway (setup never asks about finances);
+    the neutral and the in-house hints ask about the role; every hint keeps
+    the one-person, no-departments draft rule."""
     neutral = iv.SOLO_HINT.lower()
     assert "run the business alone" not in neutral
     assert "cash" not in neutral and "runway" not in neutral
@@ -390,8 +390,9 @@ def test_solo_hints_are_role_neutral_where_they_should_be() -> None:
         assert word in neutral, word
 
     owner = iv.SOLO_ROLE_HINTS["owner"].lower()
-    for word in ("offer", "customers", "pricing", "cash and runway", "top goals"):
+    for word in ("offer", "customers", "pricing", "top goals"):
         assert word in owner, word
+    assert "cash" not in owner and "runway" not in owner
 
     in_house = iv.SOLO_ROLE_HINTS["in_house"].lower()
     assert "employer" in in_house
@@ -812,3 +813,79 @@ async def test_prose_with_a_mid_text_question_mark_is_not_shown(
     _install(monkeypatch, provider)
     with pytest.raises(iv.InterviewError):
         await iv.advance(_opening(), questions_asked=0)
+
+
+# ── quick questions and goals ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_question_carries_its_suggested_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _ScriptedProvider(
+        [
+            _tool_response(
+                iv.ASK_TOOL_NAME,
+                {"question": "Who is it for?", "options": ["Small teams", "Enterprises"]},
+            )
+        ]
+    )
+    _install(monkeypatch, provider)
+    result = await iv.advance(_opening())
+    assert isinstance(result, iv.Question)
+    assert result.options == ["Small teams", "Enterprises"]
+    ask = next(t for t in provider.calls[0]["tools"] if t["name"] == iv.ASK_TOOL_NAME)
+    assert "options" in ask["input_schema"]["properties"]
+
+
+def test_bad_options_cost_the_buttons_not_the_question() -> None:
+    long = "x" * (iv.MAX_OPTION_CHARS + 1)
+    q = iv.Question.model_validate(
+        {"question": "Q?", "options": ["A", " ", "A", long, 3, "B", "C", "D", "E"]}
+    )
+    assert q.options == ["A", "B", "C", "D"]
+    assert iv.Question.model_validate({"question": "Q?", "options": "A"}).options == []
+    assert iv.Question.model_validate({"question": "Q?", "options": None}).options == []
+
+
+def test_setup_asks_at_most_four_questions() -> None:
+    assert iv.MAX_QUESTIONS == 4
+
+
+def test_validate_draft_accepts_goals_with_known_owners_and_departments() -> None:
+    draft = _draft(
+        goals=[
+            {"title": "Launch same-day delivery", "owner_name": "sam okafor"},
+            {"title": "Cut returns", "department_title": "operations"},
+            {"title": "Hire a CFO", "owner_name": None, "target": None},
+        ]
+    )
+    assert iv.validate_draft(draft) == []
+    assert draft.goals[2].owner_name == "" and draft.goals[2].target == ""
+
+
+def test_validate_draft_rejects_a_goal_owned_by_a_stranger() -> None:
+    draft = _draft(goals=[{"title": "Launch", "owner_name": "Pat Doe"}])
+    errors = iv.validate_draft(draft)
+    assert any("owner_name 'Pat Doe'" in e for e in _details(errors))
+    assert all("Pat Doe" not in e for e in _safes(errors))
+
+
+def test_validate_draft_rejects_a_goal_in_an_undrafted_department() -> None:
+    draft = _draft(goals=[{"title": "Launch", "department_title": "Marketing"}])
+    assert any("department_title 'Marketing'" in e for e in _details(iv.validate_draft(draft)))
+
+
+def test_validate_draft_bounds_goals() -> None:
+    blank = _draft(goals=[{"title": "  "}])
+    assert "Every goal needs a name." in _safes(iv.validate_draft(blank))
+    many = _draft(goals=[{"title": f"Goal {i}"} for i in range(iv.MAX_GOALS + 1)])
+    assert any("lot of goals" in e for e in _safes(iv.validate_draft(many)))
+    long = _draft(goals=[{"title": "x" * (iv.MAX_GOAL_CHARS + 1)}])
+    assert any("goal is too long" in e for e in _safes(iv.validate_draft(long)))
+
+
+def test_the_prompt_never_asks_about_departments_or_finances() -> None:
+    text = ONBOARDING_INTERVIEWER_SYSTEM
+    assert "Never ask about departments" in text
+    assert "Financials: never ask" in text
+    assert "ONLY when the user's own words or files already list" in text
+    assert "never use field names" in text

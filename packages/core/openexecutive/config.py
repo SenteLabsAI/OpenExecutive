@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     # the request carries an `anthropic-workspace-id` header (#128). A
     # workspace-scoped key needs no value here.
     anthropic_workspace_id: str | None = Field(None, alias="ANTHROPIC_WORKSPACE_ID")
+    # Pydantic Logfire write token. Unset (the default) leaves request tracing
+    # off entirely; see openexecutive.observability for what a trace records.
+    logfire_token: str | None = Field(None, alias="LOGFIRE_TOKEN")
 
     default_model: str = Field("claude-sonnet-5-5", alias="DEFAULT_MODEL")
     # The model the specialists with deep reasoning on by default (CFO, legal,
@@ -869,7 +872,7 @@ class Settings(BaseSettings):
     mcp_servers_config_path: Path = Field(
         _ROOT / "company" / "mcp_servers.json", alias="MCP_SERVERS_CONFIG_PATH"
     )
-    # Directories a workflow action step's `oe__read_file` tool may read —
+    # Directories `read_document` (a workflow step's `oe__read_document`) may read —
     # where tools that download files (e.g. Gmail attachments via
     # workspace-mcp) save them. Comma-separated. Empty means workspace-mcp's
     # own default: $WORKSPACE_ATTACHMENT_DIR, else ~/.workspace-mcp/attachments.
@@ -1219,6 +1222,12 @@ class Settings(BaseSettings):
     # drafts limit above. Past it, replies wait on cards as before.
     delegation_handle_it_max_sends_per_day: int = Field(
         20, alias="DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", ge=1, le=500
+    )
+    # Workflows that send email as their creator (delegation.workflow_email,
+    # oe__send_email_as_me): the most such emails a day per person, within
+    # the drafts limit above. Past it the step is told to stop.
+    delegation_workflow_max_sends_per_day: int = Field(
+        20, alias="DELEGATION_WORKFLOW_MAX_SENDS_PER_DAY", ge=1, le=500
     )
     # Whether the owner may let team members use Act as me for themselves
     # (Delegate → Act as me → "Let team members use it", off until they turn

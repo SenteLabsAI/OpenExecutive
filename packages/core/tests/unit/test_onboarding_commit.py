@@ -25,11 +25,13 @@ from openexecutive.onboarding.commit import (
     derive_org_structure,
     link_owner_email,
     reconcile_onboarding_departments,
+    save_onboarding_goals,
     save_onboarding_people,
 )
 from openexecutive.onboarding.interview import (
     CompanyDraft,
     DepartmentDraft,
+    GoalDraft,
     PersonDraft,
 )
 from openexecutive.people import store as people_store
@@ -741,3 +743,79 @@ def test_adopt_never_renames_onto_an_existing_name(people_db: Path) -> None:
 def test_adopt_is_a_no_op_when_the_name_already_matches(people_db: Path) -> None:
     people_store.upsert_person(full_name="Ada Lovelace", email="ada@example.com", is_principal=True)
     assert adopt_owner_row("ada@example.com", "ada lovelace", "ada@example.com") is False
+
+
+# ── goals ────────────────────────────────────────────────────────────────────
+
+
+def test_goals_are_saved_with_owners_and_no_department(empty_dept_db: Path) -> None:
+    created = save_onboarding_goals(
+        [
+            GoalDraft(title="Launch the hosted version", target="Live by June"),
+            GoalDraft(title="Ship the mobile apps", owner_name="dan lee"),
+            GoalDraft(title="  "),
+        ],
+        {"Rufus Ames": 1, "Dan Lee": 2},
+        principal_id=1,
+    )
+    assert created == 2
+    goals = {g.key_result: g for g in dept_store.list_all_goals()}
+    assert set(goals) == {"Launch the hosted version", "Ship the mobile apps"}
+    launch = goals["Launch the hosted version"]
+    assert launch.department_slug is None
+    assert launch.owner_person_id == 1
+    assert launch.target == "Live by June"
+    assert launch.period_type == "year"
+    assert goals["Ship the mobile apps"].owner_person_id == 2
+    # No department was drafted, so none exists.
+    assert dept_store.list_departments() == []
+
+
+def test_a_goal_lands_in_the_drafted_department(empty_dept_db: Path) -> None:
+    reconcile_onboarding_departments([DepartmentDraft(title="Engineering")], {})
+    save_onboarding_goals(
+        [GoalDraft(title="Ship v2", department_title="engineering")], {}, principal_id=7
+    )
+    (goal,) = dept_store.list_all_goals()
+    assert goal.department_slug == "engineering"
+    # The principal, not the department's head: the review showed "you".
+    assert goal.owner_person_id == 7
+
+
+def test_rerunning_setup_does_not_duplicate_goals(empty_dept_db: Path) -> None:
+    drafts = [GoalDraft(title="Launch the hosted version")]
+    assert save_onboarding_goals(drafts, {}, principal_id=1) == 1
+    again = [GoalDraft(title="launch the hosted version "), GoalDraft(title="Win customers")]
+    assert save_onboarding_goals(again, {}, principal_id=1) == 1
+    assert sorted(g.key_result for g in dept_store.list_all_goals()) == [
+        "Launch the hosted version",
+        "Win customers",
+    ]
+
+
+def test_last_years_goal_does_not_block_this_years(empty_dept_db: Path) -> None:
+    dept_store.insert_goal(
+        None, period_type="year", period_value="2001", key_result="Launch", target=""
+    )
+    assert save_onboarding_goals([GoalDraft(title="launch")], {}, principal_id=1) == 1
+    assert sorted(g.period_value for g in dept_store.list_all_goals())[0] == "2001"
+    assert len(dept_store.list_all_goals()) == 2
+
+
+def test_goal_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a: object, **k: object) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(dept_store, "initialize_db", boom)
+    assert save_onboarding_goals([GoalDraft(title="Launch")], {}, principal_id=1) == 0
+
+
+def test_goals_become_this_years_priorities() -> None:
+    d = _draft()
+    goals = [GoalDraft(title="Launch"), GoalDraft(title=" Win customers ")]
+    out = derive_org_structure(d.profile, d.people, d.departments, goals)
+    assert out.strategic_priorities.current_year == ["Launch", "Win customers"]
+    # No goals leaves the drafted priorities as they were.
+    d.profile.strategic_priorities.current_year = ["Grow"]
+    kept = derive_org_structure(d.profile, d.people, d.departments)
+    assert kept.strategic_priorities.current_year == ["Grow"]

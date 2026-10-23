@@ -356,6 +356,35 @@ def test_the_chip_links_to_the_draft_only_when_one_was_saved() -> None:
     assert evil is not None and evil["link"] is None
 
 
+def test_the_chip_carries_the_saved_draft_for_send() -> None:
+    from openexecutive.orchestrator.action_chips import summarize_action
+
+    chip = summarize_action(
+        tool_name="ghostwrite_email", tool_input={},
+        tool_result=json.dumps({
+            "status": "drafted", "draft_row": 7, "to": [DANA], "cc": [], "subject": "Re: pilot",
+            "preview": "Yes to Oct 5.",
+        }),
+    )
+    assert chip is not None
+    assert chip["draft"] == {"row": 7, "to": [DANA], "cc": [], "subject": "Re: pilot", "preview": "Yes to Oct 5."}
+    # No row kept (or not a real one): no Send under the chat.
+    for row in (None, 0, True, "7"):
+        bare = summarize_action(
+            tool_name="ghostwrite_email", tool_input={},
+            tool_result=json.dumps({"status": "drafted", "to": [DANA], "draft_row": row}),
+        )
+        assert bare is not None and "draft" not in bare
+
+
+def test_a_saved_draft_names_its_row(roster: SimpleNamespace, composer: list[str]) -> None:
+    from openexecutive.delegation import drafts
+
+    result = _run(_session(FakeMailbox()), {"intent": "Yes to Oct 5.", "thread_id": "t1"})
+    row = drafts.get_row(result["draft_row"])
+    assert row is not None and row.source == drafts.SOURCE_CHAT and row.thread_id == "t1"
+
+
 def test_it_has_an_activity_label() -> None:
     from openexecutive.orchestrator.activity_labels import _LABELS
 

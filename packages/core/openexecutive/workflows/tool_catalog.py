@@ -116,7 +116,11 @@ class ToolInfo:
     # True: only reads. None: may change something (unknown). Never False —
     # we can't prove a tool writes, only that its name says it reads.
     read_only: bool | None = None
-    source: str = "mcp"  # "mcp" | "builtin"
+    # "mcp" | "builtin" | "server" (the model's own tool: web search, added to
+    # the model's tools rather than called; ``workflows.chat_tools``)
+    source: str = "mcp"
+    # A call's timeout when it runs a whole job (None: the step's default).
+    timeout_s: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -187,6 +191,11 @@ def _read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> b
     if _has_word(_name_words(name), _WRITE_WORDS):
         return None
     return True if name.split("__", 1)[-1].lower().startswith(_READ_VERBS) else None
+
+
+def read_only_label(name: str, input_schema: dict[str, Any] | None = None) -> bool | None:
+    """True when ``name`` only reads (see ``_read_only_label``), else None."""
+    return _read_only_label(name, input_schema)
 
 
 # ── MCP: parse the gateway's search_tools output ────────────────────────────
@@ -346,89 +355,6 @@ def resolve_readable_file(
     return resolved
 
 
-async def _read_file(tool_input: dict[str, Any]) -> str:
-    """Extract text from a file a previous tool call downloaded.
-
-    A scanned PDF is converted (``knowledge.pdf_reader``) rather than
-    reported as unreadable.
-    """
-    from openexecutive.knowledge.loader import read_document_text
-
-    resolved = resolve_readable_file(str(tool_input.get("path") or "").strip())
-    if isinstance(resolved, str):
-        return _err(resolved)
-    try:
-        result = await read_document_text(resolved)
-    except Exception as exc:
-        logger.warning("oe__read_file: extraction failed (%s)", type(exc).__name__)
-        return _err("could not read that file")
-    if not result.text.strip():
-        return _err(result.note or "no text could be extracted")
-    text = result.text
-    cap = get_settings().tool_result_max_chars
-    return text if len(text) <= cap else text[:cap] + "\n…[truncated]"
-
-
-async def _message_person(tool_input: dict[str, Any]) -> str:
-    from openexecutive.orchestrator.schedule_tools import handle_message_person
-
-    return await handle_message_person(tool_input)
-
-
-async def _create_alert(tool_input: dict[str, Any]) -> str:
-    from openexecutive.orchestrator.alert_tools import handle_create_alert
-
-    return await handle_create_alert(tool_input)
-
-
-def _builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
-    from openexecutive.orchestrator.alert_tools import CREATE_ALERT_TOOL
-    from openexecutive.orchestrator.schedule_tools import MESSAGE_PERSON_TOOL
-
-    return {
-        "oe__read_file": (
-            ToolInfo(
-                name="oe__read_file",
-                description=(
-                    "Read the text of a PDF, Word, Excel, CSV, Markdown or text "
-                    "file that another tool downloaded (e.g. an email "
-                    "attachment). Pass the file path that tool returned."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Absolute file path."}
-                    },
-                    "required": ["path"],
-                },
-                read_only=True,
-                source="builtin",
-            ),
-            _read_file,
-        ),
-        "oe__message_person": (
-            ToolInfo(
-                name="oe__message_person",
-                description=MESSAGE_PERSON_TOOL["description"],
-                input_schema=MESSAGE_PERSON_TOOL["input_schema"],
-                read_only=None,
-                source="builtin",
-            ),
-            _message_person,
-        ),
-        "oe__create_alert": (
-            ToolInfo(
-                name="oe__create_alert",
-                description=CREATE_ALERT_TOOL["description"],
-                input_schema=CREATE_ALERT_TOOL["input_schema"],
-                read_only=None,
-                source="builtin",
-            ),
-            _create_alert,
-        ),
-    }
-
-
 def _extension_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     from openexecutive.orchestrator import extensions
 
@@ -454,13 +380,76 @@ def _extension_specs() -> dict[str, tuple[ToolInfo, Handler]]:
     return specs
 
 
+def _chat_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    from openexecutive.workflows import chat_tools
+
+    try:
+        return chat_tools.workflow_specs()
+    except Exception:
+        logger.warning("tool_catalog: chat tools unavailable", exc_info=True)
+        return {}
+
+
+def _email_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    """Email as the workflow's creator (Act as me): a draft for them to send,
+    sent as them (``delegation.workflow_email``), or an email in their inbox
+    answered as Handle it for me would (``delegation.workflow_reply``)."""
+    from openexecutive.delegation import workflow_email as we
+    from openexecutive.delegation import workflow_reply as wr
+
+    return {
+        we.DRAFT_TOOL: (
+            ToolInfo(
+                we.DRAFT_TOOL, we.DRAFT_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin",
+                timeout_s=we.TIMEOUT_S,
+            ),
+            we.handle_draft_email_as_me,
+        ),
+        we.SEND_TOOL: (
+            ToolInfo(
+                we.SEND_TOOL, we.SEND_DESCRIPTION, we.INPUT_SCHEMA, None, "builtin",
+                timeout_s=we.TIMEOUT_S,
+            ),
+            we.handle_send_email_as_me,
+        ),
+        wr.TOOL: (
+            ToolInfo(
+                wr.TOOL, wr.DESCRIPTION, wr.INPUT_SCHEMA, None, "builtin",
+                timeout_s=wr.TIMEOUT_S,
+            ),
+            wr.handle_answer_email_as_me,
+        ),
+    }
+
+
+def _reads_as_me_specs() -> dict[str, tuple[ToolInfo, Handler]]:
+    """The creator's own mailbox and calendar, read as them (Act as me,
+    ``delegation.workflow_reads``)."""
+    from openexecutive.delegation import workflow_reads
+
+    return {
+        name: (ToolInfo(name, description, schema, True, "builtin"), handler)
+        for name, (_, description, schema, handler) in workflow_reads.specs().items()
+    }
+
+
 def _all_builtin_specs() -> dict[str, tuple[ToolInfo, Handler]]:
-    # Our own built-ins win a name clash.
-    return {**_extension_specs(), **_builtin_specs()}
+    # The chat's tools (workflows.chat_tools) win a name clash with an
+    # extension's.
+    return {**_extension_specs(), **_chat_specs(), **_email_as_me_specs(), **_reads_as_me_specs()}
 
 
 def builtin_tools() -> list[ToolInfo]:
-    return [info for info, _ in _all_builtin_specs().values()]
+    """The built-ins to offer for new steps (``chat_tools.not_offered``
+    still resolve, for saved workflows, but aren't shown)."""
+    from openexecutive.workflows.chat_tools import not_offered
+
+    try:
+        hidden = not_offered()
+    except Exception:
+        logger.warning("workflow tools: couldn't tell which to hide", exc_info=True)
+        hidden = set()
+    return [info for name, (info, _) in _all_builtin_specs().items() if name not in hidden]
 
 
 def builtin_handler(name: str) -> Handler | None:
@@ -474,10 +463,15 @@ def builtin_handler(name: str) -> Handler | None:
 async def search(query: str) -> list[ToolInfo]:
     """Tools matching a plain-language query: built-ins first, then the gateway."""
     words = [w for w in re.split(r"\W+", query.lower()) if len(w) > 2]
-    builtins = [
-        t for t in builtin_tools()
-        if not words or any(w in f"{t.name} {t.description}".lower() for w in words)
-    ]
+    def hits(t: ToolInfo) -> int:
+        text = f"{t.name} {t.description}".lower()
+        return sum(w in text for w in words)
+
+    # Best match first: there are dozens of built-ins now that chat's tools
+    # are among them (workflows.chat_tools).
+    builtins = sorted(
+        (t for t in builtin_tools() if not words or hits(t)), key=lambda t: -hits(t)
+    )
     gateway = _gateway()
     mcp = await _gateway_search(gateway, query, _SEARCH_TOP_K) if gateway else []
     return [*builtins, *mcp]

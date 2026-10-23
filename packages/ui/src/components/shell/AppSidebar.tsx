@@ -57,7 +57,7 @@ export default function AppSidebar({
   companyName,
   home,
 }: AppSidebarProps) {
-  const { mode, role } = useWorkspace();
+  const { mode, role, hasDepartments } = useWorkspace();
   const [reviewBadge, setReviewBadge] = useState(0);
 
   // Knowledge base badge: items waiting in its review queue. Refetched on
@@ -69,7 +69,13 @@ export default function AppSidebar({
       .catch(() => {});
   }, [pathname]);
 
-  const destinations = buildDestinations({ isOnboarded, reviewBadge, mode, roleKind: role.role_kind });
+  const destinations = buildDestinations({
+    isOnboarded,
+    reviewBadge,
+    mode,
+    roleKind: role.role_kind,
+    hasDepartments,
+  });
   const newChatActive = home ? home.mode === "chat" && home.activeSessionId === undefined : false;
 
   return (

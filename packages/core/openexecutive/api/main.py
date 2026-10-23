@@ -67,6 +67,7 @@ from openexecutive.api.routes import (
 from openexecutive.integrations.google_chat import router as google_chat_router
 from openexecutive.integrations.slack_events import router as slack_events_router
 from openexecutive.integrations.telegram_bot import router as telegram_router
+from openexecutive.observability import configure_tracing
 from openexecutive.utils.deployment import is_local_login, is_public_deployment
 
 if TYPE_CHECKING:
@@ -884,7 +885,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Open Executive API",
         description="AI-powered virtual executive team",
-        version="0.6.1",  # x-release-please-version
+        version="0.6.4",  # x-release-please-version
         lifespan=lifespan,
     )
 
@@ -1025,6 +1026,8 @@ def create_app() -> FastAPI:
     # x-api-key. Mounting also lazily creates mcp.session_manager, which the
     # lifespan runs (see above).
     mcp_server.mount(app)
+
+    configure_tracing(app)
 
     return app
 

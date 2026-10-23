@@ -55,6 +55,9 @@ _MAX_TOKENS = 4096
 # Model turns allowed beyond the tool budget: one for the final report, a
 # little slack for a turn that only talks.
 _EXTRA_TURNS = 3
+# A long web search can pause the model's turn (``pause_turn``); a paused
+# turn is not one of the step's turns, but at most this many are carried on.
+_MAX_PAUSES = 5
 _TOOL_CALL_TIMEOUT_S = 120.0
 _MAX_INPUT_CHARS = 2_000
 _MAX_PRIOR_OUTPUT_CHARS = 6_000
@@ -118,11 +121,14 @@ def _user_turn(
 ) -> str:
     from openexecutive.memory.workspace_settings import get_user_timezone
 
+    tz = get_user_timezone()
     parts = [
         f"Workflow: {workflow_title}",
         f"Step: {step.title}",
         f"Today: {datetime.now(UTC).date().isoformat()} (UTC). "
-        f"The user's timezone: {get_user_timezone().key}.",
+        f"The user's timezone: {tz.key}. Now there: "
+        f"{datetime.now(tz).strftime('%a %Y-%m-%d %H:%M')}. In your report, "
+        "give times in their timezone, never UTC.",
         "",
         "Goal:",
         goal.strip(),
@@ -153,7 +159,20 @@ def _block_to_dict(block: Any) -> dict[str, Any] | None:
             "name": getattr(block, "name", ""),
             "input": getattr(block, "input", {}) or {},
         }
+    if kind in ("server_tool_use", "web_search_tool_result"):
+        # The model's own web search: echoed back as-is so it keeps what it
+        # searched (orchestrator.web_search_tool).
+        dump = getattr(block, "model_dump", None)
+        return dump(exclude_none=True) if callable(dump) else None
     return None
+
+
+def _append_assistant(messages: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> None:
+    """Add the model's turn, joined to the one before when that one paused."""
+    if messages and messages[-1]["role"] == "assistant":
+        messages[-1]["content"] = [*messages[-1]["content"], *blocks]
+    else:
+        messages.append({"role": "assistant", "content": blocks})
 
 
 # Argument keys that say WHERE a call acts (which sheet, which recipient,
@@ -304,6 +323,10 @@ class TargetPolicy:
     - values approved for this workflow before (``approved_targets``) — by the
       owner answering a held write, never by anything the model or a page can
       write;
+    - in a workflow that writes or reads as its creator, their own addresses
+      and the addresses in the goal of a step that emails as them
+      (``workflow_email.chosen_recipients``):
+      only that creator, verified, can save one;
     - ids a write in this run created: the top-level id / link fields
       (``id``, ``spreadsheetId``, ``webViewLink`` …) of the STRUCTURED (JSON
       object) result of a tool whose name says it creates (create / insert /
@@ -313,8 +336,8 @@ class TargetPolicy:
       otherwise plant an id — and a URL-taking tool's result is whatever the
       URL served. These survive a pause through the resume payload
       (``created``).
-    Everything else, including values written in the workflow's own text
-    (which anyone who can edit the workflow could change without a review),
+    Everything else, including values written in any other workflow's own
+    text (which anyone who can edit the workflow could change without a review),
     is asked once and then remembered.
     """
 
@@ -326,7 +349,9 @@ class TargetPolicy:
     def for_workflow(
         cls, defn: DynamicWorkflowDef, created: Iterable[str] = ()
     ) -> TargetPolicy:
-        return cls(approved=approved_values(defn.name), created=created)
+        from openexecutive.delegation.workflow_email import chosen_recipients
+
+        return cls(approved=approved_values(defn.name) | chosen_recipients(defn), created=created)
 
     def _trusted(self, value: str) -> bool:
         norm = normalize_value(value)
@@ -400,19 +425,26 @@ def _audit(
 async def _dispatch(
     name: str, arguments: dict[str, Any], info: tool_catalog.ToolInfo, workflow_name: str,
 ) -> str:
-    if info.source == "builtin":
+    if info.source in ("builtin", "server"):
         handler = tool_catalog.builtin_handler(name)
         if handler is None:  # resolve() only returns names with handlers
             return json.dumps({"error": "tool is not available"})
-        if name == "oe__create_alert":
-            # An alert a team member's saved workflow raises is theirs, as
-            # it would be from their chat (orchestrator.alert_tools).
-            from openexecutive.orchestrator.alert_tools import raised_for_workflow_owner
-            from openexecutive.workflows.dynamic_store import get_owner
+        if info.source == "server":
+            return json.dumps({"error": "this tool is used by the model as it writes; it can't be called"})
+        from openexecutive.workflows import chat_tools
+        from openexecutive.workflows.dynamic_store import get_owner
 
-            with raised_for_workflow_owner(get_owner(workflow_name)):
-                return await handler(arguments)
-        return await handler(arguments)
+        owner = get_owner(workflow_name)
+        # A chat tool runs as a step of this workflow (workflows.chat_tools).
+        with chat_tools.in_workflow(workflow_name, owner):
+            if name == "oe__create_alert":
+                # An alert a team member's saved workflow raises is theirs, as
+                # it would be from their chat (orchestrator.alert_tools).
+                from openexecutive.orchestrator.alert_tools import raised_for_workflow_owner
+
+                with raised_for_workflow_owner(owner):
+                    return await handler(arguments)
+            return await handler(arguments)
     from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 
     gateway = get_active_gateway()
@@ -433,7 +465,8 @@ async def _call_tool(
     """Run one approved tool call. Returns (result text, is_error); never raises."""
     try:
         content = await asyncio.wait_for(
-            _dispatch(name, arguments, info, workflow_name), timeout=_TOOL_CALL_TIMEOUT_S
+            _dispatch(name, arguments, info, workflow_name),
+            timeout=info.timeout_s or _TOOL_CALL_TIMEOUT_S,
         )
     except TimeoutError:
         return json.dumps({"error": "the tool timed out"}), True
@@ -598,12 +631,21 @@ async def run_action_step(
         )
         return
 
+    from openexecutive.delegation import workflow_reads
+
+    # A workflow that reads its creator's mail is locked down for all of its
+    # steps (delegation.workflow_reads): checked again here, and no scripts.
+    reads_mail, refused = workflow_reads.run_rules(workflow_name)
+    if refused is not None:
+        yield ("error", f"step {step.id!r} cannot run: {refused}")
+        return
+
     settings = get_settings()
     agent = WorkflowActorAgent()
     resolved_model = model if model is not None else agent.effective_model()
     provider = get_provider(resolved_model)
-    scripts = settings.workflow_step_scripts and step_script.available()
-    tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools]
+    scripts = settings.workflow_step_scripts and step_script.available() and not reads_mail
+    tool_defs = [resolved[name].as_anthropic_tool() for name in step.tools if resolved[name].source != "server"]
     if scripts:
         tool_defs.append(
             step_script.tool_definition(
@@ -615,6 +657,13 @@ async def run_action_step(
             )
         )
     tools = sorted(tool_defs, key=lambda t: t["name"])
+    # The model's own server tools (web search) go after the sorted list.
+    if any(resolved[name].source == "server" for name in step.tools):
+        from openexecutive.orchestrator.web_search_tool import build_web_search_tool
+
+        web_search = build_web_search_tool()
+        if web_search is not None:
+            tools.append(web_search)
     system = [
         {"type": "text", "text": agent.effective_system_prompt(), "cache_control": {"type": "ephemeral"}}
     ]
@@ -649,7 +698,9 @@ async def run_action_step(
 
     max_turns = step.max_tool_calls + _EXTRA_TURNS
     fanout_hinted = False
-    for turn in range(max_turns):
+    turn = 0
+    pauses = 0
+    while turn < max_turns:
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "max_tokens": _MAX_TOKENS,
@@ -675,12 +726,24 @@ async def run_action_step(
 
         blocks = [b for b in (_block_to_dict(b) for b in getattr(response, "content", []) or []) if b]
         tool_uses = [b for b in blocks if b["type"] == "tool_use"]
+        if getattr(response, "stop_reason", None) == "pause_turn":
+            # A long web search paused mid-turn: send it back to carry on.
+            pauses += 1
+            if not blocks or pauses > _MAX_PAUSES:
+                yield ("error", f"step {step.id!r} stopped: its web search kept pausing without an answer")
+                return
+            _append_assistant(messages, blocks)
+            continue
+        turn += 1
         if not tool_uses:
-            report = "\n".join(b["text"] for b in blocks if b["type"] == "text").strip()
+            paused = messages[-1]["content"] if messages[-1]["role"] == "assistant" else []
+            report = "\n".join(
+                b["text"] for b in [*paused, *blocks] if b["type"] == "text"
+            ).strip()
             yield ("output", _format_output(report, actions))
             return
 
-        messages.append({"role": "assistant", "content": blocks})
+        _append_assistant(messages, blocks)
         results: list[dict[str, Any]] = []
         for use in tool_uses:
             name = str(use["name"])
@@ -868,7 +931,7 @@ async def run_held_calls(
         _audit(
             workflow_name, step.id, call.tool, f"held → {outcome}", _target_digest(call.arguments)
         )
-        lines.append(f"- `{call.tool}` → {where} — {outcome}")
+        lines.append(f"- {plain_tool_name(call.tool)} → {where} — {outcome}")
     return "\n".join(lines)
 
 
@@ -889,13 +952,41 @@ def held_question(workflow_title: str, held: list[HeldCall]) -> str:
     ]
     for call in held:
         where = ", ".join(describe_target(k, v) for k, v in call.targets) or "a new target"
-        lines.append(f"- {where} (via {call.tool})")
+        lines.append(f"- {where} (via {plain_tool_name(call.tool)})")
     lines.append(
         "Reply yes to allow all of the above — they run now, and future runs "
         "can write to these with any of this workflow's tools without asking — "
         "or no to skip them."
     )
     return "\n".join(lines)
+
+
+# The words a server prefix reads as: "google_workspace" is "Google
+# Workspace", not "Google workspace".
+_ACRONYMS = frozenset({"api", "crm", "csv", "hr", "mcp", "pdf", "url"})
+
+
+def _words(name: str) -> str:
+    return " ".join(name.replace("-", "_").split("_")).strip()
+
+
+def plain_tool_name(name: str) -> str:
+    """A tool's name in plain words for the person reading a run: an app's
+    tool reads "Google Workspace: get events", a built-in one "Send telegram
+    message", never ``google_workspace__get_events``."""
+    from openexecutive.workflows.tool_catalog import BUILTIN_PREFIX
+
+    if name.startswith(BUILTIN_PREFIX):
+        return _words(name[len(BUILTIN_PREFIX):]).capitalize()
+    if name == step_script.RUN_SCRIPT_TOOL:
+        return "Script"
+    server, sep, tool = name.partition("__")
+    if not sep:
+        return _words(name).capitalize()
+    app = " ".join(
+        w.upper() if w.lower() in _ACRONYMS else w.capitalize() for w in _words(server).split()
+    )
+    return f"{app}: {_words(tool)}"
 
 
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:
@@ -907,7 +998,7 @@ def _format_output(report: str, actions: list[tuple[str, str]]) -> str:
         for action in actions:
             counts[action] = counts.get(action, 0) + 1
         lines += [
-            f"- `{name}` — {outcome}" + (f" (×{n})" if n > 1 else "")
+            f"- {plain_tool_name(name)} — {outcome}" + (f" (×{n})" if n > 1 else "")
             for (name, outcome), n in counts.items()
         ]
     else:

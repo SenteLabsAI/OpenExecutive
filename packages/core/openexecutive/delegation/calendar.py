@@ -20,7 +20,8 @@ opens; turning Act as me off turns it off too.
 the same turns and with the same fence as their mail: a read makes the turn
 private and locks it down (``delegation.lockdown``), since an invite's title
 is anyone's words. And the first week's private brief lists today's meetings
-(``briefing.first_week``). And a reply card whose open question is when to
+(``briefing.first_week``), and the principal's daily briefs merge it with the
+calendar the Executive reads (``briefing.top_three.read_todays_calendar``). And a reply card whose open question is when to
 meet offers their next free slots (``delegation.answers.free_slots``): only
 the busy times are used, in code, and no event's title reaches a model.
 And an invite card's clashes (``delegation.invites.clashes``), the same way.

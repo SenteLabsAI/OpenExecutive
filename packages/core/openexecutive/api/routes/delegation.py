@@ -44,6 +44,16 @@ Routes:
                                     switch is off or a check is running)
   GET    /delegation/replies      — the reply cards waiting for the caller
                                     (from the database; no Gmail call)
+  POST   /delegation/drafts/{id}/send — {thread_moved_on?}: send a draft
+                                    chat wrote as the caller, on their tap,
+                                    exactly as written (their own only; 404
+                                    otherwise). Needs a caller the API knows
+                                    is that person, like a card's Send (409
+                                    ``caller_signing_required``); 409
+                                    ``confirm`` asks a second yes when the
+                                    conversation moved on, and
+                                    ``draft_changed`` when it was edited in
+                                    the mailbox
   PUT    /delegation/replies/{id}/text — {text}: change a reply's words
   PUT    /delegation/replies/{id}/recipients — {everyone}: the sender only,
          or everyone the email went to
@@ -442,6 +452,17 @@ class ReplyTextUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(max_length=20_000)
+
+
+class ChatDraftSendIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The second yes for a reply whose conversation moved on since.
+    thread_moved_on: bool = False
+
+
+class ChatDraftSentOut(BaseModel):
+    sent: bool = True
 
 
 class ReplyRecipientsUpdate(BaseModel):
@@ -1007,6 +1028,27 @@ async def update_delegation_reply_text(request: Request, decision_id: int, body:
     if card is None:
         raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
     return ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+
+
+@router.post("/delegation/drafts/{row_id}/send", response_model=ChatDraftSentOut)
+async def send_chat_draft(request: Request, row_id: int, body: ChatDraftSendIn) -> ChatDraftSentOut:
+    """Send a draft chat wrote as the caller, on their tap, exactly as it was
+    written (``delegation.reply_send.send_chat_draft``, which checks
+    everything again first). Their own drafts only."""
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.delegation.reply_send import send_chat_draft as send
+
+    person = _caller(request)
+    try:
+        await send(
+            person, row_id, caller=api_caller.caller(request),
+            confirm={"thread_moved_on": True} if body.thread_moved_on else None,
+        )
+    except SendRefused as refused:
+        raise HTTPException(
+            status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},
+        ) from None
+    return ChatDraftSentOut()
 
 
 @router.put("/delegation/replies/{decision_id}/recipients", response_model=ReplyCardOut)

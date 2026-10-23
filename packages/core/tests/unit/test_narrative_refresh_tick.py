@@ -84,3 +84,23 @@ async def test_a_running_refresh_is_not_doubled(
     gate.set()
     task: Any = runner._narrative_task
     await task
+
+
+def test_the_principal_opening_today_settles_drafts_at_most_every_two_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduler's pass can be 30 minutes apart, or off: opening the
+    page also settles the drafts (a draft sent from the mailbox stops being
+    called unsent), throttled."""
+    from fastapi import BackgroundTasks
+
+    from openexecutive.api.routes import today
+
+    monkeypatch.setattr(today, "_view_settled_at", None)
+    t0 = datetime(2026, 9, 30, 15, 0, tzinfo=UTC)
+    tasks = BackgroundTasks()
+
+    assert today._maybe_settle_on_view(tasks, t0) is True
+    assert today._maybe_settle_on_view(tasks, t0 + timedelta(seconds=90)) is False
+    assert today._maybe_settle_on_view(tasks, t0 + timedelta(minutes=2)) is True
+    assert [t.func for t in tasks.tasks] == [today.refresh_principal_narrative] * 2

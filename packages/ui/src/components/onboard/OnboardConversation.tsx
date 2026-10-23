@@ -47,6 +47,9 @@ function flavourFor(solo: boolean, roleKind: RoleKind | null | undefined): Flavo
   return "solo";
 }
 
+// What Skip sends. The interviewer moves on and does not ask it again.
+const SKIP_ANSWER = "Skip this one.";
+
 export interface Bubble {
   role: "user" | "assistant";
   text: string;
@@ -96,8 +99,9 @@ export default function OnboardConversation({
     ]);
   }
 
-  async function send() {
-    const text = input.trim();
+  // A tapped suggestion or Skip sends its own text; otherwise the box's.
+  async function send(tapped?: string) {
+    const text = (tapped ?? input).trim();
     if ((!text && files.length === 0) || busy) return;
     setBusy(true);
     setError(null);
@@ -141,6 +145,29 @@ export default function OnboardConversation({
           {turn?.question_hint && (
             <p className="text-xs text-fg-muted mt-2">{turn.question_hint}</p>
           )}
+          {started && headline && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {(turn?.question_options ?? []).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => void send(option)}
+                  disabled={busy}
+                  className="min-h-9 px-3.5 py-1.5 rounded-full border border-line-strong text-sm text-fg text-left hover:border-indigo-500/60 hover:bg-indigo-500/10 disabled:opacity-40 transition-colors cursor-pointer"
+                >
+                  {option}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => void send(SKIP_ANSWER)}
+                disabled={busy}
+                className="min-h-9 px-3 py-1.5 text-sm text-fg-muted hover:text-fg disabled:opacity-40 transition-colors cursor-pointer"
+              >
+                Skip
+              </button>
+            </div>
+          )}
         </div>
 
       </div>
@@ -160,7 +187,7 @@ export default function OnboardConversation({
           autoFocus
           placeholder={
             started
-              ? "Your answer… (Enter to send, Shift+Enter for a new line)"
+              ? "Or type your own answer… (Enter to send, Shift+Enter for a new line)"
               : OPENING_EXAMPLE[flavour]
           }
           className="w-full rounded-lg border border-line-strong bg-surface-overlay px-3 py-2 text-sm text-fg placeholder-fg-subtle focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-colors disabled:opacity-50"
@@ -204,12 +231,12 @@ export default function OnboardConversation({
               disabled={busy}
               className="text-xs text-fg-muted hover:text-fg disabled:opacity-40 transition-colors"
             >
-              Skip ahead — draft my profile now
+              Draft it now
             </button>
           )}
           {started && (
             <span className="text-xs text-fg-subtle ml-auto">
-              {turn!.questions_asked} of {turn!.max_questions} questions
+              {turn!.questions_asked} of up to {turn!.max_questions}
             </span>
           )}
         </div>

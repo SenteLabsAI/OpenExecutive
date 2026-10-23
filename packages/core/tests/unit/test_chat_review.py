@@ -474,7 +474,7 @@ def test_it_grades_each_turn_and_keeps_what_they_wanted(db: Path, roster: Simple
     _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
     _record(roster.principal, text=AGAIN, reply="Sorry, creating it now.", at=NOW + timedelta(minutes=2))
     provider.grades = [
-        {"turn": 1, "verdict": "miss", "kind": "company",
+        {"turn": 1, "verdict": "miss", "kind": "company", "cause": "do_it",
          "wanted": "The alert created in the turn, not a promise to watch.",
          "quote": "did you set up that alert"},
         {"turn": 2, "verdict": "fine"},
@@ -484,7 +484,7 @@ def test_it_grades_each_turn_and_keeps_what_they_wanted(db: Path, roster: Simple
     assert provider.grade_calls[0]["tool_choice"] == {"type": "tool", "name": "grade_turns"}
     assert "[1] SIGNALS: none" in _grade_content(provider)
     first, second = _turns(db)
-    assert first["verdict"] == "miss" and first["kind"] == "company"
+    assert first["verdict"] == "miss" and first["kind"] == "company" and first["cause"] == "do_it"
     assert first["wanted"] == "The alert created in the turn, not a promise to watch."
     assert first["graded_at"] is not None and json.loads(first["signals"]) == []
     assert second["verdict"] == "fine" and second["wanted"] is None
@@ -504,6 +504,20 @@ def test_a_miss_without_their_words_is_unclear(db: Path, roster: SimpleNamespace
     [row] = _turns(db)
     assert row["verdict"] == "unclear" and row["wanted"] is None and row["kind"] is None
     assert cr.weekly_rates(person_id=None, db_path=db) == [{"week": "2026-W42", "graded": 1, "misses": 0}]
+
+
+def test_a_cause_from_the_other_kind_is_dropped(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
+    _record(roster.principal, text=ASK, reply="I'll keep an eye on it.", at=NOW)
+    _record(roster.principal, text=AGAIN, reply="Sorry, creating it now.", at=NOW + timedelta(minutes=2))
+    provider.grades = [
+        {"turn": 1, "verdict": "miss", "kind": "product", "cause": "term",
+         "wanted": "The alert created.", "quote": "did you set up that alert"},
+        {"turn": 2, "verdict": "fine", "cause": "tool"},
+    ]
+    _review(db)
+    first, second = _turns(db)
+    assert first["verdict"] == "miss" and first["kind"] == "product" and first["cause"] is None
+    assert second["verdict"] == "fine" and second["cause"] is None
 
 
 def test_a_skipped_or_odd_grade_is_unclear(db: Path, roster: SimpleNamespace, provider: _Provider) -> None:
@@ -714,6 +728,7 @@ def test_misses_are_listed_per_person_and_forgotten_by_their_owner(db: Path, ros
     assert [m["person_name"] for m in everyone] == ["Olivia Owner"]
     miss = everyone[0]
     assert miss["message"] == ASK and miss["wanted"] == "The alert created." and miss["kind"] == "company"
+    assert miss["cause"] is None
     assert miss["session_id"] == "s-1" and miss["tools"] == [] and miss["signals"] == []
     assert cr.list_misses(person_id=roster.teammate.id, db_path=db) == []
     assert not cr.forget_miss(miss["id"], caller_person_id=roster.teammate.id, db_path=db)

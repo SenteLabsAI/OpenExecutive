@@ -8,9 +8,7 @@ import OnboardConversation, {
 } from "@/components/onboard/OnboardConversation";
 import OnboardAnswers from "@/components/onboard/OnboardAnswers";
 import OnboardDescribe from "@/components/onboard/OnboardDescribe";
-import OnboardDone from "@/components/onboard/OnboardDone";
 import OnboardDraftReview from "@/components/onboard/OnboardDraftReview";
-import VoicePicker from "@/components/executive/VoicePicker";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   discardOnboardInterview,
@@ -24,13 +22,13 @@ import { clearSetupMemory, recall, remember, STORAGE_KEYS } from "@/lib/firstRun
 // (see AppShell.tsx EXEMPT_PREFIXES) so it owns the whole viewport.
 //
 // First run starts with the free-text box: describe your work (and attach a
-// one-pager if you like). The Executive reads it, shows what it understood —
-// personal or team, role, company, focus — for a quick confirm, saves the
-// workspace mode and role, and then asks only about what is still missing
-// (up to five questions, each skippable). Then the drafted profile is
-// reviewed and, last, how the Executive should sound (skippable; changeable
-// in Settings). A re-run — a company profile already exists — skips the
-// first two: they are changed in Settings.
+// one-pager if you like). The Executive reads it and saves Personal or Team
+// and the role without asking (Personal when it can't tell), then asks a few
+// quick questions about what is still missing (up to four, each with answers
+// to tap, each skippable). Then the drafted profile, people and goals are
+// reviewed, with Personal or Team on one line and a Change link, and Save
+// goes to Home, where the getting-started checklist carries on. A re-run — a
+// company profile already exists — skips the box and keeps the saved mode.
 //
 // The original step-by-step wizard stays reachable at /onboard?mode=form — it
 // needs no API key beyond the profile save, so it is also the fallback when
@@ -42,8 +40,7 @@ import { clearSetupMemory, recall, remember, STORAGE_KEYS } from "@/lib/firstRun
 // A setup in progress survives a refresh, a closed tab and a restart of the
 // API: the interview is kept on the server, and this browser remembers which
 // one is theirs (lib/firstRun.ts). Opening /onboard with one remembered
-// picks it up at the same question or draft. After the save, a last screen
-// shows what was kept and the two accounts worth connecting.
+// picks it up at the same question or draft.
 
 const FOR_PARAM: Record<WorkspaceMode, string> = { solo: "me", team: "team" };
 
@@ -66,11 +63,12 @@ function OnboardFlow() {
   const [hasProfile, setHasProfile] = useState<boolean | null>(null);
   // Set once the describe-first step is done, in place of the `?for=` param.
   const [chosenHere, setChosenHere] = useState<WorkspaceMode | null>(null);
-  const [askVoice, setAskVoice] = useState(false);
-  const [showDone, setShowDone] = useState(false);
   // Resuming: the remembered session is being fetched.
   const [resuming, setResuming] = useState(() => recall(STORAGE_KEYS.session) !== null);
   const [resumed, setResumed] = useState(false);
+  // What was read from the website on the first step, shown once over the
+  // questions or the draft (not kept across a refresh).
+  const [siteNote, setSiteNote] = useState<string | null>(null);
   // Bumped by Start over, so the conversation starts again from empty.
   const [restarts, setRestarts] = useState(0);
   // Bumped by each redraft from an edited answer, so the review starts afresh.
@@ -134,9 +132,16 @@ function OnboardFlow() {
     setConversationTurn(null);
     setResumeTurns([]);
     setResumed(false);
+    setSiteNote(null);
     setChosenHere(null);
     setRestarts((n) => n + 1);
   }
+
+  const siteLine = siteNote && (
+    <p className="mb-4 text-sm text-fg-muted" role="status">
+      {siteNote}
+    </p>
+  );
 
   const resumedBanner = resumed && (
     <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-accent/25 bg-accent/5 px-4 py-3 text-sm text-fg-muted">
@@ -150,11 +155,11 @@ function OnboardFlow() {
     </div>
   );
 
+  // Home, where the getting-started checklist lives. The tone of voice and
+  // everything else stay in Settings.
   function finish() {
     clearSetupMemory();
-    // Only a first setup asks the voice; a re-run keeps what it has.
-    if (chosenHere || resumed) setAskVoice(true);
-    else router.push("/");
+    router.push("/");
   }
 
   function later() {
@@ -165,15 +170,12 @@ function OnboardFlow() {
 
   if (hasProfile === null || resuming) return null;
 
-  if (showDone) return <OnboardDone solo={mode === "solo"} onDone={() => router.push("/")} />;
-
-  if (askVoice) return <VoiceStep onDone={() => setShowDone(true)} />;
-
   if (!hasProfile && !chosenFor && !chosenHere && !resumed) {
     return (
       <OnboardDescribe
         onLater={later}
-        onReady={({ mode: picked, turn: first, turns }) => {
+        onReady={({ mode: picked, turn: first, turns, websiteNote }) => {
+          setSiteNote(websiteNote);
           remember(STORAGE_KEYS.session, first.session_id);
           remember(STORAGE_KEYS.description, null);
           setResumeTurns(turns);
@@ -205,6 +207,7 @@ function OnboardFlow() {
     return (
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 w-full">
         {resumedBanner}
+        {siteLine}
         <OnboardDraftReview
           // A redraft after an edited answer starts the review afresh.
           key={redrafts}
@@ -241,14 +244,20 @@ function OnboardFlow() {
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 w-full">
       <div className="mb-8">
-        <h1 className="text-xl font-semibold text-fg">Set up your Executive</h1>
+        <h1 className="text-xl font-semibold text-fg">
+          {conversationTurn ? "A few quick questions" : "Set up your Executive"}
+        </h1>
         <p className="text-sm text-fg-muted mt-1">
-          A few minutes now, and every answer you get afterwards is grounded in
-          your {mode === "solo" ? "work" : "company"} rather than a generic one.
+          {conversationTurn
+            ? "Tap an answer, type your own, or skip. Every question is optional."
+            : `A few minutes now, and every answer you get afterwards is grounded in your ${
+                mode === "solo" ? "work" : "company"
+              } rather than a generic one.`}
         </p>
       </div>
 
       {resumedBanner}
+      {conversationTurn && siteLine}
 
       <OnboardConversation
         key={restarts}
@@ -271,23 +280,6 @@ function OnboardFlow() {
           Prefer a form? Use the step-by-step version
         </a>
       </p>
-    </div>
-  );
-}
-
-// How should the Executive sound? Saved on the Executive (PATCH
-// /agents/executive); skipping keeps Direct. Settings → Executive changes it.
-function VoiceStep({ onDone }: { onDone: () => void }) {
-  return (
-    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-16 w-full">
-      <h1 className="text-xl font-semibold text-fg">How should your Executive sound?</h1>
-      <p className="text-sm text-fg-muted mt-1">
-        The advice is the same; this sets the tone it comes in. You can change it later in
-        Settings.
-      </p>
-      <div className="mt-8">
-        <VoicePicker variant="step" onDone={onDone} />
-      </div>
     </div>
   );
 }

@@ -880,7 +880,7 @@ def test_solo_standalone_brief_prompt_has_a_due_section() -> None:
     assert "**Due this week**" in STANDALONE_BRIEF_SOLO_SYSTEM
     assert "DUE THIS WEEK" in STANDALONE_BRIEF_SOLO_SYSTEM
     assert "Due this week" not in STANDALONE_BRIEF_SYSTEM
-    assert "what's due this week" in BRIEFING_NARRATIVE_SOLO_SYSTEM
+    assert "what is due" in BRIEFING_NARRATIVE_SOLO_SYSTEM
 
 
 def test_today_header_counts_due_items_in_solo(team: SimpleNamespace) -> None:

@@ -99,6 +99,7 @@ def test_the_principal_sees_everyone_and_a_teammate_their_own(client: TestClient
     miss = next(m for m in everyone["misses"] if m["person_name"] == "Olivia Owner")
     assert miss["session_id"] == "s-1" and miss["tools"] == ["list_people"]
     assert miss["wanted"] == "The thing done." and miss["kind"] == "company" and miss["signals"] == ["thumbs down"]
+    assert miss["cause"] is None
     one = client.get("/memories/reflection", headers=OWNER, params={"person_id": ids["teammate"]}).json()
     assert [m["person_name"] for m in one["misses"]] == ["Ben Teammate"]
     assert one["weeks"] == [{"week": "2026-W42", "graded": 3, "misses": 1}]

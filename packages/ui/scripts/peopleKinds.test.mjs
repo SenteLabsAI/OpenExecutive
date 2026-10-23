@@ -8,7 +8,7 @@ import {
   isContact,
   personCardStatus,
   peopleForTab,
-  shouldOfferTeamMode,
+  shouldSwitchToTeam,
   tabsFor,
 } from "../src/lib/peopleKinds.ts";
 
@@ -62,12 +62,12 @@ test("the principal is always on the team", () => {
   assert.equal(effectiveKind("contact", false), "contact");
 });
 
-test("adding a teammate in solo offers team mode; a contact or the principal does not", () => {
-  assert.equal(shouldOfferTeamMode("solo", "team", false), true);
-  assert.equal(shouldOfferTeamMode("solo", "contact", false), false);
-  assert.equal(shouldOfferTeamMode("solo", "team", true), false);
-  assert.equal(shouldOfferTeamMode("solo", "contact", true), false);
-  assert.equal(shouldOfferTeamMode("team", "team", false), false);
+test("adding a teammate in solo switches to team mode; a contact or the principal does not", () => {
+  assert.equal(shouldSwitchToTeam("solo", "team", false), true);
+  assert.equal(shouldSwitchToTeam("solo", "contact", false), false);
+  assert.equal(shouldSwitchToTeam("solo", "team", true), false);
+  assert.equal(shouldSwitchToTeam("solo", "contact", true), false);
+  assert.equal(shouldSwitchToTeam("team", "team", false), false);
 });
 
 test("a card's one status: email for a contact, leave or reply time for the team", () => {

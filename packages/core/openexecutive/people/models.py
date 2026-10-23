@@ -72,6 +72,16 @@ PersonKind = Literal["team", "contact"]
 PERSON_KINDS: tuple[str, ...] = ("team", "contact")
 
 
+# Contact details besides email and the chat apps (``people.contact_info``).
+DetailKind = Literal["phone", "mobile", "website", "linkedin", "social", "address"]
+DETAIL_KINDS: tuple[str, ...] = ("phone", "mobile", "website", "linkedin", "social", "address")
+
+
+class ContactDetail(BaseModel):
+    kind: DetailKind
+    value: str
+
+
 class Person(BaseModel):
     """A real human who can receive work, approve actions, and respond.
 
@@ -103,6 +113,10 @@ class Person(BaseModel):
     slack_user_id: str | None = None
     telegram_chat_id: str | None = None
     discord_user_id: str | None = None
+    # How else to reach them (``person_details``), for the reader: never a
+    # channel the Executive sends on. May be filled in from their own email
+    # signature (``people.contact_keeper``).
+    details: list[ContactDetail] = Field(default_factory=list)
     preferred_channel: PreferredChannel = "any"
     # The chat app they last talked to the Executive in, from their own
     # account (``people.reach.note_talked``), and when (ISO, UTC). With

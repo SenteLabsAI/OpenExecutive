@@ -717,6 +717,7 @@ def test_morning_brief_and_eod_follow_the_workspace_mode(
 
 
 def test_narrative_hash_differs_by_mode_and_team_is_unchanged() -> None:
+    from openexecutive.briefing.narrative import brief_model
     from openexecutive.briefing.narrative_cache import (
         NARRATIVE_PROMPT_VERSION,
         build_narrative_input_hash,
@@ -724,12 +725,13 @@ def test_narrative_hash_differs_by_mode_and_team_is_unchanged() -> None:
 
     ctx = "PERIOD: 2026-09-25\n\nNEEDS YOU: x"
     team = build_narrative_input_hash(ctx, "principal")
-    # The team key is exactly the pre-solo formula — no team cache invalidated.
+    # The team key carries no mode — solo mode invalidated no team cache.
     legacy = hashlib.sha256(json.dumps({
         "scope": "principal",
         "prompt_version": NARRATIVE_PROMPT_VERSION,
         "date": datetime.now(UTC).strftime("%Y-%m-%d"),
         "context": ctx,
+        "model": brief_model(),
     }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     assert team == legacy
     assert build_narrative_input_hash(ctx, "principal", mode="team") == team

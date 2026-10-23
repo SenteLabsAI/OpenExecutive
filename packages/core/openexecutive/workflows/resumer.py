@@ -362,6 +362,7 @@ async def _execute_resume(
     its steps read and draft is theirs (`artifact_records.pinned_viewer`),
     and nobody's for a team run, so no one's documents reach the run's
     history that someone else may read."""
+    from openexecutive.delegation.workflow_reads import private_run
     from openexecutive.orchestrator.artifact_records import (
         NOBODY,
         pinned_viewer,
@@ -370,7 +371,10 @@ async def _execute_resume(
 
     run = _wf_persistence.get_run(row["run_id"], db_path=db_path) or {}
     owner = run.get("owner_person_id")
-    with pinned_viewer(viewer_for_person(owner) if owner is not None else NOBODY):
+    with (
+        pinned_viewer(viewer_for_person(owner) if owner is not None else NOBODY),
+        private_run(str(run.get("workflow_name") or "")),
+    ):
         return await _drive_resume(row, claim, db_path=db_path)
 
 
@@ -553,18 +557,28 @@ async def _drive_resume(
     )
     logger.info("resumer: run %s resumed -> %s", run_id, outcome)
     if artifact and state.deliver_to_person_id is not None:
-        await _deliver_artifact(run_id, state.deliver_to_person_id, artifact)
+        await _deliver_artifact(run_id, name, state.deliver_to_person_id, artifact)
     return True
 
 
-async def _deliver_artifact(run_id: str, person_id: int, artifact: str) -> None:
-    """DM a resumed scheduled run's artifact — the delivery the scheduler
-    would have made had the run not paused. Best effort: the run is already
-    stored as done, and a failed send must not change that."""
+async def _deliver_artifact(run_id: str, name: str, person_id: int, artifact: str) -> None:
+    """DM what a resumed scheduled run came to — the delivery the scheduler
+    would have made had the run not paused (``run_message``: a few plain
+    lines, or nothing). Best effort: the run is already stored as done, and a
+    failed send must not change that."""
     try:
         from openexecutive.orchestrator.schedule_tools import handle_message_person
+        from openexecutive.workflows.dynamic_store import get_definition
+        from openexecutive.workflows.run_message import message_for_run
 
-        await handle_message_person({"person_id": person_id, "text": artifact})
+        defn = get_definition(name)
+        message = await message_for_run(
+            title=(defn.title if defn else "") or name,
+            description=(defn.description if defn else "") or "",
+            artifact=artifact, person_id=person_id,
+        )
+        if message:
+            await handle_message_person({"person_id": person_id, "text": message})
     except Exception:
         logger.exception("resumer: run %s artifact delivery failed (run still done)", run_id)
 

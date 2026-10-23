@@ -1124,6 +1124,56 @@ async def _scan(person: Any, client: Any, watch: InboxWatch, now: datetime) -> S
     return result
 
 
+async def answer_thread(person: Any, client: Any, thread_id: str, *, now: datetime) -> str:
+    """Answer the newest message in ``thread_id`` the way a scan would
+    (``_consider``): written in their voice, sent on its own when Handle it
+    for me's rules allow, otherwise a card for the person. For a workflow
+    step (``delegation.workflow_reply``). Returns what happened: ``sent``,
+    ``card``, ``not_needed``, ``skipped``, ``theirs_last`` (nothing to
+    answer), ``backlog_full``, ``busy`` or ``not_now`` (too new, already
+    looked at, or a limit). Raises a Gmail error as a scan does."""
+    from openexecutive.audit import rows_for_person
+    from openexecutive.config import get_settings
+
+    if person.id in _SCANNING or _client_slot_active():
+        return "busy"
+    # Taken like a scan: the daily and per-thread counts Handle it for me
+    # checks are check-then-act, so one person's answers go one at a time,
+    # and every row it writes is theirs alone, as a scan's are.
+    _SCANNING.add(person.id)
+    try:
+        with rows_for_person(person.id):
+            return await _answer(person, client, thread_id, now=now, exec_address=(
+                get_settings().exec_email_address or ""
+            ).strip().lower())
+    finally:
+        _SCANNING.discard(person.id)
+
+
+async def _answer(person: Any, client: Any, thread_id: str, *, now: datetime, exec_address: str) -> str:
+    email = (person.email or "").strip().lower()
+    own = {email, *(a.strip().lower() for a in await client.send_as_addresses())}
+    if len(open_cards(person.id)) >= OPEN_CARDS_MAX:
+        return "backlog_full"
+    thread = await client.get_thread(thread_id)
+    shown = [m for m in thread.messages if "DRAFT" not in m.labels]
+    if not shown or shown[-1].from_addr in own:
+        return "theirs_last"
+    result = ScanResult("ok")
+    # Only staleness bounds it: the step named this thread, whenever the
+    # watcher started watching (if it does at all).
+    await _consider(person, client, shown[-1].id, thread.id, own, exec_address, now - STALE, now, result)
+    if result.handled:
+        return "sent"
+    if result.drafted:
+        return "card"
+    if result.not_needed:
+        return "not_needed"
+    if result.skipped:
+        return "skipped"
+    return "not_now"
+
+
 async def _consider(
     person: Any, client: Any, message_id: str, thread_id: str, own: set[str], exec_address: str,
     since: datetime, now: datetime, result: ScanResult,
@@ -1132,7 +1182,14 @@ async def _consider(
     Once claimed, a message is finished or left for a later scan
     (``_retry_later``); a Gmail failure is raised for the scan to back off."""
     from openexecutive.config import get_settings
-    from openexecutive.delegation import caps, card_drafts, drafts, handle_it, invites
+    from openexecutive.delegation import (
+        caps,
+        card_drafts,
+        drafts,
+        handle_it,
+        injection_check,
+        invites,
+    )
     from openexecutive.delegation import disclosure as ai_disclosure
     from openexecutive.delegation.ghostwriter import ComposeError
     from openexecutive.delegation.gmail import DraftSpec, GmailError
@@ -1221,6 +1278,10 @@ async def _consider(
             person.id, message, thread, reply, verdict, relation=relation, own=own,
             exec_address=exec_address, now=now,
         ) if handling.enabled else "level"
+        if held is None and await injection_check.held_back(message, relation=relation):
+            # One more look, only ever holding back: an email that tries to
+            # steer an assistant waits for the person.
+            held = injection_check.REASON
         # The AI line, by the person's own switch for this kind of send: in
         # the words themselves, so card, draft and what goes all match.
         reply.body = ai_disclosure.sign(person.id, reply.body, on_its_own=held is None)

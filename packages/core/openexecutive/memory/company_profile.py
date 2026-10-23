@@ -53,6 +53,8 @@ class CompanyProfile(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = ""
+    # The company's own site, as setup read it (https://example.com/).
+    website: str = ""
     industry: str = ""
     stage: str = ""
     founding_year: int | None = None
@@ -160,6 +162,8 @@ class CompanyProfile(BaseModel):
 
         lines = ["## Company Context", ""]
         lines.append(f"**Company**: {self.name}")
+        if self.website:
+            lines.append(f"**Website**: {self.website}")
         if self.industry:
             lines.append(f"**Industry**: {self.industry}")
         if self.stage:

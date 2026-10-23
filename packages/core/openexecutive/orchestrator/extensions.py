@@ -13,7 +13,11 @@ An extension tool is offered only on a turn someone is in:
   ``_ALL_SKILL_TOOLS``, which never holds these;
 - never on a turn private to the principal (mail from one of their contacts);
 - never to a speaker who isn't on the People list (mail from a stranger, an
-  unknown chat user), so text from outside the team can't reach these tools;
+  unknown chat user), so text from outside the team can't reach these tools.
+  A tool registered with ``known_caller=False`` is the one exception: it is
+  asked on a turn with no verified caller too (a surface that names its user
+  without proving who is speaking), and its own ``offered`` decides alone, so
+  it must have one that checks who is asking;
 - like every tool Act as me's lockdown has not classified, it is refused once
   the turn has read the owner's mail (``delegation.lockdown`` fails closed),
   unless it is registered with ``after_mail_read=True``: a tool that only
@@ -38,7 +42,9 @@ own return (a task copies the flag). ``read_only`` says whether the tool only
 reads (the workflow review card's "may change things" badge).
 
 A tool may sit in a ``tool_groups`` group (opened with open_tools) instead of
-on the direct list, and may describe its chip. A collection is a kind of
+on the direct list, may describe its chip, may name the activity line the chat
+shows while it runs, and may keep its dispatch audit row private (``private_row``:
+its input or result quotes the speaker's own data). A collection is a kind of
 document an extension publishes as a drafted artifact tagged
 ``collection_tag(name)``: the Documents page gives it its own filter, and the
 extension hears when one is archived, restored or deleted, before it happens.
@@ -111,7 +117,9 @@ class ExtraTool:
     offered: Callable[[Any], bool] | None = None
     # The chip for a successful call: (tool input, parsed JSON result or
     # None) -> {"summary", "target", "link"} or None for no chip. A link must
-    # be a path inside the app ("/artifacts/alert:12").
+    # be a path inside the app ("/artifacts/alert:12"). It is asked whatever
+    # the result's status, a "waiting_for_approval" one included: what an
+    # extension's tool waits on is its own, never core's held action.
     chip: Callable[[dict[str, Any], dict[str, Any] | None], dict[str, Any] | None] | None = None
     # Also offered to workflow action steps (see module doc), and whether it
     # only reads there (None: may change something).
@@ -124,6 +132,14 @@ class ExtraTool:
     # Returns text from outside the team, e.g. a vendor app's records (see
     # module doc and ``orchestrator.outside_content``).
     reads_outside: bool = False
+    # Asked on a turn with no verified caller too (see module doc); needs
+    # ``offered``.
+    known_caller: bool = True
+    # Its dispatch audit row is private: its input or result quotes the
+    # speaker's own data.
+    private_row: bool = False
+    # The chat's activity line while it runs ("Checking the draft…").
+    activity_label: str | None = None
 
     @property
     def name(self) -> str:
@@ -197,6 +213,8 @@ def register_tool(tool: ExtraTool) -> None:
         raise ExtensionError(f"workflow tool name {name!r} must be at most {_MAX_WORKFLOW_NAME} characters")
     if tool.after_mail_read and tool.read_only is not True:
         raise ExtensionError(f"tool {name!r} may run after a mail read only if it is read_only")
+    if not tool.known_caller and tool.offered is None:
+        raise ExtensionError(f"tool {name!r} asked without a known caller needs its own offered()")
     if tool.group is not None:
         from openexecutive.orchestrator import tool_groups
 
@@ -318,14 +336,15 @@ def _forget_tool(name: str) -> None:
 
 def offered_tools(session: Any) -> list[ExtraTool]:
     """The extension tools a turn on ``session`` is offered (the caller has
-    already excluded unattended and private turns): none unless the speaker
-    is on the People list, then each whose ``offered`` agrees. A failing
-    ``offered`` counts as not offered."""
-    if not isinstance(getattr(session, "caller_person_id", None), int):
-        return []
+    already excluded unattended and private turns): unless the speaker is on
+    the People list, only those registered ``known_caller=False``; then each
+    whose ``offered`` agrees. A failing ``offered`` counts as not offered."""
+    known = isinstance(getattr(session, "caller_person_id", None), int)
     load()
     offered: list[ExtraTool] = []
     for tool in _tools.values():
+        if not known and tool.known_caller:
+            continue
         if tool.offered is not None:
             try:
                 if not tool.offered(session):
@@ -352,6 +371,21 @@ def reads_outside(tool_name: str) -> bool:
     load()
     tool = _tools.get(tool_name)
     return tool is not None and tool.reads_outside
+
+
+def private_row(tool_name: str) -> bool:
+    """Whether extension tool ``tool_name``'s dispatch audit row is private
+    (``private_row``). False for anything else."""
+    load()
+    tool = _tools.get(tool_name)
+    return tool is not None and tool.private_row
+
+
+def activity_label(tool_name: str) -> str | None:
+    """The activity line extension tool ``tool_name`` registered, if any."""
+    load()
+    tool = _tools.get(tool_name)
+    return tool.activity_label if tool is not None else None
 
 
 def workflow_tools() -> list[ExtraTool]:
@@ -471,6 +505,7 @@ __all__ = [
     "ExtraTool",
     "GatewayCall",
     "GatewayCheck",
+    "activity_label",
     "chip_fields",
     "collection_for_tags",
     "collection_tag",
@@ -481,6 +516,7 @@ __all__ = [
     "load",
     "notify",
     "offered_tools",
+    "private_row",
     "register_collection",
     "register_gateway_check",
     "register_tool",

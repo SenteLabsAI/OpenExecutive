@@ -116,6 +116,21 @@ test("a hub's menu entry stays lit on every one of its tabs", () => {
   assert.deepEqual(lit("/settings"), []);
 });
 
+test("team: the Departments tab shows only once a department exists", () => {
+  const company = buildHubs({ hasDepartments: false })[1];
+  assert.deepEqual(links(company.tabs), [
+    "People → /people",
+    "Goals → /goals",
+    "Company profile → /company-profile",
+  ]);
+  // The Departments pages keep it: that is where the first one is added.
+  const onDepts = hubForPath("/departments/new", { hasDepartments: false });
+  assert.ok(onDepts?.tabs.some((t) => t.href === "/departments"));
+  assert.ok(!hubForPath("/goals", { hasDepartments: false })?.tabs.some((t) => t.href === "/departments"));
+  // Solo never shows it, departments or not.
+  assert.ok(!JSON.stringify(buildHubs({ mode: "solo", hasDepartments: true })).includes("/departments"));
+});
+
 test("hubForPath finds the hub a page belongs to", () => {
   assert.equal(hubForPath("/jobs/new")?.key, "work");
   assert.equal(hubForPath("/people/3")?.key, "company");

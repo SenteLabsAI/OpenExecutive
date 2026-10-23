@@ -328,10 +328,21 @@ def _turn_read_outside(session: Any) -> bool:
     except Exception:
         return True
     pinned = turn_delegation(session)
-    return bool(
-        pinned is not None and getattr(pinned, "touched_mail", False) is True
-        and not outside_content.trusted_turn()
-    )
+    if pinned is None:
+        return False
+    from openexecutive.delegation.lockdown import mail_lock_holds
+    from openexecutive.orchestrator import outside_mode
+
+    # The mail it read holds as the safety level says (Careful: a
+    # conversation that read it; Balanced: a read the check flagged or
+    # hasn't checked yet; Hands-off: nothing).
+    try:
+        state = outside_content.current()
+        if getattr(pinned, "touched_mail", False) is True and (state is None or state.mode == outside_mode.ASK):
+            return True
+        return mail_lock_holds(pinned)
+    except Exception:
+        return True
 
 
 # --------------------------------------------------------------------------- #

@@ -270,7 +270,7 @@ def test_tool_search_endpoint(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert client.get("/workflows/tools/search").json() == {"tools": []}
     tools = client.get("/workflows/tools/search", params={"q": "read a file"}).json()["tools"]
     assert tools[0] == {
-        "name": "oe__read_file",
+        "name": "oe__read_document",
         "description": tools[0]["description"],
         "read_only": True,
         "source": "builtin",
@@ -308,3 +308,79 @@ def test_tool_describe_ignores_malformed_and_duplicate_names(
         params={"names": "srv__a,srv__a,has space,semi;colon," + "x" * 70},
     )
     assert searched == ["srv__a"]
+
+
+@pytest.fixture
+def creator_check(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The send-as-creator save check, recording what it was asked: refuses
+    a sending workflow unless ``state["ok"]``."""
+    from openexecutive.delegation import workflow_email
+
+    state: dict[str, Any] = {"ok": False, "owners": []}
+
+    def refusal(defn: Any, caller: Any, owner_id: int | None, *, check_tools: bool = True) -> str | None:
+        if not workflow_email.sends(defn):
+            return None
+        state["owners"].append(owner_id)
+        return None if state["ok"] else "Only the person who created this workflow can."
+
+    monkeypatch.setattr(workflow_email, "save_refusal", refusal)
+    monkeypatch.setattr("openexecutive.api.routes.chat._resolve_caller_person_id", lambda request: 1)
+    return state
+
+
+def test_only_its_verified_creator_saves_a_workflow_that_sends_as_them(
+    client: TestClient, creator_check: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = _action_definition(["oe__send_email_as_me"])
+    r = client.post("/workflows/custom", json=send)
+    assert r.status_code == 403 and "created" in r.json()["detail"]
+    assert creator_check["owners"] == [1]
+    # A drafts-only workflow isn't checked.
+    assert client.post("/workflows/custom", json=_action_definition(["oe__draft_email_as_me"])).status_code == 201
+    client.delete("/workflows/custom/file_bills")
+
+    creator_check["ok"] = True
+    assert client.post("/workflows/custom", json=send).status_code == 201, client.get("/workflows/custom").text
+
+    # Someone else can't change it, even to take the send out, or switch it on.
+    creator_check["ok"] = False
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: 1)
+    assert client.put("/workflows/custom/file_bills", json=send).status_code == 403
+    assert client.put(
+        "/workflows/custom/file_bills", json=_action_definition(["oe__draft_email_as_me"]),
+    ).status_code == 403
+    assert client.post("/workflows/custom/file_bills/activate", json={"is_active": False}).status_code == 200
+    stored = client.get("/workflows/custom/file_bills").json()
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": stored})
+    assert r.status_code == 403
+    creator_check["ok"] = True
+    r = client.post("/workflows/custom/file_bills/activate", json={"is_active": True, "definition": stored})
+    assert r.status_code == 200, r.text
+
+
+def test_only_its_creator_runs_a_workflow_that_reads_their_mail(
+    client: TestClient, creator_check: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert client.post("/workflows/custom", json=_action_definition(["oe__search_my_email"])).status_code == 201
+    monkeypatch.setattr(dynamic_store, "get_owner", lambda name: 1)
+    monkeypatch.setattr("openexecutive.api.routes.workflows._caller_person_id", lambda request: 2)
+
+    r = client.post("/workflows/file_bills/runs", json={})
+
+    assert r.status_code == 403 and "creator" in r.json()["detail"]
+    # Its creator, only once the API knows it is them (as a save needs).
+    from types import SimpleNamespace
+
+    from openexecutive.delegation import verified
+
+    monkeypatch.setattr("openexecutive.api.routes.workflows._caller_person_id", lambda request: 1)
+    monkeypatch.setattr(
+        "openexecutive.people.store.get_person", lambda pid: SimpleNamespace(email="olivia@co.example", is_principal=False, archived=False),
+    )
+    monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: verified.SIGNING_REQUIRED)
+    r = client.post("/workflows/file_bills/runs", json={})
+    assert r.status_code == 403 and "signed sign-ins" in r.json()["detail"]
+    monkeypatch.setattr(verified, "caller_refusal", lambda caller, email: None)
+    r = client.post("/workflows/file_bills/runs", json={})
+    assert r.status_code != 403, r.text

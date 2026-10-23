@@ -71,7 +71,7 @@ def test_seed_principal_briefs_includes_reflection(
     _setup_isolated_db(tmp_path / "refl.db", monkeypatch)
 
     inserted = runner.seed_principal_briefs()
-    assert inserted == 4  # morning + eod + reflection + chat_replay
+    assert inserted == 5  # morning + eod + reflection + chat_replay + goal_review
 
     actions = episodic.list_scheduled_actions(status="pending", limit=10)
     kinds = {a.kind for a in actions}

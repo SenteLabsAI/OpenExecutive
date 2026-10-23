@@ -25,6 +25,11 @@ already hold them:
   • CALENDAR — today's remaining events, from an in-process cache the
     scheduler and the morning brief refresh. The /today hot path never makes
     the calendar call itself; it reads the cache. Private to the principal.
+    The meetings that already ended today are kept apart (``met_today``),
+    so Right now can ask what follows from one.
+  • WAITING — the principal's own sent mail nobody has answered yet
+    (``briefing.waiting_on``, read in the background from their own mailbox
+    under Act as me): who it went to, its subject, when. Private.
 
 Private rows (the principal's own contacts, their drafts, their chat titles,
 their calendar) are included only with ``include_private=True``: the morning brief (a
@@ -57,6 +62,8 @@ _STUCK_MAX = 6
 _CONVERSATIONS_MAX = 5
 _OWN_MAX = 6
 _CALENDAR_MAX = 6
+_MET_TODAY_MAX = 3
+_WAITING_MAX = 5
 # How many audit rows each query reads. A busy day's inbound is well under
 # this; the cap keeps a flood from turning one page load into a scan.
 _POOL = 200
@@ -208,6 +215,12 @@ class LiveSignals:
     # None: no calendar was read (none connected, or not cached yet).
     # (): read, and nothing left today.
     calendar: tuple[str, ...] | None = None
+    # Meetings that ended earlier today, latest first. This and ``waiting``
+    # are Right now's alone (``briefing.header_context``): the briefs neither
+    # render them nor count them in ``is_empty`` or ``keys``.
+    met_today: tuple[str, ...] = ()
+    # The reader's own emails with no answer yet, newest first.
+    waiting: tuple[str, ...] = ()
     # Stable identities for the brief's "unchanged" fingerprint — no times.
     # The reader's own messages are left out: chatting with the Executive
     # is not a reason to send a brief.
@@ -487,7 +500,8 @@ def _conversations(
         title = _one_line(row["title"], 100)
         if title.lower() in _UNTITLED:
             continue
-        lines.append(f"[{_local_hhmm(row['updated_at'], tz, now)}] {title}")
+        # No time: the header pointed back at "the 13:26 chat" by it.
+        lines.append(title)
         keys.append(title.lower())
         if len(lines) >= _CONVERSATIONS_MAX:
             break
@@ -587,6 +601,43 @@ def _calendar_lines(events: list[Any], now: datetime, tz: tzinfo) -> list[str]:
     return (all_day + lines)[:_CALENDAR_MAX]
 
 
+def _met_today_lines(events: list[Any], now: datetime, tz: tzinfo) -> list[str]:
+    """Meetings of today that are over, latest first."""
+    today = now.astimezone(tz).date()
+    over = sorted(
+        (
+            e for e in events
+            if not e.all_day and e.start is not None and e.end is not None
+            and e.end > e.start and e.end <= now and e.start.astimezone(tz).date() == today
+        ),
+        key=lambda e: e.end,
+        reverse=True,
+    )
+    return [
+        f"{e.start.astimezone(tz):%H:%M}–{e.end.astimezone(tz):%H:%M} {_one_line(e.title, 80)}"
+        for e in over[:_MET_TODAY_MAX]
+    ]
+
+
+def _waiting_lines(items: list[Any], now: datetime, tz: tzinfo) -> list[str]:
+    """One line per unanswered email of theirs: to whom, when, its subject."""
+    today = now.astimezone(tz).date()
+    lines: list[str] = []
+    for w in items[:_WAITING_MAX]:
+        names = [_named(a, True) for a in w.to[:3]]
+        if len(w.to) > 3:
+            names.append(f"{len(w.to) - 3} more")
+        local = w.sent_at.astimezone(tz)
+        days = (today - local.date()).days
+        when = (
+            f"today at {local:%H:%M}" if days == 0
+            else "yesterday" if days == 1
+            else f"{days} days ago ({local:%a} {local.day} {local:%b})"
+        )
+        lines.append(f"to {', '.join(names)}, sent {when}, no reply yet: {_one_line(w.subject, 120)}")
+    return lines
+
+
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -659,6 +710,7 @@ def gather_live_signals(
         cached_calendar(now, tz) if use_cached_calendar else None
     )
     calendar_lines: tuple[str, ...] | None = None
+    met_today: tuple[str, ...] = ()
     calendar_key = ""
     if events is not None:
         try:
@@ -668,6 +720,19 @@ def gather_live_signals(
             ).hexdigest()[:16]
         except Exception:
             logger.exception("live_signals: calendar render failed")
+        try:
+            met_today = tuple(_met_today_lines(events, now, tz))
+        except Exception:
+            logger.exception("live_signals: ended meetings render failed")
+
+    waiting: tuple[str, ...] = ()
+    if include_private:
+        from openexecutive.briefing import waiting_on
+
+        try:
+            waiting = tuple(_waiting_lines(waiting_on.cached() or [], now, tz))
+        except Exception:
+            logger.exception("live_signals: waiting render failed")
 
     stuck = stuck[:_STUCK_MAX]
     return LiveSignals(
@@ -680,6 +745,8 @@ def gather_live_signals(
         conversations=tuple(conversations),
         own=tuple(own),
         calendar=calendar_lines,
+        met_today=met_today,
+        waiting=waiting,
         keys={
             "inbound": sorted(inbound_keys),
             "stuck": sorted(s.split("] ", 1)[-1] for s in stuck),

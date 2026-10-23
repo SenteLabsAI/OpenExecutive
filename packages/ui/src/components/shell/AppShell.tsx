@@ -113,7 +113,7 @@ function useFirstRunGate(pathname: string): boolean {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const { mode, role } = useWorkspace();
+  const { mode, role, hasDepartments } = useWorkspace();
   const redirecting = useFirstRunGate(pathname);
 
   if (isExempt(pathname)) {
@@ -124,7 +124,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const segments = pathname.split("/").filter(Boolean);
-  const hub = hubForPath(pathname, { mode, roleKind: role.role_kind });
+  const hub = hubForPath(pathname, { mode, roleKind: role.role_kind, hasDepartments });
 
   return (
     <AskOEProvider>

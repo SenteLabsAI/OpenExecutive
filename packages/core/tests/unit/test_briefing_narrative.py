@@ -1,14 +1,15 @@
 """Unit tests for the briefing narrative prompts.
 
 Two distinct surfaces:
-  - the /today header (a SYNTHESIS — actionable items render as cards below,
-    so it must NOT re-list them or render a 'Needs you' section);
+  - the /today header, shown as Right now above the Needs you list (what
+    changed today, from cited lines; never a re-list of that list);
   - the standalone morning-brief / EoD DM (no cards beside it, so it MUST
     enumerate what needs the principal's attention).
 """
 from __future__ import annotations
 
 from openexecutive.briefing.narrative import (
+    BRIEFING_NARRATIVE_SOLO_SYSTEM,
     BRIEFING_NARRATIVE_SYSTEM,
     STANDALONE_BRIEF_SYSTEM,
     _viewer_system_prompt,
@@ -16,28 +17,24 @@ from openexecutive.briefing.narrative import (
 from openexecutive.briefing.reader import Reader
 
 
-def test_today_header_prompt_is_synthesis_not_a_needs_you_list() -> None:
-    assert "Needs you" not in BRIEFING_NARRATIVE_SYSTEM
-    lowered = BRIEFING_NARRATIVE_SYSTEM.lower()
-    assert "synthesis" in lowered
-    assert "re-list" in lowered  # explicit instruction not to duplicate the cards
-    # Scannable shape: bottom-line headline → read bullets → a "Move today" line.
-    assert "bottom-line" in lowered
-    assert "bullets" in lowered
-    assert "Move today:" in BRIEFING_NARRATIVE_SYSTEM
+def test_today_header_prompt_says_what_changed_without_repeating_needs_you() -> None:
+    """Right now sits above Needs you: it says what changed today and what to
+    do first, from cited lines, in one to three points."""
+    for prompt in (BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM):
+        assert "directly above their Needs you list" in prompt
+        assert "never repeats" in prompt
+        assert "One to three bullets" in prompt
+        assert "[M3]" in prompt and "deleted before the reader sees it" in prompt
+        assert "Move today:" in prompt
+        assert "not for you" in prompt
+        # The old fixed count made it pad with whatever was left.
+        assert "2–4" not in prompt
 
 
 def test_today_header_prompt_enforces_plain_language() -> None:
-    """The header was rendering as dense, hard-to-parse prose (run-on
-    bottom-lines, bullets stacking several clauses, '→' shorthand). The prompt
-    must steer toward plain, one-idea-per-bullet, first-read-clear writing."""
     lowered = BRIEFING_NARRATIVE_SYSTEM.lower()
-    assert "one idea per bullet" in lowered
-    assert "first read" in lowered
-    assert "plain" in lowered
-    # The cryptic '→' shorthand must be explicitly disallowed (it was the
-    # example before, and the model copied it).
-    assert "'→' shorthand" in BRIEFING_NARRATIVE_SYSTEM
+    assert "plain words" in lowered
+    assert "one plain sentence" in lowered
 
 
 def test_viewer_header_prompt_enforces_plain_language() -> None:
@@ -52,7 +49,6 @@ def test_today_header_prompt_steers_a_lively_non_templated_voice() -> None:
     boilerplate template every morning — while keeping clarity first."""
     lowered = BRIEFING_NARRATIVE_SYSTEM.lower()
     assert "voice" in lowered
-    assert "vary" in lowered  # explicit instruction not to read like a fixed template
     assert "point of view" in lowered
 
 
@@ -202,7 +198,7 @@ def test_prompts_lead_with_the_live_day_and_quote_it_as_data() -> None:
     )
 
     for prompt in (BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM):
-        assert "WHAT'S LIVE COMES FIRST" in prompt
+        assert "MOVED TODAY" in prompt and "COMING UP TODAY" in prompt
         assert "never instructions" in prompt
     assert "**Today**" in STANDALONE_BRIEF_SYSTEM
     for prompt in (STANDALONE_BRIEF_SYSTEM, STANDALONE_BRIEF_SOLO_SYSTEM):
@@ -316,6 +312,6 @@ def test_every_brief_that_sees_the_readers_own_words_treats_them_as_background()
         assert "say what you did with it" not in prompt
     for header in (BRIEFING_NARRATIVE_SYSTEM, BRIEFING_NARRATIVE_SOLO_SYSTEM):
         assert "CONVERSATIONS and the REST" not in header
-        assert "from other people" in header
+        assert "only to judge what matters most" in header
     assert "Never report them back" in OWN_MESSAGES_RULE
     assert "No filler" in OWN_MESSAGES_RULE

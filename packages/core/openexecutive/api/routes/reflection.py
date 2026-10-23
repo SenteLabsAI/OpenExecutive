@@ -56,6 +56,8 @@ class MissOut(BaseModel):
     tools: list[str]
     wanted: str
     kind: str
+    # What would have fixed it (memory.chat_review.CAUSES), or None.
+    cause: str | None = None
     signals: list[str]
     # How its replays went (memory.replay): "open" until one passes,
     # "closed" (it would go right today), "evidence" (can't be judged today).

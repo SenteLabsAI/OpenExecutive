@@ -14,7 +14,7 @@ import pytest
 
 from openexecutive.audit import logger as audit_logger
 from openexecutive.audit.logger import AuditLogger
-from openexecutive.delegation import caps, drafts, inbox
+from openexecutive.delegation import caps, drafts, inbox, injection_check
 from openexecutive.delegation import ghostwriter as gw
 from openexecutive.delegation import inbox_classifier as ic
 from openexecutive.delegation.gmail import (
@@ -248,7 +248,7 @@ def owner() -> Any:
 def models(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The two model calls, scripted: the classifier by the email's text, the
     composer with a fixed reply. Records what each was sent."""
-    seen: dict[str, Any] = {"classified": [], "composed": [], "verdicts": {}}
+    seen: dict[str, Any] = {"classified": [], "composed": [], "verdicts": {}, "checked": [], "steers": False}
 
     async def classifier(model: str, turn: str) -> dict[str, Any]:
         seen["classified"].append(turn)
@@ -265,8 +265,13 @@ def models(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             "open_questions": ["Can the call move to Friday at 10?"],
         }
 
+    async def checker(model: str, turn: str) -> dict[str, Any]:
+        seen["checked"].append(turn)
+        return {"steers_assistant": seen["steers"]}
+
     monkeypatch.setattr(ic, "_call_model", classifier)
     monkeypatch.setattr(gw, "_call_model", composer)
+    monkeypatch.setattr(injection_check, "_call_model", checker)
     return seen
 
 

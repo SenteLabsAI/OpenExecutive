@@ -538,10 +538,8 @@ class EndOfDayDigestWorkflow(Workflow):
             step_title="Synthesize the digest",
         )
 
-        from openexecutive.agents.utility_fast import get_fast_model
-        from openexecutive.audit.usage import log_model_usage
+        from openexecutive.briefing.narrative import brief_model, create_brief_text
         from openexecutive.memory.facts import with_standing_facts
-        from openexecutive.providers import get_provider
 
         # A SQLite read: off the event loop the SSE streams share.
         user_content = await asyncio.to_thread(with_standing_facts, _render_eod_context(
@@ -558,24 +556,18 @@ class EndOfDayDigestWorkflow(Workflow):
 
         system = _EOD_DIGEST_SOLO_SYSTEM if mode == "solo" else _EOD_DIGEST_SYSTEM
         try:
-            model = get_fast_model()
-            response = await get_provider(model).messages_create(
-                model=model,
-                max_tokens=600,
-                system=system,
+            model = brief_model()
+            draft = await create_brief_text(
+                model, system=system,
                 messages=[{"role": "user", "content": user_content}],
+                actor=self.name,
             )
-            log_model_usage(response, model=model, actor=self.name)
-            text_blocks = [b for b in response.content if getattr(b, "type", "") == "text"]
             # Whatever still names the reader becomes "you" / "your".
-            artifact_text = fix_slips(text_blocks[0].text.strip() if text_blocks else "", reader)
+            artifact_text = fix_slips(draft, reader)
         except Exception as exc:
             logger.exception("eod_digest: synthesis failed")
             yield WorkflowEvent(type="error", message=f"Synthesis failed: {exc}")
             return
-
-        if not artifact_text:
-            artifact_text = "Quiet day — nothing carrying forward."
 
         # Nobody reads this before it ships: hold back any line naming a
         # person or figure the context doesn't hold, and cite the figures.

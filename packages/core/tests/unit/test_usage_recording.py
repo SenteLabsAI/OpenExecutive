@@ -237,9 +237,14 @@ def fast_provider(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return create
 
 
-def test_briefing_narrative_records_usage(audit: AuditLogger, fast_provider: AsyncMock) -> None:
-    """The morning brief and the /today header both synthesize through here."""
+def test_briefing_narrative_records_usage(
+    audit: AuditLogger, fast_provider: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The morning brief and the /today header both synthesize through here,
+    on the Executive's model."""
     from openexecutive.briefing.narrative import synthesize_briefing_narrative
+
+    monkeypatch.setattr("openexecutive.briefing.narrative.brief_model", lambda: "claude-exec")
 
     text = asyncio.run(synthesize_briefing_narrative(
         today_data={}, activity=[], period_label="Monday", rendered_context="ctx",
@@ -248,7 +253,7 @@ def test_briefing_narrative_records_usage(audit: AuditLogger, fast_provider: Asy
     assert text == "brief"
     rows = audit.query(event_type="cache_event")
     assert [r.actor for r in rows] == ["briefing_narrative"]
-    assert rows[0].details["model"] == "claude-fast"
+    assert rows[0].details["model"] == "claude-exec"
     assert rows[0].details["input_tokens"] == 50
 
 

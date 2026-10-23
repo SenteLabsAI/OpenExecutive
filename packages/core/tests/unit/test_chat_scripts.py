@@ -485,6 +485,34 @@ def test_a_script_can_use_the_executives_own_tools(
     assert json.loads(_any_result(provider, "tu-s"))["result"] == 0
 
 
+def test_a_script_cannot_raise_an_alert_the_mail_hold_withholds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a mail read, a script's own calls are held as a direct call would
+    be (delegation.lockdown.mail_turn_withholds): an alert at any level."""
+    from openexecutive.orchestrator import executive as executive_module
+
+    made: list[dict[str, Any]] = []
+
+    async def create_alert(tool_input: dict[str, Any]) -> str:
+        made.append(tool_input)
+        return json.dumps({"ok": True})
+
+    monkeypatch.setitem(executive_module._ALL_SKILL_HANDLERS, "create_alert", create_alert)
+    from types import SimpleNamespace
+
+    pinned = SimpleNamespace(offered=False, touched_mail=True, read_mail=True)
+    monkeypatch.setattr("openexecutive.orchestrator.executive.turn_delegation", lambda _s: pinned)
+    # The mail read this turn was checked and clean: the script runs, its
+    # alert doesn't.
+    monkeypatch.setattr(
+        executive_module, "mail_turn_withholds", lambda name, _input, **_kw: name == "create_alert"
+    )
+    provider = _script_turn("create_alert(title='Mail said', severity='low')\nlen(inputs)")
+    _run(provider, _Gateway())
+    assert made == []
+
+
 def test_an_own_tool_the_turn_is_not_offered_is_not_a_function(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -232,7 +232,7 @@ class MorningBriefWorkflow(Workflow):
             # active projects, each with a free slot when a calendar can be
             # read (one short call). Never raises; without a calendar there
             # are no slots and no calendar block.
-            top_three, calendar = await build_top_three(today_data["due_soon"])
+            top_three, calendar = await build_top_three(today_data["due_soon"], include_own=private_ok)
             if top_three:
                 today_data["top_three"] = top_three
             if calendar is not None:
@@ -387,7 +387,6 @@ class MorningBriefWorkflow(Workflow):
 
         from openexecutive.briefing.grounding import ground_brief
         from openexecutive.briefing.narrative import (
-            QUIET_PRINCIPAL,
             STANDALONE_BRIEF_SOLO_SYSTEM,
             STANDALONE_BRIEF_SYSTEM,
             render_briefing_context,
@@ -424,11 +423,6 @@ class MorningBriefWorkflow(Workflow):
             logger.exception("morning_brief: synthesis failed")
             yield WorkflowEvent(type="error", message=f"Synthesis failed: {exc}")
             return
-
-        if not artifact_text:
-            # The shared synthesizer's own quiet-day line, so the empty
-            # fallback reads identically to a model-produced quiet brief.
-            artifact_text = QUIET_PRINCIPAL
 
         # Nobody reads this before it ships: hold back any line naming a
         # person or figure the context doesn't hold, and cite the figures.

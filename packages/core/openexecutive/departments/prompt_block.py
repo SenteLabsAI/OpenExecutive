@@ -24,6 +24,10 @@ Key invariants:
   PrincipalRole``: kind, title, reports to, remit, measured on), its lines
   follow the principal's own line — the context the solo persona reads the
   principal's role from. Set once per install, so the 5m cache stays warm.
+- Goals with no department (``Goal.department_slug`` None) render after the
+  departments in their own section, team and solo alike, each with its
+  goal_id and, when the goal names one, its owner. A department goal with an
+  owner of its own (not the department's lead) shows that owner too.
 - The principal's contacts (people outside the team) get their own short
   "## Contacts" section after the team or solo block — name, role/company and
   whether an email is on file, nothing about authority — but only when
@@ -79,6 +83,9 @@ _MAX_CONTACTS_IN_BLOCK = 25
 # the Executive could read as its own identity.
 _SOLO_PRINCIPAL_HEADER = "## Your Principal"
 _SOLO_GOALS_HEADER = "## Your Principal's Goals"
+# Goals that belong to no department, in both modes.
+_UNASSIGNED_GOALS_HEADER = "## Goals With No Department"
+_SOLO_UNASSIGNED_HEADING = "### No area"
 
 # Opens the principal's role lines. Block 1 goes out on every turn, whoever
 # sent it, and the role says who the principal reports to and what they are
@@ -124,7 +131,52 @@ def _status(s: str) -> str:
     return _STATUS_LABEL.get(s, s)
 
 
-def _render_department_section(state: DepartmentState, head_name: str | None = None) -> str:
+def _owner_note(goal: Goal, owner_names: dict[int, str] | None) -> str:
+    """`` — owner: Name`` for a goal that names its own owner, else ""."""
+    if goal.owner_person_id is None or not owner_names:
+        return ""
+    name = owner_names.get(goal.owner_person_id)
+    return f" — owner: {_safe(name, 80)}" if name else ""
+
+
+def _unassigned_goals() -> list[Goal]:
+    """Goals with no department, by (period, id). Never raises."""
+    from openexecutive.departments import store
+
+    try:
+        goals = store.list_goals(None)
+    except Exception:
+        logger.warning("render_org_block: unassigned goals unreadable", exc_info=True)
+        return []
+    return sorted(goals, key=lambda g: (g.period_type, g.period_value, g.id or 0))
+
+
+def _render_unassigned_section(goals: list[Goal], owner_names: dict[int, str]) -> str:
+    """The team block's ``## Goals With No Department``, or "" when none."""
+    if not goals:
+        return ""
+    lines = [
+        f"{_UNASSIGNED_GOALS_HEADER}\n",
+        "Owned by the named person, else the principal. Tools name these by "
+        "goal_id alone, with no department_slug.",
+    ]
+    for goal in goals:
+        current_note = (
+            f"  (now: {_safe(goal.current, _CURRENT_CHAR_CAP)})" if goal.current else ""
+        )
+        lines.append(
+            f"  [{_status(goal.status)}] {_period_label(goal.period_type, goal.period_value)}: "
+            f"{_safe(goal.key_result, _KEY_RESULT_CHAR_CAP)}{current_note}"
+            f"{_owner_note(goal, owner_names)} (goal_id {goal.id})"
+        )
+    return "\n".join(lines)
+
+
+def _render_department_section(
+    state: DepartmentState,
+    head_name: str | None = None,
+    owner_names: dict[int, str] | None = None,
+) -> str:
     """Render one department section: heading + mission + Goals."""
     config = state.config
     goals = state.goals
@@ -177,6 +229,7 @@ def _render_department_section(state: DepartmentState, head_name: str | None = N
                 lines.append(
                     f"  [{_status(goal.status)}]"
                     f" {_safe(goal.key_result, _KEY_RESULT_CHAR_CAP)}{current_note}"
+                    f"{_owner_note(goal, owner_names)}"
                 )
 
     return "\n".join(lines)
@@ -284,7 +337,7 @@ def _period_label(period_type: str, period_value: str) -> str:
     return f"{period_type.capitalize()} {safe_value}".strip()
 
 
-def _render_solo_goal(goal: Goal) -> str:
+def _render_solo_goal(goal: Goal, owner_names: dict[int, str] | None = None) -> str:
     status = _SOLO_STATUS_LABEL.get(goal.status, _safe(goal.status, 20))
     line = (
         f"- [{status}] {_period_label(goal.period_type, goal.period_value)}: "
@@ -294,6 +347,7 @@ def _render_solo_goal(goal: Goal) -> str:
         line += f" — target: {_safe(goal.target, _TARGET_CHAR_CAP)}"
     if goal.current:
         line += f" — now: {_safe(goal.current, _CURRENT_CHAR_CAP)}"
+    line += _owner_note(goal, owner_names)
     if goal.id is not None:
         line += f" (goal_id {goal.id})"
     return line
@@ -375,11 +429,17 @@ def _render_solo_principal(role: PrincipalRole | None = None) -> str:
     return f"{_SOLO_PRINCIPAL_HEADER}\n\n" + "\n".join([line, *role_lines])
 
 
-def _render_solo_goals(states: list[DepartmentState]) -> str:
-    """Goals grouped by area (a department row), areas with no goals skipped.
+def _render_solo_goals(
+    states: list[DepartmentState],
+    unassigned: list[Goal] | None = None,
+    owner_names: dict[int, str] | None = None,
+) -> str:
+    """Goals grouped by area (a department row), areas with no goals skipped,
+    then the goals with no area under ``### No area``.
 
     Areas keep the registry's order; goals sort by (period, id) like the team
-    block, so the output is deterministic for the same DB state.
+    block, so the output is deterministic for the same DB state. The owner
+    shows only on a goal that names someone (a teammate's, in solo).
     """
     sections: list[str] = []
     for state in states:
@@ -389,20 +449,35 @@ def _render_solo_goals(states: list[DepartmentState]) -> str:
         for goal in sorted(
             state.goals, key=lambda g: (g.period_type, g.period_value, g.id or 0)
         ):
-            lines.append(_render_solo_goal(goal))
+            lines.append(_render_solo_goal(goal, owner_names))
         sections.append("\n".join(lines))
+    if unassigned:
+        sections.append("\n".join(
+            [_SOLO_UNASSIGNED_HEADING, *(_render_solo_goal(g, owner_names) for g in unassigned)]
+        ))
     if not sections:
         return ""
     return "\n\n".join([
         f"{_SOLO_GOALS_HEADER}\n\n"
-        "Grouped by area. Tools take the area slug as `department_slug`.",
+        "Grouped by area. Tools take the area slug as `department_slug`; "
+        "a goal with no area is named by its goal_id alone.",
         *sections,
     ])
 
 
-def _render_solo_block(states: list[DepartmentState], role: PrincipalRole | None) -> str:
+def _render_solo_block(
+    states: list[DepartmentState],
+    role: PrincipalRole | None,
+    unassigned: list[Goal] | None = None,
+    owner_names: dict[int, str] | None = None,
+) -> str:
     return "\n\n".join(
-        part for part in (_render_solo_principal(role), _render_solo_goals(states)) if part
+        part
+        for part in (
+            _render_solo_principal(role),
+            _render_solo_goals(states, unassigned, owner_names),
+        )
+        if part
     )
 
 
@@ -470,19 +545,23 @@ def render_org_block(
         # (the caller decides), after the team or solo block. Without it the
         # block is byte-identical to one with no contacts at all.
         contacts_section = _render_contacts_section(contacts)
+        unassigned = _unassigned_goals()
+
+        # A quick id→name map for head-person and goal-owner lookups.
+        head_name_by_id: dict[int, str] = {
+            p.id: p.full_name for p in people if p.id is not None
+        }
 
         if mode == "solo":
             role = principal_role if principal_role is not None else _workspace_role()
             return _cap("\n\n".join(
                 part
-                for part in (_render_solo_block(states, role).strip(), contacts_section)
+                for part in (
+                    _render_solo_block(states, role, unassigned, head_name_by_id).strip(),
+                    contacts_section,
+                )
                 if part
             ).strip())
-
-        # Build a quick id→name map for head-person lookups.
-        head_name_by_id: dict[int, str] = {
-            p.id: p.full_name for p in people if p.id is not None
-        }
 
         # Build departments section.
         dept_sections: list[str] = []
@@ -494,18 +573,30 @@ def render_org_block(
                     if state.config.head_person_id is not None
                     else None
                 )
-                dept_sections.append(_render_department_section(state, head_name=head_name))
+                dept_sections.append(
+                    _render_department_section(
+                        state, head_name=head_name, owner_names=head_name_by_id
+                    )
+                )
+        unassigned_section = _render_unassigned_section(unassigned, head_name_by_id)
 
         # Build people section — pass the already-fetched list to avoid a
         # second DB call.
         people_section = _render_people_section(people)
 
-        if not dept_sections and not people_section and not contacts_section:
+        if (
+            not dept_sections
+            and not unassigned_section
+            and not people_section
+            and not contacts_section
+        ):
             return ""
 
         parts: list[str] = []
         if dept_sections:
             parts.append("\n\n".join(dept_sections))
+        if unassigned_section:
+            parts.append(unassigned_section)
         if people_section:
             parts.append(people_section)
         if contacts_section:

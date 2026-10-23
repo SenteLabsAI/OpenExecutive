@@ -115,7 +115,7 @@ def initialize_db(db_path: Path | None = None) -> None:
             );
             CREATE TABLE IF NOT EXISTS department_goals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                department_slug TEXT NOT NULL,
+                department_slug TEXT,
                 period_type TEXT NOT NULL DEFAULT 'quarter',
                 period_value TEXT NOT NULL,
                 key_result TEXT NOT NULL,
@@ -138,6 +138,7 @@ def initialize_db(db_path: Path | None = None) -> None:
         _migrate_add_channel_columns(conn)
         _migrate_add_last_reviewed_at_column(conn)
         _migrate_add_watched_entities_column(conn)
+        _migrate_goals_stand_alone(conn)
 
 
 def _migrate_add_last_reviewed_at_column(conn: sqlite3.Connection) -> None:
@@ -205,6 +206,58 @@ def _migrate_add_watched_entities_column(conn: sqlite3.Connection) -> None:
         if "duplicate column" not in str(exc).lower():
             raise
 
+
+def _migrate_goals_stand_alone(conn: sqlite3.Connection) -> None:
+    """Let a goal exist without a department, and give it an owner.
+
+    Drops NOT NULL on ``department_goals.department_slug`` (a table rebuild,
+    as ``_migrate_specialist_key_nullable`` does for departments) and adds
+    ``owner_person_id``. Existing goals keep their department; their owner
+    stays NULL, which reads as the department's lead (``goals.effective_owner_id``),
+    so nothing needs back-filling and a lead change still moves them.
+    """
+    cols = {c["name"]: c for c in conn.execute("PRAGMA table_info(department_goals)")}
+    if not cols:
+        return
+    slug_col = cols.get("department_slug")
+    if slug_col is not None and slug_col["notnull"] == 1:
+        logger.info("departments: letting goals exist without a department")
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            names = ", ".join(c for c in cols)
+            conn.executescript(f"""
+                BEGIN;
+                CREATE TABLE department_goals_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    department_slug TEXT,
+                    period_type TEXT NOT NULL DEFAULT 'quarter',
+                    period_value TEXT NOT NULL,
+                    key_result TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    current TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'on_track',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_reviewed_at TEXT,
+                    FOREIGN KEY (department_slug) REFERENCES departments(slug)
+                );
+                INSERT INTO department_goals_new ({names}) SELECT {names} FROM department_goals;
+                DROP TABLE department_goals;
+                ALTER TABLE department_goals_new RENAME TO department_goals;
+                CREATE INDEX IF NOT EXISTS idx_goals_dept ON department_goals(department_slug);
+                COMMIT;
+            """)
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(department_goals)")}
+    if "owner_person_id" not in existing:
+        try:
+            conn.execute("ALTER TABLE department_goals ADD COLUMN owner_person_id INTEGER")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
 
 def _migrate_okrs_to_goals(conn: sqlite3.Connection) -> None:
     """Rename department_okrs → department_goals; add period_type column.
@@ -382,9 +435,14 @@ def _row_to_goal(row: sqlite3.Row) -> Goal:
         last_reviewed_at = row["last_reviewed_at"] or ""
     except (IndexError, KeyError):
         last_reviewed_at = ""
+    try:
+        owner = row["owner_person_id"]
+    except (IndexError, KeyError):
+        owner = None
     return Goal(
         id=int(row["id"]),
-        department_slug=row["department_slug"],
+        department_slug=row["department_slug"] or None,
+        owner_person_id=int(owner) if owner is not None else None,
         period_type=row["period_type"],
         period_value=row["period_value"],
         key_result=row["key_result"],
@@ -605,16 +663,35 @@ def update_department(
 # Goal CRUD
 # --------------------------------------------------------------------------- #
 
+
 def list_goals(
-    department_slug: str, db_path: Path | None = None
+    department_slug: str | None, db_path: Path | None = None
 ) -> list[Goal]:
+    """A department's goals, or (``None``) the goals with no department."""
     if not _resolve_db_path(db_path).exists():
         return []
     with _get_conn(db_path) as conn:
-        rows = conn.execute(
-            "SELECT * FROM department_goals WHERE department_slug = ? ORDER BY id",
-            (department_slug,),
-        ).fetchall()
+        if department_slug is None:
+            rows = conn.execute(
+                "SELECT * FROM department_goals "
+                "WHERE department_slug IS NULL OR department_slug = '' ORDER BY id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM department_goals WHERE department_slug = ? ORDER BY id",
+                (department_slug,),
+            ).fetchall()
+    return [_row_to_goal(r) for r in rows]
+
+
+def list_all_goals(db_path: Path | None = None) -> list[Goal]:
+    """Every goal, with or without a department, oldest first."""
+    if not _resolve_db_path(db_path).exists():
+        return []
+    with _get_conn(db_path) as conn:
+        if not _table_exists(conn, "department_goals"):
+            return []
+        rows = conn.execute("SELECT * FROM department_goals ORDER BY id").fetchall()
     return [_row_to_goal(r) for r in rows]
 
 
@@ -630,7 +707,7 @@ def get_goal(goal_id: int, db_path: Path | None = None) -> Goal | None:
 
 def _mirror_goal_to_honcho(
     *,
-    department_slug: str,
+    department_slug: str | None,
     period_type: str,
     period_value: str,
     key_result: str,
@@ -648,6 +725,9 @@ def _mirror_goal_to_honcho(
     by the time this runs, and a Honcho failure must not break the goal
     mutation.
     """
+    if not department_slug:
+        # The notes timeline is per department; a goal with none has no peer.
+        return
     try:
         from openexecutive.memory.honcho_client import append_department_note
 
@@ -670,7 +750,7 @@ def _mirror_goal_to_honcho(
 
 
 def insert_goal(
-    department_slug: str,
+    department_slug: str | None,
     *,
     period_value: str,
     key_result: str,
@@ -678,18 +758,23 @@ def insert_goal(
     period_type: PeriodType = "quarter",
     current: str = "",
     status: GoalStatus = "on_track",
+    owner_person_id: int | None = None,
     db_path: Path | None = None,
 ) -> int:
+    """Add a goal. ``department_slug`` None = a goal with no department;
+    ``owner_person_id`` None = the department's lead, else the principal."""
     now = _now()
+    department_slug = department_slug or None
     with _get_conn(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO department_goals
-              (department_slug, period_type, period_value, key_result, target, current, status,
-               created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (department_slug, owner_person_id, period_type, period_value, key_result,
+               target, current, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (department_slug, period_type, period_value, key_result, target, current, status, now, now),
+            (department_slug, owner_person_id, period_type, period_value, key_result,
+             target, current, status, now, now),
         )
         goal_id = int(cursor.lastrowid or 0)
     _mirror_goal_to_honcho(
@@ -715,9 +800,14 @@ def update_goal(
     current: str | None = None,
     status: GoalStatus | None = None,
     last_reviewed_at: str | None = None,
+    owner_person_id: int | None | object = _UNSET,
+    department_slug: str | None | object = _UNSET,
     db_path: Path | None = None,
 ) -> bool:
     """Update content fields on a goal row.
+
+    ``owner_person_id`` and ``department_slug`` move the goal: pass ``None``
+    to clear (no owner of its own / no department), leave them out to keep.
 
     Bumps `updated_at` whenever any content field changes (period/KR/target/
     current/status). The new `last_reviewed_at` kwarg (Phase B) lets a
@@ -747,6 +837,10 @@ def update_goal(
         fields.append(("current", current))
     if status is not None:
         fields.append(("status", status))
+    if owner_person_id is not _UNSET:
+        fields.append(("owner_person_id", owner_person_id))
+    if department_slug is not _UNSET:
+        fields.append(("department_slug", department_slug or None))
     if not fields:
         # No content edit. If the caller supplied last_reviewed_at, route
         # through record_goal_review instead so we don't bump updated_at.
@@ -986,9 +1080,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def delete_department(slug: str, db_path: Path | None = None) -> bool:
-    """Delete a department and all its Goals. Returns True if deleted, False if not found.
+    """Delete a department. Returns True if deleted, False if not found.
 
-    Goals are deleted explicitly first because the schema has no ON DELETE CASCADE clause.
+    Its goals are kept, with no department: a goal stands on its own, so
+    removing the grouping must not lose the work it tracks. Goals without an
+    owner of their own were the lead's; they become the principal's.
     Pending ``dept_cadence`` scheduled actions for this department are cancelled in
     the same transaction so a deleted department stops firing check-in alerts. All
     three writes run together.
@@ -1010,8 +1106,19 @@ def delete_department(slug: str, db_path: Path | None = None) -> bool:
                 "WHERE kind = 'dept_cadence' AND department = ? AND status = 'pending'",
                 (slug,),
             )
+        head = conn.execute(
+            "SELECT head_person_id FROM departments WHERE slug = ?", (slug,)
+        ).fetchone()
+        if head is not None and head["head_person_id"] is not None:
+            # The lead owned these through the department; keep it that way.
+            conn.execute(
+                "UPDATE department_goals SET owner_person_id = ? "
+                "WHERE department_slug = ? AND owner_person_id IS NULL",
+                (head["head_person_id"], slug),
+            )
         conn.execute(
-            "DELETE FROM department_goals WHERE department_slug = ?", (slug,)
+            "UPDATE department_goals SET department_slug = NULL WHERE department_slug = ?",
+            (slug,),
         )
         cursor = conn.execute(
             "DELETE FROM departments WHERE slug = ?", (slug,)

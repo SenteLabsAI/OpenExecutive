@@ -603,7 +603,7 @@ def persist_goal_verdicts(
                 "goal_status_review",
                 f"{state.config.title}: reviewed {len(transitions)} goal(s)",
                 actor=actor,
-                department=slug,
+                department=slug or None,  # "" = goals with no department (goal_review)
                 details={"period": period, "transitions": transitions},
             )
         except Exception:  # noqa: BLE001 - audit must not break the workflow.

@@ -1137,6 +1137,10 @@ async def _execute_action(
         await _run_take_the_lead_wake(action, now)
         return
 
+    if action.kind == GOAL_REVIEW_KIND:
+        await _run_goal_review(action, now)
+        return
+
     if action.kind == CHAT_REPLAY_KIND:
         await _run_chat_replay(action, now, gateway)
         return
@@ -1667,6 +1671,10 @@ _DEFAULT_REPLAY_TIME = "03:30"
 # other pinned times.
 WEEKLY_REVIEW_KIND = "principal_weekly_review"
 _DEFAULT_WEEKLY_REVIEW_SPEC = "weekly@fri@16:00"
+# The weekly grading of goals no department check-in covers
+# (departments.goal_review): Monday morning in the user's zone, both modes.
+GOAL_REVIEW_KIND = "goal_review"
+_DEFAULT_GOAL_REVIEW_SPEC = "weekly@mon@09:00"
 
 
 def _rotation_pause_active() -> bool:
@@ -1750,9 +1758,10 @@ _RECURRING_KIND_ENV: dict[str, tuple[str, str]] = {
     # Solo only (see _SOLO_ONLY_KINDS): seeded in solo, cancelled on a switch
     # to team, retired without running if one fires in team anyway.
     WEEKLY_REVIEW_KIND: ("PRINCIPAL_WEEKLY_REVIEW_TIME", _DEFAULT_WEEKLY_REVIEW_SPEC),
+    GOAL_REVIEW_KIND: ("GOAL_REVIEW_TIME", _DEFAULT_GOAL_REVIEW_SPEC),
 }
 # Kinds that recur weekly (the rest are daily).
-_WEEKLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND})
+_WEEKLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND, GOAL_REVIEW_KIND})
 # Kinds that exist only in a solo workspace.
 _SOLO_ONLY_KINDS: frozenset[str] = frozenset({WEEKLY_REVIEW_KIND})
 # The recurring principal kinds that run a workflow and deliver its artifact
@@ -2435,77 +2444,96 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
         mark_action_done(action.id)
         return
 
-    run_id = str(uuid.uuid4())
-    try:
-        workflow = get_workflow(name)
-        wf_inputs = workflow.input_model()()  # cadence runs supply no inputs
-        create_run(
-            run_id, name, f"{workflow.title} {now.strftime('%Y-%m-%d')}", wf_inputs.model_dump()
-        )
-        store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
-        artifact = ""
-        paused = False
-        async for event in workflow.run(inputs=wf_inputs, store=store):
-            # The one pause a scheduled run CAN take: an action step held
-            # writes to new targets. Nothing waits in-process — the run is
-            # checkpointed, its owner is asked, and the resumer finishes it
-            # (and DMs the artifact to this cadence's recipient) later.
-            if (
-                isinstance(event, WaitForHumanEvent)
-                and event.resume_state is not None
-                and event.resume_state.kind == "held_writes"
-            ):
-                event.resume_state.deliver_to_person_id = action.assigned_to_person_id
-                await checkpoint_gate(run_id=run_id, event=event, workflow_title=workflow.title)
-                paused = True
-                break
-            # The only scheduler branch that can receive a DYNAMIC workflow, so
-            # the only one that can be handed an approval gate. A cadence fire
-            # has no human in the loop, and `validate_definition` forbids gates
-            # in cadence-enabled workflows for exactly that reason — but a
-            # definition saved before that rule, or edited while a scheduled
-            # row was pending, still lands here. This used to ignore the gate
-            # and store `complete_run(run_id, "(no artifact)")`: a phantom
-            # successful run, every period, with nothing in it. Raising instead
-            # lets the handler below record a real failure.
-            event = ensure_workflow_event(event, site="scheduler.dynamic_workflow")
-            if event.type == "artifact" and event.content:
-                artifact = event.content
-            elif event.type == "error" and event.message:
-                raise RuntimeError(event.message)
-        if paused:
-            artifact = ""  # the resumer delivers it once the owner answers
-        else:
-            complete_run(run_id, artifact or "(no artifact)")
-    except Exception as exc:
-        logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
-        with contextlib.suppress(Exception):
-            fail_run(run_id, str(exc))
-        file_failed_run_card(
-            run_id=run_id,
-            workflow_name=name,
-            title=defn.title or name,
-            scope=name,
-            routed_to_person_id=action.assigned_to_person_id,
-        )
-    else:
-        # Deliver AFTER the run is marked done, in its own guard — a delivery
-        # failure (e.g. revoked token) must not regress a successfully
-        # produced-and-stored artifact's status back to 'error'.
-        if artifact and action.assigned_to_person_id is not None:
-            try:
-                from openexecutive.orchestrator.schedule_tools import (
-                    handle_message_person,
-                )
+    from openexecutive.delegation.workflow_reads import owns_runs, private_run
+    from openexecutive.orchestrator.artifact_records import pinned_viewer, viewer_for_person
 
-                await handle_message_person(
-                    {"person_id": action.assigned_to_person_id, "text": artifact}
-                )
-            except Exception:
-                logger.exception(
-                    "scheduler: dynamic_workflow %r artifact delivery failed "
-                    "(run still complete)", name,
-                )
+    # One that reads its creator's mail runs as theirs: its history, its report
+    # and a failure go to them alone (delegation.workflow_reads).
+    owner = owns_runs(name)
+    deliver_to = owner if owner is not None else action.assigned_to_person_id
+    run_id = str(uuid.uuid4())
+    # Every audit row it writes, its report's included, is theirs too.
+    with private_run(name):
+        try:
+            workflow = get_workflow(name)
+            wf_inputs = workflow.input_model()()  # cadence runs supply no inputs
+            create_run(
+                run_id, name, f"{workflow.title} {now.strftime('%Y-%m-%d')}", wf_inputs.model_dump(),
+                owner_person_id=owner,
+            )
+            store = ChromaDBStore(persist_directory=get_settings().vector_store_path)
+            artifact = ""
+            paused = False
+            as_owner = pinned_viewer(viewer_for_person(owner)) if owner is not None else contextlib.nullcontext()
+            with as_owner:
+                async for event in workflow.run(inputs=wf_inputs, store=store):
+                    # The one pause a scheduled run CAN take: an action step held
+                    # writes to new targets. Nothing waits in-process — the run is
+                    # checkpointed, its owner is asked, and the resumer finishes it
+                    # (and DMs the artifact to this cadence's recipient) later.
+                    if (
+                        isinstance(event, WaitForHumanEvent)
+                        and event.resume_state is not None
+                        and event.resume_state.kind == "held_writes"
+                    ):
+                        event.resume_state.deliver_to_person_id = deliver_to
+                        await checkpoint_gate(run_id=run_id, event=event, workflow_title=workflow.title)
+                        paused = True
+                        break
+                    # The only scheduler branch that can receive a DYNAMIC workflow, so
+                    # the only one that can be handed an approval gate. A cadence fire
+                    # has no human in the loop, and `validate_definition` forbids gates
+                    # in cadence-enabled workflows for exactly that reason — but a
+                    # definition saved before that rule, or edited while a scheduled
+                    # row was pending, still lands here. This used to ignore the gate
+                    # and store `complete_run(run_id, "(no artifact)")`: a phantom
+                    # successful run, every period, with nothing in it. Raising instead
+                    # lets the handler below record a real failure.
+                    event = ensure_workflow_event(event, site="scheduler.dynamic_workflow")
+                    if event.type == "artifact" and event.content:
+                        artifact = event.content
+                    elif event.type == "error" and event.message:
+                        raise RuntimeError(event.message)
+            if paused:
+                artifact = ""  # the resumer delivers it once the owner answers
+            else:
+                complete_run(run_id, artifact or "(no artifact)")
+        except Exception as exc:
+            logger.exception("scheduler: dynamic_workflow %r (action %d) failed", name, action.id)
+            with contextlib.suppress(Exception):
+                fail_run(run_id, str(exc))
+            file_failed_run_card(
+                run_id=run_id,
+                workflow_name=name,
+                title=defn.title or name,
+                scope=name,
+                routed_to_person_id=deliver_to,
+            )
+        else:
+            # Deliver AFTER the run is marked done, in its own guard — a delivery
+            # failure (e.g. revoked token) must not regress a successfully
+            # produced-and-stored artifact's status back to 'error'.
+            if artifact and deliver_to is not None:
+                try:
+                    from openexecutive.orchestrator.schedule_tools import (
+                        handle_message_person,
+                    )
+                    from openexecutive.workflows.run_message import message_for_run
+
+                    # A few plain lines for the reader, or none when the run
+                    # had nothing for them; the full report stays on its page.
+                    message = await message_for_run(
+                        title=getattr(defn, "title", "") or name,
+                        description=getattr(defn, "description", "") or "",
+                        artifact=artifact, person_id=deliver_to,
+                    )
+                    if message:
+                        await handle_message_person({"person_id": deliver_to, "text": message})
+                except Exception:
+                    logger.exception(
+                        "scheduler: dynamic_workflow %r artifact delivery failed "
+                        "(run still complete)", name,
+                    )
 
     mark_action_done(action.id)
     # A Run again is a one-off: the cadence already has its next occurrence.
@@ -2788,6 +2816,22 @@ async def _run_executive_reflection(
     # kill the recurring rhythm.
     mark_action_done(action.id)
     _enqueue_next_principal_brief("executive_reflection", after=_chain_after(action))
+
+
+async def _run_goal_review(action: ScheduledAction, now: datetime) -> None:
+    """Grade the goals no department check-in covers (departments.goal_review),
+    then chain next week's, like the reflection: a failed week never breaks
+    the rhythm. Nothing is delivered; at-risk goals reach the brief."""
+    from openexecutive.departments import goal_review
+
+    assert action.id is not None
+    try:
+        with unscoped_audit_rows():
+            await goal_review.run_review(now)
+    except Exception:
+        logger.exception("scheduler: goal_review failed")
+    mark_action_done(action.id)
+    _enqueue_next_principal_brief(GOAL_REVIEW_KIND, after=_chain_after(action))
 
 
 # Take the lead as the Executive: new mail or chat wakes the reflection early

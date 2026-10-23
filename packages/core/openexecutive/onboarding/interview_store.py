@@ -71,6 +71,8 @@ def to_payload(session: InterviewSession) -> dict[str, Any]:
         "questions_asked": session.questions_asked,
         "draft": session.draft.model_dump(mode="json") if session.draft is not None else None,
         "last_hint": session.last_hint,
+        "last_options": list(session.last_options),
+        "website": session.website,
         "saved": session.saved,
     }
 
@@ -86,6 +88,8 @@ def from_payload(payload: dict[str, Any]) -> InterviewSession:
         questions_asked=int(payload.get("questions_asked", 0)),
         draft=CompanyDraft.model_validate(draft) if draft else None,
         last_hint=str(payload.get("last_hint", "")),
+        last_options=[str(o) for o in payload.get("last_options") or [] if isinstance(o, str)],
+        website=str(payload.get("website") or ""),
         saved=bool(payload.get("saved", False)),
     )
 

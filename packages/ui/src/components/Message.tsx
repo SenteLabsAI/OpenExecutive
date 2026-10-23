@@ -15,6 +15,7 @@ import { hostOf } from "@/lib/url";
 import { initials } from "@/lib/initials";
 import FeatureName from "@/components/FeatureName";
 import { ChatActionCards } from "@/components/ActionCards";
+import ChatDraftCard from "@/components/ChatDraftCard";
 import { useExecutiveName } from "@/components/executive/ExecutiveStatusContext";
 
 interface MessageProps {
@@ -280,6 +281,11 @@ export default function Message({
         .filter((id): id is number => typeof id === "number"),
     [actions],
   );
+  // Emails written as you (Act as me), shown under it with Send.
+  const chatDrafts = useMemo(
+    () => (actions ?? []).flatMap((a) => (a.draft && typeof a.draft.row === "number" ? [a.draft] : [])),
+    [actions],
+  );
   if (role === "user" && author && !author.mine) {
     return (
       <div className="flex gap-2.5 mb-6">
@@ -362,6 +368,8 @@ export default function Message({
         {actions && actions.length > 0 && <ActionChips actions={actions} />}
 
         {cardIds.length > 0 && <ChatActionCards ids={cardIds} />}
+
+        {!isStreaming && chatDrafts.map((d) => <ChatDraftCard key={d.row} draft={d} />)}
 
         {sources && !isStreaming && <AnswerSourcesFooter sources={sources} />}
 

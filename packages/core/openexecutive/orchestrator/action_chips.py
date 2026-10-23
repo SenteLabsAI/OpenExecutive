@@ -147,6 +147,29 @@ def _humanize_iso(iso_ts: str) -> str:
     return f"in {int(delta_s // 86_400)}d"
 
 
+def _draft_fields(parsed: dict[str, Any]) -> dict[str, Any]:
+    """What the chat shows under a draft written as the speaker, with its
+    Send button: the draft's row (what the tap names, never the model), who
+    it goes to, its subject and the start of its text, all from the draft
+    as saved. Nothing when the row wasn't kept: then it is sent from the
+    mailbox only."""
+    row = parsed.get("draft_row")
+    if not isinstance(row, int) or isinstance(row, bool) or row <= 0:
+        return {}
+
+    def addresses(key: str) -> list[str]:
+        value = parsed.get(key)
+        return [str(a) for a in value if isinstance(a, str)] if isinstance(value, list) else []
+
+    return {"draft": {
+        "row": row,
+        "to": addresses("to"),
+        "cc": addresses("cc"),
+        "subject": str(parsed.get("subject") or ""),
+        "preview": str(parsed.get("preview") or ""),
+    }}
+
+
 def summarize_action(
     *,
     tool_name: str,
@@ -219,9 +242,12 @@ def summarize_action(
         parsed is not None
         and parsed.get("status") == "waiting_for_approval"
         and tool_name not in ("propose_actions", "do_in_app")
+        and not extension
     ):
         # Held for someone's approval (a team member's send or change, the
-        # department gate): nothing happened yet, so no "done" chip.
+        # department gate): nothing happened yet, so no "done" chip. An
+        # extension's tool is never held there; what it waits on is its
+        # chip's to describe.
         payload["summary"] = "Waiting for approval"
         return payload
     if extension:
@@ -261,6 +287,7 @@ def summarize_action(
         # Built server-side from a fixed prefix (delegation.gmail.mailbox_link).
         if isinstance(link, str) and link.startswith(MAILBOX_LINK_PREFIXES):
             payload["link"] = link
+        payload.update(_draft_fields(parsed or {}))
     elif tool_name == "save_my_email_attachment":
         # Only a saved copy earns a chip. No link or name: the link opens
         # outside the app, and the name is whatever the sender called it.
@@ -399,7 +426,9 @@ def summarize_action(
         if slug:
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "update_department_goal":
-        slug = tool_input.get("department_slug", "")
+        # The handler's result names the goal's real department (none for a
+        # goal that stands on its own), whatever the model passed.
+        slug = str((parsed or {}).get("department_slug") or tool_input.get("department_slug") or "")
         # The handler always returns `from_status`/`to_status` (when status
         # wasn't supplied, `to_status == from_status`). To tell a real
         # status transition from a current-only edit, compare the two
@@ -423,11 +452,14 @@ def summarize_action(
             # fallback; the handler rejects this combo so this branch
             # should never fire in practice.
             payload["summary"] = f"Touched {slug} goal"
+        elif status_changed:
+            payload["summary"] = f"Updated a goal → {str(to_status).replace('_', ' ')}"
+        elif current_updated:
+            payload["summary"] = "Updated goal progress"
         else:
-            payload["summary"] = "Updated a department goal"
+            payload["summary"] = "Updated a goal"
         payload["target"] = slug or None
-        if slug:
-            payload["link"] = f"/departments/{slug}"
+        payload["link"] = f"/departments/{slug}" if slug else "/goals"
     elif tool_name == "create_goal":
         # The handler's result names the area the goal landed in — which may
         # be one it just created — so prefer it over the model's input.
@@ -443,10 +475,11 @@ def summarize_action(
         else:
             payload["summary"] = "Added a goal"
         payload["target"] = slug or None
-        if workspace_mode == "solo":
-            # Solo's nav has Goals (every goal grouped by area), not Departments.
+        if workspace_mode == "solo" or not slug:
+            # Solo's nav has Goals, not Departments; and a goal with no
+            # department lives only on the Goals page.
             payload["link"] = "/goals"
-        elif slug:
+        else:
             payload["link"] = f"/departments/{slug}"
     elif tool_name == "record_decision_outcome":
         # The handler's result names the decision it wrote to.
