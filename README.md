@@ -201,6 +201,24 @@ setup guide:
 Synced Drive, OneDrive, Confluence and Notion content is kept apart from your uploaded
 documents and labelled as unreviewed, so it ranks below them.
 
+### Web search for any model
+
+`ENABLE_WEB_SEARCH` uses Anthropic's server-side `web_search` tool, so only Claude
+models get it. Any model that can use tools, local ones included, can search the web
+through a search MCP server under **MCP tools** instead. For example,
+[Keenable](https://keenable.ai) needs no account or API key. Add it under `mcpServers`
+in `company/mcp_servers.json` (Docker: `/data/company/mcp_servers.json`):
+
+```json
+"keenable": {
+  "url": "https://api.keenable.ai/mcp?keenable_title=openexecutive"
+}
+```
+
+Restart the API. The Executive finds `keenable__search_web_pages` and
+`keenable__fetch_page_content` with `search_tools` and runs them with `call_tool`,
+like every other MCP tool.
+
 ## Run the Discord Bot
 
 1. Create a Discord application at https://discord.com/developers/applications
