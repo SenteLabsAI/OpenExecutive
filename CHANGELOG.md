@@ -9,6 +9,24 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.5](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.4...v0.6.5) (2026-10-24)
+
+
+### Added
+
+* **delegation:** let the own-mail hold follow the safety level ([#614](https://github.com/SenteLabsAI/OpenExecutive/issues/614)) ([297218b](https://github.com/SenteLabsAI/OpenExecutive/commit/297218b0c8de94f55630eb205e3526144dd9b1e8))
+* **orchestrator:** set the safety level per channel and check all outside content ([#612](https://github.com/SenteLabsAI/OpenExecutive/issues/612)) ([f0ae974](https://github.com/SenteLabsAI/OpenExecutive/commit/f0ae974172785c29ea251293b99378037f348dad))
+* **ui:** explain the safety levels with one worked example ([#618](https://github.com/SenteLabsAI/OpenExecutive/issues/618)) ([fa5fb15](https://github.com/SenteLabsAI/OpenExecutive/commit/fa5fb1525e2a6505b78bd2ffd3ba6ab5a1b16886))
+
+
+### Fixed
+
+* **chat:** stop false mail flags and the reply's note about them ([#617](https://github.com/SenteLabsAI/OpenExecutive/issues/617)) ([7475f18](https://github.com/SenteLabsAI/OpenExecutive/commit/7475f18794ae660676b8c58e382064a5575ddab8))
+* **delegation:** prove the sender on Outlook searches too ([#620](https://github.com/SenteLabsAI/OpenExecutive/issues/620)) ([c0077f6](https://github.com/SenteLabsAI/OpenExecutive/commit/c0077f6fc3e441a11609b6dbb6038f75068b0fe5))
+* **delegation:** skip the content check on the Executive's own sent mail ([#619](https://github.com/SenteLabsAI/OpenExecutive/issues/619)) ([6299964](https://github.com/SenteLabsAI/OpenExecutive/commit/62999648f756d20eeccd9059961bbed66b5d73b4))
+* **onboarding:** suggest a website's team as people and show setup's progress ([#610](https://github.com/SenteLabsAI/OpenExecutive/issues/610)) ([5ae4da4](https://github.com/SenteLabsAI/OpenExecutive/commit/5ae4da4e6f32c99dc61bdeea07e697ada3187f4a))
+* **workflows:** send scheduled runs as a short message and never a cut-off brief ([#616](https://github.com/SenteLabsAI/OpenExecutive/issues/616)) ([a1964c8](https://github.com/SenteLabsAI/OpenExecutive/commit/a1964c8b373d70ce8d5c6bf54280e11d56ca5c31))
+
 ## [0.6.4](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.3...v0.6.4) (2026-10-21)
 
 
