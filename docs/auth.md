@@ -61,6 +61,23 @@ Browser ──► exec.example.com (UI) ──► (middleware: session check)
                                     route handler
 ```
 
+### Pages' security headers
+
+The UI's middleware also sets a Content-Security-Policy on every page, so it now runs on
+`/signin` and Auth.js's routes too; they still skip the session check
+([`middlewarePaths.ts`](../packages/ui/src/lib/middlewarePaths.ts)):
+
+- **Scripts** run only with the response's nonce (`script-src 'self' 'nonce-…' 'strict-dynamic'`),
+  plus `'unsafe-eval'` on the dev server for React's dev build. A script injected into a page
+  (text from an outside source rendered as HTML, a dependency gone wrong) doesn't run.
+- **No plugins and no foreign `<base>`** (`object-src 'none'`, `base-uri 'self'`).
+- **No framing by other sites** (`frame-ancestors 'self'`), so no other page can show the app's
+  Approve and Send buttons under its own. Auth.js's own pages get this header alone.
+
+Every page renders per request (the root layout awaits `connection()`), because a page built
+ahead of time would carry no nonce and the policy would stop its scripts. See
+[`lib/csp.ts`](../packages/ui/src/lib/csp.ts).
+
 ### Exempt paths (API)
 
 These bypass the shared-secret check because they're hit by external services that authenticate themselves:

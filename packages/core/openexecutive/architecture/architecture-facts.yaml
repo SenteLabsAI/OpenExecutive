@@ -7801,6 +7801,15 @@ auth:
         local-login change: removed users kept working until their
         JWT expired. /signin bounces a visitor onward only when
         `sessionStillAllowed` agrees, or a refused session would loop.
+    Pages' security headers (packages/ui/src/middleware.ts, lib/csp.ts):
+    every request but Next's static files and the favicon runs the
+    middleware, /signin and Auth.js's routes included (they skip only the
+    session check, SESSION_FREE_PATH in lib/middlewarePaths.ts). Every page
+    gets Content-Security-Policy script-src 'self' 'nonce-…'
+    'strict-dynamic' (+ 'unsafe-eval' on the dev server only), object-src
+    'none', base-uri 'self', frame-ancestors 'self'; Auth.js's own HTML
+    pages get frame-ancestors 'self' alone. The root layout awaits
+    connection() so every page renders per request and carries its nonce.
     Local login (packages/ui/src/lib/localLogin.ts): `make dev` with
     neither Google nor SSO sign-in set up starts the UI with `-H 127.0.0.1` and
     OE_LOCAL_LOGIN=1 in one recipe line (the flag alone would hand
