@@ -256,12 +256,13 @@ def _definition_of(name: str) -> str:
     from openexecutive.orchestrator.workflow_change import may_read
     from openexecutive.workflows.dynamic_store import get_definition
 
-    defn = get_definition(name)
-    if defn is None:
-        return _err("list_workflows", f"There is no custom workflow named {name!r}.")
+    # Refused before looking it up, so a refusal doesn't say whether it exists.
     refused = may_read(name)
     if refused is not None:
         return _err("list_workflows", refused)
+    defn = get_definition(name)
+    if defn is None:
+        return _err("list_workflows", f"There is no custom workflow named {name!r}.")
     _audit("list_workflows", "read", True, f"list_workflows read {name}", {"name": name})
     return json.dumps({
         "definition": defn.model_dump(mode="json", exclude={"created_at", "updated_at"}),

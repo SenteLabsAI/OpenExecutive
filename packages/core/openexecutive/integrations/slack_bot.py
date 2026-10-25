@@ -553,6 +553,12 @@ async def handle_card_tap(body: dict[str, Any], client: Any) -> None:
     person = await asyncio.to_thread(find_person_by_slack_id, user_id) if user_id else None
     if parsed is None or person is None or not await _is_own_dm(client, user_id, channel_id):
         logger.warning("Slack: ignored a card tap that isn't from its own DM")
+        if user_id and channel_id:
+            try:
+                await client.chat_postEphemeral(channel=channel_id, user=user_id,
+                                                text="This card is no longer there.")
+            except Exception:
+                logger.warning("Slack: couldn't answer an ignored card tap", exc_info=True)
         return
     decision_id, approve = parsed
     line = await channel_cards.resolve(decision_id, person, approve=approve)

@@ -55,6 +55,7 @@ class FakeSlack:
         self.dm = dm
         self.updates: list[dict[str, Any]] = []
         self.posts: list[dict[str, Any]] = []
+        self.ephemeral: list[dict[str, Any]] = []
 
     async def conversations_open(self, users: str) -> dict[str, Any]:
         return {"channel": {"id": self.dm}}
@@ -64,6 +65,9 @@ class FakeSlack:
 
     async def chat_postMessage(self, **kwargs: Any) -> None:  # noqa: N802 - Slack's name
         self.posts.append(kwargs)
+
+    async def chat_postEphemeral(self, **kwargs: Any) -> None:  # noqa: N802 - Slack's name
+        self.ephemeral.append(kwargs)
 
 
 def _slack_tap(channel: str = "D1", value: str = "card:7:a") -> dict[str, Any]:
@@ -91,7 +95,9 @@ def test_a_slack_tap_anywhere_else_is_ignored(chat_apps: list[Any], monkeypatch:
     monkeypatch.setattr("openexecutive.people.store.find_person_by_slack_id", lambda uid: PERSON)
     # A channel, or a DM that isn't this user's with the bot.
     asyncio.run(slack_bot.handle_card_tap(_slack_tap(channel="C1"), FakeSlack()))
-    asyncio.run(slack_bot.handle_card_tap(_slack_tap(channel="D9"), FakeSlack(dm="D1")))
+    elsewhere = FakeSlack(dm="D1")
+    asyncio.run(slack_bot.handle_card_tap(_slack_tap(channel="D9"), elsewhere))
+    assert elsewhere.ephemeral[0]["text"] == "This card is no longer there." and elsewhere.updates == []
     asyncio.run(slack_bot.handle_card_tap(_slack_tap(value="junk"), FakeSlack()))
     monkeypatch.setattr("openexecutive.people.store.find_person_by_slack_id", lambda uid: None)
     asyncio.run(slack_bot.handle_card_tap(_slack_tap(), FakeSlack()))
