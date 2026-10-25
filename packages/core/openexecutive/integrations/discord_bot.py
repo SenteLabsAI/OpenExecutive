@@ -669,6 +669,90 @@ def _find_discord_sender(discord_user_id: str) -> object:
     return find_person_by_discord_id(discord_user_id)
 
 
+# Discord caps a message at 2000 characters.
+_MAX_CARD_TEXT = 1900
+
+
+def _card_view(decision_id: int) -> Any:
+    """A card's Approve and Skip buttons. Their custom ids carry the card
+    (``channel_cards.callback_data``); ``on_interaction`` takes the tap, so it
+    still works after a restart."""
+    import discord
+
+    from openexecutive.integrations import channel_cards
+
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        label="Approve", style=discord.ButtonStyle.success,
+        custom_id=channel_cards.callback_data(decision_id, channel_cards.APPROVE),
+    ))
+    view.add_item(discord.ui.Button(
+        label="Skip", style=discord.ButtonStyle.secondary,
+        custom_id=channel_cards.callback_data(decision_id, channel_cards.SKIP),
+    ))
+    return view
+
+
+async def _send_cards(send_card: Callable[[int, str], Awaitable[None]], cards: list[int]) -> None:
+    from openexecutive.integrations import channel_cards
+
+    for decision_id in cards[: channel_cards.MAX_CARDS]:
+        try:
+            text = await asyncio.to_thread(channel_cards.card_text, decision_id)
+            if text:
+                await send_card(decision_id, text[:_MAX_CARD_TEXT])
+        except Exception:
+            logger.exception("Discord: couldn't send card %d", decision_id)
+
+
+async def handle_card_tap(interaction: Any) -> None:
+    """A tap on a card's Approve or Skip button (``channel_cards``). It came
+    over the bot's own gateway connection; it counts only in the tapper's own
+    DM with the bot, from someone on the roster, and
+    ``decisions.resolve_in_chat`` decides whether the card is theirs."""
+    import discord
+
+    from openexecutive.audit import log_event as audit_log
+    from openexecutive.integrations import channel_cards
+    from openexecutive.people.store import find_person_by_discord_id
+
+    data = getattr(interaction, "data", None) or {}
+    parsed = channel_cards.parse_callback(data.get("custom_id") if isinstance(data, dict) else None)
+    if parsed is None:
+        return  # not one of ours
+    user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
+    channel = getattr(interaction, "channel", None)
+    recipient = getattr(channel, "recipient", None)
+    own_dm = isinstance(channel, discord.DMChannel) and str(getattr(recipient, "id", "") or "") == user_id
+    person = await asyncio.to_thread(find_person_by_discord_id, user_id) if user_id and own_dm else None
+    if person is None:
+        await interaction.response.send_message("This card is no longer there.", ephemeral=True)
+        return
+    decision_id, approve = parsed
+    # Deciding can take longer than Discord's three seconds.
+    await interaction.response.defer()
+    line = await channel_cards.resolve(decision_id, person, approve=approve)
+    choice = "approve" if approve else "skip"
+    await asyncio.to_thread(
+        audit_log,
+        "integration_inbound",
+        f"Discord card {decision_id}: tapped {choice.capitalize()}: {line[:120]}",
+        actor="discord",
+        details={"channel": "discord", "discord_user": user_id, "decision_id": decision_id,
+                 "choice": choice, "outcome": channel_cards.outcome_of(line), "person_id": person.id},
+    )
+    try:
+        if line == channel_cards.BUSY:
+            await interaction.followup.send(line, ephemeral=True)
+            return
+        # The card keeps what it said, with the outcome under it and no buttons.
+        shown = str(getattr(getattr(interaction, "message", None), "content", "") or "")
+        text = f"{shown}\n\n{line}" if shown else line
+        await interaction.edit_original_response(content=text[:2000], view=None)
+    except Exception:
+        logger.exception("Discord: couldn't update card %d after the tap", decision_id)
+
+
 # The rows this handler writes before the turn binds its session (the inbound
 # row, the knowledge retrieval, alert triage) are private when the principal
 # sent the message and they name one of their contacts.
@@ -696,6 +780,7 @@ async def _handle_message(
     attachment_count: int = 0,
     co_present_discord_user_ids: list[str] | None = None,
     response_router: Callable[[str], Awaitable[MentionRouteResult]] | None = None,
+    send_card: Callable[[int, str], Awaitable[None]] | None = None,
 ) -> None:
     """Core handler shared by on_message and slash commands.
 
@@ -979,6 +1064,13 @@ async def _handle_message(
                 person=sender_person,
             )
 
+            from openexecutive.integrations.channel_cards import shows_cards
+
+            # A DM shows the reply's cards with Approve and Skip buttons
+            # (integrations.channel_cards), sent by ``send_card``.
+            cards_here = is_dm and send_card is not None and shows_cards(session)
+            cards: list[int] = []
+
             executive = Executive(mcp_gateway=get_active_gateway())
             response = await executive.chat(
                 user_message=chat_user_message,
@@ -987,7 +1079,8 @@ async def _handle_message(
                 episodic_context=episodic_context,
                 attachment_blocks=attachment_blocks or None,
                 briefing_context=briefing_context,
-                channel_context_block=build_channel_context_block("discord"),
+                channel_context_block=build_channel_context_block("discord", cards_here=cards_here),
+                cards=cards if cards_here else None,
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,
             )
@@ -1021,6 +1114,8 @@ async def _handle_message(
                 reply = with_chat_line(response, f"discord:{session_id}")
                 for chunk in _split_message(reply):
                     await effective_send_fn(chunk)
+                if cards and send_card is not None:
+                    await _send_cards(send_card, cards)
             else:
                 logger.info(
                     "Discord: executive returned empty response for session %s — "
@@ -1331,6 +1426,12 @@ def create_discord_bot():
             logger.info("Discord slash commands synced globally")
 
     @bot.event
+    async def on_interaction(interaction: discord.Interaction) -> None:
+        # A card's Approve or Skip button; slash commands go to the tree.
+        if interaction.type == discord.InteractionType.component:
+            await handle_card_tap(interaction)
+
+    @bot.event
     async def on_message(message: discord.Message) -> None:
         if message.author == bot.user:
             return
@@ -1572,9 +1673,15 @@ def create_discord_bot():
                     exc_info=True,
                 )
 
+        send_card: Callable[[int, str], Awaitable[None]] | None = None
+        if is_dm:
+            async def send_card(decision_id: int, text: str) -> None:
+                await message.channel.send(text, view=_card_view(decision_id), suppress_embeds=True)
+
         # Use the channel id as thread_id so WaitForHuman resolution can match
         # replies that arrive in the same DM or thread channel.
         await _handle_message(
+            send_card=send_card,
             text=cleaned,
             attachment_count=len(message.attachments or []),
             discord_user_id=discord_user_id,

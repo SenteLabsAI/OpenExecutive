@@ -162,8 +162,9 @@ def may_stage(name: str) -> str | None:
         return refused
     if not card_here(_session()):
         return (
-            "I can't show the change for your OK in this chat app yet. Ask me in the web app "
-            "or Telegram and I'll leave it there for you to approve."
+            "I can't show the change for your OK in this chat. Ask me in the web app, or in "
+            "your own chat with me on Telegram, Slack or Discord, and I'll leave it there for "
+            "you to approve."
         )
     return None
 

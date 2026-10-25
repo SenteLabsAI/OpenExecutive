@@ -8504,8 +8504,16 @@ integrations:
     private chat's id on the verified webhook, and
     ``decisions.resolve_in_chat`` applies the web chat's who-may-decide
     rule, with ``delegation.verified.ChatTap`` standing in for the
-    signed-in caller. Every other chat app sends no card, and
-    ``propose_actions`` tells the model the card is on Today.
+    signed-in caller. A Slack DM (with SLACK_CARD_BUTTONS on, which needs
+    Interactivity in the Slack app) and a Discord DM do the same: Slack
+    sends Block Kit buttons (action ids oe_card_approve / oe_card_skip, the
+    callback data as the value; text as plain_text), and a tap counts only
+    when conversations.open for the tapper returns that very channel; a
+    Discord View's buttons carry the callback data as custom_id and
+    on_interaction takes a tap only in a DMChannel whose recipient is the
+    tapper. Either way the tapper must be on the roster by their app id.
+    Every other chat app (channels, threads, Google Chat) sends no card,
+    and ``propose_actions`` tells the model the card is on Today.
 
     Errors. The catch-all logs with session/user/channel/thread/mode,
     writes an ``integration_inbound`` row with

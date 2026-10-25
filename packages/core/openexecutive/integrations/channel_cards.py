@@ -8,10 +8,18 @@ each as a short message with two buttons, and passes a tap to
 ``api.routes.decisions.resolve_in_chat``, which applies the web chat's rule
 for who may decide it.
 
-Telegram is the one so far. A tap proves who made it only in a private chat
-(the chat is the person; ``from.id`` must equal the chat id) on a webhook
-only Telegram can call (``TELEGRAM_WEBHOOK_SECRET`` set and valid), the same
-bar as a verified speaker there (``people_tools._is_verified_speaker_surface``).
+Where a tap proves who made it, the same bar as a verified speaker there
+(``people_tools._is_verified_speaker_surface``):
+
+- Telegram: a private chat (the chat is the person; ``from.id`` must equal
+  the chat id) on a webhook only Telegram can call (``TELEGRAM_WEBHOOK_SECRET``
+  set and valid).
+- Slack: a DM, with ``SLACK_CARD_BUTTONS`` on (Interactivity turned on in
+  the Slack app). Slack signs the tap (Socket Mode, or the signing secret
+  over HTTP), and it counts only from the user whose DM with the bot it is.
+- Discord: a DM. The tap comes over the bot's own gateway connection, and
+  counts only from the user whose DM with the bot it is.
+
 Anywhere else no card is shown and the Executive is told the card is on Today.
 """
 from __future__ import annotations
@@ -23,7 +31,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Telegram callback_data: "card:<decision id>:a" (Approve) or ":s" (Skip).
+# A button's data (Telegram callback_data, a Slack button value, a Discord
+# custom_id): "card:<decision id>:a" (Approve) or ":s" (Skip).
 _PREFIX = "card"
 APPROVE = "a"
 SKIP = "s"
@@ -51,20 +60,34 @@ def telegram_proves_taps() -> bool:
     return bool(s.telegram_bot_token and s.telegram_webhook_secret and s.telegram_webhook_secret_valid)
 
 
+def _dm_proves_taps(channel: str) -> bool:
+    """Whether a Slack or Discord DM here can show cards with buttons."""
+    from openexecutive.config import get_settings
+
+    s = get_settings()
+    if channel == "slack":
+        return bool(s.slack_bot_token and s.slack_card_buttons)
+    return bool(s.discord_bot_token)
+
+
 def shows_cards(session: Any) -> bool:
     """Whether this turn's chat shows its cards with buttons: a private
     Telegram chat with someone on the roster, on a webhook only Telegram can
-    call. Fails closed."""
-    if session is None or getattr(session, "origin_channel", "") != "telegram":
-        return False
-    ref = str(getattr(session, "origin_channel_ref", "") or "")
-    if not ref.isdigit() or getattr(session, "caller_person_id", None) is None:
+    call, or a Slack or Discord DM with someone on the roster. Fails closed."""
+    channel = str(getattr(session, "origin_channel", "") or "") if session is not None else ""
+    if getattr(session, "caller_person_id", None) is None:
         return False
     try:
-        return telegram_proves_taps()
+        if channel == "telegram":
+            ref = str(getattr(session, "origin_channel_ref", "") or "")
+            return ref.isdigit() and telegram_proves_taps()
+        if channel in ("slack", "discord"):
+            from openexecutive.delegation.settings import private_conversation
+
+            return private_conversation(session) and _dm_proves_taps(channel)
     except Exception:
-        logger.warning("channel_cards: couldn't read the Telegram settings", exc_info=True)
-        return False
+        logger.warning("channel_cards: couldn't read the %s settings", channel, exc_info=True)
+    return False
 
 
 def card_here(session: Any) -> bool:

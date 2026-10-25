@@ -491,6 +491,11 @@ class Settings(BaseSettings):
     # The other way to hear Slack: with this set and no SLACK_APP_TOKEN, Slack
     # posts events to POST /webhook/slack, signed with the app's signing secret.
     slack_signing_secret: str | None = Field(None, alias="SLACK_SIGNING_SECRET")
+    # Approve and Skip buttons on the cards a reply leaves in a Slack DM
+    # (integrations.channel_cards). Needs Interactivity turned on in the Slack
+    # app's settings (with SLACK_SIGNING_SECRET, its Request URL is
+    # /webhook/slack); off, a DM points to the web app instead.
+    slack_card_buttons: bool = Field(False, alias="SLACK_CARD_BUTTONS")
     # Company-wide broadcast channels — when set, OE can post to "the
     # whole team" on a given integration without picking a specific
     # human or department. Used by `send_company_broadcast`. Each is
