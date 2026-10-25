@@ -117,11 +117,13 @@ def save_message(
         return int(cur.lastrowid or 0)
 
 
-def mark_host_wrote(session_id: str, db_path: Path = DB_PATH) -> None:
+def mark_host_wrote(session_id: str, db_path: Path = DB_PATH) -> bool:
     """Mark ``session_id`` as written in by a host origin's page, now, before
-    its turn is saved (``host_wrote``). Never cleared."""
+    its turn is saved (``host_wrote``). Never cleared. Whether the mark is
+    stored: False when the conversation has no row to carry it."""
     with _get_conn(db_path) as conn:
-        conn.execute("UPDATE sessions SET host_wrote = 1 WHERE session_id = ?", (session_id,))
+        cur = conn.execute("UPDATE sessions SET host_wrote = 1 WHERE session_id = ?", (session_id,))
+        return cur.rowcount > 0
 
 
 def host_wrote(session_id: str, db_path: Path = DB_PATH) -> bool:

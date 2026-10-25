@@ -206,10 +206,11 @@ def _stop_owner_key(request: Request, caller_person_id: int | None) -> str:
     return f"{key}|host" if api_caller.from_host(request) else key
 
 
-# Conversations a host origin's page has written in, as this process saw it
-# happen: the stored mark (session_store.host_wrote) can fail to write, and a
-# turn running alongside must be held all the same. The API runs as one
-# process.
+# Conversations a host origin's page has written in whose stored mark
+# (session_store.host_wrote) hasn't been written yet, or failed to write: a
+# turn running alongside must be held all the same. An id leaves once its mark
+# is stored, so a host page starting many chats doesn't grow it. The API runs
+# as one process.
 _host_sessions: set[str] = set()
 
 
@@ -1301,7 +1302,8 @@ async def _run_chat_turn(
         try:
             from openexecutive.memory.session_store import mark_host_wrote
 
-            mark_host_wrote(session.session_id)
+            if mark_host_wrote(session.session_id):
+                _host_sessions.discard(session.session_id)
         except Exception:
             logger.exception("chat.host_mark_failed session_id=%s", session.session_id)
 

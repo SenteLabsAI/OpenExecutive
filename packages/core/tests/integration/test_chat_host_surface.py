@@ -228,3 +228,24 @@ def test_only_user_lines_from_the_host_are_marked(temp_db: Path) -> None:
     assert not session_store.host_wrote("s1", db_path=temp_db)
     session_store.save_message("s1", "user", "theirs", db_path=temp_db, sender_surface="host")
     assert session_store.host_wrote("s1", db_path=temp_db)
+
+
+def test_a_stored_mark_frees_the_in_process_hold(temp_db: Path, seen: list[bool]) -> None:
+    """Once the mark is stored, the stored mark holds the chat and the id
+    leaves the process's own list, so a host page starting many chats
+    doesn't grow it."""
+    client = _client()
+    session_id = _session_id(client.post("/chat", json={"message": "plant"}, headers=HOST).text)
+    assert session_id not in chat_route._host_sessions
+    client.post("/chat", json={"message": "ok", "session_id": session_id})
+    assert seen == [True, True]
+
+
+def test_a_mark_with_no_row_keeps_the_hold(temp_db: Path, seen: list[bool], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(session_store, "mark_host_wrote", lambda *_a, **_k: False)
+    monkeypatch.setattr(session_store, "host_wrote", lambda *_a, **_k: False)
+    client = _client()
+    session_id = _session_id(client.post("/chat", json={"message": "plant"}, headers=HOST).text)
+    assert session_id in chat_route._host_sessions
+    client.post("/chat", json={"message": "ok", "session_id": session_id})
+    assert seen == [True, True]
