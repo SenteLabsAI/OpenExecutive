@@ -23,8 +23,9 @@ import { reviewExcerpt, reviewRanLabel, topThreeSlot, topThreeWhy } from "@/lib/
 
 import { PanelIntro, RankBadge, TONE_TEXT } from "./shared";
 
-// Solo-only parts of Home. Each loads its own data through a hook here, so
-// the tile row can count it before its side panel is opened.
+// Solo's parts of Home (Due soon is on every Home). Each loads its own data
+// through a hook here, so the tile row can count it before its side panel is
+// opened.
 
 // ── Your projects ─────────────────────────────────────────────────────────
 // The projects (initiatives) the Executive is tracking as active — the solo
