@@ -42,9 +42,12 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openexecutive.alerts.lifecycle import parse_aware
+
+if TYPE_CHECKING:
+    from openexecutive.departments.models import Goal
 
 logger = logging.getLogger(__name__)
 
@@ -110,25 +113,33 @@ def first_week_started(now: datetime | None = None) -> datetime | None:
 def _goal_lines(solo: bool = False) -> tuple[list[str], list[str], list[str]]:
     """(goal lines, leaderless lines, keys). Solo has no team, so no
     department names and no leaders to name."""
-    from openexecutive.departments.store import list_departments
+    from openexecutive.departments.store import list_departments, list_goals
 
     goals: list[str] = []
     leaderless: list[str] = []
     keys: list[str] = []
+    # Goals with no area first: they are not under any department row.
+    for goal in list_goals(None):
+        goals.append(_goal_line(goal, None))
+        keys.append(f"goal:{goal.id}:{goal.status}")
     for dept in list_departments():
         title = _one_line(dept.config.title, 60)
         if dept.config.head_person_id is None and not solo:
             leaderless.append(f"- {title}")
             keys.append(f"leaderless:{dept.config.slug}")
         for goal in dept.goals:
-            line = f"- {_one_line(goal.key_result)}" if solo else f"- [{title}] {_one_line(goal.key_result)}"
-            if goal.target:
-                line += f" — target {_one_line(goal.target, 60)}"
-            if goal.period_value:
-                line += f" ({_one_line(goal.period_value, 30)})"
-            goals.append(line)
+            goals.append(_goal_line(goal, None if solo else title))
             keys.append(f"goal:{goal.id}:{goal.status}")
     return goals[:_GOALS_MAX], leaderless[:_LEADERLESS_MAX], keys
+
+
+def _goal_line(goal: Goal, area: str | None) -> str:
+    line = f"- [{area}] {_one_line(goal.key_result)}" if area else f"- {_one_line(goal.key_result)}"
+    if goal.target:
+        line += f" — target {_one_line(goal.target, 60)}"
+    if goal.period_value:
+        line += f" ({_one_line(goal.period_value, 30)})"
+    return line
 
 
 def _priority_lines() -> tuple[list[str], list[str]]:
@@ -390,9 +401,11 @@ def first_week_card(now: datetime | None = None) -> FirstWeekCard | None:
         return None
     card = FirstWeekCard()
     try:
-        from openexecutive.departments.store import list_departments
+        from openexecutive.departments.store import list_all_goals
 
-        card.needs_goal = not any(dept.goals for dept in list_departments())
+        # Every goal counts, with or without an area: the card's own Set a
+        # goal saves one with no area unless the person names one.
+        card.needs_goal = not list_all_goals()
     except Exception:
         logger.warning("first_week: departments unreadable", exc_info=True)
     try:
