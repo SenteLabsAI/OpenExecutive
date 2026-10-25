@@ -245,6 +245,28 @@ def test_a_telegram_tap_saves_it(owner: Any) -> None:
     assert stored is not None and "olivia@co.example" in stored.steps[0].goal  # type: ignore[union-attr]
 
 
+def test_a_tap_from_someone_no_longer_its_creator_changes_nothing(owner: Any, db: Path) -> None:
+    import sqlite3
+
+    tess = people_store.get_person(people_store.upsert_person(full_name="Tess Team", email="tess@co.example"))
+    people_registry.invalidate()
+    _stored(owner=tess.id)  # type: ignore[union-attr]
+    out = _save_fix(_web(tess))
+    assert out["status"] == "waiting_for_approval"
+    with sqlite3.connect(db) as conn:  # handed to someone else before the tap
+        conn.execute("UPDATE dynamic_workflows SET owner_person_id = ? WHERE name = ?", (owner.id, "meeting_prep"))
+    card = decision_ledger.get_decision_instance(out["decision_id"])
+    assert card is not None
+    staged = json.loads(json.loads(card.proposed_payload_json or "{}")["value"])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(workflows_route.apply_chat_change(
+            "meeting_prep", staged["definition"], staged["base"], ChatTap("tess@co.example"),
+        ))
+    assert exc.value.status_code == 403
+    stored = dynamic_store.get_definition("meeting_prep")
+    assert stored is not None and "John's calendar" in stored.steps[0].goal  # type: ignore[union-attr]
+
+
 def test_a_workflow_changed_since_the_card_is_left_alone(owner: Any) -> None:
     decision_id = _staged(owner)
     current = dynamic_store.get_definition("meeting_prep")

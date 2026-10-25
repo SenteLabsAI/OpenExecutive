@@ -473,6 +473,18 @@ async def save_designer_edit(name: str, request: Request) -> dict[str, Any]:
     return _with_owner(stored)
 
 
+def _tapper_person_id(who: Any) -> int | None:
+    """The People entry of a card's tapper: a request's caller, or a chat
+    app's proven tap (``ChatTap``)."""
+    if isinstance(who, api_caller.Caller):
+        return api_caller.person_id_for(who)
+    from openexecutive.people.store import find_person_by_email
+
+    email = str(getattr(who, "email", "") or "")
+    person = find_person_by_email(email) if email else None
+    return person.id if person is not None else None
+
+
 async def apply_chat_change(
     name: str, definition: dict[str, Any], base: Any, who: Any
 ) -> DynamicWorkflowDef:
@@ -483,6 +495,7 @@ async def apply_chat_change(
     tap), checked as a save from the Workflows page is. The on/off state is
     kept."""
     from openexecutive.delegation.workflow_email import save_refusal
+    from openexecutive.people.store import is_principal_or_self
 
     current = get_definition(name)
     if current is None:
@@ -503,6 +516,13 @@ async def apply_chat_change(
     if errors:
         raise HTTPException(status_code=422, detail="; ".join(errors)[:300])
     owner = get_owner(name)
+    # The card may be a day old: whoever taps must still be the account owner
+    # or the workflow's creator, as when it was staged.
+    if not is_principal_or_self(_tapper_person_id(who), owner):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the account owner or the person who created this workflow can change it.",
+        )
     for checked, stored in ((defn, False), (current, True)):
         refused = save_refusal(checked, who, owner, check_tools=not stored)
         if refused is not None:

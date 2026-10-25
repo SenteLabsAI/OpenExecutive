@@ -8505,7 +8505,7 @@ integrations:
     ``decisions.resolve_in_chat`` applies the web chat's who-may-decide
     rule, with ``delegation.verified.ChatTap`` standing in for the
     signed-in caller. A Slack DM (with SLACK_CARD_BUTTONS on, which needs
-    Interactivity in the Slack app) and a Discord DM do the same: Slack
+    Interactivity in the Slack app and the im:write scope) and a Discord DM do the same: Slack
     sends Block Kit buttons (action ids oe_card_approve / oe_card_skip, the
     callback data as the value; text as plain_text), and a tap counts only
     when conversations.open for the tapper returns that very channel; a
