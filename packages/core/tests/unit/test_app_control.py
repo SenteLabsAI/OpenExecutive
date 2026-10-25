@@ -316,7 +316,7 @@ def test_the_catalog_is_whole() -> None:
         if action.needs_tap("x", "on"):
             assert action.card, action.name
     schema = app_control.DO_IN_APP_TOOL["input_schema"]["properties"]["action"]["enum"]
-    assert schema == sorted(catalog.actions)
+    assert schema == sorted(name for name, action in catalog.actions.items() if not action.hidden)
     for name in ("pin_chat", "rename_chat", "delete_chat"):
         assert name in app_control.DO_IN_APP_TOOL["description"]
     for name, action in catalog.actions.items():

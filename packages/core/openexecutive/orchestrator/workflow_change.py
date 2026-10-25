@@ -30,9 +30,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ACTION = "change_workflow"
-# The card names at most this many changed steps, then "and N more".
-_MAX_LINES = 8
-_GOAL_CHARS = 220
+# The longest card a chat app shows whole (Discord's 2000 characters, with
+# room for the outcome line). A change that needs more isn't staged: a card
+# never cuts a line short, so every step, goal and tool it saves is on it.
+MAX_CARD_CHARS = 1800
 
 
 def needs_card(existing: Any, defn: Any) -> bool:
@@ -54,21 +55,24 @@ def _tools(step: Any) -> list[str]:
     return [plain_tool_name(t) for t in getattr(step, "tools", None) or []]
 
 
-def _clip(text: str, limit: int) -> str:
-    flat = " ".join(str(text or "").split())
-    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+def _flat(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _does(step: Any) -> str:
+    """What a step does, in full, for the card."""
+    kind = getattr(step, "kind", "")
+    if kind in ("action", "specialist"):
+        return _flat(step.goal)
+    if kind == "approval_gate":
+        return f"Asks person {step.person_id}: {_flat(step.question)}"
+    return _flat(getattr(step, "instructions", "") or "Writes the result.")
 
 
 def _what(step: Any) -> str:
-    """What a step does, for the card."""
-    kind = getattr(step, "kind", "")
-    if kind == "action":
-        return f"{_clip(step.goal, _GOAL_CHARS)} Tools: {', '.join(_tools(step)) or 'none'}."
-    if kind == "specialist":
-        return _clip(step.goal, _GOAL_CHARS)
-    if kind == "approval_gate":
-        return f"Asks person {step.person_id}: {_clip(step.question, _GOAL_CHARS)}"
-    return _clip(getattr(step, "instructions", "") or "Writes the result.", _GOAL_CHARS)
+    if getattr(step, "kind", "") == "action":
+        return f"{_does(step)} Tools: {', '.join(_tools(step)) or 'none'}."
+    return _does(step)
 
 
 def change_lines(old: Any, new: Any) -> list[str]:
@@ -80,7 +84,7 @@ def change_lines(old: Any, new: Any) -> list[str]:
     for sid, step in after.items():
         was = before.get(sid)
         if was is None:
-            lines.append(f"New step “{_clip(step.title, 80)}”: {_what(step)}")
+            lines.append(f"New step “{_flat(step.title)}”: {_what(step)}")
             continue
         if was.model_dump() == step.model_dump():
             continue
@@ -92,13 +96,14 @@ def change_lines(old: Any, new: Any) -> list[str]:
                 parts.append("now uses " + ", ".join(added))
             if removed:
                 parts.append("no longer uses " + ", ".join(removed))
-        other = {k: v for k, v in step.model_dump().items() if k != "tools"}
-        if other != {k: v for k, v in was.model_dump().items() if k != "tools"}:
-            parts.append("now: " + _what(step).split(" Tools: ")[0])
-        lines.append(f"Step “{_clip(step.title, 80)}”: " + "; ".join(parts))
+        if _does(was) != _does(step):
+            parts.append("now: " + _does(step))
+        if not parts:
+            parts.append("its settings change")
+        lines.append(f"Step “{_flat(step.title)}”: " + "; ".join(parts))
     for sid, step in before.items():
         if sid not in after:
-            lines.append(f"Removed step “{_clip(step.title, 80)}”")
+            lines.append(f"Removed step “{_flat(step.title)}”")
     if [s.id for s in old.steps if s.id in after] != [s.id for s in new.steps if s.id in before]:
         lines.append("Steps run in a new order")
     if (old.cadence, old.cadence_person_id) != (new.cadence, new.cadence_person_id):
@@ -107,18 +112,15 @@ def change_lines(old: Any, new: Any) -> list[str]:
             + (f", delivered to person {new.cadence_person_id}" if new.cadence else "")
         )
     if old.title != new.title:
-        lines.append(f"Renamed to “{_clip(new.title, 80)}”")
-    if not lines and old.model_dump(exclude={"is_active", "created_at", "updated_at"}) != new.model_dump(
-        exclude={"is_active", "created_at", "updated_at"}
-    ):
+        lines.append(f"Renamed to “{_flat(new.title)}”")
+    rest = {"description", "section", "estimated_minutes", "input_fields"}
+    if old.model_dump(include=rest) != new.model_dump(include=rest):
         lines.append("Its description or form fields change")
-    if len(lines) > _MAX_LINES:
-        lines = [*lines[:_MAX_LINES], f"and {len(lines) - _MAX_LINES} more changes"]
     return lines
 
 
 def card_text(old: Any, new: Any) -> str:
-    head = f"Change the workflow “{_clip(old.title, 80)}”"
+    head = f"Change the workflow “{_flat(old.title)}”"
     lines = change_lines(old, new)
     if not lines:
         return head + "\nNothing else changes."
@@ -180,6 +182,11 @@ def stage(defn: Any, existing: Any) -> dict[str, Any]:
         return {"error": refused}
     person = _speaker()
     text = card_text(existing, defn)
+    if len(text) > MAX_CARD_CHARS:
+        return {"error": (
+            "That change is too big to show on one card. Change a few steps at a time, or "
+            "edit it on the Workflows page."
+        )}
     value = json.dumps({
         "definition": defn.model_dump(mode="json", exclude={"is_active", "created_at", "updated_at"}),
         "base": existing.model_dump(mode="json", exclude={"is_active", "created_at", "updated_at"}),

@@ -138,6 +138,38 @@ def test_new_removed_and_rescheduled_steps_are_named() -> None:
     assert "Removed step “Find meetings”" in lines
 
 
+def test_every_change_is_on_the_card_whole() -> None:
+    old = DynamicWorkflowDef.model_validate(_prep())
+    extra = [{"kind": "specialist", "id": f"s{i}", "title": f"Check {i}", "specialist": "finance",
+              "goal": f"Look at item {i}."} for i in range(8)]
+    long_goal = "List events on olivia@co.example's calendar for tomorrow. " * 5
+    new = DynamicWorkflowDef.model_validate({**_prep(goal=long_goal, tools=["oe__my_calendar"]),
+                                             "steps": [*_prep(goal=long_goal, tools=["oe__my_calendar"])["steps"],
+                                                       *extra]})
+    text = workflow_change.card_text(old, new)
+    assert "now uses My calendar" in text
+    assert long_goal.strip() in text
+    assert all(f"“Check {i}”" in text for i in range(8))
+    assert "more changes" not in text
+
+
+def test_a_change_too_big_for_one_card_isnt_staged(owner: Any) -> None:
+    _stored()
+    d = _prep(goal="List events on olivia@co.example's calendar for tomorrow. " * 40)
+    out = _call(wat.handle_save_workflow, {"definition": d, "confirm_token": wat._canonical_token(d),
+                                           "overwrite": True}, _web(owner))
+    assert "too big" in out["error"]
+    assert decision_ledger.list_instances("app_action") == []
+
+
+def test_a_step_whose_settings_change_still_gets_a_line() -> None:
+    old = DynamicWorkflowDef.model_validate(_prep())
+    new_spec = _prep()
+    new_spec["steps"][0]["max_tool_calls"] = 3
+    new = DynamicWorkflowDef.model_validate(new_spec)
+    assert "Step “Find meetings”: its settings change" in workflow_change.change_lines(old, new)
+
+
 def test_a_switched_on_tool_workflow_changes_only_on_a_card() -> None:
     approved = DynamicWorkflowDef.model_validate(_prep())
     pending = approved.model_copy(update={"is_active": False})

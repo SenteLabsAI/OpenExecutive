@@ -152,7 +152,8 @@ def card_text(decision_id: int) -> str | None:
             lines.append("With " + ", ".join(who))
     elif instance.decision_class == "app_action":
         # Written by the server from the change itself (workflow_change.card_text).
-        lines.append(str(payload.get("card") or "").strip()[:1500])
+        # Never cut: workflow_change stages only a card that fits.
+        lines.append(str(payload.get("card") or "").strip())
     else:
         why = str(payload.get("why") or "").strip()[:300]
         if why:

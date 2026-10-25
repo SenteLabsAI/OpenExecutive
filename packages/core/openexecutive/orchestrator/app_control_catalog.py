@@ -845,7 +845,7 @@ _ACTIONS = (
            card="Delete the workflow {title}"),
     # Only a card save_workflow stages runs it (orchestrator.workflow_change).
     Action("change_workflow", "workflow", "Save a change to a workflow", _change_workflow, confirm=True,
-           hidden=True),
+           card="Change the workflow {title}", hidden=True),
     Action("rerun_workflow_run", "workflow_run", "Run a failed scheduled run again", _rerun),
     Action("approve_workflow_step", "workflow_run", "Approve a run's step that is waiting for a yes",
            _fixed(_decide_run, "approve"), confirm=True, card="Approve the waiting step in {title}"),
