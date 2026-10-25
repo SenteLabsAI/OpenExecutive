@@ -209,9 +209,9 @@ export function gettingStartedItems(input: ChecklistInput): ChecklistItem[] {
       detail:
         input.teamSize > 1
           ? `${input.teamSize} people on the People page`
-          : "Who the Executive works with, and who reports to whom.",
+          : "Optional. Who the Executive works with, and who reports to whom.",
       done: input.teamSize > 1,
-      optional: false,
+      optional: true,
       href: FIRST_RUN_LINKS.people,
       action: "Add",
     });
@@ -221,8 +221,8 @@ export function gettingStartedItems(input: ChecklistInput): ChecklistItem[] {
 
 /** "2 of 5" for the heading; optional rows count once done. */
 export function checklistProgress(items: readonly ChecklistItem[]): { done: number; total: number } {
-  const required = items.filter((i) => !i.optional);
-  return { done: required.filter((i) => i.done).length, total: required.length };
+  const counted = items.filter((i) => !i.optional || i.done);
+  return { done: counted.filter((i) => i.done).length, total: counted.length };
 }
 
 /** The checklist leaves Home once every required row is done. */

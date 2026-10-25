@@ -60,6 +60,22 @@ test("the two mailboxes are separate rows read from separate checks", () => {
   assert.equal(items.find((i) => i.id === "own_mailbox").done, false);
 });
 
+test("an optional row counts once done, and inviting the team is optional", () => {
+  const items = gettingStartedItems({
+    ...base,
+    hasAsked: true,
+    checks: [check("gmail", "ok"), check("your_gmail", "ok")],
+    team: true,
+    teamSize: 1,
+  });
+  const team = items.find((i) => i.id === "team");
+  assert.equal(team.done, false);
+  assert.equal(team.optional, true);
+  assert.match(team.detail, /^Optional\./);
+  assert.deepEqual(checklistProgress(items), { done: 4, total: 4 });
+  assert.equal(checklistComplete(items), true);
+});
+
 test("while the checks are loading, nothing is marked done", () => {
   const items = gettingStartedItems({ ...base, checks: null });
   assert.equal(items.find((i) => i.id === "exec_mailbox").done, false);
