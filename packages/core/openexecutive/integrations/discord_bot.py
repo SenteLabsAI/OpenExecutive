@@ -723,7 +723,14 @@ async def handle_card_tap(interaction: Any) -> None:
     user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
     channel = getattr(interaction, "channel", None)
     recipient = getattr(channel, "recipient", None)
-    own_dm = isinstance(channel, discord.DMChannel) and str(getattr(recipient, "id", "") or "") == user_id
+    if isinstance(channel, discord.DMChannel):
+        own_dm = str(getattr(recipient, "id", "") or "") == user_id
+    else:
+        # A DM the bot hasn't cached since it restarted comes as a partial
+        # channel with no recipient. A one-to-one DM outside any server has
+        # one person besides the bot, so the tapper is the one it's with.
+        own_dm = (getattr(interaction, "guild_id", None) is None
+                  and getattr(channel, "type", None) == discord.ChannelType.private)
     person = await asyncio.to_thread(find_person_by_discord_id, user_id) if user_id and own_dm else None
     if person is None:
         await interaction.response.send_message("This card is no longer there.", ephemeral=True)

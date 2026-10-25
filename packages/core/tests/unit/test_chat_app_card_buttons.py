@@ -125,12 +125,15 @@ class FakeResponse:
         self.deferred = True
 
 
-def _discord_tap(dm: bool = True, recipient: str = "42", custom_id: str = "card:7:s") -> Any:
+def _discord_tap(dm: bool = True, recipient: str = "42", custom_id: str = "card:7:s",
+                 partial: Any = None, guild_id: int | None = None) -> Any:
     import discord
 
     edits: list[dict[str, Any]] = []
     channel: Any
-    if dm:
+    if partial is not None:
+        channel = SimpleNamespace(type=partial)  # not cached: no recipient
+    elif dm:
         channel = discord.DMChannel.__new__(discord.DMChannel)
         channel.recipients = [SimpleNamespace(id=int(recipient))]
     else:
@@ -140,7 +143,7 @@ def _discord_tap(dm: bool = True, recipient: str = "42", custom_id: str = "card:
         edits.append(kwargs)
 
     return SimpleNamespace(
-        data={"custom_id": custom_id}, user=SimpleNamespace(id=42), channel=channel,
+        data={"custom_id": custom_id}, user=SimpleNamespace(id=42), channel=channel, guild_id=guild_id,
         message=SimpleNamespace(content="Change the workflow"), response=FakeResponse(),
         edit_original_response=edit_original_response, edits=edits,
     )
@@ -155,6 +158,21 @@ def test_a_discord_tap_in_its_own_dm_decides_the_card(
     assert chat_apps == [(7, PERSON, False)]
     assert tap.response.deferred and tap.edits[0]["view"] is None
     assert "Skipped." in tap.edits[0]["content"]
+
+
+def test_a_discord_tap_still_counts_after_a_restart(
+    chat_apps: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import discord
+
+    monkeypatch.setattr("openexecutive.people.store.find_person_by_discord_id", lambda uid: PERSON)
+    asyncio.run(discord_bot.handle_card_tap(_discord_tap(partial=discord.ChannelType.private)))
+    assert chat_apps == [(7, PERSON, False)]
+    for tap in (_discord_tap(partial=discord.ChannelType.group),
+                _discord_tap(partial=discord.ChannelType.private, guild_id=5)):
+        asyncio.run(discord_bot.handle_card_tap(tap))
+        assert tap.response.sent == ["This card is no longer there."]
+    assert len(chat_apps) == 1
 
 
 def test_a_discord_tap_anywhere_else_is_turned_away(
