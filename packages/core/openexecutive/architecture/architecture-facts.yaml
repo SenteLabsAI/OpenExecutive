@@ -398,7 +398,11 @@ caching:
     routes by exact name): a spelling that only normalizes to it is refused
     (name-spelling), and load_mcp_server refuses a runtime name that
     normalizes to a checked server. Strings (8+ chars) only outgoing added
-    are replaced with [redacted] in result_text (_string_leaves). Server
+    are replaced with [redacted] in result_text (_string_leaves), as sent
+    and in their JSON-escaped spellings (_echoed_forms: quotes, backslashes,
+    non-ASCII and slashes escaped). A check and its outgoing run on the
+    event loop with no timeout, so they must not block (no network or disk
+    I/O; keys loaded in register()). Server
     names are single-_-separated letters and digits (_SERVER_NAME: no "__",
     no leading or trailing _). A failed register() leaves its servers held,
     not unchecked: each registered check and each name in the module's

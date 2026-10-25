@@ -176,6 +176,12 @@ class GatewayCheck:
     # (tool name, lowercased with "-" as "_"; a copy of the model's
     # arguments) -> GatewayCall. Runs in the turn, so it may read
     # ``schedule_tools.current_session`` to see who is asking.
+    #
+    # It and its ``outgoing`` run on the event loop, inside the gateway's
+    # call_tool, with nothing timing them out: they must not block. Decide
+    # from the arguments and the turn, and sign with keys loaded in
+    # register(); never a network call, a disk read or a lock that waits.
+    # A check that blocks stalls every chat turn running at the time.
     check: Callable[[str, dict[str, Any]], GatewayCall]
 
 

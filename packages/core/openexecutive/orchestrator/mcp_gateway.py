@@ -763,6 +763,20 @@ def _extension_outgoing(
     return outgoing
 
 
+def _echoed_forms(values: set[str]) -> set[str]:
+    """Each value as a server's answer may spell it back: as sent, and inside
+    a JSON string, where it can come back escaped (a quote or backslash
+    escaped, non-ASCII as ``\\uXXXX``, and a slash as ``\\/`` from servers
+    that escape slashes). Redacting only the raw spelling let an escaped echo
+    reach the model."""
+    forms: set[str] = set()
+    for value in values:
+        for spelled in (value, json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1]):
+            forms.add(spelled)
+            forms.add(spelled.replace("/", "\\/"))
+    return forms
+
+
 def _string_leaves(value: Any) -> set[str]:
     """Every string of 8 or more characters in a JSON value (keys aside):
     what ``call_tool`` compares to find the values an extension's outgoing()
@@ -4101,7 +4115,7 @@ class MCPGateway:
                 ),
                 "timed_out": True,
             })
-        for value in sorted(added_values, key=len, reverse=True):
+        for value in sorted(_echoed_forms(added_values), key=len, reverse=True):
             result_text = result_text.replace(value, "[redacted]")
         # On the final result, retry or not: roster answer tokens are hidden
         # from every mailbox read (Google Workspace or Microsoft 365) but the

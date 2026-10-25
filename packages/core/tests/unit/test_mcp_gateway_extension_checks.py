@@ -247,3 +247,22 @@ def test_an_answer_never_hands_back_what_outgoing_added() -> None:
     assert token not in json.dumps(out) and "[redacted]" in out["error"]
     # The model's own words stay.
     assert "window seat" in out["error"]
+
+
+@pytest.mark.parametrize(
+    ("token", "echoed"),
+    [
+        # A slash escaped, as some servers do.
+        ("ab/cd+ef==tok", "ab\\/cd+ef==tok"),
+        # A quote and a backslash escaped by plain JSON.
+        ('sig"nat\\ure-1', 'sig\\"nat\\\\ure-1'),
+        # Non-ASCII as \u escapes.
+        ("café-token-1", "caf\\u00e9-token-1"),
+    ],
+)
+def test_an_answer_never_hands_back_what_outgoing_added_escaped(token: str, echoed: str) -> None:
+    _register(lambda _t, _a: GatewayCall(outgoing=lambda a: {**a, "_signed": token}))
+    gateway, _ = _gateway('{"error": "validation failed: _signed=' + echoed + ' table=window seat"}')
+    out = _call(gateway, "kiosk__show_menu", {"table": "window seat"})
+    assert "[redacted]" in out["error"] and "window seat" in out["error"]
+    assert token not in json.dumps(out, ensure_ascii=False) and echoed not in json.dumps(out)
