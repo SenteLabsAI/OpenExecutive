@@ -129,3 +129,14 @@ test("nothing hides without a valid init from the parent", () => {
   assert.equal(shell.match(/<EmbeddedShell/g)?.length, 1);
   assert.match(shell, /if \(embedded\) \{[\s\S]*?<EmbeddedShell/);
 });
+
+test("the embedded page warns when the host's user isn't who is signed in here", () => {
+  const shell = readFileSync(new URL("../src/components/embed/EmbeddedShell.tsx", import.meta.url), "utf8");
+  // Shown above the page, compared case-blind (the hint arrives lowercased).
+  assert.match(shell, /<UserHintWarning \/>\s*<PausedBanner \/>/);
+  assert.match(shell, /const signedIn = data\?\.user\?\.email\?\.toLowerCase\(\) \?\? "";/);
+  // Nothing without a hint or a session, and nothing when they agree.
+  assert.match(shell, /if \(!hint \|\| !signedIn \|\| hint === signedIn\) return null;/);
+  // Sign out comes back to the same page, still embedded.
+  assert.match(shell, /callbackUrl: `\/signin\?embed=1&callbackUrl=\$\{encodeURIComponent\(window\.location\.pathname \+ window\.location\.search\)\}`/);
+});

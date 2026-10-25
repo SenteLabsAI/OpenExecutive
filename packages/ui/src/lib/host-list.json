@@ -1,6 +1,7 @@
 {
-  "about": "The calls a host origin's page may make through the backend proxy (OE_HOST_ORIGINS, docs/auth.md \"Host origins\"): method and API path, {name} standing for one path segment. Reading the briefing, cards, conversations and the watch list; handling alerts; chatting; the watch list. Never approving, rejecting or cancelling a card, preparing a draft, Act as me, delegation, settings or People: those stay in Open Executive's own pages. packages/core/tests/unit/test_host_list.py checks every entry against the API's routes and against that rule; read every change to it with security-reviewer.",
+  "about": "The calls a host origin's page may make through the backend proxy (OE_HOST_ORIGINS, docs/auth.md \"Host origins\"): method and API path, {name} standing for one path segment. Reading who is signed in, the briefing, cards, conversations and the watch list; handling alerts; chatting; the watch list. Never approving, rejecting or cancelling a card, preparing a draft, Act as me, delegation, settings or People: those stay in Open Executive's own pages. packages/core/tests/unit/test_host_list.py checks every entry against the API's routes and against that rule; read every change to it with security-reviewer.",
   "calls": [
+    ["GET", "/auth/me"],
     ["GET", "/today"],
     ["GET", "/today/activity"],
     ["GET", "/today/activity/daily"],

@@ -1,5 +1,6 @@
 "use client";
 
+import { signOut, useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
 
@@ -14,7 +15,8 @@ import { embedRequested, isNativePath, openMessage, queryWithoutEmbed, routeMess
 // bar, bottom bar or Ask OE panel (the host has its own), but the hub's tabs,
 // the paused banner and the page itself. It tells the host where it is on
 // every navigation, keeps ?embed=1 in the address so a reload stays
-// embedded, and hands a place the host shows natively to the host.
+// embedded, and hands a place the host shows natively to the host. When the
+// host's user isn't who is signed in here, it says so.
 
 function postToHost(message: unknown, origin: string | null): void {
   if (origin && message) window.parent.postMessage(message, origin);
@@ -69,9 +71,43 @@ export default function EmbeddedShell({
   if (bare) return <>{children}</>;
   return (
     <div className="flex h-full flex-col bg-surface text-fg">
+      <UserHintWarning />
       <PausedBanner />
       {hub && <HubTabs hub={hub} pathname={pathname} />}
       <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">{children}</div>
+    </div>
+  );
+}
+
+// The host says who is using it (`userHint`, display only). When that isn't
+// who is signed in here, say so: the next person at a shared computer must
+// not work on as the last one without knowing.
+function UserHintWarning() {
+  const { init } = useEmbed();
+  const { data } = useSession();
+  const signedIn = data?.user?.email?.toLowerCase() ?? "";
+  const hint = init?.userHint ?? "";
+  if (!hint || !signedIn || hint === signedIn) return null;
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-fg"
+    >
+      <span>
+        You are signed in here as <strong>{signedIn}</strong>, but {init?.productName ?? "this page"} is open for{" "}
+        <strong>{hint}</strong>.
+      </span>
+      <button
+        type="button"
+        onClick={() =>
+          void signOut({
+            callbackUrl: `/signin?embed=1&callbackUrl=${encodeURIComponent(window.location.pathname + window.location.search)}`,
+          })
+        }
+        className="rounded-lg border border-line px-3 py-1 text-sm font-medium hover:bg-surface-overlay"
+      >
+        Sign out
+      </button>
     </div>
   );
 }

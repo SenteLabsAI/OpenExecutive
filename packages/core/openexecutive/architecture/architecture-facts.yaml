@@ -7996,7 +7996,10 @@ auth:
     doesn't control (its administrators' scripts, installed apps), so
     what its origin can do is fixed here, not by the host.
 
-    The host list: GETs of /today*, /decisions, /decisions/{id},
+    The host list: GETs of /auth/me (the email the call is made as, so a
+    host's native screens can warn when this session is someone else's,
+    as EmbeddedShell's UserHintWarning does in the frame; never
+    /auth/allowed-emails), /today*, /decisions, /decisions/{id},
     /alerts/approvals/{id}, /sessions*, /watchlist*, /chat/voice,
     /chat/suggested-prompts; alerts ack/snooze/reopen/bulk-ack/review;
     POST /chat, /chat/stop, /chat/add, /chat/upload, /chat/transcribe;
@@ -8082,7 +8085,8 @@ auth:
     Embedded mode (lib/embed.ts, components/embed/): ?embed=1, a parent
     window, a listed origin and a valid oe-embed/v1 init (contract 1;
     colours, font pattern, bounded product name, email hint (display
-    only, not shown yet), native paths under the app's routes). AppShell then drops AppSidebar,
+    only: EmbeddedShell's UserHintWarning says so, with Sign out, when it
+    isn't who is signed in here), native paths under the app's routes). AppShell then drops AppSidebar,
     TopBar, MobileBottomNav and AskOEPanel, keeping HubTabs,
     PausedBanner and the page. Messages ready/init/theme/route/open/
     badge, examples in lib/embed-examples.json shared with the host's

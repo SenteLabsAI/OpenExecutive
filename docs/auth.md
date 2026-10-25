@@ -398,7 +398,8 @@ the proxy without a policy of its own (JSON, its HTML docs, an error page) gets
 origin. Downloads keep the API's own sandbox policy.
 
 **What a host origin may call: the host list** (`packages/ui/src/lib/host-list.json`).
-Each entry is a method and an API path. It holds: reading the briefing, cards,
+Each entry is a method and an API path. It holds: reading who is signed in (`GET /auth/me`,
+so the host can warn when that isn't its own user), the briefing, cards,
 conversations and the watch list; acknowledging, snoozing, reopening and reviewing
 alerts; chatting (send, stop, add a message, attach, dictate); and the watch list
 (describe, add, approve or decline a proposal, edit, delete). Never approving, rejecting
@@ -456,6 +457,10 @@ parent window, and every `init` field is validated. In a frame:
   framed, and a sign-in button under a page this app doesn't control can be pressed by a
   lured click. So `/signin` in a frame shows no sign-in forms, only a link that opens it in
   a new tab; when the person comes back signed in, the frame goes on to where it was headed.
+- **The host's user hint** (an email in `init`, display only) shows a warning with Sign out
+  when it isn't who is signed in here, so the next person at a shared computer doesn't
+  work on as the last one without knowing. A host's own screens can do the same with
+  `GET /auth/me`.
 - **Changes ask inside the frame, and the browser must have seen the question, in any
   frame** (embedded or not, since a host page can frame these pages without saying so).
   Approving, rejecting or cancelling a card, a proposal, a workflow sign-off or a roster
@@ -501,7 +506,8 @@ app or holding its secrets: `embed-manifest.json` (the navigation and routes),
 
 **What remains.** A host origin runs code Open Executive doesn't control: the host app,
 everything installed in it, and whatever its administrators add. That code can do what
-the host list allows, as whoever has the host open and is signed in here: read the briefing, alerts, cards, conversations (whose replies can draw on the person's memory and
+the host list allows, as whoever has the host open and is signed in here: read their
+email, the briefing, alerts, cards, conversations (whose replies can draw on the person's memory and
 mail) and the watch list; start a read-only chat turn, in a conversation it started, and
 read its reply; handle alerts and the watch list. It can't approve, send, change settings
 or People, act through a chat turn (its lines make a conversation read-only everywhere,
