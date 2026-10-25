@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 
 import { AskOEProvider, useAskOE } from "@/components/askoe/AskOEContext";
 import AskOEPanel from "@/components/askoe/AskOEPanel";
+import EmbeddedShell from "@/components/embed/EmbeddedShell";
+import { useEmbed } from "@/components/embed/EmbedProvider";
 import Icon from "@/components/Icon";
 import PausedBanner from "@/components/executive/PausedBanner";
 import AppSidebar from "@/components/shell/AppSidebar";
@@ -70,6 +72,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   about: "About",
   guide: "User Guide",
   clients: "Client Companies",
+  cards: "Card",
 };
 
 function labelFor(segment: string): string {
@@ -115,6 +118,29 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { mode, role, hasDepartments } = useWorkspace();
   const redirecting = useFirstRunGate(pathname);
+  const { embedded } = useEmbed();
+
+  // In a host's frame (components/embed/EmbedProvider.tsx): the host has its
+  // own navigation, header and help, so this shell's sidebar, top bar,
+  // bottom bar and Ask OE panel are left out; the hub's tabs, the paused
+  // banner and the page stay.
+  if (embedded) {
+    const top = pathname.split("/").filter(Boolean)[0];
+    return (
+      <AskOEProvider>
+        <PageCrumbProvider>
+          <EmbeddedShell
+            pathname={pathname}
+            title={top ? labelFor(top) : "Home"}
+            hub={hubForPath(pathname, { mode, roleKind: role.role_kind })}
+            bare={isExempt(pathname) || redirecting}
+          >
+            {redirecting ? <div className="h-full bg-surface" /> : children}
+          </EmbeddedShell>
+        </PageCrumbProvider>
+      </AskOEProvider>
+    );
+  }
 
   if (isExempt(pathname)) {
     return <>{children}</>;

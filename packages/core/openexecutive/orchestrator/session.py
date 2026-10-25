@@ -88,6 +88,18 @@ class Session:
     # never offered `schedule_tools.MCP_CLIENT_ACTING_WITHHELD_TOOLS`, Act as
     # me's mailbox tools, recall_history or extension tools.
     mcp_client_may_act: bool = False
+    # Set per turn by the web chat route when a host origin's page sent it
+    # (`api.caller.from_host`: another app that frames Open Executive and may
+    # call a short list of its routes, OE_HOST_ORIGINS, docs/auth.md), or
+    # wrote any earlier line of this conversation
+    # (`session_store.host_wrote`): that line stays in what the model reads.
+    # Its scripts aren't Open Executive's, so such a turn only reads and advises,
+    # as a read-only turn from another AI app does
+    # (`schedule_tools.read_only_turn`): nothing that sends, posts, books,
+    # schedules, runs or changes stored state, no Act as me, recall_history,
+    # script or extension tool, and of the gateway tools only the reads. What
+    # would act, the person does in Open Executive's own pages.
+    from_host: bool = False
     # The rostered Person behind this conversation, when one is resolved. The
     # adapters already pass this to `Executive.chat(person_id=...)`; holding it
     # on the session too lets tool handlers running mid-turn tell "the approver

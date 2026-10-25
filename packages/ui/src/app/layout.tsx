@@ -2,10 +2,13 @@ import type { Metadata, Viewport } from "next";
 import { Bricolage_Grotesque, Geist } from "next/font/google";
 import { connection } from "next/server";
 import AuthProvider from "@/components/AuthProvider";
+import EmbedProvider from "@/components/embed/EmbedProvider";
 import { ExecutiveStatusProvider } from "@/components/executive/ExecutiveStatusContext";
 import { SessionsProvider } from "@/components/sessions/SessionsContext";
 import AppShell from "@/components/shell/AppShell";
 import { WorkspaceProvider } from "@/components/workspace/WorkspaceContext";
+import { HOST_ORIGINS } from "@/lib/hostConfig";
+import packageJson from "../../package.json";
 import "./globals.css";
 
 // Geist, self-hosted by next/font at build time: no request to Google from
@@ -46,13 +49,15 @@ export default async function RootLayout({
     <html lang="en" className={`h-full ${geist.variable} ${bricolage.variable}`}>
       <body className="h-full antialiased bg-surface text-fg">
         <AuthProvider>
-          <SessionsProvider>
-            <ExecutiveStatusProvider>
-              <WorkspaceProvider>
-                <AppShell>{children}</AppShell>
-              </WorkspaceProvider>
-            </ExecutiveStatusProvider>
-          </SessionsProvider>
+          <EmbedProvider hostOrigins={[...HOST_ORIGINS.origins]} version={packageJson.version}>
+            <SessionsProvider>
+              <ExecutiveStatusProvider>
+                <WorkspaceProvider>
+                  <AppShell>{children}</AppShell>
+                </WorkspaceProvider>
+              </ExecutiveStatusProvider>
+            </SessionsProvider>
+          </EmbedProvider>
         </AuthProvider>
       </body>
     </html>

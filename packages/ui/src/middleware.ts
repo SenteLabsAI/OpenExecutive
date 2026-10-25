@@ -1,13 +1,28 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { auth } from "@/auth";
-import { contentSecurityPolicy, FRAME_ANCESTORS, makeNonce } from "@/lib/csp";
+import { contentSecurityPolicy, makeNonce } from "@/lib/csp";
+import { HOST_CALLS, HOST_ORIGINS } from "@/lib/hostConfig";
+import { backendSegments, corsHeaders, frameAncestors, hostPreflight, judgeHostRequest } from "@/lib/hostOrigins";
 import { SESSION_FREE_PATH } from "@/lib/middlewarePaths";
-import { gatePage } from "@/lib/pageGate";
+import { PASSED_ON_HEADER, gatePage, isResponse, withHeader } from "@/lib/pageGate";
 
-// Every request but static assets comes through here. What it does with one
-// (the session check, then the Content-Security-Policy on every page and
-// every refusal of one) is lib/pageGate.ts; this wires in Next.js and
-// Auth.js.
+// Every request but static assets comes through here, in this order:
+//
+// 1. A call to the backend proxy from a host origin (lib/hostOrigins.ts): its
+//    preflight is answered here, before any session check (a preflight
+//    carries no cookie), and a call off the host list is refused with 403.
+//    Both with CORS for that exact origin, so the host's page can read why.
+// 2. The session check, except for Auth.js's own routes and exactly `/signin`
+//    (with optional trailing slash): the decision, and the response a refused
+//    request gets (JSON 401 for /api/*, a redirect to /signin for pages),
+//    live in the `authorized` callback in auth.ts. A host call refused there
+//    gets its 401 with CORS too, so a host's page can offer sign-in. A check
+//    that answers anything but a Response refuses.
+// 3. Pages get the Content-Security-Policy (lib/csp.ts): a nonce per
+//    request, which Next.js puts on its own scripts, and who may frame them.
+//
+// Everything but the backend proxy goes through lib/pageGate.ts, which is
+// tested with a stub session check (scripts/pageGate.test.mjs).
 //
 // `auth` is called as-is, never wrapped as `auth((req) => …)`: when a wrapper
 // is passed, next-auth runs it even after `authorized` returns false, so the
@@ -15,20 +30,65 @@ import { gatePage } from "@/lib/pageGate";
 // the roster kept working until their 24h JWT expired.
 const sessionGate = auth as unknown as (req: NextRequest, ev: NextFetchEvent) => Promise<unknown>;
 
+const FRAME_ANCESTORS = frameAncestors(HOST_ORIGINS.origins);
 // Written out literally: Next.js folds it at build time, so a production
 // build never allows eval.
 const DEV_SERVER = process.env.NODE_ENV !== "production";
 
+function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+async function backend(req: NextRequest, ev: NextFetchEvent, segments: string[]): Promise<Response> {
+  const origin = req.headers.get("origin");
+  const secFetchSite = req.headers.get("sec-fetch-site");
+  const preflight = hostPreflight(
+    {
+      origin,
+      secFetchSite,
+      method: req.method,
+      segments,
+      requestMethod: req.headers.get("access-control-request-method"),
+      requestHeaders: req.headers.get("access-control-request-headers"),
+    },
+    HOST_ORIGINS,
+    HOST_CALLS,
+  );
+  if (preflight) return new Response(null, preflight);
+
+  const verdict = judgeHostRequest({ origin, secFetchSite, method: req.method, segments }, HOST_ORIGINS, HOST_CALLS);
+  if (verdict.kind === "refused") {
+    return json(403, { error: "not available from this page", code: verdict.reason }, corsHeaders(verdict.origin));
+  }
+  const gated = await sessionGate(req, ev);
+  const cors = verdict.kind === "host" ? corsHeaders(verdict.origin) : {};
+  if (!isResponse(gated)) return json(500, { error: "the session check failed" }, cors);
+  // Passed on: the proxy route adds CORS to its own answer (adding it here
+  // too would send the header twice, which browsers refuse).
+  if (gated.headers.get(PASSED_ON_HEADER) === "1") return gated;
+  let response = gated;
+  for (const [name, value] of Object.entries(cors)) response = withHeader(response, name, value);
+  return response;
+}
+
 export function middleware(req: NextRequest, ev: NextFetchEvent): Promise<Response> {
   const { pathname } = req.nextUrl;
+  const segments = backendSegments(pathname);
+  if (segments !== null) return backend(req, ev, segments);
+
   return gatePage(
     { pathname, headers: req.headers, sessionFree: SESSION_FREE_PATH.test(pathname) },
     {
       sessionGate: () => sessionGate(req, ev),
       passOn: (requestHeaders) =>
         requestHeaders ? NextResponse.next({ request: { headers: requestHeaders } }) : NextResponse.next(),
-      csp: () => contentSecurityPolicy({ nonce: makeNonce(), devServer: DEV_SERVER }),
-      authPagesPolicy: FRAME_ANCESTORS,
+      csp: () => contentSecurityPolicy({ nonce: makeNonce(), frameAncestors: FRAME_ANCESTORS, devServer: DEV_SERVER }),
+      // Auth.js's own pages: not even a host origin may frame them; in a
+      // frame, sign-in opens in a tab of its own.
+      authPagesPolicy: "frame-ancestors 'self'",
     },
   );
 }

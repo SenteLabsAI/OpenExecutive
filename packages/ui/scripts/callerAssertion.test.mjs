@@ -38,7 +38,13 @@ for (const vector of VECTORS.cases) {
     const signer = parseCallerSigningKey(VECTORS.test_signing_key);
     const token = mintCallerAssertion(
       signer,
-      { kind: vector.kind, email: vector.email, method: vector.method, target: vector.target },
+      {
+        kind: vector.kind,
+        email: vector.email,
+        method: vector.method,
+        target: vector.target,
+        ...(vector.surface ? { surface: vector.surface } : {}),
+      },
       vector.now_ms,
       vector.jti,
     );
@@ -65,6 +71,23 @@ test("the signature checks out against the public key", () => {
   assert.equal(claims.m, "GET");
   assert.equal(claims.exp - claims.iat, ASSERTION_LIFETIME_S);
   assert.match(claims.jti, /^[A-Za-z0-9_-]{16,128}$/);
+});
+
+test("a host call's surface is signed, after sub in key order", () => {
+  const signer = parseCallerSigningKey(VECTORS.test_signing_key);
+  const token = mintCallerAssertion(signer, {
+    kind: "user",
+    email: "a@b.example",
+    method: "POST",
+    target: "/chat",
+    surface: "host",
+  });
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+  assert.deepEqual(Object.keys(claims), ["aud", "exp", "iat", "jti", "kid", "kind", "m", "p", "sub", "surface"]);
+  assert.equal(claims.surface, "host");
+  assert.throws(() =>
+    mintCallerAssertion(signer, { kind: "operator", email: "", method: "GET", target: "/x", surface: "desk" }),
+  );
 });
 
 test("every assertion gets its own id", () => {

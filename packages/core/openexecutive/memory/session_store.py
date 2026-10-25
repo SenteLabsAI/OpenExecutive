@@ -86,6 +86,7 @@ def save_message(
     stopped: bool = False,
     sender_person_id: int | None = None,
     sources: str | None = None,
+    sender_surface: str | None = None,
 ) -> int:
     """Persist one chat message and return its row id. ``action_chips`` is a
     JSON-encoded list of the assistant turn's action-chip dicts (or None), so
@@ -96,20 +97,50 @@ def save_message(
     sender, never the session owner's principal fallback, so per-person
     learning never reads an outsider's words as someone on the roster.
     ``sources`` is the JSON ``TurnSources.payload()`` of an assistant reply —
-    what it looked at and which areas it had to leave out — or None."""
+    what it looked at and which areas it had to leave out — or None.
+    ``sender_surface`` is ``"host"`` for a user message a host origin's page
+    sent (``host_wrote``)."""
     text = content if isinstance(content, str) else str(content)
     now = datetime.now(UTC).isoformat()
     with _get_conn(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO chat_messages "
             "(session_id, role, content, created_at, action_chips, stopped, sender_person_id, "
-            "sources) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "sources, sender_surface) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id, role, text, now, action_chips, 1 if stopped else 0,
-                sender_person_id, sources,
+                sender_person_id, sources, sender_surface,
             ),
         )
+        if role == "user" and sender_surface == "host":
+            conn.execute("UPDATE sessions SET host_wrote = 1 WHERE session_id = ?", (session_id,))
         return int(cur.lastrowid or 0)
+
+
+def mark_host_wrote(session_id: str, db_path: Path = DB_PATH) -> None:
+    """Mark ``session_id`` as written in by a host origin's page, now, before
+    its turn is saved (``host_wrote``). Never cleared."""
+    with _get_conn(db_path) as conn:
+        conn.execute("UPDATE sessions SET host_wrote = 1 WHERE session_id = ?", (session_id,))
+
+
+def host_wrote(session_id: str, db_path: Path = DB_PATH) -> bool:
+    """Whether a host origin's page wrote any user message in this
+    conversation (``sender_surface`` ``"host"``). Every turn in it is then
+    held to the host surface's read-only rules, from any page: the line stays
+    in the conversation the model reads, and a script on that page could have
+    written it. It sticks (``sessions.host_wrote``): taking the line back
+    (Try again, Edit) must not hand its words to a turn that may act."""
+    if not db_path.exists():
+        return False
+    with _get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ? AND host_wrote = 1 "
+            "UNION ALL SELECT 1 FROM chat_messages WHERE session_id = ? AND role = 'user' "
+            "AND sender_surface = 'host' LIMIT 1",
+            (session_id, session_id),
+        ).fetchone()
+    return row is not None
 
 
 FEEDBACK_VALUES = frozenset({"up", "down"})
@@ -450,14 +481,19 @@ def own_messages_since(
     first: the newest ``limit`` of their own messages, each as one line of at
     most ``max_chars``. Only their words, never a reply or what someone else
     wrote in a chat they share; a message from before senders were recorded
-    counts when the conversation is theirs."""
+    counts when the conversation is theirs. Never a line a host origin's page
+    sent (``sender_surface``): a script there may have written it."""
     if not db_path.exists():
         return []
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             "SELECT m.created_at, m.content FROM chat_messages m "
             "JOIN sessions s ON s.session_id = m.session_id "
-            "WHERE m.role = 'user' AND m.created_at > ? AND (m.sender_person_id = ? "
+            # Nor any line of a conversation a host's page wrote in: a host
+            # line taken back and sent again (Try again) is saved as theirs.
+            "WHERE m.role = 'user' AND m.created_at > ? AND m.sender_surface IS NULL "
+            "AND s.host_wrote = 0 "
+            "AND (m.sender_person_id = ? "
             "OR (m.sender_person_id IS NULL AND s.caller_person_id = ?)) "
             "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
             (since, person_id, person_id, limit),
@@ -484,15 +520,17 @@ def own_conversation_since(
     (ISO 8601), oldest first: the newest ``limit`` messages, theirs and the
     Executive's replies, as ``{"at", "role", "text"}`` with ``text`` one line
     of at most ``max_chars``. Only conversations they own, so nobody else's
-    words or a reply written to someone else ever reach it. The end-of-day
-    digest reads it: what moved today is mostly said in chat."""
+    words or a reply written to someone else ever reach it, and never one a
+    host origin's page wrote in (``host_wrote``): its replies answer that
+    page's words. The end-of-day digest reads it: what moved today is mostly
+    said in chat."""
     if not db_path.exists():
         return []
     with _get_conn(db_path) as conn:
         rows = conn.execute(
             "SELECT m.created_at, m.role, m.content FROM chat_messages m "
             "JOIN sessions s ON s.session_id = m.session_id "
-            "WHERE s.caller_person_id = ? AND m.created_at > ? "
+            "WHERE s.caller_person_id = ? AND m.created_at > ? AND s.host_wrote = 0 "
             "AND m.role IN ('user', 'assistant') "
             "AND (m.role = 'assistant' OR m.sender_person_id IS NULL "
             "OR m.sender_person_id = ?) "
@@ -741,12 +779,13 @@ def list_shared_with_person(person_id: int, db_path: Path = DB_PATH) -> list[dic
 def export_rows(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
     """Every message of ``session_id`` with who wrote it, for an export:
     ``role``, ``content``, ``created_at``, ``sender_person_id``, ``stopped``
-    and the reply's ``sources`` (decoded, or None)."""
+    and the reply's ``sources`` (decoded, or None), and ``sender_surface``
+    ("host" for a line a host origin's page sent)."""
     if not db_path.exists():
         return []
     with _get_conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT role, content, created_at, sender_person_id, stopped, sources "
+            "SELECT role, content, created_at, sender_person_id, stopped, sources, sender_surface "
             "FROM chat_messages WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
@@ -763,6 +802,7 @@ def export_rows(session_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]
             "content": row["content"],
             "created_at": row["created_at"],
             "sender_person_id": row["sender_person_id"],
+            "sender_surface": row["sender_surface"],
             "stopped": bool(row["stopped"]),
             "sources": sources if isinstance(sources, dict) else None,
         })

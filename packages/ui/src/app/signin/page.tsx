@@ -5,6 +5,7 @@ import { GOOGLE_SIGN_IN, LOCAL_LOGIN, OIDC, auth, sessionStillAllowed, signIn } 
 import { LOCAL_LOGIN_PROVIDER_ID } from "@/lib/localLogin";
 import { OIDC_PROVIDER_ID } from "@/lib/oidc";
 import BrandMark from "@/components/BrandMark";
+import FrameSignIn from "@/components/embed/FrameSignIn";
 
 type SearchParams = Promise<{ callbackUrl?: string; error?: string }>;
 
@@ -83,7 +84,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
             </p>
           </>
         ) : (
-          <>
+          <FrameSignIn destination={safeDest}>
             {OIDC && (
               <form
                 action={async () => {
@@ -121,7 +122,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Searc
                 <p className="mt-2 text-xs text-fg-muted">If that’s you: see docs/auth.md.</p>
               </div>
             )}
-          </>
+          </FrameSignIn>
         )}
       </div>
     </main>

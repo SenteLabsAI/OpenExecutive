@@ -40,7 +40,7 @@ function refusal(status: number, json: boolean): Response {
 
 // By shape rather than instanceof: Next.js runs the middleware in a runtime
 // of its own, where a Response may come from another realm.
-function isResponse(value: unknown): value is Response {
+export function isResponse(value: unknown): value is Response {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -51,7 +51,7 @@ function isResponse(value: unknown): value is Response {
 
 // Response.redirect() and others answer with headers that can't be changed;
 // a copy can.
-function withHeader(response: Response, name: string, value: string): Response {
+export function withHeader(response: Response, name: string, value: string): Response {
   try {
     response.headers.set(name, value);
     return response;

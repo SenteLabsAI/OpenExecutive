@@ -372,6 +372,10 @@ def _adapter_verified_turn(session: Any) -> bool:
 
 
 def _is_verified_speaker_surface(session: Any) -> bool:
+    # A host origin's page (Session.from_host) proves nothing about who
+    # wrote the turn: a script on it may have.
+    if getattr(session, "from_host", False) is True:
+        return False
     if bool(getattr(session, "from_web_chat", False)):
         return True
     # Another AI app over Open Executive's own MCP server: its caller is the

@@ -75,6 +75,9 @@ def to_markdown(meta: dict[str, Any], *, owner_person_id: int | None) -> str:
             who = EXECUTIVE
         else:
             who = (names.get(int(sender)) if sender is not None else None) or owner_name or "You"
+            # Sent from another app's page, where a script may have written it.
+            if row.get("sender_surface") == "host":
+                who = f"{who} (from another app's page)"
         out += ["", f"## {who}", "", str(row["content"]).strip()]
         if row["stopped"]:
             out += ["", "_(Stopped before it finished.)_"]
