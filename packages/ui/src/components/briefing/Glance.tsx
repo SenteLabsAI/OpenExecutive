@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { getHandledReplies, listCustomWorkflows, listWatchlist, listWorkflowRuns } from "@/lib/api";
-import { handledThisWeek, scheduledWorkflows, watching } from "@/lib/glance";
+import { handledThisWeek, scheduledNames, scheduledWorkflows, watching } from "@/lib/glance";
 
 // The counts behind Home's "At a glance" tiles that /today doesn't carry:
 // what Act as me handled this week, your scheduled workflows, and the
@@ -31,8 +31,14 @@ export function useGlance(enabled: boolean): Glance {
     getHandledReplies(controller.signal)
       .then((replies) => set({ actAsMe: replies ? handledThisWeek(replies, now) : null }))
       .catch(() => {});
-    Promise.all([listCustomWorkflows(), listWorkflowRuns()])
-      .then(([defs, runs]) => set({ workflows: scheduledWorkflows(defs, runs, now) }))
+    // Each scheduled workflow's own runs: the unfiltered list is the latest
+    // 100 of every workflow, which the system's own runs can fill.
+    listCustomWorkflows()
+      .then(async (defs) => {
+        const names = scheduledNames(defs);
+        const runs = (await Promise.all(names.map((name) => listWorkflowRuns(name)))).flat();
+        set({ workflows: scheduledWorkflows(defs, runs, now) });
+      })
       .catch(() => {});
     listWatchlist({ enabledOnly: true })
       .then((items) => set({ watching: watching(items, now) }))

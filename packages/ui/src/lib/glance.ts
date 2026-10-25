@@ -33,6 +33,11 @@ export function handledThisWeek(replies: HandledReply[], now: Date): number {
   return replies.filter((r) => withinWeek(r.sent_at, now)).length;
 }
 
+// The workflows of your own that run on a schedule.
+export function scheduledNames(defs: DynamicWorkflowDef[]): string[] {
+  return defs.filter((d) => d.is_active !== false && Boolean(d.cadence)).map((d) => d.name);
+}
+
 // Workflows of your own that run on a schedule, and how many times they ran
 // this week (runs of anything else, like the system's own, don't count).
 export function scheduledWorkflows(
@@ -40,7 +45,7 @@ export function scheduledWorkflows(
   runs: WorkflowRunSummary[],
   now: Date,
 ): { scheduled: number; runsThisWeek: number } {
-  const names = new Set(defs.filter((d) => d.is_active !== false && Boolean(d.cadence)).map((d) => d.name));
+  const names = new Set(scheduledNames(defs));
   const runsThisWeek = runs.filter((r) => names.has(r.workflow_name) && withinWeek(r.created_at, now)).length;
   return { scheduled: names.size, runsThisWeek };
 }

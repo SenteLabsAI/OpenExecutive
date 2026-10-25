@@ -4,6 +4,7 @@ import {
   goalTotals,
   handledThisWeek,
   realDepartments,
+  scheduledNames,
   scheduledWorkflows,
   watching,
 } from "../src/lib/glance.ts";
@@ -48,6 +49,7 @@ test("workflows count your active scheduled ones and only their runs", () => {
     { workflow_name: "weekly", created_at: daysAgo(10) },
     { workflow_name: "morning_brief", created_at: daysAgo(1) },
   ];
+  assert.deepEqual(scheduledNames(defs), ["weekly"]);
   assert.deepEqual(scheduledWorkflows(defs, runs, NOW), { scheduled: 1, runsThisWeek: 1 });
 });
 
