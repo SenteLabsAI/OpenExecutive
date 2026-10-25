@@ -113,15 +113,11 @@ def first_week_started(now: datetime | None = None) -> datetime | None:
 def _goal_lines(solo: bool = False) -> tuple[list[str], list[str], list[str]]:
     """(goal lines, leaderless lines, keys). Solo has no team, so no
     department names and no leaders to name."""
-    from openexecutive.departments.store import list_departments, list_goals
+    from openexecutive.departments.store import list_all_goals, list_departments
 
     goals: list[str] = []
     leaderless: list[str] = []
     keys: list[str] = []
-    # Goals with no area first: they are not under any department row.
-    for goal in list_goals(None):
-        goals.append(_goal_line(goal, None))
-        keys.append(f"goal:{goal.id}:{goal.status}")
     for dept in list_departments():
         title = _one_line(dept.config.title, 60)
         if dept.config.head_person_id is None and not solo:
@@ -129,6 +125,11 @@ def _goal_lines(solo: bool = False) -> tuple[list[str], list[str], list[str]]:
             keys.append(f"leaderless:{dept.config.slug}")
         for goal in dept.goals:
             goals.append(_goal_line(goal, None if solo else title))
+            keys.append(f"goal:{goal.id}:{goal.status}")
+    # Goals with no area sit under no department row.
+    for goal in list_all_goals():
+        if not goal.department_slug:
+            goals.append(_goal_line(goal, None))
             keys.append(f"goal:{goal.id}:{goal.status}")
     return goals[:_GOALS_MAX], leaderless[:_LEADERLESS_MAX], keys
 

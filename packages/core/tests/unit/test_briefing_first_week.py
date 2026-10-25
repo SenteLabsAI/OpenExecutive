@@ -49,10 +49,6 @@ def setup(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     state.loose_goals = []
     monkeypatch.setattr("openexecutive.departments.store.list_departments", lambda *a, **k: state.departments)
     monkeypatch.setattr(
-        "openexecutive.departments.store.list_goals",
-        lambda slug, *a, **k: state.loose_goals if slug is None else [],
-    )
-    monkeypatch.setattr(
         "openexecutive.departments.store.list_all_goals",
         lambda *a, **k: [g for d in state.departments for g in d.goals] + state.loose_goals,
     )
@@ -394,7 +390,7 @@ def test_card_drops_the_ask_for_a_goal_with_no_area(card: SimpleNamespace) -> No
 def test_shared_block_lists_a_goal_with_no_area(setup: SimpleNamespace) -> None:
     setup.loose_goals = [_goal(9, "", "Sign 3 pilots by December")]
     lines, _, keys = first_week._goal_lines()
-    assert lines[0] == "- Sign 3 pilots by December (Q4 2026)"
+    assert lines[-1] == "- Sign 3 pilots by December (Q4 2026)"
     assert any(k.startswith("goal:9:") for k in keys)
 
 
