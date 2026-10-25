@@ -8,6 +8,7 @@ import {
   approveAlert,
   approveDecision,
   bulkAckAlerts,
+  getDelegation,
   getToday,
   markTodaySeen,
   rejectDecision,
@@ -699,6 +700,17 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   // day isn't called quiet and the summary line points at it.
   const firstWeekCard = today?.first_week_card ?? null;
   const firstWeek = Boolean(today?.first_week);
+  // The first week's empty Needs you points at the own-mailbox step only
+  // while that mailbox isn't connected (null until known, so no flash).
+  const [ownMailboxConnected, setOwnMailboxConnected] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!firstWeek) return;
+    const ctrl = new AbortController();
+    getDelegation(ctrl.signal)
+      .then((d) => setOwnMailboxConnected(d ? d.gmail.status === "connected" : null))
+      .catch(() => undefined);
+    return () => ctrl.abort();
+  }, [firstWeek]);
   const briefFreshness = today
     ? today.narrative_stale
       ? "Refreshing…"
@@ -891,11 +903,16 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   </div>
                 ) : firstWeek ? (
                   <p className="rounded-2xl border border-dashed border-line px-4 py-5 text-[15px] text-fg-muted">
-                    Nothing waiting on you yet. Decisions and replies to send land here.{" "}
-                    <Link href={FIRST_RUN_LINKS.ownMailbox} className="font-medium text-accent hover:underline">
-                      Let it read your mailbox
-                    </Link>{" "}
-                    to get draft replies here.
+                    Nothing waiting on you yet. Decisions and replies to send land here.
+                    {ownMailboxConnected === false && (
+                      <>
+                        {" "}
+                        <Link href={FIRST_RUN_LINKS.ownMailbox} className="font-medium text-accent hover:underline">
+                          Let it read your mailbox
+                        </Link>{" "}
+                        to get draft replies here.
+                      </>
+                    )}
                   </p>
                 ) : !isQuiet ? (
                   <p className="rounded-2xl border border-dashed border-line px-4 py-5 text-[15px] text-fg-muted">
