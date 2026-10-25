@@ -88,7 +88,7 @@ export default function ChatAppActionCard({ id }: { id: number }) {
   return (
     <article className="mt-3 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
       <div className="text-xs font-semibold uppercase tracking-wide text-accent">Needs your OK</div>
-      <div className="mt-1 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words">
+      <div className="mt-1 text-base sm:text-[17px] font-semibold leading-snug text-fg break-words whitespace-pre-line">
         {payload.card}
       </div>
       {done ? (

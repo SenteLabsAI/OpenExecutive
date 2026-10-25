@@ -142,9 +142,19 @@ LIST_WORKFLOWS_TOOL: dict[str, Any] = {
         "title, description, section, estimated_minutes, and the input fields "
         "it expects (name → type/description/required). Call this when the "
         "principal asks what you can run, or to discover a workflow's name and "
-        "required inputs before calling run_workflow."
+        "required inputs before calling run_workflow. Pass `name` of a custom "
+        "workflow to read its full definition (steps, tools, schedule), e.g. to "
+        "work out why a run went wrong and draft a fix with draft_workflow."
     ),
-    "input_schema": {"type": "object", "properties": {}},
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "A custom workflow's name, to get its full definition instead of the list.",
+            },
+        },
+    },
 }
 
 
@@ -239,8 +249,36 @@ def _input_fields(input_schema: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _definition_of(name: str) -> str:
+    """A custom workflow's full definition, for the account owner or its
+    creator in a conversation only they read: its steps can quote addresses
+    and what it does."""
+    from openexecutive.orchestrator.workflow_change import may_read
+    from openexecutive.workflows.dynamic_store import get_definition
+
+    defn = get_definition(name)
+    if defn is None:
+        return _err("list_workflows", f"There is no custom workflow named {name!r}.")
+    refused = may_read(name)
+    if refused is not None:
+        return _err("list_workflows", refused)
+    _audit("list_workflows", "read", True, f"list_workflows read {name}", {"name": name})
+    return json.dumps({
+        "definition": defn.model_dump(mode="json", exclude={"created_at", "updated_at"}),
+        "note": (
+            "is_active says whether it is switched on. To fix it, draft the whole corrected "
+            "definition under the same name with draft_workflow, then save_workflow with "
+            "overwrite=true."
+        ),
+    })
+
+
 async def handle_list_workflows(tool_input: dict[str, Any]) -> str:
     from openexecutive.workflows import list_workflows as _list_workflows
+
+    name = str(tool_input.get("name") or "").strip()
+    if name:
+        return _definition_of(name)
 
     try:
         workflows = _list_workflows()

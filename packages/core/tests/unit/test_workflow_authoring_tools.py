@@ -190,17 +190,18 @@ def test_chat_saves_tool_workflow_switched_off(scheduled: list[str]) -> None:
 
 def test_chat_cannot_replace_an_approved_tool_workflow(scheduled: list[str]) -> None:
     """Replacing a switched-on tool workflow from chat (e.g. steered by an
-    inbound email) would switch it off and stage new tools under a familiar
-    name — refused at draft and save; edits happen on the Jobs page."""
+    inbound email) would stage new tools under a familiar name. It waits on a
+    card its person taps (workflow_change), so a turn with nobody verified to
+    leave it for is refused at draft and save."""
     from openexecutive.workflows.dynamic_models import DynamicWorkflowDef
 
     dynamic_store.upsert_definition(DynamicWorkflowDef.model_validate(_action_definition()))
     d = _action_definition()
     d["title"] = "Weekly Watch v2"
     drafted = _draft(d)
-    assert "error" in drafted and "/jobs/new?edit=weekly_watch" in drafted["error"]
+    assert "error" in drafted and "know who is asking" in drafted["error"]
     saved = _save(d, wat._canonical_token(d), overwrite=True)
-    assert "error" in saved and "approved" in saved["error"]
+    assert "error" in saved and "know who is asking" in saved["error"]
     # An analysis-only replacement is refused too — it would still drop the tools the user approved.
     assert "error" in _save(_valid_definition(), wat._canonical_token(_valid_definition()), overwrite=True)
     stored = dynamic_store.get_definition("weekly_watch")

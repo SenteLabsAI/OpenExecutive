@@ -113,6 +113,9 @@ class Action:
     card: str = ""
     principal_only: bool = False
     prepare: Preparer | None = None
+    # Not offered to do_in_app: only a card another tool leaves runs it (a
+    # workflow change ``save_workflow`` stages, ``workflow_change``).
+    hidden: bool = False
 
     def needs_tap(self, item_id: str, value: str) -> bool:
         return self.confirm(item_id, value) if callable(self.confirm) else bool(self.confirm)
@@ -156,8 +159,9 @@ def _rebuild() -> None:
             "required": ["kind"],
         },
     })
+    offered = sorted(name for name, action in CATALOG.actions.items() if not action.hidden)
     lines = []
-    for name in sorted(CATALOG.actions):
+    for name in offered:
         action = CATALOG.actions[name]
         extra = f" value: {action.value}." if action.value else ""
         lines.append(f"- {name} ({action.kind}): {action.does}.{extra}")
@@ -174,7 +178,7 @@ def _rebuild() -> None:
         "input_schema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": sorted(CATALOG.actions)},
+                "action": {"type": "string", "enum": offered},
                 "id": {"type": "string", "description": "The item's id from find_in_app, or \"this\" for this chat."},
                 "value": {"type": "string", "description": "The action's value, when it takes one."},
             },
@@ -451,7 +455,7 @@ async def handle_do_in_app(tool_input: dict[str, Any]) -> str:
     if not _private_here():
         return _error(_NOT_PRIVATE)
     action = CATALOG.actions.get(str(tool_input.get("action") or ""))
-    if action is None:
+    if action is None or action.hidden:
         return _error("Unknown action. Pick one from the list.")
     kind = CATALOG.kinds[action.kind]
     if (action.principal_only or kind.principal_only) and not getattr(person, "is_principal", False):
@@ -544,6 +548,15 @@ def _leave_card(
         approver_person_id=person_id,
         confidence=None,
     )
+
+
+def leave_card(person_id: int, action: str, item_id: str, value: str, title: str, card: str) -> int:
+    """Leave a card for a hidden action another tool stages (its ``value``
+    may be longer than ``do_in_app`` takes). Returns the decision id."""
+    found = CATALOG.actions.get(action)
+    if found is None:
+        raise ValueError(f"unknown action {action!r}")
+    return _leave_card(person_id, _session(), found, item_id, value, title, card)
 
 
 def card_stale(created_at: str, now: datetime | None = None) -> bool:

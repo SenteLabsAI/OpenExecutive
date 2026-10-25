@@ -437,6 +437,12 @@ async def _turn_workflow(request: Any, name: str, on: bool) -> str:
     return f"Turned {_q(title)} {'on' if on else 'off'}"
 
 
+async def _change_workflow(request: Any, name: str, value: str) -> str:
+    from openexecutive.orchestrator import workflow_change
+
+    return await workflow_change.run(request, name, value)
+
+
 async def _delete_workflow(request: Any, name: str, value: str) -> str:
     from openexecutive.api.routes import workflows
 
@@ -837,6 +843,9 @@ _ACTIONS = (
     Action("turn_off_workflow", "workflow", "Turn a workflow off", _fixed(_turn_workflow, False)),
     Action("delete_workflow", "workflow", "Delete a workflow for good", _delete_workflow, confirm=True,
            card="Delete the workflow {title}"),
+    # Only a card save_workflow stages runs it (orchestrator.workflow_change).
+    Action("change_workflow", "workflow", "Save a change to a workflow", _change_workflow, confirm=True,
+           hidden=True),
     Action("rerun_workflow_run", "workflow_run", "Run a failed scheduled run again", _rerun),
     Action("approve_workflow_step", "workflow_run", "Approve a run's step that is waiting for a yes",
            _fixed(_decide_run, "approve"), confirm=True, card="Approve the waiting step in {title}"),

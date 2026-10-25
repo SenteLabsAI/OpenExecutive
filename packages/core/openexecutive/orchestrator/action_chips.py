@@ -72,6 +72,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "ack_alert",
     # Universal workflow launcher (any built-in / custom workflow from chat)
     "run_workflow",
+    # Saves a workflow, or leaves a card for a change to one (workflow_change)
+    "save_workflow",
     # Research artifacts flagged for review
     "draft_artifact",
     # MCP — generic, classified by underlying tool name at runtime
@@ -241,7 +243,7 @@ def summarize_action(
     if (
         parsed is not None
         and parsed.get("status") == "waiting_for_approval"
-        and tool_name not in ("propose_actions", "do_in_app")
+        and tool_name not in ("propose_actions", "do_in_app", "save_workflow")
         and not extension
     ):
         # Held for someone's approval (a team member's send or change, the
@@ -586,6 +588,24 @@ def summarize_action(
             return None
         payload["summary"] = f"Open {(parsed or {}).get('screen') or 'it'}"
         payload["link"] = link
+    elif tool_name == "save_workflow":
+        status = (parsed or {}).get("status")
+        name = str((parsed or {}).get("name") or "").replace("_", " ")
+        if status == "waiting_for_approval":
+            payload["summary"] = "Waiting for your OK: a change to a workflow"
+            # The chat shows the card itself under its message, by this id.
+            decision_id = (parsed or {}).get("decision_id")
+            if isinstance(decision_id, int) and not isinstance(decision_id, bool):
+                payload["decision_id"] = decision_id
+        elif status == "saved":
+            payload["summary"] = f"Saved the workflow {name}" if name else "Saved the workflow"
+        elif status == "saved_pending_review":
+            payload["summary"] = f"Saved the workflow {name}, switched off" if name else "Saved the workflow, switched off"
+        else:
+            return None
+        link = (parsed or {}).get("name")
+        if isinstance(link, str) and link and status != "waiting_for_approval":
+            payload["link"] = f"/jobs/{link}"
     elif tool_name == "run_workflow":
         wf = str(tool_input.get("workflow", "")).replace("_", " ")
         run_id = (parsed or {}).get("run_id")

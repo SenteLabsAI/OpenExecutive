@@ -30,6 +30,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from openexecutive.orchestrator import workflow_change
 from openexecutive.orchestrator.schedule_tools import current_session
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,11 @@ DEFINITION_SCHEMA: dict[str, Any] = {
                 "calendar (the same condition): 'oe__search_my_email', "
                 "'oe__read_my_email', 'oe__my_email_awaiting_reply', 'oe__my_calendar', and "
                 "'oe__answer_email_as_me' answers a thread from those as their Handle it "
-                "for me would; "
+                "for me would. The gateway's mail and calendar tools "
+                "(google_workspace__*, microsoft_365__*) act as YOUR account, not theirs: "
+                "a calendar step with no calendar named reads your own calendar. To read "
+                "the user's, use 'oe__my_calendar', or write their email address into the "
+                "step's goal as the calendar to read; "
                 "a workflow that reads them runs only for them, reports only to them, "
                 "and can't also use web search, scripts, gateway tools or other "
                 "workflows. Write the addresses they name into the step's goal: an "
@@ -124,7 +129,9 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "user has identified. If validation fails, the response lists exactly "
         "what to fix; re-draft and try again. A workflow with action (tool) "
         "steps is saved switched OFF: after saving, give the user the link so "
-        "they can review its tools and turn it on."
+        "they can review its tools and turn it on. To fix or change a saved "
+        "workflow, read it first (list_workflows with its name) and draft the "
+        "whole corrected definition under the same name."
     ),
     "input_schema": {
         "type": "object",
@@ -144,7 +151,11 @@ SAVE_WORKFLOW_TOOL: dict[str, Any] = {
         "mismatch) — re-draft if you need to change anything. On success the "
         "workflow appears in /jobs and is immediately runnable — except one "
         "with action (tool) steps, which stays off until the user reviews its "
-        "tools and turns it on at the returned deep_link."
+        "tools and turns it on at the returned deep_link. Replacing a switched-on "
+        "workflow that uses tools, or one that reads or sends email as its "
+        "creator, changes nothing yet: it leaves a card spelling out the change "
+        "for the user to approve, and it is saved, staying on, when they tap "
+        "Approve."
     ),
     "input_schema": {
         "type": "object",
@@ -176,25 +187,6 @@ def _canonical_token(definition: dict[str, Any]) -> str:
     payload = {k: v for k, v in definition.items() if k not in {"created_at", "updated_at"}}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
-
-
-def _approved_tool_workflow_error(name: str, existing: Any) -> str | None:
-    """Refuse chat overwrites of a switched-on tool workflow (``existing``).
-
-    A person approved its tools. Chat (including a turn steered by an inbound
-    email) replacing it would switch it off and stage different tools under
-    the same familiar name, so edits to it happen on the Workflows page instead.
-    """
-    from openexecutive.config import get_settings
-
-    if existing is None or not existing.is_active or not _needs_review(existing):
-        return None
-    base = get_settings().ui_base_url.rstrip("/")
-    return (
-        f"{name!r} is a switched-on workflow whose tools the user approved; it "
-        "can't be replaced from chat. Pick a different name for a new "
-        f"workflow, or tell the user to edit it at {base}/jobs/new?edit={name}"
-    )
 
 
 def _session_caller_id() -> int | None:
@@ -269,8 +261,10 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.workflows.dynamic_store import get_definition
 
     defn, error = await _build_def(tool_input.get("definition"))
-    if error is None:
-        error = _approved_tool_workflow_error(defn.name, get_definition(defn.name))
+    existing = get_definition(defn.name) if error is None else None
+    on_card = error is None and workflow_change.needs_card(existing, defn)
+    if on_card:
+        error = workflow_change.may_stage(defn.name)
     if error is None:
         error = _reads_refusal(defn)
     if error is not None:
@@ -280,7 +274,13 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
         "Show this summary to the user. After they confirm, call "
         "save_workflow with the same definition and this confirm_token."
     )
-    if _needs_review(defn):
+    if on_card:
+        note += (
+            " It changes a saved workflow, so saving (overwrite=true) doesn't change it "
+            "right away: it leaves a card showing the change, in this chat and their chat "
+            "app, and it is saved when they tap Approve."
+        )
+    elif _needs_review(defn):
         note += (
             " It uses tools, so it will be saved switched OFF: tell the user "
             "that after saving they review its tools and turn it on from the "
@@ -310,7 +310,6 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event as audit_log
     from openexecutive.config import get_settings
     from openexecutive.delegation.lockdown import outside_reach_refusal
-    from openexecutive.delegation.workflow_email import as_creator
     from openexecutive.workflows.dynamic_store import get_definition, save_if_unchanged
 
     if (refused := outside_reach_refusal("save_workflow")) is not None:
@@ -334,20 +333,6 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
         })
 
     existing = get_definition(defn.name)
-    approved_error = _approved_tool_workflow_error(defn.name, existing)
-    if approved_error is not None:
-        return json.dumps({"error": approved_error})
-    if existing is not None and (as_creator(existing) or as_creator(defn)):
-        # Only its creator, verified, may change one that sends or reads as
-        # them (workflow_email.save_refusal), and chat can't verify anyone:
-        # nor may chat add a send or a read to an existing one, which would
-        # act as its creator, not as whoever asked.
-        base = get_settings().ui_base_url.rstrip("/")
-        return json.dumps({"error": (
-            f"{defn.name!r} would send or read email as the person who created it, so it "
-            "can't be replaced from chat. Pick a different name, or tell the user to edit "
-            f"it at {base}/jobs/new?edit={defn.name}"
-        )})
     if (refused := _reads_refusal(defn)) is not None:
         return json.dumps({"error": refused})
 
@@ -359,6 +344,25 @@ async def handle_save_workflow(tool_input: dict[str, Any]) -> str:
                 "overwrite=true to replace it."
             )
         })
+    if workflow_change.needs_card(existing, defn):
+        # A person approved its tools, or it sends or reads email as its
+        # creator, whom chat can't verify: the change waits on a card that
+        # spells it out, saved on their own tap (workflow_change).
+        try:
+            staged = workflow_change.stage(defn, existing)
+        except Exception:
+            logger.exception("save_workflow: couldn't leave the change card")
+            return json.dumps({"error": "Couldn't leave the card just now. Try again in a moment."})
+        if "decision_id" in staged:
+            session = current_session.get()
+            audit_log(
+                "app_action_proposed",
+                f"Left a card: change the workflow {defn.name!r}",
+                session_id=getattr(session, "session_id", None) if session is not None else None,
+                actor="executive",
+                details={"action": workflow_change.ACTION, "id": defn.name, "decision_id": staged["decision_id"]},
+            )
+        return json.dumps(staged)
 
     # A tool-using workflow waits for a person to turn it on from its review
     # card. Applied after the token check so the token still covers exactly

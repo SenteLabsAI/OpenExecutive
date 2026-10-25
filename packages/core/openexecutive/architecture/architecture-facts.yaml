@@ -6947,11 +6947,23 @@ workflows:
     the approval is **Turn on workflow** on the review card that /jobs/{name}
     shows for an inactive custom workflow (POST /workflows/custom/{name}/
     activate, which re-runs validate_definition_and_tools when turning on).
-    Chat may keep revising a switched-off one, but draft/save REFUSE to
-    replace a switched-on workflow with action steps (any replacement, even
-    analysis-only): an inbound email steering the Executive could otherwise
-    switch off an approved job and stage new tools under its familiar name.
-    Those edits go through /jobs/new?edit=<name>. The refusal is decided from
+    Chat may keep revising a switched-off one, but never replaces a
+    switched-on workflow with action steps, or one that reads or sends email
+    as its creator, directly (an inbound email steering the Executive could
+    otherwise stage new tools under a familiar name). save_workflow with
+    overwrite=true leaves a CHANGE CARD instead (orchestrator.workflow_change,
+    decision class app_action, hidden catalog action change_workflow that
+    do_in_app never offers): server-written lines name every step added,
+    removed or changed, tools by plain name, schedule and title. Only a
+    verified speaker in a private conversation who is the owner or the
+    workflow's creator can stage one, and only where the card shows (web
+    chat, or a chat app channel_cards.shows_cards). The tap
+    (api.routes.workflows.apply_chat_change) saves it only if the stored
+    workflow still matches the card's base (else 409), re-validates tools,
+    runs workflow_email.save_refusal for the tapper (signed web caller or a
+    ChatTap), keeps is_active, and saves with save_if_unchanged. Chat reads a
+    saved definition with list_workflows(name=...) (owner or creator, private
+    conversation). The refusal is decided from
     a read, so the save itself is conditional on that row
     (dynamic_store.save_if_unchanged: INSERT only if still absent, else
     UPDATE ... WHERE updated_at = the read one) — an activation landing in
@@ -7272,12 +7284,18 @@ workflows:
     the send. A workflow with the send tool is created/changed/activated only
     by its creator per verified.caller_refusal (403 from POST/PUT
     /workflows/custom, save-edit, activate; save_refusal); chat's
-    save_workflow refuses to replace one at all. At send:
+    save_workflow only leaves a change card for one (workflow_change), saved
+    on the creator's own verified tap. At send:
     is_enabled, handle_it.signing_ok, no client slot, draft unchanged
     (recipients exactly as written, from an own address, <=10, never the
     Executive's). Results and the run report carry to/subject, never the
     body; audit rows are private to the creator. The designer gets an
-    "Email as the user" line (build_context_block(as_me=...)).
+    "Email as the user" line (build_context_block(as_me=...)) and a line on
+    whose account the gateway's mail and calendar tools use (the
+    Executive's, EXEC_EMAIL_ADDRESS): a calendar step that names no calendar
+    reads the Executive's calendar, so the user's needs oe__my_calendar or
+    their address (build_context_block(user_email=...)). DEFINITION_SCHEMA
+    says the same to chat.
 
     Reads as the creator (delegation/workflow_reads.py): oe__search_my_email,
     oe__read_my_email, oe__my_email_awaiting_reply and oe__my_calendar run
@@ -8478,7 +8496,9 @@ integrations:
 
     Approval cards with buttons. A private Telegram chat on a webhook only
     Telegram can call (``integrations.channel_cards.shows_cards``) gets the
-    cards a reply leaves (a meeting to book, a ``propose_actions`` card)
+    cards a reply leaves (a meeting to book, a ``propose_actions`` card, a
+    workflow change card: ``decisions.CHAT_APP_ACTIONS`` of the app_action
+    cards, whose action checks the tapper itself)
     as messages with Approve and Skip buttons, and its ``<channel>`` block
     says so (``cards_here``). A tap is taken only when ``from.id`` is the
     private chat's id on the verified webhook, and

@@ -340,6 +340,8 @@ _KNOWN_READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "search_tools",
     # workflow_run_tools — catalog read (run_workflow is in SIDE_EFFECTING_TOOLS)
     "list_workflows",
+    # workflow_authoring_tools — a draft saves nothing (save_workflow is side-effecting)
+    "draft_workflow",
     # mail_read_tools — reads of the speaker's own mailbox (Act as me)
     "my_calendar",
     "search_my_email",
@@ -372,6 +374,7 @@ def _all_registered_tool_names() -> set[str]:
     from openexecutive.orchestrator.people_tools import PEOPLE_TOOL_HANDLERS
     from openexecutive.orchestrator.schedule_tools import SCHEDULE_TOOL_HANDLERS
     from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS
+    from openexecutive.orchestrator.workflow_authoring_tools import WORKFLOW_AUTHORING_TOOL_HANDLERS
     from openexecutive.orchestrator.workflow_run_tools import WORKFLOW_RUN_TOOL_HANDLERS
 
     return (
@@ -388,6 +391,7 @@ def _all_registered_tool_names() -> set[str]:
         | set(DRAFT_ARTIFACT_TOOL_HANDLERS)
         | set(MCP_TOOL_NAMES)
         | set(WORKFLOW_RUN_TOOL_HANDLERS)
+        | set(WORKFLOW_AUTHORING_TOOL_HANDLERS)
         | set(APP_TOOL_HANDLERS)
         # Act as me: its own registry, offered per turn (never _ALL_SKILL_TOOLS).
         | set(DELEGATION_TOOL_HANDLERS)

@@ -239,11 +239,35 @@ def _email_as_line(as_me: bool) -> str:
     )
 
 
-def build_context_block(*, as_me: bool = False) -> str:
+def _accounts_line(as_me: bool, exec_email: str, user_email: str) -> str:
+    """Whose mailbox and calendar each kind of tool reads."""
+    from openexecutive.delegation.workflow_reads import TOOLS as READ_TOOLS
+
+    yours = f" ({user_email})" if user_email else ""
+    line = (
+        "Whose account the gateway's mail and calendar tools use: the Executive's own"
+        + (f" ({exec_email})" if exec_email else "")
+        + ", never the user's. A calendar step that names no calendar reads the "
+        "Executive's calendar, so it finds none of the user's meetings."
+    )
+    if as_me:
+        mine = next((t for t in sorted(READ_TOOLS) if t.endswith("calendar")), "")
+        return line + (
+            f" To read the user's own calendar{yours}, use {mine}. With a gateway "
+            "calendar tool, write their address into the step's goal as the calendar to read."
+        )
+    return line + (
+        f" To read the user's calendar{yours}, write their address into the step's goal "
+        "as the calendar to read (it must be shared with the Executive's account)."
+    )
+
+
+def build_context_block(*, as_me: bool = False, user_email: str = "") -> str:
     """Render the live facts the designer needs, for the FIRST user turn.
 
     ``as_me``: the person designing it may have its emails written as them
-    (``workflow_email.available_for``).
+    (``workflow_email.available_for``). ``user_email``: their address, so a
+    calendar step reads their calendar and not the Executive's.
 
     Read once per session by the route and stored, so the replayed first turn
     stays identical across the conversation. Every source degrades to an
@@ -312,8 +336,18 @@ def build_context_block(*, as_me: bool = False) -> str:
         "the Executive uses in chat, so anything it did in chat a step can "
         "do too):\n" + "\n".join(builtins) + "\n\n"
         + _email_as_line(as_me) + "\n\n"
+        + _accounts_line(as_me, _exec_email(), _one_line(user_email, 254)) + "\n\n"
         "Workflow names already taken (do not reuse): " + ", ".join(taken)
     )
+
+
+def _exec_email() -> str:
+    from openexecutive.config import get_settings
+
+    try:
+        return str(get_settings().exec_email_address or "").strip()
+    except Exception:
+        return ""
 
 
 def _first_sentence(text: str) -> str:

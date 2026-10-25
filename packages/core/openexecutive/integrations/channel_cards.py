@@ -39,6 +39,7 @@ _resolving: set[int] = set()
 _CLASS_LABEL = {
     "meeting_scheduling": "Meeting to book",
     "delegation_actions": "Waiting for your approval",
+    "app_action": "Waiting for your OK",
 }
 
 
@@ -102,11 +103,11 @@ def _when(start: Any, end: Any) -> str:
 def card_text(decision_id: int) -> str | None:
     """What the card says, or None when it isn't one a chat shows or isn't
     waiting any more."""
-    from openexecutive.api.routes.decisions import CHAT_CARD_CLASSES
+    from openexecutive.api.routes.decisions import shown_in_chat
     from openexecutive.memory.decision_ledger import STATUS_PROPOSED, get_decision_instance
 
     instance = get_decision_instance(decision_id)
-    if instance is None or instance.decision_class not in CHAT_CARD_CLASSES:
+    if instance is None or not shown_in_chat(instance):
         return None
     if instance.status != STATUS_PROPOSED:
         return None
@@ -126,6 +127,9 @@ def card_text(decision_id: int) -> str | None:
         who = [str(a) for a in payload.get("attendee_emails") or [] if a][:10]
         if who:
             lines.append("With " + ", ".join(who))
+    elif instance.decision_class == "app_action":
+        # Written by the server from the change itself (workflow_change.card_text).
+        lines.append(str(payload.get("card") or "").strip()[:1500])
     else:
         why = str(payload.get("why") or "").strip()[:300]
         if why:

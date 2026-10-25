@@ -412,7 +412,7 @@ def test_chat_cannot_replace_a_workflow_that_sends(people, monkeypatch: pytest.M
         {"definition": definition, "confirm_token": "tok", "overwrite": True},
     )))
 
-    assert "can't be replaced from chat" in out["error"] and saved == []
+    assert "know who is asking" in out["error"] and saved == []
 
 
 def test_a_step_timeout_cannot_cut_a_send_short(on, composed) -> None:
@@ -467,7 +467,6 @@ def test_chat_cannot_add_a_send_to_someone_elses_workflow(people, monkeypatch: p
 
     monkeypatch.setattr(wat, "_build_def", build)
     monkeypatch.setattr(wat, "_canonical_token", lambda definition: "tok")
-    monkeypatch.setattr(wat, "_approved_tool_workflow_error", lambda name, existing: None)
     saved: list[Any] = []
     monkeypatch.setattr(dynamic_store, "save_if_unchanged", lambda *a, **k: saved.append(a))
 
@@ -475,7 +474,7 @@ def test_chat_cannot_add_a_send_to_someone_elses_workflow(people, monkeypatch: p
         {"definition": {"name": "weekly_update"}, "confirm_token": "tok", "overwrite": True},
     )))
 
-    assert "can't be replaced from chat" in out["error"] and saved == []
+    assert "know who is asking" in out["error"] and saved == []
 
 
 # ── Who an email goes to without asking ──────────────────────────────────────

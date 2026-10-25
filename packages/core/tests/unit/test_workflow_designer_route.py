@@ -590,7 +590,7 @@ def as_me_seen(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
 
     seen: list[bool] = []
 
-    def _context(*, as_me: bool = False) -> str:
+    def _context(*, as_me: bool = False, user_email: str = "") -> str:
         seen.append(as_me)
         return "CTX"
 
