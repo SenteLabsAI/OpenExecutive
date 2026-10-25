@@ -68,8 +68,20 @@
 
 /* A host's frame (embedded mode, components/embed/EmbedProvider.tsx) says
  * light or dark on <html data-theme>, whatever the system prefers; its own
- * colours, when it sends them, are set inline on top. */
-:root[data-theme="dark"] {
+ * colours, when it sends them, are set inline on top.
+ *
+ * A `.consent` surface (a Yes asked inside a frame: FrameConfirm, the inline
+ * Approve) declares this app's own colours and face again on itself, so the
+ * host's colours and font never reach it: a host could otherwise draw the
+ * question white on white, or in a symbol font, while the browser still
+ * reports it seen (lib/seen.ts). The host's light or dark stays. */
+.consent,
+.consent * {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+:root[data-theme="dark"],
+[data-theme="dark"] .consent {
   --surface-base: 9 9 11;          /* zinc-950 */
   --surface-elevated: 17 17 19;
   --surface-overlay: 24 24 27;     /* zinc-900 */
@@ -92,7 +104,8 @@
   --scrollbar-thumb-hover: #52525b;
 }
 
-:root[data-theme="light"] {
+:root[data-theme="light"],
+[data-theme="light"] .consent {
   --surface-base: 250 250 250;
   --surface-elevated: 255 255 255;
   --surface-overlay: 244 244 245;

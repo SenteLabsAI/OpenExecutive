@@ -8044,8 +8044,8 @@ auth:
     loops, style, notes, review, Honcho), and attunement.style skips
     sender_surface rows. sessions.host_wrote makes the mark sticky across a
     rewind (Try again / Edit). Frame input also counts drop, paste and a
-    Yes in the window; chat sends always ask in a frame, and the window
-    shows the message. A host turn marks a new conversation as soon as its
+    Yes in the in-frame confirm; chat sends always ask in a frame, and the
+    confirm shows the message. A host turn marks a new conversation as soon as its
     session row exists (session_store.mark_host_wrote), so an own-page turn
     running alongside is held too; briefing.live_signals leaves such
     conversations' titles (the host's words) out of the brief. The
@@ -8058,9 +8058,20 @@ auth:
     host-written chats' titles (fail closed); the Markdown export labels
     host lines "(from another app's page)".
     In any frame, card actions, chat messages, and any other change off the
-    host list made within 10 s of a trusted click/key/drop/paste are refused
-    (CardActionRefusedInFrame): an in-frame dialog can be beaten by lured
-    clicks on an invisible frame.
+    host list made within 10 s of a trusted click/key/drop/paste ask in
+    FrameConfirm, inside the frame. A lured click on an invisible frame
+    beats a plain dialog, so its Yes counts only under lib/seen.ts:
+    IntersectionObserver v2 (trackVisibility) reported the panel whole,
+    uncovered, untransformed and at full opacity for an unbroken 700 ms
+    (pending reports read with takeRecords); the real pointer rested inside
+    for 500 ms (reset on pointerleave and the frame's blur); the press began
+    on Yes after that and a trusted click on Yes followed; and 250 ms later
+    the same run of "seen" holds with the pointer inside. The panel wears
+    .consent (the app's own colour tokens and a system font, never the
+    host's). Without v2 (Firefox, Safari), or for keyboard and touch, it
+    offers no Yes: a link to this app's own page, target _top (the card's
+    /cards/<id>, else the asking page without embed); it never fails open.
+    A No throws CardActionNotConfirmed.
 
     Pages (all, host origins set or not): Content-Security-Policy
     script-src 'self' 'nonce-…' 'strict-dynamic' (+ 'unsafe-eval' on the
@@ -8080,9 +8091,9 @@ auth:
     once /api/auth/session has a user. In ANY frame card actions
     (decisions approve/reject/cancel, alerts approve, workflow decisions,
     roster requests), chat messages, and other changes off the host list
-    after a click are refused (fetch is checked against
-    lib/cardActions.ts); each card has /cards/<id>, which a host can open
-    in a new tab.
+    after a click ask in FrameConfirm under lib/seen.ts's rule (fetch is
+    checked against lib/cardActions.ts); each card has /cards/<id>, where a
+    browser without IntersectionObserver v2 answers it.
 
     What remains (docs/auth.md): a host's scripts can read what the
     host list allows (briefing, conversations and replies, watch list)

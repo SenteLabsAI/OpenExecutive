@@ -456,17 +456,44 @@ parent window, and every `init` field is validated. In a frame:
   framed, and a sign-in button under a page this app doesn't control can be pressed by a
   lured click. So `/signin` in a frame shows no sign-in forms, only a link that opens it in
   a new tab; when the person comes back signed in, the frame goes on to where it was headed.
-- **Changes are refused, in any frame** (embedded or not, since a host page can frame
-  these pages without saying so). The page around a frame can make it invisible and lay
-  its own buttons over it, so a confirmation drawn inside the frame can be beaten with
-  lured clicks. So approving, rejecting or cancelling a card, a proposal, a workflow
-  sign-off or a roster request, every chat message sent from the frame (the host's are
-  read-only, but one sent from this app's page is the person's own turn), and any other
-  change the host list doesn't already allow with the same effect (a setting, Handle it
-  for me, People, an upload) made within 10 seconds of a click, key, drop or paste in the
-  frame, is not sent: the page says to do it in Open Executive itself. The frame checks
-  every request it sends (`lib/cardActions.ts`), so no button can skip it. Each approval
-  card has its own page, `/cards/<id>`, which a host can open in a new tab for that.
+- **Changes ask inside the frame, and the browser must have seen the question, in any
+  frame** (embedded or not, since a host page can frame these pages without saying so).
+  Approving, rejecting or cancelling a card, a proposal, a workflow sign-off or a roster
+  request, every chat message sent from the frame (the host's are read-only, but one sent
+  from this app's page is the person's own turn), and any other change the host list
+  doesn't already allow with the same effect (a setting, Handle it for me, People, an
+  upload) made within 10 seconds of a click, key, drop or paste in the frame, or of a Yes,
+  first asks in a panel inside the frame naming what will happen (for a chat message, the
+  message). The frame checks every request it sends (`lib/cardActions.ts`), so no button
+  can skip it. The page around a frame can make it invisible, cover it and lure clicks,
+  so the panel's Yes counts only when all of these hold (`lib/seen.ts`):
+  - IntersectionObserver v2 (`trackVisibility: true`) has reported the panel whole on
+    screen, uncovered, untransformed, unfiltered and at full opacity, without a break, for
+    at least 700 ms. The browser computes that answer; the page around can't fake it. A
+    cover that lets clicks through (`pointer-events: none`) and a frame cropped to show the
+    Yes without the words above it fail it too. The browser reports at most every 100 ms;
+    reports it hasn't delivered yet are read at each look (`takeRecords`);
+  - the real pointer has been inside the panel, without leaving, for at least 500 ms, and
+    has moved there (a cursor drawn by the page around doesn't move it). A frame slid under
+    the pointer between the two clicks of a lured double-click fails this. Leaving the
+    panel, or the frame losing focus, starts it again;
+  - the press began on Yes after all of that held, and the click that follows is trusted
+    and on Yes too. A key press on a focused Yes has no pointer press, so it never counts;
+  - 250 ms after the click, the panel is still in the same unbroken run of "seen" and the
+    pointer still inside, so a cover laid on just before the click shows up first.
+
+  The panel keeps Open Executive's own colours and face (`.consent` in `globals.css`),
+  whatever the host's theme: otherwise a host could draw the question white on white, or in
+  a symbol font, while the browser still reports it seen. Anyone who can't point (a
+  keyboard, a touch screen) answers on this app's own page, which the panel links to.
+
+  A browser without v2 (Firefox, Safari) can't tell, so the panel offers no Yes there: it
+  links to this app's own page for it, top level in the same tab (the card's page,
+  `/cards/<id>`, or else the page that asked, without `embed`), where nothing can frame
+  it; Back returns to the host. It never fails open. The answer stays in the browser:
+  what it guards against is code on the host's origin, which can't run in this app's
+  origin, and the change itself is still this app's same-origin request with its usual
+  checks.
 
 `make embed-outputs` writes what a host app checks itself against without running this
 app or holding its secrets: `embed-manifest.json` (the navigation and routes),
@@ -488,7 +515,9 @@ arrive marked as outside content, as any watch's do. A framed page reports its p
 every navigation, which on a page about one record (a person, a run) names it, and on a
 search page carries what was searched for.
 It can lure clicks onto a framed page it has made invisible, but every change beyond the
-host list is refused in a frame, so the person makes it in Open Executive itself. Every host origin you list is
+host list asks inside the frame, and its Yes counts only once the browser has seen the
+question and the person pointed at it (or, in a browser that can't tell, on this app's
+own page). Every host origin you list is
 trusted that far: list only apps whose administrators you would trust with it, and read every change
 to the host list, the `host` surface's tools and these policies with a security review.
 
