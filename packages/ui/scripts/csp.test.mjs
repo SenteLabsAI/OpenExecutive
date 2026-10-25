@@ -40,7 +40,9 @@ test("every page renders on request, so each gets its own nonce", () => {
   // stop its scripts: the root layout waits for the request.
   const layout = readFileSync(new URL("../src/app/layout.tsx", import.meta.url), "utf8");
   assert.match(layout, /await connection\(\)/);
+  // What the middleware does with the policy is tested with a stub session
+  // check in pageGate.test.mjs; here, only that it is wired to lib/pageGate.ts.
   const middleware = readFileSync(new URL("../src/middleware.ts", import.meta.url), "utf8");
-  assert.match(middleware, /requestHeaders\.set\("content-security-policy", csp\)/);
-  assert.match(middleware, /response\.headers\.set\("Content-Security-Policy", csp\)/);
+  assert.match(middleware, /return gatePage\(/);
+  assert.match(middleware, /csp: \(\) => contentSecurityPolicy\(\{ nonce: makeNonce\(\), devServer: DEV_SERVER \}\)/);
 });
