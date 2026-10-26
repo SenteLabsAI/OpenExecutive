@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -47,9 +48,15 @@ _POINTS_MAX = 3
 
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _SLACK_LINK_RE = re.compile(r"<[^>|]*\|([^>]*)>")
-_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_DOMAIN_RE = re.compile(r"\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|ai|app|dev|info|biz|me|us|uk)\b", re.IGNORECASE)
+# Anything a chat app could turn into a link: a token with a scheme
+# ("https:", "tg:", "mailto:"), an email address, an IP address, or any
+# dot-joined name ending in two or more letters ("evil.xyz/login",
+# "bit.ly", "xn--pple-43d.shop"). Matched as whole tokens, so nothing is
+# left half-stripped. Over-eager on purpose: "report.pdf" goes too.
+_SCHEME_RE = re.compile(r"\S*\b[a-z][a-z0-9+.-]*:[\w/?%#~.-]\S*", re.IGNORECASE)
+_EMAIL_RE = re.compile(r"\S*@\S+")
+_IP_RE = re.compile(r"\S*\b\d{1,3}(?:\.\d{1,3}){3}\S*")
+_DOMAIN_RE = re.compile(r"\S*[\w-]\.[^\W\d_]{2,}\S*")
 
 
 @dataclass(frozen=True)
@@ -66,12 +73,14 @@ def plain_point(text: str) -> str:
     """A point as plain words for a chat message: link text kept, every URL,
     email address and bare domain dropped, markup and angle brackets gone,
     one line, cut."""
-    out = _MD_LINK_RE.sub(r"\1", text)
+    # Look-alikes first: a fullwidth dot or letter reads as the real one.
+    out = unicodedata.normalize("NFKC", text)
+    out = _MD_LINK_RE.sub(r"\1", out)
     out = _SLACK_LINK_RE.sub(r"\1", out)
-    out = _URL_RE.sub("", out)
-    out = _EMAIL_RE.sub("", out)
-    out = _DOMAIN_RE.sub("", out)
-    out = out.replace("**", "").replace("__", "").replace("`", "'")
+    out = out.replace("**", "").replace("__", "")
+    for pattern in (_SCHEME_RE, _EMAIL_RE, _IP_RE, _DOMAIN_RE):
+        out = pattern.sub("", out)
+    out = out.replace("`", "'")
     table: dict[str, str | int | None] = {"<": None, ">": None, "*": None, "_": " ", "[": "(", "]": ")"}
     out = out.translate(str.maketrans(table))
     out = re.sub(r"\(\s*\)", "", out)

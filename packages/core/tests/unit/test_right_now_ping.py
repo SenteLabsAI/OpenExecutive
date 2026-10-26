@@ -1,6 +1,7 @@
 """briefing.right_now_ping: a chat message when Right now gains a point."""
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,3 +105,28 @@ def test_a_point_goes_out_with_no_link_or_address_in_it() -> None:
     assert "http" not in out and "@" not in out and "evil" not in out and "bad.test" not in out
     assert out.startswith("Wire request — verify here")
     assert "<" not in out and "*" not in out
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "go to evil.ru/login", "Visit evil.xyz now", "bit.ly/abc", "discord.gg/abc", "evil.zip",
+        "evil.ca/pay", "xn--pple-43d.shop/login", "ftp://evil.xyz", "tg://resolve?domain=x",
+        "mailto:x@y", "1.2.3.4/login", "evil.museum", "paypal-secure.com.evil.top",
+        "evil．com", "ＷＷＷ.evil.top", "https://x.test",
+    ],
+)
+def test_nothing_link_like_survives(bad: str) -> None:
+    out = right_now_ping.plain_point(f"**Payroll** — re-verify at {bad} today.")
+
+    assert out.startswith("Payroll — re-verify at")
+    assert not re.search(r"[\w-]\.[^\W\d_]{2,}|\d\.\d|:|@", out), out
+
+
+def test_ordinary_words_and_figures_stay() -> None:
+    out = right_now_ping.plain_point("**St. Albans** — offer is $4.6M, due 3 p.m.; e.g. Pine View")
+    assert out == "St. Albans — offer is $4.6M, due 3 p.m.; e.g. Pine View"
+
+
+def test_a_bold_label_with_a_colon_is_kept() -> None:
+    assert right_now_ping.plain_point("**Andy Agee:** wants a call at 3:30.") == "Andy Agee: wants a call at 3:30."
