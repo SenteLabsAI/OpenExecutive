@@ -324,16 +324,18 @@ async def redraft(instance: Any, person: Any, gmail: Any, rewrite: Rewrite) -> d
     _EDITING.add(instance.id)
     try:
         written, extra = await rewrite(person, payload)
-        return await _edit(instance, person, payload, _check_words(written), gmail, extra)
+        return await _edit(instance, person, payload, _check_words(written), gmail, extra, by_hand=False)
     finally:
         _EDITING.discard(instance.id)
 
 
 async def _edit(
     instance: Any, person: Any, payload: dict[str, Any], words: str, gmail: Any, extra: dict[str, Any],
-    recipients: tuple[list[str], list[str]] | None = None,
+    recipients: tuple[list[str], list[str]] | None = None, *, by_hand: bool = True,
 ) -> dict[str, Any]:
-    """``edit`` once its checks passed, one at a time per card."""
+    """``edit`` once its checks passed, one at a time per card. Not
+    ``by_hand`` (``redraft``): the words stay the Executive's, so Send and
+    training don't take them for the person's change."""
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
         STATUS_MESSAGES,
@@ -348,7 +350,7 @@ async def _edit(
     from openexecutive.delegation.reply_send import SendRefused
     from openexecutive.memory.decision_ledger import update_open_payload
 
-    changed = {**payload, **extra, "draft_body": words, EDITED_ON_CARD: True}
+    changed = {**payload, **extra, "draft_body": words, **({EDITED_ON_CARD: True} if by_hand else {})}
     if recipients is not None:
         to, cc = recipients
         changed["draft_to"] = [*to, *cc]
@@ -387,6 +389,10 @@ async def _edit(
                 502, "gmail_error", "Couldn't save your change in your mailbox. Try again in a moment.",
             ) from exc
         changed[EDITED_VERSION] = version
+        if not by_hand and not payload.get(EDITED_VERSION):
+            # Still the Executive's own draft: the mailbox's new version is
+            # the one Send compares with to tell whether the person changed it.
+            changed["draft_message_id"] = version
     if not update_open_payload(instance.id, changed, expected_json=instance.proposed_payload_json):
         raise SendRefused(409, "already_handled", "This reply changed or was sent meanwhile. Look at it again.")
     _audit("delegation_reply_edited", f"Person {person.id} changed a reply on its card", {

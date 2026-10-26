@@ -215,6 +215,7 @@ def test_a_newer_message_needs_a_second_yes(owner: Any, models: dict[str, Any]) 
 def test_a_draft_brought_up_to_date_asks_again_unless_that_version_was_shown(
     owner: Any, models: dict[str, Any],
 ) -> None:
+    from openexecutive.delegation import card_drafts
     from openexecutive.delegation.answers import CAUGHT_UP_KEY
 
     mailbox, card = _card(owner)
@@ -229,6 +230,10 @@ def test_a_draft_brought_up_to_date_asks_again_unless_that_version_was_shown(
     # The card that was tapped showed this version: it goes.
     _send(card, mailbox, owner, confirm={"seen_caught_up_at": caught_up})
     assert mailbox.sent == ["d1"]
+    # The Executive's own rewrite isn't the person's change.
+    assert card_drafts.EDITED_ON_CARD not in inbox.card_payload(card)
+    assert "edited_in_gmail" not in inbox.ledger_flags(owner.id, ["m1"])["m1"]
+    assert _status(card) == "approved_unchanged"
 
 
 def test_a_draft_gone_or_answered_closes_the_card(owner: Any, models: dict[str, Any]) -> None:
