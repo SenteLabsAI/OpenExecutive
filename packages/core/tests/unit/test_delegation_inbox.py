@@ -282,6 +282,7 @@ def models(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(injection_check, "_call_model", checker)
     monkeypatch.setattr(answers, "_call_model", rewriter)
+    monkeypatch.setattr(answers, "_CATCH_UP_FAILED", {})
     return seen
 
 
@@ -832,6 +833,8 @@ def test_a_newer_message_only_warns_when_the_rewrite_fails(owner: Any, models: d
     assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["thread_moved_on"]}
     payload = inbox.card_payload(ledger.get_decision_instance(card.id))
     assert payload["draft_body"] == before and answers.conversation(payload) == []
+    # Tried once, not on every scan after.
+    assert _reconcile(owner, mailbox) == 0 and len(models["rewrites"]) == 1
 
 
 def test_catch_ups_stop_after_the_cap(owner: Any, models: dict[str, Any]) -> None:

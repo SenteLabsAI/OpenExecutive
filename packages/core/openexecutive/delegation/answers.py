@@ -76,6 +76,9 @@ _MAX_TOKENS = 2000
 
 # Rewrites per person in the last hour, in this process.
 _ANSWERED: dict[int, list[datetime]] = {}
+# Newer messages a catch-up already failed on, per card, in this process:
+# each is tried once, not on every scan.
+_CATCH_UP_FAILED: dict[int, set[str]] = {}
 
 REWRITE_PROMPT = """You are a ghostwriter. <draft> is an email you wrote AS \
 the person named in <writer>, waiting for them to send it. It left some \
@@ -681,6 +684,9 @@ async def catch_up(
         return True
     if sum(1 for t in conversation(payload) if t.get("kind") == "news") >= MAX_CATCH_UPS:
         return False
+    tried = _CATCH_UP_FAILED.setdefault(card.id, set())
+    if all(str(m.id) in tried for m in fresh):
+        return False
     news = [
         {
             "id": str(m.id),
@@ -701,5 +707,7 @@ async def catch_up(
         await card_drafts.redraft(card, person, gmail, write)
     except Exception as exc:
         logger.info("delegation.answers: didn't bring a reply up to date (%s)", getattr(exc, "code", type(exc).__name__))
+        tried.update(str(m.id) for m in fresh)
         return False
+    _CATCH_UP_FAILED.pop(card.id, None)
     return True
