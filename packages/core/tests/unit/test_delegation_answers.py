@@ -342,6 +342,18 @@ def test_tell_me_what_to_change_rewrites_it_and_joins_the_conversation(
     assert client.post(url, json=ask, headers=TEAMMATE).status_code == 403
     assert client.post("/delegation/replies/9999/change", json=ask, headers=OWNER).status_code == 404
     assert client.post(url, json={"text": ""}, headers=OWNER).status_code == 422
+    # Not a reply card, even their own: 404.
+    from openexecutive.memory import decision_ledger
+
+    other = decision_ledger.create_decision_instance(
+        decision_class="meeting_scheduling", department="ops", originating_session_id=None,
+        proposed_payload={"summary": "x"}, idempotency_key="not-a-reply", gate_mode="propose",
+        approver_person_id=ids["principal"], confidence=0.9,
+    )
+    assert client.post(f"/delegation/replies/{other}/change", json=ask, headers=OWNER).status_code == 404
+    # Nobody else's card is rewritten, and no model call is made for them.
+    assert calls == []
+    assert mailbox.drafts["d1"].message.text.startswith("Hi Dana,\n\nThanks for the note.")
     resp = client.post(url, json=ask, headers=OWNER)
     assert resp.status_code == 200, resp.text
     card = resp.json()
