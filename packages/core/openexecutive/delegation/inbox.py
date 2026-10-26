@@ -948,8 +948,12 @@ def _audit(event_type: str, summary: str, details: dict[str, Any]) -> None:
 # mail to them from someone else (their own, the Executive's, before the
 # switch, too old, already answered) are left out.
 MAIL_SEEN_EVENT = "delegation_inbox_mail"
+# Not recorded: nothing new to the reader, or bulk, list and Gmail-tab mail
+# (never a point, and a busy day of it would crowd the real mail out of the
+# rows Right now reads).
 _NOT_NEWS = frozenset({
     "before_watch", "stale", "no_sender", "from_you", "from_executive", "ours", "you_replied", "draft_exists",
+    "automatic", "mailing_list", "category",
 })
 # Newer mail on a card's thread already noted, in this process: reconcile
 # reads the thread on every scan. Right now also drops repeats by message id.

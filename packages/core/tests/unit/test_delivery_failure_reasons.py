@@ -228,6 +228,44 @@ def test_a_late_gateway_carries_the_brief(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.ok and result.channel == "email" and len(sent) == 1
 
 
+def test_chat_only_never_goes_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Email is set up and working, but a chat-only send has no chat app to
+    go on: nothing goes, and the email gateway is never tried."""
+    _mail_configured(monkeypatch)
+    sup = _Supervisor(gateway=object())
+    mcp_gateway.set_gateway_supervisor(sup)
+    plans: list[list[str]] = []
+
+    async def _send(person: Person, plan: list[str], text: str, *, label: str) -> runner.PrincipalDelivery:
+        plans.append(plan)
+        return runner.PrincipalDelivery(True, "sent", "delivered")
+
+    monkeypatch.setattr(runner, "_send_on_plan", _send)
+
+    result = asyncio.run(runner.deliver_to_person(_owner(), "PING", chat_only=True))
+
+    assert not result.ok and result.reason == "no_channel"
+    assert plans == [] and sup.ensured == 0
+
+
+def test_chat_only_leaves_email_out_of_the_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mail_configured(monkeypatch)
+    mcp_gateway.set_gateway_supervisor(_Supervisor(gateway=object()))
+    plans: list[list[str]] = []
+
+    async def _send(person: Person, plan: list[str], text: str, *, label: str) -> runner.PrincipalDelivery:
+        plans.append(plan)
+        return runner.PrincipalDelivery(True, "sent", "delivered")
+
+    monkeypatch.setattr(runner, "_send_on_plan", _send)
+
+    asyncio.run(runner.deliver_to_person(_owner(slack_user_id="U1"), "PING", chat_only=True))
+    asyncio.run(runner.deliver_to_person(_owner(slack_user_id="U1"), "BRIEF"))
+
+    assert plans[0] == ["slack_dm"]
+    assert "email" in plans[1], "without chat_only the same person also gets email"
+
+
 def test_every_channel_failing_says_what_each_said(monkeypatch: pytest.MonkeyPatch) -> None:
     _mail_configured(monkeypatch)
 

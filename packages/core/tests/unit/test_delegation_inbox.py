@@ -890,6 +890,49 @@ def test_a_newer_message_is_flagged_on_the_card(owner: Any, models: dict[str, An
     assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["thread_moved_on"]}
 
 
+def test_newer_mail_on_an_open_card_is_noted_for_right_now_once(
+    owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inbox, "_NOTED_LATER", set())
+    mailbox, card = _one_card(owner, models)
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, can we talk Monday?"))
+    assert _reconcile(owner, mailbox) == 0
+    assert _reconcile(owner, mailbox, now=NOW + timedelta(minutes=40)) == 0  # the next scan reads it again
+    rows = audit_logger._default_logger.query(event_type=inbox.MAIL_SEEN_EVENT)
+    later = [r for r in rows if r.details["message_id"] == "m2"]
+    assert len(later) == 1
+    assert later[0].private and later[0].details["card_id"] == card.id
+    assert later[0].details["relation"] == "contact" and "text" not in later[0].details
+
+
+def test_note_later_skips_their_own_mail_and_starts_over_when_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    noted: list[str] = []
+    monkeypatch.setattr(inbox, "_note_mail", lambda pid, m, **kw: noted.append(m.id))
+    monkeypatch.setattr(inbox, "_NOTED_LATER", {(1, f"x{i}") for i in range(inbox._NOTED_LATER_MAX)})
+    card = SimpleNamespace(id=39)
+    later = [
+        _msg("mine", "t1", sender=OWNER),
+        _msg("sent", "t1", labels=("SENT",)),
+        _msg("theirs", "t1"),
+    ]
+    inbox._note_later(1, card, {"relation": "contact"}, later, {OWNER})
+    assert noted == ["theirs"]
+    # Full: started over rather than growing with the mail.
+    noted_later = inbox._NOTED_LATER
+    assert noted_later == {(1, "theirs")}
+    inbox._note_later(1, card, {"relation": "contact"}, later, {OWNER})
+    assert noted == ["theirs"]
+
+
+def test_outcomes_reads_what_the_watcher_did(owner: Any, models: dict[str, Any]) -> None:
+    _one_card(owner, models)
+    assert inbox.outcomes(owner.id, ["m1", "never-seen"]) == {"m1": inbox.DRAFTED}
+    assert inbox.outcomes(owner.id + 1, ["m1"]) == {}
+    assert inbox.outcomes(owner.id, []) == {}
+
+
 # ── dismissing ────────────────────────────────────────────────────────────────
 
 

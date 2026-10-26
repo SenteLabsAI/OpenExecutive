@@ -688,8 +688,9 @@ def test_own_inbox_splits_people_they_deal_with_from_the_rest(
     at = now - timedelta(hours=1)
     inbox._note_mail(7, _mail("m1", "andy@svn.test", "Andy Agee", "Re: loan figures", at), relation="contact")
     inbox._note_mail(7, _mail("m2", "promo@yardi.test", "Yardi", "Webinar", at), relation="stranger")
-    inbox._note_mail(7, _mail("m3", "news@list.test", "Weekly", "Issue 9", at), relation="", reason="mailing_list")
-    # Not news: the reader's own mail, and mail from before the window.
+    inbox._note_mail(7, _mail("m3", "kim@co.test", "Kim", "All hands", at), relation="team", reason="not_addressed")
+    # Not news: list mail, the reader's own mail, and mail from before the window.
+    inbox._note_mail(7, _mail("m7", "news@list.test", "Weekly", "Issue 9", at), relation="", reason="mailing_list")
     inbox._note_mail(7, _mail("m4", "me@co.test", "Pat", "Mine", at), relation="", reason="from_you")
     inbox._note_mail(7, _mail("m5", "old@co.test", "Old", "Old", now - timedelta(days=2)), relation="contact")
     # A teammate's own inbox never reaches the principal's header.
@@ -701,7 +702,7 @@ def test_own_inbox_splits_people_they_deal_with_from_the_rest(
     assert len(mail.lines) == 1
     assert 'from Andy Agee (andy@svn.test): "Re: loan figures"' in mail.lines[0]
     assert "on a card waiting" in mail.lines[0]
-    assert sorted(mail.others) == ["Weekly: Issue 9", "Yardi: Webinar"]
+    assert sorted(mail.others) == ["Kim: All hands", "Yardi: Webinar"]
     assert mail.others_total == 2
 
 
