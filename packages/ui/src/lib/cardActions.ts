@@ -223,3 +223,63 @@ export class CardActionNotConfirmed extends Error {
     this.name = "CardActionNotConfirmed";
   }
 }
+
+// A change made this soon after a click or a key in the frame may have been
+// lured, so it asks; later than that, the page made it on its own.
+export const AFTER_INPUT_MS = 10_000;
+
+export type FrameAsk = { action: CardAction; resolve: (ok: boolean) => void };
+
+export type FrameGate = {
+  // window.fetch in the frame: asks first where `frameActionFor` says so.
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  // A trusted click, key, drop or paste in the frame.
+  input: () => void;
+  // The person's answer in FrameConfirm.
+  answer: (ok: boolean) => void;
+};
+
+/**
+ * The frame's check on every request (EmbedProvider): a card action always
+ * asks, and any other change off `hostCalls` asks when it follows input
+ * within AFTER_INPUT_MS. `show` puts the question up (FrameConfirm), or takes
+ * it down with null. One question at a time: a second change while one is
+ * asked is refused. A No, or a refusal, throws CardActionNotConfirmed and
+ * never reaches `send`.
+ */
+export function frameGate(
+  send: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  hostCalls: readonly HostCall[],
+  show: (ask: FrameAsk | null) => void,
+  now: () => number = Date.now,
+): FrameGate {
+  let pending: FrameAsk | null = null;
+  let lastInput = 0;
+  const confirm = (action: CardAction) =>
+    new Promise<boolean>((resolve) => {
+      if (pending) return resolve(false);
+      pending = { action, resolve };
+      show(pending);
+    });
+  return {
+    fetch: async (input, init) => {
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const action = frameActionFor(method, url, init?.body, hostCalls);
+      const asks = action !== null && (action.card || now() - lastInput < AFTER_INPUT_MS);
+      if (asks && !(await confirm(action))) throw new CardActionNotConfirmed();
+      return send(input, init);
+    },
+    input: () => {
+      lastInput = now();
+    },
+    answer: (ok) => {
+      const current = pending;
+      pending = null;
+      // A Yes is input too: what the confirmed change sets off next asks again.
+      lastInput = now();
+      show(null);
+      current?.resolve(ok);
+    },
+  };
+}

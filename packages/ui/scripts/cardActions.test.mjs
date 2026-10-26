@@ -6,9 +6,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  AFTER_INPUT_MS,
   CardActionNotConfirmed,
   cardActionFor,
   frameActionFor,
+  frameGate,
   messageOf,
   ownPageFor,
 } from "../src/lib/cardActions.ts";
@@ -118,13 +120,134 @@ test("a browser that can't tell the frame is seen answers on this app's own page
 test("the frame checks every request, in any frame, and asks about what may have been lured", () => {
   const provider = read("../src/components/embed/EmbedProvider.tsx");
   assert.match(provider, /if \(window\.top === window\.self\) return;/);
-  assert.match(provider, /const action = frameActionFor\(method, url, init\?\.body, HOST_CALLS\);/);
-  assert.match(provider, /action\.card \|\| Date\.now\(\) - lastInput\.current < AFTER_INPUT_MS/);
+  assert.match(provider, /const current = frameGate\(original, HOST_CALLS, setPending\);/);
+  assert.match(provider, /window\.fetch = current\.fetch;/);
+  assert.match(provider, /if \(event\.isTrusted\) current\.input\(\);/);
   // A drop or a paste is input too: a page over the frame can put its own
   // file in a drag.
   assert.match(provider, /const INPUT_EVENTS = \["pointerdown", "keydown", "drop", "paste"\] as const;/);
-  assert.match(provider, /if \(asks && !\(await confirm\(action\)\)\) throw new CardActionNotConfirmed\(\);/);
   // It asks inside the frame, and never opens a window.
   assert.match(provider, /<FrameConfirm action=\{pending\.action\} onAnswer=\{answer\} \/>/);
   assert.doesNotMatch(provider, /window\.open\(/);
+});
+
+// frameGate run for real: a faked fetch records what reached the API, and a
+// faked FrameConfirm records what was asked and answers it.
+function gateHarness() {
+  const sent = [];
+  const shown = [];
+  let clock = 1_000_000;
+  const send = async (input, init) => {
+    sent.push(`${init?.method ?? "GET"} ${input}`);
+    return new Response("{}");
+  };
+  const gate = frameGate(send, CALLS, (ask) => shown.push(ask), () => clock);
+  const asked = () => shown.filter(Boolean);
+  const tick = (ms) => {
+    clock += ms;
+  };
+  // Lets a pending fetch reach its question.
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  return { gate, sent, shown, asked, tick, settle };
+}
+
+const APPROVE = ["/api/backend/decisions/7/approve", { method: "POST" }];
+const REJECT = ["/api/backend/decisions/8/reject", { method: "POST" }];
+const PAUSE = ["/api/backend/executive/pause", { method: "POST" }];
+
+test("a card action asks, and a Yes sends it", async () => {
+  const { gate, sent, shown, asked, settle } = gateHarness();
+  const call = gate.fetch(...APPROVE);
+  await settle();
+  assert.equal(asked().length, 1);
+  assert.equal(asked()[0].action.verb, "approve");
+  assert.deepEqual(sent, []);
+  gate.answer(true);
+  assert.equal((await call).status, 200);
+  assert.deepEqual(sent, ["POST /api/backend/decisions/7/approve"]);
+  // The question is taken down.
+  assert.equal(shown.at(-1), null);
+});
+
+test("a No throws and sends nothing", async () => {
+  const { gate, sent, settle } = gateHarness();
+  const call = gate.fetch(...APPROVE);
+  await settle();
+  gate.answer(false);
+  await assert.rejects(call, CardActionNotConfirmed);
+  assert.deepEqual(sent, []);
+});
+
+test("one question at a time: a second change while one is asked is refused", async () => {
+  const { gate, sent, asked, settle } = gateHarness();
+  const first = gate.fetch(...APPROVE);
+  await settle();
+  // Refused at once, never shown, never sent, and the first question stays.
+  await assert.rejects(gate.fetch(...REJECT), CardActionNotConfirmed);
+  assert.equal(asked().length, 1);
+  assert.equal(asked()[0].action.decisionId, 7);
+  gate.answer(true);
+  await first;
+  assert.deepEqual(sent, ["POST /api/backend/decisions/7/approve"]);
+  // Once answered, the next one asks again rather than riding on that Yes.
+  const next = gate.fetch(...REJECT);
+  await settle();
+  assert.equal(asked().length, 2);
+  gate.answer(false);
+  await assert.rejects(next, CardActionNotConfirmed);
+  assert.deepEqual(sent, ["POST /api/backend/decisions/7/approve"]);
+});
+
+test("an answer with no question pending does nothing", () => {
+  const { gate, shown, sent } = gateHarness();
+  gate.answer(true);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(shown, [null]);
+});
+
+test("a change off the host list asks only soon after input, or soon after an answer", async () => {
+  const { gate, sent, asked, tick, settle } = gateHarness();
+  // On its own, long after any input: sent without asking.
+  await gate.fetch(...PAUSE);
+  assert.equal(asked().length, 0);
+  // Right after a click: asks.
+  gate.input();
+  tick(AFTER_INPUT_MS - 1);
+  const lured = gate.fetch(...PAUSE);
+  await settle();
+  assert.equal(asked().length, 1);
+  gate.answer(true);
+  await lured;
+  // A Yes counts as input: what it sets off next asks again.
+  tick(AFTER_INPUT_MS - 1);
+  const after = gate.fetch(...PAUSE);
+  await settle();
+  assert.equal(asked().length, 2);
+  gate.answer(true);
+  await after;
+  // Once that has passed, the page is on its own again.
+  tick(AFTER_INPUT_MS);
+  await gate.fetch(...PAUSE);
+  assert.equal(asked().length, 2);
+  assert.equal(sent.length, 4);
+});
+
+test("reads and host-list calls never ask, even right after input", async () => {
+  const { gate, sent, asked } = gateHarness();
+  gate.input();
+  await gate.fetch("/api/backend/today");
+  await gate.fetch("/api/backend/alerts/3/ack", { method: "POST" });
+  await gate.fetch(new Request("http://this.app/api/backend/today"));
+  assert.equal(asked().length, 0);
+  assert.equal(sent.length, 3);
+});
+
+test("a Request's own method counts, not just init's", async () => {
+  const { gate, sent, asked, settle } = gateHarness();
+  const call = gate.fetch(new Request("http://this.app/api/backend/decisions/7/approve", { method: "POST" }));
+  await settle();
+  assert.equal(asked().length, 1);
+  gate.answer(false);
+  await assert.rejects(call, CardActionNotConfirmed);
+  assert.deepEqual(sent, []);
 });
