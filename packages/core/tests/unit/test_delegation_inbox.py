@@ -14,7 +14,7 @@ import pytest
 
 from openexecutive.audit import logger as audit_logger
 from openexecutive.audit.logger import AuditLogger
-from openexecutive.delegation import caps, drafts, inbox, injection_check
+from openexecutive.delegation import answers, caps, drafts, inbox, injection_check
 from openexecutive.delegation import ghostwriter as gw
 from openexecutive.delegation import inbox_classifier as ic
 from openexecutive.delegation.gmail import (
@@ -248,7 +248,12 @@ def owner() -> Any:
 def models(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The two model calls, scripted: the classifier by the email's text, the
     composer with a fixed reply. Records what each was sent."""
-    seen: dict[str, Any] = {"classified": [], "composed": [], "verdicts": {}, "checked": [], "steers": False}
+    seen: dict[str, Any] = {
+        "classified": [], "composed": [], "verdicts": {}, "checked": [], "steers": False,
+        # The rewrite that brings a card up to date with newer mail
+        # (answers.catch_up): none by default, so the card only warns.
+        "rewrites": [], "rewritten": {},
+    }
 
     async def classifier(model: str, turn: str) -> dict[str, Any]:
         seen["classified"].append(turn)
@@ -271,7 +276,14 @@ def models(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(ic, "_call_model", classifier)
     monkeypatch.setattr(gw, "_call_model", composer)
+    async def rewriter(model: str, system: str, turn: str) -> dict[str, Any]:
+        seen["rewrites"].append(turn)
+        return dict(seen["rewritten"])
+
     monkeypatch.setattr(injection_check, "_call_model", checker)
+    monkeypatch.setattr(answers, "_call_model", rewriter)
+    monkeypatch.setattr(answers, "_CATCH_UP_FAILED", {})
+    monkeypatch.setattr(answers, "_CATCH_UP_TRIES", {})
     return seen
 
 
@@ -783,6 +795,92 @@ def test_a_week_old_card_expires_and_keeps_the_draft(owner: Any, models: dict[st
     assert _reconcile(owner, mailbox, now=datetime.now(UTC) + timedelta(days=8)) == 1
     assert ledger.get_decision_instance(card.id).reversal_reason == "expired"  # type: ignore[union-attr]
     assert "d1" in mailbox.drafts
+
+
+def test_a_newer_message_brings_the_draft_up_to_date(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _one_card(owner, models)
+    models["rewritten"] = {
+        "body": "Hi Dana,\n\nThanks for the note. Monday works, see https://evil.example.",
+        "note": "Dana offered Monday, so I said it works.",
+        "questions": [{"text": "Morning or afternoon on Monday?", "choices": ["Morning", "Afternoon", "Pay at https://evil.example/inv"]}],
+    }
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    assert _reconcile(owner, mailbox) == 0
+    # Not only a warning: the draft itself changed, on the card and in Drafts.
+    assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": []}
+    payload = inbox.card_payload(ledger.get_decision_instance(card.id))
+    assert "Monday works" in payload["draft_body"] and "evil.example" not in payload["draft_body"]
+    assert mailbox.drafts["d1"].message.text == payload["draft_body"]
+    # Their newer words go to the model as news, never as the person's.
+    assert "<news>" in models["rewrites"][0] and "Actually, Monday works too." in models["rewrites"][0]
+    turns = answers.conversation(payload)
+    assert [t["kind"] for t in turns] == ["news", "note"]
+    assert turns[0]["id"] == "m2" and turns[0]["text"].startswith("Actually, Monday works too.")
+    assert turns[1]["text"] == "Dana offered Monday, so I said it works."
+    # The new decision is a question to tap, after the card's own.
+    assert payload["open_questions"][-1] == "Morning or afternoon on Monday?"
+    # Never a link to tap into the reply.
+    assert payload["question_choices"][-1]["choices"] == ["Morning", "Afternoon"]
+    assert len(payload["open_questions"]) == len(payload["question_choices"])
+    # Caught up: the next look doesn't rewrite it again, and Send counts
+    # newer mail from here.
+    assert payload[answers.CAUGHT_UP_KEY]
+    assert _reconcile(owner, mailbox) == 0 and len(models["rewrites"]) == 1
+    later = inbox.later_messages(asyncio.run(mailbox.get_thread("t1")), payload, now=NOW + timedelta(minutes=30))
+    assert [m.id for m in later if m.id == "m2"] == []
+
+
+def test_a_newer_message_only_warns_when_the_rewrite_fails(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _one_card(owner, models)
+    before = inbox.card_payload(ledger.get_decision_instance(card.id))["draft_body"]
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    assert _reconcile(owner, mailbox) == 0
+    assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["thread_moved_on"]}
+    payload = inbox.card_payload(ledger.get_decision_instance(card.id))
+    assert payload["draft_body"] == before and answers.conversation(payload) == []
+    # Tried once, not on every scan after.
+    assert _reconcile(owner, mailbox) == 0 and len(models["rewrites"]) == 1
+
+
+def test_a_busy_card_is_caught_up_on_the_next_look(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation import card_drafts
+
+    mailbox, card = _one_card(owner, models)
+    models["rewritten"] = {"body": "Hi Dana,\n\nMonday works.", "note": "Dana offered Monday."}
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    card_drafts._EDITING.add(card.id)
+    try:
+        assert _reconcile(owner, mailbox) == 0
+    finally:
+        card_drafts._EDITING.discard(card.id)
+    assert answers.conversation(inbox.card_payload(ledger.get_decision_instance(card.id))) == []
+    assert _reconcile(owner, mailbox) == 0
+    assert "Monday works." in inbox.card_payload(ledger.get_decision_instance(card.id))["draft_body"]
+
+
+def test_a_card_that_stays_busy_is_tried_a_few_times_only(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation import card_drafts
+
+    mailbox, card = _one_card(owner, models)
+    models["rewritten"] = {"body": "Hi Dana,\n\nMonday works.", "note": "Dana offered Monday."}
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    card_drafts._EDITING.add(card.id)
+    try:
+        for _ in range(answers.MAX_CATCH_UP_TRIES + 2):
+            _reconcile(owner, mailbox)
+    finally:
+        card_drafts._EDITING.discard(card.id)
+    assert "m2" in answers._CATCH_UP_FAILED[card.id]
+
+
+def test_catch_ups_stop_after_the_cap(owner: Any, models: dict[str, Any]) -> None:
+    mailbox, card = _one_card(owner, models)
+    models["rewritten"] = {"body": "Hi Dana,\n\nNoted.", "note": "Updated it."}
+    for i in range(answers.MAX_CATCH_UPS + 1):
+        mailbox.add(_msg(f"n{i}", "t1", minutes_ago=-(i + 1), text=f"One more thing {i}."))
+        _reconcile(owner, mailbox, now=NOW + timedelta(minutes=30 + i))
+    assert len(models["rewrites"]) == answers.MAX_CATCH_UPS
+    assert inbox.ledger_flags(owner.id, ["m1"]) == {"m1": ["thread_moved_on"]}
 
 
 def test_a_newer_message_is_flagged_on_the_card(owner: Any, models: dict[str, Any]) -> None:

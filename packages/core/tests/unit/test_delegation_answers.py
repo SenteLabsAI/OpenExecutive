@@ -320,6 +320,59 @@ def test_a_typed_answer_is_a_note_to_work_in_with_the_choices_offered(
     assert "Question: When should we talk?\nAnswer: Next week" in turn and "They typed" not in turn
 
 
+def test_tell_me_what_to_change_rewrites_it_and_joins_the_conversation(
+    client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    calls: list[str] = []
+    answers._ANSWERED.clear()
+
+    async def fake(model: str, system: str, turn: str) -> dict[str, Any]:
+        calls.append(turn)
+        return {"body": "Hi Dana,\n\nThursday at 2 works.", "note": "I shortened it and offered Thursday at 2."}
+
+    monkeypatch.setattr(answers, "_call_model", fake)
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr("openexecutive.delegation.gmail.gmail_for", lambda email: mailbox)
+    url = f"/delegation/replies/{card_id}/change"
+    ask = {"text": "Make it shorter and offer Thursday 2pm"}
+    # Like Send and Edit: only a caller the API can tie to the person.
+    resp = client.post(url, json=ask, headers=OWNER)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
+    monkeypatch.setenv("OE_LOCAL_LOGIN", "1")
+    assert client.post(url, json=ask, headers=TEAMMATE).status_code == 403
+    assert client.post("/delegation/replies/9999/change", json=ask, headers=OWNER).status_code == 404
+    assert client.post(url, json={"text": ""}, headers=OWNER).status_code == 422
+    # Not a reply card, even their own: 404.
+    from openexecutive.memory import decision_ledger
+
+    other = decision_ledger.create_decision_instance(
+        decision_class="meeting_scheduling", department="ops", originating_session_id=None,
+        proposed_payload={"summary": "x"}, idempotency_key="not-a-reply", gate_mode="propose",
+        approver_person_id=ids["principal"], confidence=0.9,
+    )
+    assert client.post(f"/delegation/replies/{other}/change", json=ask, headers=OWNER).status_code == 404
+    # Nobody else's card is rewritten, and no model call is made for them.
+    assert calls == []
+    assert mailbox.drafts["d1"].message.text.startswith("Hi Dana,\n\nThanks for the note.")
+    resp = client.post(url, json=ask, headers=OWNER)
+    assert resp.status_code == 200, resp.text
+    card = resp.json()
+    assert "Thursday at 2 works." in card["draft_body"]
+    assert any("Thursday at 2" in s for s in card["changed_sentences"])
+    assert mailbox.drafts["d1"].message.text == card["draft_body"]
+    # Their words, then what it did, as the card shows them.
+    assert [(t["kind"], t["text"]) for t in card["conversation"]] == [
+        ("asked", "Make it shorter and offer Thursday 2pm"),
+        ("note", "I shortened it and offered Thursday at 2."),
+    ]
+    # A change asked for isn't an answer: the question stays open.
+    assert card["questions"][0]["answer"] == "" and card["questions_settled"] is False
+    assert "<change>\nMake it shorter and offer Thursday 2pm\n</change>" in calls[-1]
+    assert "<answers>" not in calls[-1]
+    shown = client.get("/delegation/replies", headers=OWNER).json()["cards"][0]
+    assert len(shown["conversation"]) == 2
+
+
 def test_the_card_summary_comes_from_the_composer_and_follows_the_rewrite(
     client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:

@@ -68,7 +68,9 @@ class ApproveBody(BaseModel):
     For a reply card (``delegation_reply``) nothing is edited here: the draft
     is sent as it is in Gmail. ``edits`` carries the person's second yes when
     something changed since the card was made: ``recipients`` (the list they
-    were shown) and ``thread_moved_on: true``; and Send + allow in training:
+    were shown) and ``thread_moved_on: true``, and ``seen_caught_up_at``
+    (the card's ``caught_up_at`` as shown, so a draft brought up to date
+    since asks again); and Send + allow in training:
     ``allow: true``, with ``example: true`` to keep an edited draft as an
     example (``delegation.training``).
 

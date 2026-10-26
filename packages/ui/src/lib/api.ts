@@ -2103,6 +2103,14 @@ export interface HandledReply {
 // alone. Send approves it (POST /decisions/{id}/approve); Dismiss rejects it
 // (POST /decisions/{id}/reject). `status` is "executing" while a send Gmail
 // didn't confirm is being checked.
+export interface ReplyTurn {
+  kind: "news" | "asked" | "note" | string;
+  text: string;
+  from_name?: string;
+  from_email?: string;
+  at?: string;
+}
+
 export interface ReplyCard {
   decision_id: number;
   status: string;
@@ -2152,6 +2160,13 @@ export interface ReplyCard {
   // What the email asks and what the draft says, in a line or two, for the
   // card's closed view; empty or absent on a card drafted before it.
   gist?: string;
+  // Since the draft was written: newer email in the conversation ("news"),
+  // what you asked to change ("asked") and what the Executive changed
+  // ("note"), in order. Absent on an older backend.
+  conversation?: ReplyTurn[];
+  // When the reply was last brought up to date with newer mail; Send passes
+  // it back, so a version you never saw asks again.
+  caught_up_at?: string;
 }
 
 // One thing a reply leaves you to decide (GET /delegation/replies).
@@ -2502,6 +2517,18 @@ export async function answerReplyQuestions(
   return (await res.json()) as ReplyCard;
 }
 
+// Change the reply the way you say, in your own words: the Executive
+// rewrites it and says what it changed (POST .../change). Sends nothing.
+export async function changeReply(id: number, text: string): Promise<ReplyCard> {
+  const res = await fetch(`${API_BASE}/delegation/replies/${id}/change`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change your reply.");
+  return (await res.json()) as ReplyCard;
+}
+
 // Forget one thing it learned in training: it asks again from now on.
 export async function removeTrainingLearned(id: number): Promise<DelegationSettings> {
   const res = await fetch(`${API_BASE}/delegation/learned/${id}`, { method: "DELETE" });
@@ -2615,7 +2642,14 @@ function strings(value: unknown): string[] {
 // version when you changed the draft (Drafts in training).
 export async function sendReplyCard(
   id: number,
-  confirm?: { recipients: string[]; thread_moved_on?: boolean; allow?: boolean; example?: boolean },
+  confirm?: {
+    recipients: string[];
+    thread_moved_on?: boolean;
+    allow?: boolean;
+    example?: boolean;
+    // The card's caught_up_at as shown: brought up to date since asks again.
+    seen_caught_up_at?: string;
+  },
 ): Promise<SendReplyResult> {
   const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
     method: "POST",
