@@ -204,7 +204,7 @@ class HealthResponse(BaseModel):
     # gateway failed to start used to look healthy here while no email went
     # out or came in.
     gateway: GatewayHealth | None = None
-    version: str = "0.6.5"  # x-release-please-version
+    version: str = "0.6.6"  # x-release-please-version
 
 
 class VersionResponse(BaseModel):

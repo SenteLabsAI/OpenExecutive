@@ -9,6 +9,25 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.6](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.5...v0.6.6) (2026-10-26)
+
+
+### Added
+
+* **ui:** a nonce Content-Security-Policy on every page ([#623](https://github.com/SenteLabsAI/OpenExecutive/issues/623)) ([85b5945](https://github.com/SenteLabsAI/OpenExecutive/commit/85b5945c3c9130433f517931919c1b71a3d6337f))
+* **ui:** confirm changes inside a frame once the browser reports the question seen ([#635](https://github.com/SenteLabsAI/OpenExecutive/issues/635)) ([9d9ca16](https://github.com/SenteLabsAI/OpenExecutive/commit/9d9ca16d0a958cfe7e7193643e999465218be901))
+* **ui:** let host origins frame the UI and call a short host list ([#628](https://github.com/SenteLabsAI/OpenExecutive/issues/628)) ([42b626d](https://github.com/SenteLabsAI/OpenExecutive/commit/42b626d12199d80d116a9d20241b0874c8e004ef))
+* **ui:** sum up Home under At a glance with more tiles ([#633](https://github.com/SenteLabsAI/OpenExecutive/issues/633)) ([6d20d9c](https://github.com/SenteLabsAI/OpenExecutive/commit/6d20d9c73383c0d534401496da70d62e39f793c8))
+
+
+### Fixed
+
+* **briefing:** stop first-week nudges for steps already done ([#632](https://github.com/SenteLabsAI/OpenExecutive/issues/632)) ([c04bd42](https://github.com/SenteLabsAI/OpenExecutive/commit/c04bd4235b1d91cc15ae56ae293e974226676fdd))
+* **chat:** stop the host chat list growing once the mark is stored ([#634](https://github.com/SenteLabsAI/OpenExecutive/issues/634)) ([efe9dd4](https://github.com/SenteLabsAI/OpenExecutive/commit/efe9dd43bda6649e11af426a5afe189770f94556))
+* **integrations:** save briefs and digests into the chat-app conversation ([#636](https://github.com/SenteLabsAI/OpenExecutive/issues/636)) ([e500883](https://github.com/SenteLabsAI/OpenExecutive/commit/e500883008cae4e4bad209c849a648fb46fae6ee))
+* **ui:** count done optional rows and make adding the team optional ([#631](https://github.com/SenteLabsAI/OpenExecutive/issues/631)) ([f211b96](https://github.com/SenteLabsAI/OpenExecutive/commit/f211b96961986d6ddef3e1be201ffe54bda3613a))
+* **workflows:** let chat fix a saved workflow on a card and say whose calendar a step reads ([#629](https://github.com/SenteLabsAI/OpenExecutive/issues/629)) ([582449d](https://github.com/SenteLabsAI/OpenExecutive/commit/582449d787abb11ff73773762935aff3ad80e5c9))
+
 ## [0.6.5](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.4...v0.6.5) (2026-10-24)
 
 
