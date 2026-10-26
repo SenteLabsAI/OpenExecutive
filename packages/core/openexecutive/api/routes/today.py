@@ -2217,7 +2217,7 @@ async def _regen_briefing_narrative_locked(
     if scope == narrative_cache.DEFAULT_SCOPE and recorded.new:
         from openexecutive.briefing.right_now_ping import maybe_ping
 
-        ping = await maybe_ping(recorded.new, important, earlier_today=recorded.earlier_today)
+        ping = await maybe_ping(recorded.new, important, earlier_today=_written_earlier_today(cached))
         logger.info("today: right now ping %s", ping.status)
     logger.info(
         "today: narrative regenerated scope=%s ms=%d quiet=%s context_chars=%d",
@@ -2225,6 +2225,16 @@ async def _regen_briefing_narrative_locked(
         context in (narrative_cache.QUIET_CONTEXT, narrative_cache.NOTHING_MOVED_CONTEXT), len(context),
     )
     return True
+
+
+def _written_earlier_today(cached: Any) -> bool:
+    """Whether the header being replaced was written today, the quiet line
+    included: the first header of the day is the morning's, which the brief
+    covers, so it pings nobody."""
+    from openexecutive.briefing import narrative_cache
+
+    written = _parse_aware(cached.generated_at) if cached is not None else None
+    return written is not None and narrative_cache.local_today(written) == narrative_cache.local_today()
 
 
 async def refresh_principal_narrative() -> bool:

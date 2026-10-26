@@ -117,10 +117,9 @@ def _day_of(iso: str) -> str | None:
 @dataclass
 class Recorded:
     """What a written header added today: the points (as written) whose key
-    was not recorded before, and whether an earlier header today had any."""
+    was not recorded before."""
 
     new: list[str] = field(default_factory=list)
-    earlier_today: bool = False
 
 
 def record_points(scope: str, text: str, written_at: str) -> Recorded:
@@ -155,7 +154,7 @@ def record_points(scope: str, text: str, written_at: str) -> Recorded:
     except Exception:
         logger.exception("right_now: recording points failed (scope=%s)", scope)
         return Recorded()
-    return Recorded(new=[p for k, p in by_key.items() if k not in known], earlier_today=bool(known))
+    return Recorded(new=[p for k, p in by_key.items() if k not in known])
 
 
 def point_times(scope: str, day: str) -> dict[str, str]:

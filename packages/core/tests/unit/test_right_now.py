@@ -76,9 +76,9 @@ def test_seen_is_per_scope() -> None:
 def test_record_points_says_what_is_new_today() -> None:
     now = datetime.now(UTC)
     first = right_now.record_points("principal", HEADER, (now - timedelta(minutes=30)).isoformat())
-    assert len(first.new) == 2 and first.earlier_today is False
+    assert len(first.new) == 2
 
     later = right_now.record_points(
         "principal", HEADER + "\n- **Board deck** — draft is in.", now.isoformat(),
     )
-    assert later.new == ["**Board deck** — draft is in."] and later.earlier_today is True
+    assert later.new == ["**Board deck** — draft is in."]

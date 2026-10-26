@@ -2755,3 +2755,19 @@ def test_a_header_is_outdated_once_a_meeting_starts_or_ends_after_it(
     assert not today_route._header_outdated(before, now, quotes_calendar=False)
     # Hours old is outdated whatever the calendar says.
     assert today_route._header_outdated(now - timedelta(hours=3), now, quotes_calendar=False)
+
+
+def test_a_quiet_header_earlier_today_counts_for_right_now_pings() -> None:
+    from openexecutive.briefing import narrative_cache
+    from openexecutive.briefing.narrative import QUIET_PRINCIPAL
+
+    now = datetime.now(UTC)
+    quiet = narrative_cache.BriefingNarrative(
+        scope="principal", input_hash="h", narrative_text=QUIET_PRINCIPAL, generated_at=now.isoformat(),
+    )
+    yesterday = quiet.model_copy(update={"generated_at": (now - timedelta(days=2)).isoformat()})
+
+    # A quiet line has no points, but it was today's first header all the same.
+    assert today_route._written_earlier_today(quiet) is True
+    assert today_route._written_earlier_today(yesterday) is False
+    assert today_route._written_earlier_today(None) is False
