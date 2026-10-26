@@ -2415,8 +2415,9 @@ async def _remember_in_chat(
 ) -> None:
     """Save a message just sent into a chat app into that chat's conversation
     (``integrations.conversations.record_delivery``), so the person's reply
-    to it has it in view. Only once it was sent: a held one is saved when it
-    goes out later. Never raises."""
+    to it has it in view. Only once it was sent: a held one is saved when
+    ``people.held_messages`` releases it, which sends through
+    ``deliver_to_person`` and so through here. Never raises."""
     import json as _json
 
     try:

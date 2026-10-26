@@ -116,3 +116,28 @@ def test_a_brief_sent_to_telegram_is_saved_into_the_chat(monkeypatch: pytest.Mon
 
 def test_a_held_message_is_saved_only_when_it_goes_out(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _run_send(monkeypatch, {"status": "held"}) == []
+
+
+def test_a_held_message_is_saved_when_its_release_sends_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # people.held_messages releases through deliver_to_person, which sends on
+    # the same plan, so the released block is saved into the chat then.
+    saved: list[tuple[Any, ...]] = []
+
+    async def fake_send(_input: dict[str, Any]) -> str:
+        return json.dumps({"status": "sent", "chat_id": 4242})
+
+    async def no_email() -> bool:
+        return False
+
+    def fake_record(base_id: str, text: str, **kw: Any) -> str:
+        saved.append((base_id, text, kw["title"]))
+        return base_id
+
+    monkeypatch.setattr(schedule_tools, "handle_send_telegram_message", fake_send)
+    monkeypatch.setattr(runner, "ensure_email_ready", no_email)
+    monkeypatch.setattr("openexecutive.integrations.conversations.record_delivery", fake_record)
+    from openexecutive.people.held_messages import HEADING
+
+    delivery = asyncio.run(runner.deliver_to_person(_principal(), "While you were away: ...", label=HEADING))
+    assert delivery.ok and delivery.channel == "telegram"
+    assert saved == [(BASE, "While you were away: ...", HEADING)]
