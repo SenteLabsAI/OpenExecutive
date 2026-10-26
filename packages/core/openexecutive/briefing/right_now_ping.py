@@ -75,6 +75,9 @@ def plain_point(text: str) -> str:
     one line, cut."""
     # Look-alikes first: a fullwidth dot or letter reads as the real one.
     out = unicodedata.normalize("NFKC", text)
+    # Invisible format characters (zero-width space, soft hyphen) would
+    # split "evil.com" past the patterns while a chat app still links it.
+    out = "".join(c for c in out if unicodedata.category(c) != "Cf")
     out = _MD_LINK_RE.sub(r"\1", out)
     out = _SLACK_LINK_RE.sub(r"\1", out)
     out = out.replace("**", "").replace("__", "")

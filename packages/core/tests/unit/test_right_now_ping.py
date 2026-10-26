@@ -114,6 +114,7 @@ def test_a_point_goes_out_with_no_link_or_address_in_it() -> None:
         "evil.ca/pay", "xn--pple-43d.shop/login", "ftp://evil.xyz", "tg://resolve?domain=x",
         "mailto:x@y", "1.2.3.4/login", "evil.museum", "paypal-secure.com.evil.top",
         "evil．com", "ＷＷＷ.evil.top", "https://x.test",
+        "evil\u200b.com", "evil.\u200bcom/pay", "evil\u00ad.top", "evil.\u2060top",
     ],
 )
 def test_nothing_link_like_survives(bad: str) -> None:
