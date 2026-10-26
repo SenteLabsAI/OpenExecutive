@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import contextvars
+import copy
 import html
 import json
 import logging
@@ -14,13 +15,16 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from email.utils import getaddresses
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 from openexecutive.config import Settings, get_settings, mcp_config_file_present
 from openexecutive.memory import drive_reads
 from openexecutive.people.identity import RosterAllow
 from openexecutive.utils.html_tags import strip_tags
+
+if TYPE_CHECKING:
+    from openexecutive.orchestrator.extensions import GatewayCall
 
 logger = logging.getLogger(__name__)
 
@@ -681,6 +685,114 @@ def _refuse(tool: str, field: str, shown: str, *, reason: str) -> str:
         details={"tool": tool, "field": field, "address": shown},
     )
     return json.dumps({"error": reason})
+
+
+def _refuse_server_call(tool: str, server: str, reason: str, message: str) -> str:
+    """Refuse a call an extension's server check stopped (or that failed it).
+    Audited as `_refuse` is, with the reason in the row's address slot."""
+    from openexecutive.audit import log_event as audit_log
+
+    logger.warning("blocked extension server call: tool=%s reason=%s", tool, reason)
+    audit_log(
+        "integration_outbound_blocked",
+        f"Blocked a call to {server} (tool={tool} reason={reason[:80]})",
+        actor="mcp_gateway",
+        details={"tool": tool, "field": "server_check", "address": f"<{reason[:80]}>"},
+    )
+    return json.dumps({"error": message})
+
+
+def _extension_server_call(tool_name: Any, normalized: str, arguments: Any) -> GatewayCall | str | None:
+    """What an installed extension's check says about a call to its server
+    (orchestrator/extensions.py): None when no check covers the tool, the
+    refusal text when it refuses (or fails), else its ``GatewayCall``."""
+    from openexecutive.orchestrator import extensions
+
+    gateway_check = extensions.gateway_check_for(normalized)
+    if gateway_check is None:
+        return None
+    tool = str(tool_name)[:200]
+    if str(tool_name).partition("__")[0] != gateway_check.server:
+        # The proxy routes by the exact name, so "Kiosk__x" or " kiosk__x"
+        # would reach some other server (one loaded at runtime under that
+        # spelling) carrying what this check's outgoing() signed.
+        return _refuse_server_call(
+            tool, gateway_check.server, "name-spelling",
+            f"{tool} is not available: call it by its exact name, "
+            f"{gateway_check.server}__<tool>, in lowercase.",
+        )
+    if not isinstance(arguments, dict):
+        # The check reads a dict; anything else would skip it.
+        return _refuse(
+            tool, "arguments", "<non-object>", reason="arguments must be a JSON object — refusing.",
+        )
+    try:
+        decision = gateway_check.check(normalized, copy.deepcopy(arguments))
+    except Exception:
+        logger.exception("gateway check for %s failed on %s", gateway_check.server, tool)
+        decision = None
+    if not isinstance(decision, extensions.GatewayCall):
+        return _refuse_server_call(
+            tool, gateway_check.server, "check-failed",
+            f"{tool} is not available right now: its server's check failed. Do not retry it.",
+        )
+    if decision.refusal is not None:
+        return _refuse_server_call(tool, gateway_check.server, "refused", decision.refusal)
+    return decision
+
+
+def _extension_outgoing(
+    tool_name: Any, server_call: GatewayCall, arguments: dict[str, Any]
+) -> dict[str, Any] | str:
+    """The arguments an extension's check sends for this call (one send's
+    worth), or the refusal text when building them fails."""
+    tool = str(tool_name)[:200]
+    if server_call.outgoing is None:
+        return arguments
+    try:
+        outgoing = server_call.outgoing(copy.deepcopy(arguments))
+    except Exception:
+        logger.exception("gateway check's outgoing() failed on %s", tool)
+        outgoing = None
+    if not isinstance(outgoing, dict):
+        server = _normalize_tool_name(tool).partition("__")[0]
+        return _refuse_server_call(
+            tool, server, "outgoing-failed",
+            f"{tool} is not available right now: its server's check failed. Do not retry it.",
+        )
+    return outgoing
+
+
+def _echoed_forms(values: set[str]) -> set[str]:
+    """Each value as a server's answer may spell it back: as sent, and inside
+    a JSON string, where it can come back escaped (a quote or backslash
+    escaped, non-ASCII as ``\\uXXXX``, and a slash as ``\\/`` from servers
+    that escape slashes). Redacting only the raw spelling let an escaped echo
+    reach the model."""
+    forms: set[str] = set()
+    for value in values:
+        for spelled in (value, json.dumps(value)[1:-1], json.dumps(value, ensure_ascii=False)[1:-1]):
+            forms.add(spelled)
+            forms.add(spelled.replace("/", "\\/"))
+    return forms
+
+
+def _string_leaves(value: Any) -> set[str]:
+    """Every string of 8 or more characters in a JSON value (keys aside):
+    what ``call_tool`` compares to find the values an extension's outgoing()
+    added. Shorter ones are too likely to occur in an answer by chance."""
+    found: set[str] = set()
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if len(item) >= 8:
+                found.add(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return found
 
 
 def _norm_key(key: str) -> str:
@@ -3807,6 +3919,11 @@ class MCPGateway:
             return json.dumps({"error": _SAVED_FILE_REFUSAL.format(tool=str(tool_name)[:200])})
         if not code_built and _names_saved_folder(normalized, arguments, hidden.folders):
             return json.dumps({"error": _SAVED_FOLDER_REFUSAL.format(tool=str(tool_name)[:200])})
+        # An installed extension's own server (orchestrator/extensions.py):
+        # its check may refuse the call, and builds what is sent (below).
+        server_call = _extension_server_call(tool_name, normalized, arguments)
+        if isinstance(server_call, str):
+            return server_call
         attached_artifacts: list[str] = []
         # Every Google Workspace call acts as the Executive's own account.
         if _is_apps_script_tool(tool_name):
@@ -3949,7 +4066,27 @@ class MCPGateway:
             if isinstance(disclosed, str):
                 return disclosed
             wire_arguments = disclosed
-        wire_input = {"tool_name": tool_input["name"], "arguments": wire_arguments}
+
+        # What an extension's outgoing() added (a signed token): never handed
+        # back to the model, should the server's answer quote it.
+        added_values: set[str] = set()
+
+        def _wire_input() -> dict[str, Any] | str:
+            # Built again for each send: an extension's server check may put
+            # something in what goes out that is good for one request only.
+            # From wire_arguments, so outgoing() sees what every gate above
+            # left (a rewrite or a redaction), never the model's raw input.
+            if server_call is None or server_call.outgoing is None:
+                return {"tool_name": tool_input["name"], "arguments": wire_arguments}
+            outgoing = _extension_outgoing(tool_name, server_call, wire_arguments)
+            if isinstance(outgoing, str):
+                return outgoing
+            added_values.update(_string_leaves(outgoing) - _string_leaves(wire_arguments))
+            return {"tool_name": tool_input["name"], "arguments": outgoing}
+
+        wire_input = _wire_input()
+        if isinstance(wire_input, str):
+            return wire_input
         try:
             result = await _session_call(session, "call_tool", wire_input, self._call_timeout())
             result_text = result.content[0].text if result.content else json.dumps({"result": None})
@@ -3958,6 +4095,9 @@ class MCPGateway:
             # The refused call ran nothing, and every gate above has already
             # passed these same arguments.
             if _is_undiscovered_refusal(tool_name, result_text) and await self._discover(tool_name):
+                wire_input = _wire_input()
+                if isinstance(wire_input, str):
+                    return wire_input
                 result = await _session_call(session, "call_tool", wire_input, self._call_timeout())
                 result_text = result.content[0].text if result.content else json.dumps({"result": None})
         except GatewayCallTimeout:
@@ -3975,6 +4115,8 @@ class MCPGateway:
                 ),
                 "timed_out": True,
             })
+        for value in sorted(_echoed_forms(added_values), key=len, reverse=True):
+            result_text = result_text.replace(value, "[redacted]")
         # On the final result, retry or not: roster answer tokens are hidden
         # from every mailbox read (Google Workspace or Microsoft 365) but the
         # poller's own.
@@ -4132,6 +4274,18 @@ class MCPGateway:
         url: str = tool_input["url"]
         if not url.startswith("https://"):
             return json.dumps({"error": "load_mcp_server requires an HTTPS URL"})
+        from openexecutive.orchestrator import extensions
+
+        name = str(tool_input.get("name") or "")
+        if extensions.gateway_check_for(f"{_normalize_tool_name(name)}__") is not None:
+            # A server spelled like an extension's own would take calls that
+            # extension's check signed for it.
+            return json.dumps({
+                "error": (
+                    f"load_mcp_server cannot use the name '{name[:64]}': it belongs "
+                    "to an installed extension's server. Choose another name."
+                )
+            })
         result = await _session_call(
             session,
             "load_mcp_server",
