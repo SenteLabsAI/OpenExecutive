@@ -67,6 +67,9 @@ CONVERSATION_MAX = 20
 # time of the newest (``inbox.later_messages`` counts from it), and how many
 # times one card may be rewritten that way before it only warns.
 CAUGHT_UP_KEY = "caught_up_at"
+# How many newer messages it was brought up to date with, kept apart from
+# the conversation, which keeps only its last CONVERSATION_MAX turns.
+CAUGHT_UP_COUNT = "caught_up_count"
 MAX_CATCH_UPS = 5
 NEWS_CHARS = 2000
 # Questions a catch-up can add, and all a card can hold.
@@ -682,7 +685,9 @@ async def catch_up(
     fresh = [m for m in newer if getattr(m, "id", "") not in shown]
     if not fresh:
         return True
-    if sum(1 for t in conversation(payload) if t.get("kind") == "news") >= MAX_CATCH_UPS:
+    done = payload.get(CAUGHT_UP_COUNT)
+    done = done if isinstance(done, int) else 0
+    if done >= MAX_CATCH_UPS:
         return False
     tried = _CATCH_UP_FAILED.setdefault(card.id, set())
     if all(str(m.id) in tried for m in fresh):
@@ -701,7 +706,7 @@ async def catch_up(
 
     async def write(person_: Any, current: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         body, extra, _ = await rewrite(person_, current, [], news=news, now=now)
-        return body, {**extra, **({CAUGHT_UP_KEY: newest} if newest else {})}
+        return body, {**extra, CAUGHT_UP_COUNT: done + len(news), **({CAUGHT_UP_KEY: newest} if newest else {})}
 
     try:
         await card_drafts.redraft(card, person, gmail, write)
