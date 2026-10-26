@@ -703,7 +703,10 @@ async def catch_up(
         }
         for m in fresh
     ]
-    newest = max((n["at"] for n in news if n["at"]), default="")
+    # By the instant, not the string: mailboxes write times in more than one
+    # form, and inbox.later_messages compares them parsed.
+    times = [t for t in (_moment(n["at"]) for n in news if n["at"]) if t is not None]
+    newest = max(times).isoformat() if times else ""
 
     async def write(person_: Any, current: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         body, extra, _ = await rewrite(person_, current, [], news=news, now=now)
