@@ -22,6 +22,10 @@ def history_window_start(total: int, max_turns: int = 20, step_turns: int = 10) 
     return ((total - keep) // step) * step
 
 
+# The user turn put before history that opens with the Executive's message.
+CONTINUED_PLACEHOLDER = "(Continuing our chat.)"
+
+
 @dataclass
 class Session:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -276,8 +280,11 @@ class Session:
         """
         start = history_window_start(len(self.conversation_history), max_turns, step_turns)
         history = self.conversation_history[start:]
-        # Anthropic requires messages to start with a user turn.
-        # Drop a leading assistant message if history length is odd (can happen on error recovery).
+        # Anthropic requires messages to start with a user turn. A chat-app
+        # conversation can open with the Executive's own message (a brief or
+        # digest it sent, ``integrations.conversations.record_delivery``), and
+        # the window can start on a reply. Dropping that message would hide
+        # what the person is answering, so a placeholder turn goes first.
         if history and history[0]["role"] != "user":
-            history = history[1:]
+            history = [{"role": "user", "content": CONTINUED_PLACEHOLDER}, *history]
         return history

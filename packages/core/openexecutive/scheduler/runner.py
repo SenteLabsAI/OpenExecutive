@@ -2371,6 +2371,7 @@ async def _send_on_plan(
                     "user_id": principal.slack_user_id, "text": text,
                 })
                 if _delivered_ok(result):
+                    await _remember_in_chat(result, f"slack:dm:{principal.slack_user_id}", principal, text, label)
                     return _sent(channel, principal.slack_user_id)
                 failures.append(f"{channel}: {_error_line(result)}")
             elif channel == "discord_dm" and principal.discord_user_id:
@@ -2379,6 +2380,7 @@ async def _send_on_plan(
                     "discord_user_id": principal.discord_user_id, "text": text,
                 })
                 if _delivered_ok(result):
+                    await _remember_in_chat(result, f"discord:dm:{principal.discord_user_id}", principal, text, label)
                     return _sent(channel, principal.discord_user_id)
                 failures.append(f"{channel}: {_error_line(result)}")
             elif channel == "telegram" and principal.telegram_chat_id:
@@ -2389,6 +2391,7 @@ async def _send_on_plan(
                     "chat_id": int(principal.telegram_chat_id), "text": text,
                 })
                 if _delivered_ok(result):
+                    await _remember_in_chat(result, f"telegram:{principal.telegram_chat_id}", principal, text, label)
                     return _sent(channel, principal.telegram_chat_id)
                 failures.append(f"{channel}: {_error_line(result)}")
             elif channel == "email":
@@ -2405,6 +2408,27 @@ async def _send_on_plan(
     return PrincipalDelivery(
         False, "delivery failed on every channel: " + "; ".join(failures), "send_failed"
     )
+
+
+async def _remember_in_chat(
+    result_json: str, base_id: str, person: Person, text: str, label: str
+) -> None:
+    """Save a message just sent into a chat app into that chat's conversation
+    (``integrations.conversations.record_delivery``), so the person's reply
+    to it has it in view. Only once it was sent: a held one is saved when it
+    goes out later. Never raises."""
+    import json as _json
+
+    try:
+        if _json.loads(result_json).get("status") != "sent":
+            return
+        from openexecutive.integrations.conversations import record_delivery
+
+        await asyncio.to_thread(
+            record_delivery, base_id, text, owner_person_id=person.id, title=label,
+        )
+    except Exception:
+        logger.exception("scheduler: couldn't save the delivery into %s", base_id)
 
 
 def _sent(channel: str, to: str | None) -> PrincipalDelivery:

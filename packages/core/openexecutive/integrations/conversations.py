@@ -4,13 +4,16 @@ Each adapter computes its stream's base id as before, then asks
 ``conversation_for`` which conversation a message belongs to, answers
 ``/new`` with ``start_fresh``, and calls ``title_after_turn`` once a turn is
 saved so a conversation's first exchange gives it a title, as a web chat's
-does.
+does. ``record_delivery`` saves what the Executive sent on its own (a brief,
+a digest, a workflow's report) into the conversation, so a reply to it has
+it in view.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
+from pathlib import Path
 
 from openexecutive.memory.conversation_ids import base_session_id, is_rolling
 
@@ -42,6 +45,52 @@ def conversation_for(base_id: str) -> str:
     except Exception:
         logger.exception("conversations: couldn't pick the conversation for %s", base_id)
         return base_id
+
+
+def record_delivery(
+    base_id: str,
+    text: str,
+    *,
+    owner_person_id: int | None,
+    title: str,
+    db_path: Path | None = None,
+) -> str | None:
+    """Save ``text``, which the Executive just sent into ``base_id``'s stream
+    on its own, as its message in the conversation a reply would join.
+
+    Without it the reply's turn has nothing before it: "can you fix it?"
+    after the evening digest reads as a question out of nowhere, and when the
+    stream was quiet for a while the reply even starts a new conversation.
+    Saving it also counts as activity, so the reply lands in this same
+    conversation. ``title`` names a conversation this message starts; an
+    existing one keeps its name. Returns the conversation's id, or None when
+    it couldn't be saved. Sync (SQLite); never raises.
+    """
+    if not is_rolling(base_id) or not (text or "").strip():
+        return None
+    from datetime import UTC, datetime
+
+    from openexecutive.memory import episodic
+    from openexecutive.memory.conversations import current_conversation
+    from openexecutive.memory.session_store import (
+        create_session,
+        save_message,
+        update_session_timestamp,
+    )
+
+    path = db_path or episodic.DB_PATH
+    try:
+        session_id = current_conversation(base_session_id(base_id), db_path=path)
+        create_session(
+            session_id, title, datetime.now(UTC).isoformat(),
+            caller_person_id=owner_person_id, db_path=path,
+        )
+        save_message(session_id, "assistant", text, db_path=path)
+        update_session_timestamp(session_id, db_path=path)
+    except Exception:
+        logger.exception("conversations: couldn't save a delivery into %s", base_id)
+        return None
+    return session_id
 
 
 def start_fresh(base_id: str, owner_person_id: int | None) -> str:
