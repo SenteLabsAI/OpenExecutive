@@ -82,6 +82,10 @@ _ANSWERED: dict[int, list[datetime]] = {}
 # Newer messages a catch-up already failed on, per card, in this process:
 # each is tried once, not on every scan.
 _CATCH_UP_FAILED: dict[int, set[str]] = {}
+# Tries on one message that failed for a passing reason (a busy card, a
+# mailbox error) before it counts as failed too.
+_CATCH_UP_TRIES: dict[tuple[int, str], int] = {}
+MAX_CATCH_UP_TRIES = 3
 _CATCH_UP_FINAL = frozenset({"rewrite_failed", "draft_changed", "draft_not_plain", "empty", "too_long"})
 
 REWRITE_PROMPT = """You are a ghostwriter. <draft> is an email you wrote AS \
@@ -719,8 +723,13 @@ async def catch_up(
         # Tried for good only when another try would fail the same way: the
         # rewrite itself, or a draft changed in the mailbox. A busy card (the
         # person editing or sending it) or a mailbox hiccup is tried again.
-        if getattr(exc, "code", "") in _CATCH_UP_FINAL:
-            tried.update(str(m.id) for m in fresh)
+        for m in fresh:
+            key = (card.id, str(m.id))
+            _CATCH_UP_TRIES[key] = _CATCH_UP_TRIES.get(key, 0) + 1
+            if getattr(exc, "code", "") in _CATCH_UP_FINAL or _CATCH_UP_TRIES[key] >= MAX_CATCH_UP_TRIES:
+                tried.add(str(m.id))
         return False
     _CATCH_UP_FAILED.pop(card.id, None)
+    for m in fresh:
+        _CATCH_UP_TRIES.pop((card.id, str(m.id)), None)
     return True
