@@ -5,6 +5,7 @@
 
 export type QuietDays = "every_day" | "weekdays";
 export type Delivery = "instant" | "digest";
+export type RightNowPings = "off" | "important" | "everything";
 
 export interface QuietHours {
   enabled: boolean;
@@ -18,6 +19,9 @@ export interface NotificationSettings {
   quiet_hours: QuietHours;
   delivery: Delivery;
   urgent_through: boolean;
+  /** A chat message when Right now changes (the owner's). Absent on an
+   * older backend. */
+  right_now?: RightNowPings;
   /** The zone they chose; "" for the workspace's. */
   timezone: string;
   effective_timezone: string;
@@ -32,6 +36,7 @@ export interface NotificationSettingsUpdate {
   quiet_hours: QuietHours;
   delivery: Delivery;
   urgent_through: boolean;
+  right_now?: RightNowPings;
   timezone: string;
 }
 
@@ -90,15 +95,29 @@ export function heldLine(count: number, delivery: Delivery): string | null {
 /** The PUT body for a form state; the browser's zone fills an unset one, so
  * the times mean what the person sees. */
 export function toUpdate(
-  s: Pick<NotificationSettings, "quiet_hours" | "delivery" | "urgent_through" | "timezone">,
+  s: Pick<NotificationSettings, "quiet_hours" | "delivery" | "urgent_through" | "right_now" | "timezone">,
   browserZone: string | null,
 ): NotificationSettingsUpdate {
   return {
     quiet_hours: { ...s.quiet_hours },
     delivery: s.delivery,
     urgent_through: s.urgent_through,
+    ...(s.right_now ? { right_now: s.right_now } : {}),
     timezone: s.timezone || browserZone || "",
   };
+}
+
+export const RIGHT_NOW_LABEL: Record<RightNowPings, string> = {
+  off: "Off",
+  important: "Important only",
+  everything: "Everything",
+};
+
+/** What each Right now choice sends, from the person's side. */
+export function rightNowDescription(choice: RightNowPings): string {
+  if (choice === "off") return "Nothing. Right now on Home still changes through the day.";
+  if (choice === "everything") return "A short message whenever Right now adds something, up to 4 a day.";
+  return "A short message when Right now adds something that needs you: someone wrote to you, something is stuck or overdue, or a decision came up. Up to 4 a day.";
 }
 
 export const DELIVERY_LABEL: Record<Delivery, string> = {

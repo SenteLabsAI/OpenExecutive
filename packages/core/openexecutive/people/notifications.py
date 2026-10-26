@@ -52,6 +52,9 @@ TABLE = "person_notification_settings"
 
 QuietDays = Literal["every_day", "weekdays"]
 Delivery = Literal["instant", "digest"]
+# When Right now changes: a short chat message for a new point that needs
+# them, for any new point, or never (``briefing.right_now_ping``).
+RightNowPings = Literal["off", "important", "everything"]
 
 _HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
 
@@ -81,6 +84,7 @@ class NotificationSettings(BaseModel):
     quiet_hours: QuietHours = Field(default_factory=QuietHours)
     delivery: Delivery = "instant"
     urgent_through: bool = True
+    right_now: RightNowPings = "important"
     # IANA zone the quiet hours are read in; "" means the workspace's zone.
     timezone: str = Field(default="", max_length=64)
     updated_at: str = ""

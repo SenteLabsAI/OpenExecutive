@@ -114,27 +114,48 @@ def _day_of(iso: str) -> str | None:
     return narrative_cache.local_today(when)
 
 
-def record_points(scope: str, text: str, written_at: str) -> None:
+@dataclass
+class Recorded:
+    """What a written header added today: the points (as written) whose key
+    was not recorded before, and whether an earlier header today had any."""
+
+    new: list[str] = field(default_factory=list)
+    earlier_today: bool = False
+
+
+def record_points(scope: str, text: str, written_at: str) -> Recorded:
     """Note when each of this header's points first appeared today. A point
-    already recorded keeps its earlier time. Never raises."""
+    already recorded keeps its earlier time. Returns what was new (for
+    ``briefing.right_now_ping``). Never raises."""
     day = _day_of(written_at)
     if day is None:
-        return
-    keys = {k for k in (point_key(p) for p in split_narrative(text).points) if k}
-    if not keys:
-        return
+        return Recorded()
+    by_key: dict[str, str] = {}
+    for p in split_narrative(text).points:
+        k = point_key(p)
+        if k and k not in by_key:
+            by_key[k] = p
+    if not by_key:
+        return Recorded()
     try:
         initialize_db()
         with narrative_cache._get_conn() as conn:
+            known = {
+                r["point_key"] for r in conn.execute(
+                    "SELECT point_key FROM briefing_point_seen WHERE scope = ? AND day = ?", (scope, day),
+                ).fetchall()
+            }
             conn.executemany(
                 "INSERT OR IGNORE INTO briefing_point_seen "
                 "(scope, day, point_key, first_seen) VALUES (?, ?, ?, ?)",
-                [(scope, day, k, written_at) for k in sorted(keys)],
+                [(scope, day, k, written_at) for k in sorted(by_key)],
             )
             # Times are only read for the local today; earlier days go.
             conn.execute("DELETE FROM briefing_point_seen WHERE day < ?", (day,))
     except Exception:
         logger.exception("right_now: recording points failed (scope=%s)", scope)
+        return Recorded()
+    return Recorded(new=[p for k, p in by_key.items() if k not in known], earlier_today=bool(known))
 
 
 def point_times(scope: str, day: str) -> dict[str, str]:
@@ -187,6 +208,7 @@ def seen_at(scope: str) -> str | None:
 
 __all__ = [
     "NarrativeParts",
+    "Recorded",
     "initialize_db",
     "mark_seen",
     "point_key",

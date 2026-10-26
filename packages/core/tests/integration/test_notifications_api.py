@@ -200,3 +200,15 @@ def test_moving_time_zone_releases_what_waited(client: TestClient) -> None:
         json=_body(delivery="instant", timezone="America/New_York"),
     )
     assert sara in held._due(datetime.now(UTC) + timedelta(minutes=1), None)
+
+
+def test_right_now_pings_round_trip_and_survive_an_older_page(client: TestClient) -> None:
+    assert client.get("/notifications/settings", headers=OWNER).json()["right_now"] == "important"
+    res = client.put("/notifications/settings", headers=OWNER, json=_body(right_now="everything"))
+    assert res.status_code == 200 and res.json()["right_now"] == "everything"
+    # A page that doesn't know the field keeps the stored choice.
+    res = client.put("/notifications/settings", headers=OWNER, json=_body())
+    assert res.json()["right_now"] == "everything"
+    assert client.put(
+        "/notifications/settings", headers=OWNER, json=_body(right_now="loud")
+    ).status_code == 422

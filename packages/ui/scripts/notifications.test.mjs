@@ -7,6 +7,7 @@ import {
   heldLine,
   quietError,
   quietSummary,
+  rightNowDescription,
   tileStatus,
   toUpdate,
 } from "../src/lib/notifications.ts";
@@ -72,4 +73,12 @@ test("the hub tile sums it up", () => {
     tileStatus({ quiet_hours: { ...NIGHT, enabled: false }, delivery: "instant" }),
     "Quiet hours off · As they happen",
   );
+});
+
+test("the Right now choice is sent only when the backend has one", () => {
+  const base = { quiet_hours: NIGHT, delivery: "instant", urgent_through: true, timezone: "" };
+  assert.equal(toUpdate({ ...base, right_now: "everything" }, null).right_now, "everything");
+  assert.equal("right_now" in toUpdate(base, null), false);
+  assert.match(rightNowDescription("important"), /needs you/);
+  assert.match(rightNowDescription("off"), /^Nothing/);
 });

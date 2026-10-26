@@ -13,7 +13,7 @@ Routes:
                                  them, and whether they get the briefs
   PUT  /notifications/settings — replace them: {quiet_hours: {enabled, start,
                                  end, days}, delivery, urgent_through,
-                                 timezone}
+                                 right_now, timezone}
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from openexecutive.people.notifications import (
     Delivery,
     NotificationSettings,
     QuietHours,
+    RightNowPings,
     get_notification_settings,
     save_notification_settings,
     zone_for,
@@ -41,6 +42,8 @@ class NotificationsOut(BaseModel):
     quiet_hours: QuietHours
     delivery: Delivery
     urgent_through: bool
+    # A chat message when Right now changes (the principal's alone).
+    right_now: RightNowPings
     # The zone they chose ("" for the workspace's), and the one in effect.
     timezone: str
     effective_timezone: str
@@ -58,6 +61,8 @@ class NotificationsUpdate(BaseModel):
     quiet_hours: QuietHours
     delivery: Delivery
     urgent_through: bool
+    # Optional so an older page that doesn't send it keeps the stored choice.
+    right_now: RightNowPings | None = None
     timezone: str = Field(default="", max_length=64)
 
 
@@ -98,6 +103,7 @@ def _out(person: Person, settings: NotificationSettings) -> NotificationsOut:
         quiet_hours=settings.quiet_hours,
         delivery=settings.delivery,
         urgent_through=settings.urgent_through,
+        right_now=settings.right_now,
         timezone=settings.timezone,
         effective_timezone=str(zone_for(settings)),
         held_count=held_count(person.id),
@@ -116,16 +122,17 @@ def get_notifications(request: Request) -> NotificationsOut:
 def update_notifications(request: Request, body: NotificationsUpdate) -> NotificationsOut:
     person = _caller(request)
     assert person.id is not None
+    before = get_notification_settings(person.id)
     try:
         settings = NotificationSettings(
             quiet_hours=body.quiet_hours,
             delivery=body.delivery,
             urgent_through=body.urgent_through,
+            right_now=body.right_now or before.right_now,
             timezone=body.timezone,
         )
     except ValueError as exc:
         raise _refuse(422, "invalid_settings", "That time zone isn't one we know.") from exc
-    before = get_notification_settings(person.id)
     try:
         saved = save_notification_settings(person.id, settings)
     except Exception as exc:
@@ -157,6 +164,7 @@ def update_notifications(request: Request, body: NotificationsUpdate) -> Notific
             "quiet_hours": saved.quiet_hours.enabled,
             "delivery": saved.delivery,
             "urgent_through": saved.urgent_through,
+            "right_now": saved.right_now,
         },
     )
     return _out(person, saved)

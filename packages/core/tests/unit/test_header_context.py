@@ -402,3 +402,20 @@ def test_raise_split_puts_todays_lines_apart_from_older_ones(
     assert fresh == ["Book the venue"]
     assert older == ["Send the deck"]
     assert leave.endswith("- golf")
+
+
+def test_needs_you_tags_and_point_citations() -> None:
+    from openexecutive.briefing.header_context import needs_you_tags, point_citations
+
+    ctx = _render(live=LiveSignals(
+        inbox=('[14:12] from Andy Agee (andy@svn.test): "Re: loan figures"',),
+        met_today=("14:30–15:15 Update call",),
+    ))
+    text = ctx.text  # type: ignore[attr-defined]
+    assert needs_you_tags(text) == {"M1"}  # the meeting that ended doesn't need them
+
+    draft = "**Andy wants a call.**\n\n- **Andy Agee** — wants a call. [M1]\n- **Update call** — done. [M2]"
+    assert point_citations(draft) == [
+        ("**Andy Agee** — wants a call.", frozenset({"M1"})),
+        ("**Update call** — done.", frozenset({"M2"})),
+    ]

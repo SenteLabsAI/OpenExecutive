@@ -14,8 +14,11 @@ import {
   heldLine,
   quietError,
   quietSummary,
+  RIGHT_NOW_LABEL,
+  rightNowDescription,
   toUpdate,
   type Delivery,
+  type RightNowPings,
   type QuietDays,
   type QuietHours,
 } from "@/lib/notifications";
@@ -82,7 +85,9 @@ export default function NotificationsCard() {
   const dirty = JSON.stringify(quiet) !== JSON.stringify(current.quiet_hours);
   const draftError = quietError(quiet);
 
-  async function save(change: Partial<Pick<NotificationSettings, "quiet_hours" | "delivery" | "urgent_through" | "timezone">>) {
+  async function save(
+    change: Partial<Pick<NotificationSettings, "quiet_hours" | "delivery" | "urgent_through" | "right_now" | "timezone">>,
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -252,6 +257,38 @@ export default function NotificationsCard() {
           />
         }
       />
+
+      {current.gets_briefs && current.right_now && (
+        <SettingsCard
+          title="Tell me when Right now changes"
+          titleId="right-now-label"
+          description="A short message on the chat app you last used with the Executive. Never during quiet hours, or when things come in your briefs."
+        >
+          <div role="radiogroup" aria-labelledby="right-now-label" className="grid grid-cols-3 overflow-hidden rounded-xl border border-line">
+            {(Object.keys(RIGHT_NOW_LABEL) as RightNowPings[]).map((choice) => {
+              const selected = current.right_now === choice;
+              return (
+                <button
+                  key={choice}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={busy}
+                  onClick={() => {
+                    if (!selected) void save({ right_now: choice });
+                  }}
+                  className={`min-h-[44px] px-2 py-2 text-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+                    selected ? "bg-accent/10 font-semibold text-accent" : "bg-surface text-fg-muted hover:text-fg"
+                  }`}
+                >
+                  {RIGHT_NOW_LABEL[choice]}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-sm text-fg-muted leading-relaxed">{rightNowDescription(current.right_now)}</p>
+        </SettingsCard>
+      )}
 
       {current.gets_briefs && (
         <p className="text-[15px] text-fg-muted">

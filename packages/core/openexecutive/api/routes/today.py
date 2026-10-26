@@ -2139,6 +2139,8 @@ async def _regen_briefing_narrative_locked(
     from openexecutive.memory.workspace_settings import get_workspace
 
     started = time.monotonic()
+    # The new points that need the principal, by key (right_now_ping).
+    important: set[str] = set()
     try:
         mode = get_workspace().mode
         snapshot = _build_today(include_private=expected_scope == narrative_cache.DEFAULT_SCOPE)
@@ -2182,6 +2184,15 @@ async def _regen_briefing_narrative_locked(
                 timeout=25.0 + REWRITE_TIMEOUT_S,
             )
             if viewer_desc is None and text:
+                if scope == narrative_cache.DEFAULT_SCOPE:
+                    from openexecutive.briefing.header_context import (
+                        needs_you_tags,
+                        point_citations,
+                    )
+                    from openexecutive.briefing.right_now import point_key
+
+                    needs_you = needs_you_tags(context)
+                    important = {point_key(p) for p, cited in point_citations(text) if cited & needs_you}
                 # Right now: a point must cite a line of what moved today.
                 # A draft with nothing left is still cached (as the fixed
                 # line), or every view would pay for the same draft again.
@@ -2202,7 +2213,12 @@ async def _regen_briefing_narrative_locked(
     ))
     from openexecutive.briefing import right_now
 
-    right_now.record_points(scope, text, written_at)
+    recorded = right_now.record_points(scope, text, written_at)
+    if scope == narrative_cache.DEFAULT_SCOPE and recorded.new:
+        from openexecutive.briefing.right_now_ping import maybe_ping
+
+        ping = await maybe_ping(recorded.new, important, earlier_today=recorded.earlier_today)
+        logger.info("today: right now ping %s", ping.status)
     logger.info(
         "today: narrative regenerated scope=%s ms=%d quiet=%s context_chars=%d",
         scope, int((time.monotonic() - started) * 1000),
