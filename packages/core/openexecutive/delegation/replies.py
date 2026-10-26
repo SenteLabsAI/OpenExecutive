@@ -64,6 +64,10 @@ class ReplyCard:
     # card's closed view; "" on a card drafted before it (the card falls back
     # to the start of what they wrote).
     gist: str = ""
+    # What happened on the card since the draft was written, in order
+    # (delegation.answers.conversation): newer email in the conversation,
+    # what they asked to change, and what the Executive said it did.
+    conversation: list[dict[str, str]] = field(default_factory=list)
 
 
 def _strings(value: Any) -> list[str]:
@@ -73,7 +77,7 @@ def _strings(value: Any) -> list[str]:
 def cards(person: Any) -> list[ReplyCard]:
     """``person``'s open reply cards, newest first."""
     from openexecutive.delegation import training
-    from openexecutive.delegation.answers import questions_for
+    from openexecutive.delegation.answers import conversation, questions_for
     from openexecutive.delegation.card_drafts import QUESTIONS_SETTLED
     from openexecutive.delegation.gmail import credential_provider, mailbox_link
     from openexecutive.delegation.handle_it import REASONS
@@ -123,6 +127,7 @@ def cards(person: Any) -> list[ReplyCard]:
             questions_settled=payload.get(QUESTIONS_SETTLED) is True,
             reply_others=[] if payload.get("source") == "follow_up" else _strings(payload.get(REPLY_OTHERS)),
             gist=str(payload.get("gist") or ""),
+            conversation=conversation(payload),
         ))
     return out
 

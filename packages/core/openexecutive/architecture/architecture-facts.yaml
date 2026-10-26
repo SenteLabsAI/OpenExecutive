@@ -11422,8 +11422,16 @@ delegation:
     after 7 days (the draft stays in Gmail), sent_in_gmail (the draft gone
     and the person's message after it; the draft row's sent_message_id is
     set), draft_deleted, you_replied, thread_gone — each a compare-and-set
-    close_externally with the reason — and a newer message from someone
-    else adds the flag thread_moved_on. A card being sent right now
+    close_externally with the reason. A newer message from someone else
+    brings the card up to date (answers.catch_up): one composer-model call
+    rewrites the draft with it as <news> (data, never the person's facts; a
+    decision only they can make comes back as a new question with choices,
+    at most MAX_NEW_QUESTIONS), saved by card_drafts.redraft (edit's card
+    checks without a caller), and the message plus the Executive's one-line
+    note join the payload's conversation; caught_up_at then moves where
+    later_messages (and Send's second yes) count from. Past MAX_CATCH_UPS
+    news on one card, or a failed rewrite, it only adds the flag
+    thread_moved_on. A card being sent right now
     (inbox.SENDING, this process) is left alone; one left executing by an
     unconfirmed send is settled (see send).
   send_chat_draft: |
@@ -11658,6 +11666,10 @@ delegation:
     /delegation/replies/{id}/recipients {everyone} sends it to the sender
     only or to everyone the email went to (409 no_choice when nobody else
     was on it), with the same checks. POST
+    /delegation/replies/{id}/change {text} (answers.change) rewrites it the
+    way the person said, through the same rewrite as <change>, and adds
+    their words and the Executive's note to the card's conversation (shown
+    by ReplyCardOut.conversation). POST
     /delegation/replies/{id}/answer {answers: [{question_index,
     answer_text}]} (delegation.answers) answers what the reply left open:
     one composer-model call (REWRITE_PROMPT + the person's voice block, no

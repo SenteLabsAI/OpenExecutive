@@ -1454,8 +1454,13 @@ async def settle_sends(person: Any, client: Any, *, now: datetime, own: set[str]
 
 
 def later_messages(thread: Any, payload: dict[str, Any], *, now: datetime) -> list[Any]:
-    """The thread's messages after the one a card answers (drafts left out)."""
-    inbound_at = _parse(str(payload.get("received_at") or ""))
+    """The thread's messages after the one a card answers (drafts left out),
+    or after the newest its draft was brought up to date with
+    (``answers.catch_up``)."""
+    from openexecutive.delegation.answers import CAUGHT_UP_KEY
+
+    marks = [_parse(str(payload.get(key) or "")) for key in ("received_at", CAUGHT_UP_KEY)]
+    inbound_at = max((m for m in marks if m is not None), default=None)
     return [
         m for m in thread.messages
         if "DRAFT" not in m.labels and (inbound_at is None or ((_parse(m.received_at) or now) > inbound_at))
@@ -1537,7 +1542,13 @@ async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime,
                 except Exception:
                     logger.warning("delegation.inbox: couldn't delete an unneeded follow-up draft", exc_info=True)
             return int(closed)
-        _add_flag(person.id, message_id, "thread_moved_on")
+        # Newer mail from them: the draft is brought up to date on its card,
+        # and only warns at Send when it couldn't be.
+        from openexecutive.delegation.answers import catch_up
+
+        newer = [m for m in later if m.from_addr not in own and "SENT" not in m.labels]
+        if not await catch_up(person, card, payload, newer, gmail=client, now=now):
+            _add_flag(person.id, message_id, "thread_moved_on")
     return 0
 
 

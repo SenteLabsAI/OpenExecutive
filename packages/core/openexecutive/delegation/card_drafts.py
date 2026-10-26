@@ -303,6 +303,32 @@ async def edit(
             _EDITING.discard(instance.id)
 
 
+async def redraft(instance: Any, person: Any, gmail: Any, rewrite: Rewrite) -> dict[str, Any]:
+    """Rewrite the reply on ``instance`` on the watcher's own turn, not a
+    tap: a newer email in its conversation (``answers.catch_up``). The same
+    card checks as ``edit`` except the caller's, since nobody tapped; the
+    words stay the card's until Send. Returns the payload as it now is;
+    raises ``SendRefused``. Sends nothing."""
+    from openexecutive.delegation.inbox import SENDING, card_payload
+    from openexecutive.delegation.reply_send import SendRefused
+    from openexecutive.delegation.settings import is_enabled
+    from openexecutive.memory.decision_ledger import STATUS_PROPOSED
+
+    payload = card_payload(instance)
+    if instance.status != STATUS_PROPOSED or instance.id in SENDING:
+        raise SendRefused(409, "already_handled", "This reply was already sent or dismissed.")
+    if getattr(instance, "gate_mode", "") == "auto_execute" or not is_enabled(person.id):
+        raise SendRefused(409, "already_handled", "This reply isn't waiting on its card.")
+    if instance.id in _EDITING or instance.id in _MAKING:
+        raise SendRefused(409, "busy", "This reply is being saved or sent right now.")
+    _EDITING.add(instance.id)
+    try:
+        written, extra = await rewrite(person, payload)
+        return await _edit(instance, person, payload, _check_words(written), gmail, extra)
+    finally:
+        _EDITING.discard(instance.id)
+
+
 async def _edit(
     instance: Any, person: Any, payload: dict[str, Any], words: str, gmail: Any, extra: dict[str, Any],
     recipients: tuple[list[str], list[str]] | None = None,

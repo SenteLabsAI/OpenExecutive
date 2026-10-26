@@ -2103,6 +2103,14 @@ export interface HandledReply {
 // alone. Send approves it (POST /decisions/{id}/approve); Dismiss rejects it
 // (POST /decisions/{id}/reject). `status` is "executing" while a send Gmail
 // didn't confirm is being checked.
+export interface ReplyTurn {
+  kind: "news" | "asked" | "note" | string;
+  text: string;
+  from_name?: string;
+  from_email?: string;
+  at?: string;
+}
+
 export interface ReplyCard {
   decision_id: number;
   status: string;
@@ -2152,6 +2160,10 @@ export interface ReplyCard {
   // What the email asks and what the draft says, in a line or two, for the
   // card's closed view; empty or absent on a card drafted before it.
   gist?: string;
+  // Since the draft was written: newer email in the conversation ("news"),
+  // what you asked to change ("asked") and what the Executive changed
+  // ("note"), in order. Absent on an older backend.
+  conversation?: ReplyTurn[];
 }
 
 // One thing a reply leaves you to decide (GET /delegation/replies).
@@ -2499,6 +2511,18 @@ export async function answerReplyQuestions(
     body: JSON.stringify({ answers }),
   });
   if (!res.ok) throw await delegationError(res, "Couldn't add that to your reply.");
+  return (await res.json()) as ReplyCard;
+}
+
+// Change the reply the way you say, in your own words: the Executive
+// rewrites it and says what it changed (POST .../change). Sends nothing.
+export async function changeReply(id: number, text: string): Promise<ReplyCard> {
+  const res = await fetch(`${API_BASE}/delegation/replies/${id}/change`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't change your reply.");
   return (await res.json()) as ReplyCard;
 }
 
