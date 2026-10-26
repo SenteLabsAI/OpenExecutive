@@ -2164,6 +2164,9 @@ export interface ReplyCard {
   // what you asked to change ("asked") and what the Executive changed
   // ("note"), in order. Absent on an older backend.
   conversation?: ReplyTurn[];
+  // When the reply was last brought up to date with newer mail; Send passes
+  // it back, so a version you never saw asks again.
+  caught_up_at?: string;
 }
 
 // One thing a reply leaves you to decide (GET /delegation/replies).
@@ -2639,7 +2642,14 @@ function strings(value: unknown): string[] {
 // version when you changed the draft (Drafts in training).
 export async function sendReplyCard(
   id: number,
-  confirm?: { recipients: string[]; thread_moved_on?: boolean; allow?: boolean; example?: boolean },
+  confirm?: {
+    recipients: string[];
+    thread_moved_on?: boolean;
+    allow?: boolean;
+    example?: boolean;
+    // The card's caught_up_at as shown: brought up to date since asks again.
+    seen_caught_up_at?: string;
+  },
 ): Promise<SendReplyResult> {
   const res = await fetch(`${API_BASE}/decisions/${id}/approve`, {
     method: "POST",

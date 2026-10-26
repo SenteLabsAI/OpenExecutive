@@ -579,6 +579,15 @@ def _turns(
     return {CONVERSATION_KEY: turns[-CONVERSATION_MAX:]}
 
 
+def _clean(text: str) -> bool:
+    """Whether ``text`` has no link or email address in it."""
+    from openexecutive.delegation.ghostwriter import lint, one_line
+
+    line = one_line(text, 300)
+    cleaned, _ = lint(line, allowed_text="", exec_name="")
+    return " ".join(cleaned.split()) == " ".join(line.split())
+
+
 def _new_questions(payload: dict[str, Any], raw: Any) -> dict[str, Any]:
     """The questions a catch-up left the person, added after the card's own
     (so the answers given keep their places)."""
@@ -594,12 +603,15 @@ def _new_questions(payload: dict[str, Any], raw: Any) -> dict[str, Any]:
         if added >= MAX_NEW_QUESTIONS or len(questions) >= MAX_QUESTIONS or not isinstance(item, dict):
             break
         text = one_line(str(item.get("text") or ""), 300)
-        if not text or text in questions:
+        if not text or text in questions or not _clean(text):
             continue
         choices = item.get("choices")
-        picked = [one_line(c, 120) for c in choices if isinstance(c, str) and c.strip()][:4] if isinstance(
-            choices, list,
-        ) else []
+        # Written after reading other people's email: a choice with a link or
+        # address in it never becomes something the person can tap into the
+        # reply (a tapped answer counts as theirs for the lint).
+        picked = [
+            one_line(c, 120) for c in choices if isinstance(c, str) and c.strip() and _clean(c)
+        ][:4] if isinstance(choices, list) else []
         questions.append(text)
         shaped.append({"choices": picked, "about": "", "source": ""})
         added += 1

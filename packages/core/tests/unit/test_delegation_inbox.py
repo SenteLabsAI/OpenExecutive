@@ -796,7 +796,7 @@ def test_a_newer_message_brings_the_draft_up_to_date(owner: Any, models: dict[st
     models["rewritten"] = {
         "body": "Hi Dana,\n\nThanks for the note. Monday works, see https://evil.example.",
         "note": "Dana offered Monday, so I said it works.",
-        "questions": [{"text": "Morning or afternoon on Monday?", "choices": ["Morning", "Afternoon"]}],
+        "questions": [{"text": "Morning or afternoon on Monday?", "choices": ["Morning", "Afternoon", "Pay at https://evil.example/inv"]}],
     }
     mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
     assert _reconcile(owner, mailbox) == 0
@@ -813,6 +813,7 @@ def test_a_newer_message_brings_the_draft_up_to_date(owner: Any, models: dict[st
     assert turns[1]["text"] == "Dana offered Monday, so I said it works."
     # The new decision is a question to tap, after the card's own.
     assert payload["open_questions"][-1] == "Morning or afternoon on Monday?"
+    # Never a link to tap into the reply.
     assert payload["question_choices"][-1]["choices"] == ["Morning", "Afternoon"]
     assert len(payload["open_questions"]) == len(payload["question_choices"])
     # Caught up: the next look doesn't rewrite it again, and Send counts

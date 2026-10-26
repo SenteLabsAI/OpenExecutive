@@ -462,6 +462,9 @@ class ReplyCardOut(BaseModel):
     # Newer email in the conversation, what the caller asked to change and
     # what the Executive changed, in order.
     conversation: list[ReplyTurnOut] = Field(default_factory=list)
+    # When it was last brought up to date with newer mail; Send passes it
+    # back as edits.seen_caught_up_at.
+    caught_up_at: str = ""
 
 
 class RepliesOut(BaseModel):

@@ -212,6 +212,25 @@ def test_a_newer_message_needs_a_second_yes(owner: Any, models: dict[str, Any]) 
     assert mailbox.sent == ["d1"]
 
 
+def test_a_draft_brought_up_to_date_asks_again_unless_that_version_was_shown(
+    owner: Any, models: dict[str, Any],
+) -> None:
+    from openexecutive.delegation.answers import CAUGHT_UP_KEY
+
+    mailbox, card = _card(owner)
+    models["rewritten"] = {"body": "Hi Dana,\n\nMonday works.", "note": "Dana offered Monday."}
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    asyncio.run(inbox.reconcile(owner, mailbox, now=NOW + timedelta(minutes=30), own={OWNER, *mailbox.aliases}))
+    card = ledger.get_decision_instance(card.id)
+    caught_up = inbox.card_payload(card)[CAUGHT_UP_KEY]
+    # Rewritten on its own after the card was shown: a second yes.
+    first = _refused(card, mailbox, owner, confirm={"seen_caught_up_at": "an older version"})
+    assert first.code == "confirm" and first.extra["reasons"] == ["thread_moved_on"]
+    # The card that was tapped showed this version: it goes.
+    _send(card, mailbox, owner, confirm={"seen_caught_up_at": caught_up})
+    assert mailbox.sent == ["d1"]
+
+
 def test_a_draft_gone_or_answered_closes_the_card(owner: Any, models: dict[str, Any]) -> None:
     mailbox, card = _card(owner)
     del mailbox.drafts["d1"]

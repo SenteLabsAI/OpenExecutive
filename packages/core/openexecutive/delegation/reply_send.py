@@ -207,6 +207,7 @@ async def _send_checked(
 ) -> str:
     from openexecutive.config import get_settings
     from openexecutive.delegation import card_drafts, drafts, handle_it, training
+    from openexecutive.delegation.answers import CAUGHT_UP_KEY
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
         STATUS_MESSAGES,
@@ -366,6 +367,15 @@ async def _send_checked(
         reasons.append("recipients_changed")
     moved_on = any(m.from_addr not in own and "SENT" not in m.labels for m in later)
     if moved_on and confirm.get("thread_moved_on") is not True:
+        reasons.append("thread_moved_on")
+    # Brought up to date with newer mail on its own (answers.catch_up): Send
+    # goes without asking again only when the card that was tapped showed
+    # that version (edits.seen_caught_up_at).
+    caught_up = str(payload.get(CAUGHT_UP_KEY) or "")
+    if (
+        caught_up and confirm.get("seen_caught_up_at") != caught_up
+        and confirm.get("thread_moved_on") is not True and "thread_moved_on" not in reasons
+    ):
         reasons.append("thread_moved_on")
     if reasons:
         raise SendRefused(

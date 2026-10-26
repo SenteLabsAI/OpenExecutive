@@ -260,6 +260,7 @@ export function ReplyCardItem({
         card.decision_id,
         {
           ...confirm,
+          ...(card.caught_up_at ? { seen_caught_up_at: card.caught_up_at } : {}),
           ...(allow ? { allow: true } : {}),
           ...(learnsStyle && keepExample ? { example: true } : {}),
         },
@@ -277,6 +278,9 @@ export function ReplyCardItem({
         );
         return;
       }
+      // The reply may have been brought up to date with newer mail since it
+      // was shown: show it as it is now, beside the second question.
+      if (result.reasons.includes("thread_moved_on")) void onRefresh();
       setStep({
         kind: "confirm",
         message: result.message,
