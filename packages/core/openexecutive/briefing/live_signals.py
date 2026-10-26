@@ -30,6 +30,12 @@ already hold them:
   • WAITING — the principal's own sent mail nobody has answered yet
     (``briefing.waiting_on``, read in the background from their own mailbox
     under Act as me): who it went to, its subject, when. Private.
+  • INBOX — mail to the principal's own inbox that the Act as me watcher
+    looked at (``delegation_inbox_mail`` audit rows, ``delegation.inbox``),
+    including newer mail on a thread whose reply card is still open. From
+    people they deal with, one line each with what the watcher did; from
+    anyone else (strangers, bulk mail), only short labels for Home's "Also
+    in" line, never a point. Private.
 
 Private rows (the principal's own contacts, their drafts, their chat titles,
 their calendar) are included only with ``include_private=True``: the morning brief (a
@@ -64,6 +70,8 @@ _OWN_MAX = 6
 _CALENDAR_MAX = 6
 _MET_TODAY_MAX = 3
 _WAITING_MAX = 5
+_INBOX_MAX = 6
+_INBOX_OTHERS_MAX = 3
 # How many audit rows each query reads. A busy day's inbound is well under
 # this; the cap keeps a flood from turning one page load into a scan.
 _POOL = 200
@@ -221,6 +229,12 @@ class LiveSignals:
     met_today: tuple[str, ...] = ()
     # The reader's own emails with no answer yet, newest first.
     waiting: tuple[str, ...] = ()
+    # Mail to the reader's own inbox from people they deal with, newest
+    # first; and short labels for the rest (``inbox_others_total`` of them).
+    # Right now's alone, like ``waiting``.
+    inbox: tuple[str, ...] = ()
+    inbox_others: tuple[str, ...] = ()
+    inbox_others_total: int = 0
     # Stable identities for the brief's "unchanged" fingerprint — no times.
     # The reader's own messages are left out: chatting with the Executive
     # is not a reason to send a brief.
@@ -621,6 +635,98 @@ def _met_today_lines(events: list[Any], now: datetime, tz: tzinfo) -> list[str]:
     ]
 
 
+# Why the watcher passed mail over without reading it as someone's: bulk,
+# a list, a Gmail tab, not addressed to them. Such mail is "Also in", never a
+# point, however well they know the sender.
+_INBOX_NOISE = frozenset({"automatic", "mailing_list", "category", "not_addressed", "too_many_recipients"})
+_INBOX_KNOWN = frozenset({"team", "contact", "correspondent"})
+
+
+@dataclass(frozen=True)
+class OwnInbox:
+    lines: tuple[str, ...] = ()
+    others: tuple[str, ...] = ()
+    others_total: int = 0
+
+
+def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnInbox:
+    """Mail to the principal's own inbox since ``since`` (by when it arrived),
+    as the Act as me watcher recorded it. Private; never raises."""
+    from openexecutive.delegation import inbox as watcher
+
+    principal = _principal()
+    if principal is None or principal.id is None:
+        return OwnInbox()
+    try:
+        from openexecutive.audit import logger as audit_logger
+
+        if audit_logger._default_logger is None and not audit_logger.DB_PATH.exists():
+            return OwnInbox()  # a read must not create the database (see _audit_rows)
+        # The principal's rows carry no owner; owned_by keeps a row a
+        # failed principal check left marked as theirs too.
+        rows = audit_logger.get_audit_logger().query(
+            event_type=watcher.MAIL_SEEN_EVENT, since=since.isoformat(), limit=_POOL,
+            include_private=True, owned_by=principal.id,
+        )
+    except Exception:
+        logger.exception("live_signals: own inbox read failed")
+        return OwnInbox()
+    picked: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ev in rows:  # newest first
+        d = ev.details if isinstance(ev.details, dict) else {}
+        message_id = str(d.get("message_id") or "")
+        if d.get("person_id") != principal.id or not message_id or message_id in seen:
+            continue
+        seen.add(message_id)
+        # Noted on a later pass (a restart, a card read again): what counts
+        # is when it arrived.
+        arrived = parse_aware(str(d.get("received_at") or "")) or parse_aware(ev.ts)
+        if arrived is None or arrived < since:
+            continue
+        picked.append(d | {"_at": arrived})
+    picked.sort(key=lambda d: d["_at"], reverse=True)
+    done = watcher.outcomes(principal.id, [str(d["message_id"]) for d in picked])
+    lines: list[str] = []
+    others: list[str] = []
+    others_total = 0
+    for d in picked:
+        address = str(d.get("from_email") or "")
+        name = _one_line(d.get("from_name"), 60)
+        subject = _one_line(d.get("subject"), 100) or "(no subject)"
+        outcome = done.get(str(d["message_id"]), "")
+        relation = str(d.get("relation") or "")
+        reason = str(d.get("reason") or "")
+        on_card = d.get("card_id") is not None
+        needs_them = on_card or outcome in (watcher.DRAFTED, watcher.SENT)
+        if not needs_them and (relation not in _INBOX_KNOWN or reason in _INBOX_NOISE):
+            others_total += 1
+            if len(others) < _INBOX_OTHERS_MAX:
+                who = name or _one_line(address, 60)
+                others.append(_one_line(f"{who}: {subject}", 90))
+            continue
+        if len(lines) >= _INBOX_MAX:
+            continue
+        who = f"{name} ({address})" if name and address else _named(address, True)
+        at = _local_hhmm(d["_at"].isoformat(), tz, now)
+        if on_card:
+            what = (
+                "wrote again in a thread whose reply card is still open, so the card's "
+                "draft was written before this"
+            )
+        elif outcome == watcher.DRAFTED:
+            what = "I drafted a reply; it is on a card waiting for the reader"
+        elif outcome == watcher.SENT:
+            what = "I answered it on the reader's behalf"
+        elif outcome == watcher.NOT_NEEDED:
+            what = "no reply needed"
+        else:
+            what = ""
+        line = f"[{at}] from {who}: \"{subject}\""
+        lines.append(f"{line} — {what}" if what else line)
+    return OwnInbox(tuple(lines), tuple(others), others_total)
+
+
 def _waiting_lines(items: list[Any], now: datetime, tz: tzinfo) -> list[str]:
     """One line per unanswered email of theirs: to whom, when, its subject."""
     today = now.astimezone(tz).date()
@@ -736,6 +842,13 @@ def gather_live_signals(
         except Exception:
             logger.exception("live_signals: waiting render failed")
 
+    mail = OwnInbox()
+    if include_private:
+        try:
+            mail = own_inbox(since, tz, now)
+        except Exception:
+            logger.exception("live_signals: own inbox render failed")
+
     stuck = stuck[:_STUCK_MAX]
     return LiveSignals(
         inbound=tuple(inbound),
@@ -749,6 +862,9 @@ def gather_live_signals(
         calendar=calendar_lines,
         met_today=met_today,
         waiting=waiting,
+        inbox=mail.lines,
+        inbox_others=mail.others,
+        inbox_others_total=mail.others_total,
         keys={
             "inbound": sorted(inbound_keys),
             "stuck": sorted(s.split("] ", 1)[-1] for s in stuck),

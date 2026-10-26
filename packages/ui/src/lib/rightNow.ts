@@ -46,3 +46,25 @@ export function newSinceLabel(points: TimedPoint[], baseline: Date | null): stri
   if (n === 0 || !baseline) return null;
   return `${n} new since ${clockLabel(baseline.toISOString())}`;
 }
+
+/** "Checked 2:20 PM": when the served header was last found current, so a
+ * quiet one doesn't read as stuck at the hour it was written. */
+export function checkedLabel(iso: string | null | undefined): string | null {
+  const at = clockLabel(iso);
+  return at ? `Checked ${at}` : null;
+}
+
+/** Right now's closing line for mail from people the reader doesn't deal
+ * with: "Also in: 2 others — Ana Ruiz: Q4 rates and Yardi: Webinar." Null
+ * when there was none. */
+export function alsoInLine(labels: string[] | null | undefined, total: number | null | undefined): string | null {
+  const shown = (labels ?? []).filter((l) => l.trim());
+  const count = Math.max(total ?? 0, shown.length);
+  if (count === 0) return null;
+  const head = `Also in: ${count} ${count === 1 ? "other" : "others"}`;
+  if (shown.length === 0) return `${head}.`;
+  const rest = count - shown.length;
+  const named = rest > 0 ? [...shown, `${rest} more`] : shown;
+  const list = named.length === 1 ? named[0] : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+  return `${head} — ${list}.`;
+}

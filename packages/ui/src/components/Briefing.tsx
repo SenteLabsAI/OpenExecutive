@@ -31,7 +31,7 @@ import {
   narrativeUpdatedLabel,
   shouldRefreshOnFocus,
 } from "@/lib/narrativeFreshness";
-import { seenBaseline } from "@/lib/rightNow";
+import { checkedLabel, seenBaseline } from "@/lib/rightNow";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
 import InfoTip from "./InfoTip";
@@ -794,7 +794,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const briefFreshness = today
     ? today.narrative_stale
       ? "Refreshing…"
-      : narrativeUpdatedLabel(today.narrative_generated_at, new Date())
+      : checkedLabel(today.narrative_checked_at) ?? narrativeUpdatedLabel(today.narrative_generated_at, new Date())
     : null;
 
   // In the first week the first-week card says what to start on, so the day

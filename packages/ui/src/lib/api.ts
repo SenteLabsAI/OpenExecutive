@@ -5336,6 +5336,12 @@ export interface Today {
   narrative_points?: NarrativePoint[];
   narrative_move?: string | null;
   narrative_seen_at?: string | null;
+  // When the served header was last found current (null while a fresher one
+  // is being written), and the owner's "Also in" line: today's mail to their
+  // own inbox from people they don't deal with. Optional for older API builds.
+  narrative_checked_at?: string | null;
+  inbox_also?: string[];
+  inbox_also_total?: number;
   // The owner's own: today's delivered morning brief and the meetings still
   // ahead today.
   morning_brief?: MorningBriefItem | null;

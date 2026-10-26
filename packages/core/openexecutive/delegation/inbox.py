@@ -943,6 +943,80 @@ def _audit(event_type: str, summary: str, details: dict[str, Any]) -> None:
     )
 
 
+# Mail the watcher looked at, for Right now (``briefing.live_signals``): who
+# wrote, about what, and how well the person knows them. Skips that aren't
+# mail to them from someone else (their own, the Executive's, before the
+# switch, too old, already answered) are left out.
+MAIL_SEEN_EVENT = "delegation_inbox_mail"
+_NOT_NEWS = frozenset({
+    "before_watch", "stale", "no_sender", "from_you", "from_executive", "ours", "you_replied", "draft_exists",
+})
+# Newer mail on a card's thread already noted, in this process: reconcile
+# reads the thread on every scan. Right now also drops repeats by message id.
+_NOTED_LATER: set[tuple[int, str]] = set()
+# Started over past this many, so it never grows with the mail.
+_NOTED_LATER_MAX = 5000
+
+
+def _note_mail(
+    person_id: int, message: Any, *, relation: str, reason: str | None = None, card_id: int | None = None,
+) -> None:
+    """Record that ``message`` reached the person's inbox (private, theirs).
+    Never raises."""
+    if reason in _NOT_NEWS:
+        return
+    try:
+        _audit(MAIL_SEEN_EVENT, f"Email to person {person_id}", {
+            "person_id": person_id,
+            "message_id": message.id,
+            "thread_id": message.thread_id,
+            "from_name": message.from_name or "",
+            "from_email": message.from_addr or "",
+            "subject": message.subject or "",
+            "received_at": message.received_at or "",
+            "relation": relation or "",
+            "reason": reason or "",
+            "card_id": card_id,
+        })
+    except Exception:
+        logger.warning("delegation.inbox: noting a message failed", exc_info=True)
+
+
+def outcomes(person_id: int, message_ids: list[str], db_path: Path | None = None) -> dict[str, str]:
+    """``message_id`` → what the watcher did with it (``DRAFTED``,
+    ``NOT_NEEDED``, …), for the ids it recorded. Never raises."""
+    if not message_ids:
+        return {}
+    try:
+        conn = _connect(db_path)
+        try:
+            marks = ",".join("?" * len(message_ids))
+            rows = conn.execute(
+                f"SELECT message_id, outcome FROM {INBOX_MESSAGES_TABLE} "  # noqa: S608 — constant table name
+                f"WHERE person_id = ? AND message_id IN ({marks})",
+                (person_id, *message_ids),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("delegation.inbox: reading outcomes failed", exc_info=True)
+        return {}
+    return {r["message_id"]: r["outcome"] for r in rows}
+
+
+def _note_later(person_id: int, card: Any, payload: dict[str, Any], later: list[Any], own: set[str]) -> None:
+    """Note newer mail from someone else on an open card's thread (a scan
+    passes those threads over while the card is open)."""
+    relation = str(payload.get("relation") or "")
+    for m in later:
+        if m.from_addr in own or "SENT" in m.labels or (person_id, m.id) in _NOTED_LATER:
+            continue
+        if len(_NOTED_LATER) >= _NOTED_LATER_MAX:
+            _NOTED_LATER.clear()
+        _NOTED_LATER.add((person_id, m.id))
+        _note_mail(person_id, m, relation=relation, card_id=card.id)
+
+
 async def scan_person(person: Any, *, gmail: Any = None, now: datetime | None = None) -> ScanResult:
     """One scan of ``person``'s inbox. Never raises; the switch's status
     records how it went. With the switch off it only follows through a send
@@ -1221,6 +1295,7 @@ async def _consider(
     if reason is not None:
         if _claim(person.id, message, relation="", outcome=SKIPPED, reason=reason, now=now):
             result.skipped += 1
+            _note_mail(person.id, message, relation="", reason=reason)
         return False
     known_as = await relation_of(message.from_addr, client, contacts=bool(person.is_principal))
     relation = handling_relation(known_as, message)
@@ -1233,6 +1308,7 @@ async def _consider(
         return False
     if not _claim(person.id, message, relation=relation, outcome=PROCESSING, now=now):
         return False
+    _note_mail(person.id, message, relation=relation)
     asked = addressing(message, name=person.full_name or "", own=own, exec_address=exec_address)
     verdict = await classify(
         message, relation=relation, addressed=asked, earlier=their_last_words(thread, message, own)
@@ -1527,6 +1603,7 @@ async def _reconcile_card(person: Any, client: Any, card: Any, *, now: datetime,
     if sent_by_them:
         return int(_close_card(person.id, card.id, message_id, "you_replied", CLOSED))
     if any(m.from_addr not in own and "SENT" not in m.labels for m in later):
+        _note_later(person.id, card, payload, later, own)
         if payload.get("source") == FOLLOW_UP_SOURCE:
             # They answered: the follow-up isn't needed any more.
             closed = _close_card(person.id, card.id, message_id, "answered", CLOSED)

@@ -655,3 +655,91 @@ def test_a_drafts_recipient_is_named_when_they_are_a_contact(roster: SimpleNames
     line = live_signals.draft_line(draft, UTC)
 
     assert 'to Mara Quinn (MQuinn@acme.test), nobody@else.test — "Property tax"' in line
+
+
+# --------------------------------------------------------------------------- #
+# Own inbox (the Act as me watcher's notes)
+# --------------------------------------------------------------------------- #
+
+
+def _mail(mid: str, sender: str, name: str, subject: str, at: datetime, thread: str = "") -> Any:
+    from openexecutive.delegation.gmail import MailMessage
+
+    return MailMessage(
+        id=mid, thread_id=thread or f"t-{mid}", from_addr=sender, from_name=name, subject=subject,
+        received_at=at.isoformat(),
+    )
+
+
+@pytest.fixture()
+def principal(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    me = SimpleNamespace(id=7, email="me@co.test", email_aliases=[], full_name="Pat Lee")
+    monkeypatch.setattr(live_signals, "_principal", lambda: me)
+    return me
+
+
+def test_own_inbox_splits_people_they_deal_with_from_the_rest(
+    principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import inbox
+
+    now = datetime(2026, 10, 26, 18, 0, tzinfo=UTC)
+    since = now - timedelta(hours=12)
+    at = now - timedelta(hours=1)
+    inbox._note_mail(7, _mail("m1", "andy@svn.test", "Andy Agee", "Re: loan figures", at), relation="contact")
+    inbox._note_mail(7, _mail("m2", "promo@yardi.test", "Yardi", "Webinar", at), relation="stranger")
+    inbox._note_mail(7, _mail("m3", "news@list.test", "Weekly", "Issue 9", at), relation="", reason="mailing_list")
+    # Not news: the reader's own mail, and mail from before the window.
+    inbox._note_mail(7, _mail("m4", "me@co.test", "Pat", "Mine", at), relation="", reason="from_you")
+    inbox._note_mail(7, _mail("m5", "old@co.test", "Old", "Old", now - timedelta(days=2)), relation="contact")
+    # A teammate's own inbox never reaches the principal's header.
+    inbox._note_mail(9, _mail("m6", "x@co.test", "X", "Theirs", at), relation="contact")
+    monkeypatch.setattr(inbox, "outcomes", lambda pid, ids: {"m1": inbox.DRAFTED})
+
+    mail = live_signals.own_inbox(since, UTC, now)
+
+    assert len(mail.lines) == 1
+    assert 'from Andy Agee (andy@svn.test): "Re: loan figures"' in mail.lines[0]
+    assert "on a card waiting" in mail.lines[0]
+    assert sorted(mail.others) == ["Weekly: Issue 9", "Yardi: Webinar"]
+    assert mail.others_total == 2
+
+
+def test_newer_mail_on_an_open_card_is_news_and_noted_once(
+    principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import inbox
+
+    now = datetime(2026, 10, 26, 18, 0, tzinfo=UTC)
+    monkeypatch.setattr(inbox, "_NOTED_LATER", set())
+    card = SimpleNamespace(id=39)
+    payload = {"relation": "contact"}
+    later = [
+        _mail("r1", "andy@svn.test", "Andy Agee", "Re: loan figures", now - timedelta(hours=2), "t1"),
+        _mail("r2", "me@co.test", "Pat", "Re: loan figures", now - timedelta(hours=1), "t1"),
+    ]
+    inbox._note_later(7, card, payload, later, {"me@co.test"})
+    inbox._note_later(7, card, payload, later, {"me@co.test"})  # the next scan reads it again
+    monkeypatch.setattr(inbox, "outcomes", lambda pid, ids: {})
+
+    mail = live_signals.own_inbox(now - timedelta(hours=12), UTC, now)
+
+    assert len(mail.lines) == 1
+    assert "reply card is still open" in mail.lines[0]
+    rows = live_signals._audit_rows(inbox.MAIL_SEEN_EVENT, now - timedelta(days=1), True)
+    assert len([r for r in rows if r.details.get("message_id") == "r1"]) <= 1
+
+
+def test_own_inbox_is_the_principals_alone(principal: SimpleNamespace) -> None:
+    from openexecutive.delegation import inbox
+
+    now = datetime.now(UTC)
+    inbox._note_mail(7, _mail("m1", "andy@svn.test", "Andy", "Hi", now - timedelta(minutes=30)), relation="contact")
+
+    shared = live_signals.gather_live_signals(now - timedelta(hours=6), now=now, include_private=False)
+    own = live_signals.gather_live_signals(now - timedelta(hours=6), now=now, include_private=True)
+
+    assert shared.inbox == ()
+    assert len(own.inbox) == 1
+    # Right now's alone: the briefs don't count it.
+    assert own.is_empty()

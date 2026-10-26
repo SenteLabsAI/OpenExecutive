@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 
 import type { Today } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine } from "@/lib/briefing-memory";
-import { clockLabel, isNewSince, newSinceLabel, type TimedPoint } from "@/lib/rightNow";
+import { alsoInLine, clockLabel, isNewSince, newSinceLabel, type TimedPoint } from "@/lib/rightNow";
 
 import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 
@@ -102,6 +102,7 @@ export function RightNowCard({
 }) {
   const points = today.narrative_points ?? [];
   const badge = newSinceLabel(points, baseline);
+  const alsoIn = alsoInLine(today.inbox_also, today.inbox_also_total);
   return (
     <section aria-labelledby="sec-right-now" className="mb-8 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
       <div className="mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -129,6 +130,7 @@ export function RightNowCard({
               ))}
             </ul>
           )}
+          {alsoIn && <AlsoIn text={alsoIn} />}
           <button
             type="button"
             onClick={onOpen}
@@ -143,6 +145,11 @@ export function RightNowCard({
       )}
     </section>
   );
+}
+
+// Mail from people the reader doesn't deal with: one quiet line, never a point.
+function AlsoIn({ text }: { text: string }) {
+  return <p className="mt-2 border-t border-dashed border-line pt-2 text-sm text-fg-muted">{text}</p>;
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -178,6 +185,7 @@ export function RightNowBody({
   const open = points.filter((p) => !isNewSince(p, baseline));
   const calendar = today.calendar_next ?? [];
   const morning = today.morning_brief;
+  const alsoIn = alsoInLine(today.inbox_also, today.inbox_also_total);
   const list = (items: TimedPoint[], isNew: boolean) => (
     <ul>
       {items.map((p, i) => (
@@ -202,6 +210,7 @@ export function RightNowBody({
       ) : (
         open.length > 0 && <div className="mt-3">{list(open, false)}</div>
       )}
+      {alsoIn && <AlsoIn text={alsoIn} />}
       {today.narrative_move && (
         <p className="mt-4 rounded-xl bg-accent/5 px-3 py-2.5 text-[15px] text-fg">
           <span className="font-semibold">Move today:</span> {today.narrative_move}

@@ -162,6 +162,8 @@ def test_morning_brief_alias_returns_same_body(
     today = client.get("/today").json()
     legacy = client.get("/morning-brief").json()
     assert today["narrative"] == "- **Bottom line:** the budget needs you."
+    # When each call found the header current: the moment of that call.
+    assert today.pop("narrative_checked_at") and legacy.pop("narrative_checked_at")
     assert today == legacy
 
 
@@ -675,7 +677,10 @@ def test_morning_brief_alias_unaffected_by_async_today(client: TestClient) -> No
     the narrative cache is deliberately warmed first — see the alias test
     above — so the two calls are compared on equal footing)."""
     client.get("/today")  # warm the narrative cache — see the alias test above
-    assert client.get("/today").json() == client.get("/morning-brief").json()
+    today, legacy = client.get("/today").json(), client.get("/morning-brief").json()
+    today.pop("narrative_checked_at", None)
+    legacy.pop("narrative_checked_at", None)
+    assert today == legacy
 
 
 def test_naive_awaiting_timestamp_does_not_500(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2542,8 +2547,30 @@ def test_today_splits_the_header_for_right_now(
     assert point["text"].startswith("**Lakeside renewal**")
     assert point["since"] == data["narrative_generated_at"]
     assert data["narrative_seen_at"] is None
-    # Not the principal: no morning brief or calendar.
+    # Nothing moved since it was written: it was found current just now.
+    assert data["narrative_checked_at"] >= data["narrative_generated_at"]
+    # Not the principal: no morning brief, calendar or own inbox.
     assert data["morning_brief"] is None and data["calendar_next"] == []
+    assert data["inbox_also"] == [] and data["inbox_also_total"] == 0
+
+
+def test_right_now_also_in_is_the_principals_own_inbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.briefing import live_signals
+
+    seen: list[datetime] = []
+
+    def _own(since: datetime, tz: object, now: object = None) -> live_signals.OwnInbox:
+        seen.append(since)
+        return live_signals.OwnInbox(("[10:00] from Andy",), ("Yardi: Webinar",), 3)
+
+    monkeypatch.setattr(live_signals, "own_inbox", _own)
+    response = today_route.TodayResponse(departments=[], people=[], proposals=[])
+    now = datetime(2026, 10, 26, 18, 30, tzinfo=UTC)
+    today_route._attach_inbox_also(response, now)
+
+    assert response.inbox_also == ["Yardi: Webinar"] and response.inbox_also_total == 3
+    # The same window Right now reads: back to midnight or 12 hours, in UTC.
+    assert seen == [datetime(2026, 10, 26, 0, 0, tzinfo=UTC)]
 
 
 def test_today_seen_round_trips_in_a_teammates_scope(

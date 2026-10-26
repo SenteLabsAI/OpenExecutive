@@ -11,7 +11,9 @@ that, not around everything the Executive can see:
   overdue from people it is waiting on, work it finished today, things it
   could not do from a chat, and today's monitoring signals. For the
   principal also the emails of theirs nobody has answered yet (their own
-  sent mail, ``briefing.waiting_on``) and the meetings that ended today.
+  sent mail, ``briefing.waiting_on``), the meetings that ended today, and
+  mail to their own inbox from people they deal with (``live_signals.
+  own_inbox``; mail from anyone else is Home's "Also in" line, never a point).
 - **COMING UP TODAY**: the rest of the calendar, tagged the same way.
 - **STILL OPEN**: what is already on the list below and did not move today.
   Background for ranking, never a point.
@@ -144,6 +146,8 @@ def render_header_context(
             moved.add(f"{n} draft{'s' if n != 1 else ''} in the reader's own mailbox, waiting for them to send")
         for line in live.waiting:
             moved.add(f"The reader's own email, waiting on an answer: {_one_line(line, 300)}")
+        for line in live.inbox:
+            moved.add(f"Email to the reader's own inbox: {_one_line(line, 400)}")
         for line in live.met_today:
             moved.add(f"Meeting that ended today: {_one_line(line, 200)}")
 

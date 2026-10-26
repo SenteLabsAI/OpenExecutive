@@ -549,6 +549,17 @@ class TodayResponse(BaseModel):
     narrative_points: list[NarrativePoint] = Field(default_factory=list)
     narrative_move: str | None = None
     narrative_seen_at: str | None = None
+    # When the served header was last found current (ISO-8601 UTC): now,
+    # when nothing it reads has moved since it was written, so a quiet
+    # header says "Checked 2:20 PM" rather than the hour it was written.
+    # None while a fresher one is being written. Additive.
+    narrative_checked_at: str | None = None
+    # The principal's own: mail to their own inbox today from people they
+    # don't deal with (strangers, bulk mail), as short "Name: subject"
+    # labels (a few) and how many there were. Right now's "Also in" line,
+    # never a point. Additive; empty / 0 for anyone else.
+    inbox_also: list[str] = Field(default_factory=list)
+    inbox_also_total: int = 0
     # The principal's own: today's delivered morning brief and the meetings
     # still ahead today. Additive; None / empty for anyone else.
     morning_brief: MorningBriefItem | None = None
@@ -1739,6 +1750,13 @@ def _with_due_soon(
 _LIVE_MIN_LOOKBACK = timedelta(hours=12)
 
 
+def _live_start(now: datetime, tz: tzinfo) -> datetime:
+    """Where Right now's live window starts: local midnight, or
+    ``_LIVE_MIN_LOOKBACK`` before the current hour when that is earlier."""
+    hour = now.astimezone(tz).replace(minute=0, second=0, microsecond=0)
+    return min(hour.replace(hour=0), hour - _LIVE_MIN_LOOKBACK)
+
+
 def _header_live(include_private: bool, now: datetime | None = None) -> tuple[Any, str, str]:
     """``(signals, window words, NOW label)`` for a whole-company header.
 
@@ -1756,9 +1774,8 @@ def _header_live(include_private: bool, now: datetime | None = None) -> tuple[An
     now = now or datetime.now(UTC)
     tz = get_user_timezone()
     hour = now.astimezone(tz).replace(minute=0, second=0, microsecond=0)
-    midnight = hour.replace(hour=0)
-    start = min(midnight, hour - _LIVE_MIN_LOOKBACK)
-    window = "today so far" if start == midnight else f"since {start:%a %H:%M}"
+    start = _live_start(now, tz)
+    window = "today so far" if start == hour.replace(hour=0) else f"since {start:%a %H:%M}"
     now_label = f"{hour:%A %d %B}, between {hour:%H}:00 and {(hour + timedelta(hours=1)):%H}:00 local time"
     signals = gather_live_signals(
         start.astimezone(UTC), now=now, include_private=include_private,
@@ -2002,6 +2019,8 @@ def _attach_narrative(
             ):
                 response.narrative = cached.narrative_text
                 response.narrative_generated_at = cached.generated_at
+                if not is_stale:
+                    response.narrative_checked_at = narrative_cache.utc_now_iso()
                 age_s = int((datetime.now(UTC) - written).total_seconds())
                 _attach_right_now(response, scope, cached.narrative_text, cached.generated_at)
         scheduled = is_stale and background_tasks is not None and not _in_failure_backoff(scope)
@@ -2034,6 +2053,25 @@ def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at
     # Only a rostered reader's own scope has a last look (see /today/seen).
     if scope != narrative_cache.COMPANY_SCOPE:
         response.narrative_seen_at = right_now.seen_at(scope)
+    if scope == narrative_cache.DEFAULT_SCOPE:
+        _attach_inbox_also(response)
+
+
+def _attach_inbox_also(response: TodayResponse, now: datetime | None = None) -> None:
+    """The principal's "Also in" line: today's mail to their own inbox from
+    people they don't deal with. Never raises."""
+    from openexecutive.briefing.live_signals import own_inbox
+    from openexecutive.memory.workspace_settings import get_user_timezone
+
+    now = now or datetime.now(UTC)
+    try:
+        tz = get_user_timezone()
+        mail = own_inbox(_live_start(now, tz).astimezone(UTC), tz, now)
+    except Exception:
+        logger.exception("today: reading the own inbox for Right now failed")
+        return
+    response.inbox_also = list(mail.others)
+    response.inbox_also_total = mail.others_total
 
 
 async def _regen_briefing_narrative(

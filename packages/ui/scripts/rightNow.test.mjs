@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { clockLabel, isNewSince, newSinceLabel, seenBaseline } from "../src/lib/rightNow.ts";
+import { alsoInLine, checkedLabel, clockLabel, isNewSince, newSinceLabel, seenBaseline } from "../src/lib/rightNow.ts";
 
 const at = (h, m) => {
   const d = new Date();
@@ -36,4 +36,26 @@ test("points after the baseline are new", () => {
   assert.equal(newSinceLabel(points, baseline), "2 new since 11:05 AM");
   assert.equal(newSinceLabel(points, null), null);
   assert.equal(newSinceLabel(points.slice(2), baseline), null);
+});
+
+test("checkedLabel says when the header was last found current", () => {
+  const at = new Date(2026, 9, 26, 14, 20).toISOString();
+  assert.equal(checkedLabel(at), "Checked 2:20 PM");
+  assert.equal(checkedLabel(null), null);
+  assert.equal(checkedLabel("nope"), null);
+});
+
+test("alsoInLine names a few and counts the rest", () => {
+  assert.equal(alsoInLine([], 0), null);
+  assert.equal(alsoInLine(undefined, undefined), null);
+  assert.equal(alsoInLine(["Yardi: Webinar"], 1), "Also in: 1 other — Yardi: Webinar.");
+  assert.equal(
+    alsoInLine(["Ana: Rates", "Yardi: Webinar"], 2),
+    "Also in: 2 others — Ana: Rates and Yardi: Webinar.",
+  );
+  assert.equal(
+    alsoInLine(["Ana: Rates", "Yardi: Webinar", "Bo: Hi"], 5),
+    "Also in: 5 others — Ana: Rates, Yardi: Webinar, Bo: Hi and 2 more.",
+  );
+  assert.equal(alsoInLine([], 3), "Also in: 3 others.");
 });

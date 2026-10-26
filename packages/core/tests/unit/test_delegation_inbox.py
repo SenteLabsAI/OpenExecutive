@@ -344,6 +344,10 @@ def test_a_question_from_a_contact_gets_a_draft_and_a_private_card(
     assert alert_store.list_alerts(limit=10, db_path=db) == []
     rows = audit_logger._default_logger.query(event_type="delegation_reply_drafted")
     assert len(rows) == 1 and rows[0].private and "Thursday" not in json.dumps(rows[0].details)
+    # Noted for Right now: who wrote and the subject, private, never the body.
+    [seen] = audit_logger._default_logger.query(event_type=inbox.MAIL_SEEN_EVENT)
+    assert seen.private and seen.details["message_id"] == "m1" and seen.details["from_email"] == DANA
+    assert seen.details["relation"] == "contact" and "text" not in seen.details
 
 
 def test_the_same_message_is_never_drafted_twice(owner: Any, models: dict[str, Any]) -> None:
