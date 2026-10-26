@@ -83,6 +83,15 @@ def test_the_reply_sees_a_conversation_that_opens_with_the_delivery() -> None:
     assert history[1]["content"] == DIGEST
 
 
+def test_a_web_chat_still_drops_a_leading_reply() -> None:
+    session = Session(session_id="4f1c2a")
+    session.conversation_history = [
+        {"role": "assistant", "content": "orphan"},
+        {"role": "user", "content": "Hi"},
+    ]
+    assert session.get_recent_history() == [{"role": "user", "content": "Hi"}]
+
+
 def test_only_chat_app_streams_and_real_text_are_saved(db: Path) -> None:
     assert record_delivery("4f1c2a", DIGEST, owner_person_id=OWNER, title="x", db_path=db) is None
     assert record_delivery(BASE, "  ", owner_person_id=OWNER, title="x", db_path=db) is None

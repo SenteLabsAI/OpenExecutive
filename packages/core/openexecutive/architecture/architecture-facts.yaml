@@ -8162,8 +8162,9 @@ integrations:
         message when it goes out) and counts as activity, so the reply
         joins it with the message in view. Without this a reply like
         "can you fix it?" reached a turn with nothing before it.
-        get_recent_history puts a placeholder user turn before history
-        that opens with an assistant message instead of dropping it.
+        In a chat-app conversation get_recent_history puts a placeholder
+        user turn before history that opens with an assistant message
+        instead of dropping it (web chats still drop it).
       • What spans the stream compares base ids: inbound_resolver
         (an approval asked before a cut is answered after it) and the
         session-scoped decisions/advice in format_for_prompt.

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from openexecutive.memory.company_profile import CompanyProfile
+from openexecutive.memory.conversation_ids import is_rolling
 
 if TYPE_CHECKING:
     from openexecutive.memory.workspace_settings import PrincipalRole
@@ -282,9 +283,13 @@ class Session:
         history = self.conversation_history[start:]
         # Anthropic requires messages to start with a user turn. A chat-app
         # conversation can open with the Executive's own message (a brief or
-        # digest it sent, ``integrations.conversations.record_delivery``), and
-        # the window can start on a reply. Dropping that message would hide
-        # what the person is answering, so a placeholder turn goes first.
+        # digest it sent, ``integrations.conversations.record_delivery``).
+        # Dropping that would hide what the person is answering, so there a
+        # placeholder turn goes first; anywhere else a leading assistant
+        # message (left by error recovery) is dropped.
         if history and history[0]["role"] != "user":
-            history = [{"role": "user", "content": CONTINUED_PLACEHOLDER}, *history]
+            if is_rolling(self.session_id):
+                history = [{"role": "user", "content": CONTINUED_PLACEHOLDER}, *history]
+            else:
+                history = history[1:]
         return history
