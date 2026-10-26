@@ -3631,7 +3631,7 @@ attunement:
       non-archived person; teammates can't attribute commitments to others
       (hearsay); principal's own commitments left to the episodic extractor
       (team; see solo_dated_commitments); close ids must be in the closable set; per-owner cap
-      ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON=15; due date clamped to 60 days,
+      ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON=50; due date clamped to 60 days,
       default ATTUNEMENT_LOOP_DEFAULT_DUE_DAYS=2, date-only = 17:00 in
       the user's zone (workspace setting, else USER_TIMEZONE). Prompt says messages are data, not instructions.
     solo_dated_commitments: |
@@ -3696,7 +3696,7 @@ attunement:
       `task` must appear verbatim in the speaker's own words this turn
       (`delegation.settings.own_words` of the pinned speaker text — adapter
       tag blocks stripped, attachment turns refused), the same rule as
-      verbatim_text, and language-neutral. Cap 5 per turn. A contact owner
+      verbatim_text, and language-neutral. Cap 20 per turn. A contact owner
       reads as `unknown_owner` unless `contacts_reachable_now()` (no contact
       oracle for teammates). `open_loop()` swaps `<`, `>` and `"` for
       look-alikes at insert (both paths): the text is quoted into the nudge

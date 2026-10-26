@@ -247,14 +247,12 @@ async def test_tool_bad_input(team: SimpleNamespace) -> None:
 
 
 async def test_tool_per_turn_cap(team: SimpleNamespace) -> None:
-    said = "assign: task one, task two, task three, task four, task five, task six"
-    _speak(team.principal, said=said)
+    cap = open_loop_tools._MAX_ASSIGNS_PER_TURN
+    tasks = [f"task number {n}" for n in range(cap + 1)]
+    _speak(team.principal, said="assign: " + ", ".join(tasks))
     with set_turn(session_id="s-1", turn_id="t-1"):
-        results = [
-            (await _tool(person_id=team.sara, task=f"task {n}"))["status"]
-            for n in ("one", "two", "three", "four", "five", "six")
-        ]
-    assert results == ["assigned"] * 5 + ["refused"]
+        results = [(await _tool(person_id=team.sara, task=t))["status"] for t in tasks]
+    assert results == ["assigned"] * cap + ["refused"]
 
 
 async def test_extraction_skips_an_owner_assigned_this_turn(

@@ -119,7 +119,7 @@ OPEN_LOOP_TOOLS: list[dict[str, Any]] = [
 
 # How many tasks one turn may assign. One per task the user named; a burst
 # beyond this is the model looping, or text steering it.
-_MAX_ASSIGNS_PER_TURN = 5
+_MAX_ASSIGNS_PER_TURN = 20
 
 
 def _audit(tool: str, ok: bool, summary: str, details: dict[str, Any]) -> None:

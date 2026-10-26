@@ -1161,7 +1161,7 @@ class Settings(BaseSettings):
     # cannot sit in /today (and the nudge queue) forever.
     attunement_loop_ttl_days: int = Field(21, alias="ATTUNEMENT_LOOP_TTL_DAYS")
     attunement_max_open_loops_per_person: int = Field(
-        15, alias="ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON"
+        50, alias="ATTUNEMENT_MAX_OPEN_LOOPS_PER_PERSON"
     )
     # Tell a person, once, when someone else assigns them a task
     # (attunement/assignment_notice.py). Chasing it stays the nudge engine's.
