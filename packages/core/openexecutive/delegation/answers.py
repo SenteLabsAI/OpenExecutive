@@ -67,7 +67,7 @@ CONVERSATION_MAX = 20
 # time of the newest (``inbox.later_messages`` counts from it), and how many
 # times one card may be rewritten that way before it only warns.
 CAUGHT_UP_KEY = "caught_up_at"
-# How many newer messages it was brought up to date with, kept apart from
+# How many times it was brought up to date with newer mail, kept apart from
 # the conversation, which keeps only its last CONVERSATION_MAX turns.
 CAUGHT_UP_COUNT = "caught_up_count"
 MAX_CATCH_UPS = 5
@@ -82,6 +82,7 @@ _ANSWERED: dict[int, list[datetime]] = {}
 # Newer messages a catch-up already failed on, per card, in this process:
 # each is tried once, not on every scan.
 _CATCH_UP_FAILED: dict[int, set[str]] = {}
+_CATCH_UP_FINAL = frozenset({"rewrite_failed", "draft_changed", "draft_not_plain", "empty", "too_long"})
 
 REWRITE_PROMPT = """You are a ghostwriter. <draft> is an email you wrote AS \
 the person named in <writer>, waiting for them to send it. It left some \
@@ -706,13 +707,17 @@ async def catch_up(
 
     async def write(person_: Any, current: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         body, extra, _ = await rewrite(person_, current, [], news=news, now=now)
-        return body, {**extra, CAUGHT_UP_COUNT: done + len(news), **({CAUGHT_UP_KEY: newest} if newest else {})}
+        return body, {**extra, CAUGHT_UP_COUNT: done + 1, **({CAUGHT_UP_KEY: newest} if newest else {})}
 
     try:
         await card_drafts.redraft(card, person, gmail, write)
     except Exception as exc:
         logger.info("delegation.answers: didn't bring a reply up to date (%s)", getattr(exc, "code", type(exc).__name__))
-        tried.update(str(m.id) for m in fresh)
+        # Tried for good only when another try would fail the same way: the
+        # rewrite itself, or a draft changed in the mailbox. A busy card (the
+        # person editing or sending it) or a mailbox hiccup is tried again.
+        if getattr(exc, "code", "") in _CATCH_UP_FINAL:
+            tried.update(str(m.id) for m in fresh)
         return False
     _CATCH_UP_FAILED.pop(card.id, None)
     return True

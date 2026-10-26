@@ -837,6 +837,22 @@ def test_a_newer_message_only_warns_when_the_rewrite_fails(owner: Any, models: d
     assert _reconcile(owner, mailbox) == 0 and len(models["rewrites"]) == 1
 
 
+def test_a_busy_card_is_caught_up_on_the_next_look(owner: Any, models: dict[str, Any]) -> None:
+    from openexecutive.delegation import card_drafts
+
+    mailbox, card = _one_card(owner, models)
+    models["rewritten"] = {"body": "Hi Dana,\n\nMonday works.", "note": "Dana offered Monday."}
+    mailbox.add(_msg("m2", "t1", minutes_ago=-5, text="Actually, Monday works too."))
+    card_drafts._EDITING.add(card.id)
+    try:
+        assert _reconcile(owner, mailbox) == 0
+    finally:
+        card_drafts._EDITING.discard(card.id)
+    assert answers.conversation(inbox.card_payload(ledger.get_decision_instance(card.id))) == []
+    assert _reconcile(owner, mailbox) == 0
+    assert "Monday works." in inbox.card_payload(ledger.get_decision_instance(card.id))["draft_body"]
+
+
 def test_catch_ups_stop_after_the_cap(owner: Any, models: dict[str, Any]) -> None:
     mailbox, card = _one_card(owner, models)
     models["rewritten"] = {"body": "Hi Dana,\n\nNoted.", "note": "Updated it."}
