@@ -85,6 +85,16 @@ async def test_when_nothing_is_sent(
         assert env["sent"] == []  # dropped, not held: Home and the brief say it later
 
 
+async def test_a_point_that_is_only_a_link_sends_nothing(env: dict[str, Any]) -> None:
+    bare = "<https://evil.xyz/x> bob@corp.com"
+    assert right_now_ping.ping_text([bare]) == ""
+    result = await right_now_ping.maybe_ping([bare], {point_key(bare)}, earlier_today=True, now=NOW)
+
+    assert result.status == "nothing_left" and env["sent"] == []
+    # Mixed with a real point, it is left out and the rest goes.
+    assert right_now_ping.ping_text([bare, ANDY]).startswith("Right now: Andy Agee")
+
+
 async def test_at_most_four_a_day(env: dict[str, Any]) -> None:
     for i in range(right_now_ping.DAILY_MAX):
         point = f"**Item {i}** — new."

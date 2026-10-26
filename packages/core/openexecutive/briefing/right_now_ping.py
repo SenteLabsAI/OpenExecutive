@@ -62,7 +62,8 @@ _DOMAIN_RE = re.compile(r"\S*[\w-]\.[^\W\d_]{2,}\S*")
 @dataclass(frozen=True)
 class PingResult:
     """``sent`` (with the channel), or why not: ``off``, ``none_new``,
-    ``first_today``, ``not_important``, ``daily_limit``, ``quiet``,
+    ``first_today``, ``not_important``, ``nothing_left`` (only links),
+    ``daily_limit``, ``quiet``,
     ``no_chat_app``, ``not_reached``."""
 
     status: str
@@ -92,8 +93,11 @@ def plain_point(text: str) -> str:
 
 
 def ping_text(points: list[str]) -> str:
-    """The message: one point on its own, or a short list."""
+    """The message: one point on its own, or a short list; empty when no
+    point has words left once links are taken out."""
     lines = [p for p in (plain_point(p) for p in points[:_POINTS_MAX]) if p]
+    if not lines:
+        return ""
     if len(lines) == 1:
         return f"Right now: {lines[0]}"
     return "Right now:\n" + "\n".join(f"• {line}" for line in lines)
@@ -159,6 +163,9 @@ async def _maybe_ping(
     points = new_points if choice == "everything" else [p for p in new_points if point_key(p) in important]
     if not points:
         return PingResult("not_important"), 0
+    text = ping_text(points)
+    if not text:
+        return PingResult("nothing_left"), len(points)
     if _sent_today(now) >= DAILY_MAX:
         return PingResult("daily_limit"), len(points)
     if hold_for(principal.id, source=SOURCE_RIGHT_NOW, now=now) is not None:
@@ -167,7 +174,7 @@ async def _maybe_ping(
     from openexecutive.scheduler.runner import deliver_to_person
 
     with tag_proactive(SOURCE_RIGHT_NOW):
-        delivery = await deliver_to_person(principal, ping_text(points), label=LABEL, chat_only=True)
+        delivery = await deliver_to_person(principal, text, label=LABEL, chat_only=True)
     if not delivery.ok:
         status = "no_chat_app" if delivery.reason == "no_channel" else "not_reached"
         return PingResult(status), len(points)
