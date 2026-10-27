@@ -5379,6 +5379,15 @@ export interface NarrativePoint {
   source?: PointSource | null;
 }
 
+// What a Right now being rewritten is doing (shown in its place): reading
+// what moved, writing, checking each point. `new_mail`: emails from people
+// the owner deals with since the served header (`since`) was written.
+export interface NarrativeProgress {
+  step: "reading" | "writing" | "checking";
+  new_mail?: number;
+  since?: string | null;
+}
+
 export interface PointSource {
   kind: "mail" | "alert";
   message_id?: string | null;
@@ -5411,6 +5420,8 @@ export interface Today {
   // Optional for older API builds + test mocks.
   narrative_generated_at?: string | null;
   narrative_stale?: boolean;
+  // While narrative_stale: what the rewrite is doing.
+  narrative_progress?: NarrativeProgress | null;
   // The same narrative split for Home's Right now card: the bold opener, the
   // points with when each first appeared today, the Move today line, and when
   // this reader last looked. Optional for older API builds + test mocks.

@@ -92,3 +92,28 @@ export function alsoInLine(labels: string[] | null | undefined, total: number | 
   const list = named.length === 1 ? named[0] : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
   return `${head} — ${list}.`;
 }
+
+// While Right now is being rewritten: its steps, each done, running or still
+// to come, from the step the server reports (reading until it starts).
+export type ProgressState = "done" | "now" | "todo";
+
+const PROGRESS_STEPS = [
+  { step: "reading", now: "Checking your inbox, calendar and Needs you", done: "Checked your inbox, calendar and Needs you" },
+  { step: "writing", now: "Writing what matters now", done: "Wrote what matters now" },
+  { step: "checking", now: "Checking each point against your email", done: "Checked each point against your email" },
+] as const;
+
+export function progressSteps(step: string | null | undefined): { label: string; state: ProgressState }[] {
+  const at = Math.max(0, PROGRESS_STEPS.findIndex((s) => s.step === step));
+  return PROGRESS_STEPS.map((s, i) => ({
+    label: i < at ? s.done : s.now,
+    state: i < at ? "done" : i === at ? "now" : "todo",
+  }));
+}
+
+/** "2 new emails since 3:12 PM", or null when none came (or no header yet). */
+export function progressNote(newMail: number | null | undefined, since: string | null | undefined): string | null {
+  const when = clockLabel(since);
+  if (!newMail || newMail < 1 || !when) return null;
+  return `${newMail} new email${newMail === 1 ? "" : "s"} since ${when}`;
+}

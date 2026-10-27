@@ -14,6 +14,8 @@ import {
   isNewSince,
   newSinceLabel,
   pointTarget,
+  progressNote,
+  progressSteps,
   type PointTarget,
   type TimedPoint,
 } from "@/lib/rightNow";
@@ -28,7 +30,9 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 // inbox has View email and Reply under it: View opens the email right there
 // (GET /delegation/mail), with the reply card already on its conversation;
 // Reply writes one (POST /delegation/mail/reply) and shows it to send,
-// change or edit. A point about a card in Needs you has Show me.
+// change or edit. A point about a card in Needs you has Show me. While it
+// is being rewritten, its steps show in place of the old read, which is no
+// longer current.
 
 // How many points the Home card shows; the panel has them all.
 const CARD_POINTS = 3;
@@ -267,6 +271,38 @@ function MailPanel({
   );
 }
 
+/** Right now being rewritten: a spinner and its steps, and how many emails
+ * came since the last read. Shown instead of that read. */
+function Progress({ today }: { today: Today }) {
+  const progress = today.narrative_progress;
+  const steps = progressSteps(progress?.step);
+  const note = progressNote(progress?.new_mail, progress?.since);
+  return (
+    <div aria-live="polite" aria-busy="true">
+      <ol className="flex flex-col gap-3">
+        {steps.map((s, i) => (
+          <li key={s.label}>
+            <div className={`flex items-center gap-3 text-[15px] ${s.state === "todo" ? "text-fg-muted" : "text-fg"} ${s.state === "now" ? "font-semibold" : ""}`}>
+              {s.state === "done" ? (
+                <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-xs font-bold text-emerald-700 dark:text-emerald-300" aria-hidden>
+                  ✓
+                </span>
+              ) : s.state === "now" ? (
+                <span className="h-5 w-5 flex-shrink-0 animate-spin rounded-full border-2 border-accent/25 border-t-accent" aria-hidden />
+              ) : (
+                <span className="h-5 w-5 flex-shrink-0 rounded-full border-2 border-line" aria-hidden />
+              )}
+              {s.label}
+            </div>
+            {i === 0 && note && <p className="ml-8 mt-0.5 text-sm text-fg-muted">{note}</p>}
+          </li>
+        ))}
+      </ol>
+      <p className="mt-3 border-t border-line pt-2 text-sm text-fg-muted">Usually under a minute.</p>
+    </div>
+  );
+}
+
 function Lead({ today }: { today: Today }) {
   const lead = today.narrative_lead;
   if (lead) return <p className="text-[17px] font-semibold leading-snug text-fg">{lead}</p>;
@@ -281,7 +317,7 @@ function Lead({ today }: { today: Today }) {
 }
 
 /** The Home card: when it was updated, what's new, the opener and the top
- * points. Renders nothing until there is a header or one is being written. */
+ * points, or its steps while it is being rewritten. */
 export function RightNowCard({
   today,
   baseline,
@@ -315,7 +351,9 @@ export function RightNowCard({
           </span>
         )}
       </div>
-      {today.narrative ? (
+      {today.narrative_stale ? (
+        <Progress today={today} />
+      ) : today.narrative ? (
         <>
           <Lead today={today} />
           {points.length > 0 && (
@@ -340,9 +378,7 @@ export function RightNowCard({
             See the whole picture →
           </button>
         </>
-      ) : (
-        <p className="animate-pulse text-[15px] text-fg-muted">Catching up on today…</p>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -375,10 +411,11 @@ export function RightNowBody({
   actions?: PointActions;
 }) {
   const [showMorning, setShowMorning] = useState(false);
+  if (today.narrative_stale) return <Progress today={today} />;
   if (!today.narrative) {
     return (
-      <div aria-live="polite" className="animate-pulse rounded-xl bg-accent/5 px-4 py-3 text-[15px] text-fg-muted">
-        {today.narrative_stale ? "Catching up on today…" : "Nothing yet today."}
+      <div aria-live="polite" className="rounded-xl bg-accent/5 px-4 py-3 text-[15px] text-fg-muted">
+        Nothing yet today.
       </div>
     );
   }

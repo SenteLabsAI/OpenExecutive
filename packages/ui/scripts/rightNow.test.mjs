@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { alsoInLine, checkedLabel, clockLabel, isNewSince, newSinceLabel, pointTarget, seenBaseline } from "../src/lib/rightNow.ts";
+import {
+  alsoInLine,
+  checkedLabel,
+  clockLabel,
+  isNewSince,
+  newSinceLabel,
+  pointTarget,
+  progressNote,
+  progressSteps,
+  seenBaseline,
+} from "../src/lib/rightNow.ts";
 
 const at = (h, m) => {
   const d = new Date();
@@ -69,4 +79,24 @@ test("a point opens the email or card it is about", () => {
   // An email without its conversation, or no source, opens nothing.
   assert.equal(pointTarget({ text: "a", source: { kind: "mail", message_id: "m1" } }), null);
   assert.equal(pointTarget({ text: "a" }), null);
+});
+
+test("progress steps follow the step the server reports", () => {
+  assert.deepEqual(
+    progressSteps("writing").map((s) => s.state),
+    ["done", "now", "todo"],
+  );
+  assert.equal(progressSteps("writing")[0].label, "Checked your inbox, calendar and Needs you");
+  assert.equal(progressSteps("checking")[1].label, "Wrote what matters now");
+  // Not started yet, or a step this page doesn't know: the first is running.
+  assert.deepEqual(progressSteps(null).map((s) => s.state), ["now", "todo", "todo"]);
+  assert.deepEqual(progressSteps("later").map((s) => s.state), ["now", "todo", "todo"]);
+});
+
+test("the progress note counts new email since the last header", () => {
+  const since = at(15, 12).toISOString();
+  assert.equal(progressNote(2, since), "2 new emails since 3:12 PM");
+  assert.equal(progressNote(1, since), "1 new email since 3:12 PM");
+  assert.equal(progressNote(0, since), null);
+  assert.equal(progressNote(3, null), null);
 });

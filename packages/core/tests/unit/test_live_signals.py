@@ -709,6 +709,28 @@ def test_own_inbox_splits_people_they_deal_with_from_the_rest(
     assert mail.refs[0]["kind"] == "mail" and mail.refs[0]["message_id"] == "m1"
 
 
+def test_own_inbox_leaves_out_mail_they_answered_since(
+    principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing import waiting_on
+    from openexecutive.delegation import inbox
+
+    now = datetime(2026, 10, 26, 18, 0, tzinfo=UTC)
+    at = now - timedelta(hours=2)
+    # Judged no reply needed, so no card ever looked for their answer.
+    inbox._note_mail(7, _mail("m1", "andy@svn.test", "Andy Agee", "Re: loan figures", at, "t1"), relation="contact")
+    inbox._note_mail(7, _mail("m2", "dana@co.test", "Dana Fox", "Lease terms", at, "t2"), relation="contact")
+    inbox._note_mail(7, _mail("m3", "lee@co.test", "Lee Park", "Budget", at, "t3"), relation="contact")
+    monkeypatch.setattr(inbox, "outcomes", lambda pid, ids: {m: inbox.NOT_NEEDED for m in ids})
+    sent = {"t1": now - timedelta(hours=1), "t3": at - timedelta(hours=1)}  # t3: before it came
+    monkeypatch.setattr(waiting_on, "replied_at", lambda thread_id: sent.get(thread_id))
+
+    mail = live_signals.own_inbox(now - timedelta(hours=12), UTC, now)
+
+    assert sorted(r["message_id"] for r in mail.refs) == ["m2", "m3"]
+    assert not any("loan figures" in line for line in mail.lines)
+
+
 def test_newer_mail_on_an_open_card_is_news_and_noted_once(
     principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

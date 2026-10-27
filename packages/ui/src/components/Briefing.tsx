@@ -797,7 +797,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   }, [firstWeek]);
   const briefFreshness = today
     ? today.narrative_stale
-      ? "Refreshing…"
+      ? "Updating…"
       : checkedLabel(today.narrative_checked_at) ?? narrativeUpdatedLabel(today.narrative_generated_at, new Date())
     : null;
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -2256,6 +2257,67 @@ def test_response_says_how_old_the_header_is_and_whether_it_is_refreshing(
     assert second["narrative"] == "- live header"
     assert second["narrative_stale"] is False
     assert second["narrative_generated_at"]
+
+
+def test_a_header_being_rewritten_says_what_it_is_doing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "progress.db"
+    _setup_isolated_db(db, monkeypatch)
+    _seed_live_action_alert(db)
+    written = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    narrative_cache.put(narrative_cache.BriefingNarrative(
+        scope=narrative_cache.COMPANY_SCOPE, input_hash="old",
+        narrative_text="- an older read", generated_at=written,
+    ), db_path=db)
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+
+    first = _make_client().get("/today").json()
+    assert first["narrative_stale"] is True
+    assert first["narrative_progress"] == {"step": "reading", "new_mail": 0, "since": written}
+
+    monkeypatch.setitem(today_route._regen_step, narrative_cache.COMPANY_SCOPE, "writing")
+    second = _make_client().get("/today").json()
+    assert second["narrative_progress"]["step"] == "writing"
+
+
+async def test_the_rewrite_reports_its_steps_and_clears_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[str | None] = []
+
+    async def _pass(caller: object, scope: str) -> bool:
+        seen.append(today_route._regen_step.get(scope))
+        today_route._regen_step[scope] = "writing"
+        return True
+
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative_locked", _pass)
+    await today_route._regen_briefing_narrative(None, "s-progress")
+    assert seen == ["reading"]
+    assert "s-progress" not in today_route._regen_step
+
+
+def test_progress_counts_new_mail_since_the_served_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.briefing import live_signals
+
+    written = datetime.now(UTC) - timedelta(minutes=20)
+    asked: list[datetime] = []
+
+    def _own(since: datetime, tz: object, now: object) -> object:
+        asked.append(since)
+        return live_signals.OwnInbox(lines=("a", "b"), others_total=4)
+
+    monkeypatch.setattr(live_signals, "own_inbox", _own)
+    cached = SimpleNamespace(generated_at=written.isoformat())
+
+    progress = today_route._narrative_progress(narrative_cache.DEFAULT_SCOPE, cached)
+
+    assert progress.new_mail == 2 and progress.since == written.isoformat()
+    assert asked == [written]
+    # Nobody else's header counts the principal's inbox.
+    assert today_route._narrative_progress(narrative_cache.COMPANY_SCOPE, cached).new_mail == 0
+    # No header yet: nothing to count from.
+    assert today_route._narrative_progress(narrative_cache.DEFAULT_SCOPE, None).since is None
 
 
 def test_yesterdays_header_is_not_served_as_today(

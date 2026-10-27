@@ -102,6 +102,35 @@ async def test_a_later_message_of_theirs_in_the_thread_is_the_one_judged(
     assert [w.sent_at for w in found or []] == [NOW - timedelta(hours=2)]
 
 
+async def test_the_read_notes_where_they_last_wrote(monkeypatch: pytest.MonkeyPatch) -> None:
+    newer = _sent("second", ["andrew@co.test"], ago=timedelta(minutes=10), thread="t-andrew", text="Thanks")
+    older = _sent("first", ["andrew@co.test"], ago=timedelta(days=2), thread="t-andrew")
+    other = _sent("lease", ["dana@co.test"], ago=timedelta(hours=3), thread="t-lease", text="Got it.")
+    _use(monkeypatch, _Mailbox([newer, other, older]))
+    replied: dict[str, datetime] = {}
+
+    await waiting_on.read_waiting(NOW, replied)
+
+    assert replied == {"t-andrew": NOW - timedelta(minutes=10), "t-lease": NOW - timedelta(hours=3)}
+
+
+async def test_replied_at_comes_from_the_last_good_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _read(now: Any = None, replied_out: Any = None) -> list[waiting_on.Waiting]:
+        replied_out["t-andrew"] = NOW
+        return []
+
+    monkeypatch.setattr(waiting_on, "read_waiting", _read)
+    assert waiting_on.replied_at("t-andrew") is None
+    await waiting_on.refresh()
+    assert waiting_on.replied_at("t-andrew") == NOW
+    assert waiting_on.replied_at("t-other") is None
+    _act_as_me(monkeypatch, on=False)
+    assert waiting_on.replied_at("t-andrew") is None
+    _act_as_me(monkeypatch, on=True)
+    waiting_on.reset_cache()
+    assert waiting_on.replied_at("t-andrew") is None
+
+
 async def test_no_mailbox_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _use(monkeypatch, None)
     assert await waiting_on.read_waiting(NOW) is None
@@ -164,7 +193,7 @@ async def test_a_failed_refresh_keeps_the_last_good_read(monkeypatch: pytest.Mon
     good = [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
     results: list[Any] = [good, RuntimeError("503")]
 
-    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+    async def _read(now: Any = None, replied_out: Any = None) -> list[waiting_on.Waiting]:
         result = results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -182,7 +211,7 @@ async def test_a_failed_refresh_keeps_the_last_good_read(monkeypatch: pytest.Mon
 async def test_the_read_is_cached_until_it_is_old(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[Any] = []
 
-    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+    async def _read(now: Any = None, replied_out: Any = None) -> list[waiting_on.Waiting]:
         calls.append(now)
         return []
 
@@ -198,7 +227,7 @@ async def test_the_read_is_cached_until_it_is_old(monkeypatch: pytest.MonkeyPatc
 async def test_a_read_running_when_act_as_me_goes_off_is_not_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+    async def _read(now: Any = None, replied_out: Any = None) -> list[waiting_on.Waiting]:
         waiting_on.reset_cache()  # turned off while the read runs
         return [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
 
@@ -240,7 +269,7 @@ def test_turning_act_as_me_on_drops_the_empty_read(tmp_path: Any) -> None:
 
 
 async def test_a_cached_read_stops_once_act_as_me_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _read(now: Any = None) -> list[waiting_on.Waiting]:
+    async def _read(now: Any = None, replied_out: Any = None) -> list[waiting_on.Waiting]:
         return [waiting_on.Waiting(("leonard@svn.test",), "SVN numbers", NOW)]
 
     monkeypatch.setattr(waiting_on, "read_waiting", _read)

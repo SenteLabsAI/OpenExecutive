@@ -534,6 +534,18 @@ def _point_source(raw: dict[str, Any] | None) -> PointSource | None:
         return None
 
 
+class NarrativeProgress(BaseModel):
+    """What a Right now being written is doing, for the page to show in its
+    place: ``reading`` what moved (mail, calendar, Needs you), ``writing``
+    the header, ``checking`` each point cites something that moved. Plus how
+    many emails from people they deal with came to the principal's own inbox
+    since the served header was written (``since``), when there is one."""
+
+    step: Literal["reading", "writing", "checking"]
+    new_mail: int = 0
+    since: str | None = None
+
+
 class MorningBriefItem(BaseModel):
     """Today's delivered morning brief, for Right now's "Earlier today" link."""
 
@@ -564,6 +576,9 @@ class TodayResponse(BaseModel):
     # narrative lands without a reload. Additive; None / False on a cold cache.
     narrative_generated_at: str | None = None
     narrative_stale: bool = False
+    # While ``narrative_stale``: what the rewrite is doing, so the page shows
+    # that instead of the header it replaces. Additive; None otherwise.
+    narrative_progress: NarrativeProgress | None = None
     # The same narrative split for Home's Right now card
     # (``briefing.right_now``): the bold opener, the points with when each
     # first appeared today, and the Move today line. Plus when this reader
@@ -1961,6 +1976,8 @@ _regen_pending: set[str] = set()
 # the page is told nothing is coming, so it drops its "Catching up…" line.
 _REGEN_FAILURE_BACKOFF = timedelta(minutes=5)
 _regen_failed_at: dict[str, datetime] = {}
+# Scope → the step a running rewrite is on (``NarrativeProgress.step``).
+_regen_step: dict[str, str] = {}
 
 
 def _in_failure_backoff(scope: str, now: datetime | None = None) -> bool:
@@ -2057,12 +2074,39 @@ def _attach_narrative(
             assert background_tasks is not None
             background_tasks.add_task(_regen_briefing_narrative, caller_person_id, scope)
         response.narrative_stale = scheduled
+        if scheduled:
+            response.narrative_progress = _narrative_progress(scope, cached)
         logger.info(
             "today: narrative served scope=%s age_s=%s stale=%s regen_scheduled=%s",
             scope, age_s, is_stale, scheduled,
         )
     except Exception:
         logger.exception("today: briefing narrative attach failed (scope=%s)", scope)
+
+
+def _narrative_progress(scope: str, cached: Any, now: datetime | None = None) -> NarrativeProgress:
+    """Where the rewrite of ``scope``'s header is (``reading`` until it
+    starts), and for the principal how many emails came to their own inbox
+    since ``cached`` was written. Never raises."""
+    from openexecutive.briefing import narrative_cache
+
+    step = _regen_step.get(scope)
+    progress = NarrativeProgress(step="writing" if step == "writing" else "checking" if step == "checking" else "reading")
+    written = _parse_aware(cached.generated_at) if cached is not None else None
+    if written is None or narrative_cache.local_today(written) != narrative_cache.local_today():
+        return progress
+    progress.since = cached.generated_at
+    if scope != narrative_cache.DEFAULT_SCOPE:
+        return progress
+    try:
+        from openexecutive.briefing.live_signals import own_inbox
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        mail = own_inbox(written, get_user_timezone(), now or datetime.now(UTC))
+        progress.new_mail = len(mail.lines)  # from people they deal with, unanswered
+    except Exception:
+        logger.exception("today: counting new mail for Right now failed")
+    return progress
 
 
 def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at: str) -> None:
@@ -2139,19 +2183,23 @@ async def _regen_briefing_narrative(
         )
         return
     async with lock:
-        # At most one extra pass: a trigger that arrived mid-run may carry
-        # news the running pass never saw. The pass is cheap when nothing
-        # moved (it returns before the model call when the key matches).
-        for _ in range(2):
-            _regen_pending.discard(expected_scope)
-            ok = await _regen_briefing_narrative_locked(caller_person_id, expected_scope)
-            if not ok:
-                _regen_failed_at[expected_scope] = datetime.now(UTC)
+        try:
+            # At most one extra pass: a trigger that arrived mid-run may carry
+            # news the running pass never saw. The pass is cheap when nothing
+            # moved (it returns before the model call when the key matches).
+            for _ in range(2):
                 _regen_pending.discard(expected_scope)
-                return
-            _regen_failed_at.pop(expected_scope, None)
-            if expected_scope not in _regen_pending:
-                return
+                _regen_step[expected_scope] = "reading"
+                ok = await _regen_briefing_narrative_locked(caller_person_id, expected_scope)
+                if not ok:
+                    _regen_failed_at[expected_scope] = datetime.now(UTC)
+                    _regen_pending.discard(expected_scope)
+                    return
+                _regen_failed_at.pop(expected_scope, None)
+                if expected_scope not in _regen_pending:
+                    return
+        finally:
+            _regen_step.pop(expected_scope, None)
 
 
 async def _regen_briefing_narrative_locked(
@@ -2208,6 +2256,7 @@ async def _regen_briefing_narrative_locked(
             # Open items, none new today: Needs you below is the whole story.
             text = NOTHING_NEW
         else:
+            _regen_step[expected_scope] = "writing"
             text = await asyncio.wait_for(
                 synthesize_briefing_narrative(
                     today_data=today_data, activity=activity or [],
@@ -2221,6 +2270,7 @@ async def _regen_briefing_narrative_locked(
                 # 25 s for the draft, plus the rewrite's own budget.
                 timeout=25.0 + REWRITE_TIMEOUT_S,
             )
+            _regen_step[expected_scope] = "checking"
             if viewer_desc is None and text:
                 from openexecutive.briefing.header_context import point_sources
                 from openexecutive.briefing.right_now import point_key as key_of
