@@ -469,6 +469,19 @@ def test_a_date_or_reference_number_is_not_a_sign_off(owner: int, monkeypatch: p
     assert read == ["signed"]
 
 
+def test_an_invite_on_top_of_a_read_mail_does_not_read_it_again(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    read = _reading(monkeypatch)
+    box = _leo_box()
+    _run(box)
+    signed = box.latest["leo@contoso.example"]
+    box.latest["leo@contoso.example"] = _from_leo("invite", "x", calendar_invite=True)
+    box.older["leo@contoso.example"] = [signed]
+    asyncio.run(keeper.run_once(client=box, now=NOW + 2 * keeper.READ_AGAIN))
+    assert read == ["in1"]
+    assert changes.reads_since((NOW + 2 * keeper.READ_AGAIN).replace(hour=0)) == 0
+
+
 def test_a_signature_is_read_again_only_when_new_mail_comes(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
     people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
     read = _reading(monkeypatch)

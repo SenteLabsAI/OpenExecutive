@@ -1178,7 +1178,13 @@ class DelegateGmail:
         found = await self.list_message_ids(
             f"from:{target} -in:chats newer_than:{int(days)}d", max_results=max(1, min(int(limit), 25)),
         )
-        return [await self.get_message(message_id) for message_id, _thread in found]
+        messages: list[MailMessage] = []
+        for message_id, _thread in found:
+            try:
+                messages.append(await self.get_message(message_id))
+            except GmailNotFound:
+                continue  # deleted since it was listed
+        return messages
 
     async def get_message(self, message_id: str) -> MailMessage:
         if not valid_id(message_id):

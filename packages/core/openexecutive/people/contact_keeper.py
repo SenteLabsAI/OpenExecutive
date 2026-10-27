@@ -806,8 +806,13 @@ async def _read_roles(
             # call, so it is not one of the day's reads.
             changes.note_unsigned(address, now, message_id=latest.id, version=READ_VERSION)
             continue
+        if last is not None and last.version >= READ_VERSION and last.message_id == message.id:
+            # The mail read last time, under a newer invite or automatic one.
+            changes.note_unsigned(address, now, message_id=message.id, version=READ_VERSION)
+            continue
         budget -= 1
-        changes.note_read(address, now, message_id=latest.id, version=READ_VERSION)
+        # The mail read: a newer one that isn't theirs doesn't read it again.
+        changes.note_read(address, now, message_id=message.id, version=READ_VERSION)
         # As it stands now: an earlier step of this run may have changed it.
         person = people_store.get_person(int(person.id or 0)) or person
         name = clean_name(getattr(message, "from_name", ""))
