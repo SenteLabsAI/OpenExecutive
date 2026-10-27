@@ -709,7 +709,9 @@ def _names_written(client: Any, address: str, seen: dict[str, Seen]) -> list[str
     return list(entry.names) if entry is not None else []
 
 
-_PHONE_RUN = re.compile(r"\d[\d\s().+\-]{5,}\d")
+# A phone number's shape on one line ("+1 (555) 010-0100", "555.010.0199"),
+# not a date or a reference number.
+_PHONE_RUN = re.compile(r"(?:\+\d{1,3}[ .\-]?)?\(?\b\d{2,4}\)?[ .\-]\d{3,4}[ .\-]\d{4}\b")
 
 
 def _written(message: Any, address: str) -> bool:

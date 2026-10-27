@@ -456,6 +456,19 @@ def test_a_calendar_invite_on_top_reads_the_newest_signed_mail(owner: int, monke
     assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [("mobile", "555.010.0199")]
 
 
+def test_a_date_or_reference_number_is_not_a_sign_off(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    read = _reading(monkeypatch)
+    box = FakeMailbox()
+    box.latest = {"leo@contoso.example": _from_leo("invite", "x", calendar_invite=True)}
+    box.older = {"leo@contoso.example": [
+        _from_leo("dated", "Sent 2026-05-12\nRef 123 456 789"),
+        _from_leo("signed", SIGNATURE),
+    ]}
+    _run(box)
+    assert read == ["signed"]
+
+
 def test_a_signature_is_read_again_only_when_new_mail_comes(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
     people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
     read = _reading(monkeypatch)
