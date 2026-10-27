@@ -964,3 +964,28 @@ def test_undo_never_changes_a_team_members_name(owner: int) -> None:
     )
     changes.undo(change_id)
     assert people_store.get_person(pid).full_name == "Ben Teammate"
+
+
+def test_a_restart_does_not_push_the_next_run_back(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[datetime] = []
+
+    async def run(*, now: datetime | None = None, **_kw: Any) -> keeper.RunResult:
+        started.append(now or NOW)
+        return keeper.RunResult("ok")
+
+    async def tick(moment: datetime) -> bool:
+        ran = keeper.maybe_run(moment)
+        if keeper._task is not None:
+            await keeper._task
+        return ran
+
+    monkeypatch.setattr(keeper, "run_once", run)
+    monkeypatch.setattr(keeper, "_task", None)
+    # A fresh process, two hours after the last run.
+    monkeypatch.setattr(keeper, "_last_start", None)
+    changes.note_run("ok", NOW)
+    restart = NOW + timedelta(hours=2)
+    assert asyncio.run(tick(restart)) is False
+    # Due six hours after the last run, not six after the restart.
+    assert asyncio.run(tick(NOW + keeper.RUN_EVERY + timedelta(minutes=1))) is True
+    assert started == [NOW + keeper.RUN_EVERY + timedelta(minutes=1)]

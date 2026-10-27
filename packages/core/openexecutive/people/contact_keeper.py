@@ -972,9 +972,12 @@ def maybe_run(now: datetime) -> bool:
             _last_start = now
             return False
         last, _status = changes.last_run()
-        _last_start = now
         if last is not None and now - last < RUN_EVERY:
+            # Due RUN_EVERY after the last run, not after this process
+            # started: a restart (every deploy) must not push it back.
+            _last_start = last
             return False
+        _last_start = now
         from openexecutive.audit.context import unscoped_audit_rows
 
         with unscoped_audit_rows():
