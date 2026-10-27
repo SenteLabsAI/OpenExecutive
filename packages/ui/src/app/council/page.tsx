@@ -53,6 +53,15 @@ interface DraftState {
   voice_persona_slug: string | null;
   research_focus: string | null;
   instructions: string;
+  // The Executive's model after pushback; "" = same as normal answers.
+  pushback_model: string;
+}
+
+// "off" (stored) and "" / null (no PUSHBACK_MODEL) all mean answers stay on
+// the normal model. Mirrors PUSHBACK_OFF in orchestrator/pushback.py.
+const PUSHBACK_OFF = "off";
+function pushbackPick(model: string | null | undefined): string {
+  return !model || model === PUSHBACK_OFF ? "" : model;
 }
 
 // Mirrors INSTRUCTIONS_MAX_CHARS in api/routes/agents.py.
@@ -157,6 +166,7 @@ function detailToDraft(d: AgentDetail): DraftState {
     voice_persona_slug: d.voice_persona_slug ?? null,
     research_focus: d.research_focus ?? null,
     instructions: d.instructions ?? "",
+    pushback_model: pushbackPick(d.pushback_model),
   };
 }
 
@@ -169,7 +179,8 @@ function draftIsDirty(d: AgentDetail | null, draft: DraftState | null): boolean 
     d.prompt !== draft.prompt ||
     (d.voice_persona_slug ?? null) !== draft.voice_persona_slug ||
     (d.research_focus ?? null) !== draft.research_focus ||
-    (d.instructions ?? "") !== draft.instructions
+    (d.instructions ?? "") !== draft.instructions ||
+    pushbackPick(d.pushback_model) !== draft.pushback_model
   );
 }
 
@@ -324,12 +335,16 @@ export default function CouncilPage() {
   const pickerOptions = useMemo<PickerOption[]>(() => {
     const known = new Set(modelOptions.map((o) => o.id));
     const extra = Array.from(
-      new Set([detail?.model_default, draft?.model].filter((m): m is string => !!m))
+      new Set(
+        [detail?.model_default, draft?.model, draft?.pushback_model].filter(
+          (m): m is string => !!m
+        )
+      )
     )
       .filter((m) => !known.has(m))
       .map((m) => unlistedOption(m, modelOptions));
     return [...modelOptions, ...extra];
-  }, [modelOptions, detail?.model_default, draft?.model]);
+  }, [modelOptions, detail?.model_default, draft?.model, draft?.pushback_model]);
 
   // Provider groups in first-seen order (backend order: Anthropic first).
   const providerGroups = useMemo(() => {
@@ -424,6 +439,14 @@ export default function CouncilPage() {
       if (draft.instructions !== (detail.instructions ?? "")) {
         // Blank clears the field; the backend stores null for "".
         patch.instructions = draft.instructions.trim() ? draft.instructions : null;
+      }
+      if (draft.pushback_model !== pushbackPick(detail.pushback_model)) {
+        // Back to PUSHBACK_MODEL's pick clears the override; "same as normal
+        // answers" against a PUSHBACK_MODEL that names a model stores "off".
+        patch.pushback_model =
+          draft.pushback_model === pushbackPick(detail.pushback_model_default)
+            ? null
+            : draft.pushback_model || PUSHBACK_OFF;
       }
       const updated = await patchAgent(selected, patch);
       setDetail(updated);
@@ -862,6 +885,36 @@ export default function CouncilPage() {
                       )}
                     </div>
                   </div>
+
+                  {detail.name === "executive" && (
+                    <label className="block">
+                      <span className={FIELD_LABEL}>Model after pushback</span>
+                      <select
+                        aria-label="Model after pushback"
+                        value={draft.pushback_model}
+                        onChange={(e) => setDraft({ ...draft, pushback_model: e.target.value })}
+                        className={`w-full ${FIELD} mt-1.5 h-11 text-[15px]`}
+                      >
+                        <option value="">Same as normal answers</option>
+                        {providerGroups.map((g) => (
+                          <optgroup key={g.provider} label={g.label}>
+                            {pickerOptions
+                              .filter((o) => o.provider === g.provider)
+                              .map((o) => (
+                                <option key={o.id} value={o.id}>
+                                  {o.label}
+                                </option>
+                              ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                      <span className="text-xs text-fg-subtle mt-1 block">
+                        After a thumbs down, &ldquo;that&apos;s not what I asked&rdquo;, the same ask
+                        again, or a reply that claimed something it didn&apos;t do, the next answer
+                        uses this model. The one after goes back to the normal model.
+                      </span>
+                    </label>
+                  )}
 
                   {detail.name !== "utility_fast" && (
                     <label

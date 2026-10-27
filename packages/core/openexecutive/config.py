@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # off) instead of Opus is the dominant cost lever for the workflow.
     # Set RESEARCH_MODEL=claude-opus-5-5 to restore the prior behavior.
     research_model: str = Field("claude-sonnet-5-5", alias="RESEARCH_MODEL")
+    # The Executive's model for the one answer after someone pushes back on
+    # the last one (a thumbs down, "that's not what I asked", the same ask
+    # again, or a reply the claim check caught); the answer after that goes
+    # back to the normal model (orchestrator.pushback). Empty = off, every
+    # answer on the normal model. The Executive's Council card can set its
+    # own pick, which wins over this.
+    pushback_model: str = Field("", alias="PUSHBACK_MODEL")
 
     vector_store_path: Path = Field(_ROOT / "chroma_db", alias="VECTOR_STORE_PATH")
     company_profile_path: Path = Field(

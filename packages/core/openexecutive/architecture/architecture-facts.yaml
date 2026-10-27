@@ -5265,6 +5265,17 @@ chat:
     debounces it and opens a message match with /?session=…&find=…, and
     the chat starts on that message with previous/next and highlights
     the words (CSS Custom Highlight API where the browser has it).
+  pushback_model: |
+    After pushback, a stronger model for one answer (orchestrator/pushback.py).
+    At turn start the Executive checks the message for pushback on the last
+    answer: a thumbs down on the last saved reply (or typed), words that say
+    it missed, the same ask again, or a claim_check row on the last reply.
+    Then this turn runs on the pushback model (Council Executive card
+    agent_overrides.pushback_model, else PUSHBACK_MODEL; empty or "off" =
+    off) and logs a pushback_model audit row; the next turn is back on the
+    normal model. No model call, fails open. Why: most misses were followed
+    by the person pushing back, and a stronger model on just those turns
+    costs far less than running every answer on it.
   claim_check: |
     Do what it says (orchestrator/claim_check.py). At the end of the
     agent loop, a reply that uses a word able to claim a change (done,

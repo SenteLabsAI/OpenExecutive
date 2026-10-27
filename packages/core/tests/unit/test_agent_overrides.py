@@ -376,3 +376,21 @@ def test_analyze_appends_instructions_to_replaced_prompt(
     asyncio.run(_Dummy().analyze(query="hi"))
     text = create_mock.await_args.kwargs["system"][0]["text"]
     assert text == ov_mod.append_instructions("OVERRIDE_PROMPT", "Use EUR.")
+
+
+def test_pushback_model_round_trips_through_history(tmp_db: Path) -> None:
+    ov_mod.set_override(
+        "executive", pushback_model="claude-opus-5-5", pushback_model_set=True, db_path=tmp_db
+    )
+    ov_mod.set_override("executive", pushback_model="off", pushback_model_set=True, db_path=tmp_db)
+    assert ov_mod.get_override("executive", db_path=tmp_db).pushback_model == "off"
+    # Another field left alone keeps the pick.
+    ov_mod.set_override("executive", role="Chief", role_set=True, db_path=tmp_db)
+    assert ov_mod.get_override("executive", db_path=tmp_db).pushback_model == "off"
+    older = [
+        e for e in ov_mod.list_history("executive", db_path=tmp_db)
+        if e.pushback_model == "claude-opus-5-5"
+    ]
+    assert older
+    ov_mod.rollback_to(older[0].id, db_path=tmp_db)
+    assert ov_mod.get_override("executive", db_path=tmp_db).pushback_model == "claude-opus-5-5"

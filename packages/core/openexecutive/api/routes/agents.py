@@ -30,6 +30,7 @@ from openexecutive.agents.presets import (
     writes_for,
 )
 from openexecutive.audit.usage import log_model_usage
+from openexecutive.orchestrator.pushback import PUSHBACK_OFF
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,11 @@ class AgentDetail(BaseModel):
     # Additional instructions appended after ``prompt`` (which stays the
     # built-in prompt or its replacement, never the two joined).
     instructions: str | None = None
+    # The Executive only: the model for one answer after pushback
+    # (orchestrator.pushback), and PUSHBACK_MODEL's. "off" or "" means
+    # answers stay on ``model``. null on the specialists.
+    pushback_model: str | None = None
+    pushback_model_default: str | None = None
 
 
 # Additional instructions ride in every call to the agent (and in the
@@ -108,6 +114,8 @@ class AgentPatch(BaseModel):
     voice_persona_slug: str | None = None
     research_focus: str | None = None
     instructions: str | None = Field(None, max_length=INSTRUCTIONS_MAX_CHARS)
+    # The Executive only: a model id, "off", or null to follow PUSHBACK_MODEL.
+    pushback_model: str | None = None
 
 
 class AgentTestRequest(BaseModel):
@@ -243,6 +251,12 @@ class _ExecutiveDefaults:
         return get_settings().default_model
 
     @staticmethod
+    def pushback_model() -> str:
+        from openexecutive.config import get_settings
+
+        return (get_settings().pushback_model or "").strip()
+
+    @staticmethod
     def prompt() -> str:
         """The built-in persona for this install's workspace mode, so the
         Council shows — and resets to — the prompt a turn actually uses."""
@@ -294,7 +308,10 @@ def _build_executive_detail() -> AgentDetail:
             overridden.append("voice_persona_slug")
         if ov.instructions is not None:
             overridden.append("instructions")
+        if ov.pushback_model is not None:
+            overridden.append("pushback_model")
     role_default = _ExecutiveDefaults.role
+    pushback_default = _ExecutiveDefaults.pushback_model()
     model_default = _ExecutiveDefaults.model()
     prompt_default = _ExecutiveDefaults.prompt()
     return AgentDetail(
@@ -317,6 +334,10 @@ def _build_executive_detail() -> AgentDetail:
         updated_at=ov.updated_at if ov else None,
         voice_persona_slug=ov.voice_persona_slug if ov else None,
         instructions=ov.instructions if ov else None,
+        pushback_model=(
+            ov.pushback_model if ov and ov.pushback_model is not None else pushback_default
+        ),
+        pushback_model_default=pushback_default,
     )
 
 
@@ -555,6 +576,19 @@ def patch_agent(agent_id: str, patch: AgentPatch) -> AgentDetail:
             detail=f"Model {patch.model!r} is not in the allowed list",
         )
 
+    if "pushback_model" in raw:
+        if agent_id != EXECUTIVE_ID:
+            raise HTTPException(
+                status_code=400, detail="Only the Executive has a pushback model"
+            )
+        if patch.pushback_model not in (None, PUSHBACK_OFF) and (
+            patch.pushback_model not in _allowed(agent_id)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model {patch.pushback_model!r} is not in the allowed list",
+            )
+
     if "voice_persona_slug" in raw and patch.voice_persona_slug is not None:
         from openexecutive.personas.loader import persona_exists
         if not persona_exists(patch.voice_persona_slug):
@@ -584,6 +618,8 @@ def patch_agent(agent_id: str, patch: AgentPatch) -> AgentDetail:
         voice_persona_slug_set="voice_persona_slug" in raw,
         research_focus_set="research_focus" in raw,
         instructions_set="instructions" in raw,
+        pushback_model=patch.pushback_model,
+        pushback_model_set="pushback_model" in raw,
     )
     return (
         _build_executive_detail()

@@ -568,6 +568,7 @@ All settings via environment variables (`.env` file in `packages/core/`).
 | `DEFAULT_MODEL` | No | `claude-sonnet-4-6` | Model for Executive + most specialists |
 | `DEEP_REASONING_MODEL` | No | `claude-sonnet-5-5` | Model for CSO, CFO, GC, Board |
 | `ROUTING_MODEL` | No | `claude-haiku-5-5` | Model for intent routing and memory extraction |
+| `PUSHBACK_MODEL` | No | — (off) | The Executive's model for one answer after pushback on the last one |
 | `VECTOR_STORE_PATH` | No | `./chroma_db` | ChromaDB persistence directory |
 | `COMPANY_PROFILE_PATH` | No | `./company/profile.yaml` | Company profile location |
 | `EPISODIC_DB_PATH` | No | `./episodic_memory.db` | SQLite for episodic memory, alerts, audit, scheduler |

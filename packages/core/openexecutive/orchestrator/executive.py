@@ -50,6 +50,7 @@ from openexecutive.orchestrator import (
     take_the_lead,
     tool_groups,
 )
+from openexecutive.orchestrator import pushback as pushback_mod
 from openexecutive.orchestrator.action_card_tools import (
     ACTION_CARD_TOOL_HANDLERS,
     ACTION_CARD_TOOLS,
@@ -885,6 +886,44 @@ def _artifact_row_owner(tool_name: str) -> int | None:
     return current_viewer().person_id
 
 
+def _pushback_for_turn(
+    settings: Any, session: Session, text: str, normal_model: str
+) -> pushback_mod.Pushback | None:
+    """The pushback model for this turn, when the person pushed back on the
+    last answer (``orchestrator.pushback``). The Executive's Council pick
+    wins over ``PUSHBACK_MODEL``. None runs the turn on ``normal_model``."""
+    try:
+        from openexecutive.agents.overrides import EXECUTIVE_AGENT_ID, get_override
+
+        ov = get_override(EXECUTIVE_AGENT_ID)
+        return pushback_mod.for_turn(
+            session_id=session.session_id,
+            text=text,
+            history=session.conversation_history,
+            normal_model=normal_model,
+            override_pick=ov.pushback_model if ov is not None else None,
+            default=getattr(settings, "pushback_model", "") or "",
+        )
+    except Exception:
+        logger.warning("pushback: couldn't pick the turn's model", exc_info=True)
+        return None
+
+
+def _log_pushback(
+    pushback: pushback_mod.Pushback | None, session: Session, turn_id: str
+) -> None:
+    if pushback is None:
+        return
+    audit_log(
+        "pushback_model",
+        f"Pushback on the last answer ({pushback.reason}); this answer on {pushback.model}",
+        session_id=session.session_id,
+        turn_id=turn_id,
+        actor="executive",
+        details={"reason": pushback.reason, "model": pushback.model},
+    )
+
+
 def _speaker_text(memory_text: str | None, user_message: str) -> str:
     """The speaker's own words for this turn, which every post-turn pass reads
     instead of the prompt — episodic extraction, open loops and peer memory:
@@ -1362,6 +1401,12 @@ class Executive:
             )
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
+        # Pushback on the last answer: this one answer on the pushback model.
+        pushback = _pushback_for_turn(
+            self._settings, session, _speaker_text(memory_text, user_message), effective_model
+        )
+        if pushback is not None:
+            effective_model = pushback.model
         # Solo / team, resolved once per turn and pinned on the session, so the
         # persona, the org block, the toolkit the loop offers and every tool
         # handler agree even if the setting flips mid-turn (Session override →
@@ -1406,6 +1451,7 @@ class Executive:
         t0 = time.monotonic()
         full_response = ""
         with set_turn(session_id=session.session_id, turn_id=turn_id):
+            _log_pushback(pushback, session, turn_id)
             # Per-person prefetch from Honcho. Runs once per turn (NOT inside
             # the tool-call loop) so a long multi-tool turn doesn't accrue
             # multiple round trips. The wrapper enforces a hard timeout and
@@ -1732,6 +1778,12 @@ class Executive:
             )
         except Exception:
             logger.exception("Failed to load executive override; using defaults")
+        # Pushback on the last answer: this one answer on the pushback model.
+        pushback = _pushback_for_turn(
+            self._settings, session, _speaker_text(memory_text, user_message), effective_model
+        )
+        if pushback is not None:
+            effective_model = pushback.model
 
         workspace_mode = pin_turn_workspace_mode(session)
         principal_role = pin_turn_principal_role(session, workspace_mode)
@@ -1778,6 +1830,7 @@ class Executive:
         # refactor adds a raising step in this window, wrap that step in
         # try/finally with clear_turn() or migrate to `with set_turn`.
         bind_turn(session_id=session.session_id, turn_id=turn_id)
+        _log_pushback(pushback, session, turn_id)
 
         # Per-person prefetch from Honcho (see stream_chat for rationale).
         # Skip when caller pre-resolved (e.g. parallel context fetch in route).

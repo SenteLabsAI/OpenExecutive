@@ -3846,6 +3846,10 @@ export interface AgentDetail {
   research_focus: string | null;
   research_focus_default: string | null;
   instructions: string | null;
+  // The Executive only: the model for one answer after pushback ("off" or ""
+  // = same as normal answers), and PUSHBACK_MODEL's.
+  pushback_model?: string | null;
+  pushback_model_default?: string | null;
 }
 
 export interface AgentHistoryEntry {
@@ -3858,6 +3862,7 @@ export interface AgentHistoryEntry {
   voice_persona_slug: string | null;
   research_focus: string | null;
   instructions: string | null;
+  pushback_model?: string | null;
   created_at: string;
 }
 
@@ -3869,6 +3874,7 @@ export interface AgentPatch {
   voice_persona_slug?: string | null;
   research_focus?: string | null;
   instructions?: string | null;
+  pushback_model?: string | null;
 }
 
 // ---- Voice Personas --------------------------------------------------------

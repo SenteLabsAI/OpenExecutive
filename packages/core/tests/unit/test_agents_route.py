@@ -359,3 +359,31 @@ def test_executive_test_endpoint_appends_instructions(client: TestClient) -> Non
     assert res.status_code == 200, res.text
     text = create_mock.await_args.kwargs["system"][0]["text"]
     assert text == ov_mod.append_instructions("EXEC", "Sign off as Ada.")
+
+
+def test_executive_pushback_model_follows_the_setting_until_picked(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PUSHBACK_MODEL", "claude-opus-5-5")
+    body = client.get("/agents/executive").json()
+    assert body["pushback_model"] == "claude-opus-5-5"
+    assert body["pushback_model_default"] == "claude-opus-5-5"
+
+    res = client.patch("/agents/executive", json={"pushback_model": "off"})
+    assert res.status_code == 200, res.text
+    assert res.json()["pushback_model"] == "off"
+    assert "pushback_model" in res.json()["overridden_fields"]
+
+    res = client.patch("/agents/executive", json={"pushback_model": "claude-sonnet-5-5"})
+    assert res.json()["pushback_model"] == "claude-sonnet-5-5"
+
+    # null clears the pick: back to PUSHBACK_MODEL.
+    res = client.patch("/agents/executive", json={"pushback_model": None})
+    assert res.json()["pushback_model"] == "claude-opus-5-5"
+
+
+def test_pushback_model_must_be_allowed_and_executive_only(client: TestClient) -> None:
+    res = client.patch("/agents/executive", json={"pushback_model": "no-such-model"})
+    assert res.status_code == 400
+    res = client.patch("/agents/cso", json={"pushback_model": "claude-opus-5-5"})
+    assert res.status_code == 400
