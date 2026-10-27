@@ -280,3 +280,45 @@ def test_choosing_who_a_reply_goes_to(
     resp = client.put(url, json={"everyone": False}, headers=OWNER)
     assert resp.json()["draft_to"] == [sender] and mailbox.drafts["d1"].message.cc == []
     assert client.put("/delegation/replies/9999/recipients", json={"everyone": True}, headers=OWNER).status_code == 404
+
+
+def test_view_an_email_from_home(client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation.gmail import MailAttachment
+
+    set_enabled(ids["principal"], True, updated_by="t")
+    mailbox = FakeInbox()
+    mailbox.add(
+        _msg("r0", "t1", sender="olivia@co.example", labels=("SENT",), minutes_ago=90, text="Two LOIs, please."),
+        _msg(
+            "m1", "t1", text="Attached are the two LOIs.\n\nOn Mon, Olivia wrote:\n> Two LOIs, please.",
+            attachments=[MailAttachment(index=1, name="LOI Elm.pdf", mime_type="application/pdf", size=10)],
+        ),
+    )
+    mailbox.email = "olivia@co.example"
+    monkeypatch.setattr(route, "gmail_for", lambda email: mailbox)
+
+    body = client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "m1"}, headers=OWNER).json()
+    assert body["from_email"] == "dana@northpeak.example" and body["subject"] == "Thursday call"
+    assert body["text"] == "Attached are the two LOIs."  # their own words, not the quoted mail
+    assert body["attachments"] == [{"name": "LOI Elm.pdf", "mime_type": "application/pdf", "size": 10}]
+    assert body["their_last_words"] == "Two LOIs, please."
+    assert body["link"].startswith("https://mail.google.com/") and body["reply_card_id"] is None
+    missing = client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "x"}, headers=OWNER)
+    assert missing.status_code == 404
+    # Someone without Act as me reads nothing.
+    assert client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "m1"}, headers=TEAMMATE).status_code == 403
+
+
+def test_reply_from_home_makes_a_card(client: TestClient, ids: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    mailbox, card_id = _card(ids["principal"], monkeypatch)
+    monkeypatch.setattr(route, "gmail_for", lambda email: mailbox)
+    # The conversation's open card is the answer.
+    resp = client.post("/delegation/mail/reply", json={"thread_id": "t1", "message_id": "m1"}, headers=OWNER)
+    assert resp.status_code == 200 and resp.json() == {"decision_id": card_id}
+    view = client.get("/delegation/mail", params={"thread_id": "t1", "message_id": "m1"}, headers=OWNER).json()
+    assert view["reply_card_id"] == card_id
+    gone = client.post("/delegation/mail/reply", json={"thread_id": "t9", "message_id": "m9"}, headers=OWNER)
+    assert gone.status_code == 409 and gone.json()["detail"]["code"] == "not_found"
+    set_enabled(ids["principal"], False, updated_by="t")
+    off = client.post("/delegation/mail/reply", json={"thread_id": "t1", "message_id": "m1"}, headers=OWNER)
+    assert off.status_code == 409 and off.json()["detail"]["code"] == "act_as_me_off"

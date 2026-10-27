@@ -643,6 +643,17 @@ def test_their_last_email_cannot_end_its_block_or_open_another() -> None:
     assert ic.render_email(_msg("m1", "t1"), relation="team").startswith("<email>")
 
 
+def test_the_email_turn_names_its_attachments() -> None:
+    from openexecutive.delegation.gmail import MailAttachment
+
+    files = [MailAttachment(index=n, name=f"LOI {n}.pdf") for n in range(1, 8)]
+    turn = ic.render_email(_msg("m1", "t1", attachments=files), relation="contact")
+    assert "Attachments: LOI 1.pdf, LOI 2.pdf, LOI 3.pdf, LOI 4.pdf, LOI 5.pdf and 2 more" in turn
+    # Outlook says only that there are some.
+    assert "Attachments: yes" in ic.render_email(_msg("m1", "t1", has_attachments=True), relation="contact")
+    assert "Attachments" not in ic.render_email(_msg("m1", "t1"), relation="contact")
+
+
 def test_mail_to_the_executive_that_copies_them_gets_no_draft(
     db: Path, owner: Any, models: dict[str, Any]
 ) -> None:
@@ -1294,3 +1305,52 @@ def test_the_writers_notes_for_the_sender_and_everyone_copied_reach_the_composer
     _scan(owner, mailbox)
     assert asked == [(owner.id, [DANA, "ben@co.example"])]
     assert '<writer_noted>\n[2026-09-28] agreed: "Friday works"\n</writer_noted>' in models["composed"][-1]
+
+
+# ── Reply from Home (draft_on_request) ───────────────────────────────────────
+
+
+def _ask(person: Any, mailbox: FakeInbox, thread_id: str, message_id: str) -> int | str:
+    return asyncio.run(inbox.draft_on_request(person, thread_id, message_id, gmail=mailbox, now=NOW))
+
+
+def test_reply_from_home_drafts_what_the_watcher_passed_over(
+    db: Path, owner: Any, models: dict[str, Any]
+) -> None:
+    from openexecutive.delegation import handle_it
+
+    # Handle it for me is on, yet a reply they asked for waits for them.
+    handle_it.set_(owner.id, enabled=True, mode="bold", updated_by="test")
+    models["verdicts"]["LOIs"] = {"needs_reply": False, "kind": "fyi", "asked_of_them": True, "confidence": 0.9}
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1", text="Attached are the two LOIs. Let me know if you have any questions."))
+    assert _scan(owner, mailbox).not_needed == 1
+
+    got = _ask(owner, mailbox, "t1", "m1")
+
+    [card] = inbox.open_cards(owner.id)
+    assert got == card.id and card.status == "proposed"
+    assert mailbox.sent == [] and len(mailbox.specs) == 1
+    assert _ledger(db)["m1"][0] == "drafted"
+    # Asked again: the same card, no second draft.
+    assert _ask(owner, mailbox, "t1", "m1") == card.id and len(mailbox.specs) == 1
+
+
+def test_reply_from_home_reuses_the_card_on_the_conversation(owner: Any, models: dict[str, Any]) -> None:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    _scan(owner, mailbox)
+    [card] = inbox.open_cards(owner.id)
+    mailbox.add(_msg("m2", "t1", minutes_ago=5, text="Also, can you bring the deck?"))
+    assert _ask(owner, mailbox, "t1", "m2") == card.id
+    assert len(mailbox.specs) == 1
+
+
+def test_reply_from_home_refuses_what_it_cannot_answer(db: Path, owner: Any, models: dict[str, Any]) -> None:
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"), _msg("r1", "t1", sender=OWNER, labels=("SENT",), minutes_ago=5))
+    assert _ask(owner, mailbox, "t1", "m1") == "theirs_last"
+    assert _ask(owner, mailbox, "nope", "m1") == "not_found"
+    assert _ask(owner, mailbox, "t1", "gone") == "not_found"
+    assert set(inbox.ASK_REFUSALS) >= {"theirs_last", "not_found", "busy", "daily_limit", "not_now"}
+    assert mailbox.specs == [] and inbox.open_cards(owner.id) == []

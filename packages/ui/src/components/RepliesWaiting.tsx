@@ -137,9 +137,12 @@ export function ReplyCardItem({
   onRefresh,
   onChanged,
   emphasized = false,
+  defaultOpen = false,
 }: {
   card: ReplyCard;
   emphasized?: boolean;
+  // Start open (Right now's View email shows the reply straight away).
+  defaultOpen?: boolean;
   onGone: (id: number, note?: string) => void;
   onRefresh: () => Promise<void>;
   onChanged?: (card: ReplyCard) => void;
@@ -147,7 +150,7 @@ export function ReplyCardItem({
   const [step, setStep] = useState<Step>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   // Closed until tapped: the summary, what's left to decide, one main button.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   // Edit: the draft's words in a box on the card, until Save or Cancel.
   const [editing, setEditing] = useState<string | null>(null);
   // Drafts in training: keep what you sent as an example when you changed it first.

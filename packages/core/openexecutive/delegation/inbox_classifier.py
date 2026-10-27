@@ -40,6 +40,8 @@ MAX_BODY_CHARS = 3000
 # Of the person's own last email in the thread: enough for what they asked.
 MAX_EARLIER_CHARS = 1500
 _MAX_TOKENS = 200
+# Attachment names shown in the email's header lines.
+_MAX_ATTACHMENT_NAMES = 5
 
 KINDS: tuple[str, ...] = (
     "question",
@@ -109,6 +111,13 @@ sender proposes is not settled until this person accepts it: "would \
 Thursday at 11 suit?" waits on their yes, so it is scheduling and needs_reply \
 is true. When the email settles what they asked and leaves nothing for them \
 to do (it accepts a time they offered), it needs no reply.
+
+When the email delivers what this person asked for in <their_last_email> \
+(the document, figures or changes they wanted, often attached), it is a \
+follow_up and needs_reply is true, even when it ends with "let me know if \
+you have any questions": they owe a short word back, that it arrived and \
+what happens next, and the deal or task waits on them. A plain thanks or \
+an "ok, will do" that delivers nothing needs no reply.
 
 When unsure, say needs_reply false."""
 
@@ -241,6 +250,13 @@ def render_email(
     header += [
         f"Subject: {one_line(getattr(message, 'subject', '') or '', 200)}",
     ]
+    files = [one_line(a.name, 80) for a in getattr(message, "attachments", None) or [] if getattr(a, "name", "")]
+    if files:
+        shown = ", ".join(files[:_MAX_ATTACHMENT_NAMES])
+        more = len(files) - _MAX_ATTACHMENT_NAMES
+        header.append(f"Attachments: {shown}" + (f" and {more} more" if more > 0 else ""))
+    elif getattr(message, "has_attachments", False):
+        header.append("Attachments: yes")
     lines = [scrub_block_line(line, "</email>") for line in [*header, "", *body.splitlines()]]
     # The text can't open or close a tag, in any spelling.
     text = no_tags("\n".join(lines)).strip()

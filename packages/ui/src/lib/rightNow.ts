@@ -8,6 +8,30 @@
 export interface TimedPoint {
   text: string;
   since?: string | null;
+  source?: {
+    kind: "mail" | "alert";
+    message_id?: string | null;
+    thread_id?: string | null;
+    decision_id?: number | null;
+    alert_id?: number | null;
+  } | null;
+}
+
+/** What a point's buttons open: an email (by its ids), a card in Needs you,
+ * or nothing (the point is only talked through). */
+export type PointTarget =
+  | { kind: "mail"; threadId: string; messageId: string; cardId: number | null }
+  | { kind: "alert"; alertId: number }
+  | null;
+
+export function pointTarget(point: TimedPoint): PointTarget {
+  const s = point.source;
+  if (!s) return null;
+  if (s.kind === "mail" && s.message_id && s.thread_id) {
+    return { kind: "mail", threadId: s.thread_id, messageId: s.message_id, cardId: s.decision_id ?? null };
+  }
+  if (s.kind === "alert" && typeof s.alert_id === "number") return { kind: "alert", alertId: s.alert_id };
+  return null;
 }
 
 /** "2:31 PM" in the browser's zone, or null for a missing/bad time. */

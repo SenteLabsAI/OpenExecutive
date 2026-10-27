@@ -1031,6 +1031,134 @@ def get_delegation_replies(request: Request) -> RepliesOut:
     ])
 
 
+class MailAttachmentOut(BaseModel):
+    name: str
+    mime_type: str = ""
+    size: int = 0
+
+
+class MailViewOut(BaseModel):
+    """One email in the caller's own mailbox, as Home opens it from a Right
+    now point: who wrote, to whom, what they wrote (without the quoted
+    conversation below), its files, what the caller last wrote in the
+    conversation, a link to it in their mailbox, and the reply card open on
+    the conversation, if any."""
+
+    thread_id: str
+    message_id: str
+    subject: str = ""
+    from_name: str = ""
+    from_email: str = ""
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    received_at: str = ""
+    text: str = ""
+    attachments: list[MailAttachmentOut] = Field(default_factory=list)
+    has_attachments: bool = False
+    their_last_words: str = ""
+    link: str = ""
+    reply_card_id: int | None = None
+
+
+class MailReplyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str = Field(min_length=1, max_length=512)
+    message_id: str = Field(min_length=1, max_length=512)
+
+
+class MailReplyOut(BaseModel):
+    decision_id: int
+
+
+# The most of an email's own words Home shows.
+_MAIL_VIEW_MAX_CHARS = 8000
+_MAIL_EARLIER_MAX_CHARS = 400
+
+
+async def _connected_mailbox(person: Person) -> Any:
+    status = await gmail_status(person.email)
+    if status != "connected":
+        raise _refuse(409, _BLOCKING_CODES.get(status, "gmail_error"), STATUS_MESSAGES[status])
+    return gmail_for(person.email or "")
+
+
+@router.get("/delegation/mail", response_model=MailViewOut)
+async def get_delegation_mail(request: Request, thread_id: str, message_id: str) -> MailViewOut:
+    """One email in the caller's own mailbox (Home's View email). Their own
+    mailbox only: the client is theirs, so another person's ids find
+    nothing. Reads; changes nothing."""
+    from openexecutive.delegation.gmail import GmailNotFound, mailbox_link
+    from openexecutive.delegation.inbox import card_payload, open_cards
+    from openexecutive.delegation.inbox_classifier import their_last_words
+    from openexecutive.integrations.email_poller import sender_new_text
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    if not (0 < len(thread_id) <= 512 and 0 < len(message_id) <= 512):
+        raise _refuse(422, "bad_id", "That isn't an email.")
+    client = await _connected_mailbox(person)
+    try:
+        thread = await client.get_thread(thread_id)
+        own = {(person.email or "").strip().lower(), *(a.strip().lower() for a in await client.send_as_addresses())}
+    except GmailNotFound as exc:
+        raise _refuse(404, "not_found", "That email isn't in your mailbox any more.") from exc
+    except GmailAuthError as exc:
+        raise _refuse(409, "gmail_needs_reconnect", STATUS_MESSAGES["needs_reconnect"]) from exc
+    except GmailError as exc:
+        logger.warning("delegation: reading an email failed", exc_info=True)
+        raise _refuse(502, "gmail_error", STATUS_MESSAGES["error"]) from exc
+    message = next((m for m in thread.messages if m.id == message_id), None)
+    if message is None:
+        raise _refuse(404, "not_found", "That email isn't in your mailbox any more.")
+    card = next(
+        (c for c in open_cards(person_id) if card_payload(c).get("thread_id") == thread.id), None
+    )
+    return MailViewOut(
+        thread_id=thread.id,
+        message_id=message.id,
+        subject=message.subject,
+        from_name=message.from_name,
+        from_email=message.from_addr,
+        to=list(message.to),
+        cc=list(message.cc),
+        received_at=message.received_at,
+        text=sender_new_text(message.text or "")[:_MAIL_VIEW_MAX_CHARS].strip(),
+        attachments=[
+            MailAttachmentOut(name=a.name, mime_type=a.mime_type, size=a.size) for a in message.attachments
+        ],
+        has_attachments=bool(message.attachments) or message.has_attachments,
+        their_last_words=their_last_words(thread, message, own)[:_MAIL_EARLIER_MAX_CHARS],
+        link=mailbox_link(person.email or "", thread_id=thread.id, message_id=message.id),
+        reply_card_id=int(card.id) if card is not None else None,
+    )
+
+
+@router.post("/delegation/mail/reply", response_model=MailReplyOut)
+async def reply_to_delegation_mail(request: Request, body: MailReplyIn) -> MailReplyOut:
+    """Write a reply to one email in the caller's own inbox, because they
+    asked (Home's Reply), and put it on a reply card for them
+    (``delegation.inbox.draft_on_request``). The open card already on that
+    conversation when there is one. Sends nothing: the card's Send does."""
+    from openexecutive.delegation.inbox import ASK_REFUSALS, draft_on_request
+
+    person = _caller(request)
+    person_id = _person_id(person)
+    if not is_enabled(person_id):
+        raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
+    client = await _connected_mailbox(person)
+    try:
+        got = await draft_on_request(person, body.thread_id, body.message_id, gmail=client)
+    except GmailAuthError as exc:
+        raise _refuse(409, "gmail_needs_reconnect", STATUS_MESSAGES["needs_reconnect"]) from exc
+    except GmailError as exc:
+        logger.warning("delegation: writing a reply on request failed", exc_info=True)
+        raise _refuse(502, "gmail_error", STATUS_MESSAGES["error"]) from exc
+    if isinstance(got, str):
+        raise _refuse(409, got, ASK_REFUSALS.get(got, ASK_REFUSALS["not_now"]))
+    return MailReplyOut(decision_id=got)
+
+
 @router.put("/delegation/replies/{decision_id}/text", response_model=ReplyCardOut)
 async def update_delegation_reply_text(request: Request, decision_id: int, body: ReplyTextUpdate) -> ReplyCardOut:
     """Change the words of one of the caller's reply cards before Send: on

@@ -71,6 +71,10 @@ class HeaderContext:
     # Tags of MOVED TODAY lines only (not the calendar): with none, nothing
     # moved and no model call is needed.
     moved: frozenset[str] = field(default_factory=frozenset)
+    # Tag → the item a line is about, for the lines Home can open from a
+    # point: ``{"kind": "mail", "message_id", "thread_id"?, "decision_id"?}``
+    # or ``{"kind": "alert", "alert_id"}``. Never part of the text.
+    sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _one_line(value: Any, limit: int = 160) -> str:
@@ -133,6 +137,7 @@ def render_header_context(
     solo = mode == "solo"
     moved = _Tagger()
     still_open: list[str] = []
+    sources: dict[str, dict[str, Any]] = {}
 
     if live is not None:
         for line in live.inbound:
@@ -146,8 +151,11 @@ def render_header_context(
             moved.add(f"{n} draft{'s' if n != 1 else ''} in the reader's own mailbox, waiting for them to send")
         for line in live.waiting:
             moved.add(f"The reader's own email, waiting on an answer: {_one_line(line, 300)}")
-        for line in live.inbox:
-            moved.add(f"Email to the reader's own inbox: {_one_line(line, 400)}")
+        refs = list(live.inbox_refs)
+        for i, line in enumerate(live.inbox):
+            tag = moved.add(f"Email to the reader's own inbox: {_one_line(line, 400)}")
+            if i < len(refs) and refs[i].get("message_id"):
+                sources[tag] = dict(refs[i])
         for line in live.met_today:
             moved.add(f"Meeting that ended today: {_one_line(line, 200)}")
 
@@ -158,9 +166,13 @@ def render_header_context(
             line = f"New for the reader to decide ({age}): {headline}"
             if p.get("why_now"):
                 line += f" (why now: {_one_line(p['why_now'], 100)})"
-            moved.add(line)
+            _cite_alert(sources, moved.add(line), p)
         elif _local_day(p.get("last_seen_at"), tz) == today and int(p.get("occurrence_count") or 1) > 1:
-            moved.add(f"Came up again today ({age}, {p.get('occurrence_count')} times so far): {headline}")
+            _cite_alert(
+                sources,
+                moved.add(f"Came up again today ({age}, {p.get('occurrence_count')} times so far): {headline}"),
+                p,
+            )
         else:
             still_open.append(f"decision waiting ({age}): {headline}")
 
@@ -276,7 +288,32 @@ def render_header_context(
         text="\n".join(head_lines) + "\n" + text_body,
         tags=frozenset(moved.tags),
         moved=frozenset(moved_tags),
+        sources=sources,
     )
+
+
+def _cite_alert(sources: dict[str, dict[str, Any]], tag: str, proposal: dict[str, Any]) -> None:
+    alert_id = proposal.get("alert_id")
+    if isinstance(alert_id, int) and not isinstance(alert_id, bool):
+        sources[tag] = {"kind": "alert", "alert_id": alert_id}
+
+
+def point_sources(
+    draft: str, sources: dict[str, dict[str, Any]]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Each bullet of ``draft`` (as ``point_citations`` reads it) with the
+    item its first cited tag that has one is about. A bullet citing none of
+    ``sources`` is left out."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for point, cited in point_citations(draft):
+        tag = next((t for t in sorted(cited, key=_tag_order) if t in sources), None)
+        if tag is not None:
+            out.append((point, sources[tag]))
+    return out
+
+
+def _tag_order(tag: str) -> int:
+    return int(tag[1:]) if tag[1:].isdigit() else 0
 
 
 def tags_in(context: str) -> frozenset[str]:
@@ -390,6 +427,7 @@ __all__ = [
     "keep_cited_points",
     "needs_you_tags",
     "point_citations",
+    "point_sources",
     "render_header_context",
     "tags_in",
 ]

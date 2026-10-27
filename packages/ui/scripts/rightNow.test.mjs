@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { alsoInLine, checkedLabel, clockLabel, isNewSince, newSinceLabel, seenBaseline } from "../src/lib/rightNow.ts";
+import { alsoInLine, checkedLabel, clockLabel, isNewSince, newSinceLabel, pointTarget, seenBaseline } from "../src/lib/rightNow.ts";
 
 const at = (h, m) => {
   const d = new Date();
@@ -58,4 +58,15 @@ test("alsoInLine names a few and counts the rest", () => {
     "Also in: 5 others — Ana: Rates, Yardi: Webinar, Bo: Hi and 2 more.",
   );
   assert.equal(alsoInLine([], 3), "Also in: 3 others.");
+});
+
+test("a point opens the email or card it is about", () => {
+  assert.deepEqual(
+    pointTarget({ text: "a", source: { kind: "mail", message_id: "m1", thread_id: "t1", decision_id: 4 } }),
+    { kind: "mail", threadId: "t1", messageId: "m1", cardId: 4 },
+  );
+  assert.deepEqual(pointTarget({ text: "a", source: { kind: "alert", alert_id: 9 } }), { kind: "alert", alertId: 9 });
+  // An email without its conversation, or no source, opens nothing.
+  assert.equal(pointTarget({ text: "a", source: { kind: "mail", message_id: "m1" } }), null);
+  assert.equal(pointTarget({ text: "a" }), null);
 });

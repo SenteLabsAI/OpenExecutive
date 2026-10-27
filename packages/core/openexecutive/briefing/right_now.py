@@ -10,6 +10,9 @@ of state that needs, next to the header's own table:
   bold subject) first appeared in a written header. Recorded when a header is
   written, so a point keeps its time across rewrites that reword it.
 - ``briefing_reader_seen``: per scope, when the reader last looked at it.
+- ``briefing_point_source``: per scope and local day, what each point of the
+  latest header is about (an email, a card), so Home can open it. Replaced
+  whole on every write.
 
 ``split_narrative`` parses the header's fixed shape (bold opener, bullets, a
 ``**Move today:**`` line) for the card; text in any other shape comes back as
@@ -17,10 +20,12 @@ the opener alone. Nothing here calls a model.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from openexecutive.briefing import narrative_cache
 
@@ -90,6 +95,17 @@ def initialize_db() -> None:
                 day TEXT NOT NULL,
                 point_key TEXT NOT NULL,
                 first_seen TEXT NOT NULL,
+                PRIMARY KEY (scope, day, point_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS briefing_point_source (
+                scope TEXT NOT NULL,
+                day TEXT NOT NULL,
+                point_key TEXT NOT NULL,
+                source TEXT NOT NULL,
                 PRIMARY KEY (scope, day, point_key)
             )
             """
@@ -173,6 +189,48 @@ def point_times(scope: str, day: str) -> dict[str, str]:
     return {r["point_key"]: r["first_seen"] for r in rows}
 
 
+def record_sources(scope: str, written_at: str, sources: dict[str, dict[str, Any]]) -> None:
+    """Keep what each point of the header written at ``written_at`` is
+    about (``point_key`` → item), in place of the last header's. Never
+    raises."""
+    day = _day_of(written_at)
+    if day is None:
+        return
+    try:
+        initialize_db()
+        with narrative_cache._get_conn() as conn:
+            conn.execute("DELETE FROM briefing_point_source WHERE scope = ?", (scope,))
+            conn.executemany(
+                "INSERT OR REPLACE INTO briefing_point_source (scope, day, point_key, source) VALUES (?, ?, ?, ?)",
+                [(scope, day, k, json.dumps(v, sort_keys=True)) for k, v in sorted(sources.items()) if k],
+            )
+    except Exception:
+        logger.exception("right_now: recording point sources failed (scope=%s)", scope)
+
+
+def point_sources(scope: str, day: str) -> dict[str, dict[str, Any]]:
+    """``point_key`` → what it is about, for one scope's header of ``day``."""
+    try:
+        initialize_db()
+        with narrative_cache._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT point_key, source FROM briefing_point_source WHERE scope = ? AND day = ?",
+                (scope, day),
+            ).fetchall()
+    except Exception:
+        logger.exception("right_now: reading point sources failed (scope=%s)", scope)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        try:
+            value = json.loads(r["source"])
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            out[r["point_key"]] = value
+    return out
+
+
 def mark_seen(scope: str, at: str | None = None) -> str | None:
     """Record that the reader looked at Right now; returns the time stored,
     or None when it could not be written. Never raises."""
@@ -211,8 +269,10 @@ __all__ = [
     "initialize_db",
     "mark_seen",
     "point_key",
+    "point_sources",
     "point_times",
     "record_points",
+    "record_sources",
     "seen_at",
     "split_narrative",
 ]

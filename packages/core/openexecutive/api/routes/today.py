@@ -28,7 +28,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta, tzinfo
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -503,12 +503,35 @@ class HeldBackItem(BaseModel):
     lines: list[str]
 
 
+class PointSource(BaseModel):
+    """What a Right now point is about, when Home can open it: an email in
+    the reader's own inbox (``kind`` "mail": its ids, and its reply card
+    when one is open) or a card in Needs you (``kind`` "alert")."""
+
+    kind: Literal["mail", "alert"]
+    message_id: str | None = None
+    thread_id: str | None = None
+    decision_id: int | None = None
+    alert_id: int | None = None
+
+
 class NarrativePoint(BaseModel):
-    """One point of Right now (the /today header): its Markdown, and when it
-    first appeared today (ISO-8601 UTC)."""
+    """One point of Right now (the /today header): its Markdown, when it
+    first appeared today (ISO-8601 UTC), and what it is about."""
 
     text: str
     since: str | None = None
+    source: PointSource | None = None
+
+
+def _point_source(raw: dict[str, Any] | None) -> PointSource | None:
+    """A stored point source as the API shows it; None when unreadable."""
+    if not raw:
+        return None
+    try:
+        return PointSource.model_validate(raw)
+    except ValueError:
+        return None
 
 
 class MorningBriefItem(BaseModel):
@@ -1794,11 +1817,14 @@ def _narrative_context(
     mode: str = "team",
     scope: str | None = None,
     reader: Reader | None | object = _LOOKUP,
+    sources_out: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]] | None]:
     """``(context, activity)`` — the exact user turn the model would receive.
 
     ``reader`` is who the header is written for (``_narrative_reader``); the
     regeneration resolves it once and hands the same one to the post-check.
+    ``sources_out``, when given, is filled with Right now's tag → item map
+    (``HeaderContext.sources``), so a point can be opened from Home.
 
     The single source both the cache key and the model call come from, so the
     key can never be computed over something the model did not see.
@@ -1819,7 +1845,7 @@ def _narrative_context(
     today_data = _with_due_soon(today_data, mode, viewer_desc, scope)
     resolved = _narrative_reader(scope, viewer) if reader is _LOOKUP else reader
     if viewer_desc is None:
-        return _header_context(today_data, viewer, mode, scope, resolved)  # type: ignore[arg-type]
+        return _header_context(today_data, viewer, mode, scope, resolved, sources_out)  # type: ignore[arg-type]
     if _nothing_needs_attention(today_data, mode):
         return narrative_cache.QUIET_CONTEXT, None
     activity = _narrative_activity(viewer, viewer_desc)
@@ -1840,6 +1866,7 @@ def _header_context(
     mode: str,
     scope: str | None,
     reader: Reader | None,
+    sources_out: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]] | None]:
     """Right now's context for a whole-company scope
     (``briefing.header_context``). With nothing moved today it is one of the
@@ -1903,6 +1930,8 @@ def _header_context(
     ctx = render(activity)
     if not ctx.moved:
         return narrative_cache.NOTHING_MOVED_CONTEXT, None
+    if sources_out is not None:
+        sources_out.update(ctx.sources)
     return ctx.text, activity
 
 
@@ -2043,11 +2072,17 @@ def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at
     from openexecutive.briefing import narrative_cache, right_now
 
     parts = right_now.split_narrative(text)
-    times = right_now.point_times(scope, narrative_cache.local_today())
+    day = narrative_cache.local_today()
+    times = right_now.point_times(scope, day)
+    sources = right_now.point_sources(scope, day)
     response.narrative_lead = parts.lead
     response.narrative_move = parts.move
     response.narrative_points = [
-        NarrativePoint(text=p, since=times.get(right_now.point_key(p), written_at))
+        NarrativePoint(
+            text=p,
+            since=times.get(right_now.point_key(p), written_at),
+            source=_point_source(sources.get(right_now.point_key(p))),
+        )
         for p in parts.points
     ]
     # Only a rostered reader's own scope has a last look (see /today/seen).
@@ -2141,6 +2176,9 @@ async def _regen_briefing_narrative_locked(
     started = time.monotonic()
     # The new points that need the principal, by key (right_now_ping).
     important: set[str] = set()
+    # Tag → item for the lines Home can open, and point key → item.
+    sources: dict[str, dict[str, Any]] = {}
+    pointed: dict[str, dict[str, Any]] = {}
     try:
         mode = get_workspace().mode
         snapshot = _build_today(include_private=expected_scope == narrative_cache.DEFAULT_SCOPE)
@@ -2155,7 +2193,7 @@ async def _regen_briefing_narrative_locked(
             return True
         reader = _narrative_reader(scope, viewer)
         context, activity = _narrative_context(
-            today_data, viewer, viewer_desc, mode, scope, reader=reader,
+            today_data, viewer, viewer_desc, mode, scope, reader=reader, sources_out=sources,
         )
         input_hash = narrative_cache.build_narrative_input_hash(context, scope=scope, mode=mode)
         cached = narrative_cache.get(scope)
@@ -2184,6 +2222,10 @@ async def _regen_briefing_narrative_locked(
                 timeout=25.0 + REWRITE_TIMEOUT_S,
             )
             if viewer_desc is None and text:
+                from openexecutive.briefing.header_context import point_sources
+                from openexecutive.briefing.right_now import point_key as key_of
+
+                pointed = {key_of(p): src for p, src in point_sources(text, sources)}
                 if scope == narrative_cache.DEFAULT_SCOPE:
                     from openexecutive.briefing.header_context import (
                         needs_you_tags,
@@ -2214,6 +2256,7 @@ async def _regen_briefing_narrative_locked(
     from openexecutive.briefing import right_now
 
     recorded = right_now.record_points(scope, text, written_at)
+    right_now.record_sources(scope, written_at, pointed)
     if scope == narrative_cache.DEFAULT_SCOPE and recorded.new:
         from openexecutive.briefing.right_now_ping import maybe_ping
 

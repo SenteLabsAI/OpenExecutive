@@ -1,0 +1,41 @@
+id: delegation_inbox_016
+domain: delegation
+type: inbox
+description: "Inbox watcher: the person asked a broker for two separate letters of intent, and the broker sends them attached with \"let me know if you have any questions\". It delivers what they asked for and the deal waits on them, so a short reply is drafted."
+inbox:
+  person:
+    full_name: Olivia Owner
+    email: olivia@fernway.example
+  relation: contact
+  expect: draft
+  thread:
+    id: t-lois
+    subject: "Re: property figures"
+    messages:
+      - from: "Olivia Owner <olivia@fernway.example>"
+        to: ["marco@harbourbrokers.example"]
+        text: |
+          Hi Marco,
+
+          We're good to go with the second offer. Before counsel looks at it,
+          could you have them split the LOI in two, one per property, with
+          the price shown for each?
+
+          Olivia
+      - from: "Marco Reyes <marco@harbourbrokers.example>"
+        to: ["olivia@fernway.example"]
+        text: |
+          Attached are the clean versions of the two LOIs, one for Elm Court
+          and one for Bayside Commons. Let me know if you have any questions.
+
+          Marco
+        attachments:
+          - name: LOI Elm Court.pdf
+            text: "Letter of intent: Elm Court. Price $2,400,000."
+          - name: LOI Bayside Commons.pdf
+            text: "Letter of intent: Bayside Commons. Price $2,250,000."
+quality_criteria:
+  acknowledges_the_two_lois_arrived: true
+  says_or_asks_about_the_next_step_without_inventing_commitments: true
+  promises_nothing_new_on_price_or_terms: true
+  brief: true

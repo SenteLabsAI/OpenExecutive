@@ -235,6 +235,9 @@ class LiveSignals:
     inbox: tuple[str, ...] = ()
     inbox_others: tuple[str, ...] = ()
     inbox_others_total: int = 0
+    # Which email each ``inbox`` line is, in the same order, so Home can open
+    # it from the point that cites it. Never rendered or keyed.
+    inbox_refs: tuple[dict[str, Any], ...] = ()
     # Stable identities for the brief's "unchanged" fingerprint — no times.
     # The reader's own messages are left out: chatting with the Executive
     # is not a reason to send a brief.
@@ -647,6 +650,8 @@ class OwnInbox:
     lines: tuple[str, ...] = ()
     others: tuple[str, ...] = ()
     others_total: int = 0
+    # Per line: the email's ids and its open reply card, if any.
+    refs: tuple[dict[str, Any], ...] = ()
 
 
 def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnInbox:
@@ -688,6 +693,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
     picked.sort(key=lambda d: d["_at"], reverse=True)
     done = watcher.outcomes(principal.id, [str(d["message_id"]) for d in picked])
     lines: list[str] = []
+    refs: list[dict[str, Any]] = []
     others: list[str] = []
     others_total = 0
     for d in picked:
@@ -724,7 +730,18 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
             what = ""
         line = f"[{at}] from {who}: \"{subject}\""
         lines.append(f"{line} — {what}" if what else line)
-    return OwnInbox(tuple(lines), tuple(others), others_total)
+        refs.append(_mail_ref(d))
+    return OwnInbox(tuple(lines), tuple(others), others_total, tuple(refs))
+
+
+def _mail_ref(d: dict[str, Any]) -> dict[str, Any]:
+    """What Home needs to open one email from a Right now point."""
+    ref: dict[str, Any] = {"kind": "mail", "message_id": str(d.get("message_id") or "")}
+    if d.get("thread_id"):
+        ref["thread_id"] = str(d["thread_id"])
+    if isinstance(d.get("card_id"), int):
+        ref["decision_id"] = d["card_id"]
+    return ref
 
 
 def _waiting_lines(items: list[Any], now: datetime, tz: tzinfo) -> list[str]:
@@ -865,6 +882,7 @@ def gather_live_signals(
         inbox=mail.lines,
         inbox_others=mail.others,
         inbox_others_total=mail.others_total,
+        inbox_refs=mail.refs,
         keys={
             "inbound": sorted(inbound_keys),
             "stuck": sorted(s.split("] ", 1)[-1] for s in stuck),

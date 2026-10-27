@@ -1259,18 +1259,7 @@ async def _consider(
     """Handle one message. True when the rest of the scan should stop.
     Once claimed, a message is finished or left for a later scan
     (``_retry_later``); a Gmail failure is raised for the scan to back off."""
-    from openexecutive.config import get_settings
-    from openexecutive.delegation import (
-        caps,
-        card_drafts,
-        drafts,
-        handle_it,
-        injection_check,
-        invites,
-    )
-    from openexecutive.delegation import disclosure as ai_disclosure
-    from openexecutive.delegation.ghostwriter import ComposeError
-    from openexecutive.delegation.gmail import DraftSpec, GmailError
+    from openexecutive.delegation import invites
     from openexecutive.delegation.inbox_classifier import (
         addressing,
         classify,
@@ -1278,7 +1267,6 @@ async def _consider(
         wants_draft,
     )
 
-    email = (person.email or "").strip().lower()
     thread = await client.get_thread(thread_id)
     message = next((m for m in thread.messages if m.id == message_id), None)
     if message is None:
@@ -1327,6 +1315,27 @@ async def _consider(
         _set_outcome(person.id, message.id, NOT_NEEDED, reason=reason)
         result.not_needed += 1
         return False
+    return await _draft_card(
+        person, client, message, thread, relation=relation, known_as=known_as, verdict=verdict,
+        own=own, exec_address=exec_address, now=now, result=result,
+    )
+
+
+async def _draft_card(
+    person: Any, client: Any, message: Any, thread: Any, *, relation: str, known_as: str, verdict: Any,
+    own: set[str], exec_address: str, now: datetime, result: ScanResult, asked: bool = False,
+) -> bool:
+    """Write the reply to ``message`` (already claimed, ``PROCESSING``) and
+    put it on a card, within the day's draft limit; under Handle it for me
+    it may go on its own, unless the person ``asked`` for it (from Home).
+    True when the rest of the scan should stop (the limit)."""
+    from openexecutive.config import get_settings
+    from openexecutive.delegation import caps, card_drafts, drafts, handle_it, injection_check
+    from openexecutive.delegation import disclosure as ai_disclosure
+    from openexecutive.delegation.ghostwriter import ComposeError
+    from openexecutive.delegation.gmail import DraftSpec, GmailError
+
+    email = (person.email or "").strip().lower()
     settings = get_settings()
     if caps.reserve(person.id, settings.delegation_max_drafts_per_day) is not None:
         # Chat took the day's last draft while this one was being read: it
@@ -1353,11 +1362,12 @@ async def _consider(
         # Handle it for me: plain code decides whether this reply may go on
         # its own. The two model calls above have no tools, so the email's
         # text can only change their answers, never this.
-        handling = handle_it.get(person.id)
+        # Asked for from Home, it is always a card for them to look at.
+        on_its_own_allowed = handle_it.get(person.id).enabled and not asked
         held = handle_it.refusal(
             person.id, message, thread, reply, verdict, relation=relation, own=own,
             exec_address=exec_address, now=now,
-        ) if handling.enabled else "level"
+        ) if on_its_own_allowed else "level"
         if held is None and await injection_check.held_back(message, relation=relation):
             # One more look, only ever holding back: an email that tries to
             # steer an assistant waits for the person.
@@ -1402,7 +1412,7 @@ async def _consider(
     try:
         decision_id = _create_card(
             person, message, thread, reply, draft, relation=known_as, handled_as=relation, verdict=verdict,
-            on_its_own=held is None, handle_it_reason=held if handling.enabled else None,
+            on_its_own=held is None, handle_it_reason=held if on_its_own_allowed else None,
             kept=None if draft.draft_id else card_drafts.card_fields(spec, key),
         )
     except Exception as exc:
@@ -1430,12 +1440,95 @@ async def _consider(
         "relation": relation,
         "kind": verdict.kind,
         "flags": reply.flags,
-        **({"handle_it": held or "send"} if handling.enabled else {}),
+        **({"handle_it": held or "send"} if on_its_own_allowed else {}),
     })
     if held is None and decision_id is not None:
         await _send_on_its_own(person, client, decision_id, result, now=now)
     return False
 
+
+# Why Home's Reply couldn't make a card, by code.
+ASK_REFUSALS: dict[str, str] = {
+    "not_found": "That email isn't in your mailbox any more.",
+    "theirs_last": "You wrote last in that conversation.",
+    "backlog_full": "Too many replies are waiting for you. Send or dismiss some first.",
+    "daily_limit": "That's today's limit of replies. Try again tomorrow.",
+    "busy": "I'm already working on that one. Try again in a minute.",
+    "not_now": "I couldn't write that reply just now. Try again in a minute.",
+}
+
+
+def _row_for(person_id: int, message_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT outcome, decision_id FROM {INBOX_MESSAGES_TABLE} "  # noqa: S608 — constant table name
+            "WHERE person_id = ? AND message_id = ?",
+            (person_id, message_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+async def draft_on_request(
+    person: Any, thread_id: str, message_id: str, *, gmail: Any = None, now: datetime | None = None
+) -> int | str:
+    """A reply card for one email in ``person``'s own inbox, because they
+    asked for one (Home's Reply), whatever the watcher judged of it. The
+    open card already on its conversation when there is one (the watcher
+    brings its draft up to date with newer mail), else a new card, always
+    left for them: never sent on its own. Returns the card's decision id, or
+    a code from ``ASK_REFUSALS``. A Gmail failure is raised."""
+    from openexecutive.config import get_settings
+    from openexecutive.delegation.gmail import GmailNotFound, gmail_for
+    from openexecutive.delegation.inbox_classifier import Verdict
+
+    now = now or datetime.now(UTC)
+    person_id = int(person.id)
+    email = (person.email or "").strip().lower()
+    cards = open_cards(person_id)
+    on_thread = next((c for c in cards if card_payload(c).get("thread_id") == thread_id), None)
+    if on_thread is not None:
+        return int(on_thread.id)
+    if len(cards) >= OPEN_CARDS_MAX:
+        return "backlog_full"
+    client = gmail if gmail is not None else gmail_for(email)
+    try:
+        thread = await client.get_thread(thread_id)
+    except GmailNotFound:
+        return "not_found"
+    own = {email, *(a.strip().lower() for a in await client.send_as_addresses())}
+    shown = [m for m in thread.messages if "DRAFT" not in m.labels]
+    message = next((m for m in shown if m.id == message_id), None)
+    if message is None:
+        return "not_found"
+    if shown[-1].from_addr.strip().lower() in own:
+        return "theirs_last"
+    exec_address = (get_settings().exec_email_address or "").strip().lower()
+    known_as = await relation_of(message.from_addr, client, contacts=bool(person.is_principal))
+    relation = handling_relation(known_as, message)
+    row = _row_for(person_id, message_id)
+    if row is not None and row["outcome"] == PROCESSING:
+        return "busy"
+    if row is None:
+        if not _claim(person_id, message, relation=relation, outcome=PROCESSING, now=now):
+            return "busy"
+        _note_mail(person_id, message, relation=relation)
+    else:
+        _set_outcome(person_id, message_id, PROCESSING, reason="asked")
+    # They asked: the reply is theirs to write, so no verdict is needed.
+    verdict = Verdict(needs_reply=True, kind="request", confidence=1.0, asked_of_them=True)
+    result = ScanResult("ok")
+    await _draft_card(
+        person, client, message, thread, relation=relation, known_as=known_as, verdict=verdict,
+        own=own, exec_address=exec_address, now=now, result=result, asked=True,
+    )
+    if result.drafted:
+        done = _row_for(person_id, message_id)
+        if done is not None and isinstance(done["decision_id"], int):
+            return int(done["decision_id"])
+    return "daily_limit" if result.status == "daily_limit" else "not_now"
 
 async def _send_on_its_own(person: Any, client: Any, decision_id: int, result: ScanResult, *, now: datetime) -> None:
     """Send the reply on card ``decision_id`` under Handle it for me. A

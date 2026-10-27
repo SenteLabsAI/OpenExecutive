@@ -443,6 +443,10 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     }, 120);
   };
 
+  // What Right now's points open: the email (and its reply card, shared
+  // with Needs you) or the card in Needs you.
+  const rightNowActions = { replies, onShowAlert: jumpToAlert, onContinue };
+
   const dateLabel = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   const departments = today?.departments ?? [];
@@ -909,6 +913,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                   baseline={rightNowBaseline?.at ?? null}
                   updatedLabel={briefFreshness}
                   onOpen={() => setOpenPanel("brief")}
+                  actions={rightNowActions}
                 />
               )}
 
@@ -1064,7 +1069,12 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                 }
                 width="lg"
               >
-                <RightNowBody today={today} baseline={rightNowBaseline?.at ?? null} onContinue={onContinue} />
+                <RightNowBody
+                  today={today}
+                  baseline={rightNowBaseline?.at ?? null}
+                  onContinue={onContinue}
+                  actions={rightNowActions}
+                />
               </SidePanel>
               <SidePanel
                 open={openPanel === "departments"}

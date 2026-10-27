@@ -2613,6 +2613,43 @@ export async function getReplyCards(signal?: AbortSignal): Promise<ReplyCard[] |
   return body.cards;
 }
 
+// One email in your own mailbox, as Right now opens it (GET /delegation/mail).
+export interface MailView {
+  thread_id: string;
+  message_id: string;
+  subject: string;
+  from_name: string;
+  from_email: string;
+  to: string[];
+  cc: string[];
+  received_at: string;
+  text: string;
+  attachments: { name: string; mime_type: string; size: number }[];
+  has_attachments: boolean;
+  their_last_words: string;
+  link: string;
+  reply_card_id: number | null;
+}
+
+export async function getMail(threadId: string, messageId: string, signal?: AbortSignal): Promise<MailView> {
+  const q = new URLSearchParams({ thread_id: threadId, message_id: messageId });
+  const res = await fetch(`${API_BASE}/delegation/mail?${q}`, { signal });
+  if (!res.ok) throw await delegationError(res, "Couldn't open that email.");
+  return (await res.json()) as MailView;
+}
+
+// A reply to one email, on a card for you (the conversation's open card
+// when there is one). Sends nothing.
+export async function replyToMail(threadId: string, messageId: string): Promise<number> {
+  const res = await fetch(`${API_BASE}/delegation/mail/reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: threadId, message_id: messageId }),
+  });
+  if (!res.ok) throw await delegationError(res, "Couldn't write that reply.");
+  return ((await res.json()) as { decision_id: number }).decision_id;
+}
+
 // Why a Send didn't go: the backend's code (draft_gone, you_replied,
 // already_handled, send_unconfirmed, caller_signing_required, …) and what to
 // tell you.
@@ -5337,6 +5374,17 @@ export interface NarrativePoint {
   text: string;
   // When the point first appeared today (ISO UTC).
   since?: string | null;
+  // What the point is about, when Home can open it: an email in your own
+  // inbox, or a card in Needs you.
+  source?: PointSource | null;
+}
+
+export interface PointSource {
+  kind: "mail" | "alert";
+  message_id?: string | null;
+  thread_id?: string | null;
+  decision_id?: number | null;
+  alert_id?: number | null;
 }
 
 export interface MorningBriefItem {

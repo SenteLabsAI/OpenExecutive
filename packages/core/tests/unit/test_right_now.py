@@ -82,3 +82,16 @@ def test_record_points_says_what_is_new_today() -> None:
         "principal", HEADER + "\n- **Board deck** — draft is in.", now.isoformat(),
     )
     assert later.new == ["**Board deck** — draft is in."]
+
+
+def test_point_sources_are_the_latest_headers_alone() -> None:
+    now = datetime.now(UTC)
+    day = narrative_cache.local_today(now)
+    mail = {"kind": "mail", "message_id": "m1", "thread_id": "t1"}
+    right_now.record_sources("principal", now.isoformat(), {"northwind contract": mail})
+    assert right_now.point_sources("principal", day) == {"northwind contract": mail}
+    # The next header replaces them: a point it no longer has opens nothing.
+    card = {"kind": "alert", "alert_id": 4}
+    right_now.record_sources("principal", now.isoformat(), {"lakeside renewal": card})
+    assert right_now.point_sources("principal", day) == {"lakeside renewal": card}
+    assert right_now.point_sources("person:7", day) == {}

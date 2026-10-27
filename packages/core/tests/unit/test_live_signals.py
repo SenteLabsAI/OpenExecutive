@@ -704,6 +704,9 @@ def test_own_inbox_splits_people_they_deal_with_from_the_rest(
     assert "on a card waiting" in mail.lines[0]
     assert sorted(mail.others) == ["Kim: All hands", "Yardi: Webinar"]
     assert mail.others_total == 2
+    # Which email the line is, for Home to open it.
+    assert len(mail.refs) == 1
+    assert mail.refs[0]["kind"] == "mail" and mail.refs[0]["message_id"] == "m1"
 
 
 def test_newer_mail_on_an_open_card_is_news_and_noted_once(
@@ -727,6 +730,7 @@ def test_newer_mail_on_an_open_card_is_news_and_noted_once(
 
     assert len(mail.lines) == 1
     assert "reply card is still open" in mail.lines[0]
+    assert mail.refs[0] == {"kind": "mail", "message_id": "r1", "thread_id": "t1", "decision_id": 39}
     rows = live_signals._audit_rows(inbox.MAIL_SEEN_EVENT, now - timedelta(days=1), True)
     assert len([r for r in rows if r.details.get("message_id") == "r1"]) <= 1
 
