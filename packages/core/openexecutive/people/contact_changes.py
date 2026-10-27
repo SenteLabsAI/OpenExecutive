@@ -86,9 +86,18 @@ CREATE TABLE IF NOT EXISTS contact_keeper_state (
 );
 CREATE TABLE IF NOT EXISTS contact_keeper_reads (
     email TEXT PRIMARY KEY,
-    read_at TEXT NOT NULL
+    read_at TEXT NOT NULL,
+    message_id TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0,
+    checked_at TEXT
 );
 """
+# Columns added to contact_keeper_reads after it first shipped.
+_READS_COLUMNS = (
+    ("message_id", "TEXT NOT NULL DEFAULT ''"),
+    ("version", "INTEGER NOT NULL DEFAULT 0"),
+    ("checked_at", "TEXT"),
+)
 
 
 class ContactChange(BaseModel):
@@ -126,6 +135,10 @@ def _conn(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, No
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(contact_keeper_reads)")}
+        for column, decl in _READS_COLUMNS:
+            if column not in have:
+                conn.execute(f"ALTER TABLE contact_keeper_reads ADD COLUMN {column} {decl}")
         yield conn
         conn.commit()
     finally:
@@ -202,26 +215,74 @@ def note_run(status: str, now: datetime, db_path: Path | None = None) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Signature reads: at most one per address per READ_AGAIN
+# Signature reads: again when the person sends new mail
 # --------------------------------------------------------------------------- #
 
 
-def read_recently(email: str, now: datetime, within: timedelta, db_path: Path | None = None) -> bool:
-    with _conn(db_path) as conn:
-        row = conn.execute("SELECT read_at FROM contact_keeper_reads WHERE email = ?", (norm(email),)).fetchone()
-    if row is None:
-        return False
+class SignatureRead(BaseModel):
+    """The last signature read for an address: when, which message it read,
+    under which ``version`` of the reader, and when its mail was last checked."""
+
+    read_at: datetime | None = None
+    message_id: str = ""
+    version: int = 0
+    checked_at: datetime | None = None
+
+
+def _moment(value: str | None) -> datetime | None:
+    if not value:
+        return None
     try:
-        return now - datetime.fromisoformat(row["read_at"]) < within
+        return datetime.fromisoformat(value)
     except ValueError:
-        return False
+        return None
 
 
-def note_read(email: str, now: datetime, db_path: Path | None = None) -> None:
+def last_read(email: str, db_path: Path | None = None) -> SignatureRead | None:
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT read_at, message_id, version, checked_at FROM contact_keeper_reads WHERE email = ?",
+            (norm(email),),
+        ).fetchone()
+    if row is None:
+        return None
+    return SignatureRead(
+        read_at=_moment(row["read_at"]), message_id=row["message_id"] or "",
+        version=int(row["version"] or 0), checked_at=_moment(row["checked_at"]),
+    )
+
+
+def checked_times(db_path: Path | None = None) -> dict[str, datetime]:
+    """When each address's mail was last checked for a new signature."""
+    with _conn(db_path) as conn:
+        rows = conn.execute("SELECT email, checked_at FROM contact_keeper_reads").fetchall()
+    return {row["email"]: moment for row in rows if (moment := _moment(row["checked_at"])) is not None}
+
+
+def read_recently(email: str, now: datetime, within: timedelta, db_path: Path | None = None) -> bool:
+    found = last_read(email, db_path)
+    return found is not None and found.read_at is not None and now - found.read_at < within
+
+
+def note_read(
+    email: str, now: datetime, *, message_id: str = "", version: int = 0, db_path: Path | None = None,
+) -> None:
     with _conn(db_path) as conn:
         conn.execute(
-            "INSERT INTO contact_keeper_reads (email, read_at) VALUES (?, ?) "
-            "ON CONFLICT(email) DO UPDATE SET read_at = excluded.read_at",
+            "INSERT INTO contact_keeper_reads (email, read_at, message_id, version, checked_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET read_at = excluded.read_at, "
+            "message_id = excluded.message_id, version = excluded.version, checked_at = excluded.checked_at",
+            (norm(email), now.isoformat(), message_id, version, now.isoformat()),
+        )
+
+
+def note_checked(email: str, now: datetime, db_path: Path | None = None) -> None:
+    """Their mail was looked at and nothing needed reading. An address never
+    read gets a row with no read in it (``read_at`` older than any day)."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO contact_keeper_reads (email, read_at, checked_at) VALUES (?, '', ?) "
+            "ON CONFLICT(email) DO UPDATE SET checked_at = excluded.checked_at",
             (norm(email), now.isoformat()),
         )
 

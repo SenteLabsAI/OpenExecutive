@@ -1169,6 +1169,15 @@ class DelegateGmail:
         found = await self.list_message_ids(f"from:{target} -in:chats newer_than:{int(days)}d", max_results=1)
         return await self.get_message(found[0][0]) if found else None
 
+    async def recent_from(self, address: str, *, days: int = 90, limit: int = 5) -> list[MailMessage]:
+        """The newest ``limit`` mails ``address`` sent the person in the last
+        ``days``, newest first."""
+        target = normalize_email(address)
+        if not _EMAIL_RE.fullmatch(target):
+            return []
+        found = await self.list_message_ids(f"from:{target} -in:chats newer_than:{int(days)}d", max_results=limit)
+        return [await self.get_message(message_id) for message_id, _thread in found]
+
     async def get_message(self, message_id: str) -> MailMessage:
         if not valid_id(message_id):
             raise GmailError("invalid message id")

@@ -29,8 +29,8 @@ or a ``first.last`` address).
 - **Name:** a fuller form of a one-word name ("Priya" to "Priya Shah"), from
   the To line of the principal's own mail, a guest list, or the From line of
   the contact's own authenticated mail.
-- **Role and contact details:** from the signature of the newest mail the
-  contact sent the principal, when the mailbox authenticated the sender:
+- **Role and contact details:** from the signature of the newest signed mail
+  the contact sent the principal, when the mailbox authenticated the sender:
   phone, mobile, website, LinkedIn, another profile, postal address
   (``people.contact_info``). Each is kept only when the mail writes it (a
   phone's digits as one number, every word of an address), a website only
@@ -38,7 +38,9 @@ or a ``first.last`` address).
   on a known site. One of each kind is the keeper's: a newer one replaces
   it; what anyone typed is never touched. One small model call
   (``ROUTING_MODEL``, a forced tool, no other tools), at most
-  ``SIGNATURE_READS_PER_DAY`` a day and once per address per ``READ_AGAIN``;
+  ``SIGNATURE_READS_PER_DAY`` a day, again whenever the contact sends new
+  mail (at most once per ``READ_AGAIN``), on the newest of their last
+  ``SIGNATURE_LOOK_BACK`` mails that someone wrote and that signs off;
   every word of the role it returns must be in the mail (checked in code), so
   it can copy a title but not write one.
 - **Second address:** an address the principal mailed under exactly the
@@ -83,7 +85,16 @@ SENT_TO_READ = 100
 ADDS_PER_RUN = 10
 SIGNATURE_READS_PER_RUN = 5
 SIGNATURE_READS_PER_DAY = 20
-READ_AGAIN = timedelta(days=14)
+# A person's mail is looked at again each run (at most SIGNATURE_CHECKS_PER_RUN
+# of them, the longest unchecked first); the signature is read again when
+# they sent new mail, at most once per READ_AGAIN.
+SIGNATURE_CHECKS_PER_RUN = 20
+READ_AGAIN = timedelta(days=1)
+# How many of their newest mails a read looks through for one with a
+# signature (a calendar invite or an automatic mail has none).
+SIGNATURE_LOOK_BACK = 5
+# Bumped when the reader learns something new to copy: everyone is read again once.
+READ_VERSION = 2
 # "Last heard from" dates read a pass (one mailbox search each).
 HEARD_READS_PER_RUN = 20
 ROLE_MAX = 80
@@ -684,8 +695,9 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
                 )
                 break
 
-    await _read_roles(client, mode, people, now, result)
-    await _refresh_notes(client, people, seen, now, result)
+    latest_seen: dict[str, Any] = {}
+    await _read_roles(client, mode, people, now, result, latest_seen)
+    await _refresh_notes(client, people, seen, now, result, latest_seen)
     if result.refused is not None:
         # Recorded like any mailbox failure (run_once), after the notes.
         raise result.refused
@@ -697,9 +709,52 @@ def _names_written(client: Any, address: str, seen: dict[str, Seen]) -> list[str
     return list(entry.names) if entry is not None else []
 
 
-async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime, result: RunResult) -> None:
+_PHONE_RUN = re.compile(r"\d[\d\s().+\-]{5,}\d")
+
+
+def _written(message: Any, address: str) -> bool:
+    """A mail the contact wrote, from them, as the mailbox proved: not an
+    invite, a bounce, a list or an automatic one."""
+    return (
+        getattr(message, "sender_authenticated", False) is True
+        and changes.norm(getattr(message, "from_addr", "")) == address
+        and not any(
+            getattr(message, flag, False)
+            for flag in ("calendar_invite", "bulk", "delivery_report", "auto_generated", "mailing_list")
+        )
+    )
+
+
+def _signs_off(message: Any, person: Any) -> bool:
+    """Whether the end of what they wrote looks like a signature: a phone
+    number, or their own name, in its last lines."""
+    from openexecutive.integrations.email_poller import sender_new_text
+
+    tail = "\n".join(sender_new_text(getattr(message, "text", "") or "").splitlines()[-12:])
+    if _PHONE_RUN.search(tail):
+        return True
+    names = {w.casefold() for w in (person.full_name or "").split() if len(w) > 1}
+    names |= {w.casefold() for w in clean_name(getattr(message, "from_name", "")).split() if len(w) > 1}
+    return bool(names & {w.casefold() for w in _ROLE_WORD.findall(tail)})
+
+
+async def _signed_mail(client: Any, address: str, person: Any, latest: Any) -> Any:
+    """The newest of their last ``SIGNATURE_LOOK_BACK`` mails that they wrote
+    and signed; else the newest they wrote; else None."""
+    if latest is not None and _written(latest, address) and _signs_off(latest, person):
+        return latest
+    recent = await client.recent_from(address, limit=SIGNATURE_LOOK_BACK)
+    written = [m for m in recent if _written(m, address)]
+    return next((m for m in written if _signs_off(m, person)), written[0] if written else None)
+
+
+async def _read_roles(
+    client: Any, mode: str, contacts: list[Any], now: datetime, result: RunResult,
+    latest_seen: dict[str, Any] | None = None,
+) -> None:
     """Roles, phones and websites (and a fuller name) from the contacts' own
-    newest mail."""
+    newest signed mail, read again when they send new mail. ``latest_seen``
+    gets each newest mail looked at, for the notes' last-heard dates."""
     from openexecutive.delegation.gmail import GmailAuthError, GmailRateLimited
     from openexecutive.people import store as people_store
 
@@ -707,19 +762,34 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
     budget = min(SIGNATURE_READS_PER_RUN, SIGNATURE_READS_PER_DAY - changes.reads_since(day_start))
     if budget <= 0:
         return
-    # Added here first, newest first: what was just added is what is missing most.
+    # Added here first: what was just added is what is missing most. Then
+    # the longest unchecked, so every one comes round.
     added_here = {c.person_id for c in changes.list_changes() if c.action == "add" and c.status == "applied"}
-    order = sorted(contacts, key=lambda p: (p.id not in added_here, -(p.id or 0)))
+    checked = changes.checked_times()
+    never = datetime.min.replace(tzinfo=UTC)
+    order = sorted(
+        (p for p in contacts if changes.norm(p.email)),
+        key=lambda p: (p.id not in added_here, checked.get(changes.norm(p.email), never), -(p.id or 0)),
+    )
+    checks = SIGNATURE_CHECKS_PER_RUN
     for person in order:
-        if budget <= 0:
+        if budget <= 0 or checks <= 0:
             break
         address = changes.norm(person.email)
-        if not address or changes.read_recently(address, now, READ_AGAIN):
+        last = changes.last_read(address)
+        if last is not None and last.version >= READ_VERSION and last.read_at is not None and now - last.read_at < READ_AGAIN:
             continue
-        budget -= 1
-        changes.note_read(address, now)
+        checks -= 1
         try:
-            message = await client.latest_from(address)
+            latest = await client.latest_from(address)
+            if latest_seen is not None:
+                latest_seen[address] = latest
+            if latest is None or (
+                last is not None and last.version >= READ_VERSION and last.message_id == latest.id
+            ):
+                changes.note_checked(address, now)
+                continue
+            message = await _signed_mail(client, address, person, latest)
         except (GmailAuthError, GmailRateLimited) as exc:
             # Stop reading signatures this run; the notes still go on.
             result.refused = result.refused or exc
@@ -727,10 +797,12 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
         except Exception:
             logger.info("contact_keeper: couldn't read a contact's newest mail")
             continue
-        if message is None or getattr(message, "sender_authenticated", False) is not True:
+        if message is None:
+            # Nothing they wrote: look again when newer mail comes.
+            changes.note_read(address, now, message_id=latest.id, version=READ_VERSION)
             continue
-        if changes.norm(getattr(message, "from_addr", "")) != address:
-            continue
+        budget -= 1
+        changes.note_read(address, now, message_id=latest.id, version=READ_VERSION)
         # As it stands now: an earlier step of this run may have changed it.
         person = people_store.get_person(int(person.id or 0)) or person
         name = clean_name(getattr(message, "from_name", ""))
@@ -757,8 +829,8 @@ async def _read_roles(client: Any, mode: str, contacts: list[Any], now: datetime
                 continue
             # One of each kind is this module's: a newer one replaces it.
             # A kind someone typed a value for is theirs: left alone.
-            last = changes.last_applied(int(person.id or 0), kind)
-            old = last.new_value if last is not None and (kind, last.new_value) in held else ""
+            last_set = changes.last_applied(int(person.id or 0), kind)
+            old = last_set.new_value if last_set is not None and (kind, last_set.new_value) in held else ""
             if any(k == kind and v != old for k, v in held):
                 continue
             _propose(
@@ -782,6 +854,7 @@ def _when(value: str) -> datetime | None:
 
 async def _refresh_notes(
     client: Any, contacts: list[Any], seen: dict[str, Seen], now: datetime, result: RunResult,
+    latest_seen: dict[str, Any] | None = None,
 ) -> None:
     """Dates and counts for every contact, and a new note for those with new
     sent mail or meetings (``contact_notes``). The note is written from the
@@ -816,19 +889,27 @@ async def _refresh_notes(
         # When they last wrote: the date of their newest authenticated mail,
         # whatever the note budget, for the most recently in touch first.
         heard_at: str | None = None
-        if heard_reads > 0 and person.email:
+        address = changes.norm(person.email)
+        latest: Any = None
+        if latest_seen is not None and address in latest_seen:
+            # Already looked at for its signature this run (over a longer reach).
+            latest = latest_seen[address]
+            moment = _sent_at(latest) if latest is not None else None
+            if moment is None or now - moment > LOOKBACK:
+                latest = None
+        elif heard_reads > 0 and address:
             heard_reads -= 1
             try:
-                latest = await client.latest_from(changes.norm(person.email), days=int(LOOKBACK.days))
+                latest = await client.latest_from(address, days=int(LOOKBACK.days))
             except (GmailAuthError, GmailRateLimited) as exc:
                 # Stop asking the mailbox this run; the notes still go on.
                 heard_reads, latest = 0, None
                 result.refused = result.refused or exc
             except Exception:
                 latest = None
-            if latest is not None and getattr(latest, "sender_authenticated", False) is True:
-                moment = _sent_at(latest)
-                heard_at = moment.isoformat() if moment is not None else None
+        if latest is not None and getattr(latest, "sender_authenticated", False) is True:
+            moment = _sent_at(latest)
+            heard_at = moment.isoformat() if moment is not None else None
         try:
             notes.put_activity(
                 person_id,

@@ -78,6 +78,8 @@ class FakeMailbox:
         self.sent: list[MailMessage] = []
         self.events: list[CalendarEvent] = []
         self.latest: dict[str, MailMessage] = {}
+        # Older mail from each address, after its newest (``latest``).
+        self.older: dict[str, list[MailMessage]] = {}
         self.calendar_error: Exception | None = None
 
     async def profile_email(self) -> str:
@@ -96,6 +98,10 @@ class FakeMailbox:
 
     async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
         return self.latest.get(address)
+
+    async def recent_from(self, address: str, *, days: int = 90, limit: int = 5) -> list[MailMessage]:
+        newest = self.latest.get(address)
+        return ([newest] if newest is not None else []) + self.older.get(address, [])[:limit]
 
 
 def _run(mailbox: FakeMailbox) -> keeper.RunResult:
@@ -416,6 +422,84 @@ def test_a_contact_added_in_chat_is_listed_with_an_undo(owner: int, monkeypatch:
     assert (change.person_id, change.reason) == (out["person_id"], "asked")
     # Not counted in Done for you: the person asked for it.
     assert changes.counts_by_day() == []
+
+
+def _from_leo(message_id: str, text: str, **flags: Any) -> MailMessage:
+    return MailMessage(
+        id=message_id, thread_id="t", from_addr="leo@contoso.example", text=text, sender_authenticated=True, **flags,
+    )
+
+
+def _reading(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The ids of the mails a signature is read from."""
+    read: list[str] = []
+
+    async def record(message: Any, *, model: str | None = None) -> keeper.Signature:
+        read.append(message.id)
+        return keeper.Signature(details=[("mobile", "555.010.0199")])
+
+    monkeypatch.setattr(keeper, "read_signature", record)
+    return read
+
+
+def test_a_calendar_invite_on_top_reads_the_newest_signed_mail(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    read = _reading(monkeypatch)
+    box = FakeMailbox()
+    box.latest = {"leo@contoso.example": _from_leo("invite", "Invitation from Google Calendar", calendar_invite=True)}
+    box.older = {"leo@contoso.example": [
+        _from_leo("short", "Sounds good."),
+        _from_leo("signed", SIGNATURE),
+    ]}
+    _run(box)
+    assert read == ["signed"]
+    assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [("mobile", "555.010.0199")]
+
+
+def test_a_signature_is_read_again_only_when_new_mail_comes(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    read = _reading(monkeypatch)
+    box = _leo_box()
+    _run(box)
+    # A day on, the same mail: not read again.
+    asyncio.run(keeper.run_once(client=box, now=NOW + keeper.READ_AGAIN + timedelta(hours=1)))
+    assert read == ["in1"]
+    box.latest["leo@contoso.example"] = _from_leo("in2", SIGNATURE)
+    asyncio.run(keeper.run_once(client=box, now=NOW + keeper.READ_AGAIN + keeper.RUN_EVERY))
+    assert read == ["in1", "in2"]
+
+
+def test_new_mail_within_a_day_waits_for_the_next_day(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    read = _reading(monkeypatch)
+    box = _leo_box()
+    _run(box)
+    box.latest["leo@contoso.example"] = _from_leo("in2", SIGNATURE)
+    asyncio.run(keeper.run_once(client=box, now=NOW + timedelta(hours=1)))
+    assert read == ["in1"]
+    asyncio.run(keeper.run_once(client=box, now=NOW + keeper.READ_AGAIN + timedelta(hours=1)))
+    assert read == ["in1", "in2"]
+
+
+def test_a_read_from_before_details_is_read_again(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    read = _reading(monkeypatch)
+    # Read last week, by the reader before this version, from the same mail.
+    changes.note_read("leo@contoso.example", NOW - timedelta(days=7), message_id="in1", version=1)
+    _run(_leo_box())
+    assert read == ["in1"]
+    assert changes.last_read("leo@contoso.example").version == keeper.READ_VERSION
+
+
+def test_an_old_reads_table_gets_its_new_columns(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE contact_keeper_reads (email TEXT PRIMARY KEY, read_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO contact_keeper_reads VALUES ('leo@contoso.example', ?)", (NOW.isoformat(),))
+    found = changes.last_read("leo@contoso.example", db_path=path)
+    assert found is not None and (found.message_id, found.version) == ("", 0)
 
 
 def test_details_typed_in_chat_are_checked(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -4464,9 +4464,13 @@ people:
     is an egress address, so one reply to a lookalike must not attach it;
     blocked or archived addresses never are), a
     fuller name for a one-word one, and a role read from the contact's
-    newest authenticated mail (latest_from) by one forced-tool call, kept
-    only when every word is in the mail and it holds no link, address or
-    instruction (capped 5 per run, 20 a day, 14 days per address). Typed
+    newest signed, authenticated mail among their last 5 (recent_from;
+    calendar invites, bounces, lists and automatic mail skipped) by one
+    forced-tool call, kept only when every word is in the mail and it holds
+    no link, address or instruction (capped 5 per run, 20 a day). Each run
+    checks up to 20 people's newest mail, longest unchecked first, and reads
+    again only when it is new, at most once a day per address
+    (contact_keeper_reads keeps the message id and READ_VERSION). Typed
     fields are never overwritten (a name or role is written only when empty
     or last set by the keeper).
     people.contact_changes records each change (contact_changes) with reason

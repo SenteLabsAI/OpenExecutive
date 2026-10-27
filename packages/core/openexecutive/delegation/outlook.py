@@ -918,10 +918,17 @@ class DelegateOutlook:
 
     async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
         """The newest mail ``address`` sent the person in the last ``days``,
-        or None. Graph wants the ordered property first in the filter."""
+        or None."""
+        found = await self.recent_from(address, days=days, limit=1)
+        return found[0] if found else None
+
+    async def recent_from(self, address: str, *, days: int = 90, limit: int = 5) -> list[MailMessage]:
+        """The newest ``limit`` mails ``address`` sent the person in the last
+        ``days``, newest first. Graph wants the ordered property first in the
+        filter."""
         target = normalize_email(address)
         if not _EMAIL_RE.fullmatch(target):
-            return None
+            return []
         since = (datetime.now(UTC) - timedelta(days=int(days))).strftime("%Y-%m-%dT%H:%M:%SZ")
         odata_quoted = target.replace("'", "''")  # an address may hold a quote (o'neil@)
         async with self._client() as client:
@@ -929,12 +936,11 @@ class DelegateOutlook:
             data = await self._get(client, "/mailFolders/inbox/messages", {
                 "$filter": f"receivedDateTime ge {since} and from/emailAddress/address eq '{odata_quoted}'",
                 "$orderby": "receivedDateTime desc",
-                "$top": 1,
+                "$top": max(1, min(int(limit), 25)),
                 "$select": _SELECT,
                 "$expand": _EXPAND,
             })
-        found = [m for m in data.get("value") or [] if isinstance(m, dict)]
-        return self._parse(found[0]) if found else None
+        return [self._parse(m) for m in data.get("value") or [] if isinstance(m, dict)]
 
     async def get_message(self, message_id: str) -> MailMessage:
         if not valid_id(message_id):

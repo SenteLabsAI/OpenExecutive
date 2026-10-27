@@ -966,6 +966,15 @@ def test_latest_from_asks_for_one_senders_newest_inbox_mail() -> None:
     assert asyncio.run(graph.client().latest_from("not an address")) is None
 
 
+def test_recent_from_lists_a_senders_newest_mails() -> None:
+    graph = FakeGraph()
+    graph.listing = [_msg("in2", sender="dana@northpeak.example"), _msg("in1", sender="dana@northpeak.example")]
+    found = asyncio.run(graph.client().recent_from("dana@northpeak.example", limit=5))
+    assert [m.id for m in found] == ["in2", "in1"]
+    assert graph.graph_calls()[-1].url.params["$top"] == "5"
+    assert asyncio.run(graph.client().recent_from("not an address")) == []
+
+
 def test_each_recipient_keeps_the_name_it_was_written_with() -> None:
     raw = _msg("m1", toRecipients=[{"emailAddress": {"name": "Priya Shah", "address": "Priya@N.example"}}],
                ccRecipients=[{"emailAddress": {"address": "bare@x.example"}}])
