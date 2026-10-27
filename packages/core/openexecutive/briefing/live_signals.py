@@ -652,6 +652,8 @@ class OwnInbox:
     others_total: int = 0
     # Per line: the email's ids and its open reply card, if any.
     refs: tuple[dict[str, Any], ...] = ()
+    # Mail from people they deal with, before ``lines`` is cut to its cap.
+    total: int = 0
 
 
 def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnInbox:
@@ -704,6 +706,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
     refs: list[dict[str, Any]] = []
     others: list[str] = []
     others_total = 0
+    total = 0
     for d in picked:
         address = str(d.get("from_email") or "")
         name = _one_line(d.get("from_name"), 60)
@@ -719,6 +722,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
                 who = name or _one_line(address, 60)
                 others.append(_one_line(f"{who}: {subject}", 90))
             continue
+        total += 1
         if len(lines) >= _INBOX_MAX:
             continue
         who = f"{name} ({address})" if name and address else _named(address, True)
@@ -739,7 +743,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
         line = f"[{at}] from {who}: \"{subject}\""
         lines.append(f"{line} — {what}" if what else line)
         refs.append(_mail_ref(d))
-    return OwnInbox(tuple(lines), tuple(others), others_total, tuple(refs))
+    return OwnInbox(tuple(lines), tuple(others), others_total, tuple(refs), total)
 
 
 def _mail_ref(d: dict[str, Any]) -> dict[str, Any]:

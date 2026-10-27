@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 WINDOW = timedelta(days=7)
 # Mail sent in the last hour is not waiting on anyone yet.
 MIN_AGE = timedelta(hours=1)
+# 5 minutes, not 15: the same read is how Right now learns they answered an
+# email (``replied``), and a point they had dealt with stayed up a quarter
+# of an hour. Each read is one sent-mail list plus at most ``_CANDIDATES``
+# thread reads.
 MAX_AGE_SECONDS = 5 * 60
 _HARD_MAX_AGE_SECONDS = 3 * 60 * 60
 _SENT_LOOKED_AT = 40

@@ -2305,14 +2305,15 @@ def test_progress_counts_new_mail_since_the_served_header(monkeypatch: pytest.Mo
 
     def _own(since: datetime, tz: object, now: object) -> object:
         asked.append(since)
-        return live_signals.OwnInbox(lines=("a", "b"), others_total=4)
+        return live_signals.OwnInbox(lines=("a", "b"), others_total=4, total=9)
 
     monkeypatch.setattr(live_signals, "own_inbox", _own)
     cached = SimpleNamespace(generated_at=written.isoformat())
 
     progress = today_route._narrative_progress(narrative_cache.DEFAULT_SCOPE, cached)
 
-    assert progress.new_mail == 2 and progress.since == written.isoformat()
+    # Every email from people they deal with, not just the lines shown.
+    assert progress.new_mail == 9 and progress.since == written.isoformat()
     assert asked == [written]
     # Nobody else's header counts the principal's inbox.
     assert today_route._narrative_progress(narrative_cache.COMPANY_SCOPE, cached).new_mail == 0

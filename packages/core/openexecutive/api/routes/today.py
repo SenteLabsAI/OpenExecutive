@@ -2103,7 +2103,7 @@ def _narrative_progress(scope: str, cached: Any, now: datetime | None = None) ->
         from openexecutive.memory.workspace_settings import get_user_timezone
 
         mail = own_inbox(written, get_user_timezone(), now or datetime.now(UTC))
-        progress.new_mail = len(mail.lines)  # from people they deal with, unanswered
+        progress.new_mail = mail.total  # from people they deal with, not yet answered
     except Exception:
         logger.exception("today: counting new mail for Right now failed")
     return progress

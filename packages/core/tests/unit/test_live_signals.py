@@ -728,6 +728,7 @@ def test_own_inbox_leaves_out_mail_they_answered_since(
     mail = live_signals.own_inbox(now - timedelta(hours=12), UTC, now)
 
     assert sorted(r["message_id"] for r in mail.refs) == ["m2", "m3"]
+    assert mail.total == 2
     assert not any("loan figures" in line for line in mail.lines)
 
 
