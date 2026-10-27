@@ -231,13 +231,16 @@ def cached() -> list[Waiting] | None:
     return _cache[1]
 
 
+def replied() -> dict[str, datetime]:
+    """Thread id → when they last sent mail in it, from the last read; empty
+    with no usable read. Checked once, so a caller looking up many threads
+    pays for the Act as me check once. Never calls out."""
+    return dict(_replied) if _usable() else {}
+
+
 def replied_at(thread_id: str) -> datetime | None:
-    """When they last sent mail in ``thread_id``, from the last read, or
-    None (not among their recent sent mail, or no usable read). Never calls
-    out."""
-    if not thread_id or not _usable():
-        return None
-    return _replied.get(thread_id)
+    """When they last sent mail in ``thread_id`` (``replied``), or None."""
+    return replied().get(thread_id) if thread_id else None
 
 
 def reset_cache() -> None:
@@ -250,5 +253,5 @@ def reset_cache() -> None:
 
 
 __all__ = [
-    "MAX_AGE_SECONDS", "WINDOW", "Waiting", "cached", "read_waiting", "refresh", "replied_at", "reset_cache",
+    "MAX_AGE_SECONDS", "WINDOW", "Waiting", "cached", "read_waiting", "refresh", "replied", "replied_at", "reset_cache",
 ]

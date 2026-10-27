@@ -723,7 +723,7 @@ def test_own_inbox_leaves_out_mail_they_answered_since(
     inbox._note_mail(7, _mail("m3", "lee@co.test", "Lee Park", "Budget", at, "t3"), relation="contact")
     monkeypatch.setattr(inbox, "outcomes", lambda pid, ids: {m: inbox.NOT_NEEDED for m in ids})
     sent = {"t1": now - timedelta(hours=1), "t3": at - timedelta(hours=1)}  # t3: before it came
-    monkeypatch.setattr(waiting_on, "replied_at", lambda thread_id: sent.get(thread_id))
+    monkeypatch.setattr(waiting_on, "replied", lambda: sent)
 
     mail = live_signals.own_inbox(now - timedelta(hours=12), UTC, now)
 

@@ -657,7 +657,7 @@ class OwnInbox:
 def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnInbox:
     """Mail to the principal's own inbox since ``since`` (by when it arrived),
     as the Act as me watcher recorded it, leaving out any they have answered
-    since it came (``waiting_on.replied_at``). Private; never raises."""
+    since it came (``waiting_on.replied``). Private; never raises."""
     from openexecutive.briefing import waiting_on
     from openexecutive.delegation import inbox as watcher
 
@@ -680,6 +680,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
         return OwnInbox()
     picked: list[dict[str, Any]] = []
     seen: set[str] = set()
+    answered = waiting_on.replied()
     for ev in rows:  # newest first
         d = ev.details if isinstance(ev.details, dict) else {}
         message_id = str(d.get("message_id") or "")
@@ -693,7 +694,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
             continue
         # They wrote in the thread after it came: handled, whatever the
         # watcher made of it.
-        replied = waiting_on.replied_at(str(d.get("thread_id") or ""))
+        replied = answered.get(str(d.get("thread_id") or ""))
         if replied is not None and replied > arrived:
             continue
         picked.append(d | {"_at": arrived})
