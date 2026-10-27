@@ -188,6 +188,21 @@ function parseInit(data: Record<string, unknown>): EmbedInit | null {
   return { theme, font, productName, userHint, nativePaths };
 }
 
+/**
+ * Whether the embedded page warns that the host's user (`userHint`) isn't
+ * who is signed in here (`email`), and the two names to show: compared
+ * case-blind, and nothing to say without both.
+ */
+export function hintWarning(
+  hint: string | null | undefined,
+  email: string | null | undefined,
+): { hint: string; signedIn: string } | null {
+  const host = hint?.trim().toLowerCase() ?? "";
+  const signedIn = email?.trim().toLowerCase() ?? "";
+  if (!host || !signedIn || host === signedIn) return null;
+  return { hint: host, signedIn };
+}
+
 /** A message from the host → what it says, or null to drop it. */
 export function parseHostMessage(data: unknown): HostMessage | null {
   if (!isRecord(data) || data.protocol !== EMBED_PROTOCOL) return null;
