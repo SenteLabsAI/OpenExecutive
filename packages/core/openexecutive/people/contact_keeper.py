@@ -801,6 +801,8 @@ async def _read_roles(
             break
         except Exception:
             logger.info("contact_keeper: couldn't read a contact's newest mail")
+            # To the back of the queue, so a failing one doesn't hold the others.
+            changes.note_checked(address, now)
             continue
         if message is None:
             # Nothing they wrote: look again when newer mail comes. No model
