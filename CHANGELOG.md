@@ -9,6 +9,26 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.7](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.6...v0.6.7) (2026-10-27)
+
+
+### Added
+
+* **briefing:** open and reply to Right now's email points from Home ([#651](https://github.com/SenteLabsAI/OpenExecutive/issues/651)) ([ddc4429](https://github.com/SenteLabsAI/OpenExecutive/commit/ddc4429112ac75f1285d6d4d35ea3e140b461344))
+* **briefing:** show your own inbox in Right now and message you when it changes ([#640](https://github.com/SenteLabsAI/OpenExecutive/issues/640)) ([428456a](https://github.com/SenteLabsAI/OpenExecutive/commit/428456a73924f886a2c95c6f2539e1f2f70d00b9))
+* **delegation:** open reply cards as a conversation and redraft on newer mail ([#639](https://github.com/SenteLabsAI/OpenExecutive/issues/639)) ([bd293a7](https://github.com/SenteLabsAI/OpenExecutive/commit/bd293a79bceef557a8ee9d84b4a568242bea6e7d))
+* **orchestrator:** answer on a pushback model after the person pushes back ([#653](https://github.com/SenteLabsAI/OpenExecutive/issues/653)) ([3eb8242](https://github.com/SenteLabsAI/OpenExecutive/commit/3eb82426323667c3350d99d7ad4eee2b298a86a9))
+* **ui:** warn when the host's user isn't who is signed in, and let hosts read who that is ([#638](https://github.com/SenteLabsAI/OpenExecutive/issues/638)) ([4c5e154](https://github.com/SenteLabsAI/OpenExecutive/commit/4c5e1542f72df1fda9263ac9e8e70d2047876a91))
+
+
+### Fixed
+
+* **attunement:** raise the open-loop caps ([#642](https://github.com/SenteLabsAI/OpenExecutive/issues/642)) ([fc0ea3c](https://github.com/SenteLabsAI/OpenExecutive/commit/fc0ea3c6214d712a8f8cc088dadb7e2aa7b78501))
+* **briefing:** drop answered mail from Right now and show its steps while it updates ([#652](https://github.com/SenteLabsAI/OpenExecutive/issues/652)) ([297cbe0](https://github.com/SenteLabsAI/OpenExecutive/commit/297cbe0966cb21cabdf09ac05705dcfc948ebfea))
+* **evals:** give MCP scenarios a gateway so they can reach their tools ([#563](https://github.com/SenteLabsAI/OpenExecutive/issues/563)) ([d9c629e](https://github.com/SenteLabsAI/OpenExecutive/commit/d9c629e6ba24fd7269f4ad0849f1f44b11ab0690))
+* **people:** read a contact's signature from their newest signed mail, again on new mail ([#649](https://github.com/SenteLabsAI/OpenExecutive/issues/649)) ([d27ff6e](https://github.com/SenteLabsAI/OpenExecutive/commit/d27ff6ebc9132b3c986ee4b8aecb284f909f79e9))
+* **people:** time the contact keeper's next run from its last run, not a restart ([#650](https://github.com/SenteLabsAI/OpenExecutive/issues/650)) ([787d070](https://github.com/SenteLabsAI/OpenExecutive/commit/787d070a6e507f41b117fc9ffef07d5a7c32e3ec))
+
 ## [0.6.6](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.5...v0.6.6) (2026-10-26)
 
 
