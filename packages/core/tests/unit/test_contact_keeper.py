@@ -520,8 +520,26 @@ def test_a_contact_whose_mail_fails_goes_to_the_back(owner: int) -> None:
             raise RuntimeError("bad message")
 
     people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
-    _run(Failing())
+    box = Failing()
+    _run(box)
     assert changes.checked_times()["leo@contoso.example"] == NOW
+
+
+def test_a_contact_with_no_mail_is_checked_once_a_day(owner: int) -> None:
+    asked: list[int] = []
+
+    class Counting(FakeMailbox):
+        async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
+            asked.append(days)
+            return None
+
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    box = Counting()
+    _run(box)
+    asyncio.run(keeper.run_once(client=box, now=NOW + keeper.RUN_EVERY))
+    # The signature's look (90 days) once; the second run asks only for the
+    # last-heard date (LOOKBACK).
+    assert asked == [90, keeper.LOOKBACK.days]
 
 
 def test_a_read_from_before_details_is_read_again(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:

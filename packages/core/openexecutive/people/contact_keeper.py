@@ -779,10 +779,7 @@ async def _read_roles(
             break
         address = changes.norm(person.email)
         last = changes.last_read(address)
-        if (
-            last is not None and last.version >= READ_VERSION
-            and last.checked_at is not None and now - last.checked_at < READ_AGAIN
-        ):
+        if last is not None and last.checked_at is not None and now - last.checked_at < READ_AGAIN:
             continue
         checks -= 1
         try:
