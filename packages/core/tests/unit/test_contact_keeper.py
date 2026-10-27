@@ -478,7 +478,7 @@ def test_a_signature_is_read_again_only_when_new_mail_comes(owner: int, monkeypa
     asyncio.run(keeper.run_once(client=box, now=NOW + keeper.READ_AGAIN + timedelta(hours=1)))
     assert read == ["in1"]
     box.latest["leo@contoso.example"] = _from_leo("in2", SIGNATURE)
-    asyncio.run(keeper.run_once(client=box, now=NOW + keeper.READ_AGAIN + keeper.RUN_EVERY))
+    asyncio.run(keeper.run_once(client=box, now=NOW + 2 * keeper.READ_AGAIN + timedelta(hours=2)))
     assert read == ["in1", "in2"]
 
 
@@ -492,6 +492,26 @@ def test_new_mail_within_a_day_waits_for_the_next_day(owner: int, monkeypatch: p
     assert read == ["in1"]
     asyncio.run(keeper.run_once(client=box, now=NOW + keeper.READ_AGAIN + timedelta(hours=1)))
     assert read == ["in1", "in2"]
+
+
+def test_mail_with_nothing_to_read_does_not_use_up_the_days_reads(
+    owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read = _reading(monkeypatch)
+    box = FakeMailbox()
+    for i in range(keeper.SIGNATURE_READS_PER_DAY):
+        address = f"invites{i}@northwind.example"
+        people_store.upsert_person(full_name=f"Invite Sender{i}", email=address, kind="contact")
+        box.latest[address] = MailMessage(
+            id=f"inv{i}", thread_id="t", from_addr=address, text="x", sender_authenticated=True, calendar_invite=True,
+        )
+    people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    box.latest["leo@contoso.example"] = _from_leo("in1", SIGNATURE)
+    people_registry.invalidate()
+    for hours in range(0, 24, 6):  # the day's runs
+        asyncio.run(keeper.run_once(client=box, now=NOW + timedelta(hours=hours)))
+    assert read == ["in1"]
+    assert changes.reads_since(NOW.replace(hour=0)) == 1
 
 
 def test_a_read_from_before_details_is_read_again(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:

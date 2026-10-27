@@ -85,9 +85,9 @@ SENT_TO_READ = 100
 ADDS_PER_RUN = 10
 SIGNATURE_READS_PER_RUN = 5
 SIGNATURE_READS_PER_DAY = 20
-# A person's mail is looked at again each run (at most SIGNATURE_CHECKS_PER_RUN
-# of them, the longest unchecked first); the signature is read again when
-# they sent new mail, at most once per READ_AGAIN.
+# A person's newest mail is looked at once per READ_AGAIN (at most
+# SIGNATURE_CHECKS_PER_RUN of them a run, the longest unchecked first); the
+# signature is read again when it is new.
 SIGNATURE_CHECKS_PER_RUN = 20
 READ_AGAIN = timedelta(days=1)
 # How many of their newest mails a read looks through for one with a
@@ -779,7 +779,10 @@ async def _read_roles(
             break
         address = changes.norm(person.email)
         last = changes.last_read(address)
-        if last is not None and last.version >= READ_VERSION and last.read_at is not None and now - last.read_at < READ_AGAIN:
+        if (
+            last is not None and last.version >= READ_VERSION
+            and last.checked_at is not None and now - last.checked_at < READ_AGAIN
+        ):
             continue
         checks -= 1
         try:
@@ -800,8 +803,9 @@ async def _read_roles(
             logger.info("contact_keeper: couldn't read a contact's newest mail")
             continue
         if message is None:
-            # Nothing they wrote: look again when newer mail comes.
-            changes.note_read(address, now, message_id=latest.id, version=READ_VERSION)
+            # Nothing they wrote: look again when newer mail comes. No model
+            # call, so it is not one of the day's reads.
+            changes.note_unsigned(address, now, message_id=latest.id, version=READ_VERSION)
             continue
         budget -= 1
         changes.note_read(address, now, message_id=latest.id, version=READ_VERSION)

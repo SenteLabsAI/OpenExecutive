@@ -281,6 +281,18 @@ def note_read(
         )
 
 
+def note_unsigned(email: str, now: datetime, *, message_id: str, version: int, db_path: Path | None = None) -> None:
+    """Their mail was looked through and none of it was theirs to read: kept
+    like a read (which mail, which reader) without counting as one."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO contact_keeper_reads (email, read_at, message_id, version, checked_at) "
+            "VALUES (?, '', ?, ?, ?) ON CONFLICT(email) DO UPDATE SET message_id = excluded.message_id, "
+            "version = excluded.version, checked_at = excluded.checked_at",
+            (norm(email), message_id, version, now.isoformat()),
+        )
+
+
 def note_checked(email: str, now: datetime, db_path: Path | None = None) -> None:
     """Their mail was looked at and nothing needed reading. An address never
     read gets a row with no read in it (``read_at`` older than any day)."""
