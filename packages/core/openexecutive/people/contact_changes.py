@@ -138,7 +138,12 @@ def _conn(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, No
         have = {r["name"] for r in conn.execute("PRAGMA table_info(contact_keeper_reads)")}
         for column, decl in _READS_COLUMNS:
             if column not in have:
-                conn.execute(f"ALTER TABLE contact_keeper_reads ADD COLUMN {column} {decl}")
+                try:
+                    conn.execute(f"ALTER TABLE contact_keeper_reads ADD COLUMN {column} {decl}")
+                except sqlite3.OperationalError as exc:
+                    # Another process added it first.
+                    if "duplicate column" not in str(exc):
+                        raise
         yield conn
         conn.commit()
     finally:
