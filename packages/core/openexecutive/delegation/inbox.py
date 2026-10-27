@@ -1520,10 +1520,18 @@ async def draft_on_request(
     # They asked: the reply is theirs to write, so no verdict is needed.
     verdict = Verdict(needs_reply=True, kind="request", confidence=1.0, asked_of_them=True)
     result = ScanResult("ok")
-    await _draft_card(
-        person, client, message, thread, relation=relation, known_as=known_as, verdict=verdict,
-        own=own, exec_address=exec_address, now=now, result=result, asked=True,
-    )
+    try:
+        await _draft_card(
+            person, client, message, thread, relation=relation, known_as=known_as, verdict=verdict,
+            own=own, exec_address=exec_address, now=now, result=result, asked=True,
+        )
+    except Exception:
+        # Never left PROCESSING (every later Reply would say "busy"): it
+        # goes back to the watcher for a later scan, as a scan's failure does.
+        left = _row_for(person_id, message_id)
+        if left is not None and left["outcome"] == PROCESSING:
+            _retry_later(person_id, message_id, "error")
+        raise
     if result.drafted:
         done = _row_for(person_id, message_id)
         if done is not None and isinstance(done["decision_id"], int):

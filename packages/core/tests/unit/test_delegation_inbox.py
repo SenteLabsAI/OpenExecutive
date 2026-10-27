@@ -1354,3 +1354,26 @@ def test_reply_from_home_refuses_what_it_cannot_answer(db: Path, owner: Any, mod
     assert _ask(owner, mailbox, "t1", "gone") == "not_found"
     assert set(inbox.ASK_REFUSALS) >= {"theirs_last", "not_found", "busy", "daily_limit", "not_now"}
     assert mailbox.specs == [] and inbox.open_cards(owner.id) == []
+
+
+def test_reply_from_home_that_fails_is_not_left_busy(
+    db: Path, owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.delegation import handle_it
+
+    real = handle_it.get
+    broken = {"on": True}
+
+    def flaky(person_id: int) -> Any:
+        if broken["on"]:
+            raise RuntimeError("db down")
+        return real(person_id)
+
+    mailbox = FakeInbox()
+    mailbox.add(_msg("m1", "t1"))
+    monkeypatch.setattr(handle_it, "get", flaky)
+    with pytest.raises(RuntimeError):
+        _ask(owner, mailbox, "t1", "m1")
+    assert _ledger(db)["m1"][0] == "retry"
+    broken["on"] = False
+    assert isinstance(_ask(owner, mailbox, "t1", "m1"), int)
