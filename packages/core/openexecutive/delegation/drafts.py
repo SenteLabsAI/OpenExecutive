@@ -85,18 +85,20 @@ def record(
     draft_id: str,
     message_id: str,
     now: datetime,
+    session_id: str | None = None,
     db_path: Path | None = None,
 ) -> int:
-    """Store a draft just saved in ``person_id``'s Gmail; returns its row id."""
+    """Store a draft just saved in ``person_id``'s Gmail; returns its row id.
+    ``session_id``: the conversation a chat draft was written in."""
     if source not in _SOURCES:
         raise ValueError(f"unknown draft source {source!r}")
     conn = _connect(db_path)
     try:
         cur = conn.execute(
             f"INSERT INTO {DRAFTS_TABLE} "  # noqa: S608 — constant table name
-            "(person_id, source, thread_id, draft_id, message_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (person_id, source, thread_id, draft_id, message_id, now.isoformat()),
+            "(person_id, source, thread_id, draft_id, message_id, created_at, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (person_id, source, thread_id, draft_id, message_id, now.isoformat(), session_id or None),
         )
         conn.commit()
         return int(cur.lastrowid or 0)
@@ -173,6 +175,54 @@ def get_row(row_id: int, *, db_path: Path | None = None) -> DraftRow | None:
         draft_id=str(row[4] or ""), message_id=str(row[5] or ""), sent_message_id=str(row[6] or ""),
         created_at=str(row[7] or ""), gone_at=str(row[8] or ""),
     )
+
+
+def open_chat_drafts(
+    *,
+    person_id: int | None = None,
+    thread_id: str | None = None,
+    session_id: str | None = None,
+    before_id: int | None = None,
+    db_path: Path | None = None,
+) -> list[DraftRow]:
+    """Chat drafts not yet sent or gone, newest first: ``person_id``'s in the
+    thread ``thread_id``, or any written in the conversation ``session_id``
+    (both given: either one). Only rows before ``before_id`` when given;
+    none at all when neither a thread nor a conversation is named."""
+    which: list[str] = []
+    params: list[object] = [SOURCE_CHAT]
+    if thread_id and person_id is not None:
+        which.append("(person_id = ? AND thread_id = ?)")
+        params += [person_id, thread_id]
+    if session_id:
+        which.append("session_id = ?")
+        params.append(session_id)
+    if not which:
+        return []
+    sql = (
+        "SELECT id, person_id, source, thread_id, draft_id, message_id, sent_message_id, "
+        f"created_at, gone_at FROM {DRAFTS_TABLE} "  # noqa: S608 — constant table name
+        f"WHERE source = ? AND ({' OR '.join(which)}) "
+        "AND sent_message_id IS NULL AND gone_at IS NULL"
+    )
+    if before_id is not None:
+        sql += " AND id < ?"
+        params.append(before_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(_SETTLE_MAX)
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    return [
+        DraftRow(
+            id=int(r[0]), person_id=int(r[1]), source=str(r[2] or ""), thread_id=str(r[3] or ""),
+            draft_id=str(r[4] or ""), message_id=str(r[5] or ""), sent_message_id=str(r[6] or ""),
+            created_at=str(r[7] or ""), gone_at=str(r[8] or ""),
+        )
+        for r in rows
+    ]
 
 
 def claim_send(row_id: int, now: datetime, *, db_path: Path | None = None) -> bool:

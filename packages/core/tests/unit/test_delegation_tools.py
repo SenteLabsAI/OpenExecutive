@@ -20,6 +20,7 @@ from openexecutive.delegation import ghostwriter as gw
 from openexecutive.delegation import settings as dsettings
 from openexecutive.delegation.gmail import (
     CreatedDraft,
+    DraftInfo,
     DraftSpec,
     GmailError,
     MailMessage,
@@ -383,6 +384,70 @@ def test_a_saved_draft_names_its_row(roster: SimpleNamespace, composer: list[str
     result = _run(_session(FakeMailbox()), {"intent": "Yes to Oct 5.", "thread_id": "t1"})
     row = drafts.get_row(result["draft_row"])
     assert row is not None and row.source == drafts.SOURCE_CHAT and row.thread_id == "t1"
+
+
+class DraftingMailbox(FakeMailbox):
+    """Keeps each draft it saves, so a redraft can find and delete the last."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.saved: dict[str, DraftInfo] = {}
+        self.deleted: list[str] = []
+
+    async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
+        self.drafts.append(spec)
+        n = len(self.drafts)
+        message = MailMessage(id=f"m{100 + n}", thread_id=spec.thread_id or f"tnew{n}", to=list(spec.to))
+        self.saved[f"d{n}"] = DraftInfo(draft_id=f"d{n}", message=message)
+        return CreatedDraft(draft_id=f"d{n}", message_id=message.id, thread_id=message.thread_id)
+
+    async def get_draft(self, draft_id: str) -> DraftInfo | None:
+        return self.saved.get(draft_id)
+
+    async def delete_draft(self, draft_id: str) -> bool:
+        self.deleted.append(draft_id)
+        return self.saved.pop(draft_id, None) is not None
+
+
+def test_a_redraft_in_the_thread_replaces_the_earlier_draft(roster: SimpleNamespace, composer: list[str]) -> None:
+    mailbox = DraftingMailbox()
+    session = _session(mailbox)
+    first = _run(session, {"intent": "Yes to Oct 5.", "thread_id": "t1"})
+    assert "replaced_earlier_drafts" not in first
+    second = _run(session, {"intent": "Yes to Oct 5, without the last line.", "thread_id": "t1"})
+    # The first one is out of their Drafts and no longer counts as waiting.
+    assert second["replaced_earlier_drafts"] == 1
+    assert mailbox.deleted == ["d1"] and list(mailbox.saved) == ["d2"]
+    old = ddrafts.get_row(first["draft_row"])
+    assert old is not None and old.gone_at
+
+
+def test_a_draft_they_edited_is_never_replaced(roster: SimpleNamespace, composer: list[str]) -> None:
+    mailbox = DraftingMailbox()
+    session = _session(mailbox)
+    first = _run(session, {"intent": "Yes to Oct 5.", "thread_id": "t1"})
+    # Edited in their mailbox: Gmail gave it a new message id.
+    edited = mailbox.saved["d1"]
+    mailbox.saved["d1"] = DraftInfo(draft_id="d1", message=MailMessage(id="m-edited", thread_id="t1", to=[DANA]))
+    second = _run(session, {"intent": "Yes to Oct 5, shorter.", "thread_id": "t1"})
+    assert "replaced_earlier_drafts" not in second
+    assert mailbox.deleted == [] and "d1" in mailbox.saved and edited.draft_id == "d1"
+    row = ddrafts.get_row(first["draft_row"])
+    assert row is not None and not row.gone_at
+
+
+def test_a_new_email_replaces_only_its_own_earlier_version(roster: SimpleNamespace, composer: list[str]) -> None:
+    mailbox = DraftingMailbox()
+    session = _session(mailbox)
+    _run(session, {"intent": "Send the Q3 numbers", "to": [TEAM]})
+    _run(session, {"intent": "Hi", "to": ["kai@newclient.example"]})
+    # The same conversation, to Ben again: the first draft to him goes.
+    again = _run(session, {"intent": "Send the Q3 numbers, with the totals", "to": [TEAM]})
+    assert again["replaced_earlier_drafts"] == 1
+    assert mailbox.deleted == ["d1"] and sorted(mailbox.saved) == ["d2", "d3"]
+    # Another conversation never reaches this one's drafts.
+    elsewhere = _run(_session(mailbox), {"intent": "Numbers again", "to": [TEAM]})
+    assert "replaced_earlier_drafts" not in elsewhere and sorted(mailbox.saved) == ["d2", "d3", "d4"]
 
 
 def test_it_has_an_activity_label() -> None:

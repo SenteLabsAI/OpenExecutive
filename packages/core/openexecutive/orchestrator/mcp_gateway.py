@@ -3393,6 +3393,49 @@ _M365_SENT_REPLY_TOOLS = frozenset({
 })
 
 
+def _sent_to(tool_name: str, normalized: str, arguments: dict[str, Any]) -> set[str]:
+    """The lowercased to/cc addresses of a Gmail or Outlook send; empty for
+    any other tool (an Outlook reply names none in its arguments)."""
+    out: set[str] = set()
+    if tool_name == "google_workspace__send_gmail_message":
+        for field in _OUTBOUND_CONTEXT_RECIPIENT_FIELDS:
+            value = arguments.get(field)
+            items = value if isinstance(value, list) else [value]
+            for _name, addr in getaddresses([s for s in items if isinstance(s, str)]):
+                if addr.strip():
+                    out.add(addr.strip().lower())
+    elif normalized == _M365_RECORD_SEND_TOOL:
+        message = _ci_get(_ci_get(arguments, "body"), "message")
+        for key in ("toRecipients", "ccRecipients"):
+            for addr in _m365_recipient_addresses(_ci_get(message, key)):
+                if addr.strip():
+                    out.add(addr.strip().lower())
+    return out
+
+
+async def _clear_replaced_drafts(tool_name: str, normalized: str, arguments: dict[str, Any]) -> None:
+    """The Executive just sent an email itself: take this conversation's
+    unsent chat drafts to the same people out of the writer's Drafts
+    (``delegation.redrafts.clear_after_send``). Never raises."""
+    from openexecutive.delegation.settings import DelegationOverride
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None:
+        return
+    try:
+        sent = _sent_to(tool_name, normalized, arguments)
+        if not sent:
+            return
+        from openexecutive.delegation.redrafts import clear_after_send
+
+        override = getattr(session, "delegation_override", None)
+        client = override.gmail if isinstance(override, DelegationOverride) else None
+        await clear_after_send(str(session.session_id), sent, client=client)
+    except Exception:
+        logger.exception("clear_replaced_drafts: could not clear drafts (non-fatal)")
+
+
 def _note_mail_sent(tool_name: str, normalized: str, arguments: dict[str, Any]) -> None:
     """Mark on the conversation (``Session.mail_sent_to`` /
     ``mail_replied_ids``) who a send the mailbox accepted went to, so the
@@ -3405,19 +3448,8 @@ def _note_mail_sent(tool_name: str, normalized: str, arguments: dict[str, Any]) 
     if session is None:
         return
     try:
-        if tool_name == "google_workspace__send_gmail_message":
-            for field in _OUTBOUND_CONTEXT_RECIPIENT_FIELDS:
-                value = arguments.get(field)
-                items = value if isinstance(value, list) else [value]
-                for _name, addr in getaddresses([s for s in items if isinstance(s, str)]):
-                    if addr.strip():
-                        session.mail_sent_to.add(addr.strip().lower())
-        elif normalized == _M365_RECORD_SEND_TOOL:
-            message = _ci_get(_ci_get(arguments, "body"), "message")
-            for key in ("toRecipients", "ccRecipients"):
-                for addr in _m365_recipient_addresses(_ci_get(message, key)):
-                    if addr.strip():
-                        session.mail_sent_to.add(addr.strip().lower())
+        if tool_name == "google_workspace__send_gmail_message" or normalized == _M365_RECORD_SEND_TOOL:
+            session.mail_sent_to.update(_sent_to(tool_name, normalized, arguments))
         elif normalized in _M365_SENT_REPLY_TOOLS:
             message_id = _ci_get(arguments, "messageId")
             if isinstance(message_id, str) and message_id:
@@ -4019,6 +4051,7 @@ class MCPGateway:
         # either: marking it would hide the unanswered-email card.
         if not _is_error_payload(result_text) and not result_text.lstrip().lower().startswith("error"):
             _note_mail_sent(tool_name, normalized, arguments)
+            await _clear_replaced_drafts(tool_name, normalized, arguments)
         if attached_artifacts and not _is_error_payload(result_text):
             from openexecutive.audit import log_event as audit_log
 

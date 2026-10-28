@@ -44,7 +44,7 @@ def test_each_draft_is_one_row_of_ids(db: Path) -> None:
         row = conn.execute("SELECT * FROM delegation_drafts").fetchone()
     # Ids and times only: never an address, a subject or text.
     assert cols == ["id", "person_id", "source", "thread_id", "draft_id", "message_id",
-                    "sent_message_id", "created_at", "gone_at"]
+                    "sent_message_id", "created_at", "gone_at", "session_id"]
     assert row[1:7] == (1, "chat", "t1", "d1", "m-d1", None)
     with pytest.raises(ValueError):
         _record(1, "email", "t1", "d2")
@@ -317,7 +317,7 @@ async def test_one_drafts_failure_does_not_stop_the_pass() -> None:
     assert [d for _, d in drafts._waiting(1, NOW - timedelta(days=1), None)] == ["d2"]
 
 
-def test_an_older_table_gets_the_gone_at_column(tmp_path: Path) -> None:
+def test_an_older_table_gets_the_gone_at_and_session_id_columns(tmp_path: Path) -> None:
     import sqlite3
 
     from openexecutive.delegation.schema import ensure_schema
@@ -331,4 +331,4 @@ def test_an_older_table_gets_the_gone_at_column(tmp_path: Path) -> None:
         )
         ensure_schema(conn)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(delegation_drafts)")]
-    assert cols[-1] == "gone_at"
+    assert cols[-2:] == ["gone_at", "session_id"]

@@ -11476,6 +11476,23 @@ delegation:
     claim kept, never resent. Records sent_message_id, a private
     delegation_chat_draft_sent row, and a history note when Always in the
     loop is on. may_do's chat_drafts row reads "Drafts, sent on your tap".
+  replaced_chat_drafts: |
+    delegation.redrafts. Each delegation_drafts row keeps its conversation
+    (session_id, ghostwrite's pinned session or current_session). A redraft
+    (replace_earlier, after ghostwrite records the new row) retires the
+    person's earlier open chat drafts in the same thread, and those in the
+    same conversation whose To shares an address with the new draft; the
+    tool result carries replaced_earlier_drafts. An Executive send from its
+    own mailbox (google_workspace__send_gmail_message or
+    microsoft_365__send_mail, accepted, not an error payload) runs
+    mcp_gateway._clear_replaced_drafts → clear_after_send: the conversation's
+    open chat drafts whose To/Cc share an address with the send (the writer's
+    own address left out). Retire = get_draft: gone → gone_at only; version
+    changed (edited by the person) → kept; else delete_draft + gone_at. A
+    failed read leaves the row. Private delegation_draft_replaced audit row.
+    Why: three redrafts in one chat stayed in the principal's Drafts after
+    the Executive sent the note itself, and the brief kept calling them
+    waiting.
   send: |
     delegation.reply_send.send_approved_reply — the approve hook of
     delegation_reply, the only caller of DelegateGmail.send_draft, reached

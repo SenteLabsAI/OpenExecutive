@@ -467,7 +467,7 @@ async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> 
     if getattr(draft, "skipped_attachments", 0):
         plan["flags"].append("attachments_left_off")
     composed.subject = subject
-    return _drafted(writer, None, plan, composed, draft), True
+    return await _drafted(writer, None, plan, composed, draft), True
 
 
 async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tuple[str, bool]:
@@ -527,7 +527,7 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     ))
     if getattr(draft, "skipped_attachments", 0) and "attachments_left_off" not in plan["flags"]:
         plan["flags"].append("attachments_left_off")
-    return _drafted(writer, thread, plan, composed, draft, attached=[n for n, _, _ in attached.files]), True
+    return await _drafted(writer, thread, plan, composed, draft, attached=[n for n, _, _ in attached.files]), True
 
 
 async def _drive_files(tool_input: dict[str, Any]) -> Any:
@@ -545,7 +545,15 @@ async def _drive_files(tool_input: dict[str, Any]) -> Any:
         return _error(f"{exc}, so no draft was made. Tell them, and offer the draft without the files.")
 
 
-def _record(person_id: int, thread: Any, draft: Any) -> int | None:
+def _session_id(writer: _Writer) -> str | None:
+    """The conversation this draft is written in, when there is one."""
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session_id = writer.pinned.session_id or getattr(current_session.get(), "session_id", None)
+    return str(session_id) if session_id else None
+
+
+def _record(person_id: int, thread: Any, draft: Any, session_id: str | None = None) -> int | None:
     """Keep the draft's ids in ``delegation_drafts`` (the daily count, what
     "How I write" leaves out, and what Send under the chat sends); returns
     the row id. Best effort: the draft is already in their mailbox, and
@@ -560,23 +568,33 @@ def _record(person_id: int, thread: Any, draft: Any) -> int | None:
             draft_id=draft.draft_id,
             message_id=draft.message_id,
             now=datetime.now(UTC),
+            session_id=session_id,
         )
     except Exception:
         logger.warning("ghostwrite: couldn't record the draft", exc_info=True)
         return None
 
 
-def _drafted(
+async def _drafted(
     writer: _Writer, thread: Any, plan: dict[str, Any], composed: Any, draft: Any, *, attached: list[str] | None = None,
 ) -> str:
-    """Audit a saved draft (metadata only) and return what the model sees."""
+    """Audit a saved draft (metadata only), take out the earlier drafts it
+    replaces (``delegation.redrafts``) and return what the model sees."""
     from openexecutive.delegation.gmail import mailbox_link
+    from openexecutive.delegation.redrafts import replace_earlier
 
     flags = [*plan["flags"], *composed.flags]
     questions = list(composed.open_questions)
     if "asks_if_ai" in flags:
         questions.append("They asked whether they're talking to an AI — answer that yourself.")
-    row_id = _record(writer.person.id, thread, draft)
+    session_id = _session_id(writer)
+    row_id = _record(writer.person.id, thread, draft, session_id)
+    replaced = 0
+    if row_id:
+        replaced = await replace_earlier(
+            writer.person.id, writer.mailbox, row_id=row_id,
+            thread_id=thread.id if thread is not None else None, session_id=session_id, to=plan["to"],
+        )
     _audit(writer.person.id, f"Drafted an email as person {writer.person.id} in their own mailbox", {
         "thread_id": thread.id if thread is not None else None,
         "draft_id": draft.draft_id,
@@ -596,6 +614,8 @@ def _drafted(
         "draft_id": draft.draft_id,
         # The chat's Send button names the draft by this row (never the model).
         **({"draft_row": row_id} if row_id else {}),
+        # Earlier drafts of this email, deleted from their Drafts (unedited ones only).
+        **({"replaced_earlier_drafts": replaced} if replaced else {}),
         "gmail_link": link,
         "to": plan["to"],
         "cc": plan["cc"],
