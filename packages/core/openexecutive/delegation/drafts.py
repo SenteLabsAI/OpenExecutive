@@ -186,15 +186,18 @@ def open_chat_drafts(
     db_path: Path | None = None,
 ) -> list[DraftRow]:
     """Chat drafts not yet sent or gone, newest first: ``person_id``'s in the
-    thread ``thread_id``, or any written in the conversation ``session_id``
-    (both given: either one). Only rows before ``before_id`` when given;
+    thread ``thread_id``, or written in the conversation ``session_id`` (by
+    ``person_id`` when given, else by anyone; both given: either one). Only rows before ``before_id`` when given;
     none at all when neither a thread nor a conversation is named."""
     which: list[str] = []
     params: list[object] = [SOURCE_CHAT]
     if thread_id and person_id is not None:
         which.append("(person_id = ? AND thread_id = ?)")
         params += [person_id, thread_id]
-    if session_id:
+    if session_id and person_id is not None:
+        which.append("(person_id = ? AND session_id = ?)")
+        params += [person_id, session_id]
+    elif session_id:
         which.append("session_id = ?")
         params.append(session_id)
     if not which:

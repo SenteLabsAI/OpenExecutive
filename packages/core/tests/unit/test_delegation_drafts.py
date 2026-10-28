@@ -332,3 +332,22 @@ def test_an_older_table_gets_the_gone_at_and_session_id_columns(tmp_path: Path) 
         ensure_schema(conn)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(delegation_drafts)")]
     assert cols[-2:] == ["gone_at", "session_id"]
+
+
+def test_open_chat_drafts_by_thread_or_conversation() -> None:
+    def rec(person: int, thread: str | None, session: str, draft: str) -> int:
+        return drafts.record(
+            person, source=drafts.SOURCE_CHAT, thread_id=thread, draft_id=draft,
+            message_id=f"m-{draft}", now=NOW, session_id=session,
+        )
+
+    a = rec(1, "t1", "s1", "d1")
+    b = rec(1, None, "s1", "d2")
+    rec(2, None, "s1", "d3")  # someone else in the same conversation
+    c = rec(1, "t1", "s2", "d4")
+    newest = rec(1, None, "s1", "d5")
+    mine = drafts.open_chat_drafts(person_id=1, thread_id="t1", session_id="s1", before_id=newest)
+    assert [r.id for r in mine] == [c, b, a]
+    # A send in the conversation looks at everyone's drafts there.
+    assert len(drafts.open_chat_drafts(session_id="s1")) == 4
+    assert drafts.open_chat_drafts() == []
