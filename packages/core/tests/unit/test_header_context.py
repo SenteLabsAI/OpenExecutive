@@ -285,8 +285,10 @@ def test_an_old_open_item_writes_the_nothing_new_line_without_a_model_call(
     db = tmp_path / "rn-old.db"
     _setup_isolated_db(db, monkeypatch)
     _seed_live_action_alert(db)
+    # The route reads the real clock: six days before now, not before NOW.
+    last_week = (datetime.now(UTC) - timedelta(days=6)).isoformat()
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE alerts SET created_at = ?, last_seen_at = ?", (LAST_WEEK, LAST_WEEK))
+        conn.execute("UPDATE alerts SET created_at = ?, last_seen_at = ?", (last_week, last_week))
 
     async def _boom(**_kw: object) -> str:
         raise AssertionError("no model call when nothing moved today")
