@@ -464,9 +464,11 @@ def test_only_dismiss_deletes_a_draft() -> None:
     has just made, when that draft's card couldn't be made (a follow-up's
     too), or an unedited follow-up nobody needs once the thread is answered,
     and a reply kept on its card takes back the draft it made for a send that
-    was refused before anything went."""
+    was refused before anything went. A chat draft that a redraft or the
+    Executive's own send replaced goes too, when unedited (redrafts)."""
     assert _uses("delete_draft") == {
         "delegation/replies.py", "delegation/inbox.py", "delegation/follow_ups.py", "delegation/card_drafts.py",
+        "delegation/redrafts.py",
     }
     assert _importers("openexecutive.delegation.replies") == {"api/routes/decisions.py", "api/routes/delegation.py"}
 
