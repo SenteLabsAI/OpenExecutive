@@ -3434,9 +3434,13 @@ async def _clear_replaced_drafts(tool_name: str, normalized: str, arguments: dic
         else:
             subject = _ci_get(_ci_get(_ci_get(arguments, "body"), "message"), "subject")
         override = getattr(session, "delegation_override", None)
-        client = override.gmail if isinstance(override, DelegationOverride) else None
+        client: Any = None
+        client_person_id: int | None = None
+        if isinstance(override, DelegationOverride):
+            client, client_person_id = override.gmail, getattr(override.person, "id", None)
         await clear_after_send(
-            str(session.session_id), sent, subject=subject if isinstance(subject, str) else "", client=client,
+            str(session.session_id), sent, subject=subject if isinstance(subject, str) else "",
+            client=client, client_person_id=client_person_id,
         )
     except Exception:
         logger.exception("clear_replaced_drafts: could not clear drafts (non-fatal)")

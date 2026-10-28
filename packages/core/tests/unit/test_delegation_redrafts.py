@@ -167,7 +167,10 @@ def test_a_mailbox_that_fails_leaves_the_drafts_alone() -> None:
 def test_the_gateway_clears_after_a_send_in_the_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, set[str], str]] = []
 
-    async def fake(session_id: str, sent_to: set[str], *, subject: str = "", client: Any = None) -> int:
+    async def fake(
+        session_id: str, sent_to: set[str], *, subject: str = "", client: Any = None,
+        client_person_id: int | None = None,
+    ) -> int:
         calls.append((session_id, sent_to, subject))
         return 0
 
@@ -195,3 +198,21 @@ def test_the_gateway_clears_after_a_send_in_the_conversation(monkeypatch: pytest
 
     asyncio.run(go())
     assert calls == [("s1", {DANA, OWNER}, "Notes")]
+
+
+def test_a_given_mailbox_opens_only_its_own_persons_drafts(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation import gmail
+
+    owner = _owner()
+    other = people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example")
+    people_registry.invalidate()
+    mine, theirs = Mailbox(), Mailbox()
+    mine.add("d1", [DANA])
+    _record(owner, "d1", "s1")
+    theirs.add("d2", [DANA])
+    _record(other, "d2", "s1")
+    monkeypatch.setattr(gmail, "gmail_for", lambda email: theirs)
+    gone = asyncio.run(redrafts.clear_after_send(
+        "s1", {DANA}, subject="Pilot dates", client=mine, client_person_id=owner, now=NOW,
+    ))
+    assert gone == 2 and mine.deleted == ["d1"] and theirs.deleted == ["d2"]

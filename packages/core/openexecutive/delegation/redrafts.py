@@ -149,13 +149,14 @@ async def replace_earlier(
 
 async def clear_after_send(
     session_id: str, sent_to: set[str], *, subject: str = "", client: Any = None,
-    now: datetime | None = None,
+    client_person_id: int | None = None, now: datetime | None = None,
 ) -> int:
     """After the Executive sent an email from its own mailbox in the
     conversation ``session_id`` to ``sent_to`` about ``subject``: retire
     that conversation's open chat drafts to any of the same people (the
     writer themself aside) about the same thing. ``client`` opens the
-    writer's mailbox (default: their own connection). Returns how many were
+    mailbox of ``client_person_id`` (anyone, when that is None); everyone
+    else's opens through their own connection. Returns how many were
     deleted."""
     if not session_id or not sent_to:
         return 0
@@ -177,7 +178,8 @@ async def clear_after_send(
         email = normalize_email(getattr(person, "email", "") or "")
         if not email:
             continue
-        mailbox = client if client is not None else gmail_for(email)
+        mine = client is not None and client_person_id in (None, person_id)
+        mailbox = client if mine else gmail_for(email)
         outcomes: list[str] = []
         for row in (r for r in rows if r.person_id == person_id):
             readable, found = await _read(mailbox, row)
