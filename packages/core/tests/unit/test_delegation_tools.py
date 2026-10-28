@@ -397,7 +397,9 @@ class DraftingMailbox(FakeMailbox):
     async def create_draft(self, spec: DraftSpec) -> CreatedDraft:
         self.drafts.append(spec)
         n = len(self.drafts)
-        message = MailMessage(id=f"m{100 + n}", thread_id=spec.thread_id or f"tnew{n}", to=list(spec.to))
+        message = MailMessage(
+            id=f"m{100 + n}", thread_id=spec.thread_id or f"tnew{n}", to=list(spec.to), subject=spec.subject,
+        )
         self.saved[f"d{n}"] = DraftInfo(draft_id=f"d{n}", message=message)
         return CreatedDraft(draft_id=f"d{n}", message_id=message.id, thread_id=message.thread_id)
 

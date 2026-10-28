@@ -11481,13 +11481,16 @@ delegation:
     (session_id, ghostwrite's pinned session or current_session). A redraft
     (replace_earlier, after ghostwrite records the new row) retires the
     person's earlier open chat drafts in the same thread, and those in the
-    same conversation whose To shares an address with the new draft; the
+    same conversation whose To shares an address with the new draft and
+    whose subject is the same (redrafts.same_topic: prefixes stripped,
+    equal, or one holding the other at 8+ characters); the
     tool result carries replaced_earlier_drafts. An Executive send from its
     own mailbox (google_workspace__send_gmail_message or
     microsoft_365__send_mail, accepted, not an error payload) runs
     mcp_gateway._clear_replaced_drafts → clear_after_send: the conversation's
     open chat drafts whose To/Cc share an address with the send (the writer's
-    own address left out). Retire = get_draft: gone → gone_at only; version
+    own address left out) and whose subject matches the send's (same_topic):
+    a later unrelated email to the same person never deletes a draft. Retire = get_draft: gone → gone_at only; version
     changed (edited by the person) → kept; else delete_draft + gone_at. A
     failed read leaves the row. Private delegation_draft_replaced audit row.
     Why: three redrafts in one chat stayed in the principal's Drafts after

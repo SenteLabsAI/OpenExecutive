@@ -47,8 +47,8 @@ class Mailbox:
         self.saved: dict[str, DraftInfo] = {}
         self.deleted: list[str] = []
 
-    def add(self, draft_id: str, to: list[str], *, version: str | None = None) -> None:
-        message = MailMessage(id=version or f"m-{draft_id}", thread_id="t1", to=to)
+    def add(self, draft_id: str, to: list[str], *, version: str | None = None, subject: str = "Pilot dates") -> None:
+        message = MailMessage(id=version or f"m-{draft_id}", thread_id="t1", to=to, subject=subject)
         self.saved[draft_id] = DraftInfo(draft_id=draft_id, message=message)
 
     async def get_draft(self, draft_id: str) -> DraftInfo | None:
@@ -82,12 +82,51 @@ def test_the_executives_own_send_clears_the_drafts_it_replaced() -> None:
     _record(owner, "d3", "s1")  # to someone else: stays
     mailbox.add("d4", [DANA])
     _record(owner, "d4", "s2")  # another conversation: stays
+    mailbox.add("d5", [DANA], subject="Budget for Q4")
+    _record(owner, "d5", "s1")  # another email to Dana: stays
 
-    # It went to Dana, copying the writer.
-    gone = asyncio.run(redrafts.clear_after_send("s1", {DANA, OWNER}, client=mailbox, now=NOW))
+    # It went to Dana, copying the writer, about the same thing.
+    gone = asyncio.run(redrafts.clear_after_send(
+        "s1", {DANA, OWNER}, subject="Re: Pilot dates", client=mailbox, now=NOW,
+    ))
     assert gone == 2 and sorted(mailbox.deleted) == ["d1", "d2"]
-    assert sorted(mailbox.saved) == ["d3", "d4"]
-    assert drafts.count_waiting(owner, NOW) == 2
+    assert sorted(mailbox.saved) == ["d3", "d4", "d5"]
+    assert drafts.count_waiting(owner, NOW) == 3
+
+
+def test_a_send_about_something_else_clears_nothing() -> None:
+    owner = _owner()
+    mailbox = Mailbox()
+    mailbox.add("d1", [DANA], subject="Budget for Q4")
+    _record(owner, "d1", "s1")
+    assert asyncio.run(redrafts.clear_after_send("s1", {DANA}, subject="Running late", client=mailbox, now=NOW)) == 0
+    assert mailbox.deleted == []
+
+
+def test_same_topic() -> None:
+    assert redrafts.same_topic("Pilot dates", "RE: Fwd: pilot  dates")
+    assert redrafts.same_topic("Alpine Valley Farms", "Fwd: Alpine Valley Farms, LLC appeal")
+    assert not redrafts.same_topic("Hi", "Hi there, about the budget")  # too short to mean it
+    assert not redrafts.same_topic("Budget", "")
+
+
+def test_a_redraft_to_the_same_person_about_something_else_is_another_email() -> None:
+    owner = _owner()
+    mailbox = Mailbox()
+    mailbox.add("d1", [DANA], subject="Budget for Q4")
+    earlier = drafts.record(
+        owner, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d1", message_id="m-d1", now=NOW, session_id="s1",
+    )
+    mailbox.add("d2", [DANA], subject="Pilot dates")
+    newer = drafts.record(
+        owner, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d2", message_id="m-d2", now=NOW, session_id="s1",
+    )
+    replaced = asyncio.run(redrafts.replace_earlier(
+        owner, mailbox, row_id=newer, thread_id=None, session_id="s1", to=[DANA], subject="Pilot dates", now=NOW,
+    ))
+    assert replaced == 0 and mailbox.deleted == []
+    row = drafts.get_row(earlier)
+    assert row is not None and not row.gone_at
 
 
 def test_a_send_that_only_copies_the_writer_clears_nothing() -> None:
@@ -95,7 +134,7 @@ def test_a_send_that_only_copies_the_writer_clears_nothing() -> None:
     mailbox = Mailbox()
     mailbox.add("d1", [DANA])
     _record(owner, "d1", "s1")
-    assert asyncio.run(redrafts.clear_after_send("s1", {OWNER}, client=mailbox, now=NOW)) == 0
+    assert asyncio.run(redrafts.clear_after_send("s1", {OWNER}, subject="Pilot dates", client=mailbox, now=NOW)) == 0
     assert mailbox.deleted == []
 
 
@@ -105,7 +144,7 @@ def test_an_edited_draft_stays_and_a_missing_one_stops_waiting() -> None:
     mailbox.add("d1", [DANA], version="m-edited")
     edited = _record(owner, "d1", "s1")
     missing = _record(owner, "d2", "s1")  # deleted in their mailbox already
-    assert asyncio.run(redrafts.clear_after_send("s1", {DANA}, client=mailbox, now=NOW)) == 0
+    assert asyncio.run(redrafts.clear_after_send("s1", {DANA}, subject="Pilot dates", client=mailbox, now=NOW)) == 0
     assert mailbox.deleted == [] and "d1" in mailbox.saved
     kept, gone = drafts.get_row(edited), drafts.get_row(missing)
     assert kept is not None and not kept.gone_at
@@ -126,10 +165,10 @@ def test_a_mailbox_that_fails_leaves_the_drafts_alone() -> None:
 
 
 def test_the_gateway_clears_after_a_send_in_the_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, set[str]]] = []
+    calls: list[tuple[str, set[str], str]] = []
 
-    async def fake(session_id: str, sent_to: set[str], *, client: Any = None) -> int:
-        calls.append((session_id, sent_to))
+    async def fake(session_id: str, sent_to: set[str], *, subject: str = "", client: Any = None) -> int:
+        calls.append((session_id, sent_to, subject))
         return 0
 
     monkeypatch.setattr(redrafts, "clear_after_send", fake)
@@ -155,4 +194,4 @@ def test_the_gateway_clears_after_a_send_in_the_conversation(monkeypatch: pytest
         )
 
     asyncio.run(go())
-    assert calls == [("s1", {DANA, OWNER})]
+    assert calls == [("s1", {DANA, OWNER}, "Notes")]

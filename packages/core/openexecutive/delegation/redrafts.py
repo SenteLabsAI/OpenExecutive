@@ -4,10 +4,15 @@ A chat draft (``ghostwrite_email``) waits in the person's own mailbox until
 they send it. Two things leave it behind with nobody meaning to send it:
 
 - a redraft: they asked for a change and a new draft was saved in the same
-  thread, or in the same conversation to the same people
-  (:func:`replace_earlier`);
+  thread, or in the same conversation to the same people about the same
+  thing (:func:`replace_earlier`);
 - the Executive sent that email itself, from its own mailbox, in the same
-  conversation and to the same people (:func:`clear_after_send`).
+  conversation, to the same people and in the same thread or about the same
+  thing (:func:`clear_after_send`).
+
+"About the same thing" is a matching subject, its "Re:" / "Fwd:" aside, or
+one subject holding the other: another email to the same person in the same
+conversation is left alone.
 
 Each such draft is deleted from their mailbox and stops counting as waiting,
 so the briefs stop naming it. A draft they edited in their mailbox is theirs
@@ -26,6 +31,21 @@ from typing import Any
 from openexecutive.delegation import drafts
 
 logger = logging.getLogger(__name__)
+
+
+_MIN_SUBJECT = 8
+
+
+def same_topic(a: str, b: str) -> bool:
+    """Whether two subjects are about the same email: equal without their
+    prefixes, or one holding the other once that is long enough to mean it."""
+    x, y = drafts._same_subject(a), drafts._same_subject(b)
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    shorter, longer = sorted((x, y), key=len)
+    return len(shorter) >= _MIN_SUBJECT and shorter in longer
 
 
 def _people(message: Any, *fields: str) -> set[str]:
@@ -89,12 +109,14 @@ async def replace_earlier(
     thread_id: str | None,
     session_id: str | None,
     to: list[str],
+    subject: str = "",
     now: datetime | None = None,
 ) -> int:
     """After the chat draft ``row_id`` was saved: retire ``person_id``'s
     earlier open chat drafts it replaces, the ones in the same thread and
     the ones written in the same conversation to any of the same people
-    (``to``). Returns how many were deleted."""
+    (``to``) about the same thing (``subject``). Returns how many were
+    deleted."""
     now = now or datetime.now(UTC)
     try:
         rows = drafts.open_chat_drafts(
@@ -112,7 +134,9 @@ async def replace_earlier(
         if not readable:
             continue
         same_thread = bool(thread_id) and row.thread_id == thread_id
-        if not same_thread and found is not None and not (wanted & _people(found.message, "to")):
+        if not same_thread and found is not None and not (
+            wanted & _people(found.message, "to") and same_topic(subject, found.message.subject)
+        ):
             continue  # another email written in the same conversation
         try:
             outcomes.append(await _retire(client, row, found, now))
@@ -124,13 +148,15 @@ async def replace_earlier(
 
 
 async def clear_after_send(
-    session_id: str, sent_to: set[str], *, client: Any = None, now: datetime | None = None,
+    session_id: str, sent_to: set[str], *, subject: str = "", client: Any = None,
+    now: datetime | None = None,
 ) -> int:
     """After the Executive sent an email from its own mailbox in the
-    conversation ``session_id`` to ``sent_to``: retire that conversation's
-    open chat drafts to any of the same people, other than the writer
-    themself. ``client`` opens the writer's mailbox (default: their own
-    connection). Returns how many were deleted."""
+    conversation ``session_id`` to ``sent_to`` about ``subject``: retire
+    that conversation's open chat drafts to any of the same people (the
+    writer themself aside) about the same thing. ``client`` opens the
+    writer's mailbox (default: their own connection). Returns how many were
+    deleted."""
     if not session_id or not sent_to:
         return 0
     now = now or datetime.now(UTC)
@@ -157,7 +183,10 @@ async def clear_after_send(
             readable, found = await _read(mailbox, row)
             if not readable:
                 continue
-            if found is not None and not ((sent - {email}) & _people(found.message, "to", "cc")):
+            if found is not None and not (
+                (sent - {email}) & _people(found.message, "to", "cc")
+                and same_topic(subject, found.message.subject)
+            ):
                 continue
             try:
                 outcomes.append(await _retire(mailbox, row, found, now))

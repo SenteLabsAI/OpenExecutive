@@ -594,6 +594,7 @@ async def _drafted(
         replaced = await replace_earlier(
             writer.person.id, writer.mailbox, row_id=row_id,
             thread_id=thread.id if thread is not None else None, session_id=session_id, to=plan["to"],
+            subject=composed.subject,
         )
     _audit(writer.person.id, f"Drafted an email as person {writer.person.id} in their own mailbox", {
         "thread_id": thread.id if thread is not None else None,

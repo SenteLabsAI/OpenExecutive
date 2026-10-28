@@ -3415,7 +3415,7 @@ def _sent_to(tool_name: str, normalized: str, arguments: dict[str, Any]) -> set[
 
 async def _clear_replaced_drafts(tool_name: str, normalized: str, arguments: dict[str, Any]) -> None:
     """The Executive just sent an email itself: take this conversation's
-    unsent chat drafts to the same people out of the writer's Drafts
+    unsent chat drafts of it (same people, same subject) out of the writer's Drafts
     (``delegation.redrafts.clear_after_send``). Never raises."""
     from openexecutive.delegation.settings import DelegationOverride
     from openexecutive.orchestrator.schedule_tools import current_session
@@ -3429,9 +3429,15 @@ async def _clear_replaced_drafts(tool_name: str, normalized: str, arguments: dic
             return
         from openexecutive.delegation.redrafts import clear_after_send
 
+        if tool_name == "google_workspace__send_gmail_message":
+            subject = arguments.get("subject")
+        else:
+            subject = _ci_get(_ci_get(_ci_get(arguments, "body"), "message"), "subject")
         override = getattr(session, "delegation_override", None)
         client = override.gmail if isinstance(override, DelegationOverride) else None
-        await clear_after_send(str(session.session_id), sent, client=client)
+        await clear_after_send(
+            str(session.session_id), sent, subject=subject if isinstance(subject, str) else "", client=client,
+        )
     except Exception:
         logger.exception("clear_replaced_drafts: could not clear drafts (non-fatal)")
 
