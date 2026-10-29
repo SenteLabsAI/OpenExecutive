@@ -300,6 +300,16 @@ def test_someone_who_keeps_writing_is_only_suggested(owner: int) -> None:
     assert _contact(PRIYA) is None
 
 
+def test_a_from_name_never_ties_an_address_to_someone_they_have(owner: int) -> None:
+    people_store.upsert_person(full_name="Jane Smith", email="jane@acme.example", kind="contact")
+    lookalike = "x@other.example"
+    box = FakeMailbox()
+    box.sent = [_sent([lookalike], days_ago=1), _sent([lookalike], days_ago=2)]
+    box.inbox = _inbound(lookalike, "Jane Smith", 1)
+    _run(box)
+    assert not [c for c in changes.list_changes() if c.field == "email_alias"]
+
+
 def test_a_shared_mailbox_name_is_never_a_contact() -> None:
     assert keeper.mailbox_name("Private Wealth")
     assert keeper.mailbox_name("Financial Reporting")

@@ -286,6 +286,9 @@ class Seen:
     met: int = 0
     # Authenticated mail they wrote to the principal.
     wrote: int = 0
+    # The From name on that mail, as the sender chose it: a name only when
+    # the principal wrote none, and never matched to someone they have.
+    from_names: list[str] = field(default_factory=list)
     # As the principal wrote them (To/Cc display names, guest lists).
     names: list[str] = field(default_factory=list)
     # A contact's own address: read for a fuller name and what the principal
@@ -298,7 +301,7 @@ class Seen:
     meetings: list[tuple[str, str, str]] = field(default_factory=list)
 
     def name(self, address: str = "") -> str:
-        for raw in [*self.names, name_from_address(address)]:
+        for raw in [*self.names, *self.from_names, name_from_address(address)]:
             cleaned = clean_name(raw)
             if cleaned:
                 return cleaned
@@ -422,7 +425,7 @@ async def _gather_inbox(
             continue
         entry = seen.setdefault(address, Seen())
         entry.wrote += 1
-        entry.names.append(str(getattr(message, "from_name", "") or ""))
+        entry.from_names.append(str(getattr(message, "from_name", "") or ""))
 
 
 # --------------------------------------------------------------------------- #

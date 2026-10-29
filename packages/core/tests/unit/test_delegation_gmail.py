@@ -889,6 +889,8 @@ def test_sent_mail_pages_past_100_and_a_slowdown_drops_nothing(monkeypatch: pyte
         path = request.url.path
         if path.endswith("/messages"):
             start = int(request.url.params.get("pageToken") or 0)
+            if start == 200:
+                return httpx.Response(429, json={"error": {"errors": [{"reason": "rateLimitExceeded"}]}})
             count = int(request.url.params["maxResults"])
             body: dict[str, Any] = {"messages": [{"id": f"s{i}"} for i in range(start, min(start + count, 250))]}
             if start + count < 250:
@@ -904,5 +906,6 @@ def test_sent_mail_pages_past_100_and_a_slowdown_drops_nothing(monkeypatch: pyte
 
     client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
     sent = asyncio.run(client.list_sent(limit=300))
-    assert len(sent) == 250 and slowed == {"s7"}
+    # The third page was refused: the 200 listed are still read.
+    assert len(sent) == 200 and slowed == {"s7"}
     assert "s7" in {m.id for m in sent}

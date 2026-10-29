@@ -1105,7 +1105,13 @@ class DelegateGmail:
                 params: dict[str, Any] = {"q": "in:sent -in:chats newer_than:1y", "maxResults": min(want - len(ids), 100)}
                 if page:
                     params["pageToken"] = page
-                data = await self._get(client, "/messages", params)
+                try:
+                    data = await self._get(client, "/messages", params)
+                except GmailRateLimited:
+                    if ids:
+                        break  # read what was listed rather than nothing
+                    await asyncio.sleep(_SLOW_DOWN_SECONDS)
+                    data = await self._get(client, "/messages", params)
                 ids += [str(m.get("id")) for m in data.get("messages") or [] if valid_id(m.get("id"))]
                 page = str(data.get("nextPageToken") or "")
                 if not page:
