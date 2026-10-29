@@ -1,9 +1,8 @@
 """Messages in a team chat that ask something of the principal, until they
 answer.
 
-A Slack channel the bot is in (or a Google Chat space the Executive reads)
-carries messages that mention the principal by name: ``@Olivia, can you
-sign off on this?``. The bot never answers those, since they are not to it,
+A Slack channel the bot is in carries messages that mention the principal
+by name: ``@Olivia, can you sign off on this?``. The bot never answers those, since they are not to it,
 and nothing used to keep them. Now the adapter notes each one
 (:func:`note_ask`), and notes every message the principal writes in a place
 (:func:`note_spoke`): one in the same thread, or a new message in the same
@@ -52,6 +51,9 @@ _TABLE = """
     )
 """
 
+# Slack notes asks here (``slack_bot.note_chat_ask``); the other names are
+# for an adapter that reads every message of a place, which Google Chat's
+# webhook app (mentions of it only) does not.
 APP_NAMES = {"slack": "Slack", "google_chat": "Google Chat"}
 
 
