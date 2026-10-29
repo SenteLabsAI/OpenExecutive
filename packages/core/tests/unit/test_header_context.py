@@ -474,4 +474,5 @@ def test_a_point_on_home_says_which_email_it_is(tmp_path: Path, monkeypatch: pyt
     assert points[0]["text"] == "**Loan figures** — Andy sent them."
     assert points[0]["source"] == {
         "kind": "mail", "message_id": "m1", "thread_id": "t1", "decision_id": None, "alert_id": None,
+        "url": None, "app": None,
     }

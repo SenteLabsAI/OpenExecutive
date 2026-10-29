@@ -8692,6 +8692,16 @@ integrations:
     taps (``chat_for``), outside quiet hours, five a person a pass; a failed
     send is not retried; audit ``chat_card_sent``.
 
+    Chat messages asking the principal. ``slack_bot.note_chat_ask`` runs on
+    every Slack channel message the bot receives: a mention of the
+    principal by someone else is kept in ``chat_asks`` (with the permalink
+    and channel name); the principal's own message answers the asks in the
+    same thread, or every earlier one in that channel when it is top-level.
+    ``live_signals.chat_asks`` gives Right now the unanswered ones older than
+    30 minutes and younger than a day (principal only), with a
+    ``{kind: link, url, app}`` source that Home opens; the model never sees
+    the link.
+
     Errors. The catch-all logs with session/user/channel/thread/mode,
     writes an ``integration_inbound`` row with
     ``details.outcome="handler_error"`` under the inbound's session_id,

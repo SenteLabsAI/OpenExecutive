@@ -170,9 +170,9 @@ def card_text(decision_id: int) -> str | None:
         if who:
             lines.append("With " + ", ".join(who))
     elif instance.decision_class == "delegation_reply":
-        who = str(payload.get("from_name") or payload.get("from_email") or "").strip()[:120]
-        if who:
-            lines.append(f"To {who}")
+        sender = str(payload.get("from_name") or payload.get("from_email") or "").strip()[:120]
+        if sender:
+            lines.append(f"To {sender}")
         to = [str(a) for a in payload.get("draft_to") or [] if a][:10]
         if to:
             lines.append("Goes to " + ", ".join(to))
@@ -188,9 +188,9 @@ def card_text(decision_id: int) -> str | None:
         when = _when(payload.get("start"), payload.get("end"))
         if when:
             lines.append(when)
-        who = str(payload.get("from_name") or payload.get("from_email") or "").strip()[:120]
-        if who:
-            lines.append(f"From {who}")
+        sender = str(payload.get("from_name") or payload.get("from_email") or "").strip()[:120]
+        if sender:
+            lines.append(f"From {sender}")
         if payload.get("clashes"):
             lines.append("It clashes with something on your calendar.")
     elif instance.decision_class in ("take_the_lead_action", "department_action"):

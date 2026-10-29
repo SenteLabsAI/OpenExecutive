@@ -13,7 +13,9 @@ that, not around everything the Executive can see:
   principal also the emails of theirs nobody has answered yet (their own
   sent mail, ``briefing.waiting_on``), the meetings that ended today, and
   mail to their own inbox from people they deal with (``live_signals.
-  own_inbox``; mail from anyone else is Home's "Also in" line, never a point).
+  own_inbox``; mail from anyone else is Home's "Also in" line, never a point),
+  and team chat messages that ask something of them and have gone
+  unanswered for half an hour (``integrations.chat_asks``), with a link.
 - **COMING UP TODAY**: the rest of the calendar, tagged the same way.
 - **STILL OPEN**: what is already on the list below and did not move today.
   Background for ranking, never a point.
@@ -72,8 +74,9 @@ class HeaderContext:
     # moved and no model call is needed.
     moved: frozenset[str] = field(default_factory=frozenset)
     # Tag → the item a line is about, for the lines Home can open from a
-    # point: ``{"kind": "mail", "message_id", "thread_id"?, "decision_id"?}``
-    # or ``{"kind": "alert", "alert_id"}``. Never part of the text.
+    # point: ``{"kind": "mail", "message_id", "thread_id"?, "decision_id"?}``,
+    # ``{"kind": "alert", "alert_id"}`` or ``{"kind": "link", "url", "app"}``
+    # (a chat message). Never part of the text.
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -156,6 +159,11 @@ def render_header_context(
             tag = moved.add(f"Email to the reader's own inbox: {_one_line(line, 400)}")
             if i < len(refs) and refs[i].get("message_id"):
                 sources[tag] = dict(refs[i])
+        ask_refs = list(live.chat_ask_refs)
+        for i, line in enumerate(live.chat_asks):
+            tag = moved.add(f"Chat message asking the reader, not answered yet: {_one_line(line, 400)}")
+            if i < len(ask_refs) and ask_refs[i].get("url"):
+                sources[tag] = dict(ask_refs[i])
         for line in live.met_today:
             moved.add(f"Meeting that ended today: {_one_line(line, 200)}")
 
@@ -369,6 +377,7 @@ def point_citations(draft: str) -> list[tuple[str, frozenset[str]]]:
 NEEDS_YOU_PREFIXES = (
     "Mail or chat in:",
     "Email to the reader's own inbox:",
+    "Chat message asking the reader",
     "Stuck:",
     "New for the reader to decide",
     "Overdue (",

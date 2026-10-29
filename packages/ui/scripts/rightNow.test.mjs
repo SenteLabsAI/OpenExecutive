@@ -79,6 +79,12 @@ test("a point opens the email or card it is about", () => {
   // An email without its conversation, or no source, opens nothing.
   assert.equal(pointTarget({ text: "a", source: { kind: "mail", message_id: "m1" } }), null);
   assert.equal(pointTarget({ text: "a" }), null);
+  assert.deepEqual(
+    pointTarget({ text: "a", source: { kind: "link", url: "https://acme.slack.com/archives/C1/p1", app: "Slack" } }),
+    { kind: "link", url: "https://acme.slack.com/archives/C1/p1", app: "Slack" },
+  );
+  // Only an https link opens.
+  assert.equal(pointTarget({ text: "a", source: { kind: "link", url: "javascript:alert(1)", app: "Slack" } }), null);
 });
 
 test("progress steps follow the step the server reports", () => {

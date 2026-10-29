@@ -130,6 +130,10 @@ function PointRow({
               <Button size="sm" onClick={() => setOpen("view")}>View email</Button>
               <Button size="sm" onClick={() => setOpen("reply")}>Reply</Button>
             </>
+          ) : target.kind === "link" ? (
+            <Button size="sm" onClick={() => window.open(target.url, "_blank", "noopener,noreferrer")}>
+              Open in {target.app}
+            </Button>
           ) : (
             <Button size="sm" onClick={() => actions!.onShowAlert!(target.alertId)}>Show me</Button>
           )}

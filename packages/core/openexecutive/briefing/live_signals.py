@@ -238,6 +238,11 @@ class LiveSignals:
     # Which email each ``inbox`` line is, in the same order, so Home can open
     # it from the point that cites it. Never rendered or keyed.
     inbox_refs: tuple[dict[str, Any], ...] = ()
+    # Messages in a team chat that ask something of the principal, unanswered
+    # for half an hour (``integrations.chat_asks``), oldest first, and the
+    # link to each in the same order. Right now's alone, like ``inbox``.
+    chat_asks: tuple[str, ...] = ()
+    chat_ask_refs: tuple[dict[str, Any], ...] = ()
     # Stable identities for the brief's "unchanged" fingerprint — no times.
     # The reader's own messages are left out: chatting with the Executive
     # is not a reason to send a brief.
@@ -656,6 +661,32 @@ class OwnInbox:
     total: int = 0
 
 
+def _chat_asks(now: datetime, tz: tzinfo) -> tuple[list[str], list[dict[str, Any]], list[int]]:
+    """``(lines, refs, ids)`` of the principal's unanswered chat asks
+    (``integrations.chat_asks.waiting``). Private."""
+    from openexecutive.integrations import chat_asks
+
+    principal = _principal()
+    if principal is None or principal.id is None:
+        return [], [], []
+    lines: list[str] = []
+    refs: list[dict[str, Any]] = []
+    ids: list[int] = []
+    for ask in chat_asks.waiting(principal.id, now):
+        try:
+            at = datetime.fromisoformat(ask.asked_at).astimezone(tz).strftime("%H:%M")
+        except ValueError:
+            at = ""
+        lines.append(
+            f"{chat_asks.where(ask)}, {_one_line(ask.from_name, 60)}"
+            + (f" at {at}" if at else "") + f": {_one_line(ask.text, 300)}"
+        )
+        refs.append({"kind": "link", "url": ask.link, "app": chat_asks.APP_NAMES.get(ask.channel, ask.channel)}
+                    if ask.link else {})
+        ids.append(ask.id)
+    return lines, refs, ids
+
+
 def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnInbox:
     """Mail to the principal's own inbox since ``since`` (by when it arrived),
     as the Act as me watcher recorded it, leaving out any they have answered
@@ -878,6 +909,15 @@ def gather_live_signals(
         except Exception:
             logger.exception("live_signals: own inbox render failed")
 
+    asks: list[str] = []
+    ask_refs: list[dict[str, Any]] = []
+    ask_keys: list[int] = []
+    if include_private:
+        try:
+            asks, ask_refs, ask_keys = _chat_asks(now, tz)
+        except Exception:
+            logger.exception("live_signals: chat asks read failed")
+
     stuck = stuck[:_STUCK_MAX]
     return LiveSignals(
         inbound=tuple(inbound),
@@ -895,7 +935,10 @@ def gather_live_signals(
         inbox_others=mail.others,
         inbox_others_total=mail.others_total,
         inbox_refs=mail.refs,
+        chat_asks=tuple(asks),
+        chat_ask_refs=tuple(ask_refs),
         keys={
+            "chat_asks": ask_keys,
             "inbound": sorted(inbound_keys),
             "stuck": sorted(s.split("] ", 1)[-1] for s in stuck),
             "drafts": drafts,

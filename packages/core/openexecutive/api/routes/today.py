@@ -506,13 +506,17 @@ class HeldBackItem(BaseModel):
 class PointSource(BaseModel):
     """What a Right now point is about, when Home can open it: an email in
     the reader's own inbox (``kind`` "mail": its ids, and its reply card
-    when one is open) or a card in Needs you (``kind`` "alert")."""
+    when one is open), a card in Needs you (``kind`` "alert"), or a team
+    chat message (``kind`` "link": its link in that app, and the app's
+    name)."""
 
-    kind: Literal["mail", "alert"]
+    kind: Literal["mail", "alert", "link"]
     message_id: str | None = None
     thread_id: str | None = None
     decision_id: int | None = None
     alert_id: int | None = None
+    url: str | None = None
+    app: str | None = None
 
 
 class NarrativePoint(BaseModel):
