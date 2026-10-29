@@ -62,6 +62,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "scheduled_action",
     "alert",
     "integration_inbound",
+    "chat_card_sent",  # a card waiting outside any chat was sent to its person's chat app (integrations.channel_cards)
     "auth_login",
     "auth_logout",
     # Instrumentation events — surface what the agent saw on each turn so

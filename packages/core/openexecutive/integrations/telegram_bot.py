@@ -125,10 +125,14 @@ async def send_message(token: str, chat_id: int, text: str) -> str | None:
     return last_message_id
 
 
-async def send_card(token: str, chat_id: int, decision_id: int, text: str) -> None:
-    """Send an approval card as a message with Approve and Skip buttons
-    (``integrations.channel_cards``). Plain text: the card quotes what the
-    Executive proposed, which may come from someone's mail."""
+async def send_card(
+    token: str, chat_id: int, decision_id: int, text: str, *,
+    labels: tuple[str, str] = ("Approve", "Skip"), raise_on_error: bool = False,
+) -> None:
+    """Send an approval card as a message with its two buttons, Approve (or
+    Send, Accept) and Skip (``integrations.channel_cards``). Plain text: the
+    card quotes what the Executive proposed, which may come from someone's
+    mail."""
     from openexecutive.integrations import channel_cards
 
     resp = await _get_http_client().post(
@@ -138,13 +142,15 @@ async def send_card(token: str, chat_id: int, decision_id: int, text: str) -> No
             "text": text[:_MAX_MSG_LEN],
             "link_preview_options": {"is_disabled": True},
             "reply_markup": {"inline_keyboard": [[
-                {"text": "Approve", "callback_data": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
-                {"text": "Skip", "callback_data": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
+                {"text": labels[0], "callback_data": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
+                {"text": labels[1], "callback_data": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
             ]]},
         },
     )
     if resp.is_error:
         logger.error("Telegram: sending card %d failed: %s %s", decision_id, resp.status_code, resp.text)
+        if raise_on_error:
+            raise RuntimeError(f"telegram sendMessage failed: {resp.status_code}")
 
 
 async def _send_cards(token: str, chat_id: int, cards: list[int]) -> None:
@@ -154,7 +160,8 @@ async def _send_cards(token: str, chat_id: int, cards: list[int]) -> None:
         try:
             text = await asyncio.to_thread(channel_cards.card_text, decision_id)
             if text:
-                await send_card(token, chat_id, decision_id, text)
+                labels = await asyncio.to_thread(channel_cards.card_buttons, decision_id)
+                await send_card(token, chat_id, decision_id, text, labels=labels)
         except Exception:
             logger.exception("Telegram: couldn't send card %d", decision_id)
 

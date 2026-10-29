@@ -484,7 +484,9 @@ _CARD_ACTION_RE = re.compile(rf"^({_CARD_ACTION_APPROVE}|{_CARD_ACTION_SKIP})$")
 _MAX_CARD_TEXT = 2900
 
 
-def _card_blocks(text: str, decision_id: int | None = None) -> list[dict[str, Any]]:
+def _card_blocks(
+    text: str, decision_id: int | None = None, labels: tuple[str, str] = ("Approve", "Skip"),
+) -> list[dict[str, Any]]:
     """A card as Slack blocks: its text as plain text (it may quote what
     someone else wrote, so never mrkdwn), with the two buttons while it waits."""
     from openexecutive.integrations import channel_cards
@@ -495,10 +497,10 @@ def _card_blocks(text: str, decision_id: int | None = None) -> list[dict[str, An
     if decision_id is not None:
         blocks.append({"type": "actions", "elements": [
             {"type": "button", "action_id": _CARD_ACTION_APPROVE, "style": "primary",
-             "text": {"type": "plain_text", "text": "Approve"},
+             "text": {"type": "plain_text", "text": labels[0]},
              "value": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
             {"type": "button", "action_id": _CARD_ACTION_SKIP,
-             "text": {"type": "plain_text", "text": "Skip"},
+             "text": {"type": "plain_text", "text": labels[1]},
              "value": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
         ]})
     return blocks
@@ -514,12 +516,34 @@ async def _send_cards(client: Any, channel: str, cards: list[int]) -> None:
         try:
             text = await asyncio.to_thread(channel_cards.card_text, decision_id)
             if text:
+                labels = await asyncio.to_thread(channel_cards.card_buttons, decision_id)
                 await client.chat_postMessage(
-                    channel=channel, text=text[:_MAX_CARD_TEXT], blocks=_card_blocks(text, decision_id),
+                    channel=channel, text=text[:_MAX_CARD_TEXT], blocks=_card_blocks(text, decision_id, labels),
                     unfurl_links=False, unfurl_media=False,
                 )
         except Exception:
             logger.exception("Slack: couldn't send card %d", decision_id)
+
+
+async def send_dm_card(slack_user_id: str, decision_id: int, text: str, labels: tuple[str, str]) -> None:
+    """Post a card waiting outside any chat to ``slack_user_id``'s DM with the
+    bot (``channel_cards.push_waiting``). Raises when it couldn't."""
+    from slack_sdk.web.async_client import AsyncWebClient
+
+    from openexecutive.config import get_settings
+
+    token = get_settings().slack_bot_token
+    if not token or not slack_user_id:
+        raise RuntimeError("slack is not configured")
+    client = AsyncWebClient(token=token)
+    opened = await client.conversations_open(users=slack_user_id)
+    channel = str(((opened or {}).get("channel") or {}).get("id") or "")
+    if not channel:
+        raise RuntimeError("slack did not open a DM")
+    await client.chat_postMessage(
+        channel=channel, text=text[:_MAX_CARD_TEXT], blocks=_card_blocks(text, decision_id, labels),
+        unfurl_links=False, unfurl_media=False,
+    )
 
 
 async def _is_own_dm(client: Any, user_id: str, channel_id: str) -> bool:

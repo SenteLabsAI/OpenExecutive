@@ -8679,6 +8679,17 @@ integrations:
     Every other chat app (channels, threads, Google Chat) sends no card,
     and ``propose_actions`` tells the model the card is on Today.
 
+    Every card that waits, in the chat app. ``CHAT_CARD_CLASSES`` also holds
+    the cards that wait outside any chat: a reply card (Send and Skip; Send
+    is ``send_approved_reply`` with the ChatTap, and a second-yes refusal
+    says to open it in the app), an invite (Accept and Skip), and a Take the
+    lead or department card (done as it stands). ``channel_cards.push_waiting``
+    (scheduler tick, once a minute) sends each open ``propose`` card with no
+    conversation of its own person once (``chat_card_pushes``), after two
+    minutes and within a day, to the approver's first chat app that proves
+    taps (``chat_for``), outside quiet hours, five a person a pass; a failed
+    send is not retried; audit ``chat_card_sent``.
+
     Errors. The catch-all logs with session/user/channel/thread/mode,
     writes an ``integration_inbound`` row with
     ``details.outcome="handler_error"`` under the inbound's session_id,

@@ -673,7 +673,7 @@ def _find_discord_sender(discord_user_id: str) -> object:
 _MAX_CARD_TEXT = 1900
 
 
-def _card_view(decision_id: int) -> Any:
+def _card_view(decision_id: int, labels: tuple[str, str] = ("Approve", "Skip")) -> Any:
     """A card's Approve and Skip buttons. Their custom ids carry the card
     (``channel_cards.callback_data``); ``on_interaction`` takes the tap, so it
     still works after a restart."""
@@ -683,11 +683,11 @@ def _card_view(decision_id: int) -> Any:
 
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(
-        label="Approve", style=discord.ButtonStyle.success,
+        label=labels[0], style=discord.ButtonStyle.success,
         custom_id=channel_cards.callback_data(decision_id, channel_cards.APPROVE),
     ))
     view.add_item(discord.ui.Button(
-        label="Skip", style=discord.ButtonStyle.secondary,
+        label=labels[1], style=discord.ButtonStyle.secondary,
         custom_id=channel_cards.callback_data(decision_id, channel_cards.SKIP),
     ))
     return view
@@ -1683,7 +1683,10 @@ def create_discord_bot():
         send_card: Callable[[int, str], Awaitable[None]] | None = None
         if is_dm:
             async def send_card(decision_id: int, text: str) -> None:
-                await message.channel.send(text, view=_card_view(decision_id), suppress_embeds=True)
+                from openexecutive.integrations import channel_cards
+
+                labels = await asyncio.to_thread(channel_cards.card_buttons, decision_id)
+                await message.channel.send(text, view=_card_view(decision_id, labels), suppress_embeds=True)
 
         # Use the channel id as thread_id so WaitForHuman resolution can match
         # replies that arrive in the same DM or thread channel.
@@ -1785,6 +1788,44 @@ async def send_dm(discord_user_id: str, text: str) -> str | None:
             except (ValueError, TypeError, AttributeError):
                 pass
     return last_message_id
+
+
+async def send_dm_card(discord_user_id: str, decision_id: int, text: str, labels: tuple[str, str]) -> None:
+    """Send a card waiting outside any chat to ``discord_user_id``'s DM with
+    the bot, with its two buttons (``channel_cards.push_waiting``); the
+    bot's ``on_interaction`` takes the tap. Raises when it couldn't."""
+    from openexecutive.config import get_settings
+    from openexecutive.integrations import channel_cards
+
+    settings = get_settings()
+    if not settings.discord_bot_token or not discord_user_id:
+        raise RuntimeError("discord is not configured")
+    import httpx
+
+    headers = {"Authorization": f"Bot {settings.discord_bot_token}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        opened = await client.post(
+            "https://discord.com/api/v10/users/@me/channels", headers=headers, json={"recipient_id": discord_user_id},
+        )
+        opened.raise_for_status()
+        channel_id = opened.json().get("id")
+        if not channel_id:
+            raise RuntimeError("discord did not return a DM channel id")
+        resp = await client.post(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages",
+            headers=headers,
+            json={
+                "content": text[:_MAX_CARD_TEXT],
+                "flags": _SUPPRESS_EMBEDS,
+                "components": [{"type": 1, "components": [
+                    {"type": 2, "style": 3, "label": labels[0],
+                     "custom_id": channel_cards.callback_data(decision_id, channel_cards.APPROVE)},
+                    {"type": 2, "style": 2, "label": labels[1],
+                     "custom_id": channel_cards.callback_data(decision_id, channel_cards.SKIP)},
+                ]}],
+            },
+        )
+        resp.raise_for_status()
 
 
 async def send_channel_message(channel_id: str, text: str) -> None:

@@ -195,6 +195,19 @@ def _maybe_send_monthly_value(now: datetime) -> bool:
         return False
 
 
+def _maybe_push_cards(now: datetime) -> bool:
+    """Send the cards that wait for someone outside any chat to their chat
+    app, with buttons (integrations/channel_cards.py). A hook like the
+    reminders. Never raises."""
+    try:
+        from openexecutive.integrations.channel_cards import maybe_push
+
+        return maybe_push(now)
+    except Exception:
+        logger.exception("scheduler: card push failed to start")
+        return False
+
+
 def _maybe_release_held(now: datetime) -> bool:
     """Send the messages held for quiet hours once they end, and the ones held
     for a brief that went to someone without one (people/held_messages.py).
@@ -372,6 +385,7 @@ async def run_scheduler(
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
             _maybe_release_held(now)
+            _maybe_push_cards(now)
             _maybe_send_monthly_value(now)
             due = claim_due_actions(now)
             if due:

@@ -1388,7 +1388,7 @@ def hold(
     decision_id = create_decision_instance(
         decision_class=DECISION_CLASS,
         department="executive",
-        originating_session_id=None,
+        originating_session_id=_shown_in(approver),
         proposed_payload=payload,
         idempotency_key=idem,
         gate_mode="propose",
@@ -1427,6 +1427,23 @@ def hold(
 
 
 _HOLD_KEY_TRIES = 50
+
+
+def _shown_in(approver: int | None) -> str | None:
+    """The conversation the card is shown in, when it is held on its own
+    approver's turn in the web chat or a chat app that shows cards; None
+    otherwise, so it is sent to their chat app
+    (``integrations.channel_cards.push_waiting``)."""
+    from openexecutive.integrations.channel_cards import card_here
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    session = current_session.get()
+    if session is None or approver is None or getattr(session, "caller_person_id", None) != approver:
+        return None
+    try:
+        return str(session.session_id) if card_here(session) else None
+    except Exception:
+        return None
 
 
 def _idem_used(key: str, *, db_path: Path | None = None) -> bool:
