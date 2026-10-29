@@ -786,7 +786,8 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
         name = entry.name(address)
         if not name or mailbox_name(name) or changes.is_blocked(address, "contact"):
             continue
-        reason: changes.Reason = "emailed" if entry.emailed >= EMAILED_MIN else "met"
+        wrote_back = bool(entry.emailed and entry.wrote and not entry.met)
+        reason: changes.Reason = "emailed" if entry.emailed >= EMAILED_MIN or wrote_back else "met"
         _propose(
             mode, result, action="add", field_name="contact", reason=reason, email=address, full_name=name,
             evidence=entry.emailed if reason == "emailed" else entry.met,

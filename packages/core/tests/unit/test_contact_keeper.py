@@ -275,6 +275,8 @@ def test_emailed_once_counts_when_they_wrote_back(owner: int) -> None:
     assert _run(box).added == 1
     assert _contact(PRIYA) is not None
     assert _contact(MARCO) is None  # a bulk mail is not writing back
+    [change] = changes.list_changes()
+    assert (change.reason, change.evidence) == ("emailed", 1)
 
 
 def test_someone_who_keeps_writing_is_only_suggested(owner: int) -> None:
