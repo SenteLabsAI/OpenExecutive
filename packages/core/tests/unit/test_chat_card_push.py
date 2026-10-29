@@ -301,3 +301,16 @@ def test_a_held_action_card_shows_every_field_it_would_send(owner: int) -> None:
     assert 'bcc: ["x@evil.example"]' in text and "body: Quick note. And more." in text
     # No call stored: not shown.
     assert channel_cards.card_text(_card("take_the_lead_action", {"tool": "x", "summary": "Do x"}, owner)) is None
+
+
+def test_a_card_that_cant_be_read_is_not_left_busy(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory import decision_ledger as ledger
+
+    card = _reply(owner)
+
+    def locked(decision_id: int, **kw: Any) -> Any:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(ledger, "get_decision_instance", locked)
+    assert asyncio.run(channel_cards.resolve(card, get_person(owner), approve=False)).startswith("Not done")
+    assert card not in channel_cards._resolving

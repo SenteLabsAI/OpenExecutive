@@ -113,6 +113,22 @@ def test_slack_keeps_a_mention_of_the_principal_and_their_reply_answers_it(owner
     assert chat_asks.waiting(owner, datetime.now(UTC) + timedelta(hours=1)) == []
 
 
+def test_a_labelled_mention_counts_and_a_new_channel_message_answers(owner: int) -> None:
+    slack = FakeSlack()
+    event = {"user": "UBEN", "channel": "C1", "ts": "1.1", "thread_ts": "0.5",
+             "text": "<@UOWNER|olivia> and <@U2> please sign off"}
+    asyncio.run(slack_bot.note_chat_ask(event, slack))
+    later = datetime.now(UTC) + timedelta(hours=1)
+    [ask] = chat_asks.waiting(owner, later)
+    assert ask.text == "@Olivia and @someone please sign off"
+    # A reply of hers in another thread answers nothing; a new message in the channel does.
+    asyncio.run(slack_bot.note_chat_ask({"user": "UOWNER", "channel": "C1", "ts": "2.1", "thread_ts": "9.9",
+                                         "text": "other"}, slack))
+    assert len(chat_asks.waiting(owner, later)) == 1
+    asyncio.run(slack_bot.note_chat_ask({"user": "UOWNER", "channel": "C1", "ts": "3.1", "text": "On it."}, slack))
+    assert chat_asks.waiting(owner, later) == []
+
+
 def test_slack_ignores_messages_that_dont_mention_the_principal(owner: int) -> None:
     asyncio.run(slack_bot.note_chat_ask({"user": "UBEN", "channel": "C1", "ts": "1.1", "text": "lunch?"}, FakeSlack()))
     asyncio.run(slack_bot.note_chat_ask({"user": "UBEN", "channel": "C1", "ts": "1.2", "text": "<@UOTHER> lunch?"},

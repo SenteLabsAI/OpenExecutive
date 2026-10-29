@@ -266,9 +266,13 @@ async def resolve(decision_id: int, person: Any, *, approve: bool) -> str:
     # away rather than racing it to a second invite.
     if decision_id in _resolving:
         return BUSY
-    _resolving.add(decision_id)
-    instance = get_decision_instance(decision_id)
+    try:
+        instance = get_decision_instance(decision_id)
+    except Exception:
+        logger.exception("channel_cards: reading card %d failed", decision_id)
+        return outcome_text(approve, "something went wrong. Check Today before trying again.")
     kind = instance.decision_class if instance is not None else ""
+    _resolving.add(decision_id)
     try:
         await resolve_in_chat(decision_id, person, approve=approve)
     except HTTPException as exc:
