@@ -94,9 +94,12 @@ def note_ask(
     try:
         if person_id != _principal_id():
             return False
-        when = (at or datetime.now(UTC)).isoformat()
+        now = at or datetime.now(UTC)
+        when = now.isoformat()
         conn = _connect(db_path)
         try:
+            # What people wrote is kept no longer than it can show.
+            conn.execute("DELETE FROM chat_asks WHERE asked_at < ?", ((now - KEEP_FOR).isoformat(),))
             cur = conn.execute(
                 "INSERT OR IGNORE INTO chat_asks (channel, place, place_name, thread, message_ref, person_id,"
                 " from_name, text, link, asked_at) VALUES (?,?,?,?,?,?,?,?,?,?)",

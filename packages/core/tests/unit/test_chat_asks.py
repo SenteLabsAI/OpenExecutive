@@ -167,3 +167,12 @@ def test_live_signals_read_the_principals_asks(owner: int, monkeypatch: pytest.M
     assert signals.keys["chat_asks"] == [1]
     shared = live_signals.gather_live_signals(NOW - timedelta(hours=12), now=NOW, include_private=False)
     assert shared.chat_asks == ()
+
+
+def test_what_people_wrote_is_not_kept_past_a_day(owner: int, db: Path) -> None:
+    import sqlite3
+
+    _ask(owner, "1", at=NOW - timedelta(hours=30))
+    _ask(owner, "2", at=NOW)
+    with sqlite3.connect(db) as conn:
+        assert [r[0] for r in conn.execute("SELECT message_ref FROM chat_asks")] == ["2"]

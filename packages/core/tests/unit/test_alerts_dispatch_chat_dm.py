@@ -10,6 +10,7 @@ import pytest
 
 from openexecutive.alerts import dispatcher
 from openexecutive.alerts.models import PRIVATE_ALERT_TAG, Alert
+from openexecutive.people import channel as people_channel
 from openexecutive.people import store as people_store
 from openexecutive.scheduler import runner
 from openexecutive.scheduler.runner import PrincipalDelivery
@@ -37,6 +38,7 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, str, bool]]:
     monkeypatch.setattr(runner, "deliver_to_person", deliver)
     monkeypatch.setattr(people_store, "find_principal_person", lambda: OWNER)
     monkeypatch.setattr(people_store, "get_person", lambda pid: {1: OWNER, 2: BEN}.get(pid))
+    monkeypatch.setattr(people_channel, "is_within_availability", lambda person, **kw: True)
     return calls
 
 
@@ -62,3 +64,18 @@ def test_nothing_sent_is_not_delivered(monkeypatch: pytest.MonkeyPatch, sent: li
 
     monkeypatch.setattr(runner, "deliver_to_person", none)
     assert asyncio.run(dispatcher.dispatch_slack_dm(_alert("urgent"))) is False
+
+
+def test_quiet_hours_hold_a_high_alert_but_let_an_urgent_one_through(
+    monkeypatch: pytest.MonkeyPatch, sent: list[Any],
+) -> None:
+    asked: list[bool] = []
+
+    def quiet(person: Any, *, now: Any, quiet_hours: bool = False, urgent: bool = False) -> bool:
+        asked.append(urgent)
+        return urgent
+
+    monkeypatch.setattr(people_channel, "is_within_availability", quiet)
+    assert asyncio.run(dispatcher.dispatch_slack_dm(_alert("high"))) is False
+    assert asyncio.run(dispatcher.dispatch_slack_dm(_alert("urgent"))) is True
+    assert asked == [False, True] and len(sent) == 1
