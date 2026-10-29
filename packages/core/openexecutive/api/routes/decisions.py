@@ -1008,11 +1008,16 @@ async def resolve_in_chat(instance_id: int, person: Any, *, approve: bool) -> De
     from openexecutive.delegation.action_cards import approve as approve_actions
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.verified import ChatTap
+    from openexecutive.integrations.channel_cards import card_text
     from openexecutive.people.store import find_principal_person
 
     instance = get_decision_instance(instance_id)
     if instance is None or not shown_in_chat(instance) or person.id is None:
         raise HTTPException(status_code=404, detail="This card is no longer there.")
+    if instance.status == STATUS_PROPOSED and approve and card_text(instance.id) is None:
+        # Not one a chat can show whole (``channel_cards.CARD_MAX``): what a
+        # tap would send or do is more than any chat card showed.
+        raise HTTPException(status_code=409, detail="This one is too long to approve here. Open it in the app.")
     spec = _spec_for(instance)
     principal = find_principal_person()
     is_principal = principal is not None and principal.id == person.id

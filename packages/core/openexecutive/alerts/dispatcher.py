@@ -50,7 +50,7 @@ async def dispatch_slack_dm(alert: Alert) -> bool:
     (``people.reach``; ``scheduler.runner.deliver_to_person``, chat apps
     only). The channel keeps its old name, ``slack_dm``, in stored
     preferences."""
-    from openexecutive.alerts.models import PRIVATE_ALERT_TAG, SEVERITY_RANK
+    from openexecutive.alerts.models import SEVERITY_RANK, is_private_alert
     from openexecutive.people.store import find_principal_person, get_person
     from openexecutive.scheduler.runner import deliver_to_person
 
@@ -59,7 +59,7 @@ async def dispatch_slack_dm(alert: Alert) -> bool:
     try:
         principal = find_principal_person()
         person = get_person(alert.routed_to_person_id) if alert.routed_to_person_id is not None else None
-        if person is None or person.archived or PRIVATE_ALERT_TAG in (alert.topic_tags or []):
+        if person is None or person.archived or is_private_alert(alert):
             person = principal
         if person is None:
             return False

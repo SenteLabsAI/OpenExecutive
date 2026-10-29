@@ -8690,7 +8690,10 @@ integrations:
     conversation of its own person once (``chat_card_pushes``), after two
     minutes and within a day, to the approver's first chat app that proves
     taps (``chat_for``), outside quiet hours, five a person a pass; a failed
-    send is not retried; audit ``chat_card_sent``.
+    send is not retried; audit ``chat_card_sent``. A reply, Take the lead or
+    department card is shown whole (the whole draft, every field of the held
+    call) or not at all: over CARD_MAX (1800) it is neither pushed nor
+    approvable from a chat.
 
     Chat messages asking the principal. ``slack_bot.note_chat_ask`` runs on
     every Slack channel message the bot receives: a mention of the

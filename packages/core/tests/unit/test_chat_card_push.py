@@ -173,14 +173,14 @@ def test_a_take_the_lead_card_is_done_as_it_stands(owner: int, monkeypatch: pyte
     monkeypatch.setattr(take_the_lead, "carry_out", carry_out)
     payload = {"tool": "send_slack_dm", "input": {"text": "hi"}, "summary": "Message Ben: hi", "reason": "it's new"}
     card = _card("take_the_lead_action", payload, owner)
-    assert channel_cards.card_text(card) == "Waiting for your OK\nMessage Ben: hi\nIt waited because it's new."
+    assert channel_cards.card_text(card) == "Waiting for your OK\nMessage Ben: hi\nIt waited because it's new.\n\ntext: hi"
     assert asyncio.run(channel_cards.resolve(card, get_person(owner), approve=True)) == "Approved."
     assert done == [(payload, True)]
     assert get_decision_instance(card).status == decision_ledger.STATUS_APPROVED_UNCHANGED
 
 
 def test_a_skipped_card_does_nothing(owner: int) -> None:
-    card = _card("take_the_lead_action", {"tool": "x", "summary": "Do x"}, owner)
+    card = _card("take_the_lead_action", {"tool": "x", "summary": "Do x", "input": {}}, owner)
     assert asyncio.run(channel_cards.resolve(card, get_person(owner), approve=False)) == "Skipped."
     assert get_decision_instance(card).status == decision_ledger.STATUS_REJECTED
 
@@ -208,6 +208,7 @@ def test_a_department_card_reaches_its_approver_though_made_on_the_askers_turn(
 ) -> None:
     card = _card("department_action", {
         "tool": "send_email", "summary": "Email the vendor", "requested_by": "Ben Teammate", "reason": "it's money",
+        "input": {"to": "vendor@example.com", "body": "Please send the invoice."},
     }, owner, session="ben-chat")
     assert asyncio.run(channel_cards.push_waiting(NOW)) == 1
     assert pushed[0][1] == card
@@ -268,3 +269,35 @@ def test_resolve_refuses_a_card_class_a_chat_cant_show(owner: int) -> None:
     card = _card("something_else", {}, owner)
     with pytest.raises(HTTPException):
         asyncio.run(resolve_in_chat(card, get_person(owner), approve=True))
+
+
+def test_a_card_too_long_to_show_whole_is_neither_sent_nor_approved_from_chat(
+    owner: int, pushed: list[Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def send(instance: Any, **kw: Any) -> str:
+        raise AssertionError("must not send what the card never showed")
+
+    monkeypatch.setattr(reply_send, "send_approved_reply", send)
+    payload = {
+        "private": True, "person_id": owner, "from_name": "Dana", "draft_to": ["dana@northpeak.example"],
+        "draft_subject": "Re: Pilot dates", "draft_body": "Fine. " + "x" * channel_cards.CARD_MAX,
+    }
+    card = _card("delegation_reply", payload, owner)
+    assert channel_cards.card_text(card) is None
+    assert asyncio.run(channel_cards.push_waiting(NOW)) == 0
+    line = asyncio.run(channel_cards.resolve(card, get_person(owner), approve=True))
+    assert line == "Not done: This one is too long to approve here. Open it in the app."
+    # Skip still works.
+    assert asyncio.run(channel_cards.resolve(card, get_person(owner), approve=False)) == "Skipped."
+
+
+def test_a_held_action_card_shows_every_field_it_would_send(owner: int) -> None:
+    card = _card("take_the_lead_action", {
+        "tool": "send_email", "summary": "Email Dana: Quick note...",
+        "input": {"to": "dana@northpeak.example", "bcc": ["x@evil.example"], "body": "Quick note. And more."},
+    }, owner)
+    text = channel_cards.card_text(card)
+    assert text is not None
+    assert 'bcc: ["x@evil.example"]' in text and "body: Quick note. And more." in text
+    # No call stored: not shown.
+    assert channel_cards.card_text(_card("take_the_lead_action", {"tool": "x", "summary": "Do x"}, owner)) is None

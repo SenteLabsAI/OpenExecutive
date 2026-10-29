@@ -68,7 +68,12 @@ _CLASS_LABEL = {
 # they aren't Approve and Approved.
 _APPROVE_LABEL = {"delegation_reply": "Send", "delegation_invite": "Accept"}
 _DONE_TEXT = {"delegation_reply": "Sent.", "delegation_invite": "Accepted."}
-_BODY_MAX = 1200
+# A card waiting outside any chat is shown whole or not at all: its tap
+# sends or does exactly what is stored, so a card cut short would approve
+# what it never showed. This fits every chat app's message (Discord's 2000
+# is the smallest).
+CARD_MAX = 1800
+_WHOLE_CLASSES = frozenset({"delegation_reply", "take_the_lead_action", "department_action"})
 
 
 def telegram_proves_taps() -> bool:
@@ -182,7 +187,7 @@ def card_text(decision_id: int) -> str | None:
         body = str(payload.get("draft_body") or "").strip()
         if body:
             lines.append("")
-            lines.append(body[:_BODY_MAX] + ("..." if len(body) > _BODY_MAX else ""))
+            lines.append(body)
     elif instance.decision_class == "delegation_invite":
         lines.append(str(payload.get("title") or "Meeting").strip()[:200])
         when = _when(payload.get("start"), payload.get("end"))
@@ -200,6 +205,14 @@ def card_text(decision_id: int) -> str | None:
         reason = str(payload.get("reason") or "").strip()[:300]
         if reason:
             lines.append(f"It waited because {reason}.".replace("..", "."))
+        # Everything the call says, as the web card shows it before Approve.
+        tool_input = payload.get("input")
+        if not isinstance(tool_input, dict):
+            return None
+        lines.append("")
+        for key, value in tool_input.items():
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+            lines.append(f"{key}: {text}")
     elif instance.decision_class == "app_action":
         # Written by the server from the change itself (workflow_change.card_text).
         # Never cut: workflow_change stages only a card that fits.
@@ -211,7 +224,11 @@ def card_text(decision_id: int) -> str | None:
         for action in payload.get("actions") or []:
             if isinstance(action, dict) and action.get("summary"):
                 lines.append(f"- {str(action['summary'])[:400]}")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if instance.decision_class in _WHOLE_CLASSES and len(text) > CARD_MAX:
+        # Too long to show whole: it waits in the app instead.
+        return None
+    return text
 
 
 def card_buttons(decision_id: int) -> tuple[str, str]:
