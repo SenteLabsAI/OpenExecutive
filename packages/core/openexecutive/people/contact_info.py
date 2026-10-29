@@ -27,9 +27,15 @@ SOCIAL_HOSTS = frozenset({
 })
 LINKEDIN_HOSTS = frozenset({"linkedin.com"})
 
-# A label written before a number ("c: 256 555 0100", "Direct: (803) 555-0101",
-# "Tel. +44 20 7946 0000"): dropped, the number kept.
-_PHONE_LABEL = re.compile(r"^[^\W\d_]{1,12}(?:\s+[^\W\d_]{1,12})?\s*[:.\-]\s*(?=[+(\d])", re.UNICODE)
+# A phone label written before a number ("c: 256 555 0100", "Direct: (803)
+# 555-0101", "Tel. +44 20 7946 0000"): dropped, the number kept. Only these
+# words: "Fax:" or "Invoice-" is not a phone.
+_PHONE_LABEL = re.compile(
+    r"^(?:(?:office|mobile|cell|direct|work|main|desk)\s+)?"
+    r"(?:c|m|o|t|p|d|w|tel|telephone|phone|ph|mobile|mob|cell|direct|dir|office|work|main|desk|line)"
+    r"\s*[:.\-]\s*(?=[+(\d])",
+    re.IGNORECASE,
+)
 _PHONE_OK = re.compile(r"^\+?[\d\s().\-/]+(?:\s*(?:x|ext\.?)\s*\d{1,6})?$", re.IGNORECASE)
 _HOST = re.compile(r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 _PATH = re.compile(r"/[\w\-./~%@]*")

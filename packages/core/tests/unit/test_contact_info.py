@@ -71,4 +71,7 @@ def test_a_labelled_phone_keeps_the_number() -> None:
     assert clean_phone("c: 256-555-0165") == "256-555-0165"
     assert clean_phone("Direct: (803) 555-0101") == "(803) 555-0101"
     assert clean_phone("Tel. +44 20 7946 0000") == "+44 20 7946 0000"
+    assert clean_phone("Office Phone: 555 010 0100") == "555 010 0100"
     assert clean_phone("Call me now") == ""
+    assert clean_phone("Fax: 555 010 0199") == ""
+    assert clean_phone("Invoice-20240115") == ""
