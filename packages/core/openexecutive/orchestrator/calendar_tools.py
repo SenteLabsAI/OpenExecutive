@@ -19,7 +19,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -92,7 +92,10 @@ CREATE_CALENDAR_EVENT_TOOL: dict[str, Any] = {
             "attendee_person_ids": {
                 "type": "array",
                 "items": {"type": "integer"},
-                "description": "Person IDs (from lookup_person) of all attendees. Max 7 plus the organizer.",
+                "description": (
+                    "Person IDs (from lookup_person) of all attendees. Max 7 plus the organizer. "
+                    "For a meeting with the principal alone, pass [] with include_principal true."
+                ),
             },
             "description": {
                 "type": "string",
@@ -205,16 +208,96 @@ CALENDAR_TOOLS: list[dict[str, Any]] = [
 # Maps the calendar tool names to the integration flag checked by the tool filter.
 CALENDAR_TOOL_INTEGRATION = "calendar"
 
+# A connected calendar's own create tool books a meeting at once, with no
+# card. A new meeting with people the model asks for goes through
+# create_calendar_event instead, so the approval settings decide every time
+# (a card, or booked at once), whichever tool the model reached for.
+_RAW_CREATE_TOOLS = frozenset({
+    "google_workspace__manage_event",
+    "microsoft_365__create_calendar_event",
+    "microsoft_365__create_specific_calendar_event",
+})
+RAW_BOOKING_REFUSAL = (
+    "Book a new meeting with people through create_calendar_event (person ids "
+    "from lookup_person), not the calendar's own tool: it follows the approval "
+    "settings and puts up the card when one is needed. Call it now."
+)
+
+
+def _has_attendees(value: Any) -> bool:
+    """Whether ``value`` (a call's arguments) names an attendee anywhere."""
+    if isinstance(value, dict):
+        return any(
+            (str(k).lower() == "attendees" and bool(v)) or _has_attendees(v)
+            for k, v in value.items()
+        )
+    if isinstance(value, list):
+        return any(_has_attendees(v) for v in value)
+    return False
+
+
+def raw_booking_refusal(tool_input: Any) -> str | None:
+    """The refusal for a model's raw create-event call that invites people
+    while create_calendar_event is on, else None. Only for a turn that offers
+    create_calendar_event (``typed_booking_only``)."""
+    if not isinstance(tool_input, dict):
+        return None
+    name = str(tool_input.get("name") or "").replace("-", "_")
+    if name not in _RAW_CREATE_TOOLS:
+        return None
+    arguments = tool_input.get("arguments")
+    if not isinstance(arguments, dict) or not _has_attendees(arguments):
+        return None
+    if name == "google_workspace__manage_event" and str(arguments.get("action") or "").strip().lower() != "create":
+        return None
+    try:
+        from openexecutive.config import get_settings
+
+        if not get_settings().calendar_booking_enabled:
+            return None
+    except Exception:
+        return None
+    return json.dumps({"error": RAW_BOOKING_REFUSAL})
+
+
+def typed_booking_only(offered: bool, call_tool: Any) -> Any:
+    """Wrap the model's ``call_tool``: on a turn that offers
+    create_calendar_event, a raw booking with people is sent back to it
+    (``raw_booking_refusal``). Elsewhere ``call_tool`` as it is."""
+    if not offered:
+        return call_tool
+
+    async def wrapped(tool_input: dict[str, Any]) -> str:
+        refused = raw_booking_refusal(tool_input)
+        if refused is not None:
+            return refused
+        return await call_tool(tool_input)
+
+    return wrapped
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _local_tz() -> tzinfo:
+    """The company's time zone (Settings), UTC when it can't be read."""
+    try:
+        from openexecutive.memory.workspace_settings import get_user_timezone
+
+        return get_user_timezone()
+    except Exception:
+        return UTC
+
+
 def _parse_iso(raw: str) -> datetime | None:
-    """Parse an ISO 8601 string; return None on failure."""
+    """Parse an ISO 8601 string; return None on failure. A time with no
+    offset ("2026-11-05T14:00") is the company's local time, as the person
+    said it, never UTC."""
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
+            dt = dt.replace(tzinfo=_local_tz())
         return dt.astimezone(UTC)
     except (ValueError, AttributeError):
         return None
@@ -227,12 +310,15 @@ def is_business_day(day: date) -> bool:
 
 
 def _check_business_hours(dt: datetime, start_hhmm: str, end_hhmm: str) -> bool:
-    """Return True if dt falls within business hours (single-tz, v1 limitation)."""
+    """Return True if dt falls within business hours, read on the clock of
+    the company's time zone (Settings): 2 PM in New York is 2 PM, not 19:00."""
     try:
         sh, sm = (int(x) for x in start_hhmm.split(":"))
         eh, em = (int(x) for x in end_hhmm.split(":"))
     except (ValueError, AttributeError):
         return True  # misconfigured cap → don't block
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_local_tz())
     if not is_business_day(dt.date()):
         return False
     t_minutes = dt.hour * 60 + dt.minute
@@ -266,7 +352,12 @@ def _resolve_attendees(
     from openexecutive.people.store import list_people
 
     if not attendee_person_ids:
-        return {"error": "attendee_person_ids must not be empty"}
+        # A meeting with the principal alone ("put 30 minutes with me on
+        # Friday") names nobody else: book them, as they asked.
+        principal = _principal_id() if include_principal else None
+        if principal is None:
+            return {"error": "attendee_person_ids must not be empty"}
+        attendee_person_ids = [principal]
     if len(attendee_person_ids) > max_attendees:
         return {"error": f"too many attendees (max {max_attendees})"}
 
@@ -674,7 +765,7 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
             "error": f"start is more than {settings.calendar_horizon_days} days out",
         })
 
-    # 5. Cap: business hours / weekday (single-tz v1 — TODO: per-person timezone).
+    # 5. Cap: business hours / weekday, in the company's time zone.
     if not _check_business_hours(start, settings.calendar_business_hours_start,
                                  settings.calendar_business_hours_end):
         return json.dumps({

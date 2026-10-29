@@ -1076,3 +1076,107 @@ def test_a_proposal_says_where_its_card_is() -> None:
     assert "right here in the chat" in r["message"]
     assert again["status"] == "already_proposed" and again["approve_here"] is True
     assert again["decision_instance_id"] == r["decision_instance_id"]
+
+
+# ---------------------------------------------------------------------------
+# Business hours on the company's clock, owner-only meetings, raw bookings
+# ---------------------------------------------------------------------------
+
+def _new_york(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zoneinfo import ZoneInfo
+
+    from openexecutive.orchestrator import calendar_tools
+
+    monkeypatch.setattr(calendar_tools, "_local_tz", lambda: ZoneInfo("America/New_York"))
+
+
+def _weekday(days_out: int = 3) -> datetime:
+    day = datetime.now(UTC) + timedelta(days=days_out)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
+
+
+def test_business_hours_are_read_on_the_company_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 2 PM in New York is 18:00 or 19:00 UTC: inside 09:00-18:00 there, not in UTC.
+    from zoneinfo import ZoneInfo
+
+    _new_york(monkeypatch)
+    _add_person("Alice", "alice@example.com")
+    day = _weekday().astimezone(ZoneInfo("America/New_York"))
+    start = day.replace(hour=14, minute=0, second=0, microsecond=0)
+    result = _call({
+        "title": "Sync", "start": _iso(start), "end": _iso(start + timedelta(minutes=30)),
+        "attendee_person_ids": [1], "confidence": 0.9,
+    })
+    assert result.get("status") == "proposed", result
+
+
+def test_a_time_without_a_zone_is_company_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import calendar_tools
+
+    _new_york(monkeypatch)
+    parsed = calendar_tools._parse_iso("2026-11-05T14:00:00")
+    assert parsed == datetime(2026, 11, 5, 19, 0, tzinfo=UTC)
+
+
+def test_early_morning_in_new_york_is_still_outside_hours(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zoneinfo import ZoneInfo
+
+    _new_york(monkeypatch)
+    _add_person("Alice", "alice@example.com")
+    start = _weekday().astimezone(ZoneInfo("America/New_York")).replace(hour=7, minute=0, second=0, microsecond=0)
+    result = _call({
+        "title": "Sync", "start": _iso(start), "end": _iso(start + timedelta(minutes=30)),
+        "attendee_person_ids": [1], "confidence": 0.9,
+    })
+    assert "outside business hours" in result.get("error", "")
+
+
+def test_a_meeting_with_the_principal_alone() -> None:
+    _add_person("John", "john@example.com", is_principal=True)
+    result = _call({
+        "title": "Focus", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+        "attendee_person_ids": [], "include_principal": True, "confidence": 0.9,
+    })
+    assert result.get("status") == "proposed", result
+
+
+def test_no_attendees_without_the_principal_is_still_refused() -> None:
+    _add_person("John", "john@example.com", is_principal=True)
+    result = _call({
+        "title": "Focus", "start": _iso(FUTURE), "end": _iso(FUTURE_END),
+        "attendee_person_ids": [], "confidence": 0.9,
+    })
+    assert result.get("error") == "attendee_person_ids must not be empty"
+
+
+def test_a_raw_booking_with_people_goes_through_the_card_tool() -> None:
+    from openexecutive.orchestrator.calendar_tools import RAW_BOOKING_REFUSAL, typed_booking_only
+
+    calls: list[dict[str, Any]] = []
+
+    async def call_tool(tool_input: dict[str, Any]) -> str:
+        calls.append(tool_input)
+        return "ok"
+
+    create = {"name": "google_workspace__manage_event", "arguments": {
+        "action": "create", "summary": "Sync", "attendees": ["alice@example.com"],
+    }}
+    alone = {"name": "google_workspace__manage_event", "arguments": {"action": "create", "summary": "Focus"}}
+    delete = {"name": "google_workspace__manage_event", "arguments": {"action": "delete", "event_id": "e1"}}
+    outlook = {"name": "microsoft_365__create-calendar-event", "arguments": {
+        "body": {"subject": "Sync", "attendees": [{"emailAddress": {"address": "alice@example.com"}}]},
+    }}
+    with patch("openexecutive.config.get_settings", return_value=_settings()):
+        wrapped = typed_booking_only(True, call_tool)
+        refused = asyncio.run(wrapped(create))
+        assert json.loads(refused)["error"] == RAW_BOOKING_REFUSAL
+        assert json.loads(asyncio.run(wrapped(outlook)))["error"] == RAW_BOOKING_REFUSAL
+        assert asyncio.run(wrapped(alone)) == "ok"
+        assert asyncio.run(wrapped(delete)) == "ok"
+        # A turn without create_calendar_event keeps the calendar's own tool.
+        assert asyncio.run(typed_booking_only(False, call_tool)(create)) == "ok"
+    with patch("openexecutive.config.get_settings", return_value=_settings(calendar_booking_enabled=False)):
+        assert asyncio.run(typed_booking_only(True, call_tool)(create)) == "ok"
+    assert calls == [alone, delete, create, create]

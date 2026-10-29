@@ -80,6 +80,7 @@ from openexecutive.orchestrator.broadcast_tools import (
 from openexecutive.orchestrator.calendar_tools import (
     CALENDAR_TOOL_HANDLERS,
     CALENDAR_TOOLS,
+    typed_booking_only,
 )
 from openexecutive.orchestrator.content_trust import (
     principal_only_withheld,
@@ -2443,6 +2444,9 @@ class Executive:
         # Every tool the turn ran with its result: for the claim check, and
         # (``calls_out``) for the conversation review's record of the turn.
         turn_calls: list[tuple[str, str]] = calls_out if calls_out is not None else []
+        # What the after-reply check reads (claim_check): each call with what
+        # it was asked to do, since a result's first line rarely says it all.
+        claim_calls: list[tuple[str, str]] = []
         claim_checked = False
 
         for iteration in range(1, max_iterations + 1):
@@ -2484,6 +2488,10 @@ class Executive:
                 if t["name"] not in not_offered
             )
             client_tools = sorted(direct_tools, key=lambda t: t["name"])
+            booking_offered = any(
+                isinstance(t, dict) and t.get("name") == "create_calendar_event"
+                for t in [*direct_tools, *deferred_tools]
+            )
             tools_with_cache: list[dict[str, Any]] = [
                 *client_tools[:-1],
                 {**client_tools[-1], "cache_control": {"type": "ephemeral", "ttl": "1h"}},
@@ -2603,7 +2611,7 @@ class Executive:
                     str(b.get("text", "")) for b in response_content if b.get("type") == "text"
                 )
                 claim = await claim_check.unbacked_claim(
-                    claim_check.last_person_message(messages), reply_text, turn_calls,
+                    claim_check.last_person_message(messages), reply_text, claim_calls,
                 )
                 if claim is None:
                     return
@@ -3245,7 +3253,7 @@ class Executive:
             if mcp_tool_uses and self._mcp_gateway is not None:
                 # A teammate's mail with the Executive stays theirs: every
                 # mailbox read the model makes is filtered (teammate_mail).
-                guarded_call_tool = guard_call_tool(
+                guarded_call_tool = typed_booking_only(booking_offered, guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
                     else department_gate.gated_call_tool(
@@ -3253,7 +3261,7 @@ class Executive:
                     )
                     if seat is not None
                     else self._mcp_gateway.call_tool
-                )
+                ))
                 _mcp_dispatch = {
                     "search_tools": self._mcp_gateway.search_tools,
                     # A replay (memory.replay) makes the reads and records the rest.
@@ -3372,7 +3380,7 @@ class Executive:
                 # matters: the gateway's own gates (discovery, deny-list,
                 # recipients), Take the lead's gate on an unattended run, and
                 # the same chip and audit row, as each call happens.
-                script_call = guard_call_tool(
+                script_call = typed_booking_only(booking_offered, guard_call_tool(
                     take_the_lead.gated_call_tool(self._mcp_gateway.call_tool, source="scheduled")
                     if leading
                     else department_gate.gated_call_tool(
@@ -3380,7 +3388,7 @@ class Executive:
                     )
                     if seat is not None
                     else self._mcp_gateway.call_tool
-                )
+                ))
                 # The Executive's own tools a script may call this turn: the
                 # fixed list, less any this turn is not offered. Each runs
                 # through the turn's handler (Take the lead's gate included).
@@ -3739,6 +3747,9 @@ class Executive:
             tool_results: list[dict[str, Any]] = []
             for tu in tool_uses:
                 turn_calls.append((tu["name"], str(results_by_id.get(tu["id"], ""))))
+                claim_calls.append(
+                    (claim_check.call_label(tu["name"], tu["input"]), str(results_by_id.get(tu["id"], "")))
+                )
             for tu in tool_uses:
                 content = reading_budget.cap(
                     tu["name"],

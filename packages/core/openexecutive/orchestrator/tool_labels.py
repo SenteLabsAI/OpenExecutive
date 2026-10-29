@@ -31,9 +31,9 @@ from openexecutive.memory.drive_reads import parse_content_result
 # servers do not reuse a name for different things.
 _LABELS: dict[str, tuple[str, str]] = {
     # Mail
-    "search_gmail_messages": ("Searched your mail", "Searching your mail"),
-    "list_mail_messages": ("Searched your mail", "Searching your mail"),
-    "list_mail_folder_messages": ("Searched your mail", "Searching your mail"),
+    "search_gmail_messages": ("Searched my inbox", "Searching my inbox"),
+    "list_mail_messages": ("Searched my inbox", "Searching my inbox"),
+    "list_mail_folder_messages": ("Searched my inbox", "Searching my inbox"),
     "get_gmail_message_content": ("Read an email", "Reading an email"),
     "get_gmail_messages_content_batch": ("Read an email", "Reading an email"),
     "get_gmail_thread_content": ("Read an email", "Reading an email"),
@@ -57,7 +57,7 @@ _LABELS: dict[str, tuple[str, str]] = {
     "update_mail_message": ("Updated an email", "Updating an email"),
     "delete_mail_message": ("Deleted an email", "Deleting an email"),
     "modify_gmail_message_labels": ("Labeled an email", "Labeling an email"),
-    "list_gmail_labels": ("Checked your mail labels", "Checking your mail labels"),
+    "list_gmail_labels": ("Checked my mail labels", "Checking my mail labels"),
     # Files
     "search_drive_files": ("Searched Drive", "Searching Drive"),
     "list_drive_items": ("Searched Drive", "Searching Drive"),
@@ -73,27 +73,27 @@ _LABELS: dict[str, tuple[str, str]] = {
     "move_rename_onedrive_item": ("Moved a file", "Moving a file"),
     "share_drive_item": ("Shared a file", "Sharing a file"),
     # Docs and sheets
-    "search_docs": ("Searched your docs", "Searching your docs"),
+    "search_docs": ("Searched my docs", "Searching my docs"),
     "get_doc_content": ("Read a doc", "Reading a doc"),
     "create_doc": ("Created a doc", "Creating a doc"),
     "modify_doc_text": ("Edited a doc", "Editing a doc"),
     "read_sheet_values": ("Read a spreadsheet", "Reading a spreadsheet"),
     "get_spreadsheet_info": ("Read a spreadsheet", "Reading a spreadsheet"),
-    "list_spreadsheets": ("Searched your spreadsheets", "Searching your spreadsheets"),
+    "list_spreadsheets": ("Searched my spreadsheets", "Searching my spreadsheets"),
     "modify_sheet_values": ("Updated a spreadsheet", "Updating a spreadsheet"),
     "create_spreadsheet": ("Created a spreadsheet", "Creating a spreadsheet"),
     # Calendar
-    "list_calendars": ("Checked your calendar", "Checking your calendar"),
-    "get_events": ("Checked your calendar", "Checking your calendar"),
-    "list_calendar_events": ("Checked your calendar", "Checking your calendar"),
-    "get_calendar_event": ("Checked your calendar", "Checking your calendar"),
-    "get_calendar_view": ("Checked your calendar", "Checking your calendar"),
+    "list_calendars": ("Checked my calendar", "Checking my calendar"),
+    "get_events": ("Checked my calendar", "Checking my calendar"),
+    "list_calendar_events": ("Checked my calendar", "Checking my calendar"),
+    "get_calendar_event": ("Checked my calendar", "Checking my calendar"),
+    "get_calendar_view": ("Checked my calendar", "Checking my calendar"),
     "query_freebusy": ("Checked availability", "Checking availability"),
     "find_meeting_times": ("Checked availability", "Checking availability"),
-    "manage_event": ("Updated your calendar", "Updating your calendar"),
-    "create_calendar_event": ("Updated your calendar", "Updating your calendar"),
-    "update_calendar_event": ("Updated your calendar", "Updating your calendar"),
-    "update_specific_calendar_event": ("Updated your calendar", "Updating your calendar"),
+    "manage_event": ("Updated my calendar", "Updating my calendar"),
+    "create_calendar_event": ("Updated my calendar", "Updating my calendar"),
+    "update_calendar_event": ("Updated my calendar", "Updating my calendar"),
+    "update_specific_calendar_event": ("Updated my calendar", "Updating my calendar"),
     "delete_calendar_event": ("Removed a calendar event", "Removing a calendar event"),
     "accept_calendar_event": ("Answered an invite", "Answering an invite"),
     "decline_calendar_event": ("Answered an invite", "Answering an invite"),
@@ -179,7 +179,7 @@ def labels_for(raw_name: Any, arguments: Any = None) -> tuple[str, str]:
 
     `arguments` matters only for a tool whose action depends on them, such
     as Google's `manage_event`, which also deletes: a deletion must not read
-    as "Updated your calendar".
+    as "Updated my calendar".
     """
     if not isinstance(raw_name, str) or not raw_name.strip():
         return GENERIC_DONE, GENERIC_DOING

@@ -188,3 +188,19 @@ def test_the_turns_calls_reach_the_caller(monkeypatch: pytest.MonkeyPatch) -> No
                     {"list_open_loops": handler}):
         asyncio.run(_go())
     assert calls == [("list_open_loops", '{"loops": []}')]
+
+
+def test_the_check_sees_what_each_call_was_given() -> None:
+    # A sheet write's result says only "updated range A9:B10"; the row it
+    # moved and the formula it wrote are in what it was given.
+    label = claim_check.call_label("call_tool", {
+        "name": "google_workspace__modify_sheet_values",
+        "arguments": {"range_name": "A9:B10", "values": [["Supplies", 600], ["Total", "=SUM(B2:B9)"]]},
+    })
+    assert label.startswith("google_workspace__modify_sheet_values ")
+    assert "=SUM(B2:B9)" in label
+    assert claim_check.call_label("list_open_loops", {}) == "list_open_loops"
+    long = claim_check.call_label("note", {"text": "x" * 5000})
+    assert len(long) < claim_check.CALL_INPUT_CHARS + 40
+    rendered = claim_check.render_calls([(label, "Successfully updated range 'A9:B10'")])
+    assert "=SUM(B2:B9)" in rendered

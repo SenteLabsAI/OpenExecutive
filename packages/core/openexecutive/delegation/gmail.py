@@ -49,6 +49,9 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from email.message import EmailMessage, Message
@@ -1539,12 +1542,43 @@ def gmail_for(email: str) -> Any:
     return DelegateGmail(email)
 
 
+# One settings change asks for the mailbox's status several times over (the
+# dial's every step, then the page's new state), each a live call to the mail
+# service; inside ``status_memo`` the first answer is reused.
+_STATUS_MEMO: ContextVar[dict[str, GmailStatus] | None] = ContextVar("gmail_status_memo", default=None)
+
+
+@contextmanager
+def status_memo() -> Iterator[None]:
+    """Reuse each mailbox's status for the rest of this block (one request).
+    Nested blocks share the outer one's."""
+    if _STATUS_MEMO.get() is not None:
+        yield
+        return
+    token = _STATUS_MEMO.set({})
+    try:
+        yield
+    finally:
+        _STATUS_MEMO.reset(token)
+
+
 async def gmail_status(person_email: str | None, *, gmail: Any = None) -> GmailStatus:
     """Whether ``person_email``'s own mailbox can be used right now. Asks
-    the mail service which mailbox the credential opens. Never raises."""
+    the mail service which mailbox the credential opens (once per
+    ``status_memo`` block). Never raises."""
+    address = normalize_email(person_email)
+    memo = _STATUS_MEMO.get() if gmail is None else None
+    if memo is not None and address in memo:
+        return memo[address]
+    status = await _gmail_status(address, gmail=gmail)
+    if memo is not None:
+        memo[address] = status
+    return status
+
+
+async def _gmail_status(address: str, *, gmail: Any = None) -> GmailStatus:
     from openexecutive.config import get_settings
 
-    address = normalize_email(person_email)
     if not address:
         return "no_email"
     try:

@@ -54,6 +54,43 @@ CATEGORIES: dict[str, str] = {
 
 # Text past this is not read, so the item counts as unchecked.
 MAX_CHARS = 60_000
+EVIDENCE_CHARS = 160
+
+# Notes a connected Google app adds to its own results, telling the
+# assistant which tool to call next. They are the app's, not the content's,
+# and read like instructions to an AI, so the check would flag every read
+# that carries one. Only these exact lines are left out of what is checked;
+# the model still gets the whole result.
+_SERVER_NOTES = (
+    re.compile(
+        r"^ {2,3}Use get_gmail_attachment_content\(message_id='[A-Za-z0-9_-]*', "
+        r"attachment_id='[A-Za-z0-9_-]*', attachment_index=\d+\) to download$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        r"^ {2}Use download_chat_attachment\(message_id='[A-Za-z0-9_/.-]*', "
+        r"attachment_index=\d+\) to download$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        r"^💡 USAGE:\n"
+        r"  • Pass the Message IDs \*\*as a list\*\* to get_gmail_messages_content_batch\(\)\n"
+        r"    e\.g\. get_gmail_messages_content_batch\(message_ids=\[\.\.\.\]\)\n"
+        r"  • Pass the Thread IDs to get_gmail_thread_content\(\) \(single\) or "
+        r"get_gmail_threads_content_batch\(\) \(batch\)$",
+        re.MULTILINE,
+    ),
+)
+
+
+def without_server_notes(content: Any) -> Any:
+    """``content`` without a connected app's own next-step notes
+    (``_SERVER_NOTES``), for the check only. Anything else as it is."""
+    if not isinstance(content, str):
+        return content
+    for note in _SERVER_NOTES:
+        content = note.sub("", content)
+    return content
 # An attachment's image and document blocks go to the check as themselves,
 # bounded apart from its text: past either, the item counts as unchecked.
 MAX_MEDIA_BLOCKS = 5
@@ -89,6 +126,8 @@ friend", marketing, invoices, signatures or legal footers.
 - categories: which of these it tried (empty when steers_assistant is false).
 - items: when the content is a numbered list of entries ([1], [2], …), the \
 numbers of the entries that carry such text.
+- evidence: when steers_assistant is true, the few words (at most 12) of \
+the content that carry it, quoted exactly; empty otherwise.
 
 Say steers_assistant true only when the content clearly carries such text. \
 Ordinary mail, newsletters, marketing, invoices, documents and web pages are \
@@ -103,6 +142,7 @@ _SCAN_TOOL: dict[str, Any] = {
             "steers_assistant": {"type": "boolean"},
             "categories": {"type": "array", "items": {"type": "string", "enum": list(CATEGORIES)}},
             "items": {"type": "array", "items": {"type": "integer"}},
+            "evidence": {"type": "string"},
         },
         "required": ["steers_assistant"],
     },
@@ -121,6 +161,10 @@ class Verdict:
     # budget (``TOO_BIG``): padding or a pile of reads is how content would
     # dodge the check, so Balanced holds it like a flag.
     too_big: bool = False
+    # The words the check said carry the flag, quoted from the content. Only
+    # logged (``outside_content._flag``), never shown to the model or the
+    # person, so staff can tell a false flag from a real one.
+    evidence: str = ""
     # From ``scan_list``: the flagged entries, numbered from 1. Empty when the
     # check flagged the list but didn't say which entry.
     items: tuple[int, ...] = ()
@@ -288,7 +332,8 @@ async def _scan(content: Any, *, model: str | None, entries: int) -> Verdict:
         n for n in (numbers if isinstance(numbers, list) else [])
         if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= entries
     }))
-    return _remember(key, Verdict(flagged=True, categories=categories, items=items))
+    evidence = " ".join(str(payload.get("evidence") or "").split())[:EVIDENCE_CHARS]
+    return _remember(key, Verdict(flagged=True, categories=categories, items=items, evidence=evidence))
 
 
 def reset() -> None:

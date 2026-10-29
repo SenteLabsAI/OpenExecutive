@@ -684,11 +684,56 @@ def test_only_a_go_defers_a_read(upserts: list[dict[str, Any]]) -> None:
     assert f"{session.session_id}|" not in oc._HELD
 
 
+def test_a_go_may_read_the_same_text_again(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+    # The go turn reads the very doc the held turn read (to find what to
+    # change) before making the held step: the same text holds nothing new.
+    from openexecutive.orchestrator import content_scan
+
+    async def clean(content: object, *, model: str | None = None) -> content_scan.Verdict:
+        return content_scan.CLEAN
+
+    monkeypatch.setattr(content_scan, "scan", clean)
+    session, gateway = Session(), _Gateway()
+    _held_contact_turn(session, gateway)
+    assert upserts == []
+    _run(
+        [ToolUseBlock("tu3", "call_tool", READ_DOC)],
+        [ToolUseBlock("tu4", "call_tool", READ_DOC)],
+        [ToolUseBlock("tu5", "upsert_person", CONTACT)],
+        gateway=gateway, session=session, message="go",
+    )
+    assert upserts == [CONTACT]
+
+
+def test_a_go_still_holds_after_new_text(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import content_scan
+
+    async def clean(content: object, *, model: str | None = None) -> content_scan.Verdict:
+        return content_scan.CLEAN
+
+    monkeypatch.setattr(content_scan, "scan", clean)
+    session, gateway = Session(), _Gateway()
+    _held_contact_turn(session, gateway)
+    other = {"name": "google_workspace__get_doc_content", "arguments": {"document_id": "d2"}}
+    async def call_tool(tool_input: dict[str, Any]) -> str:
+        gateway.calls.append(tool_input)
+        return json.dumps({"text": "something else"})
+
+    monkeypatch.setattr(gateway, "call_tool", call_tool)
+    _run(
+        [ToolUseBlock("tu3", "call_tool", READ_DOC)],
+        [ToolUseBlock("tu4", "call_tool", other)],
+        [ToolUseBlock("tu5", "upsert_person", CONTACT)],
+        gateway=gateway, session=session, message="go",
+    )
+    assert upserts == []
+
+
 def test_a_stale_hold_defers_nothing(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
     session, gateway = Session(), _Gateway()
     _held_contact_turn(session, gateway)
-    names, at = oc._HELD[f"{session.session_id}|"]
-    oc._HELD[f"{session.session_id}|"] = (names, at - oc.HELD_TTL_SECONDS - 1)
+    names, at, seen = oc._HELD[f"{session.session_id}|"]
+    oc._HELD[f"{session.session_id}|"] = (names, at - oc.HELD_TTL_SECONDS - 1, seen)
     state = oc.begin_turn(session, user_message="go")
     try:
         assert state.go_first == ()

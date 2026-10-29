@@ -173,8 +173,9 @@ GO_RE = re.compile(
 # conversations at most (oldest dropped first).
 HELD_TTL_SECONDS = 3600
 _HELD_MAX = 500
-# Held tool names, by conversation: (names, when held).
-_HELD: dict[str, tuple[tuple[str, ...], float]] = {}
+# Held tool names, by conversation: (names, when held, what the held turn
+# read and the check passed, by content hash: ``seen``).
+_HELD: dict[str, tuple[Any, ...]] = {}
 
 # Tools whose result is text from outside: a file on disk or the open web.
 _FETCH_TOOLS: dict[str, str] = {
@@ -236,6 +237,12 @@ class TurnOutside:
     # that reads defers its reads until those have been made (``defers_read``).
     go_first: tuple[str, ...] = ()
     go_first_done: bool = False
+    # Connected-app reads this turn the check didn't flag, by content hash
+    # (``mark_read``). Kept with what the turn held: on the go turn, reading
+    # the very same text again (finding the email it is to label) holds
+    # nothing the person didn't already say go to (``go_seen``).
+    seen: set[str] = field(default_factory=set)
+    go_seen: frozenset[str] = frozenset()
     # The owner's setting as it applies to this turn (``outside_mode.for_turn``).
     mode: str = "ask"
     # Google Drive ids checked this turn (``vet_reads``): the company's own,
@@ -309,6 +316,7 @@ def begin_turn(
             and GO_RE.match(user_message or "")
         ):
             state.go_first = stored[0]
+            state.go_seen = stored[2] if len(stored) > 2 else frozenset()
     _TURN.set(state)
     # Also on the session: the web chat route resumes the executive's
     # generator in a fresh task per step, each with a copy of the route's
@@ -342,7 +350,7 @@ def end_turn(state: TurnOutside) -> None:
         _HELD.pop(key, None)
         while len(_HELD) >= _HELD_MAX:
             _HELD.pop(next(iter(_HELD)))
-        _HELD[key] = (tuple(dict.fromkeys(state.held)), time.monotonic())
+        _HELD[key] = (tuple(dict.fromkeys(state.held)), time.monotonic(), frozenset(state.seen))
 
 
 def _held_key(session: Any, state: TurnOutside) -> str | None:
@@ -560,7 +568,9 @@ _ENTRY_TEXT = ("subject", "from")
 _LEFT_OUT = "(left out)"
 
 
-def _flag(state: TurnOutside, source: str, categories: tuple[str, ...], what: str = "") -> None:
+def _flag(
+    state: TurnOutside, source: str, categories: tuple[str, ...], what: str = "", evidence: str = "",
+) -> None:
     """Remember a flag for the person (``pending_flags``) and log it, with
     which item it was, so the person can find and check it."""
     from openexecutive.audit import log_event
@@ -572,6 +582,9 @@ def _flag(state: TurnOutside, source: str, categories: tuple[str, ...], what: st
         f"{_SOURCE_WORDS.get(source, 'Something I read')}{what} {describe(categories)}.",
         actor="executive",
         details={"source": source, "categories": list(categories), "item": what.strip()},
+        # The words the check pointed at, for staff to tell a false flag from
+        # a real one. Never shown to the model or in the chat.
+        full={"evidence": evidence} if evidence else None,
         # The owner's own mail is theirs alone, as every Act as me row is.
         private=source == MAIL,
         private_to_person=state.speaker if source == MAIL else None,
@@ -660,7 +673,7 @@ def _apply(state: TurnOutside, source: str, verdict: Any, *, warned: bool) -> No
     from openexecutive.orchestrator import outside_mode
 
     if verdict.flagged:
-        _flag(state, source, tuple(verdict.categories))
+        _flag(state, source, tuple(verdict.categories), evidence=getattr(verdict, "evidence", ""))
     if (
         state.mode == outside_mode.ASK
         or (state.mode == outside_mode.OUTSIDERS and verdict.holds)
@@ -1056,16 +1069,33 @@ async def mark_read(source: str, tool_input: Any, result: Any, gateway: Any = No
         and await from_the_team(tool_input, result, gateway)
     ):
         return ""
+    seen_key = _seen_key(result) if source == GATEWAY else None
+    if seen_key is not None and state.go_first and seen_key in state.go_seen:
+        # The same text the held turn read and the check passed: the person
+        # saw that reply and said go, so reading it again holds nothing new.
+        state.seen.add(seen_key)
+        return ""
     try:
-        verdict = await _check(state, result)
+        verdict = await _check(state, content_scan.without_server_notes(result))
     except Exception:
         verdict = content_scan.UNCHECKED
+    if seen_key is not None and not verdict.flagged and not verdict.unchecked:
+        state.seen.add(seen_key)
     _apply(state, source, verdict, warned=True)
     if verdict.flagged:
         return FLAG_NOTICE.format(what=content_scan.describe(verdict.categories))
     if verdict.unchecked and state.mode != outside_mode.ASK:
         return UNCHECKED_NOTICE
     return ""
+
+
+def _seen_key(result: Any) -> str | None:
+    """A read's content hash (``TurnOutside.seen``), or None."""
+    try:
+        text = result if isinstance(result, str) else json.dumps(result, sort_keys=True, default=str)
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    except Exception:
+        return None
 
 
 def trusted_turn() -> bool:

@@ -3607,6 +3607,48 @@ class PinnedToolsProbe:
     missing: tuple[str, ...] | None
 
 
+# A call that finds the connection to the child closed (it went away: an
+# out-of-memory kill, a crash, a restart of the machine's services) starts it
+# again once and is retried. Only these errors: they are raised when a
+# request is about to be sent, so the closed call never reached a server and
+# retrying it can't do anything twice.
+REVIVE_TIMEOUT_S = 120.0
+
+
+def _closed_connection(exc: BaseException) -> bool:
+    import anyio
+
+    return isinstance(exc, (anyio.ClosedResourceError, anyio.BrokenResourceError))
+
+
+async def _close_parts(session: Any, stdio_cm: Any) -> None:
+    """Tear down a dead session and its stdio pipes. Never raises."""
+    for part in (session, stdio_cm):
+        if part is None:
+            continue
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(part.__aexit__(None, None, None), timeout=10.0)
+
+
+class _RevivingSession:
+    """The gateway's session, for one caller: ``call_tool`` starts the child
+    again once and retries when the connection has closed
+    (``_closed_connection``)."""
+
+    def __init__(self, gateway: MCPGateway, session: Any) -> None:
+        self._gateway = gateway
+        self._session = session
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            return await self._session.call_tool(name, arguments)
+        except BaseException as exc:
+            if not _closed_connection(exc):
+                raise
+        self._session = await self._gateway._revive(self._session)
+        return await self._session.call_tool(name, arguments)
+
+
 class MCPGateway:
     """Proxies search_tools / call_tool / load_mcp_server to an extensible-mcp subprocess.
 
@@ -3621,6 +3663,10 @@ class MCPGateway:
     def __init__(self) -> None:
         self._session: Any = None
         self._stdio_cm: Any = None
+        # Kept from start() so a child that went away can be started again
+        # in place (``_revive``), with every holder of this gateway intact.
+        self._config_path: Path | None = None
+        self._revive_lock: asyncio.Lock | None = None
         # The servers the config named when this gateway started. The
         # Connected Systems prompt section reads it, so a gateway that never
         # started never reads as connected.
@@ -3681,6 +3727,7 @@ class MCPGateway:
             args=[*_EXTENSIBLE_MCP_LAUNCH_ARGS, "--config", str(config_path)],
             env=forwarded_env or None,
         )
+        self._config_path = config_path
         self._stdio_cm = stdio_client(params)
         read, write = await self._stdio_cm.__aenter__()
         self._session = ClientSession(read, write)
@@ -3702,7 +3749,24 @@ class MCPGateway:
     def _require_session(self) -> Any:
         if self._session is None:
             raise RuntimeError("MCPGateway.start() must be called before using the gateway")
-        return self._session
+        return _RevivingSession(self, self._session)
+
+    async def _revive(self, dead: Any) -> Any:
+        """Start the child again in place after its connection closed under
+        ``dead``, once for every call that found it closed. Returns the live
+        session (another call's revival, when it got there first)."""
+        if self._revive_lock is None:
+            self._revive_lock = asyncio.Lock()
+        async with self._revive_lock:
+            if self._session is not None and self._session is not dead:
+                return self._session
+            if self._config_path is None:
+                raise RuntimeError("MCPGateway.start() must be called before using the gateway")
+            logger.warning("MCPGateway: the connection to the tools closed; starting it again")
+            await _close_parts(self._session, self._stdio_cm)
+            self._session = self._stdio_cm = None
+            await asyncio.wait_for(self.start(self._config_path), timeout=REVIVE_TIMEOUT_S)
+            return self._session
 
     async def search_tools(self, tool_input: dict[str, Any]) -> str:
         session = self._require_session()

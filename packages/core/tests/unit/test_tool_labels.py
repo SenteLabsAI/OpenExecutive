@@ -15,10 +15,10 @@ from openexecutive.orchestrator.activity_labels import summarize_activity
     [
         ("google_workspace__search_drive_files", "Searched Drive", "Searching Drive"),
         ("google_workspace__get_drive_file_content", "Read a Drive file", "Reading a Drive file"),
-        ("google_workspace__search_gmail_messages", "Searched your mail", "Searching your mail"),
+        ("google_workspace__search_gmail_messages", "Searched my inbox", "Searching my inbox"),
         ("microsoft_365__get-mail-message", "Read an email", "Reading an email"),
-        ("microsoft_365__list-calendar-events", "Checked your calendar", "Checking your calendar"),
-        ("google_workspace__manage_event", "Updated your calendar", "Updating your calendar"),
+        ("microsoft_365__list-calendar-events", "Checked my calendar", "Checking my calendar"),
+        ("google_workspace__manage_event", "Updated my calendar", "Updating my calendar"),
     ],
 )
 def test_known_tools_read_in_plain_words(raw: str, done: str, doing: str) -> None:
@@ -149,5 +149,5 @@ def test_a_calendar_delete_through_manage_event_says_so() -> None:
     assert chip["summary"] == "Removed a calendar event"
     assert activity["label"] == "Removing a calendar event…"
     assert tool_labels.labels_for("google_workspace__manage_event", {"action": "update"})[0] == (
-        "Updated your calendar"
+        "Updated my calendar"
     )

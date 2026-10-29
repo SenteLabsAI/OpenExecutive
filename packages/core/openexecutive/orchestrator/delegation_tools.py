@@ -311,6 +311,15 @@ def _writer(tool_name: str = GHOSTWRITE_EMAIL) -> _Writer | str:
     return _Writer(pinned, person, email, mailbox if mailbox is not None else gmail_for(email))
 
 
+# For the model, beside why their mailbox can't be opened: a question about
+# new mail may still be answered from the Executive's own inbox.
+NOT_CONNECTED_NOTE = (
+    "Their own mailbox can't be read. If they asked about your inbox, or about "
+    "new email without saying whose, check your own inbox with your mail tools "
+    "and say it is your inbox you checked; tell them in one line how to connect theirs."
+)
+
+
 async def _open_mailbox(writer: _Writer) -> str | None:
     """Get the speaker's mailbox ready to read, or return why it can't be.
 
@@ -325,7 +334,7 @@ async def _open_mailbox(writer: _Writer) -> str | None:
         return _error("I couldn't keep this conversation private, so I didn't open your mailbox. Try again.")
     status = await gmail_status(writer.email, gmail=writer.mailbox)
     if status != "connected":
-        return _error(STATUS_MESSAGES[status], status=status)
+        return _error(STATUS_MESSAGES[status], status=status, note=NOT_CONNECTED_NOTE)
     return None
 
 

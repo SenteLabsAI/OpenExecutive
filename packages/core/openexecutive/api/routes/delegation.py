@@ -140,6 +140,7 @@ Every change writes a private audit row.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from dataclasses import asdict
 from typing import Any, Literal
@@ -753,6 +754,21 @@ def _team_out(person: Person) -> TeamOut | None:
     return TeamOut(enabled=team_members_switch(), members=members)
 
 
+def _one_status_check(route: Any) -> Any:
+    """Run ``route`` asking the mail service for each mailbox's status once
+    (``gmail.status_memo``): moving the dial up a few steps used to ask
+    again at every step and for every page state in between, each a live
+    call, which held the switch for many seconds."""
+    from openexecutive.delegation.gmail import status_memo
+
+    @functools.wraps(route)
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with status_memo():
+            return await route(*args, **kwargs)
+
+    return wrapped
+
+
 async def _state(person: Person) -> DelegationOut:
     status = await gmail_status(person.email)
     return DelegationOut(
@@ -875,6 +891,7 @@ async def get_delegation(request: Request) -> DelegationOut:
 
 
 @router.put("/delegation", response_model=DelegationOut)
+@_one_status_check
 async def update_delegation(request: Request, body: DelegationUpdate) -> DelegationOut:
     person = _caller(request)
     person_id = _person_id(person)
@@ -956,6 +973,7 @@ _CHECKS: set[asyncio.Task[Any]] = set()
 
 
 @router.put("/delegation/inbox", response_model=DelegationOut)
+@_one_status_check
 async def update_delegation_inbox(request: Request, body: InboxUpdate) -> DelegationOut:
     person = _caller(request)
     person_id = _person_id(person)
@@ -1611,6 +1629,7 @@ def reach_of(person_id: int) -> str:
 
 
 @router.put("/delegation/reach", response_model=DelegationOut)
+@_one_status_check
 async def update_delegation_reach(request: Request, body: ReachUpdate) -> DelegationOut:
     """Move the dial. Going down turns the higher switches off first, top
     down, and needs no signed sign-in. Going up turns each one on in order

@@ -8,8 +8,8 @@ its last reply is checked against the tool calls the turn made:
 1. A cheap word check (``CLAIM_RE``): a reply that claims no change ("Here are
    the numbers…") ends the turn as before, with no model call.
 2. Otherwise one small forced-tool call on ``ROUTING_MODEL`` reads the
-   person's message, the reply and the turn's tool calls (name and the start
-   of each result) and says whether the reply claims a change this turn that
+   person's message, the reply and the turn's tool calls (name, what each was
+   given, and the start of each result) and says whether the reply claims a change this turn that
    none of those calls made. A claim about an earlier turn, a plan for later
    that the reply doesn't present as set up, or a change a call did make (or
    put up for approval) is not one.
@@ -44,7 +44,10 @@ CLAIM_RE = re.compile(
 MAX_REPLY_CHARS = 3000
 MAX_MESSAGE_CHARS = 2000
 MAX_CALLS = 20
-CALL_RESULT_CHARS = 160
+CALL_RESULT_CHARS = 400
+# What each call was asked to do, shown next to its name: "moved the total
+# to row 10" is in what a sheet write was given, not in its one-line result.
+CALL_INPUT_CHARS = 600
 CLAIM_MAX_CHARS = 200
 _MAX_TOKENS = 300
 _TIMEOUT_S = 20.0
@@ -52,7 +55,9 @@ _TIMEOUT_S = 20.0
 _SYSTEM = (
     "You check an assistant's reply against what it actually did. You get the "
     "person's message, the assistant's reply, and every tool call the "
-    "assistant made while writing that reply, with the start of each result.\n\n"
+    "assistant made while writing that reply, with what each call was given "
+    "and the start of each result. What a call wrote (cells, rows, formulas, "
+    "text) is a change it made.\n\n"
     "Report an unbacked claim when the reply says or implies that it made a "
     "change during this reply (removed, closed, saved, scheduled, sent, "
     "updated, cancelled, set a reminder, will stop doing something, will "
@@ -100,6 +105,24 @@ def enabled() -> bool:
 def may_claim(reply: str) -> bool:
     """Whether the reply uses a word that can claim a change."""
     return bool(reply.strip()) and CLAIM_RE.search(reply) is not None
+
+
+def call_label(name: str, tool_input: Any) -> str:
+    """``name`` with what the call was given, for ``render_calls``. A
+    connected app's call is named by the tool it ran."""
+    import json
+
+    if name == "call_tool" and isinstance(tool_input, dict):
+        name = str(tool_input.get("name") or name)
+        tool_input = tool_input.get("arguments")
+    try:
+        given = json.dumps(tool_input, default=str, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        given = str(tool_input)
+    given = " ".join(given.split())
+    if len(given) > CALL_INPUT_CHARS:
+        given = given[:CALL_INPUT_CHARS] + "…"
+    return f"{name} {given}" if given not in ("", "null", "{}") else name
 
 
 def render_calls(calls: list[tuple[str, str]]) -> str:
