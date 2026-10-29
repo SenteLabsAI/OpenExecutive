@@ -4818,8 +4818,10 @@ people:
     Not covered: nudges on the email channel (the MCP mail tool bypasses the
     send handlers — routing still defers them for quiet hours, but they are
     never digest-held); department channel broadcasts (rooms, not a person);
-    alerts.dispatcher channels (web SSE, a self-addressed email, and a Slack
-    DM stub); Act as me approval cards (untagged, and approvals anyway).
+    alerts.dispatcher channels (web SSE and a self-addressed email; the
+    slack_dm channel sends a high or urgent alert through the send handlers
+    to its person's first chat app, people.reach order); Act as me approval
+    cards (untagged, and approvals anyway).
     Department check-ins send no DM: their proposals become approval cards.
   scope_tokens: |
     People can be queried by scope token via

@@ -39,11 +39,37 @@ async def dispatch_persisted(alert: Alert) -> bool:
     return True
 
 
+# The lowest severity sent to a chat app on its own; the rest wait on Home.
+_CHAT_DM_MIN_SEVERITY = "high"
+
+
 async def dispatch_slack_dm(alert: Alert) -> bool:
-    # Phase 2 — deferred. Currently a no-op; future implementation will reuse
-    # the Bolt client from integrations.slack_bot.
-    logger.info("dispatch_slack_dm: phase-2 stub, alert=%s", alert.id)
-    return False
+    """A high or urgent alert to its person's own chat app: the one it was
+    routed to, else the principal (always the principal for a private one),
+    on the first of their Slack, Discord or Telegram DMs that sends
+    (``people.reach``; ``scheduler.runner.deliver_to_person``, chat apps
+    only). The channel keeps its old name, ``slack_dm``, in stored
+    preferences."""
+    from openexecutive.alerts.models import PRIVATE_ALERT_TAG, SEVERITY_RANK
+    from openexecutive.people.store import find_principal_person, get_person
+    from openexecutive.scheduler.runner import deliver_to_person
+
+    if SEVERITY_RANK.get(str(alert.severity), 0) < SEVERITY_RANK[_CHAT_DM_MIN_SEVERITY]:
+        return False
+    try:
+        principal = find_principal_person()
+        person = get_person(alert.routed_to_person_id) if alert.routed_to_person_id is not None else None
+        if person is None or person.archived or PRIVATE_ALERT_TAG in (alert.topic_tags or []):
+            person = principal
+        if person is None:
+            return False
+        delivery = await deliver_to_person(person, _format_broadcast_body(alert), label="Alert", chat_only=True)
+    except Exception:
+        logger.exception("dispatch_slack_dm failed for alert=%s", alert.id)
+        return False
+    if not delivery.ok:
+        logger.info("dispatch_slack_dm: alert=%s not sent: %s", alert.id, delivery.detail)
+    return delivery.ok
 
 
 async def dispatch_email(alert: Alert) -> bool:
@@ -243,7 +269,7 @@ async def dispatch_company_broadcast(
 
 
 # Per-channel single-arg dispatchers — used for channels that need no
-# extra routing context (web, persisted, email, the slack_dm stub).
+# extra routing context (web, persisted, email, a chat DM).
 # The two broadcast channels are dispatched separately in dispatch_all
 # because they need the department_slug / broadcast_integration kwargs.
 _SIMPLE_DISPATCHERS = {
