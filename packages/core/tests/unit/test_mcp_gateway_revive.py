@@ -68,3 +68,30 @@ def test_any_other_failure_is_not_retried() -> None:
     with pytest.raises(RuntimeError):
         asyncio.run(gateway._require_session().call_tool("search_tools", {}))
     assert started == []
+
+
+def test_a_failed_revival_is_tried_again_by_the_next_call() -> None:
+    dead = _session(anyio.ClosedResourceError())
+    fresh = _session("found")
+    gateway, started = _gateway(dead, fresh)
+    attempts = {"n": 0}
+
+    async def start(config_path: Path) -> None:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise TimeoutError("slow start")
+        gateway._session = fresh
+
+    gateway.start = start  # type: ignore[method-assign]
+    with pytest.raises(TimeoutError):
+        asyncio.run(gateway._require_session().call_tool("search_tools", {}))
+    assert gateway._session is None
+    assert asyncio.run(gateway._require_session().call_tool("search_tools", {})) == "found"
+    assert attempts["n"] == 2
+
+
+def test_a_closed_gateway_is_not_started_again() -> None:
+    gateway, _ = _gateway(_session(), _session())
+    asyncio.run(gateway.close())
+    with pytest.raises(RuntimeError):
+        gateway._require_session()

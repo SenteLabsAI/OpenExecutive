@@ -3626,7 +3626,8 @@ async def _close_parts(session: Any, stdio_cm: Any) -> None:
     for part in (session, stdio_cm):
         if part is None:
             continue
-        with contextlib.suppress(BaseException):
+        # Not BaseException: a cancelled request must stop the revival too.
+        with contextlib.suppress(Exception):
             await asyncio.wait_for(part.__aexit__(None, None, None), timeout=10.0)
 
 
@@ -3640,11 +3641,12 @@ class _RevivingSession:
         self._session = session
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        try:
-            return await self._session.call_tool(name, arguments)
-        except BaseException as exc:
-            if not _closed_connection(exc):
-                raise
+        if self._session is not None:
+            try:
+                return await self._session.call_tool(name, arguments)
+            except BaseException as exc:
+                if not _closed_connection(exc):
+                    raise
         self._session = await self._gateway._revive(self._session)
         return await self._session.call_tool(name, arguments)
 
@@ -3745,10 +3747,13 @@ class MCPGateway:
                 await self._stdio_cm.__aexit__(None, None, None)
         self._session = None
         self._stdio_cm = None
+        # Closed on purpose (shutdown): no call starts it again.
+        self._config_path = None
 
     def _require_session(self) -> Any:
-        if self._session is None:
+        if self._session is None and self._config_path is None:
             raise RuntimeError("MCPGateway.start() must be called before using the gateway")
+        # None after a revival that failed: the next call tries it again.
         return _RevivingSession(self, self._session)
 
     async def _revive(self, dead: Any) -> Any:
@@ -3765,7 +3770,13 @@ class MCPGateway:
             logger.warning("MCPGateway: the connection to the tools closed; starting it again")
             await _close_parts(self._session, self._stdio_cm)
             self._session = self._stdio_cm = None
-            await asyncio.wait_for(self.start(self._config_path), timeout=REVIVE_TIMEOUT_S)
+            try:
+                await asyncio.wait_for(self.start(self._config_path), timeout=REVIVE_TIMEOUT_S)
+            except BaseException:
+                # Left with nothing half open, so the next call tries again.
+                await _close_parts(self._session, self._stdio_cm)
+                self._session = self._stdio_cm = None
+                raise
             return self._session
 
     async def search_tools(self, tool_input: dict[str, Any]) -> str:

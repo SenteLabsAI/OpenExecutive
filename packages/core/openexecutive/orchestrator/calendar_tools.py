@@ -228,7 +228,7 @@ def _has_attendees(value: Any) -> bool:
     """Whether ``value`` (a call's arguments) names an attendee anywhere."""
     if isinstance(value, dict):
         return any(
-            (str(k).lower() == "attendees" and bool(v)) or _has_attendees(v)
+            (str(k).lower().endswith("attendees") and bool(v)) or _has_attendees(v)
             for k, v in value.items()
         )
     if isinstance(value, list):
@@ -242,7 +242,7 @@ def raw_booking_refusal(tool_input: Any) -> str | None:
     create_calendar_event (``typed_booking_only``)."""
     if not isinstance(tool_input, dict):
         return None
-    name = str(tool_input.get("name") or "").replace("-", "_")
+    name = str(tool_input.get("name") or "").strip().lower().replace("-", "_")
     if name not in _RAW_CREATE_TOOLS:
         return None
     arguments = tool_input.get("arguments")
