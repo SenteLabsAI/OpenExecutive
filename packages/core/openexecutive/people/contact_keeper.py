@@ -92,6 +92,7 @@ MAX_RECIPIENTS = 25
 SENT_TO_READ = 300
 # Inbox mail read a run for who wrote to the principal (one fetch each).
 INBOX_TO_READ = 100
+# Mails from someone never written to before they are suggested.
 WROTE_MIN = 2
 ADDS_PER_RUN = 10
 SUGGESTIONS_PER_RUN = 5
