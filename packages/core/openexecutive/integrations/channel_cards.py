@@ -204,7 +204,7 @@ def card_text(decision_id: int) -> str | None:
         lines.append(str(payload.get("summary") or payload.get("tool") or "").strip()[:400])
         reason = str(payload.get("reason") or "").strip()[:300]
         if reason:
-            lines.append(f"It waited because {reason}.".replace("..", "."))
+            lines.append(f"It waited because {reason.removesuffix('.')}.")
         # Everything the call says, as the web card shows it before Approve.
         tool_input = payload.get("input")
         if not isinstance(tool_input, dict):
@@ -297,13 +297,18 @@ PUSH_WITHIN = timedelta(hours=24)
 SCAN_EVERY = timedelta(minutes=1)
 # At most this many cards to one person in a pass; the rest go on the next.
 PUSH_PER_PASS = 5
+# A send that fails (a rate limit, the chat app down) is tried again on the
+# next passes, this many times in all.
+SEND_TRIES = 3
 
 _TABLE = """
     CREATE TABLE IF NOT EXISTS chat_card_pushes (
         decision_id INTEGER PRIMARY KEY,
         person_id INTEGER NOT NULL,
         channel TEXT NOT NULL,
-        pushed_at TEXT NOT NULL
+        pushed_at TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'sending',
+        tries INTEGER NOT NULL DEFAULT 1
     )
 """
 
@@ -326,7 +331,8 @@ def _pushed(decision_ids: list[int], db_path: Path | None) -> set[int]:
     try:
         marks = ",".join("?" * len(decision_ids))
         rows = conn.execute(
-            f"SELECT decision_id FROM chat_card_pushes WHERE decision_id IN ({marks})", decision_ids,
+            f"SELECT decision_id FROM chat_card_pushes WHERE decision_id IN ({marks})"
+            " AND (state != 'failed' OR tries >= ?)", [*decision_ids, SEND_TRIES],
         ).fetchall()
     finally:
         conn.close()
@@ -334,15 +340,33 @@ def _pushed(decision_ids: list[int], db_path: Path | None) -> set[int]:
 
 
 def _mark_pushed(decision_id: int, person_id: int, channel: str, now: datetime, db_path: Path | None) -> bool:
-    """Claim the card for sending; False when it was claimed already."""
+    """Claim the card for a send: new, or failed fewer than ``SEND_TRIES``
+    times. False when it is sent, being sent, or out of tries."""
     conn = _connect(db_path)
     try:
         cur = conn.execute(
             "INSERT OR IGNORE INTO chat_card_pushes (decision_id, person_id, channel, pushed_at) VALUES (?,?,?,?)",
             (decision_id, person_id, channel, now.isoformat()),
         )
+        if cur.rowcount != 1:
+            cur = conn.execute(
+                "UPDATE chat_card_pushes SET state = 'sending', tries = tries + 1, person_id = ?, channel = ?,"
+                " pushed_at = ? WHERE decision_id = ? AND state = 'failed' AND tries < ?",
+                (person_id, channel, now.isoformat(), decision_id, SEND_TRIES),
+            )
         conn.commit()
         return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def _mark_sent(decision_id: int, sent: bool, db_path: Path | None) -> None:
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE chat_card_pushes SET state = ? WHERE decision_id = ?", ("sent" if sent else "failed", decision_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -443,7 +467,9 @@ async def push_waiting(now: datetime | None = None, *, db_path: Path | None = No
             await _send(channel, person, card.id, text, card_buttons(card.id))
         except Exception:
             logger.warning("channel_cards: couldn't send card %d to %s", card.id, channel, exc_info=True)
+            _settle(card.id, False, db_path)
             continue
+        _settle(card.id, True, db_path)
         sent += 1
         per_person[person.id] = per_person.get(person.id, 0) + 1
         try:
@@ -455,6 +481,13 @@ async def push_waiting(now: datetime | None = None, *, db_path: Path | None = No
         except Exception:
             logger.warning("channel_cards: couldn't audit card %d", card.id, exc_info=True)
     return sent
+
+
+def _settle(decision_id: int, sent: bool, db_path: Path | None) -> None:
+    try:
+        _mark_sent(decision_id, sent, db_path)
+    except Exception:
+        logger.warning("channel_cards: couldn't record card %d's send", decision_id, exc_info=True)
 
 
 def maybe_push(now: datetime) -> bool:

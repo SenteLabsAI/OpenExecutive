@@ -235,7 +235,23 @@ def test_quiet_hours_hold_it_until_they_end(owner: int, pushed: list[Any], monke
     assert asyncio.run(channel_cards.push_waiting(NOW)) == 1
 
 
-def test_a_failed_send_is_not_tried_again(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failed_send_is_tried_again_a_few_times(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    tries: list[int] = []
+
+    async def down(channel: str, person: Any, decision_id: int, text: str, labels: tuple[str, str]) -> None:
+        tries.append(decision_id)
+        if len(tries) < 2:
+            raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(channel_cards, "_send", down)
+    _reply(owner)
+    assert asyncio.run(channel_cards.push_waiting(NOW)) == 0
+    assert asyncio.run(channel_cards.push_waiting(NOW)) == 1
+    assert asyncio.run(channel_cards.push_waiting(NOW)) == 0
+    assert len(tries) == 2
+
+
+def test_a_send_that_keeps_failing_stops_after_its_tries(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
     tries: list[int] = []
 
     async def down(channel: str, person: Any, decision_id: int, text: str, labels: tuple[str, str]) -> None:
@@ -244,9 +260,19 @@ def test_a_failed_send_is_not_tried_again(owner: int, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(channel_cards, "_send", down)
     _reply(owner)
-    assert asyncio.run(channel_cards.push_waiting(NOW)) == 0
-    assert asyncio.run(channel_cards.push_waiting(NOW)) == 0
-    assert len(tries) == 1
+    for _ in range(channel_cards.SEND_TRIES + 2):
+        assert asyncio.run(channel_cards.push_waiting(NOW)) == 0
+    assert len(tries) == channel_cards.SEND_TRIES
+
+
+def test_the_reason_a_card_waited_is_shown_as_written(owner: int) -> None:
+    card = _card(
+        "take_the_lead_action",
+        {"summary": "Share the file", "tool": "share", "reason": "the path is ../shared.", "input": {"path": "x"}},
+        owner,
+    )
+    text = channel_cards.card_text(card)
+    assert text is not None and "It waited because the path is ../shared." in text
 
 
 def test_the_chat_app_is_the_first_one_that_proves_taps(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
