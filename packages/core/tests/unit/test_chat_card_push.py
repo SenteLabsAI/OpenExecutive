@@ -265,6 +265,15 @@ def test_a_send_that_keeps_failing_stops_after_its_tries(owner: int, monkeypatch
     assert len(tries) == channel_cards.SEND_TRIES
 
 
+def test_a_send_cut_off_midway_is_tried_again_later(owner: int, pushed: list[Any]) -> None:
+    card = _reply(owner)
+    # A restart between the claim and the send leaves it marked in progress.
+    assert channel_cards._mark_pushed(card, owner, "telegram", NOW, None)
+    assert asyncio.run(channel_cards.push_waiting(NOW + timedelta(minutes=1))) == 0
+    assert asyncio.run(channel_cards.push_waiting(NOW + channel_cards.SEND_STALE + timedelta(minutes=1))) == 1
+    assert [d for _, d, _, _ in pushed] == [card]
+
+
 def test_the_reason_a_card_waited_is_shown_as_written(owner: int) -> None:
     card = _card(
         "take_the_lead_action",

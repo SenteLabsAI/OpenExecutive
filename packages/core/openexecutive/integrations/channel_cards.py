@@ -300,6 +300,11 @@ PUSH_PER_PASS = 5
 # A send that fails (a rate limit, the chat app down) is tried again on the
 # next passes, this many times in all.
 SEND_TRIES = 3
+# A send still marked in progress after this long was cut off (a restart
+# mid-send) and counts as failed.
+SEND_STALE = timedelta(minutes=5)
+# The claims a pass may take again: failed, or cut off mid-send.
+_RETRYABLE = "(state = 'failed' OR (state = 'sending' AND pushed_at < ?)) AND tries < ?"
 
 _TABLE = """
     CREATE TABLE IF NOT EXISTS chat_card_pushes (
@@ -324,15 +329,15 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
     return conn
 
 
-def _pushed(decision_ids: list[int], db_path: Path | None) -> set[int]:
+def _pushed(decision_ids: list[int], now: datetime, db_path: Path | None) -> set[int]:
     if not decision_ids:
         return set()
     conn = _connect(db_path)
     try:
         marks = ",".join("?" * len(decision_ids))
         rows = conn.execute(
-            f"SELECT decision_id FROM chat_card_pushes WHERE decision_id IN ({marks})"
-            " AND (state != 'failed' OR tries >= ?)", [*decision_ids, SEND_TRIES],
+            f"SELECT decision_id FROM chat_card_pushes WHERE decision_id IN ({marks}) AND NOT ({_RETRYABLE})",
+            [*decision_ids, (now - SEND_STALE).isoformat(), SEND_TRIES],
         ).fetchall()
     finally:
         conn.close()
@@ -340,8 +345,8 @@ def _pushed(decision_ids: list[int], db_path: Path | None) -> set[int]:
 
 
 def _mark_pushed(decision_id: int, person_id: int, channel: str, now: datetime, db_path: Path | None) -> bool:
-    """Claim the card for a send: new, or failed fewer than ``SEND_TRIES``
-    times. False when it is sent, being sent, or out of tries."""
+    """Claim the card for a send: new, or failed (or cut off) fewer than
+    ``SEND_TRIES`` times. False when it is sent, being sent, or out of tries."""
     conn = _connect(db_path)
     try:
         cur = conn.execute(
@@ -351,8 +356,8 @@ def _mark_pushed(decision_id: int, person_id: int, channel: str, now: datetime, 
         if cur.rowcount != 1:
             cur = conn.execute(
                 "UPDATE chat_card_pushes SET state = 'sending', tries = tries + 1, person_id = ?, channel = ?,"
-                " pushed_at = ? WHERE decision_id = ? AND state = 'failed' AND tries < ?",
-                (person_id, channel, now.isoformat(), decision_id, SEND_TRIES),
+                f" pushed_at = ? WHERE decision_id = ? AND {_RETRYABLE}",
+                (person_id, channel, now.isoformat(), decision_id, (now - SEND_STALE).isoformat(), SEND_TRIES),
             )
         conn.commit()
         return cur.rowcount == 1
@@ -443,7 +448,7 @@ async def push_waiting(now: datetime | None = None, *, db_path: Path | None = No
     sent = 0
     try:
         cards = _waiting(now)
-        done = _pushed([c.id for c in cards], db_path)
+        done = _pushed([c.id for c in cards], now, db_path)
         principal = find_principal_person() if any(c.approver_person_id is None for c in cards) else None
     except Exception:
         logger.warning("channel_cards: couldn't read the waiting cards", exc_info=True)
