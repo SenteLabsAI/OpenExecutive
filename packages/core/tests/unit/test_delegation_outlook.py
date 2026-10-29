@@ -473,7 +473,7 @@ def test_list_sent_reads_sent_items_as_sent() -> None:
     graph.listing = [_msg("s1", sender=EMAIL, parentFolderId=SENT_FOLDER)]
     sent = asyncio.run(graph.client().list_sent(500))
     assert [m.labels for m in sent] == [["SENT"]]
-    assert graph.graph_calls()[-1].url.params["$top"] == "100"
+    assert graph.graph_calls()[-1].url.params["$top"] == "300"
 
 
 def test_there_is_no_signature_to_read() -> None:

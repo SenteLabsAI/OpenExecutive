@@ -877,3 +877,32 @@ def test_a_read_only_sign_in_reads_but_cannot_answer() -> None:
     _seen, events_scope = _invite_google(" ".join([*gm.SCOPES, gm.SCOPE_CALENDAR_EVENTS]))
     assert asyncio.run(events_scope.calendar_granted()) is True  # calendar.events reads too
     assert asyncio.run(events_scope.calendar_write_granted()) is True
+
+
+def test_sent_mail_pages_past_100_and_a_slowdown_drops_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gm, "_SLOW_DOWN_SECONDS", 0)
+    slowed: set[str] = set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at", "expires_in": 3600, "scope": " ".join(gm.SCOPES)})
+        path = request.url.path
+        if path.endswith("/messages"):
+            start = int(request.url.params.get("pageToken") or 0)
+            count = int(request.url.params["maxResults"])
+            body: dict[str, Any] = {"messages": [{"id": f"s{i}"} for i in range(start, min(start + count, 250))]}
+            if start + count < 250:
+                body["nextPageToken"] = str(start + count)
+            return httpx.Response(200, json=body)
+        message_id = path.rsplit("/", 1)[1]
+        if message_id == "s7" and message_id not in slowed:
+            slowed.add(message_id)
+            return httpx.Response(429, json={"error": {"errors": [{"reason": "rateLimitExceeded"}]}})
+        raw = _message({"From": EMAIL, "To": "dana@northpeak.example"}, plain="Hi")
+        raw["id"] = message_id
+        return httpx.Response(200, json=raw)
+
+    client = DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler))
+    sent = asyncio.run(client.list_sent(limit=300))
+    assert len(sent) == 250 and slowed == {"s7"}
+    assert "s7" in {m.id for m in sent}

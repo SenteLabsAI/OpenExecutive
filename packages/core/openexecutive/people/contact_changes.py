@@ -45,7 +45,7 @@ DETAIL_FIELDS = frozenset({"phone", "mobile", "website", "linkedin", "social", "
 Status = Literal["applied", "suggested", "undone", "dismissed"]
 # Why: the principal emailed them, met them, asked in chat, or a name or role
 # read from the person's own mail.
-Reason = Literal["emailed", "met", "asked", "from_line", "signature"]
+Reason = Literal["emailed", "met", "wrote", "asked", "from_line", "signature"]
 
 # How far back the lists reach.
 LIST_DAYS = 30

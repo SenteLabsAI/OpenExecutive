@@ -4454,12 +4454,21 @@ people:
     audit rows are the principal's; it ends with one private contacts_kept
     log_event of counts, no names.
     Why headers only: names and addresses come from To/Cc and guest lists,
-    never a mail's text, so a mail cannot write the roster. Adds need two
-    sent mails in 60 days (no lists, bulk, auto mail, ghostwritten Handle it
-    sends, over 10 recipients) or
-    a meeting they organised or accepted (at most 10 guests); own, exec,
-    known (archived too), role, no-reply and company-domain addresses are
-    skipped. Updates: an alias under a contact's exact two-word name as the
+    never a mail's text (or the From line of the contact's own authenticated
+    mail), so a mail cannot write the roster. Adds need two sent mails in 60
+    days, or one plus authenticated mail back from them in the inbox (no
+    lists, bulk, auto mail, ghostwritten Handle it sends, over 25
+    recipients; list_sent reads up to 300 so mail to the Executive doesn't
+    shorten the window), or a meeting they organised or accepted (at most
+    25 guests); own, exec, known (archived too), role, no-reply,
+    company-domain addresses and shared mailbox names (_MAILBOX_WORDS) are
+    skipped. Someone never written to who sent 2+ authenticated mails is
+    only a suggestion (reason wrote), whatever the mode: nothing the
+    principal did vouches for them. Why 600 output tokens on the signature
+    read: a tool call cut off at max_tokens is dropped whole by the
+    provider, so a 120-token cap lost every real signature. The read takes
+    the text above a legal notice or disclaimer (_FOOTER), and a labelled
+    phone ("c: ...") keeps its number (contact_info.clean_phone). Updates: an alias under a contact's exact two-word name as the
     To line wrote it, twice, always a suggestion whatever the mode (an alias
     is an egress address, so one reply to a lookalike must not attach it;
     blocked or archived addresses never are), a

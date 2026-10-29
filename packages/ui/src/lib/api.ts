@@ -4832,7 +4832,7 @@ export interface ContactChange {
   full_name: string;
   old_value: string;
   new_value: string;
-  reason: "emailed" | "met" | "asked" | "from_line" | "signature";
+  reason: "emailed" | "met" | "wrote" | "asked" | "from_line" | "signature";
   evidence: number;
   status: "applied" | "suggested" | "undone" | "dismissed";
   seen: boolean;

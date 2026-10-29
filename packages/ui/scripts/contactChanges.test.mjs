@@ -34,6 +34,10 @@ test("an add says who, where and why", () => {
     detail: "priya@northwind.example. You emailed them 3 times lately.",
   });
   assert.equal(changeLine(change({ reason: "met", evidence: 1 })).detail, "priya@northwind.example. Guest at one of your meetings.");
+  assert.equal(
+    changeLine(change({ reason: "wrote", evidence: 3, status: "suggested" })).detail,
+    "priya@northwind.example. They emailed you 3 times lately.",
+  );
   assert.equal(changeLine(change({ status: "suggested" })).tag, "Suggested");
 });
 

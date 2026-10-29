@@ -25,6 +25,8 @@ export function changeReason(change: ContactChange): string {
         : "You emailed them at this address.";
     case "met":
       return change.evidence > 1 ? `Guest at ${change.evidence} of your meetings.` : "Guest at one of your meetings.";
+    case "wrote":
+      return `They emailed you ${times(change.evidence)} lately.`;
     case "asked":
       return "You asked in chat.";
     case "from_line":

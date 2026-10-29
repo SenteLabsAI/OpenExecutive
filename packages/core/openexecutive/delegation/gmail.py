@@ -143,6 +143,10 @@ _TOKEN_URI_RE = re.compile(r"^https://oauth2\.googleapis\.com/")
 _MAX_HEADER = 900
 _TOKEN_SLACK_SECONDS = 60
 _FETCH_CONCURRENCY = 5
+# Most sent messages ``list_sent`` reads (pages of 100).
+SENT_MAX = 300
+# Pause before asking again after Gmail said "slow down".
+_SLOW_DOWN_SECONDS = 2.0
 
 # Access tokens by (address, refresh token) — never written anywhere.
 _TOKENS: dict[str, tuple[str, float]] = {}
@@ -1091,14 +1095,21 @@ class DelegateGmail:
         return MailThread(id=thread_id, messages=messages)
 
     async def list_sent(self, limit: int = 40) -> list[MailMessage]:
-        """The person's recent sent mail, newest first (at most ``limit``)."""
+        """The person's recent sent mail, newest first (at most ``limit``,
+        capped at ``SENT_MAX``)."""
+        want = max(1, min(limit, SENT_MAX))
         async with self._client() as client:
-            data = await self._get(
-                client,
-                "/messages",
-                {"q": "in:sent -in:chats newer_than:1y", "maxResults": max(1, min(limit, 100))},
-            )
-            ids = [str(m.get("id")) for m in data.get("messages") or [] if valid_id(m.get("id"))]
+            ids: list[str] = []
+            page = ""
+            while len(ids) < want:
+                params: dict[str, Any] = {"q": "in:sent -in:chats newer_than:1y", "maxResults": min(want - len(ids), 100)}
+                if page:
+                    params["pageToken"] = page
+                data = await self._get(client, "/messages", params)
+                ids += [str(m.get("id")) for m in data.get("messages") or [] if valid_id(m.get("id"))]
+                page = str(data.get("nextPageToken") or "")
+                if not page:
+                    break
             gate = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
             async def fetch(message_id: str) -> MailMessage | GmailAuthError | None:
@@ -1109,6 +1120,17 @@ class DelegateGmail:
                         raw = await self._get(client, f"/messages/{message_id}", {"format": "full"})
                     except GmailAuthError as exc:
                         return exc
+                    except GmailRateLimited:
+                        # Asked to slow down: once more after a pause, so a
+                        # busy mailbox doesn't silently drop sent mail.
+                        await asyncio.sleep(_SLOW_DOWN_SECONDS)
+                        try:
+                            raw = await self._get(client, f"/messages/{message_id}", {"format": "full"})
+                        except GmailAuthError as exc:
+                            return exc
+                        except GmailError:
+                            logger.warning("delegation.gmail: skipped a sent message (rate limited)")
+                            return None
                     except GmailError:
                         logger.warning("delegation.gmail: skipped an unreadable sent message")
                         return None

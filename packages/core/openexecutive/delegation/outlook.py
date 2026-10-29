@@ -879,7 +879,7 @@ class DelegateOutlook:
             data = await self._get(client, "/mailFolders/sentitems/messages", {
                 "$filter": f"sentDateTime ge {since}",
                 "$orderby": "sentDateTime desc",
-                "$top": max(1, min(limit, 100)),
+                "$top": max(1, min(limit, 300)),
                 "$select": _SELECT,
                 "$expand": _EXPAND,
             })

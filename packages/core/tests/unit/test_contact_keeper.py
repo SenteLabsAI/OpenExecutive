@@ -52,6 +52,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         return "connected"
 
     monkeypatch.setattr(gmail_mod, "gmail_status", connected)
+    monkeypatch.setattr(keeper, "_PAUSE", 0)
     people_registry.invalidate()
     yield path
     people_registry.invalidate()
@@ -81,6 +82,8 @@ class FakeMailbox:
         # Older mail from each address, after its newest (``latest``).
         self.older: dict[str, list[MailMessage]] = {}
         self.calendar_error: Exception | None = None
+        # Mail in the principal's inbox, newest first.
+        self.inbox: list[MailMessage] = []
 
     async def profile_email(self) -> str:
         return OWNER
@@ -103,6 +106,12 @@ class FakeMailbox:
         newest = self.latest.get(address)
         return ([newest] if newest is not None else []) + self.older.get(address, [])[:limit]
 
+    async def inbox_message_ids(self, *, after: datetime, max_results: int = 25) -> list[tuple[str, str]]:
+        return [(m.id, m.thread_id) for m in self.inbox[:max_results]]
+
+    async def get_message(self, message_id: str) -> MailMessage:
+        return next(m for m in self.inbox if m.id == message_id)
+
 
 def _run(mailbox: FakeMailbox) -> keeper.RunResult:
     return asyncio.run(keeper.run_once(client=mailbox, now=NOW))
@@ -123,6 +132,58 @@ def test_names_come_only_from_how_a_name_was_written() -> None:
     assert keeper.name_from_address("priya.shah@x.example") == "Priya Shah"
     assert keeper.name_from_address("info@x.example") == ""
     assert keeper.name_from_address("ps2@x.example") == ""
+
+
+def test_a_role_keeps_the_part_the_mail_holds() -> None:
+    text = "Kyle Harrelson\nVice President, Finance & Accounting\nDirect: (803) 555-0101"
+    assert keeper._copied_role("Vice President, Finance & Accounting, Cahec Mgmt", text) == (
+        "Vice President, Finance & Accounting"
+    )
+    assert keeper._copied_role("<UNKNOWN>", text) == ""
+
+
+def test_the_signature_above_a_disclaimer_is_the_one_read() -> None:
+    text = (
+        "Thanks.\n\nChris Corbin\nAttorney at Law\n(555) 010-0144\n\n"
+        "CONFIDENTIALITY NOTICE: This email and any attachments are privileged.\n" + "Legal words. " * 200
+    )
+    assert keeper._before_footer(text).endswith("(555) 010-0144")
+    assert keeper._before_footer("Please keep this confidential.\nThanks\nLeo") == (
+        "Please keep this confidential.\nThanks\nLeo"
+    )
+
+
+def test_a_signature_is_read_with_room_for_all_its_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cut-off tool call is lost whole, so the reader has room for a role
+    and every detail; labelled phones are kept as numbers."""
+    asked: dict[str, Any] = {}
+
+    class Block:
+        type = "tool_use"
+        input = {
+            "role": "Managing Director, Avat Realty",
+            "details": [{"kind": "mobile", "value": "c: 256-555-0165"}, {"kind": "phone", "value": "o: 256-555-0196"}],
+        }
+
+    class Response:
+        content = [Block()]
+        usage = None
+        stop_reason = "tool_use"
+
+    class Provider:
+        async def messages_create(self, **kw: Any) -> Response:
+            asked.update(kw)
+            return Response()
+
+    monkeypatch.setattr("openexecutive.providers.get_provider", lambda model: Provider())
+    message = MailMessage(
+        id="m", thread_id="t", from_addr="andy@avat.example",
+        text="See attached.\n\nAndy Ames\nManaging Director\nAvat Realty\nc: 256-555-0165\no: 256-555-0196",
+    )
+    found = asyncio.run(keeper.read_signature(message, model="m"))
+    assert asked["max_tokens"] >= 400
+    assert found.role == "Managing Director, Avat Realty"
+    assert found.details == [("mobile", "256-555-0165"), ("phone", "256-555-0196")]
 
 
 def test_a_role_must_be_copied_from_the_mail() -> None:
@@ -183,14 +244,58 @@ def test_who_is_never_added(owner: int) -> None:
         "gone@x.example",  # removed before
         "blocked.person@x.example",  # undone before
         "x9@x.example",  # no name to give them
+        "private.wealth@x.example",  # a shared mailbox's name
     ):
         box.sent += [_sent([address], days_ago=1), _sent([address], days_ago=2)]
     old = _sent([PRIYA], days_ago=90)
     box.sent += [old, old]
-    big = _sent([f"p{i}.q@x.example" for i in range(12)], days_ago=1)
+    big = _sent([f"p{i}.q@x.example" for i in range(30)], days_ago=1)
     box.sent += [big, big]
     assert _run(box).added == 0
     assert changes.list_changes() == []
+
+
+def _inbound(address: str, name: str, n: int, **flags: Any) -> list[MailMessage]:
+    return [
+        MailMessage(
+            id=f"in-{address}-{i}", thread_id="t", from_addr=address, from_name=name, to=[OWNER],
+            received_at=(NOW - timedelta(days=i + 1)).isoformat(), **{"sender_authenticated": True, **flags},
+        )
+        for i in range(n)
+    ]
+
+
+def test_emailed_once_counts_when_they_wrote_back(owner: int) -> None:
+    box = FakeMailbox()
+    box.sent = [
+        _sent([PRIYA], names={PRIYA: "Priya Shah"}, days_ago=2),
+        _sent([MARCO], names={MARCO: "Marco Diaz"}, days_ago=2),
+    ]
+    box.inbox = _inbound(PRIYA, "Priya Shah", 1) + _inbound(MARCO, "Marco Diaz", 1, bulk=True)
+    assert _run(box).added == 1
+    assert _contact(PRIYA) is not None
+    assert _contact(MARCO) is None  # a bulk mail is not writing back
+
+
+def test_someone_who_keeps_writing_is_only_suggested(owner: int) -> None:
+    box = FakeMailbox()
+    box.inbox = (
+        _inbound(PRIYA, "Priya Shah", 2)
+        + _inbound("once.only@x.example", "Once Only", 1)
+        + _inbound("forged.sender@x.example", "Forged Sender", 3, sender_authenticated=False)
+        + _inbound("reporting@x.example", "Financial Reporting", 3)
+    )
+    result = _run(box)
+    assert (result.added, result.suggested) == (0, 1)
+    [change] = changes.list_changes()
+    assert (change.email, change.reason, change.evidence, change.status) == (PRIYA, "wrote", 2, "suggested")
+    assert _contact(PRIYA) is None
+
+
+def test_a_shared_mailbox_name_is_never_a_contact() -> None:
+    assert keeper.mailbox_name("Private Wealth")
+    assert keeper.mailbox_name("Financial Reporting")
+    assert not keeper.mailbox_name("Hunter Walker")
 
 
 def test_off_and_act_as_me_off_do_nothing(owner: int) -> None:
@@ -728,9 +833,10 @@ def test_a_mailbox_slowdown_stops_the_reads_not_the_notes(owner: int, written: l
         box.sent.append(_wrote(address, f"About order {i}.", days_ago=1))
     people_registry.invalidate()
     result = _run(box)
-    # One signature read, one last-heard read: each stops at the first refusal,
-    # the notes are written, and the run still reports the mailbox failing.
-    assert len(asked) == 2
+    # One signature read (asked again once after a pause), one last-heard
+    # read: each stops at the refusal, the notes are written, and the run
+    # still reports the mailbox failing.
+    assert len(asked) == 3
     assert len(written) == 2 and result.status == "error"
 
 
