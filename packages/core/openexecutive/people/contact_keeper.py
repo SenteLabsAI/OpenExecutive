@@ -204,13 +204,23 @@ def mailbox_name(name: str) -> bool:
     return any(w.casefold() in _MAILBOX_WORDS for w in name.split())
 
 
-def _before_footer(text: str) -> str:
-    """``text`` up to a legal notice or disclaimer below the signature."""
+def _before_footer(text: str, names: frozenset[str] = frozenset()) -> str:
+    """``text`` up to a legal notice or disclaimer below the signature: cut
+    at the first notice line whose text above ends like a signature (a
+    phone number, or one of ``names``, in its last lines), so a body line
+    like "This email is to confirm" never cuts off what follows."""
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        if index and _FOOTER.search(line):
+        if not index or not _FOOTER.search(line):
+            continue
+        tail = "\n".join(lines[max(0, index - 12):index])
+        if _PHONE_RUN.search(tail) or names & {w.casefold() for w in _ROLE_WORD.findall(tail)}:
             return "\n".join(lines[:index]).rstrip()
     return text
+
+
+def _name_words(*names: str) -> frozenset[str]:
+    return frozenset(w.casefold() for n in names for w in clean_name(n).split() if len(w) > 1)
 
 
 async def _patiently(call: Any, *args: Any, **kwargs: Any) -> Any:
@@ -640,7 +650,8 @@ async def read_signature(message: Any, *, model: str | None = None) -> Signature
     from openexecutive.providers import get_provider
     from openexecutive.utils.prompt_blocks import no_tags
 
-    text = _before_footer(sender_new_text(getattr(message, "text", "") or ""))[-_SIGNATURE_CHARS:]
+    names = _name_words(str(getattr(message, "from_name", "") or ""))
+    text = _before_footer(sender_new_text(getattr(message, "text", "") or ""), names)[-_SIGNATURE_CHARS:]
     if not text.strip():
         return Signature()
     chosen = model or get_settings().routing_model
@@ -866,11 +877,11 @@ def _signs_off(message: Any, person: Any) -> bool:
     number, or their own name, in its last lines."""
     from openexecutive.integrations.email_poller import sender_new_text
 
-    tail = "\n".join(_before_footer(sender_new_text(getattr(message, "text", "") or "")).splitlines()[-12:])
+    names = _name_words(person.full_name or "", str(getattr(message, "from_name", "") or ""))
+    text = _before_footer(sender_new_text(getattr(message, "text", "") or ""), names)
+    tail = "\n".join(text.splitlines()[-12:])
     if _PHONE_RUN.search(tail):
         return True
-    names = {w.casefold() for w in (person.full_name or "").split() if len(w) > 1}
-    names |= {w.casefold() for w in clean_name(getattr(message, "from_name", "")).split() if len(w) > 1}
     return bool(names & {w.casefold() for w in _ROLE_WORD.findall(tail)})
 
 

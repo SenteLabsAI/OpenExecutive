@@ -151,6 +151,12 @@ def test_the_signature_above_a_disclaimer_is_the_one_read() -> None:
     assert keeper._before_footer("Please keep this confidential.\nThanks\nLeo") == (
         "Please keep this confidential.\nThanks\nLeo"
     )
+    # A body line that reads like a notice never cuts off the signature below it.
+    body = "Hi Sam,\nThis email is just to confirm Thursday.\n\nThanks,\nJane Ro\nVP Finance, Acme\n+1 555 010 0100"
+    assert keeper._before_footer(body, frozenset({"jane", "ro"})) == body
+    # A notice under a signature with only a name in it is cut at the name.
+    named = "Thanks.\nJane Ro\nVP Finance\nThis message is intended only for the addressee."
+    assert keeper._before_footer(named, frozenset({"jane", "ro"})) == "Thanks.\nJane Ro\nVP Finance"
 
 
 def test_a_signature_is_read_with_room_for_all_its_details(monkeypatch: pytest.MonkeyPatch) -> None:
