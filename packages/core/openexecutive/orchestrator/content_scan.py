@@ -56,8 +56,8 @@ CATEGORIES: dict[str, str] = {
 MAX_CHARS = 60_000
 EVIDENCE_CHARS = 160
 
-# Notes a connected Google app adds to its own results, telling the
-# assistant which tool to call next. They are the app's, not the content's,
+# Notes a connected Google app (or our own gateway) adds to its own results,
+# telling the assistant what to do next. They are the app's, not the content's,
 # and read like instructions to an AI, so the check would flag every read
 # that carries one. Only these exact lines are left out of what is checked;
 # the model still gets the whole result.
@@ -79,6 +79,16 @@ _SERVER_NOTES = (
         r"  • Pass the Thread IDs to get_gmail_thread_content\(\) \(single\) or "
         r"get_gmail_threads_content_batch\(\) \(batch\)$",
         re.MULTILINE,
+    ),
+    # Our own note after a Drive search that found nothing
+    # (``memory.drive_reads.empty_search_note``), always at the end.
+    re.compile(
+        r"\n\nThis Drive search matched nothing for the query [^\n]*?\. That shows only "
+        r"that this query found nothing, not that the file does not exist: it may be "
+        r"titled differently, use other words, or not be shared with this account\. "
+        r"Tell the user the exact query you ran and that it found nothing; do not say "
+        r"the file does not exist\. Try a different query \(a distinctive word from the "
+        r"title, the author, or a file_type\) before giving up\.\Z"
     ),
 )
 

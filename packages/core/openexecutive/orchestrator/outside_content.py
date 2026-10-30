@@ -949,6 +949,35 @@ def _parsed(result: Any) -> Any:
         return None
 
 
+# What the mailbox tools (``mail_read_tools``, ``delegation_tools``,
+# ``history_tools``) say around a read in their own words: how to read it, a
+# refusal, a reminder to name a file or check an address. Those are written to
+# the model, so the check took them for the mail's own instructions. They are
+# left out of what is checked; the model still gets the whole result.
+_OWN_KEYS = frozenset({"note", "error", "check_attachments", "check_address"})
+# Statuses whose ``detail`` is only the tool's words (nothing found, which
+# thread, nowhere to save). Any other detail can carry a file's name, so it is
+# still checked.
+_OWN_DETAIL_STATUSES = frozenset({"not_found", "choose", "no_storage", "none"})
+
+
+def without_own_words(result: Any) -> Any:
+    """A mailbox tool's JSON result without what the tool itself wrote
+    (``_OWN_KEYS``), for the check only: "" when nothing else is left, so a
+    refusal costs no check. Anything that isn't a JSON object as it is."""
+    parsed = _parsed(result)
+    if not isinstance(parsed, dict):
+        return result
+    kept = {
+        key: value for key, value in parsed.items()
+        if key not in _OWN_KEYS
+        and not (key == "detail" and parsed.get("status") in _OWN_DETAIL_STATUSES)
+    }
+    if not set(kept) - {"status"}:
+        return ""
+    return json.dumps(kept)
+
+
 # A subject that carries someone else's: a reply or forward keeps the
 # subject of the mail it answers, which anyone could have written.
 _CARRIED_SUBJECT = re.compile(r"^\s*(re|fwd?|aw|wg|sv|vs|tr|rv|antw|enc|doorst|i)\s*(\[\d+\])?\s*:", re.IGNORECASE)
@@ -1004,7 +1033,7 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
             rest = [e for n, e in enumerate(listed[0][listed[1]]) if n not in own]
             verdict = await _check_list(state, rest) if rest else content_scan.CLEAN
         else:
-            verdict = await _check(state, result)
+            verdict = await _check(state, without_own_words(result))
     except Exception:
         verdict = content_scan.UNCHECKED
     if verdict.flagged and verdict.items and listed is not None:
@@ -1029,12 +1058,18 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
             again = content_scan.UNCHECKED
         if not again.flagged and not again.unchecked:
             for n in sorted(flagged):
-                _flag(state, MAIL, tuple(verdict.categories), _mail_label(entries[n]))
+                _flag(
+                    state, MAIL, tuple(verdict.categories), _mail_label(entries[n]),
+                    getattr(verdict, "evidence", ""),
+                )
             if state.mode == outside_mode.ASK:
                 pinned.mail_held = True
             return json.dumps({**parsed, key: trimmed}), LEFT_OUT_NOTICE.format(count=len(flagged))
     if verdict.flagged:
-        _flag(state, MAIL, tuple(verdict.categories), _mail_label(_parsed(result)))
+        _flag(
+            state, MAIL, tuple(verdict.categories), _mail_label(_parsed(result)),
+            getattr(verdict, "evidence", ""),
+        )
     if state.mode == outside_mode.ASK or (state.mode == outside_mode.OUTSIDERS and verdict.holds):
         pinned.mail_held = True
     if verdict.flagged:

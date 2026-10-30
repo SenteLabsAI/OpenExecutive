@@ -754,8 +754,11 @@ async def handle_read_my_email_attachment(tool_input: dict[str, Any]) -> str:
 # Words that ask for a file to be saved somewhere: "save the LOIs", "upload
 # them", "put it in my Drive". Without one in what they typed this turn,
 # nothing is copied: a mail's text can't ask for it. Kept narrow on purpose
-# ("keep", "link", "copy" and "folder" turn up in everyday asks).
-_SAVE_WORDS = frozenset({"onedrive", "save", "saved", "upload"})
+# ("keep", "link", "copy" and "folder" turn up in everyday asks). "Attach" is
+# asking for it too: a file goes on a draft only from Drive or OneDrive, so
+# attaching one from their mail means saving it there first ("attached" and
+# "attachment" are left out: "read the attached file").
+_SAVE_WORDS = frozenset({"attach", "attaching", "onedrive", "save", "saved", "upload"})
 # "Drive" counts only as the place ("to my Drive", "in Drive", "Google
 # Drive"), not "our drive to hire".
 _DRIVE_AFTER = frozenset({"google", "in", "into", "my", "on", "to", "your"})
