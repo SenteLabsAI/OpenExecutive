@@ -741,3 +741,85 @@ def test_files_chosen_after_an_outside_read_are_named_for_a_check(
     finally:
         oc.end_turn(state)
     assert "name each attached file" in result["check_attachments"]
+
+
+# --------------------------------------------------------------------------- #
+# Any file, by handle (orchestrator/file_refs.py)
+# --------------------------------------------------------------------------- #
+
+
+class MailboxWithFiles(FakeMailbox):
+    """Message m1 carries the signed LOIs as one PDF."""
+
+    async def list_attachments(self, message_id: str) -> list[Any]:
+        from openexecutive.delegation.gmail import MailAttachment
+
+        assert message_id == "m1"
+        return [MailAttachment(index=1, name="Signed LOIs.pdf", mime_type="application/pdf", size=4)]
+
+    async def attachment_bytes(self, message_id: str, index: int) -> tuple[Any, bytes]:
+        return (await self.list_attachments(message_id))[index - 1], b"%PDF"
+
+
+def test_an_emailed_file_goes_onto_a_reply_without_a_drive_step(
+    roster: SimpleNamespace, composer: list[str],
+) -> None:
+    mailbox = MailboxWithFiles()
+    result = _run(_session(mailbox, "reply to Dana and attach the signed LOIs"), {
+        "intent": "Signed LOIs attached; good to move forward.", "thread_id": "t1", "files": ["mail:m1#1"],
+    })
+    assert result["status"] == "drafted" and result["attached"] == ["Signed LOIs.pdf"]
+    assert mailbox.drafts[0].attachments == [("Signed LOIs.pdf", "application/pdf", b"%PDF")]
+    assert mailbox.drafts[0].thread_id == "t1"
+
+
+def test_a_file_from_earlier_in_the_conversation_goes_onto_a_draft(
+    roster: SimpleNamespace, composer: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import conversation_files
+
+    monkeypatch.setattr(conversation_files, "root", lambda: tmp_path / "files")
+    mailbox = FakeMailbox()
+    session = _session(mailbox, "send dana the St Albans LOI")
+    conversation_files.keep(session.session_id, {"LOI - St Albans.pdf": b"%PDF-half"})
+    result = _run(session, {"intent": "Attached.", "to": [DANA], "files": ["file:LOI - St Albans.pdf"]})
+    assert result["attached"] == ["LOI - St Albans.pdf"]
+    assert mailbox.drafts[0].attachments == [("LOI - St Albans.pdf", "application/pdf", b"%PDF-half")]
+    # Another conversation's files are not found.
+    other = _session(FakeMailbox(), "send dana the St Albans LOI")
+    missing = _run(other, {"intent": "Attached.", "to": [DANA], "files": ["file:LOI - St Albans.pdf"]})
+    assert "No file named" in missing["error"]
+
+
+def test_bad_handles_are_refused_before_the_mailbox_opens(roster: SimpleNamespace) -> None:
+    session = _session(FakeMailbox())
+    bad = _run(session, {"intent": "x", "to": [DANA], "files": ["C:/secret.pdf"]})
+    assert "isn't a file handle" in bad["error"]
+    on_forward = _run(session, {"intent": "x", "to": [DANA], "forward": "t1", "files": ["mail:m1#1"]})
+    assert "forward carries its own files" in on_forward["error"]
+    assert session.turn_delegation.touched_mail is False
+
+
+def test_a_team_member_gets_no_drive_handles(roster: SimpleNamespace) -> None:
+    person = people_store.get_person(roster.teammate)
+    assert person is not None
+    mailbox = FakeMailbox(opened=TEAM)
+    session = Session(delegation_override=DelegationOverride(enabled=True, gmail=mailbox, person=person))
+    assert pin_turn_delegation(session, "email dana the bills").offered
+    result = _run(session, {"intent": "x", "to": [DANA], "files": [f"drive:{DRIVE_ID}"]})
+    assert "Only the owner" in result["error"]
+    assert mailbox.drafts == []
+
+
+def test_cc_goes_on_a_new_email_and_a_reply(roster: SimpleNamespace, composer: list[str]) -> None:
+    mailbox = FakeMailbox()
+    new = _run(_session(mailbox, "email dana and cc priya@co.example"), {
+        "intent": "x", "to": [DANA], "cc": ["Priya@co.example", DANA],
+    })
+    assert new["cc"] == ["priya@co.example"] and mailbox.drafts[0].cc == ["priya@co.example"]
+    reply = _run(_session(mailbox, "reply and cc priya@co.example"), {
+        "intent": "x", "thread_id": "t1", "cc": ["priya@co.example"],
+    })
+    assert "priya@co.example" in mailbox.drafts[1].cc and reply["status"] == "drafted"
+    bad = _run(_session(mailbox), {"intent": "x", "to": [DANA], "cc": ["not an address"]})
+    assert "`cc`" in bad["error"]

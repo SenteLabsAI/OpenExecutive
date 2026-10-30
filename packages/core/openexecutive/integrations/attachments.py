@@ -13,7 +13,7 @@ background task so they surface in future RAG retrieval sessions.
 Supported file types
 ---------------------
 Images:   image/png, image/jpeg, image/gif, image/webp
-Docs:     .pdf, .docx, .doc, .xlsx, .xlsm, .txt, .md, .rst, .csv
+Docs:     .pdf, .docx, .doc, .xlsx, .xlsm, .txt, .md, .rst, .csv, .ics, .eml
           (a scanned PDF is converted by ``knowledge.pdf_reader``)
 Audio:    voice notes (ogg, m4a, mp3, webm, wav, …), transcribed by
           ``providers.transcription`` into the sender's words. The caller
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
 _MAX_EXTRACTED_CHARS = 40_000
 _EXTRACTABLE_SUFFIXES = frozenset(
-    {".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".txt", ".md", ".rst", ".csv"}
+    {".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".txt", ".md", ".rst", ".csv", ".ics", ".eml"}
 )
 _SUPPORTED_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
@@ -381,6 +381,12 @@ async def build_attachment_output(
         ct = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix.lstrip('.')}"
 
     from openexecutive.providers.transcription import is_audio
+    from openexecutive.workflows import turn_files
+
+    # The file itself, for the turn's file tools (attach, split, save); a
+    # voice note is the sender's words, not a file.
+    if not voice_note:
+        turn_files.offer(filename, data)
 
     if is_audio(filename, ct):
         if voice_note:
@@ -409,7 +415,7 @@ async def build_attachment_output(
         _schedule_ingest(text, filename)
         return extra_text, []
 
-    return f"(Could not read {filename}: unsupported type — supported: PDF, DOCX, XLSX, TXT, MD, CSV, PNG, JPG, GIF, WebP, voice notes)", []
+    return f"(Could not read {filename}: unsupported type — supported: PDF, DOCX, XLSX, TXT, MD, CSV, ICS, EML, PNG, JPG, GIF, WebP, voice notes)", []
 
 
 # ------------------------------------------------------------------ #

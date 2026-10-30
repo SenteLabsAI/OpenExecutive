@@ -120,6 +120,7 @@ from openexecutive.orchestrator.fact_tools import (
     FACT_TOOL_HANDLERS,
     FACT_TOOLS,
 )
+from openexecutive.orchestrator.file_tools import FILE_TOOL_HANDLERS, FILE_TOOLS
 from openexecutive.orchestrator.form_tools import (
     FORM_TOOL_HANDLERS,
     FORM_TOOLS,
@@ -214,7 +215,7 @@ from openexecutive.orchestrator.workflow_run_tools import (
 from openexecutive.prompts.cache_manager import build_system_blocks
 from openexecutive.providers import get_provider
 from openexecutive.providers.translator import reasoning_replay_block
-from openexecutive.workflows import python_job, step_script
+from openexecutive.workflows import python_job, step_script, turn_files
 from openexecutive.workflows.action_step import looks_like_error
 from openexecutive.workflows.python_job import PYTHON_JOB_TOOL_HANDLERS, PYTHON_JOB_TOOLS
 from openexecutive.workflows.tool_catalog import filter_search_results
@@ -821,6 +822,7 @@ _ALL_SKILL_TOOLS = [
     *FORM_TOOLS,
     *GUIDE_TOOLS,
     *PYTHON_JOB_TOOLS,
+    *FILE_TOOLS,
     *APP_TOOLS,
 ]
 
@@ -853,6 +855,7 @@ _ALL_SKILL_HANDLERS = {
     **FORM_TOOL_HANDLERS,
     **GUIDE_TOOL_HANDLERS,
     **PYTHON_JOB_TOOL_HANDLERS,
+    **FILE_TOOL_HANDLERS,
     **APP_TOOL_HANDLERS,
 }
 
@@ -3887,17 +3890,25 @@ class Executive:
             from openexecutive.people.reach import note_talked
 
             await asyncio.to_thread(note_talked, session)
+        # The files a chat app read for this message (turn_files.offer): bound
+        # for the turn and kept for the conversation, as a web upload is.
+        offered = turn_files.take_offered()
+        if offered:
+            from openexecutive.orchestrator import conversation_files
+
+            await asyncio.to_thread(conversation_files.keep, session.session_id, offered)
         stream = (
             self.stream_chat_with_committee(**common_kwargs)
             if committee_review
             else self.stream_chat(**common_kwargs)
         )
         result = ""
-        async for chunk in stream:
-            if isinstance(chunk, str) and chunk != self._THINKING:
-                result += chunk
-            elif cards is not None and isinstance(chunk, dict) and chunk.get("type") == "action_taken":
-                decision_id = chunk.get("decision_id")
-                if isinstance(decision_id, int) and not isinstance(decision_id, bool) and decision_id not in cards:
-                    cards.append(decision_id)
+        with turn_files.bind(offered or None) if offered else contextlib.nullcontext():
+            async for chunk in stream:
+                if isinstance(chunk, str) and chunk != self._THINKING:
+                    result += chunk
+                elif cards is not None and isinstance(chunk, dict) and chunk.get("type") == "action_taken":
+                    decision_id = chunk.get("decision_id")
+                    if isinstance(decision_id, int) and not isinstance(decision_id, bool) and decision_id not in cards:
+                        cards.append(decision_id)
         return result

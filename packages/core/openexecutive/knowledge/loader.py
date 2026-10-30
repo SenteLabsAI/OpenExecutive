@@ -186,11 +186,37 @@ def _parse_file(path: Path) -> str:
         return extract_text_from_docx(path)
     elif suffix in (".xlsx", ".xlsm"):
         return extract_text_from_xlsx(path)
-    elif suffix in (".md", ".txt", ".rst", ".csv"):
+    elif suffix in (".md", ".txt", ".rst", ".csv", ".ics"):
         # Lenient: a CSV saved by Excel is often cp1252, and a strict decode
-        # error would surface as a 500 rather than a readable document.
+        # error would surface as a 500 rather than a readable document. A
+        # calendar invite (.ics) is text too.
         return path.read_text(encoding="utf-8", errors="replace")
+    elif suffix == ".eml":
+        return extract_text_from_eml(path)
     return ""
+
+
+def extract_text_from_eml(path: Path) -> str:
+    """A saved email (.eml): its headers and plain text, with the names of
+    its own attachments."""
+    from email import policy
+    from email.parser import BytesParser
+
+    message = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+    lines = [f"{h}: {message[h]}" for h in ("From", "To", "Cc", "Date", "Subject") if message[h]]
+    body = message.get_body(preferencelist=("plain", "html"))
+    text = ""
+    if body is not None:
+        try:
+            text = body.get_content()
+        except (LookupError, ValueError):
+            text = ""
+        if body.get_content_type() == "text/html":
+            text = re.sub(r"<[^>]+>", " ", text)
+    names = [p.get_filename() for p in message.iter_attachments() if p.get_filename()]
+    if names:
+        lines.append(f"Attachments: {', '.join(str(n) for n in names)}")
+    return "\n".join(lines) + "\n\n" + text.strip()
 
 
 async def read_document_text(path: Path, *, inbound: bool = False) -> PdfReadResult:

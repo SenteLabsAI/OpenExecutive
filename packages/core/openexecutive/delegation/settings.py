@@ -105,6 +105,11 @@ class TurnDelegation:
     # leaves ``mail_vetted`` false, so the whole lockdown holds.
     mail_vetted: bool = False
     mail_held: bool = False
+    # A file from their mailbox reached a tool whose output the mail check
+    # never reads (``file_refs`` mail: handles in a Python job or
+    # ``read_document``): the whole lockdown holds for the rest of the turn,
+    # whatever later reads are checked.
+    unchecked_mail: bool = False
     # Who sent the mail this turn read, address to display name
     # (``mail_read_tools``): a new contact's address may be one of them, when
     # its name or address matches the contact's, never one the mail's text

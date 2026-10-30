@@ -117,18 +117,17 @@ def test_the_download_route_is_the_principals(company: Path, sandbox: list, monk
 
 
 def test_the_tool_is_principal_only_and_withheld_where_scripts_are() -> None:
-    from openexecutive.delegation.lockdown import MAIL_TOUCHED_WITHHELD_TOOLS
+    from openexecutive.delegation.lockdown import MAIL_TOUCHED_ALLOWED_TOOLS
     from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS
     from openexecutive.orchestrator.schedule_tools import (
         PRIVATE_TURN_WITHHELD_TOOLS,
         UNATTENDED_WITHHELD_TOOLS,
     )
 
-    for group in (
-        PRINCIPAL_ONLY_TOOLS, MAIL_TOUCHED_WITHHELD_TOOLS, PRIVATE_TURN_WITHHELD_TOOLS,
-        UNATTENDED_WITHHELD_TOOLS,
-    ):
+    for group in (PRINCIPAL_ONLY_TOOLS, PRIVATE_TURN_WITHHELD_TOOLS, UNATTENDED_WITHHELD_TOOLS):
         assert python_job.TOOL_NAME in group
+    # No network, so a turn that read the owner's mail still works on its files.
+    assert python_job.TOOL_NAME in MAIL_TOUCHED_ALLOWED_TOOLS
 
 
 def test_oversized_results_are_refused_before_decoding(company: Path, monkeypatch: pytest.MonkeyPatch) -> None:

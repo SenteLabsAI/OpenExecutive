@@ -107,8 +107,14 @@ TOOL_DEFINITION: dict[str, Any] = {
         "as given; write result files to /out and the person gets a download link "
         "for each. The value of the last expression and anything printed come back "
         "to you. The sandbox has no network and no other files; only the libraries "
-        "listed are installed. Pass files attached to the person's message by name "
-        "in attachment_files (the file itself, never retype its text), "
+        "listed are installed. Pass any file by its handle in files (the file "
+        "itself, never retype its text): mail:<message_id>#<n> for an attachment of "
+        "an email in their mailbox, drive:<file_id> for a Google Drive file, "
+        "file:<name> for a file sent in this chat (now or earlier) or made by an "
+        "earlier job. Each result file comes back with its handle, which "
+        "ghostwrite_email (files) and save_file take, so split, attach and save "
+        "in one go without asking them to send or download anything. Files "
+        "attached to the person's message also go by name in attachment_files, "
         "Knowledge-library files by name in knowledge_files, and other text you "
         "already have (data from a tool) in text_files. Each run starts fresh and "
         "takes a few seconds, so do the whole job in one call. To keep a job that "
@@ -129,6 +135,11 @@ TOOL_DEFINITION: dict[str, Any] = {
             "inputs": {
                 "type": "object",
                 "description": "Values for this run, read by the code as the dict `inputs`.",
+            },
+            "files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "File handles (mail:<message_id>#<n>, drive:<file_id>, file:<name>), copied to /in by name.",
             },
             "attachment_files": {
                 "type": "array",
@@ -551,6 +562,17 @@ async def _gather_files(tool_input: dict[str, Any]) -> tuple[dict[str, bytes], l
         name = turn_files.safe_name(str(name))
         files[name] = data
         attached.append(name)
+    if tool_input.get("files"):
+        from openexecutive.orchestrator import file_refs
+
+        try:
+            handled = await file_refs.resolve(tool_input.get("files"), max_bytes=_MAX_INPUT_BYTES)
+        except file_refs.RefError as exc:
+            return _err(str(exc))
+        if handled.skipped:
+            return _err("too many or too large input files")
+        for item in handled.items:
+            files[turn_files.safe_name(item.name)] = item.data
     for name in tool_input.get("knowledge_files") or []:
         path = _knowledge_file(str(name))
         if path is None:
@@ -656,7 +678,15 @@ async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
             logger.warning("python job: run of %r not recorded", saved.name, exc_info=True)
         reply["saved_tool"] = {"name": saved.name, "version": saved.version}
     elif save_as is not None:
-        reply.update(_save(str(save_as), str(tool_input.get("description") or ""), code, ok))
+        if _read_outside_this_turn():
+            # A kept tool lasts and its description reaches later turns: not
+            # on a turn whose words may be someone else's.
+            reply["save_error"] = (
+                "not saved: this turn read their mail or something from outside the "
+                "team. The job itself ran; offer to keep it when they ask in a new message."
+            )
+        else:
+            reply.update(_save(str(save_as), str(tool_input.get("description") or ""), code, ok))
 
     peak_mb = usage.get("peak_mb")
     if peak_mb is None and isinstance(reported_rss, int) and 0 <= reported_rss < 2**20:
@@ -676,6 +706,20 @@ async def handle_run_python_job(tool_input: dict[str, Any]) -> str:
         "saved_as": (reply.get("saved") or {}).get("name"),
     })
     return json.dumps(reply, ensure_ascii=False)
+
+
+def _read_outside_this_turn() -> bool:
+    """Whether this turn read the owner's mail or anything from outside the
+    team. Fails closed."""
+    from openexecutive.delegation.settings import turn_delegation
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    try:
+        pinned = turn_delegation(current_session.get())
+        return bool(getattr(pinned, "read_mail", False)) or outside_content.read_outside()
+    except Exception:
+        return True
 
 
 def _save(name: str, description: str, code: str, ok: bool) -> dict[str, Any]:
@@ -721,19 +765,31 @@ def _meter(details: dict[str, Any]) -> None:
 
 
 async def _keep(files: dict[str, bytes]) -> dict[str, Any]:
-    """Store a job's result files and return their links for the reply."""
+    """Store a job's result files and return their links for the reply. They
+    are kept for the conversation too, so its later file tools find them by
+    handle (``conversation_files``)."""
+    from openexecutive.orchestrator import conversation_files
+    from openexecutive.orchestrator.schedule_tools import current_session
+
     job_id = uuid.uuid4().hex
     folder = jobs_dir() / job_id
     await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
     for name, data in files.items():
         await asyncio.to_thread((folder / name).write_bytes, data)
+    session_id = getattr(current_session.get(), "session_id", None)
+    kept = set(await asyncio.to_thread(conversation_files.keep, str(session_id) if session_id else None, files))
     return {
         "files": [
             {"name": n, "bytes": len(d),
-             "link": f"/api/backend/python-jobs/{job_id}/{urllib.parse.quote(n)}"}
+             "link": f"/api/backend/python-jobs/{job_id}/{urllib.parse.quote(n)}",
+             **({"handle": f"file:{n}"} if n in kept else {})}
             for n, d in sorted(files.items())
         ],
-        "note": "Give the person each file's link as a markdown link.",
+        "note": (
+            "Give the person each file's link as a markdown link. A file's handle "
+            "attaches it to a draft (ghostwrite_email files) or saves it to a "
+            "Drive folder (save_file): do that yourself when they asked for it."
+        ),
     }
 
 

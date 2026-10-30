@@ -84,6 +84,8 @@ PRINCIPAL_ONLY_TOOLS: frozenset[str] = frozenset({
     # Reads the Knowledge library's files and keeps result files only the
     # principal can download.
     "run_python_job",
+    # Saves any file into the company's own Drive or OneDrive.
+    "save_file",
     # Runs a program the model just wrote, spending the turn's own tool budget
     # (CHAT_SCRIPT_MAX_CALLS, default 200) in one tool_use. The handler's
     # may_save / may_run_saved already refuse to keep or re-run a saved tool on

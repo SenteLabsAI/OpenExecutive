@@ -11,9 +11,9 @@ a draft in their own mailbox until they send it themselves, facts and profile ed
 the speaker's words, and a workflow drafted in chat is saved only once a
 person confirms it. What is not fenced is a door to the open internet. So from the round it
 runs in until the turn ends, only that stays shut: no outside fetch (a URL
-can carry what the mail said anywhere: ``read_document``, research, the
+can carry what the mail said anywhere: research, the
 watchlist, ``load_mcp_server``, any gateway tool but
-``PRIVATE_TURN_MCP_TOOLS``), no script or library job (it can reach either),
+``PRIVATE_TURN_MCP_TOOLS``), no script (it can reach either),
 no workflow (it runs later, unattended, and may fetch or script), no post
 to everyone (broadcasts, department messages, alerts), and no change to who
 is on the roster or holds authority (archiving someone, a department head, a
@@ -102,6 +102,17 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # code, never by the model (mail_read_tools, mail_file_save). Nothing it
     # does opens a link or reaches anyone else, which is all this turn fences.
     "save_my_email_attachment",
+    # Any file (orchestrator.file_refs) into a folder of the Executive's own
+    # Drive or OneDrive that belongs to it or the team: only when the speaker
+    # asked for file work in their own words this turn, every call built in
+    # code (orchestrator.file_tools). Nothing it does opens a link.
+    "save_file",
+    # A Python job runs with no network (Deno with no net permission, or a
+    # Sprite whose network is shut), and read_document reads files already on
+    # this machine: neither can carry what the mail said anywhere, so work on
+    # the mail's own files (split the PDF, read the scan) goes on.
+    "run_python_job",
+    "read_document",
     # Messages and invites: only people on the roster (_guard_outbound,
     # the roster) and attendees by person id (calendar_tools).
     "message_person",
@@ -149,14 +160,12 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
 
 MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # Fetches of an outside address: a URL can carry the mail anywhere.
-    "read_document",
     "load_mcp_server",
     "add_watchlist_entry",
     "tune_watchlist_entry",
     "run_executive_research",
-    # Scripts and library jobs, which can reach either.
+    # Scripts, which can reach either.
     "run_script",
-    "run_python_job",
     # Workflows run later, unattended, and may fetch or script.
     "suggest_workflow",
     "run_workflow",
@@ -369,6 +378,7 @@ def mail_lock_holds(pinned: Any, *, reading_now: bool = False) -> bool:
             reading_now
             or getattr(pinned, "mail_held", False) is True
             or getattr(pinned, "mail_vetted", False) is not True
+            or getattr(pinned, "unchecked_mail", False) is True
         )
     except Exception:
         return True

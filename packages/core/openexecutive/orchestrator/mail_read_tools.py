@@ -68,7 +68,7 @@ SAVES_PER_TURN = 10
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENT_CHARS = 15_000
 # What the document reader can turn into text (knowledge.loader, pdf_reader).
-READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv", ".md", ".txt", ".rst"})
+READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv", ".md", ".txt", ".rst", ".ics", ".eml"})
 MAX_RESULTS = 10
 INBOX_DAYS = 3
 AWAITING_DAYS = 14

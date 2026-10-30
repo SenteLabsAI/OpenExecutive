@@ -172,7 +172,7 @@ def test_not_when_the_workflow_reaches_outside(on, monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize("tool", [
-    "oe__web_search", "oe__run_workflow", "oe__read_document", "oe__send_company_broadcast",
+    "oe__web_search", "oe__run_workflow", "oe__send_company_broadcast",
     "oe__create_alert", "google_workspace__send_gmail_message", "notion__create_page",
 ])
 def test_nothing_that_reaches_outside_alongside_a_read(tool: str) -> None:
@@ -184,6 +184,8 @@ def test_what_may_run_alongside_a_read() -> None:
     defn = _defn(_step([
         *sorted(workflow_reads.TOOLS), *sorted(workflow_email.TOOLS),
         "oe__message_person", "oe__draft_artifact", "oe__list_people", "oe__create_calendar_event",
+        # Reads files already on the machine, never a link.
+        "oe__read_document",
     ]))
     assert workflow_reads.definition_refusal(defn, 1) is None
 

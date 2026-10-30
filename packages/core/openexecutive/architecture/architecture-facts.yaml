@@ -7142,6 +7142,34 @@ workflows:
     turning off doesn't. Prompted by the automated review: a principal turn
     that read an injected email could keep an attacker-shaped tool that a
     workflow then ran unattended.
+    File handles (orchestrator/file_refs.py): every file tool takes any file by
+    handle - mail:<message_id>#<n> (the speaker's own mailbox client, opened as
+    a mail read), drive:<file_id> (drive_attach.fetch, principal only),
+    file:<name> (a file sent in this conversation or made by a Python job in
+    it, orchestrator/conversation_files.py: one folder per conversation named
+    by a hash of its id, 7 days, 500 MB in all). ghostwrite_email files,
+    run_python_job files (each result comes back with its file: handle) and
+    save_file (orchestrator/file_tools.py: into a Drive folder owned by the
+    Executive's account or a team member and shared only with those people -
+    the folder's get_drive_file_permissions answer must have exactly one ID
+    line, Type and Owners read at fixed offsets from it, since the name comes
+    first and may hold anything, and every Sharing Status entry must be a
+    User of the team; a group, domain, anyone-with-link or outsider share is
+    refused; OneDrive uploads stay in its own drive and never overwrite a
+    name). Opening a mail: file sets TurnDelegation.unchecked_mail, which
+    mail_lock_holds honours, so a job printing the file cannot lift the hold;
+    save_as is refused after outside content this turn; deleting a chat
+    removes its kept files. Drafts also take cc. Chat-app files are offered
+    to the turn (turn_files.offer) and kept like web uploads; .ics and .eml
+    are read as text. run_python_job
+    (no network) and read_document (files on the machine only) moved to
+    MAIL_TOUCHED_ALLOWED_TOOLS with save_file, which after a mail or outside
+    read saves only when the speaker's own words this turn ask for file work.
+    Why - on 2026-10-30 an ask to split a signed LOI PDF from an email, file
+    both halves in a Drive folder and attach them to a reply was refused five
+    times: drafts took Drive files only, the mail read turned Python off,
+    Python took only this message's uploads, and its results went nowhere but
+    a download link.
     Python jobs (workflows/python_job.py, run_python_job): Pyodide 314 in Deno,
     one process per job (asyncio.Semaphore(1)), deno run --no-prompt --quiet
     --no-remote --allow-read=<PYTHON_SANDBOX_DIR>,<worker>, env stripped to

@@ -191,7 +191,7 @@ def test_what_stays_shut_after_an_outside_read() -> None:
     assert oc.outside_withholds("call_tool", WRITE_DOC)
     assert oc.outside_withholds("call_tool", {"name": "fetch__fetch_url", "arguments": {"url": "https://x"}})
     assert oc.outside_withholds("call_tool", "not a dict")
-    for tool in ("read_document", "run_script", "run_workflow", "send_company_broadcast", "schedule_followup"):
+    for tool in ("run_executive_research", "run_script", "run_workflow", "send_company_broadcast", "schedule_followup"):
         assert oc.outside_withholds(tool, {}), tool
     assert not oc.outside_withholds("call_tool", READ_DOC)
     for tool in ("message_person", "consult_specialist", "remember_fact", "list_people"):

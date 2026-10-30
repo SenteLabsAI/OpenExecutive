@@ -158,15 +158,17 @@ def test_memory_text_is_kept_in_the_chat_turn_audit_row(
 
 
 def test_upload_binds_the_files_as_sent_for_that_turn_only(
-    client: TestClient, captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    client: TestClient, captured: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from openexecutive.orchestrator import conversation_files
     from openexecutive.workflows import turn_files
+
+    monkeypatch.setattr(conversation_files, "root", lambda: tmp_path / "conversation_files")
 
     async def _fake_output(filename, data, content_type, **_kw):
         return f"[{filename}] text", []
 
     monkeypatch.setattr(chat_route, "build_attachment_output", _fake_output)
-    monkeypatch.setattr(chat_route, "python_job_available", lambda: True)
     principal = {"is": True}
     monkeypatch.setattr(
         "openexecutive.orchestrator.people_tools.is_principal_on_verified_surface",
@@ -182,12 +184,15 @@ def test_upload_binds_the_files_as_sent_for_that_turn_only(
     assert captured["turn_files"] == {"Q1 bundle.pdf": b"%PDF-1.7 whole file"}
     assert turn_files.names() == []
     # A plain chat turn carries none.
-    client.post("/chat", json={"message": "and again?"}).text
+    _ = client.post("/chat", json={"message": "and again?"}).text
     assert captured["turn_files"] == {}
-    # Nor does anyone else's upload: only the principal can run a job.
+    # Anyone's upload is bound: their own drafts can attach it too.
     principal["is"] = False
-    client.post(
+    _ = client.post(
         "/chat/upload", data={"message": "Split this"},
         files=[("files", ("x.pdf", b"%PDF", "application/pdf"))],
     ).text
-    assert captured["turn_files"] == {}
+    assert captured["turn_files"] == {"x.pdf": b"%PDF"}
+    # And kept for the conversation, so a later message still finds it.
+    kept = [p.name for p in (tmp_path / "conversation_files").rglob("*") if p.is_file()]
+    assert "Q1 bundle.pdf" in kept and "x.pdf" in kept

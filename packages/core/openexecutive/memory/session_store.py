@@ -504,6 +504,9 @@ def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
     from openexecutive.memory.chat_review import forget_session
 
     forget_session(session_id, db_path=db_path)
+    from openexecutive.orchestrator import conversation_files
+
+    conversation_files.forget(session_id)
     return deleted
 
 

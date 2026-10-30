@@ -1837,6 +1837,9 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # Library work on files (workflows/python_job.py): the principal's own
     # turns only; research synthesis and reflection build from the full list.
     "run_python_job",
+    # Saving files into the company's Drive (orchestrator/file_tools.py): the
+    # principal asks for it, never stored text.
+    "save_file",
     # Its sibling, for the reason this whole set exists: an unattended run's
     # context is stored or inbound text with nobody watching, and run_script
     # turns one instruction in it into a program spending the run's own tool
@@ -1934,6 +1937,7 @@ PRIVATE_TURN_WITHHELD_TOOLS: frozenset[str] = frozenset({
     # each of its calls would be checked, but the turn is simply not offered it.
     "run_script",
     "run_python_job",
+    "save_file",
     "list_saved_tools",
     "run_workflow",
     "save_workflow",

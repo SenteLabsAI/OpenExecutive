@@ -34,13 +34,15 @@ _PAGES_RE = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+))?\s*$")
 READ_DOCUMENT_TOOL: dict[str, Any] = {
     "name": "read_document",
     "description": (
-        "Read the full text of a PDF, Word, Excel, CSV, Markdown or text file. "
+        "Read the full text of a PDF, Word, Excel, CSV, Markdown, text, calendar "
+        "invite (.ics) or saved email (.eml) file. "
         "Scanned or image-only PDFs are converted to text, so use this whenever "
         "a PDF came back empty, 'could not extract any text', or 'may be "
         "scanned/image-only'. Pass `path` for a file another tool saved to disk "
         "— e.g. the 'Saved to:' path from get_gmail_attachment_content, or from "
         "get_drive_file_download_url for a Drive PDF whose content could not be "
-        "read — or `filename` for a company document. For a long PDF, pass "
+        "read — or `filename` for a company document, or `file` for any file by "
+        "its handle (mail:<message_id>#<n>, drive:<file_id>, file:<name>). For a long PDF, pass "
         "`pages` (e.g. '1-20') to read part of it."
     ),
     "input_schema": {
@@ -53,6 +55,10 @@ READ_DOCUMENT_TOOL: dict[str, Any] = {
             "filename": {
                 "type": "string",
                 "description": "Name of a company document, e.g. 'board-deck-q3.pdf'.",
+            },
+            "file": {
+                "type": "string",
+                "description": "A file's handle: mail:<message_id>#<n>, drive:<file_id> or file:<name>.",
             },
             "pages": {
                 "type": "string",
@@ -110,18 +116,18 @@ async def _read_pages(path: Path, first: int, last: int) -> tuple[Any, str]:
 
 
 async def handle_read_document(tool_input: dict[str, Any]) -> str:
-    from openexecutive.config import get_settings
     from openexecutive.delegation.lockdown import outside_reach_refusal
 
     if (refused := outside_reach_refusal("read_document")) is not None:
         return refused
-    from openexecutive.knowledge.loader import read_document_text
     from openexecutive.workflows.tool_catalog import resolve_readable_file
 
     raw_path = str(tool_input.get("path") or "").strip()
     filename = str(tool_input.get("filename") or "").strip()
+    if tool_input.get("file") and not raw_path and not filename:
+        return await _read_handle(tool_input)
     if not raw_path and not filename:
-        return _err("pass `path` (a downloaded file) or `filename` (a company document)")
+        return _err("pass `path` (a downloaded file), `filename` (a company document) or `file` (a handle)")
 
     docs_dir = _company_docs_dir()
     if filename and not raw_path:
@@ -133,6 +139,33 @@ async def handle_read_document(tool_input: dict[str, Any]) -> str:
     resolved = resolve_readable_file(raw_path, extra_dirs=[docs_dir])
     if isinstance(resolved, str):
         return _err(resolved)
+
+    return await _read_path(resolved, tool_input)
+
+
+async def _read_handle(tool_input: dict[str, Any]) -> str:
+    """``read_document`` on a file named by its handle (``file_refs``),
+    written to a temporary folder of its own for the reader and removed."""
+    import tempfile
+
+    from openexecutive.orchestrator import file_refs
+
+    try:
+        files = await file_refs.resolve([tool_input.get("file")])
+    except file_refs.RefError as exc:
+        return _err(str(exc))
+    if not files.items:
+        return _err("that file is too large to read")
+    item = files.items[0]
+    with tempfile.TemporaryDirectory(prefix="oe-read-") as folder:
+        path = Path(folder) / (Path(item.name).name or "file")
+        await asyncio.to_thread(path.write_bytes, item.data)
+        return await _read_path(path, tool_input)
+
+
+async def _read_path(resolved: Path, tool_input: dict[str, Any]) -> str:
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.loader import read_document_text
 
     pages_raw = str(tool_input.get("pages") or "").strip()
     scope = ""

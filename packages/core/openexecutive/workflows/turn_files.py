@@ -9,6 +9,11 @@ turn, and ``run_python_job`` takes them by name (``attachment_files``).
 
 The binding lasts for the turn that carried the files and no later one, as
 the extracted text does (api/routes/chat.py), and holds nothing on disk.
+
+A chat app (Telegram, Slack, Discord, Google Chat) reads its files through
+``integrations.attachments.build_attachment_output``, which ``offer``s each
+one here; ``Executive.chat`` takes them for its turn (``take_offered``), so
+a PDF sent in Telegram can be split, attached or saved like a web upload.
 """
 from __future__ import annotations
 
@@ -18,6 +23,11 @@ from collections.abc import Iterator
 from contextvars import ContextVar
 
 _files: ContextVar[dict[str, bytes] | None] = ContextVar("turn_files", default=None)
+# Files a chat app read for the message it is about to answer, waiting for
+# that turn (``offer`` / ``take_offered``). A coroutine awaited by the
+# adapter shares its context, so what the reader offers the adapter's own
+# chat call takes.
+_offered: ContextVar[list[tuple[str, bytes]] | None] = ContextVar("turn_files_offered", default=None)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9 ._()-]")
 
@@ -71,3 +81,22 @@ def get(name: str) -> bytes | None:
 
 def names() -> list[str]:
     return sorted(_files.get() or {})
+
+
+def offer(filename: str, data: bytes) -> None:
+    """Hold a file a chat app read for the next turn this context runs."""
+    pending = _offered.get()
+    if pending is None:
+        pending = []
+        _offered.set(pending)
+    pending.append((filename, data))
+
+
+def take_offered() -> dict[str, bytes]:
+    """The files offered since the last take, by safe name, and forget them."""
+    pending = _offered.get()
+    if not pending:
+        return {}
+    files = collect(pending)
+    pending.clear()
+    return files

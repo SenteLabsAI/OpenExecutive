@@ -72,8 +72,14 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         ),
     ),
     "workflows": (
-        "draft, save, list, suggest or run workflows; Python jobs (analysis, charts, documents; with or without files)",
-        ("draft_workflow", "list_workflows", "run_python_job", "run_workflow", "save_workflow", "suggest_workflow"),
+        "draft, save, list, suggest or run workflows",
+        ("draft_workflow", "list_workflows", "run_workflow", "save_workflow", "suggest_workflow"),
+    ),
+    "files": (
+        "work on any file (an email attachment, a Drive file, one sent in chat): split, merge or "
+        "convert PDFs and spreadsheets, analysis, charts, documents (Python jobs); save a file "
+        "into a Drive or OneDrive folder",
+        ("run_python_job", "save_file"),
     ),
     "documents": (
         "write, read back or list documents such as memos, reports and plans (artifacts)",

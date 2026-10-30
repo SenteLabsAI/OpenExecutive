@@ -75,6 +75,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "run_executive_research": (USE, "run the research council"),
     "list_workflows": (USE, "list workflows"),
     "run_workflow": (USE, "run another workflow"),
+    "save_file": (CHAT_ONLY, "saves files into the company's Drive for the person who asked"),
     "run_python_job": (CHAT_ONLY, "reads the principal's Knowledge files; unattended runs never get it"),
     "draft_artifact": (USE, "publish a document, sheet or report"),
     "get_artifact": (USE, "read a past deliverable"),
