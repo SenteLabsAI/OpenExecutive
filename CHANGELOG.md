@@ -9,6 +9,25 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.8](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.7...v0.6.8) (2026-10-30)
+
+
+### Added
+
+* **briefing:** dismiss a Right now point and drop mail whose sender you wrote to ([#665](https://github.com/SenteLabsAI/OpenExecutive/issues/665)) ([24e577b](https://github.com/SenteLabsAI/OpenExecutive/commit/24e577be7498011e735fe4b16f2a3c8c3ee462ff))
+* **chat:** attach, split and save any file by one handle ([#663](https://github.com/SenteLabsAI/OpenExecutive/issues/663)) ([6cd7d4c](https://github.com/SenteLabsAI/OpenExecutive/commit/6cd7d4cb29f0dbbba7c0d4c2a8a2d5ab0dc2195f))
+* **chat:** search the speaker's own earlier chats before looking things up again ([#660](https://github.com/SenteLabsAI/OpenExecutive/issues/660)) ([1ff8263](https://github.com/SenteLabsAI/OpenExecutive/commit/1ff8263dfd8254263126d2d88655a216d286403c))
+* **delegation:** take replaced chat drafts out of the person's Drafts ([#655](https://github.com/SenteLabsAI/OpenExecutive/issues/655)) ([622211c](https://github.com/SenteLabsAI/OpenExecutive/commit/622211c5b9618658ff1b71c7741c2439dae136b5))
+* **integrations:** decide every waiting card from a chat app ([#658](https://github.com/SenteLabsAI/OpenExecutive/issues/658)) ([49c27bb](https://github.com/SenteLabsAI/OpenExecutive/commit/49c27bbe2d851405e028b19314c3f3258dcd366b))
+
+
+### Fixed
+
+* **chat:** book on the company clock and stop false holds and flags ([#659](https://github.com/SenteLabsAI/OpenExecutive/issues/659)) ([ac38ef1](https://github.com/SenteLabsAI/OpenExecutive/commit/ac38ef1ead89d7ce764ab51505e32b74d0a47a8f))
+* **chat:** stop flagging the Executive's own tool notes as email instructions ([#662](https://github.com/SenteLabsAI/OpenExecutive/issues/662)) ([8261476](https://github.com/SenteLabsAI/OpenExecutive/commit/82614765a0a73b15945fe39cfcc48de397b89e8b))
+* **people:** fill contact details from signatures and add the right contacts ([#657](https://github.com/SenteLabsAI/OpenExecutive/issues/657)) ([d89c1b7](https://github.com/SenteLabsAI/OpenExecutive/commit/d89c1b7f4242603974af6d2edffcbcb92bcf1556))
+* **workflows:** send Gemini's reasoning back in action steps and the designer ([#664](https://github.com/SenteLabsAI/OpenExecutive/issues/664)) ([d77a9c0](https://github.com/SenteLabsAI/OpenExecutive/commit/d77a9c09901f74e009f1f0ca11c16ea0689b90f5))
+
 ## [0.6.7](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.6...v0.6.7) (2026-10-27)
 
 
