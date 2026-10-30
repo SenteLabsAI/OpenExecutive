@@ -20,6 +20,7 @@ from openexecutive.delegation import lockdown
 from openexecutive.delegation.settings import DelegationOverride, TurnDelegation
 from openexecutive.memory import episodic
 from openexecutive.orchestrator import executive as ex
+from openexecutive.orchestrator.chat_search_tools import CHAT_SEARCH_TOOLS
 from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOLS
 from openexecutive.orchestrator.history_tools import HISTORY_TOOLS
 from openexecutive.orchestrator.mcp_gateway import MCP_TOOLS
@@ -142,7 +143,7 @@ def test_every_tool_is_classified_once() -> None:
     names = {
         t["name"]
         for t in [
-            *ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS,
+            *ex._ALL_SKILL_TOOLS, *SPECIALIST_TOOLS, *MCP_TOOLS, *DELEGATION_TOOLS, *HISTORY_TOOLS, *CHAT_SEARCH_TOOLS,
             step_script.CHAT_TOOL_DEFINITION, step_script.LIST_SAVED_TOOLS_DEFINITION,
         ]
     }

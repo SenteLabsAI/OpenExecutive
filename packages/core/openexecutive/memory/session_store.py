@@ -417,6 +417,81 @@ def search_sessions(
     return out
 
 
+_PAST_CHAT_WORDS = 8
+_PAST_CHAT_LIMIT = 8
+_PAST_CHAT_PER_CHAT = 2
+_PAST_CHAT_EXCERPT_CHARS = 700
+
+
+def _excerpt(content: str, words: list[str], chars: int) -> str:
+    """About ``chars`` of ``content`` on one line, starting a little before
+    the first of ``words`` it holds, with … where it was cut."""
+    text = " ".join(str(content or "").split())
+    low = text.lower()
+    hits = [at for at in (low.find(w) for w in words) if at >= 0]
+    at = min(hits) if hits else 0
+    start = max(0, at - chars // 4)
+    if start:
+        space = text.find(" ", start)
+        start = space + 1 if 0 <= space < at else start
+    end = min(len(text), start + chars)
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def search_past_messages(
+    caller_person_id: int,
+    query: str,
+    *,
+    exclude_session_id: str | None = None,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Messages in the caller's own earlier chats that hold every word of
+    ``query`` (case-insensitive): the Executive's answers first, then the
+    caller's own words, newest first within each, at most
+    ``_PAST_CHAT_PER_CHAT`` from one chat and ``_PAST_CHAT_LIMIT`` in all.
+
+    Scoped like ``search_sessions`` (the caller's own rows, never a chat
+    shared with them), without ``exclude_session_id`` (the chat in
+    progress, whose history the turn already has). Each row: ``session_id``,
+    ``title``, ``said_at`` (the message's time), ``role``, ``excerpt``
+    around the first match, and ``mail_private`` (``mark_mail_private``)."""
+    words = [w for w in " ".join(query.split()).lower().split(" ") if len(w) > 1][:_PAST_CHAT_WORDS]
+    if not words or not db_path.exists():
+        return []
+    where = " AND ".join("m.content LIKE ? ESCAPE '\\'" for _ in words)
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT m.session_id, s.title, m.role, m.content, m.created_at,
+                   COALESCE(s.mail_private, 0) AS mail_private
+            FROM chat_messages m JOIN sessions s ON s.session_id = m.session_id
+            WHERE s.caller_person_id = ? AND m.session_id != ?
+              AND m.role IN ('assistant', 'user') AND {where}
+            ORDER BY m.role = 'assistant' DESC, m.id DESC
+            LIMIT 200
+            """,
+            (caller_person_id, exclude_session_id or "", *(_like_pattern(w) for w in words)),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    per_chat: dict[str, int] = {}
+    for row in rows:
+        sid = str(row["session_id"])
+        if per_chat.get(sid, 0) >= _PAST_CHAT_PER_CHAT:
+            continue
+        per_chat[sid] = per_chat.get(sid, 0) + 1
+        out.append({
+            "session_id": sid,
+            "title": row["title"],
+            "said_at": row["created_at"],
+            "role": row["role"],
+            "excerpt": _excerpt(row["content"], words, _PAST_CHAT_EXCERPT_CHARS),
+            "mail_private": bool(row["mail_private"]),
+        })
+        if len(out) >= _PAST_CHAT_LIMIT:
+            break
+    return out
+
+
 def delete_session(session_id: str, db_path: Path = DB_PATH) -> bool:
     if not db_path.exists():
         return False

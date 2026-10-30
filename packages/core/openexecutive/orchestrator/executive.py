@@ -82,6 +82,12 @@ from openexecutive.orchestrator.calendar_tools import (
     CALENDAR_TOOLS,
     typed_booking_only,
 )
+from openexecutive.orchestrator.chat_search_tools import (
+    CHAT_SEARCH_TOOL_HANDLERS,
+    CHAT_SEARCH_TOOL_NAMES,
+    CHAT_SEARCH_TOOLS,
+    search_person,
+)
 from openexecutive.orchestrator.content_trust import (
     principal_only_withheld,
     principal_only_withheld_error,
@@ -215,6 +221,10 @@ from openexecutive.workflows.tool_catalog import filter_search_results
 
 logger = logging.getLogger(__name__)
 
+# The tools that read the speaker's own notes or earlier chats: private rows,
+# withheld from the process log, and checked like a mail read.
+_OWN_RECALL_TOOL_NAMES: frozenset[str] = HISTORY_TOOL_NAMES | CHAT_SEARCH_TOOL_NAMES
+
 
 def _private_to_principal(session: Any) -> bool:
     """Whether this turn is about the principal's private mail (set by the
@@ -259,7 +269,10 @@ def _log_value(tool_name: str, value: Any) -> str:
     audit row keeps it)."""
     from openexecutive.delegation.settings import turn_touched_delegate_mail
 
-    if tool_name in DELEGATION_TOOL_NAMES or tool_name in HISTORY_TOOL_NAMES or turn_touched_delegate_mail():
+    if (
+        tool_name in DELEGATION_TOOL_NAMES or tool_name in _OWN_RECALL_TOOL_NAMES
+        or turn_touched_delegate_mail()
+    ):
         return "<private>"
     return _trunc(value)
 
@@ -870,7 +883,7 @@ def _private_tool_row(tool_name: str) -> bool:
     return (
         tool_name in DELEGATION_TOOL_NAMES
         or tool_name in FACT_TOOL_HANDLERS
-        or tool_name in HISTORY_TOOL_NAMES
+        or tool_name in _OWN_RECALL_TOOL_NAMES
         # An installed extension's tool that quotes the speaker's own data
         # (orchestrator/extensions.py, private_row).
         or extensions.private_row(tool_name)
@@ -2378,6 +2391,11 @@ class Executive:
         if history_offered:
             delegation_tools = [*delegation_tools, *HISTORY_TOOLS]
             turn_handlers = {**turn_handlers, **HISTORY_TOOL_HANDLERS}
+        # Earlier chats: search_past_chats joins the same way, on a turn whose
+        # speaker is verified in a chat nobody else reads (chat_search_tools).
+        if not mcp_client and not replaying and search_person(current_session.get()) is not None:
+            delegation_tools = [*delegation_tools, *CHAT_SEARCH_TOOLS]
+            turn_handlers = {**turn_handlers, **CHAT_SEARCH_TOOL_HANDLERS}
         # Tools an installed extension adds (orchestrator/extensions.py): only
         # on a turn someone is in, never an unattended run or a turn private
         # to the principal, and only where each tool says it is offered.
@@ -2751,7 +2769,7 @@ class Executive:
             # (delegation.lockdown.mail_turn_withholds).
             mail_touched_uses: list[dict[str, Any]] = []
             reads_mail_now = any(
-                tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in HISTORY_TOOL_NAMES for tu in dispatch_uses
+                tu["name"] in MAILBOX_TOOL_NAMES or tu["name"] in _OWN_RECALL_TOOL_NAMES for tu in dispatch_uses
             )
             if pinned_delegation is not None and (pinned_delegation.read_mail or reads_mail_now):
                 mail_touched_uses = [
@@ -3719,7 +3737,7 @@ class Executive:
             # next round on (delegation.lockdown.mail_lock_holds).
             if pinned_delegation is not None and reads_mail_now:
                 for tu in dispatch_uses:
-                    if tu["name"] not in MAILBOX_TOOL_NAMES and tu["name"] not in HISTORY_TOOL_NAMES:
+                    if tu["name"] not in MAILBOX_TOOL_NAMES and tu["name"] not in _OWN_RECALL_TOOL_NAMES:
                         continue
                     if tu["id"] not in results_by_id:
                         continue  # never ran (not offered): no mail was read

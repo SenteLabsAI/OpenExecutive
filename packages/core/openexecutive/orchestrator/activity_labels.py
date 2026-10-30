@@ -141,6 +141,8 @@ _LABELS: dict[str, str] = {
 
     # Always in the loop: the speaker's own notes
     "recall_history": "Checking your notes…",
+    # Earlier chats: the speaker's own
+    "search_past_chats": "Checking our earlier chats…",
 
     # MCP gateway. `call_tool` is dynamic and handled in `_label_for`.
     "search_tools": "Looking for the right tool…",

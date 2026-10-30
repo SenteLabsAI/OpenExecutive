@@ -2986,6 +2986,14 @@ memory:
       it.
     - recall_history takes due=true to list only dated notes, a week overdue
       to two weeks ahead, soonest first ("what's due today?").
+    - search_past_chats (orchestrator/chat_search_tools.py) searches the
+      speaker's own earlier chats (session_store.search_past_messages, owned
+      chats only, not the one in progress) on the same surface as recall, no
+      switch. Every query word must match; answers first, newest first, two
+      per chat, eight in all, dated. Hits are leads, not the source of truth:
+      the tool says to confirm figures in the source. A hit from a
+      mail_private chat sets touched_mail and marks the conversation, as
+      recall does; a plain hit changes nothing.
     - The owner's briefs read the owner's own notes (memory.history_brief):
       the morning brief a FROM YOUR NOTES - DUE SOON block, the end-of-day
       digest a FROM YOUR NOTES - TODAY block. Only on the scheduler's

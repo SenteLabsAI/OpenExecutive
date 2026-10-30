@@ -85,6 +85,8 @@ _SENSITIVE_SUBSTRINGS = (
     # Always in the loop: recall_history returns the speaker's own notes,
     # private to them.
     "recall_history",
+    # search_past_chats returns the speaker's own earlier chats.
+    "search_past_chats",
 )
 
 # Keys inside a tool_input dict whose values are stripped before being

@@ -84,6 +84,7 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "search_skills",
     "search_tools",
     "recall_history",
+    "search_past_chats",
     # The app's own user guide: a file shipped with it.
     "read_user_guide",
     # The owner's own mailbox (mail_read_tools, delegation_tools).

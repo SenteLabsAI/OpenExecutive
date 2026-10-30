@@ -115,6 +115,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "remind_me": (AS_ME, "a reminder for the person"),
     "propose_actions": (AS_ME, "an approval card from the person's mail"),
     "recall_history": (AS_ME, "the person's own conversation notes"),
+    "search_past_chats": (AS_ME, "the person's own earlier chats"),
     # COVERED: workflows have their own way.
     "consult_specialist": (COVERED, "a specialist step"),
     "search_tools": (COVERED, "a step names gateway tools directly"),
@@ -163,6 +164,7 @@ def chat_tool_definitions() -> dict[str, dict[str, Any]]:
     """Every tool the chat can offer, by name (definitions as chat offers
     them; web search is the model's server tool and has none here)."""
     from openexecutive.orchestrator import tool_groups
+    from openexecutive.orchestrator.chat_search_tools import CHAT_SEARCH_TOOLS
     from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOLS
     from openexecutive.orchestrator.executive import _offered_skill_tools
     from openexecutive.orchestrator.history_tools import HISTORY_TOOLS
@@ -173,7 +175,7 @@ def chat_tool_definitions() -> dict[str, dict[str, Any]]:
 
     tools = [
         *SPECIALIST_TOOLS, *_offered_skill_tools(), *MCP_TOOLS, *DELEGATION_TOOLS,
-        *HISTORY_TOOLS, *KNOWLEDGE_TOOLS, tool_groups.USE_TOOL_TOOL,
+        *HISTORY_TOOLS, *CHAT_SEARCH_TOOLS, *KNOWLEDGE_TOOLS, tool_groups.USE_TOOL_TOOL,
         {"name": tool_groups.OPEN_TOOLS},
         {"name": step_script.RUN_SCRIPT_TOOL}, {"name": step_script.LIST_SAVED_TOOLS_TOOL},
     ]
