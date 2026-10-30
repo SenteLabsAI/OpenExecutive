@@ -732,6 +732,40 @@ def test_own_inbox_leaves_out_mail_they_answered_since(
     assert not any("loan figures" in line for line in mail.lines)
 
 
+def test_own_inbox_counts_a_send_to_the_sender_from_another_thread(
+    principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.briefing import waiting_on
+    from openexecutive.delegation import inbox
+
+    now = datetime(2026, 10, 30, 19, 0, tzinfo=UTC)
+    at = now - timedelta(hours=1)
+    after = now - timedelta(minutes=5)
+    # Signed contracts, nothing needed back; the reader sent them on to
+    # someone else in that person's thread with Mara on copy.
+    inbox._note_mail(7, _mail("m1", "Mara.Quinn@co.test", "Mara Quinn", "Signed contracts", at, "t1"), relation="team")
+    # Dana asked for something; the reader wrote to Dana about lunch: still open.
+    inbox._note_mail(7, _mail("m2", "dana@co.test", "Dana Fox", "Lease terms", at, "t2"), relation="contact")
+    # Lee asked; the reader answered fresh, on the same subject: dealt with.
+    inbox._note_mail(7, _mail("m3", "lee@co.test", "Lee Park", "Budget", at, "t3"), relation="contact")
+    # Kim's FYI came after the reader last wrote to Kim: still news.
+    inbox._note_mail(7, _mail("m4", "kim@co.test", "Kim Ono", "Heads up", at, "t4"), relation="contact")
+    monkeypatch.setattr(inbox, "outcomes", lambda pid, ids: {
+        "m1": inbox.NOT_NEEDED, "m2": "", "m3": "", "m4": inbox.NOT_NEEDED,
+    })
+    monkeypatch.setattr(waiting_on, "replied", lambda: {})
+    monkeypatch.setattr(waiting_on, "wrote_to", lambda: {
+        "mara.quinn@co.test": [(after, "Re: figures")],
+        "dana@co.test": [(after, "Lunch Friday?")],
+        "lee@co.test": [(after, "Re: Budget")],
+        "kim@co.test": [(at - timedelta(hours=1), "Hello")],
+    })
+
+    mail = live_signals.own_inbox(now - timedelta(hours=12), UTC, now)
+
+    assert sorted(r["message_id"] for r in mail.refs) == ["m2", "m4"]
+
+
 def test_newer_mail_on_an_open_card_is_news_and_noted_once(
     principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

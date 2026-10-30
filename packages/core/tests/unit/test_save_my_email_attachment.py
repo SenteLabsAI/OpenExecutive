@@ -378,6 +378,7 @@ def test_a_bad_index_or_message_id_is_refused(roster: SimpleNamespace) -> None:
     "Copy Ben on the reply and put it in the board folder",
     "Summarise the email about our drive to hire",
     "Which store is Priya's lease for?",
+    "Read the attached file and the attachment Priya sent",
     # Their message carries an attached file: its words aren't theirs alone.
     "Save it [Attached: notes.txt] save to drive",
 ])
@@ -773,7 +774,10 @@ def test_a_failure_that_isnt_a_missing_folder_makes_no_new_folder(
     assert len(storage.folders) == 1
 
 
-@pytest.mark.parametrize("said", ["Put Priya's LOI in my Drive", "Drop it into Google Drive please", "upload the deck"])
+@pytest.mark.parametrize("said", [
+    "Put Priya's LOI in my Drive", "Drop it into Google Drive please", "upload the deck",
+    "Draft a reply to Priya and attach the signed lease to it",
+])
 def test_drive_as_the_place_counts_as_asking(roster: SimpleNamespace, said: str) -> None:
     storage = FakeStorage()
     _gateway(storage)

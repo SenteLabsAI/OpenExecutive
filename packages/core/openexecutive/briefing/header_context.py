@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from openexecutive.alerts.lifecycle import parse_aware
 from openexecutive.briefing.narrative import QUIET_PRINCIPAL, QUIET_VIEWER
 from openexecutive.briefing.reader import Reader, mask, reader_line
+from openexecutive.briefing.right_now import Dismissed, dismissed_block, source_identity
 
 if TYPE_CHECKING:
     from openexecutive.briefing.live_signals import LiveSignals
@@ -129,13 +130,18 @@ def render_header_context(
     raise_older: list[str] | None = None,
     leave_out_block: str = "",
     reader: Reader | None = None,
+    dismissed: list[Dismissed] | None = None,
 ) -> HeaderContext:
     """Right now's user turn. ``today_data`` is the scoped /today snapshot
     (``proposals`` already narrowed to action cards, plus ``external`` and,
     for the principal, ``due_soon``). ``activity`` is the rail; only rows
     from today that are not from the reader's chats are read. Never raises
-    on missing keys."""
+    on missing keys. ``dismissed`` is what the reader cleared from Right now
+    today (``right_now.dismissed``): a line about the same email, chat
+    message or card is left out, and the rest are named so the model does
+    not raise them again."""
     now = now or datetime.now(UTC)
+    gone = {i for i in (source_identity(d.source) for d in dismissed or []) if i}
     today = now.astimezone(tz).strftime("%Y-%m-%d")
     solo = mode == "solo"
     moved = _Tagger()
@@ -156,11 +162,16 @@ def render_header_context(
             moved.add(f"The reader's own email, waiting on an answer: {_one_line(line, 300)}")
         refs = list(live.inbox_refs)
         for i, line in enumerate(live.inbox):
+            ref = refs[i] if i < len(refs) else {}
+            if source_identity(ref) in gone:
+                continue
             tag = moved.add(f"Email to the reader's own inbox: {_one_line(line, 400)}")
-            if i < len(refs) and refs[i].get("message_id"):
-                sources[tag] = dict(refs[i])
+            if ref.get("message_id"):
+                sources[tag] = dict(ref)
         ask_refs = list(live.chat_ask_refs)
         for i, line in enumerate(live.chat_asks):
+            if i < len(ask_refs) and source_identity(ask_refs[i]) in gone:
+                continue
             tag = moved.add(f"Chat message asking the reader, not answered yet: {_one_line(line, 400)}")
             if i < len(ask_refs) and ask_refs[i].get("url"):
                 sources[tag] = dict(ask_refs[i])
@@ -168,6 +179,8 @@ def render_header_context(
             moved.add(f"Meeting that ended today: {_one_line(line, 200)}")
 
     for p in today_data.get("proposals") or []:
+        if source_identity({"kind": "alert", "alert_id": p.get("alert_id")}) in gone:
+            continue
         headline = _one_line(p.get("headline"), 160)
         age = _age_label(p.get("created_at"), now)
         if _local_day(p.get("created_at"), tz) == today:
@@ -286,6 +299,8 @@ def render_header_context(
         body.extend([standing_facts, ""])
     if leave_out_block:
         body.extend([leave_out_block, ""])
+    if dismissed:
+        body.extend([dismissed_block(dismissed), ""])
 
     text_body = "\n".join(body).rstrip()
     head_lines = parts[:head]

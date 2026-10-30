@@ -8,6 +8,7 @@ import {
   approveAlert,
   approveDecision,
   bulkAckAlerts,
+  dismissTodayPoint,
   getDelegation,
   getToday,
   markTodaySeen,
@@ -31,7 +32,7 @@ import {
   narrativeUpdatedLabel,
   shouldRefreshOnFocus,
 } from "@/lib/narrativeFreshness";
-import { checkedLabel, seenBaseline } from "@/lib/rightNow";
+import { checkedLabel, seenBaseline, type TimedPoint } from "@/lib/rightNow";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
 import InfoTip from "./InfoTip";
@@ -445,7 +446,16 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
 
   // What Right now's points open: the email (and its reply card, shared
   // with Needs you) or the card in Needs you.
-  const rightNowActions = { replies, onShowAlert: jumpToAlert, onContinue };
+  // ✕ on a point clears it at once; the server keeps it out for the day.
+  const onDismissPoint = useCallback((point: TimedPoint) => {
+    setToday((t) => t && { ...t, narrative_points: (t.narrative_points ?? []).filter((p) => p.text !== point.text) });
+    dismissTodayPoint(point.text)
+      .then((kept) => {
+        if (!kept) return getToday().then(setToday);
+      })
+      .catch((e) => console.error("Dismissing a Right now point failed", e));
+  }, []);
+  const rightNowActions = { replies, onShowAlert: jumpToAlert, onContinue, onDismiss: onDismissPoint };
 
   const dateLabel = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 

@@ -548,3 +548,40 @@ async def test_write_calls_audit_their_targets_but_never_content(
     assert "targets" not in read_row["details"]  # read-only tool: nothing logged
     assert write_row["details"]["targets"] == {"spreadsheet_id": "sheet-XYZ"}
     assert "Acme" not in json.dumps(write_row)
+
+
+def test_openrouter_reasoning_survives_the_assistant_turn() -> None:
+    """Gemini's thought signature (OpenRouter reasoning_details) is kept for
+    the next request, or the tool call after it is rejected."""
+    from openexecutive.providers.translator import from_openai_response
+
+    details = [
+        {
+            "type": "reasoning.encrypted",
+            "data": "SIG",
+            "id": "tool_1",
+            "format": "google-gemini-v1",
+            "index": 0,
+        }
+    ]
+    reply = from_openai_response(
+        {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "tool_1",
+                                "function": {"name": "sheets__read_values", "arguments": "{}"},
+                            }
+                        ],
+                        "reasoning_details": details,
+                    },
+                }
+            ]
+        }
+    )
+    blocks = [act._block_to_dict(b) for b in reply.content]
+    assert blocks[0] is not None and blocks[0]["type"] == "tool_use"
+    assert blocks[-1] == {"type": "openrouter_reasoning", "reasoning_details": details}

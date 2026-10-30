@@ -485,7 +485,12 @@ def test_every_tool_loop_replays_reasoning() -> None:
     import inspect
 
     from openexecutive.orchestrator import executive
-    from openexecutive.workflows import executive_reflection, executive_research
+    from openexecutive.workflows import (
+        action_step,
+        designer,
+        executive_reflection,
+        executive_research,
+    )
 
-    for mod in (executive, executive_research, executive_reflection):
+    for mod in (executive, executive_research, executive_reflection, action_step, designer):
         assert "reasoning_replay_block(block)" in inspect.getsource(mod), mod.__name__

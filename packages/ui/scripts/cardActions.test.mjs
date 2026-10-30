@@ -20,8 +20,11 @@ const CALLS = JSON.parse(readFileSync(new URL("../src/lib/host-list.json", impor
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 // Approvals that are no card: a suggested watch going live (on the host
-// list) and knowledge review items (a change like any other).
-const NOT_CARDS = new Set(["/watchlist/12/approve", "/watchlist/12/decline", "/review/bulk-approve"]);
+// list), knowledge review items and clearing a Right now point (a change
+// like any other).
+const NOT_CARDS = new Set([
+  "/watchlist/12/approve", "/watchlist/12/decline", "/review/bulk-approve", "/today/dismiss",
+]);
 
 test("every approve, reject, cancel or decide call in lib/api.ts is a card action or named as none", () => {
   const paths = [...API.matchAll(/fetch\(`\$\{API_BASE\}(\/[^`]*)`/g)]

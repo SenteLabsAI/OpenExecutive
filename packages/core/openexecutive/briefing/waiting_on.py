@@ -22,7 +22,10 @@ message in its thread.
 The same read notes which threads they last wrote in, and when
 (``replied_at``): Right now drops an email they have answered since it
 came, even one that never got a reply card (a card is settled against
-their reply on its own, ``delegation.inbox.reconcile``).
+their reply on its own, ``delegation.inbox.reconcile``). It also notes who
+they wrote to (to or cc), when and under what subject (``wrote_to``), so
+Right now can count an email dealt with when they wrote to its sender after
+it came from another thread (``live_signals.own_inbox`` says when).
 """
 from __future__ import annotations
 
@@ -92,13 +95,17 @@ async def _open_mailbox() -> tuple[Any, set[str]] | None:
 
 
 async def read_waiting(
-    now: datetime | None = None, replied_out: dict[str, datetime] | None = None
+    now: datetime | None = None,
+    replied_out: dict[str, datetime] | None = None,
+    wrote_out: dict[str, list[tuple[datetime, str]]] | None = None,
 ) -> list[Waiting] | None:
     """Their unanswered sent mail, newest first, or None when there is no
     mailbox of theirs to read (Act as me off, not connected). A mailbox that
     fails to answer raises, so ``refresh`` keeps the last good read.
     ``replied_out`` gets thread id → when they last sent in it, for every
-    thread their recent sent mail is in."""
+    thread their recent sent mail is in; ``wrote_out`` gets address → (when,
+    subject) of each of their recent sent messages to it (to or cc; a bcc is
+    a mass send, never an answer)."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.follow_ups import recipients
     from openexecutive.delegation.ghostwriter import one_line
@@ -117,10 +124,15 @@ async def read_waiting(
         seen: set[str] = set()
         # Newest first, so the first sent message seen in a thread is their latest there.
         for sent in await mailbox.list_sent(limit=_SENT_LOOKED_AT):
+            sent_at = _parse(sent.received_at)
+            mine = sent.from_addr in own and "SENT" in sent.labels
+            if wrote_out is not None and sent_at is not None and mine:
+                for address in dict.fromkeys(normalize_email(a) for a in (*sent.to, *sent.cc)):
+                    if address and address not in own:
+                        wrote_out.setdefault(address, []).append((sent_at, str(sent.subject or "")))
             if sent.thread_id in seen:
                 continue
             seen.add(sent.thread_id)
-            sent_at = _parse(sent.received_at)
             if (
                 replied_out is not None and sent_at is not None and sent.thread_id
                 and sent.from_addr in own and "SENT" in sent.labels
@@ -172,6 +184,8 @@ async def read_waiting(
 _cache: tuple[float, list[Waiting] | None] | None = None
 # Thread id → when they last sent in it, from the same read as ``_cache``.
 _replied: dict[str, datetime] = {}
+# Address → (when, subject) of their recent sends to it, from the same read.
+_wrote: dict[str, list[tuple[datetime, str]]] = {}
 _lock: asyncio.Lock | None = None
 # Bumped by ``reset_cache``: a read that was running when Act as me went off
 # must not store what it read.
@@ -184,7 +198,7 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
     /today hot path. A read that fails keeps the last good one (until it is
     ``_HARD_MAX_AGE_SECONDS`` old) and is tried again on the next call.
     Never raises."""
-    global _cache, _lock, _failed_at, _replied
+    global _cache, _lock, _failed_at, _replied, _wrote
     if _lock is None:
         _lock = asyncio.Lock()
     async with _lock:
@@ -194,15 +208,16 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
             return cached()
         started = _generation
         replied: dict[str, datetime] = {}
+        wrote: dict[str, list[tuple[datetime, str]]] = {}
         try:
-            items = await asyncio.wait_for(read_waiting(now, replied), timeout=_TIMEOUT_SECONDS)
+            items = await asyncio.wait_for(read_waiting(now, replied, wrote), timeout=_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.info("waiting_on: refresh failed (%s)", type(exc).__name__)
             _failed_at = time.monotonic()
             return cached()
         if started != _generation:
             return None
-        _cache, _failed_at, _replied = (time.monotonic(), items), None, replied
+        _cache, _failed_at, _replied, _wrote = (time.monotonic(), items), None, replied, wrote
         return items
 
 
@@ -242,6 +257,13 @@ def replied() -> dict[str, datetime]:
     return dict(_replied) if _usable() else {}
 
 
+def wrote_to() -> dict[str, list[tuple[datetime, str]]]:
+    """Address (lowercased) → (when, subject) of each of their recent sends
+    to it (to or cc), from the last read; empty with no usable read. Never
+    calls out."""
+    return dict(_wrote) if _usable() else {}
+
+
 def replied_at(thread_id: str) -> datetime | None:
     """When they last sent mail in ``thread_id`` (``replied``), or None."""
     return replied().get(thread_id) if thread_id else None
@@ -250,12 +272,14 @@ def replied_at(thread_id: str) -> datetime | None:
 def reset_cache() -> None:
     """Forget the cached read, and any read still running (tests; Act as me
     turned off)."""
-    global _cache, _generation, _failed_at, _replied
+    global _cache, _generation, _failed_at, _replied, _wrote
     _cache = _failed_at = None
     _replied = {}
+    _wrote = {}
     _generation += 1
 
 
 __all__ = [
     "MAX_AGE_SECONDS", "WINDOW", "Waiting", "cached", "read_waiting", "refresh", "replied", "replied_at", "reset_cache",
+    "wrote_to",
 ]

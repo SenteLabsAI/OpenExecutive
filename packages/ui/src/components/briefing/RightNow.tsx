@@ -30,9 +30,10 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 // inbox has View email and Reply under it: View opens the email right there
 // (GET /delegation/mail), with the reply card already on its conversation;
 // Reply writes one (POST /delegation/mail/reply) and shows it to send,
-// change or edit. A point about a card in Needs you has Show me. While it
-// is being rewritten, its steps show in place of the old read, which is no
-// longer current.
+// change or edit. A point about a card in Needs you has Show me. Every
+// point has a ✕ that dismisses it for the rest of the day (POST
+// /today/dismiss). While it is being rewritten, its steps show in place of
+// the old read, which is no longer current.
 
 // How many points the Home card shows; the panel has them all.
 const CARD_POINTS = 3;
@@ -62,6 +63,22 @@ export interface PointActions {
   // A point with nothing to open is a button that talks it through (the
   // panel), or plain text (the Home card).
   plainRows?: boolean;
+  // Clears a point for the rest of the day.
+  onDismiss?: (point: TimedPoint) => void;
+}
+
+function DismissButton({ text, onClick }: { text: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Dismiss: ${text}`}
+      title="Dismiss"
+      className="-mr-1 -mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-fg-muted transition hover:bg-accent/10 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      <span aria-hidden className="text-base leading-none">✕</span>
+    </button>
+  );
 }
 
 function PointRow({
@@ -81,6 +98,8 @@ function PointRow({
     ? () => onContinue(buildNarrativeSeed(text), briefingMemoryLine(MEMORY_ACTIONS.narrative, text))
     : undefined;
   const when = clockLabel(point.since);
+  const onDismiss = actions?.onDismiss;
+  const dismiss = onDismiss ? <DismissButton text={text} onClick={() => onDismiss(point)} /> : null;
   const body = (
     <>
       <span
@@ -97,24 +116,33 @@ function PointRow({
   // No email or card behind it: the whole row talks it through, as before.
   if (!target || (target.kind === "alert" && !actions?.onShowAlert) || (target.kind === "mail" && !actions?.replies)) {
     if (!talk || actions?.plainRows) {
-      return <li className="flex items-start gap-2.5 border-t border-line py-2 first:border-t-0">{body}</li>;
+      return (
+        <li className="flex items-start gap-2.5 border-t border-line py-2 first:border-t-0">
+          {body}
+          {dismiss}
+        </li>
+      );
     }
     return (
-      <li className="border-t border-line first:border-t-0">
+      <li className="flex items-start gap-1 border-t border-line first:border-t-0">
         <button
           type="button"
           onClick={talk}
           aria-label={`Discuss: ${text}`}
-          className="-mx-2 flex w-[calc(100%+1rem)] items-start gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-accent/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          className="-ml-2 flex min-w-0 flex-1 items-start gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-accent/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         >
           {body}
         </button>
+        {dismiss && <div className="pt-2">{dismiss}</div>}
       </li>
     );
   }
   return (
     <li className="border-t border-line py-2 first:border-t-0">
-      <div className="flex items-start gap-2.5">{body}</div>
+      <div className="flex items-start gap-2.5">
+        {body}
+        {dismiss}
+      </div>
       {target.kind === "mail" && open ? (
         <MailPanel
           target={target}
