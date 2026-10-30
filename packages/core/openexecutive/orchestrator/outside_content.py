@@ -1041,7 +1041,8 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
             rest = [e for n, e in enumerate(listed[0][listed[1]]) if n not in own]
             verdict = await _check_list(state, rest) if rest else content_scan.CLEAN
         else:
-            verdict = await _check(state, without_own_words(result))
+            checked = without_own_words(result)
+            verdict = await _check(state, checked) if checked != "" else content_scan.CLEAN
     except Exception:
         verdict = content_scan.UNCHECKED
     if verdict.flagged and verdict.items and listed is not None:

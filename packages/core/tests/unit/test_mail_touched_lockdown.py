@@ -840,7 +840,7 @@ def test_a_refusal_is_never_flagged_as_the_mails(monkeypatch: pytest.MonkeyPatch
         refused = json.dumps({"error": "Ask them first. Do not retry until they say so.", "status": "not_asked"})
         result, notice = asyncio.run(outside_content.check_mail_read(pinned, refused))
         assert result == refused and notice == ""
-        assert seen == [""] and state.flags == []
+        assert seen == [] and state.flags == [] and state.scans == 0
         assert not pinned.mail_held
     finally:
         outside_content.end_turn(state)
