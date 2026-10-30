@@ -80,10 +80,15 @@ def keep(session_id: str | None, files: dict[str, bytes], *, from_mail: bool = F
             kept.append(name)
         except OSError:
             logger.warning("conversation_files: couldn't keep a file", exc_info=True)
-    _mark(folder, kept, from_mail)
-    folder.touch()
-    if time.monotonic() - _last_prune >= PRUNE_EVERY_S:
-        prune()
+    # Best effort to the end: a caller holds a turn's locks around this, so
+    # nothing here may raise into it (a full disk, a read-only folder).
+    try:
+        _mark(folder, kept, from_mail)
+        folder.touch()
+        if time.monotonic() - _last_prune >= PRUNE_EVERY_S:
+            prune()
+    except Exception:
+        logger.warning("conversation_files: couldn't finish keeping files", exc_info=True)
     return kept
 
 

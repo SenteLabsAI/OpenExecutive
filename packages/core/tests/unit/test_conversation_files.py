@@ -113,3 +113,12 @@ def test_a_saved_email_reads_html_only_bad_charset_and_no_body(tmp_path: Path) -
     assert "Subject: Hi" in odd
     empty = _eml(tmp_path, head + b"\r\n")
     assert empty.startswith("From: a@co.example")
+
+
+def test_keeping_never_raises_into_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken() -> None:
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(conversation_files, "_last_prune", 0.0)
+    monkeypatch.setattr(conversation_files, "prune", broken)
+    assert conversation_files.keep("c1", {"a.pdf": b"x"}) == ["a.pdf"]
