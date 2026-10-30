@@ -319,6 +319,35 @@ def test_a_mail_file_in_a_job_keeps_the_turn_held(sandbox: list, monkeypatch: py
     assert lockdown.mail_lock_holds(pinned)
 
 
+def test_files_made_from_mail_hold_a_later_turn_too(
+    company: Session, sandbox: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation.settings import TurnDelegation
+
+    first = TurnDelegation(offered=True, session_id=company.session_id)
+    company.turn_delegation = first
+
+    async def writer() -> Any:
+        first.unchecked_mail = True
+        return SimpleNamespace(mailbox=_Mailbox(), pinned=first)
+
+    monkeypatch.setattr(file_refs, "_mail_writer", writer)
+    _job({"code": "split()", "files": ["mail:m1#1"]})
+    assert conversation_files.from_mail(company.session_id, "LOI - Pine View.pdf")
+    # The next turn names a half: it is held as a mail read, as the first was.
+    later = TurnDelegation(offered=True, session_id=company.session_id)
+    company.turn_delegation = later
+    _job({"code": "x", "files": ["file:LOI - Pine View.pdf"]})
+    assert later.read_mail and later.unchecked_mail
+    # A file the person sent themselves is not.
+    plain = TurnDelegation(offered=True, session_id=company.session_id)
+    company.turn_delegation = plain
+    conversation_files.keep(company.session_id, {"mine.pdf": b"x"})
+    assert file_refs.conversation_file("mine.pdf") is not None
+    assert not plain.read_mail and "mine.pdf" in conversation_files.names(company.session_id)
+    assert ".from_mail.json" not in conversation_files.names(company.session_id)
+
+
 def test_a_job_read_after_outside_content_is_not_kept(sandbox: list, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(python_job, "_read_outside_this_turn", lambda: True)
     out = _job({"code": "1", "save_as": "split_lois", "description": "Split LOIs"})

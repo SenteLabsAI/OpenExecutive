@@ -136,8 +136,30 @@ def conversation_file(name: str) -> tuple[str, bytes] | None:
         return turn_files.safe_name(name), data
     data = conversation_files.get(_session_id(), name)
     if data is not None:
+        if conversation_files.from_mail(_session_id(), name):
+            _hold_as_mail_read()
         return turn_files.safe_name(name), data
     return None
+
+
+def _hold_as_mail_read() -> None:
+    """A file made from mail is being used: hold the turn as the one that
+    opened the attachment was (``_mail_writer``)."""
+    from openexecutive.delegation.settings import turn_delegation
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    pinned = turn_delegation(current_session.get())
+    if pinned is not None:
+        pinned.read_mail = pinned.touched_mail = pinned.unchecked_mail = True
+
+
+def turn_used_mail_files() -> bool:
+    """Whether this turn used a mail file, so what it makes is from mail too."""
+    from openexecutive.delegation.settings import turn_delegation
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    pinned = turn_delegation(current_session.get())
+    return pinned is not None and pinned.unchecked_mail is True
 
 
 def available_names() -> list[str]:

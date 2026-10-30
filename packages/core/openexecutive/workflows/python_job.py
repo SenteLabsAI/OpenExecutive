@@ -782,7 +782,14 @@ async def _keep(files: dict[str, bytes]) -> dict[str, Any]:
     for name, data in files.items():
         await asyncio.to_thread((folder / name).write_bytes, data)
     session_id = getattr(current_session.get(), "session_id", None)
-    kept = set(await asyncio.to_thread(conversation_files.keep, str(session_id) if session_id else None, files))
+    from openexecutive.orchestrator.file_refs import turn_used_mail_files
+
+    kept = set(await asyncio.to_thread(
+        functools.partial(
+            conversation_files.keep, str(session_id) if session_id else None, files,
+            from_mail=turn_used_mail_files(),
+        )
+    ))
     return {
         "files": [
             {"name": n, "bytes": len(d),

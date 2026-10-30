@@ -7158,6 +7158,9 @@ workflows:
     refused; OneDrive uploads stay in its own drive and never overwrite a
     name). Opening a mail: file sets TurnDelegation.unchecked_mail, which
     mail_lock_holds honours, so a job printing the file cannot lift the hold;
+    a job's results on such a turn are kept marked from mail
+    (conversation_files .from_mail.json), and a later turn using one by
+    file: handle sets read_mail + unchecked_mail like the first;
     save_as is refused after outside content this turn; deleting a chat
     removes its kept files. With folder documents (the place to save when
     no Drive or OneDrive is connected) save_file puts the file in the company's Documents (company/docs + the

@@ -10,6 +10,9 @@ file tool finds them (``orchestrator.file_refs``).
   is only ever found from the conversation it was sent or made in.
 - **How long:** ``KEEP_DAYS``, and at most ``KEEP_TOTAL_BYTES`` in all, oldest
   conversations' files going first.
+- **From mail:** a file made from a mail attachment (a job run on one) is
+  marked (``from_mail``), so a later turn that reads or uses it is held as a
+  mail read, as the turn that opened the attachment was.
 - **Names:** the safe name the turn's uploads already use
   (``turn_files.safe_name``); a later file of the same name replaces the
   earlier one, as the newest is the one meant.
@@ -21,6 +24,7 @@ Drive, a sandboxed Python job).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import shutil
 import threading
@@ -32,6 +36,9 @@ logger = logging.getLogger(__name__)
 KEEP_DAYS = 7
 KEEP_TOTAL_BYTES = 500 * 2**20
 MAX_FILE_BYTES = 25 * 2**20
+# Names of the conversation's files made from mail; a leading dot keeps it
+# out of every file name (``turn_files.safe_name`` strips one).
+_MAIL_MARKS = ".from_mail.json"
 _prune_lock = threading.Lock()
 
 
@@ -46,9 +53,10 @@ def _folder(session_id: str) -> Path:
     return root() / digest
 
 
-def keep(session_id: str | None, files: dict[str, bytes]) -> list[str]:
+def keep(session_id: str | None, files: dict[str, bytes], *, from_mail: bool = False) -> list[str]:
     """Keep ``files`` (safe name -> bytes) for the conversation; returns the
-    names kept. Best effort: a file that can't be written is left out."""
+    names kept. ``from_mail``: they were made from a mail attachment. Best
+    effort: a file that can't be written is left out."""
     from openexecutive.workflows.turn_files import safe_name
 
     if not session_id or not files:
@@ -69,9 +77,36 @@ def keep(session_id: str | None, files: dict[str, bytes]) -> list[str]:
             kept.append(name)
         except OSError:
             logger.warning("conversation_files: couldn't keep a file", exc_info=True)
+    _mark(folder, kept, from_mail)
     folder.touch()
     prune()
     return kept
+
+
+def _marks(folder: Path) -> set[str]:
+    try:
+        loaded = json.loads((folder / _MAIL_MARKS).read_text())
+    except (OSError, ValueError):
+        return set()
+    return {str(n) for n in loaded} if isinstance(loaded, list) else set()
+
+
+def _mark(folder: Path, kept: list[str], from_mail: bool) -> None:
+    marks = _marks(folder)
+    updated = marks | set(kept) if from_mail else marks - set(kept)
+    if updated == marks:
+        return
+    try:
+        (folder / _MAIL_MARKS).write_text(json.dumps(sorted(updated)))
+    except OSError:
+        logger.warning("conversation_files: couldn't mark files from mail", exc_info=True)
+
+
+def from_mail(session_id: str | None, name: str) -> bool:
+    """Whether the conversation's file of that name was made from mail."""
+    from openexecutive.workflows.turn_files import safe_name
+
+    return bool(session_id) and safe_name(name) in _marks(_folder(str(session_id)))
 
 
 def get(session_id: str | None, name: str) -> bytes | None:
@@ -103,7 +138,7 @@ def names(session_id: str | None) -> list[str]:
     folder = _folder(session_id)
     if not folder.is_dir():
         return []
-    return sorted(p.name for p in folder.iterdir() if p.is_file())
+    return sorted(p.name for p in folder.iterdir() if p.is_file() and p.name != _MAIL_MARKS)
 
 
 def prune() -> None:
