@@ -130,3 +130,12 @@ def test_keeping_with_no_settings_returns_nothing(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(conversation_files, "root", no_settings)
     assert conversation_files.keep("c1", {"a.pdf": b"x"}) == []
+
+
+def test_one_conversation_keeps_at_most_its_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(conversation_files, "MAX_CONVERSATION_BYTES", 10)
+    assert conversation_files.keep("c1", {"a.bin": b"x" * 6}) == ["a.bin"]
+    assert conversation_files.keep("c1", {"b.bin": b"x" * 6}) == []
+    # Replacing a file counts only the new copy.
+    assert conversation_files.keep("c1", {"a.bin": b"x" * 9}) == ["a.bin"]
+    assert conversation_files.keep("c2", {"b.bin": b"x" * 6}) == ["b.bin"]

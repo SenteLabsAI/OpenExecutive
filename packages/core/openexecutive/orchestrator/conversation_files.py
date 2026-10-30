@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 KEEP_DAYS = 7
 KEEP_TOTAL_BYTES = 500 * 2**20
 MAX_FILE_BYTES = 25 * 2**20
+# One conversation's share, so one chat's uploads can't push everyone
+# else's files out of KEEP_TOTAL_BYTES.
+MAX_CONVERSATION_BYTES = 100 * 2**20
 # Names of the conversation's files made from mail; a leading dot keeps it
 # out of every file name (``turn_files.safe_name`` strips one).
 _MAIL_MARKS = ".from_mail.json"
@@ -82,15 +85,19 @@ def _keep(session_id: str | None, files: dict[str, bytes], from_mail: bool) -> l
     except OSError:
         logger.warning("conversation_files: couldn't make the folder", exc_info=True)
         return []
+    held = {p.name: p.stat().st_size for p in folder.iterdir() if p.is_file()}
     for raw, data in files.items():
         name = safe_name(raw)
-        if len(data) > MAX_FILE_BYTES:
+        others = sum(size for n, size in held.items() if n != name)
+        if len(data) > MAX_FILE_BYTES or others + len(data) > MAX_CONVERSATION_BYTES:
             # Too big to keep: an earlier file of the name isn't the one meant.
             (folder / name).unlink(missing_ok=True)
+            held.pop(name, None)
             continue
         try:
             (folder / name).write_bytes(data)
             kept.append(name)
+            held[name] = len(data)
         except OSError:
             logger.warning("conversation_files: couldn't keep a file", exc_info=True)
     # Best effort to the end: a caller holds a turn's locks around this, so
