@@ -23,9 +23,9 @@ The same read notes which threads they last wrote in, and when
 (``replied_at``): Right now drops an email they have answered since it
 came, even one that never got a reply card (a card is settled against
 their reply on its own, ``delegation.inbox.reconcile``). It also notes who
-they last wrote to, and when (``wrote_to``): an email whose sender they
-wrote to after it came counts as dealt with too, even from another thread
-(signed papers sent on to someone else with the sender on copy).
+they wrote to (to or cc), when and under what subject (``wrote_to``), so
+Right now can count an email dealt with when they wrote to its sender after
+it came from another thread (``live_signals.own_inbox`` says when).
 """
 from __future__ import annotations
 
@@ -97,14 +97,15 @@ async def _open_mailbox() -> tuple[Any, set[str]] | None:
 async def read_waiting(
     now: datetime | None = None,
     replied_out: dict[str, datetime] | None = None,
-    wrote_out: dict[str, datetime] | None = None,
+    wrote_out: dict[str, list[tuple[datetime, str]]] | None = None,
 ) -> list[Waiting] | None:
     """Their unanswered sent mail, newest first, or None when there is no
     mailbox of theirs to read (Act as me off, not connected). A mailbox that
     fails to answer raises, so ``refresh`` keeps the last good read.
     ``replied_out`` gets thread id → when they last sent in it, for every
-    thread their recent sent mail is in; ``wrote_out`` gets address → when
-    they last sent mail to it (to, cc or bcc)."""
+    thread their recent sent mail is in; ``wrote_out`` gets address → (when,
+    subject) of each of their recent sent messages to it (to or cc; a bcc is
+    a mass send, never an answer)."""
     from openexecutive.config import get_settings
     from openexecutive.delegation.follow_ups import recipients
     from openexecutive.delegation.ghostwriter import one_line
@@ -126,10 +127,9 @@ async def read_waiting(
             sent_at = _parse(sent.received_at)
             mine = sent.from_addr in own and "SENT" in sent.labels
             if wrote_out is not None and sent_at is not None and mine:
-                for address in (*sent.to, *sent.cc, *(getattr(sent, "bcc", None) or [])):
-                    key = normalize_email(address)
-                    if key and key not in own and (key not in wrote_out or wrote_out[key] < sent_at):
-                        wrote_out[key] = sent_at
+                for address in dict.fromkeys(normalize_email(a) for a in (*sent.to, *sent.cc)):
+                    if address and address not in own:
+                        wrote_out.setdefault(address, []).append((sent_at, str(sent.subject or "")))
             if sent.thread_id in seen:
                 continue
             seen.add(sent.thread_id)
@@ -184,8 +184,8 @@ async def read_waiting(
 _cache: tuple[float, list[Waiting] | None] | None = None
 # Thread id → when they last sent in it, from the same read as ``_cache``.
 _replied: dict[str, datetime] = {}
-# Address → when they last sent mail to it, from the same read.
-_wrote: dict[str, datetime] = {}
+# Address → (when, subject) of their recent sends to it, from the same read.
+_wrote: dict[str, list[tuple[datetime, str]]] = {}
 _lock: asyncio.Lock | None = None
 # Bumped by ``reset_cache``: a read that was running when Act as me went off
 # must not store what it read.
@@ -208,7 +208,7 @@ async def refresh(now: datetime | None = None, *, max_age: float = MAX_AGE_SECON
             return cached()
         started = _generation
         replied: dict[str, datetime] = {}
-        wrote: dict[str, datetime] = {}
+        wrote: dict[str, list[tuple[datetime, str]]] = {}
         try:
             items = await asyncio.wait_for(read_waiting(now, replied, wrote), timeout=_TIMEOUT_SECONDS)
         except Exception as exc:
@@ -257,9 +257,10 @@ def replied() -> dict[str, datetime]:
     return dict(_replied) if _usable() else {}
 
 
-def wrote_to() -> dict[str, datetime]:
-    """Address (lowercased) → when they last sent mail to it, from the last
-    read; empty with no usable read. Never calls out."""
+def wrote_to() -> dict[str, list[tuple[datetime, str]]]:
+    """Address (lowercased) → (when, subject) of each of their recent sends
+    to it (to or cc), from the last read; empty with no usable read. Never
+    calls out."""
     return dict(_wrote) if _usable() else {}
 
 

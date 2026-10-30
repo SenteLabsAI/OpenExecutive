@@ -691,8 +691,10 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
     """Mail to the principal's own inbox since ``since`` (by when it arrived),
     as the Act as me watcher recorded it, leaving out any they have dealt
     with since it came: answered in its thread (``waiting_on.replied``), or
-    wrote to its sender from any thread (``waiting_on.wrote_to``). Private;
-    never raises."""
+    wrote to its sender from another thread after it came (``waiting_on.
+    wrote_to``) on the same subject, or on any subject when the email needed
+    nothing back. A request answered only by an unrelated note to the same
+    person stays. Private; never raises."""
     from openexecutive.briefing import waiting_on
     from openexecutive.delegation import inbox as watcher
 
@@ -733,11 +735,6 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
         replied = answered.get(str(d.get("thread_id") or ""))
         if replied is not None and replied > arrived:
             continue
-        # They wrote to whoever sent it after it came, from any thread (the
-        # signed papers forwarded on with the sender on copy): dealt with.
-        wrote_them = wrote.get(str(d.get("from_email") or "").strip().lower())
-        if wrote_them is not None and wrote_them > arrived:
-            continue
         picked.append(d | {"_at": arrived})
     picked.sort(key=lambda d: d["_at"], reverse=True)
     done = watcher.outcomes(principal.id, [str(d["message_id"]) for d in picked])
@@ -751,6 +748,8 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
         name = _one_line(d.get("from_name"), 60)
         subject = _one_line(d.get("subject"), 100) or "(no subject)"
         outcome = done.get(str(d["message_id"]), "")
+        if _wrote_back(d, outcome == watcher.NOT_NEEDED, wrote.get(address.strip().lower(), [])):
+            continue
         relation = str(d.get("relation") or "")
         reason = str(d.get("reason") or "")
         on_card = d.get("card_id") is not None
@@ -783,6 +782,20 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
         lines.append(f"{line} — {what}" if what else line)
         refs.append(_mail_ref(d))
     return OwnInbox(tuple(lines), tuple(others), others_total, tuple(refs), total)
+
+
+def _wrote_back(d: dict[str, Any], fyi: bool, sends: list[tuple[datetime, str]]) -> bool:
+    """Whether a send of theirs to this email's sender, after it came,
+    deals with it: one on the same subject (a reply started fresh), or any
+    one when the email needed nothing back (signed papers they then sent on
+    with the sender on copy)."""
+    from openexecutive.delegation.drafts import _same_subject
+
+    subject = _same_subject(str(d.get("subject") or ""))
+    return any(
+        at > d["_at"] and (fyi or (bool(subject) and _same_subject(sent) == subject))
+        for at, sent in sends
+    )
 
 
 def _mail_ref(d: dict[str, Any]) -> dict[str, Any]:

@@ -114,31 +114,35 @@ async def test_the_read_notes_where_they_last_wrote(monkeypatch: pytest.MonkeyPa
     assert replied == {"t-andrew": NOW - timedelta(minutes=10), "t-lease": NOW - timedelta(hours=3)}
 
 
-async def test_the_read_notes_who_they_last_wrote_to(monkeypatch: pytest.MonkeyPatch) -> None:
-    signed = _sent("signed", ["Andrew@co.test"], ago=timedelta(minutes=5), thread="t-andrew", text="Signed copies.")
+async def test_the_read_notes_who_they_wrote_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    signed = _sent(
+        "signed", ["Andrew@co.test"], ago=timedelta(minutes=5), thread="t-andrew",
+        text="Signed copies.", subject="Re: figures",
+    )
     signed.cc = ["dana@co.test", ME]
-    older = _sent("older", ["andrew@co.test"], ago=timedelta(days=1), thread="t-old")
+    signed.bcc = ["list@co.test"]
+    older = _sent("older", ["andrew@co.test"], ago=timedelta(days=1), thread="t-old", subject="Lunch")
     _use(monkeypatch, _Mailbox([signed, older]))
-    wrote: dict[str, datetime] = {}
+    wrote: dict[str, list[tuple[datetime, str]]] = {}
 
     await waiting_on.read_waiting(NOW, {}, wrote)
 
-    # Lowercased, the newest send per person, and never their own address.
+    # Lowercased, every send, to and cc only, never their own address.
     assert wrote == {
-        "andrew@co.test": NOW - timedelta(minutes=5),
-        "dana@co.test": NOW - timedelta(minutes=5),
+        "andrew@co.test": [(NOW - timedelta(minutes=5), "Re: figures"), (NOW - timedelta(days=1), "Lunch")],
+        "dana@co.test": [(NOW - timedelta(minutes=5), "Re: figures")],
     }
 
 
 async def test_wrote_to_comes_from_the_last_good_read(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _read(now: Any = None, replied_out: Any = None, wrote_out: Any = None) -> list[waiting_on.Waiting]:
-        wrote_out["dana@co.test"] = NOW
+        wrote_out["dana@co.test"] = [(NOW, "Contracts")]
         return []
 
     monkeypatch.setattr(waiting_on, "read_waiting", _read)
     assert waiting_on.wrote_to() == {}
     await waiting_on.refresh()
-    assert waiting_on.wrote_to() == {"dana@co.test": NOW}
+    assert waiting_on.wrote_to() == {"dana@co.test": [(NOW, "Contracts")]}
     _act_as_me(monkeypatch, on=False)
     assert waiting_on.wrote_to() == {}
 
