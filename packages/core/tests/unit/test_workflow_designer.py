@@ -547,6 +547,26 @@ async def test_search_is_answered_within_the_same_turn(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
+async def test_search_turn_replays_openrouter_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini's thought signature (OpenRouter reasoning_details) goes back on
+    the rebuilt assistant turn, or the next request is rejected."""
+    _fake_catalog(monkeypatch, {"sheets__append_rows"})
+    details = [{"type": "reasoning.encrypted", "data": "SIG", "id": "s1", "index": 0}]
+    search = _search_response("append rows to a spreadsheet", "s1")
+    search.content.append(SimpleNamespace(type="openrouter_reasoning", reasoning_details=details))
+    provider = _ScriptedProvider(
+        [search, _tool_response(wd.EMIT_TOOL_NAME, _emit(steps=_ACTION_STEPS))]
+    )
+    _install(monkeypatch, provider)
+    await wd.advance(_opening("File my emailed bills into the tracker sheet."))
+
+    turn = provider.calls[1]["messages"][-2]
+    assert turn["role"] == "assistant"
+    assert turn["content"][0]["type"] == "tool_use"
+    assert turn["content"][1] == {"type": "openrouter_reasoning", "reasoning_details": details}
+
+
+@pytest.mark.asyncio
 async def test_search_budget_per_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     queries = _fake_catalog(monkeypatch, set())
     provider = _ScriptedProvider(

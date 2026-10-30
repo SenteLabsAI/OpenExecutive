@@ -44,6 +44,7 @@ from typing import Any
 
 from openexecutive.agents.workflow_actor import WORKFLOW_ACTOR_AGENT_ID, WorkflowActorAgent
 from openexecutive.config import get_settings
+from openexecutive.providers.translator import reasoning_replay_block
 from openexecutive.workflows import step_script, tool_catalog
 from openexecutive.workflows.approved_targets import approved_values, normalize_value
 from openexecutive.workflows.dynamic_models import ActionStepSpec, DynamicWorkflowDef
@@ -164,7 +165,9 @@ def _block_to_dict(block: Any) -> dict[str, Any] | None:
         # searched (orchestrator.web_search_tool).
         dump = getattr(block, "model_dump", None)
         return dump(exclude_none=True) if callable(dump) else None
-    return None
+    # OpenRouter's reasoning_details (Gemini's thought signature) must ride
+    # along on the next request, or the tool call after it is rejected.
+    return reasoning_replay_block(block)
 
 
 def _append_assistant(messages: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> None:

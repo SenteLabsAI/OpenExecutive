@@ -45,6 +45,7 @@ from openexecutive.agents.workflow_designer import (
 from openexecutive.config import get_settings
 from openexecutive.onboarding.interview import Turn, replay_transcript, transcript_chars
 from openexecutive.orchestrator.workflow_authoring_tools import DEFINITION_SCHEMA
+from openexecutive.providers.translator import reasoning_replay_block
 from openexecutive.workflows import tool_catalog
 from openexecutive.workflows.base import WorkflowSection
 from openexecutive.workflows.dynamic_models import DynamicWorkflowDef, validate_definition
@@ -638,7 +639,14 @@ async def advance(
                 {
                     "role": "assistant",
                     "content": [
-                        {"type": "tool_use", "id": use_id, "name": name, "input": raw}
+                        {"type": "tool_use", "id": use_id, "name": name, "input": raw},
+                        # Gemini's thought signature on OpenRouter: dropping it
+                        # gets the next request rejected.
+                        *(
+                            replay
+                            for block in getattr(response, "content", []) or []
+                            if (replay := reasoning_replay_block(block)) is not None
+                        ),
                     ],
                 },
                 {
