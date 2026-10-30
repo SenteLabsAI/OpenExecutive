@@ -122,3 +122,11 @@ def test_keeping_never_raises_into_the_turn(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(conversation_files, "_last_prune", float("-inf"))
     monkeypatch.setattr(conversation_files, "prune", broken)
     assert conversation_files.keep("c1", {"a.pdf": b"x"}) == ["a.pdf"]
+
+
+def test_keeping_with_no_settings_returns_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_settings() -> Path:
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr(conversation_files, "root", no_settings)
+    assert conversation_files.keep("c1", {"a.pdf": b"x"}) == []

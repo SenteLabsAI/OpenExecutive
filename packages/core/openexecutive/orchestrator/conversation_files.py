@@ -62,6 +62,15 @@ def keep(session_id: str | None, files: dict[str, bytes], *, from_mail: bool = F
     """Keep ``files`` (safe name -> bytes) for the conversation; returns the
     names kept. ``from_mail``: they were made from a mail attachment. Best
     effort: a file that can't be written is left out."""
+    try:
+        return _keep(session_id, files, from_mail)
+    except Exception:
+        # Callers hold a turn's locks around this: nothing may raise into them.
+        logger.warning("conversation_files: couldn't keep files", exc_info=True)
+        return []
+
+
+def _keep(session_id: str | None, files: dict[str, bytes], from_mail: bool) -> list[str]:
     from openexecutive.workflows.turn_files import safe_name
 
     if not session_id or not files:
