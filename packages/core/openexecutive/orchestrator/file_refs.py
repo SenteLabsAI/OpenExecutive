@@ -154,12 +154,13 @@ def _hold_as_mail_read() -> None:
 
 
 def turn_used_mail_files() -> bool:
-    """Whether this turn used a mail file, so what it makes is from mail too."""
+    """Whether this turn read mail or used a mail file, so what it makes may
+    carry the mail and counts as made from it."""
     from openexecutive.delegation.settings import turn_delegation
     from openexecutive.orchestrator.schedule_tools import current_session
 
     pinned = turn_delegation(current_session.get())
-    return pinned is not None and pinned.unchecked_mail is True
+    return pinned is not None and (pinned.unchecked_mail is True or pinned.read_mail is True)
 
 
 def available_names() -> list[str]:
