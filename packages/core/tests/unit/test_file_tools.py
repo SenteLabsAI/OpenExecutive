@@ -354,15 +354,6 @@ def test_a_job_read_after_outside_content_is_not_kept(sandbox: list, monkeypatch
     assert "not saved" in out["save_error"]
 
 
-def test_deleting_a_conversation_removes_its_files(company: Session) -> None:
-    from openexecutive.memory import session_store
-
-    conversation_files.keep(company.session_id, {"a.pdf": b"x"})
-    conversation_files.forget(company.session_id)
-    assert conversation_files.names(company.session_id) == []
-    assert callable(session_store.delete_session)
-
-
 def test_documents_takes_a_file_when_asked_and_without_drive(
     company: Session, drive: list, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

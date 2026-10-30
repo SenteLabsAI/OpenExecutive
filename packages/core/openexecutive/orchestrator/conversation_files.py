@@ -39,7 +39,10 @@ MAX_FILE_BYTES = 25 * 2**20
 # Names of the conversation's files made from mail; a leading dot keeps it
 # out of every file name (``turn_files.safe_name`` strips one).
 _MAIL_MARKS = ".from_mail.json"
+# How often a keep sweeps every conversation's files (``prune`` walks them all).
+PRUNE_EVERY_S = 600
 _prune_lock = threading.Lock()
+_last_prune = 0.0
 
 
 def root() -> Path:
@@ -79,7 +82,8 @@ def keep(session_id: str | None, files: dict[str, bytes], *, from_mail: bool = F
             logger.warning("conversation_files: couldn't keep a file", exc_info=True)
     _mark(folder, kept, from_mail)
     folder.touch()
-    prune()
+    if time.monotonic() - _last_prune >= PRUNE_EVERY_S:
+        prune()
     return kept
 
 
@@ -144,7 +148,9 @@ def names(session_id: str | None) -> list[str]:
 def prune() -> None:
     """Drop conversations' files past ``KEEP_DAYS``, then the oldest while
     all of them pass ``KEEP_TOTAL_BYTES``."""
+    global _last_prune
     with _prune_lock:
+        _last_prune = time.monotonic()
         base = root()
         if not base.is_dir():
             return
