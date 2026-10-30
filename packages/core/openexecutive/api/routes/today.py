@@ -1913,8 +1913,13 @@ def _header_context(
     raise_lines: list[str] = []
     raise_older: list[str] = []
     leave_out = ""
+    dismissed: list[Any] = []
     if own:
+        from openexecutive.briefing import right_now
+
         raise_lines, raise_older, leave_out = brief_requests.raise_split(tz)
+        # What they cleared from Right now today stays out of the next one.
+        dismissed = right_now.dismissed(narrative_cache.DEFAULT_SCOPE, narrative_cache.local_today())
     standing_facts = render_facts_for_prompt()
 
     def render(activity: list[dict[str, Any]]) -> HeaderContext:
@@ -1931,6 +1936,7 @@ def _header_context(
             raise_older=raise_older,
             leave_out_block=leave_out,
             reader=reader,
+            dismissed=dismissed,
         )
 
     # Rendered first without the rail: on a board with nothing open and
@@ -2123,6 +2129,8 @@ def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at
     day = narrative_cache.local_today()
     times = right_now.point_times(scope, day)
     sources = right_now.point_sources(scope, day)
+    # Dismissed today: gone until the day ends, however the header words it.
+    gone = right_now.dismissed(scope, day)
     response.narrative_lead = parts.lead
     response.narrative_move = parts.move
     response.narrative_points = [
@@ -2132,6 +2140,7 @@ def _attach_right_now(response: TodayResponse, scope: str, text: str, written_at
             source=_point_source(sources.get(right_now.point_key(p))),
         )
         for p in parts.points
+        if not right_now.is_dismissed(p, sources.get(right_now.point_key(p)), gone)
     ]
     # Only a rostered reader's own scope has a last look (see /today/seen).
     if scope != narrative_cache.COMPANY_SCOPE:
@@ -2450,6 +2459,38 @@ async def mark_today_seen(request: Request) -> dict[str, str | None]:
         return {"seen_at": None}
     scope = narrative_cache.DEFAULT_SCOPE if _is_principal(caller) else f"person:{caller}"
     return {"seen_at": right_now.mark_seen(scope)}
+
+
+class DismissPointRequest(BaseModel):
+    """A Right now point to clear, as ``GET /today`` served it."""
+
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/today/dismiss", tags=["today"])
+async def dismiss_today_point(
+    body: DismissPointRequest, request: Request, background_tasks: BackgroundTasks,
+) -> dict[str, bool]:
+    """The reader dismissed a point of their Right now: ``GET /today`` leaves
+    it out for the rest of the local day (by its subject, or a reworded point
+    about the same email or card), and the principal's next header is told
+    not to raise it again, so the header is rewritten after the response.
+    Stored per narrative scope, like ``/today/seen``; an unrostered caller's
+    shared scope keeps none."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.briefing import narrative_cache, right_now
+    from openexecutive.people.store import get_person
+
+    caller = _resolve_caller_person_id(request)
+    if caller is None or get_person(caller) is None:
+        return {"dismissed": False}
+    principal = _is_principal(caller)
+    scope = narrative_cache.DEFAULT_SCOPE if principal else f"person:{caller}"
+    if right_now.dismiss(scope, body.text) is None:
+        return {"dismissed": False}
+    if principal:
+        background_tasks.add_task(refresh_principal_narrative)
+    return {"dismissed": True}
 
 
 def _morning_brief_today() -> MorningBriefItem | None:

@@ -95,3 +95,32 @@ def test_point_sources_are_the_latest_headers_alone() -> None:
     right_now.record_sources("principal", now.isoformat(), {"lakeside renewal": card})
     assert right_now.point_sources("principal", day) == {"lakeside renewal": card}
     assert right_now.point_sources("person:7", day) == {}
+
+
+def test_a_dismissed_point_stays_gone_for_the_day_however_it_is_worded() -> None:
+    written = "2026-10-30T18:00:00+00:00"
+    right_now.record_sources("principal", written, {"signed contracts": {"kind": "mail", "message_id": "m1"}})
+
+    gone = right_now.dismiss("principal", "**Signed contracts**: Dana sent them.", at="2026-10-30T19:00:00+00:00")
+
+    assert gone is not None and gone.key == "signed contracts"
+    assert gone.source == {"kind": "mail", "message_id": "m1"}
+    day = right_now._day_of("2026-10-30T19:00:00+00:00")
+    assert day is not None
+    today = right_now.dismissed("principal", day)
+    assert [d.key for d in today] == ["signed contracts"]
+    # Same subject, or a new subject about the same email: both gone.
+    assert right_now.is_dismissed("**Signed contracts** — reworded.", None, today)
+    assert right_now.is_dismissed("**Signed papers**: in.", {"kind": "mail", "message_id": "m1"}, today)
+    assert not right_now.is_dismissed("**Lakeside renewal**: price.", {"kind": "mail", "message_id": "m2"}, today)
+    # Another scope, or the next day, starts clean.
+    assert right_now.dismissed("person:4", day) == []
+    assert right_now.dismissed("principal", "2026-10-31") == []
+    assert "Signed contracts: Dana sent them." in right_now.dismissed_block(today)
+    assert right_now.dismissed_block([]) == ""
+
+
+def test_dismissing_without_a_subject_or_source_still_works() -> None:
+    gone = right_now.dismiss("principal", "**Q3 board deck**: draft unsent.")
+    assert gone is not None and gone.source is None
+    assert right_now.dismiss("principal", "   ") is None

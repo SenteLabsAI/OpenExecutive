@@ -5484,6 +5484,19 @@ export async function markTodaySeen(): Promise<string | null> {
   return body.seen_at ?? null;
 }
 
+// The reader cleared a Right now point: gone for the rest of the day, and
+// the Executive doesn't raise it again. True when it was kept.
+export async function dismissTodayPoint(text: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/today/dismiss`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) return false;
+  const body = (await res.json()) as { dismissed?: boolean };
+  return body.dismissed === true;
+}
+
 // The latest morning brief or end-of-day digest that didn't reach the owner,
 // and what fixes it. Null while briefs are going out, and for anyone but the
 // owner.

@@ -689,8 +689,10 @@ def _chat_asks(now: datetime, tz: tzinfo) -> tuple[list[str], list[dict[str, Any
 
 def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnInbox:
     """Mail to the principal's own inbox since ``since`` (by when it arrived),
-    as the Act as me watcher recorded it, leaving out any they have answered
-    since it came (``waiting_on.replied``). Private; never raises."""
+    as the Act as me watcher recorded it, leaving out any they have dealt
+    with since it came: answered in its thread (``waiting_on.replied``), or
+    wrote to its sender from any thread (``waiting_on.wrote_to``). Private;
+    never raises."""
     from openexecutive.briefing import waiting_on
     from openexecutive.delegation import inbox as watcher
 
@@ -714,6 +716,7 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
     picked: list[dict[str, Any]] = []
     seen: set[str] = set()
     answered = waiting_on.replied()
+    wrote = waiting_on.wrote_to()
     for ev in rows:  # newest first
         d = ev.details if isinstance(ev.details, dict) else {}
         message_id = str(d.get("message_id") or "")
@@ -729,6 +732,11 @@ def own_inbox(since: datetime, tz: tzinfo, now: datetime | None = None) -> OwnIn
         # watcher made of it.
         replied = answered.get(str(d.get("thread_id") or ""))
         if replied is not None and replied > arrived:
+            continue
+        # They wrote to whoever sent it after it came, from any thread (the
+        # signed papers forwarded on with the sender on copy): dealt with.
+        wrote_them = wrote.get(str(d.get("from_email") or "").strip().lower())
+        if wrote_them is not None and wrote_them > arrived:
             continue
         picked.append(d | {"_at": arrived})
     picked.sort(key=lambda d: d["_at"], reverse=True)
