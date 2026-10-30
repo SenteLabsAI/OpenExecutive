@@ -950,28 +950,36 @@ def _parsed(result: Any) -> Any:
 
 
 # What the mailbox tools (``mail_read_tools``, ``delegation_tools``,
-# ``history_tools``) say around a read in their own words: how to read it, a
-# refusal, a reminder to name a file or check an address. Those are written to
-# the model, so the check took them for the mail's own instructions. They are
-# left out of what is checked; the model still gets the whole result.
-_OWN_KEYS = frozenset({"note", "error", "check_attachments", "check_address"})
-# Statuses whose ``detail`` is only the tool's words (nothing found, which
-# thread, nowhere to save). Any other detail can carry a file's name, so it is
+# ``history_tools``) say around a read in their own fixed words: how to read
+# it, a reminder to name a file or check an address. Those are written to the
+# model, so the check took them for the mail's own instructions. They are left
+# out of what is checked; the model still gets the whole result.
+_OWN_KEYS = frozenset({"note", "check_attachments", "check_address"})
+# Statuses whose message is only the tool's words (nothing found, which
+# thread, nowhere to save, not asked to save), and the key it is under. Any
+# other ``detail`` or ``error`` can carry a file's or thread's name, so it is
 # still checked.
-_OWN_DETAIL_STATUSES = frozenset({"not_found", "choose", "no_storage", "none"})
+_OWN_MESSAGE_BY_STATUS: dict[str, str] = {
+    "not_found": "detail",
+    "choose": "detail",
+    "no_storage": "detail",
+    "none": "detail",
+    "not_asked": "error",
+}
 
 
 def without_own_words(result: Any) -> Any:
     """A mailbox tool's JSON result without what the tool itself wrote
-    (``_OWN_KEYS``), for the check only: "" when nothing else is left, so a
-    refusal costs no check. Anything that isn't a JSON object as it is."""
+    (``_OWN_KEYS``, ``_OWN_MESSAGE_BY_STATUS``), for the check only: "" when
+    nothing else is left, so a refusal costs no check. Anything that isn't a
+    JSON object as it is."""
     parsed = _parsed(result)
     if not isinstance(parsed, dict):
         return result
+    own_message = _OWN_MESSAGE_BY_STATUS.get(str(parsed.get("status")))
     kept = {
         key: value for key, value in parsed.items()
-        if key not in _OWN_KEYS
-        and not (key == "detail" and parsed.get("status") in _OWN_DETAIL_STATUSES)
+        if key not in _OWN_KEYS and key != own_message
     }
     if not set(kept) - {"status"}:
         return ""
