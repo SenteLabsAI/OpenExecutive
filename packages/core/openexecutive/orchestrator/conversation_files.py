@@ -85,7 +85,13 @@ def _keep(session_id: str | None, files: dict[str, bytes], from_mail: bool) -> l
     except OSError:
         logger.warning("conversation_files: couldn't make the folder", exc_info=True)
         return []
-    held = {p.name: p.stat().st_size for p in folder.iterdir() if p.is_file()}
+    held: dict[str, int] = {}
+    for p in folder.iterdir():
+        try:
+            if p.is_file():
+                held[p.name] = p.stat().st_size
+        except FileNotFoundError:
+            continue  # removed by a sweep or another keep since iterdir()
     for raw, data in files.items():
         name = safe_name(raw)
         others = sum(size for n, size in held.items() if n != name)

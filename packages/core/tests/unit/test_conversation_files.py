@@ -139,3 +139,20 @@ def test_one_conversation_keeps_at_most_its_share(monkeypatch: pytest.MonkeyPatc
     # Replacing a file counts only the new copy.
     assert conversation_files.keep("c1", {"a.bin": b"x" * 9}) == ["a.bin"]
     assert conversation_files.keep("c2", {"b.bin": b"x" * 6}) == ["b.bin"]
+
+
+def test_keep_survives_a_file_vanishing_mid_listing(tmp_path, monkeypatch):
+    import pathlib
+
+    monkeypatch.setattr(conversation_files, "_folder", lambda sid: tmp_path / "c")
+    (tmp_path / "c").mkdir()
+    (tmp_path / "c" / "gone.txt").write_bytes(b"x")
+    real_stat = pathlib.Path.stat
+
+    def flaky_stat(self, *a, **kw):
+        if self.name == "gone.txt" and not kw and not a:
+            raise FileNotFoundError(self)
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "stat", flaky_stat)
+    assert conversation_files.keep("s1", {"new.txt": b"hello"}) == ["new.txt"]
