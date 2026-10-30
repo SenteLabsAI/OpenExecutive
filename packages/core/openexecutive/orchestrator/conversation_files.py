@@ -111,7 +111,10 @@ def _mark(folder: Path, kept: list[str], from_mail: bool) -> None:
         if updated == marks:
             return
         try:
-            (folder / _MAIL_MARKS).write_text(json.dumps(sorted(updated)))
+            # Written whole then swapped in: a torn file would read as no marks.
+            staged = folder / f"{_MAIL_MARKS}.tmp"
+            staged.write_text(json.dumps(sorted(updated)))
+            staged.replace(folder / _MAIL_MARKS)
         except OSError:
             logger.warning("conversation_files: couldn't mark files from mail", exc_info=True)
 
@@ -154,7 +157,7 @@ def names(session_id: str | None) -> list[str]:
     folder = _folder(session_id)
     if not folder.is_dir():
         return []
-    return sorted(p.name for p in folder.iterdir() if p.is_file() and p.name != _MAIL_MARKS)
+    return sorted(p.name for p in folder.iterdir() if p.is_file() and not p.name.startswith(_MAIL_MARKS))
 
 
 def prune() -> None:
