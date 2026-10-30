@@ -14,9 +14,9 @@ the model chooses the file, the folder and the name:
   folder an outsider owns or can open, or one shared with a group, a domain
   or by link, is refused, so nothing asked for in a document lands where an
   outsider can read it. On OneDrive any folder of its own drive, whose upload
-  path can't reach another drive; a name already there gets " (2)". With
-  neither connected, or when asked for, the company's Documents (the
-  Knowledge page's uploads, ``_documents``), indexed like an upload.
+  path can't reach another drive; a name already there gets " (2)". Or,
+  with ``folder`` ``documents``, the company's Documents (the Knowledge
+  page's uploads, ``_documents``), indexed like an upload.
 - **When:** whenever the person asks. A turn that read their mail or anything
   from outside the team still saves, but only when their own words this turn
   ask for file work (``asked_for_file_work``), so text in a document can't
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 SAVE_FILE = "save_file"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _GOOGLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
-_ONEDRIVE_ID_RE = re.compile(r"^[A-Za-z0-9!._-]{1,200}$")
+_ONEDRIVE_ID_RE = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9!._-]{1,200}$")
 _EMAIL_IN_RE = re.compile(r"\(([^()\s]+@[^()\s]+)\)")
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 # Words that ask for file work, in the person's own message.
@@ -62,7 +62,7 @@ SAVE_FILE_TOOL: dict[str, Any] = {
         "sent in this chat or made by a Python job). Find the folder's id with "
         "your Drive tools first (search or list the folder they named), or pass "
         "root for the top of your Drive, or documents for the company's Documents "
-        "on the Knowledge page (where it goes when no Drive or OneDrive is "
+        "on the Knowledge page (the place to save when no Drive or OneDrive is "
         "connected; PDF, Word, Excel, CSV, Markdown and text only). Do it whenever they ask for a file to be "
         "saved, put or filed somewhere; never ask first, and never ask them to "
         "download or move it themselves. Call it once per file. Returns the link."
@@ -298,21 +298,28 @@ async def _documents(item: Any, name: str) -> dict[str, Any]:
     docs = get_settings().company_profile_path.parent / "docs"
     docs.mkdir(parents=True, exist_ok=True)
     name = _free_name(name, {p.name.lower() for p in docs.iterdir()})
-    with tempfile.TemporaryDirectory() as tmp:
-        staged = Path(tmp) / f"file{suffix}"
-        staged.write_bytes(item.data)
-        try:
-            await ingest_file(
-                path=staged,
-                store=ChromaDBStore(persist_directory=get_settings().vector_store_path),
-                domain="general",
-                collection=ChromaDBStore.COMPANY_COLLECTION,
-                source_name=name,
-                busy_raises=True,
-            )
-        except IsolatedError as exc:
-            raise SaveFailed("The file couldn't be read.") from exc
-        await asyncio.to_thread(staged.replace, docs / name)
+    # Staged next to the documents, so the move into place stays on one
+    # filesystem; written there before it is indexed, so the index never
+    # holds a document that isn't on disk.
+    try:
+        with tempfile.TemporaryDirectory(dir=docs, prefix=".saving-") as tmp:
+            staged = Path(tmp) / f"file{suffix}"
+            staged.write_bytes(item.data)
+            await asyncio.to_thread(staged.replace, docs / name)
+    except OSError as exc:
+        raise SaveFailed("The file couldn't be written to Documents.") from exc
+    try:
+        await ingest_file(
+            path=docs / name,
+            store=ChromaDBStore(persist_directory=get_settings().vector_store_path),
+            domain="general",
+            collection=ChromaDBStore.COMPANY_COLLECTION,
+            source_name=name,
+            busy_raises=True,
+        )
+    except IsolatedError as exc:
+        (docs / name).unlink(missing_ok=True)
+        raise SaveFailed("The file couldn't be read.") from exc
     return {"name": name, "link": "", "where": "Documents on the Knowledge page"}
 
 
@@ -341,8 +348,16 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
     name = _named(tool_input.get("name"), item.name)
     gateway = await ensure_active_gateway()
     provider = save.storage_for(gateway)
-    if folder.lower() == DOCUMENTS or provider is None:
+    if folder.lower() == DOCUMENTS:
         provider = DOCUMENTS
+    elif provider is None:
+        return json.dumps({
+            "status": "no_storage",
+            "detail": (
+                "Neither Google Drive nor OneDrive is connected, so that folder can't be "
+                "reached. Pass folder documents to save it to the company's Documents."
+            ),
+        })
     try:
         async with save._lock():
             if provider == DOCUMENTS:

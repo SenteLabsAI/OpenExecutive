@@ -334,13 +334,15 @@ def test_deleting_a_conversation_removes_its_files(company: Session) -> None:
     assert callable(session_store.delete_session)
 
 
-def test_with_no_drive_it_goes_to_the_companys_documents(
+def test_documents_takes_a_file_when_asked_and_without_drive(
     company: Session, drive: list, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     ingested: list[dict[str, Any]] = []
+    docs = tmp_path / "docs"
 
     async def ingest_file(**kwargs: Any) -> int:
         ingested.append({**kwargs, "data": kwargs["path"].read_bytes()})
+        assert kwargs["path"].parent == docs
         return 1
 
     monkeypatch.setattr("openexecutive.knowledge.loader.ingest_file", ingest_file)
@@ -352,11 +354,11 @@ def test_with_no_drive_it_goes_to_the_companys_documents(
 
     monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", Store)
     monkeypatch.setattr(save, "storage_for", lambda _g: None)
-    docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "LOI.pdf").write_bytes(b"older")
     conversation_files.keep(company.session_id, {"half.pdf": b"half 1", "scan.png": b"img"})
-    out = _save({"file": "file:half.pdf", "folder": FOLDER, "name": "LOI"})
+    assert _save({"file": "file:half.pdf", "folder": FOLDER})["status"] == "no_storage"
+    out = _save({"file": "file:half.pdf", "folder": "documents", "name": "LOI"})
     assert out["status"] == "saved" and out["where"].startswith("Documents")
     assert out["name"] == "LOI (2).pdf" and (docs / "LOI (2).pdf").read_bytes() == b"half 1"
     assert (docs / "LOI.pdf").read_bytes() == b"older"
