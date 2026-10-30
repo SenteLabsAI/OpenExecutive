@@ -1161,17 +1161,18 @@ async def _run_chat_turn(
                 status_code=409,
                 detail="This conversation was started in Open Executive. Continue it there.",
             )
+        if turn_files:
+            # Kept for the conversation, so a later message can still attach,
+            # split or save them (orchestrator/file_refs.py, file:<name>).
+            # Inside the guard: a cancelled write must release the turn too.
+            from openexecutive.orchestrator import conversation_files
+
+            await asyncio.to_thread(conversation_files.keep, session.session_id, turn_files)
     except BaseException:
         _release_stop(client_turn_id, turn_id)
         if lock_key is not None:
             _release_session_turn(lock_key, turn_lock)
         raise
-    if turn_files:
-        # Kept for the conversation, so a later message can still attach,
-        # split or save them (orchestrator/file_refs.py, file:<name>).
-        from openexecutive.orchestrator import conversation_files
-
-        await asyncio.to_thread(conversation_files.keep, session.session_id, turn_files)
     if access == "missing":
         _session_starters.setdefault(
             session.session_id, _caller_keys(request, caller_person_id)
