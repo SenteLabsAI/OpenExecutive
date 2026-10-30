@@ -129,7 +129,9 @@ def get(session_id: str | None, name: str) -> bytes | None:
     if not path.is_relative_to(folder) or not path.is_file():
         return None
     try:
-        return path.read_bytes()
+        data = path.read_bytes()
+        folder.touch()  # in use: kept another KEEP_DAYS
+        return data
     except OSError:
         return None
 
