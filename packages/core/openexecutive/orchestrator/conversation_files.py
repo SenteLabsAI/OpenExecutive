@@ -162,7 +162,13 @@ def prune() -> None:
         cutoff = time.time() - KEEP_DAYS * 86400
         folders: list[tuple[float, int, Path]] = []
         try:
-            for child in base.iterdir():
+            children = list(base.iterdir())
+        except FileNotFoundError:
+            return
+        for child in children:
+            # A folder or file gone mid-sweep (a chat deleted) is skipped,
+            # not the whole sweep.
+            try:
                 if not child.is_dir():
                     continue
                 mtime = child.stat().st_mtime
@@ -170,9 +176,9 @@ def prune() -> None:
                     shutil.rmtree(child, ignore_errors=True)
                     continue
                 size = sum(f.stat().st_size for f in child.iterdir() if f.is_file())
-                folders.append((mtime, size, child))
-        except FileNotFoundError:
-            return
+            except FileNotFoundError:
+                continue
+            folders.append((mtime, size, child))
         total = sum(size for _, size, _ in folders)
         for _, size, child in sorted(folders, key=lambda f: f[0]):
             if total <= KEEP_TOTAL_BYTES:
