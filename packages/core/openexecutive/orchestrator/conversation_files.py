@@ -42,6 +42,8 @@ _MAIL_MARKS = ".from_mail.json"
 # How often a keep sweeps every conversation's files (``prune`` walks them all).
 PRUNE_EVERY_S = 600
 _prune_lock = threading.Lock()
+# Marking is a read-modify-write of one file per conversation.
+_mark_lock = threading.Lock()
 _last_prune = 0.0
 
 
@@ -74,6 +76,8 @@ def keep(session_id: str | None, files: dict[str, bytes], *, from_mail: bool = F
     for raw, data in files.items():
         name = safe_name(raw)
         if len(data) > MAX_FILE_BYTES:
+            # Too big to keep: an earlier file of the name isn't the one meant.
+            (folder / name).unlink(missing_ok=True)
             continue
         try:
             (folder / name).write_bytes(data)
@@ -101,14 +105,15 @@ def _marks(folder: Path) -> set[str]:
 
 
 def _mark(folder: Path, kept: list[str], from_mail: bool) -> None:
-    marks = _marks(folder)
-    updated = marks | set(kept) if from_mail else marks - set(kept)
-    if updated == marks:
-        return
-    try:
-        (folder / _MAIL_MARKS).write_text(json.dumps(sorted(updated)))
-    except OSError:
-        logger.warning("conversation_files: couldn't mark files from mail", exc_info=True)
+    with _mark_lock:
+        marks = _marks(folder)
+        updated = marks | set(kept) if from_mail else marks - set(kept)
+        if updated == marks:
+            return
+        try:
+            (folder / _MAIL_MARKS).write_text(json.dumps(sorted(updated)))
+        except OSError:
+            logger.warning("conversation_files: couldn't mark files from mail", exc_info=True)
 
 
 def from_mail(session_id: str | None, name: str) -> bool:
