@@ -783,6 +783,7 @@ async def _keep(files: dict[str, bytes]) -> dict[str, Any]:
         await asyncio.to_thread((folder / name).write_bytes, data)
     session_id = getattr(current_session.get(), "session_id", None)
     from openexecutive.orchestrator.file_refs import turn_used_mail_files
+    from openexecutive.workflows.turn_files import safe_name
 
     kept = set(await asyncio.to_thread(
         functools.partial(
@@ -794,7 +795,7 @@ async def _keep(files: dict[str, bytes]) -> dict[str, Any]:
         "files": [
             {"name": n, "bytes": len(d),
              "link": f"/api/backend/python-jobs/{job_id}/{urllib.parse.quote(n)}",
-             **({"handle": f"file:{n}"} if n in kept else {})}
+             **({"handle": f"file:{safe_name(n)}"} if safe_name(n) in kept else {})}
             for n, d in sorted(files.items())
         ],
         "note": (
