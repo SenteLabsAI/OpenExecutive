@@ -116,7 +116,10 @@ def _read_something_outside() -> bool:
 
     try:
         pinned = turn_delegation(current_session.get())
-        return bool(getattr(pinned, "read_mail", False)) or outside_content.read_outside()
+        return (
+            bool(getattr(pinned, "read_mail", False) or getattr(pinned, "unchecked_mail", False))
+            or outside_content.read_outside()
+        )
     except Exception:
         return True
 
@@ -329,12 +332,6 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
     from openexecutive.orchestrator import mail_file_save as save
     from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
 
-    if _read_something_outside() and not asked_for_file_work():
-        return _error(
-            "Save a file only when they ask for it in their own words; they haven't "
-            "asked for file work in this message. Do not retry until they do.",
-            status="not_asked",
-        )
     folder = str(tool_input.get("folder") or "").strip()
     if not folder:
         return _error("Pass `folder`: the folder's id from your Drive tools, or root.")
@@ -344,6 +341,14 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
         return _error(str(exc))
     if not files.items:
         return _error("That file is too large to save.")
+    # After resolving: a mail file, or one made from mail, marks the turn
+    # as a mail read, which this then sees.
+    if _read_something_outside() and not asked_for_file_work():
+        return _error(
+            "Save a file only when they ask for it in their own words; they haven't "
+            "asked for file work in this message. Do not retry until they do.",
+            status="not_asked",
+        )
     item = files.items[0]
     name = _named(tool_input.get("name"), item.name)
     gateway = await ensure_active_gateway()

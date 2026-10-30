@@ -386,3 +386,14 @@ def test_documents_takes_a_file_when_asked_and_without_drive(
     assert not any(n.endswith("create_drive_file") for n, _ in drive[1:])
     refused = _save({"file": "file:scan.png", "folder": "documents"})
     assert refused["status"] == "failed" and "PDF, Word" in refused["detail"]
+
+
+def test_a_file_made_from_mail_saves_only_when_they_asked(company: Session, drive: list) -> None:
+    from openexecutive.delegation.settings import TurnDelegation
+
+    conversation_files.keep(company.session_id, {"half.pdf": b"x"}, from_mail=True)
+    company.turn_delegation = TurnDelegation(offered=True, session_id=company.session_id)
+    pin_turn_delegation(company, "what's new today?")
+    assert _save({"file": "file:half.pdf", "folder": FOLDER})["status"] == "not_asked"
+    pin_turn_delegation(company, "save the half to the LOIs folder")
+    assert _save({"file": "file:half.pdf", "folder": FOLDER})["status"] == "saved"
