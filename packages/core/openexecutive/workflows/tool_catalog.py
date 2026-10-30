@@ -46,7 +46,7 @@ BUILTIN_PREFIX = "oe__"
 _RESOLVE_TOP_K = 10
 _SEARCH_TOP_K = 8
 _MAX_READ_FILE_BYTES = 25 * 1024 * 1024
-_READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv", ".md", ".txt"})
+_READABLE_SUFFIXES = frozenset({".pdf", ".docx", ".doc", ".xlsx", ".xlsm", ".csv", ".md", ".txt", ".ics", ".eml"})
 
 # Verbs that mark a tool as read-only. The gateway reports no read-only
 # hints, so this is a name heuristic. It drives the review card's "may change
