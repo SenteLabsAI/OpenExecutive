@@ -116,7 +116,8 @@ _SIGNATURE_CHARS = 1200
 # A role and six details fit with room to spare: a cut-off tool call is lost whole.
 _MAX_TOKENS = 600
 # Seconds to wait before asking the mailbox again after it said "slow down".
-_PAUSE = 2.0
+# Gmail's quota is per minute, so a shorter wait is refused again.
+_PAUSE = 61.0
 
 # Local parts nobody is a contact behind.
 _ROLE_LOCALS = frozenset({
@@ -759,6 +760,10 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
     # Everyone but the principal, for signatures and notes: the team too.
     people = [p for p in everyone if not p.archived and p.id is not None and not p.is_principal]
     watch = frozenset(changes.norm(a) for p in people for a in [p.email, *p.email_aliases] if a)
+    # Signatures first, while the mailbox's per-minute quota is fresh: the
+    # sent-mail pass below reads hundreds of mails and can use it all up.
+    latest_seen: dict[str, Any] = {}
+    await _read_roles(client, mode, people, now, result, latest_seen)
     seen = await gather(client, own=own, known=known, now=now, watch=watch, result=result)
 
     # A second address for a contact they already have, mailed at least
@@ -829,6 +834,8 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
 
     # Fuller names for contacts with one word, from how the principal wrote it.
     for person in contacts:
+        # As it stands now: the signature reads above may have filled it in.
+        person = people_store.get_person(int(person.id or 0)) or person
         if len(person.full_name.split()) != 1:
             continue
         for address in [changes.norm(a) for a in [person.email, *person.email_aliases] if a]:
@@ -843,8 +850,6 @@ async def _run(client: Any, mode: str, email: str, now: datetime) -> RunResult:
                 )
                 break
 
-    latest_seen: dict[str, Any] = {}
-    await _read_roles(client, mode, people, now, result, latest_seen)
     await _refresh_notes(client, people, seen, now, result, latest_seen)
     if result.refused is not None:
         # Recorded like any mailbox failure (run_once), after the notes.

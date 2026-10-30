@@ -1034,6 +1034,31 @@ def test_details_are_added_for_contacts_and_team_and_undone(owner: int, monkeypa
     assert changes.is_blocked("leo@contoso.example", "phone", "+1 (555) 010-0100")
 
 
+def test_signatures_are_read_before_the_sent_mail_uses_up_the_quota(
+    owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
+    _signed(monkeypatch, [("phone", "+1 (555) 010-0100")])
+
+    class BusyBox(FakeMailbox):
+        sent_read = False
+
+        async def list_sent(self, limit: int = 40) -> list[MailMessage]:
+            self.sent_read = True
+            return []
+
+        async def latest_from(self, address: str, *, days: int = 90) -> MailMessage | None:
+            # After the sent-mail pass the mailbox says "slow down".
+            if self.sent_read:
+                raise gmail_mod.GmailRateLimited("slow down")
+            return await super().latest_from(address, days=days)
+
+    box = BusyBox()
+    box.latest = _leo_box().latest
+    _run(box)
+    assert [(d.kind, d.value) for d in people_store.get_person(pid).details] == [("phone", "+1 (555) 010-0100")]
+
+
 def test_a_newer_signature_replaces_only_its_own_detail(owner: int, monkeypatch: pytest.MonkeyPatch) -> None:
     pid = people_store.upsert_person(full_name="Leo Park", email="leo@contoso.example", kind="contact")
     _signed(monkeypatch, [("mobile", "555.010.0199")])

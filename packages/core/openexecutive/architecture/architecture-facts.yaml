@@ -4489,7 +4489,11 @@ people:
     again only when it is new, at most once a day per address
     (contact_keeper_reads keeps the message id and READ_VERSION). Typed
     fields are never overwritten (a name or role is written only when empty
-    or last set by the keeper).
+    or last set by the keeper). Why signatures first: the sent-mail pass
+    (300 full reads) used up Gmail's per-user per-minute quota, so every
+    run's first signature lookup was refused and no detail was ever saved;
+    a "slow down" is asked once more after 61 s (_PAUSE), the quota's
+    window.
     people.contact_changes records each change (contact_changes) with reason
     and evidence. Mode ask stores a suggestion applied on accept. Undo
     archives an add or restores the old value if unchanged since; undo and
