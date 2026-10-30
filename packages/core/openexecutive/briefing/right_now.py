@@ -365,7 +365,7 @@ def dismissed_block(gone: list[Dismissed]) -> str:
     """The header's note of what the reader dismissed today; "" for none."""
     if not gone:
         return ""
-    return "\n".join([DISMISSED_HEADER, *(f"- {_strip_bold(d.text)}" for d in gone)])
+    return "\n".join([DISMISSED_HEADER, *(f"- {' '.join(_strip_bold(d.text).split())}" for d in gone)])
 
 
 def mark_seen(scope: str, at: str | None = None) -> str | None:
