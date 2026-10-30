@@ -102,6 +102,18 @@ def test_a_job_splits_an_emailed_pdf_and_its_halves_get_handles(
     assert sandbox[1] == {"LOI - Willow Court.pdf": b"half 2"}
 
 
+def test_two_inputs_of_one_name_both_reach_the_job(
+    company: Session, sandbox: list[dict[str, bytes]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def writer() -> Any:
+        return SimpleNamespace(mailbox=_Mailbox())
+
+    monkeypatch.setattr(file_refs, "_mail_writer", writer)
+    conversation_files.keep(company.session_id, {"20261030_001.pdf": b"%PDF mine"})
+    _job({"code": "x", "files": ["mail:m1#1", "file:20261030_001.pdf"]})
+    assert sandbox[0] == {"20261030_001.pdf": b"%PDF all", "20261030_001 (2).pdf": b"%PDF mine"}
+
+
 def test_a_job_names_a_missing_file_and_lists_what_the_chat_has(sandbox: list) -> None:
     _job({"code": "x"})
     out = _job({"code": "x", "files": ["file:nope.pdf"]})

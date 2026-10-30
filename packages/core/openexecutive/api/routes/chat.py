@@ -2200,6 +2200,9 @@ async def chat_upload(
             extra_text, blocks = await build_attachment_output(
                 filename, data, upload.content_type or "", inbound=False,
             )
+            # The upload is bound and kept by this route itself; don't leave
+            # it offered for a chat app's turn (turn_files.offer).
+            turn_files.take_offered()
         except Exception:
             logger.exception("chat_upload: processing failed for %s", filename)
             text_parts.append(f"(Could not process {filename})")

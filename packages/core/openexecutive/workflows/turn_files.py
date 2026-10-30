@@ -8,7 +8,8 @@ text. So ``POST /chat/upload`` binds the turn's uploads here for the whole
 turn, and ``run_python_job`` takes them by name (``attachment_files``).
 
 The binding lasts for the turn that carried the files and no later one, as
-the extracted text does (api/routes/chat.py), and holds nothing on disk.
+the extracted text does (api/routes/chat.py); a later message reaches the
+conversation's copy (``orchestrator.conversation_files``) by ``file:<name>``.
 
 A chat app (Telegram, Slack, Discord, Google Chat) reads its files through
 ``integrations.attachments.build_attachment_output``, which ``offer``s each

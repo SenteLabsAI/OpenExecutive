@@ -139,7 +139,7 @@ TOOL_DEFINITION: dict[str, Any] = {
             "files": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "File handles (mail:<message_id>#<n>, drive:<file_id>, file:<name>), copied to /in by name.",
+                "description": "File handles (mail:<message_id>#<n>, drive:<file_id>, file:<name>), copied to /in by name; a second file of a name already there comes in as \"<name> (2).<ext>\", in the order given.",
             },
             "attachment_files": {
                 "type": "array",
@@ -571,8 +571,13 @@ async def _gather_files(tool_input: dict[str, Any]) -> tuple[dict[str, bytes], l
             return _err(str(exc))
         if handled.skipped:
             return _err("too many or too large input files")
+        from openexecutive.orchestrator.mail_file_save import _free_name
+
         for item in handled.items:
-            files[turn_files.safe_name(item.name)] = item.data
+            # Two emails' "invoice.pdf" are two inputs: the later one in the
+            # order given comes in as "invoice (2).pdf", as the tool says.
+            name = _free_name(turn_files.safe_name(item.name), {n.lower() for n in files})
+            files[name] = item.data
     for name in tool_input.get("knowledge_files") or []:
         path = _knowledge_file(str(name))
         if path is None:
