@@ -67,7 +67,7 @@ def sandbox(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, bytes]]:
         seen.append(files)
         return {"result": "ok", "files": {
             "LOI - Pine View.pdf": base64.b64encode(b"half 1").decode(),
-            "LOI - St Albans.pdf": base64.b64encode(b"half 2").decode(),
+            "LOI - Willow Court.pdf": base64.b64encode(b"half 2").decode(),
         }}
 
     monkeypatch.setattr(python_job, "available", lambda: True)
@@ -96,16 +96,16 @@ def test_a_job_splits_an_emailed_pdf_and_its_halves_get_handles(
     monkeypatch.setattr(file_refs, "_mail_writer", writer)
     out = _job({"code": "split()", "files": ["mail:m1#1"]})
     assert sandbox[0] == {"20261030_001.pdf": b"%PDF all"}
-    assert [f["handle"] for f in out["files"]] == ["file:LOI - Pine View.pdf", "file:LOI - St Albans.pdf"]
+    assert [f["handle"] for f in out["files"]] == ["file:LOI - Pine View.pdf", "file:LOI - Willow Court.pdf"]
     # A later job (or a draft, or save_file) takes a result by its handle.
-    _job({"code": "again()", "files": ["file:LOI - St Albans.pdf"]})
-    assert sandbox[1] == {"LOI - St Albans.pdf": b"half 2"}
+    _job({"code": "again()", "files": ["file:LOI - Willow Court.pdf"]})
+    assert sandbox[1] == {"LOI - Willow Court.pdf": b"half 2"}
 
 
 def test_a_job_names_a_missing_file_and_lists_what_the_chat_has(sandbox: list) -> None:
     _job({"code": "x"})
     out = _job({"code": "x", "files": ["file:nope.pdf"]})
-    assert "No file named 'nope.pdf'" in out["error"] and "LOI - St Albans.pdf" in out["error"]
+    assert "No file named 'nope.pdf'" in out["error"] and "LOI - Willow Court.pdf" in out["error"]
 
 
 # --------------------------------------------------------------------------- #
@@ -182,10 +182,10 @@ def _save(tool_input: dict[str, Any]) -> dict[str, Any]:
 def test_a_job_result_is_saved_into_the_folder_under_the_name_asked_for(
     company: Session, drive: list,
 ) -> None:
-    conversation_files.keep(company.session_id, {"LOI - St Albans.pdf": b"half 2"})
-    out = _save({"file": "file:LOI - St Albans.pdf", "folder": FOLDER, "name": "Letter of Intent - St Albans (Signed)"})
+    conversation_files.keep(company.session_id, {"LOI - Willow Court.pdf": b"half 2"})
+    out = _save({"file": "file:LOI - Willow Court.pdf", "folder": FOLDER, "name": "Letter of Intent - Willow Court (Signed)"})
     assert out["status"] == "saved" and out["link"].startswith("https://drive.google.com/")
-    assert out["name"] == "Letter of Intent - St Albans (Signed).pdf"
+    assert out["name"] == "Letter of Intent - Willow Court (Signed).pdf"
     created = [a for n, a in drive[1:] if n.endswith("create_drive_file")]
     assert created[0]["folder_id"] == FOLDER
     assert base64.b64decode(created[0]["base64_content"]) == b"half 2"
@@ -320,3 +320,35 @@ def test_deleting_a_conversation_removes_its_files(company: Session) -> None:
     conversation_files.forget(company.session_id)
     assert conversation_files.names(company.session_id) == []
     assert callable(session_store.delete_session)
+
+
+def test_with_no_drive_it_goes_to_the_companys_documents(
+    company: Session, drive: list, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    ingested: list[dict[str, Any]] = []
+
+    async def ingest_file(**kwargs: Any) -> int:
+        ingested.append({**kwargs, "data": kwargs["path"].read_bytes()})
+        return 1
+
+    monkeypatch.setattr("openexecutive.knowledge.loader.ingest_file", ingest_file)
+    class Store:
+        COMPANY_COLLECTION = "company_docs"
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr("openexecutive.knowledge.store.ChromaDBStore", Store)
+    monkeypatch.setattr(save, "storage_for", lambda _g: None)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "LOI.pdf").write_bytes(b"older")
+    conversation_files.keep(company.session_id, {"half.pdf": b"half 1", "scan.png": b"img"})
+    out = _save({"file": "file:half.pdf", "folder": FOLDER, "name": "LOI"})
+    assert out["status"] == "saved" and out["where"].startswith("Documents")
+    assert out["name"] == "LOI (2).pdf" and (docs / "LOI (2).pdf").read_bytes() == b"half 1"
+    assert (docs / "LOI.pdf").read_bytes() == b"older"
+    assert ingested[0]["source_name"] == "LOI (2).pdf" and ingested[0]["data"] == b"half 1"
+    assert not any(n.endswith("create_drive_file") for n, _ in drive[1:])
+    refused = _save({"file": "file:scan.png", "folder": "documents"})
+    assert refused["status"] == "failed" and "PDF, Word" in refused["detail"]

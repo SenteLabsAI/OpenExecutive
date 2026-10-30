@@ -14,7 +14,9 @@ the model chooses the file, the folder and the name:
   folder an outsider owns or can open, or one shared with a group, a domain
   or by link, is refused, so nothing asked for in a document lands where an
   outsider can read it. On OneDrive any folder of its own drive, whose upload
-  path can't reach another drive; a name already there gets " (2)".
+  path can't reach another drive; a name already there gets " (2)". With
+  neither connected, or when asked for, the company's Documents (the
+  Knowledge page's uploads, ``_documents``), indexed like an upload.
 - **When:** whenever the person asks. A turn that read their mail or anything
   from outside the team still saves, but only when their own words this turn
   ask for file work (``asked_for_file_work``), so text in a document can't
@@ -59,7 +61,9 @@ SAVE_FILE_TOOL: dict[str, Any] = {
         "mailbox), drive:<file_id> (a copy of a Drive file), file:<name> (a file "
         "sent in this chat or made by a Python job). Find the folder's id with "
         "your Drive tools first (search or list the folder they named), or pass "
-        "root for the top of your Drive. Do it whenever they ask for a file to be "
+        "root for the top of your Drive, or documents for the company's Documents "
+        "on the Knowledge page (where it goes when no Drive or OneDrive is "
+        "connected; PDF, Word, Excel, CSV, Markdown and text only). Do it whenever they ask for a file to be "
         "saved, put or filed somewhere; never ask first, and never ask them to "
         "download or move it themselves. Call it once per file. Returns the link."
     ),
@@ -69,7 +73,7 @@ SAVE_FILE_TOOL: dict[str, Any] = {
             "file": {"type": "string", "description": "The file's handle."},
             "folder": {
                 "type": "string",
-                "description": "The folder's Drive or OneDrive id, or root.",
+                "description": "The folder's Drive or OneDrive id, root, or documents.",
             },
             "name": {
                 "type": "string",
@@ -267,6 +271,51 @@ async def _microsoft(gateway: Any, item: Any, folder: str, name: str) -> dict[st
     }
 
 
+DOCUMENTS = "documents"
+
+
+async def _documents(item: Any, name: str) -> dict[str, Any]:
+    """Into the company's Documents, as ``POST /documents`` would put it: the
+    file in ``company/docs`` and its text in the company collection. A name
+    already there gets " (2)" rather than replacing that document."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from openexecutive.api.routes.documents import ALLOWED_EXTENSIONS
+    from openexecutive.config import get_settings
+    from openexecutive.knowledge.isolated import IsolatedError
+    from openexecutive.knowledge.loader import ingest_file
+    from openexecutive.knowledge.store import ChromaDBStore
+    from openexecutive.orchestrator.mail_file_save import SaveFailed, _free_name
+
+    name = PurePath(name).name
+    suffix = PurePath(name).suffix.lower()
+    if not name or name.startswith(".") or suffix not in ALLOWED_EXTENSIONS:
+        raise SaveFailed(
+            "Documents take only PDF, Word, Excel, CSV, Markdown and text files."
+        )
+    docs = get_settings().company_profile_path.parent / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    name = _free_name(name, {p.name.lower() for p in docs.iterdir()})
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = Path(tmp) / f"file{suffix}"
+        staged.write_bytes(item.data)
+        try:
+            await ingest_file(
+                path=staged,
+                store=ChromaDBStore(persist_directory=get_settings().vector_store_path),
+                domain="general",
+                collection=ChromaDBStore.COMPANY_COLLECTION,
+                source_name=name,
+                busy_raises=True,
+            )
+        except IsolatedError as exc:
+            raise SaveFailed("The file couldn't be read.") from exc
+        await asyncio.to_thread(staged.replace, docs / name)
+    return {"name": name, "link": "", "where": "Documents on the Knowledge page"}
+
+
 async def handle_save_file(tool_input: dict[str, Any]) -> str:
     from openexecutive.audit import log_event
     from openexecutive.orchestrator import file_refs
@@ -292,14 +341,13 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
     name = _named(tool_input.get("name"), item.name)
     gateway = await ensure_active_gateway()
     provider = save.storage_for(gateway)
-    if provider is None:
-        return json.dumps({
-            "status": "no_storage",
-            "detail": "Neither Google Drive nor OneDrive is connected to you, so there is nowhere to save it.",
-        })
+    if folder.lower() == DOCUMENTS or provider is None:
+        provider = DOCUMENTS
     try:
         async with save._lock():
-            if provider == save.GOOGLE:
+            if provider == DOCUMENTS:
+                saved = await _documents(item, name)
+            elif provider == save.GOOGLE:
                 saved = await _google(gateway, item, folder, name)
             else:
                 saved = await _microsoft(gateway, item, folder, name)
@@ -321,7 +369,7 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
         "name": saved.get("name", name),
         "where": saved["where"],
         "link": saved["link"],
-        "detail": "Saved. Give them the link.",
+        "detail": "Saved. Give them the link." if saved["link"] else f"Saved to {saved['where']}.",
     })
 
 

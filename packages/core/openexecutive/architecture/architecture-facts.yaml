@@ -7159,7 +7159,10 @@ workflows:
     name). Opening a mail: file sets TurnDelegation.unchecked_mail, which
     mail_lock_holds honours, so a job printing the file cannot lift the hold;
     save_as is refused after outside content this turn; deleting a chat
-    removes its kept files. Drafts also take cc. Chat-app files are offered
+    removes its kept files. With no Drive or OneDrive (or folder documents)
+    save_file puts the file in the company's Documents (company/docs + the
+    company collection, upload types only, never replacing a name). Drafts
+    also take cc. Chat-app files are offered
     to the turn (turn_files.offer) and kept like web uploads; .ics and .eml
     are read as text. run_python_job
     (no network) and read_document (files on the machine only) moved to

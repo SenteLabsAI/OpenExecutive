@@ -780,14 +780,14 @@ def test_a_file_from_earlier_in_the_conversation_goes_onto_a_draft(
 
     monkeypatch.setattr(conversation_files, "root", lambda: tmp_path / "files")
     mailbox = FakeMailbox()
-    session = _session(mailbox, "send dana the St Albans LOI")
-    conversation_files.keep(session.session_id, {"LOI - St Albans.pdf": b"%PDF-half"})
-    result = _run(session, {"intent": "Attached.", "to": [DANA], "files": ["file:LOI - St Albans.pdf"]})
-    assert result["attached"] == ["LOI - St Albans.pdf"]
-    assert mailbox.drafts[0].attachments == [("LOI - St Albans.pdf", "application/pdf", b"%PDF-half")]
+    session = _session(mailbox, "send dana the Willow Court LOI")
+    conversation_files.keep(session.session_id, {"LOI - Willow Court.pdf": b"%PDF-half"})
+    result = _run(session, {"intent": "Attached.", "to": [DANA], "files": ["file:LOI - Willow Court.pdf"]})
+    assert result["attached"] == ["LOI - Willow Court.pdf"]
+    assert mailbox.drafts[0].attachments == [("LOI - Willow Court.pdf", "application/pdf", b"%PDF-half")]
     # Another conversation's files are not found.
-    other = _session(FakeMailbox(), "send dana the St Albans LOI")
-    missing = _run(other, {"intent": "Attached.", "to": [DANA], "files": ["file:LOI - St Albans.pdf"]})
+    other = _session(FakeMailbox(), "send dana the Willow Court LOI")
+    missing = _run(other, {"intent": "Attached.", "to": [DANA], "files": ["file:LOI - Willow Court.pdf"]})
     assert "No file named" in missing["error"]
 
 
