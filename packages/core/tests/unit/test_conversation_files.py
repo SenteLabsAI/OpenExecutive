@@ -56,7 +56,7 @@ def test_keep_sweeps_at_most_every_few_minutes(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(conversation_files, "_last_prune", time.monotonic())
     conversation_files.keep("c1", {"a.pdf": b"x"})
     assert calls == []
-    monkeypatch.setattr(conversation_files, "_last_prune", 0.0)
+    monkeypatch.setattr(conversation_files, "_last_prune", float("-inf"))
     conversation_files.keep("c1", {"b.pdf": b"x"})
     assert calls == [1]
 
@@ -119,6 +119,6 @@ def test_keeping_never_raises_into_the_turn(monkeypatch: pytest.MonkeyPatch) -> 
     def broken() -> None:
         raise PermissionError("read-only")
 
-    monkeypatch.setattr(conversation_files, "_last_prune", 0.0)
+    monkeypatch.setattr(conversation_files, "_last_prune", float("-inf"))
     monkeypatch.setattr(conversation_files, "prune", broken)
     assert conversation_files.keep("c1", {"a.pdf": b"x"}) == ["a.pdf"]

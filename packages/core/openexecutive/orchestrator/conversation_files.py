@@ -44,7 +44,7 @@ PRUNE_EVERY_S = 600
 _prune_lock = threading.Lock()
 # Marking is a read-modify-write of one file per conversation.
 _mark_lock = threading.Lock()
-_last_prune = 0.0
+_last_prune = float("-inf")  # the first keep sweeps
 
 
 def root() -> Path:
