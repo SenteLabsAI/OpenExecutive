@@ -2486,7 +2486,16 @@ async def dismiss_today_point(
         return {"dismissed": False}
     principal = _is_principal(caller)
     scope = narrative_cache.DEFAULT_SCOPE if principal else f"person:{caller}"
-    if right_now.dismiss(scope, body.text) is None:
+    # Only a point of the header this reader is served, in its words: they go
+    # into the next header's context. One reworded since the page loaded is
+    # matched by its subject.
+    served = narrative_cache.get(scope)
+    points = right_now.split_narrative(served.narrative_text).points if served is not None else []
+    key = right_now.point_key(body.text)
+    point = next((p for p in points if p == body.text), None) or next(
+        (p for p in points if key and right_now.point_key(p) == key), None,
+    )
+    if point is None or right_now.dismiss(scope, point) is None:
         return {"dismissed": False}
     if principal:
         background_tasks.add_task(refresh_principal_narrative)

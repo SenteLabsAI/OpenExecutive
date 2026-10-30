@@ -124,3 +124,13 @@ def test_dismissing_without_a_subject_or_source_still_works() -> None:
     gone = right_now.dismiss("principal", "**Q3 board deck**: draft unsent.")
     assert gone is not None and gone.source is None
     assert right_now.dismiss("principal", "   ") is None
+
+
+def test_a_full_day_still_takes_a_point_dismissed_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(right_now, "_DISMISSED_MAX", 2)
+    at = "2026-10-30T19:00:00+00:00"
+    assert right_now.dismiss("principal", "**One**: a.", at=at) is not None
+    assert right_now.dismiss("principal", "**Two**: b.", at=at) is not None
+    assert right_now.dismiss("principal", "**Three**: c.", at=at) is None
+    # A double tap on one already kept is not refused.
+    assert right_now.dismiss("principal", "**Two**: b.", at=at) is not None

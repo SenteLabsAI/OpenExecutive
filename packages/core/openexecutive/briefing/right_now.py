@@ -294,10 +294,14 @@ def dismiss(scope: str, text: str, at: str | None = None) -> Dismissed | None:
         initialize_db()
         with narrative_cache._get_conn() as conn:
             conn.execute("DELETE FROM briefing_point_dismissed WHERE day < ?", (day,))
+            known = conn.execute(
+                "SELECT 1 FROM briefing_point_dismissed WHERE scope = ? AND day = ? AND point_key = ?",
+                (scope, day, key),
+            ).fetchone()
             count = conn.execute(
                 "SELECT COUNT(*) FROM briefing_point_dismissed WHERE scope = ? AND day = ?", (scope, day),
             ).fetchone()[0]
-            if count >= _DISMISSED_MAX:
+            if known is None and count >= _DISMISSED_MAX:
                 return None
             conn.execute(
                 "INSERT OR REPLACE INTO briefing_point_dismissed "
