@@ -62,7 +62,7 @@ from urllib.parse import quote
 
 import httpx
 
-from openexecutive.delegation.email_html import body_html
+from openexecutive.delegation.email_html import body_html, is_ours
 from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
@@ -838,8 +838,12 @@ def _plain_or_ours(msg: EmailMessage) -> bool:
         return msg.get_content_type() == "text/plain"
     if msg.get_content_type() != "multipart/alternative":
         return False
-    parts = [p.get_content_type() for p in msg.iter_parts()]
-    return parts == ["text/plain", "text/html"]
+    parts = list(msg.iter_parts())
+    if [p.get_content_type() for p in parts] != ["text/plain", "text/html"]:
+        return False
+    # Gmail's own composer saves the same shape: only our table HTML counts.
+    html_part = parts[1]
+    return isinstance(html_part, EmailMessage) and is_ours(str(html_part.get_content()))
 
 
 def build_raw(sender: str, spec: DraftSpec) -> str:

@@ -38,7 +38,16 @@ _STYLES = {
     "td": "border:1px solid #d0d7de;padding:6px 10px",
 }
 
-_WRAPPER = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45">{}</div>'
+_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45"
+_WRAPPER = '<div style="' + _STYLE + '">{}</div>'
+# What marks the HTML as ours once a mail service has stored it: services
+# reformat markup (Graph adds a document around it), so the test is the
+# wrapper's style with spacing and case ignored.
+_MARK = "line-height:1.45"
+_WHITESPACE = re.compile(r"\s+")
+
+# The line a forwarded message starts under (``delegation_tools._forward_header``).
+_FORWARDED = re.compile(r"^-{2,}\s*Forwarded message\s*-{2,}\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 def _lines_with_tables(text: str) -> tuple[list[str], bool]:
@@ -72,10 +81,29 @@ def _style(tokens: list[Token]) -> None:
             token.attrSet("style", f"{_STYLES[tag]};{align}" if align else _STYLES[tag])
 
 
+def is_ours(markup: str) -> bool:
+    """Whether ``markup`` (an email's stored HTML) is what ``body_html``
+    wrote, rather than formatting someone made in their mail app."""
+    flat = _WHITESPACE.sub("", (markup or "").lower())
+    return _MARK in flat and "<table" in flat
+
+
+def split_forward(text: str) -> tuple[str, str]:
+    """``text`` as the note and the forwarded message under it (from its
+    "Forwarded message" line), or the whole text and ""."""
+    match = _FORWARDED.search(text or "")
+    if match is None:
+        return text, ""
+    return text[: match.start()].rstrip("\n"), text[match.start():]
+
+
 def body_html(body: str, *, quoted: str = "") -> str | None:
     """``body`` as the HTML part of an email when it holds a table, else
     None (the email stays plain text). ``quoted`` (a forwarded message,
-    under the note) goes below it as escaped text, never rendered."""
+    under the note) goes below it as escaped text, never rendered; without
+    it, a forwarded message in ``body`` itself is split off the same way."""
+    if not quoted:
+        body, quoted = split_forward(body or "")
     lines, found = _lines_with_tables(body or "")
     if not found:
         return None

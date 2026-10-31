@@ -68,8 +68,7 @@ an AI or an assistant, do not answer that: add it to open_questions.
 a table: when <intent> asks for one, or gives the same few details for \
 several items (such as a bill number, amount and due date for each \
 property), lay them out as a Markdown pipe table, with a header row and a \
-|---| separator row, and a blank line before and after it. It is sent as a \
-real table. No other markdown: no headings, bold or links.
+|---| separator row, and a blank line before and after it. No other markdown: no headings, bold or links.
 6. <writer_noted>, when given, is what the writer told these same recipients \
 in earlier emails, in their own words, with dates. Use it only to stay \
 consistent: never add anything from it that <intent> does not ask for. If \

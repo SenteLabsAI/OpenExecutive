@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 from email import message_from_bytes, policy
+from email.message import EmailMessage
 from typing import Any
 
 import httpx
@@ -107,3 +108,80 @@ def test_outlook_gets_an_html_body_only_for_a_table() -> None:
     assert outlook._body("Hi")["contentType"] == "text"
     body = outlook._body(TABLE_BODY)
     assert body["contentType"] == "html" and "<table" in body["content"]
+
+
+def test_only_our_html_counts_as_ours() -> None:
+    markup = email_html.body_html(TABLE_BODY)
+    assert markup is not None and email_html.is_ours(markup)
+    # Graph wraps and respaces it; still ours.
+    assert email_html.is_ours("<html><body>" + markup.replace(";", "; ").upper() + "</body></html>")
+    assert not email_html.is_ours("<div dir='ltr'><b>Hi</b> Dana</div>")
+
+
+def test_a_forward_in_the_edited_text_stays_escaped() -> None:
+    text = (
+        "Here it is:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        "---------- Forwarded message ---------\n| x | y |\n|---|---|\n# not a heading"
+    )
+    markup = email_html.body_html(text)
+    assert markup is not None and markup.count("<table") == 1 and "<h1" not in markup
+    # A table only in the forwarded part: the email stays plain.
+    assert email_html.body_html("FYI\n\n---------- Forwarded message ---------\n| x | y |\n|---|---|") is None
+
+
+def _gmail_with_draft(raw: str) -> tuple[Any, list[dict[str, Any]]]:
+    from tests.unit.test_delegation_gmail import EMAIL, FakeGoogle, _cred
+
+    google = FakeGoogle()
+    puts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/drafts/d1") and request.method == "GET":
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m9", "threadId": "t1", "raw": raw}})
+        if request.url.path.endswith("/drafts/d1") and request.method == "PUT":
+            puts.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "d1", "message": {"id": "m10", "threadId": "t1"}})
+        return FakeGoogle.handler(google, request)
+
+    return DelegateGmail(EMAIL, credential=_cred(), transport=httpx.MockTransport(handler)), puts
+
+
+def test_a_gmail_draft_with_its_own_formatting_or_files_is_left_alone() -> None:
+    import pytest
+
+    from openexecutive.delegation.gmail import DraftChanged
+
+    composed = EmailMessage()
+    composed["To"] = "dana@x.example"
+    composed.set_content("Hi Dana")
+    composed.add_alternative("<div dir='ltr'><b>Hi</b> Dana</div>", subtype="html")
+    with_files = build_raw("me@x.example", DraftSpec(
+        to=["dana@x.example"], subject="Bills", body=TABLE_BODY,
+        attachments=[("bill.pdf", "application/pdf", b"%PDF-1.4")],
+    ))
+    for raw in (base64.urlsafe_b64encode(composed.as_bytes()).decode(), with_files):
+        client, puts = _gmail_with_draft(raw)
+        with pytest.raises(DraftChanged) as err:
+            asyncio.run(client.update_draft_text("d1", "m9", "Hi"))
+        assert err.value.reason == "not_plain" and not puts
+
+
+def test_an_outlook_table_draft_can_be_edited_and_a_rich_one_cannot() -> None:
+    import pytest
+
+    from openexecutive.delegation import outlook as ol
+    from openexecutive.delegation.gmail import DraftChanged
+    from tests.unit.test_delegation_outlook import FakeGraph
+    from tests.unit.test_delegation_outlook import _msg as graph_msg
+
+    graph = FakeGraph()
+    graph.messages["d1"] = graph_msg("d1", isDraft=True, body=ol._body(TABLE_BODY))
+    asyncio.run(graph.client().update_draft_text("d1", ol.draft_version("d1", "ck1"), "Thanks, Dana."))
+    patch = next(r for r in graph.graph_calls() if r.method == "PATCH")
+    assert json.loads(patch.content)["body"] == {"contentType": "text", "content": "Thanks, Dana."}
+
+    graph = FakeGraph()
+    graph.messages["d1"] = graph_msg("d1", isDraft=True, body={"contentType": "html", "content": "<b>Hi</b>"})
+    with pytest.raises(DraftChanged) as err:
+        asyncio.run(graph.client().update_draft_text("d1", ol.draft_version("d1", "ck1"), "Hi"))
+    assert err.value.reason == "not_plain"

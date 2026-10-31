@@ -62,7 +62,7 @@ from urllib.parse import quote
 
 import httpx
 
-from openexecutive.delegation.email_html import body_html
+from openexecutive.delegation.email_html import body_html, is_ours
 from openexecutive.delegation.gmail import (
     _AUTOREPLY_HEADERS,
     _BULK_PRECEDENCE,
@@ -516,6 +516,13 @@ def _body(text: str) -> dict[str, str]:
     if markup is None:
         return {"contentType": "text", "content": text}
     return {"contentType": "html", "content": markup}
+
+
+def _plain_or_ours(body: dict[str, Any]) -> bool:
+    """Whether a draft's body is plain text or the table HTML ``_body``
+    wrote, not formatting someone made in Outlook."""
+    kind = str(body.get("contentType") or "").lower()
+    return kind == "text" or (kind == "html" and is_ours(str(body.get("content") or "")))
 
 
 def _recipients(addresses: list[str]) -> list[dict[str, Any]]:
@@ -1076,9 +1083,7 @@ class DelegateOutlook:
             if draft_version(draft_id, change_key) != expected_version or not change_key:
                 raise DraftChanged("changed")
             body = data.get("body")
-            if data.get("hasAttachments") is True or not (
-                isinstance(body, dict) and str(body.get("contentType") or "").lower() == "text"
-            ):
+            if data.get("hasAttachments") is True or not (isinstance(body, dict) and _plain_or_ours(body)):
                 raise DraftChanged("not_plain")
             etag = str(data.get("@odata.etag") or f'W/"{change_key}"')
             fields: dict[str, Any] = {"body": _body(text)}
