@@ -10,10 +10,12 @@ the model chooses the file, the folder and the name:
 - **Who:** the principal (``content_trust.PRINCIPAL_ONLY_TOOLS``). The
   Executive's Drive is the company's.
 - **Where:** a folder of the Executive's own storage. On Google Drive one
-  that only the Executive and the team can see (``folder_refusal``): a
-  folder an outsider owns or can open, or one shared with a group, a domain
-  or by link, is refused, so nothing asked for in a document lands where an
-  outsider can read it. On OneDrive any folder of its own drive, whose upload
+  that only the Executive and the team can see (``folder_check``): a
+  folder an outsider owns is refused, and one an outsider can open (shared
+  with them, a group, a domain or by link) is saved into only on the
+  person's tap, on an approval card that names who else can open it
+  (``action_cards`` ``save_files``), so nothing asked for in a document
+  lands where an outsider can read it unseen. On OneDrive any folder of its own drive, whose upload
   path can't reach another drive; a name already there gets " (2)". Or,
   with ``folder`` ``documents``, the company's Documents (the Knowledge
   page's uploads, ``_documents``), indexed like an upload.
@@ -149,36 +151,65 @@ def _team_emails() -> set[str]:
     return {a.lower() for p in people for a in [p.email, *p.email_aliases] if a}
 
 
-def folder_refusal(info: str, folder: str, account: str, team: set[str]) -> str | None:
+SHARED_OUTSIDE = "That folder is shared with someone outside the team, so I don't save into it"
+
+
+class SharedOutside(Exception):
+    """A team folder that people outside the team can open: saved into only
+    on the person's tap (``action_cards`` ``save_files``). ``outside`` says
+    who, as Drive lists them."""
+
+    def __init__(self, outside: list[str]) -> None:
+        super().__init__(SHARED_OUTSIDE)
+        self.outside = outside
+
+
+def _viewer(entry: str) -> str:
+    """One permission line, as the card shows who else can open the folder:
+    the address, a domain or "Anyone with the link", without the role and id."""
+    kind, _, rest = entry.partition(": ")
+    if kind not in ("User", "Group", "Domain") or not rest:
+        return entry.split(" (", 1)[0].strip()[:80]
+    who = rest.split(" ", 1)[0].strip()
+    if kind == "Domain":
+        return f"Everyone at {who}"[:80]
+    if kind == "Group":
+        return f"{who} (group)"[:80]
+    return who[:80]
+
+
+def folder_check(info: str, folder: str, account: str, team: set[str]) -> tuple[str | None, list[str]]:
     """Why a Google Drive folder, by ``get_drive_file_permissions``'s answer,
-    is not one to save into, or None.
+    is not one to save into (or None), and who outside the team can open it.
 
     The answer starts with the folder's name, which anyone who shares a
     folder chooses and which may hold line breaks, so nothing is read from
     it by search: the ``ID:`` line must be there exactly once, and the type
-    and owners are the fixed lines right after it. Then every permission
-    listed must be the Executive or the team: a folder in someone else's
-    shared drive, one shared with an outsider, a group, a domain or by link
-    is refused. The lines after the permissions can only add entries, which
-    can only refuse."""
+    and owners are the fixed lines right after it. A folder an outsider owns
+    is refused. Every permission that isn't the Executive or the team (an
+    outsider, a group, a domain, a link, someone else's shared drive's
+    members) is listed: such a folder is saved into only on the person's tap
+    (``SharedOutside``). The lines after the permissions can only add
+    entries, which can only add to that list."""
     lines = info.splitlines()
     marks = [i for i, line in enumerate(lines) if line.strip() == f"ID: {folder}"]
     if len(marks) != 1 or len(lines) < marks[0] + 4:
-        return "I couldn't tell what that Drive item is"
+        return "I couldn't tell what that Drive item is", []
     kind, owners = lines[marks[0] + 1], lines[marks[0] + 3]
     if not kind.startswith("Type: ") or not owners.startswith("Owners: "):
-        return "I couldn't tell what that Drive item is"
+        return "I couldn't tell what that Drive item is", []
     if kind.removeprefix("Type: ").strip() != _FOLDER_MIME:
-        return "That Drive id is a file, not a folder"
+        return "That Drive id is a file, not a folder", []
     allowed = {account} | team
     owner_emails = {e.lower() for e in _EMAIL_IN_RE.findall(owners)}
     if not owner_emails <= allowed:
-        return "That folder belongs to someone outside the team, so I don't save into it"
+        return "That folder belongs to someone outside the team, so I don't save into it", []
     tail = lines[marks[0] + 4:]
     try:
         start = next(i for i, line in enumerate(tail) if line.strip() == "Sharing Status:")
     except StopIteration:
-        return "I couldn't tell who can see that folder"
+        return "I couldn't tell who can see that folder", []
+    outside: list[str] = []
     for line in tail[start + 1:]:
         entry = line.strip()
         if not entry.startswith("- "):
@@ -188,13 +219,27 @@ def folder_refusal(info: str, folder: str, account: str, team: set[str]) -> str 
             email = entry.split(": ", 1)[1].split(" ", 1)[0].lower()
             if entry.startswith("User: ") and email in allowed:
                 continue
-        return "That folder is shared with someone outside the team, so I don't save into it"
+        shown = _viewer(entry)
+        if shown not in outside:
+            outside.append(shown)
     if not owner_emails and not any(line.strip().startswith("- User: ") for line in tail[start + 1:]):
-        return "I couldn't tell who can see that folder"
-    return None
+        return "I couldn't tell who can see that folder", []
+    return None, outside
 
 
-async def _google(gateway: Any, item: Any, folder: str, name: str) -> dict[str, Any]:
+def folder_refusal(info: str, folder: str, account: str, team: set[str]) -> str | None:
+    """``folder_check`` as one answer: a folder people outside the team can
+    open is refused too (``SHARED_OUTSIDE``)."""
+    refused, outside = folder_check(info, folder, account, team)
+    if refused is not None:
+        return refused
+    return SHARED_OUTSIDE if outside else None
+
+
+async def _google(gateway: Any, item: Any, folder: str, name: str, *, tapped: bool = False) -> dict[str, Any]:
+    """Save ``item`` into ``folder`` of the Executive's Google Drive.
+    ``tapped``: the person approved this save on a card, so a folder people
+    outside the team can open is saved into; otherwise ``SharedOutside``."""
     from openexecutive.orchestrator.drive_attach import INFO_TOOL
     from openexecutive.orchestrator.mail_file_save import (
         _CREATED_RE,
@@ -212,9 +257,11 @@ async def _google(gateway: Any, item: Any, folder: str, name: str) -> dict[str, 
         info = await _call(gateway, INFO_TOOL, {"user_google_email": account, "file_id": folder})
         if _failed(info):
             raise SaveFailed(f"Couldn't open that folder: {_why(info)}")
-        refused = folder_refusal(info, folder, account, _team_emails())
+        refused, outside = folder_check(info, folder, account, _team_emails())
         if refused is not None:
             raise SaveFailed(refused + ".")
+        if outside and not tapped:
+            raise SharedOutside(outside)
     made = await _call(gateway, "google_workspace__create_drive_file", {
         "user_google_email": account,
         "file_name": name,
@@ -373,6 +420,8 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
                 saved = await _microsoft(gateway, item, folder, name)
     except save.NoStorage:
         return json.dumps({"status": "no_storage", "detail": "Your OneDrive couldn't be reached."})
+    except SharedOutside as exc:
+        return _shared_outside(name, exc.outside)
     except save.SaveFailed as exc:
         return json.dumps({"status": "failed", "detail": f"Couldn't save {name}. {exc.detail}"})
     try:
@@ -390,6 +439,35 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
         "where": saved["where"],
         "link": saved["link"],
         "detail": "Saved. Give them the link." if saved["link"] else f"Saved to {saved['where']}.",
+    })
+
+
+def _card_offered() -> bool:
+    """Whether this turn can leave an approval card (``propose_actions``)."""
+    from openexecutive.orchestrator.action_card_tools import PROPOSE_ACTIONS
+    from openexecutive.orchestrator.delegation_tools import _writer
+
+    try:
+        return not isinstance(_writer(PROPOSE_ACTIONS), str)
+    except Exception:
+        return False
+
+
+def _shared_outside(name: str, outside: list[str]) -> str:
+    """A folder people outside the team can open: the save goes on a card
+    for the person to approve, or is refused when no card can be left."""
+    if not _card_offered():
+        return json.dumps({"status": "failed", "detail": f"Couldn't save {name}. {SHARED_OUTSIDE}."})
+    return json.dumps({
+        "status": "needs_card",
+        "shared_with": outside[:10],
+        "detail": (
+            "That folder is shared with people outside the team, so this save waits for their "
+            "tap. Put every file for this folder on one approval card: propose_actions with kind "
+            "save_files, the folder's id as folder, and files (each file's handle as file and "
+            "the name to save under as name). Nothing is saved until they approve; tell them the "
+            "card is waiting."
+        ),
     })
 
 

@@ -2730,7 +2730,7 @@ export async function sendChatDraft(row: number, threadMovedOn = false): Promise
 // Dismiss (POST /decisions/{id}/reject) drops it.
 export interface ActionCardAction {
   index: number;
-  // invite, message, add_contact or drive_files.
+  // invite, message, add_contact, drive_files or save_files.
   kind: string;
   summary: string;
   // A message's text as it will be sent, or a meeting's description.

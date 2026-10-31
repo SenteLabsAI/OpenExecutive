@@ -82,9 +82,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DECISION_CLASS = "delegation_actions"
-KINDS: tuple[str, ...] = ("invite", "message", "add_contact", "drive_files")
+KINDS: tuple[str, ...] = ("invite", "message", "add_contact", "drive_files", "save_files")
 # Kinds that never run without the person's tap.
-TAP_ONLY_KINDS = frozenset({"add_contact", "drive_files"})
+TAP_ONLY_KINDS = frozenset({"add_contact", "drive_files", "save_files"})
+HANDLE_MAX = 300
 DRIVE_FILES_MAX = 25
 FILE_NAME_MAX = 200
 _DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
@@ -322,6 +323,99 @@ def _check_drive_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] |
     }
 
 
+def _check_save_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] | str:
+    if not speaker.is_principal:
+        return "save_files: the Executive's Drive is the owner's; only they can save into it."
+    folder = str(action.get("folder") or "").strip()
+    if not _DRIVE_ID_RE.match(folder):
+        return "save_files: `folder` must be a Drive folder id."
+    raw = action.get("files")
+    if not isinstance(raw, list) or not raw:
+        return "save_files: pass `files`, each with the file's handle as `file` and the `name` to save under."
+    if len(raw) > DRIVE_FILES_MAX:
+        return f"save_files: at most {DRIVE_FILES_MAX} files on one action."
+    files: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return "save_files: each file is an object with `file` (its handle) and an optional `name`."
+        handle = str(entry.get("file") or "").strip()
+        if not handle or len(handle) > HANDLE_MAX:
+            return "save_files: each file needs its handle as `file`."
+        name = _one_line(entry.get("name"), FILE_NAME_MAX + 1)
+        if len(name) > FILE_NAME_MAX:
+            return f"save_files: keep each `name` to {FILE_NAME_MAX} characters."
+        if any(f["file"] == handle for f in files):
+            continue
+        # Set by describe_save_files when the card is made: the name the
+        # file is kept under for the conversation.
+        files.append({"file": handle, "name": name, "kept": _one_line(entry.get("kept"), FILE_NAME_MAX)})
+    count = f"{len(files)} file" + ("" if len(files) == 1 else "s")
+    return {
+        "kind": "save_files",
+        "input": {"folder": folder, "files": files, "session_id": _one_line(action.get("session_id"), 200)},
+        "summary": f"Save {count} to Drive", "text": "\n".join(f["name"] or f["file"] for f in files),
+    }
+
+
+async def describe_save_files(actions: list[dict[str, Any]], session_id: str | None) -> str | None:
+    """Make checked ``save_files`` actions ready for a tap: each file read now
+    and kept for this conversation (``conversation_files``), its name fixed,
+    and the folder's name and who outside the team can open it put on the
+    card. None when ready, else why the card can't be made."""
+    from openexecutive.orchestrator import conversation_files, file_refs, file_tools
+    from openexecutive.orchestrator import mail_file_save as save
+    from openexecutive.orchestrator.drive_attach import INFO_TOOL
+    from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
+
+    saves = [a for a in actions if a.get("kind") == "save_files"]
+    if not saves:
+        return None
+    if not session_id:
+        return "save_files: this chat can't hold the files for a card."
+    gateway = await ensure_active_gateway()
+    if gateway is None or save.storage_for(gateway) != save.GOOGLE:
+        return "save_files: Google Drive isn't connected right now."
+    account = save._exec_account()
+    for action in saves:
+        stored = action["input"]
+        folder = stored["folder"]
+        info = await save._call(gateway, INFO_TOOL, {"user_google_email": account, "file_id": folder})
+        if save._failed(info):
+            return f"save_files: couldn't open that folder: {save._why(info)}"
+        refused, outside = file_tools.folder_check(info, folder, account, file_tools._team_emails())
+        if refused is not None:
+            return f"save_files: {refused}."
+        if not outside:
+            return "save_files: only the team can open that folder, so save_file saves into it now; no card needed."
+        try:
+            names = await gateway.drive_item_names([folder])
+        except Exception:
+            logger.warning("action_cards: couldn't read the folder's name", exc_info=True)
+            names = {}
+        folder_name = _one_line(str(names.get(folder) or ""), FILE_NAME_MAX)
+        if not folder_name:
+            return "save_files: couldn't read that folder's name in Drive, so it can't be shown on a card."
+        for f in stored["files"]:
+            try:
+                got = await file_refs.resolve([f["file"]])
+            except file_refs.RefError as exc:
+                return f"save_files: {exc}"
+            if not got.items:
+                return f"save_files: {f['file']} is too large to save."
+            item = got.items[0]
+            f["name"] = file_tools._named(f["name"] or None, item.name)
+            kept = conversation_files.keep(session_id, {f["name"]: item.data}, from_mail=file_refs.turn_used_mail_files())
+            if not kept:
+                return f"save_files: couldn't hold {f['name']} for the card. Try again."
+            f["kept"] = kept[0]
+        stored["session_id"] = session_id
+        count = f"{len(stored['files'])} file" + ("" if len(stored["files"]) == 1 else "s")
+        action["summary"] = f"Save {count} to {folder_name}"
+        shown = ", ".join(outside[:10]) + (f" and {len(outside) - 10} more" if len(outside) > 10 else "")
+        action["text"] = "\n".join([*(f["name"] for f in stored["files"]), f"Also open to: {shown}"])
+    return None
+
+
 async def describe_drive_files(actions: list[dict[str, Any]]) -> str | None:
     """Put each Drive file's current name, and the folder's, on checked
     ``drive_files`` actions, for the card to show. A card never shows bare
@@ -375,6 +469,8 @@ def check(actions: Any, speaker: Any, *, now: datetime) -> list[dict[str, Any]] 
             checked = _check_contact(action, speaker)
         elif kind == "drive_files":
             checked = _check_drive_files(action, speaker)
+        elif kind == "save_files":
+            checked = _check_save_files(action, speaker)
         else:
             return f"`kind` must be one of {', '.join(KINDS)}."
         if isinstance(checked, str):
@@ -592,7 +688,7 @@ def _on_its_own_refusal(
         return "signing_off"
     if not actions:
         return "not_allowed"
-    if any(a.get("kind") == "drive_files" for a in actions):
+    if any(a.get("kind") in ("drive_files", "save_files") for a in actions):
         return "tap_only"
     message_max = ON_ITS_OWN_MESSAGE_MAX
     if by_mode:
@@ -707,6 +803,8 @@ async def _do(action: dict[str, Any], person: Any, *, tapped: bool = False) -> d
             return {"status": "done", "detail": "Added."}
         if kind == "drive_files":
             return await _do_drive_files(tool_input, tapped=tapped)
+        if kind == "save_files":
+            return await _do_save_files(tool_input, tapped=tapped)
     except Exception:
         logger.exception("action_cards: a %s action failed", kind)
         return {"status": "failed", "detail": "Something went wrong, so it may not have happened. Check before trying again."}
@@ -731,6 +829,39 @@ async def _do_drive_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, 
     if not failed:
         return {"status": "done", "detail": f"Done for {len(files)} file" + ("" if len(files) == 1 else "s") + "."}
     detail = f"{len(files) - len(failed)} of {len(files)} done. " + "; ".join(failed[:3])
+    return {"status": "failed", "detail": detail[:300]}
+
+
+async def _do_save_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, str]:
+    """Save each file on a ``save_files`` action into its folder, one by one,
+    from the copy kept when the card was made. Only on the person's tap:
+    the folder is still checked (``file_tools.folder_check``), but people
+    outside the team being able to open it is what they approved."""
+    from openexecutive.orchestrator import conversation_files, file_refs, file_tools
+    from openexecutive.orchestrator import mail_file_save as save
+    from openexecutive.orchestrator.mcp_gateway import ensure_active_gateway
+
+    if not tapped:
+        return {"status": "failed", "detail": "Saving into a folder shared outside the team waits for a tap."}
+    gateway = await ensure_active_gateway()
+    if gateway is None or save.storage_for(gateway) != save.GOOGLE:
+        return {"status": "failed", "detail": "Google Drive isn't connected right now."}
+    files = stored["files"]
+    failed: list[str] = []
+    for f in files:
+        data = conversation_files.get(stored["session_id"] or None, f["kept"]) if f["kept"] else None
+        if data is None:
+            failed.append(f"{f['name']}: no longer kept; ask again in the chat")
+            continue
+        item = file_refs.FileItem(name=f["name"], mime=file_refs.guess_mime(f["name"]), data=data, ref=f["file"])
+        try:
+            async with save._lock():
+                await file_tools._google(gateway, item, stored["folder"], f["name"], tapped=True)
+        except save.SaveFailed as exc:
+            failed.append(f"{f['name']}: {exc.detail}")
+    if not failed:
+        return {"status": "done", "detail": f"Saved {len(files)} file" + ("" if len(files) == 1 else "s") + "."}
+    detail = f"{len(files) - len(failed)} of {len(files)} saved. " + "; ".join(failed[:3])
     return {"status": "failed", "detail": detail[:300]}
 
 
