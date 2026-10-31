@@ -4877,6 +4877,13 @@ export interface ContactNote {
   updated_at: string;
 }
 
+// When the principal last emailed, heard from or met each person, for the
+// People list (principal only; people with nothing known are left out).
+export async function getLastContacts(): Promise<{ person_id: number; at: string; how: string }[]> {
+  const body = await contactsCall<{ people: { person_id: number; at: string; how: string }[] }>("/last-contact");
+  return body.people;
+}
+
 export async function getContactNote(personId: number): Promise<ContactNote | null> {
   const res = await fetch(`${API_BASE}/contacts/${personId}/note`);
   if (res.status === 404) return null;

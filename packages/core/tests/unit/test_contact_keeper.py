@@ -991,6 +991,24 @@ def test_the_note_route_and_removing_a_contact(client: TestClient, owner: int, w
     assert client.get(f"/contacts/{person.id}/note", headers={"x-caller-email": OWNER}).status_code == 404
 
 
+def test_the_last_contact_route(client: TestClient, owner: int) -> None:
+    from openexecutive.people import contact_notes
+
+    pid = people_store.upsert_person(full_name="Priya Shah", email=PRIYA, kind="contact")
+    contact_notes.put_activity(
+        pid, last_emailed_at="2026-10-18T10:00:00+00:00", last_met_at="2026-10-20T15:00:00+00:00",
+        next_meeting_at=None, next_meeting_title="", emailed_count=1, met_count=1,
+        last_heard_at="2026-10-19T09:00:00+00:00",
+    )
+    people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example")
+    people_registry.invalidate()
+    assert client.get("/contacts/last-contact", headers={"x-caller-email": "ben@co.example"}).status_code == 404
+    body = client.get("/contacts/last-contact", headers={"x-caller-email": OWNER}).json()
+    assert body["people"] == [{"person_id": pid, "at": "2026-10-20T15:00:00+00:00", "how": "met"}]
+    people_store.archive_person(pid)
+    assert client.get("/contacts/last-contact", headers={"x-caller-email": OWNER}).json() == {"people": []}
+
+
 # --- contact details from a signature --------------------------------------
 
 

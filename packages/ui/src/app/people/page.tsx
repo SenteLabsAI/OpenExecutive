@@ -15,6 +15,7 @@ import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
   createPerson,
   getContactChanges,
+  getLastContacts,
   getPeopleViewer,
   listPeople,
   type ContactChanges,
@@ -22,7 +23,7 @@ import {
   type Person,
   type PersonKind,
 } from "@/lib/api";
-import { newlyAdded } from "@/lib/contactChanges";
+import { cardChanges, newlyAdded } from "@/lib/contactChanges";
 import {
   defaultKindForTab,
   defaultPeopleTab,
@@ -35,6 +36,16 @@ import {
   tabsFor,
   type PeopleTab,
 } from "@/lib/peopleKinds";
+import {
+  duplicateIds,
+  groupByCompany,
+  lastContactLabel,
+  matchesSearch,
+  sortPeople,
+  type LastContact,
+  type PeopleFilter,
+  type PeopleSort,
+} from "@/lib/peopleList";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,8 +68,8 @@ const CHANNELS = ["any", "slack", "discord", "telegram", "email"];
 const KINDS: PersonKind[] = ["team", "contact"];
 
 // ---------------------------------------------------------------------------
-// PersonCard — name, role, channel and one status. Approval scopes are on
-// the person's own page.
+// PersonRow — one line per person: name, role, when you were last in touch
+// (contacts) and one status. Approval scopes are on the person's own page.
 // ---------------------------------------------------------------------------
 
 const TONE_DOT = { ok: "bg-emerald-500", warn: "bg-amber-500", muted: "bg-fg-subtle" } as const;
@@ -67,40 +78,65 @@ function channelLabel(channel: string): string {
   return channel === "any" ? "Where they last talked" : channel.charAt(0).toUpperCase() + channel.slice(1);
 }
 
-function PersonCard({ person, today, isNew = false }: { person: Person; today: string; isNew?: boolean }) {
+function PersonRow({
+  person,
+  today,
+  lastContact = "",
+  isNew = false,
+  isDuplicate = false,
+}: {
+  person: Person;
+  today: string;
+  lastContact?: string;
+  isNew?: boolean;
+  isDuplicate?: boolean;
+}) {
   const contact = isContact(person);
   const status = personCardStatus(person, today);
   return (
     <Link
       href={`/people/${person.id}`}
-      className="flex items-start gap-4 rounded-2xl border border-line bg-surface-elevated hover:bg-surface-hover hover:border-line-strong transition-colors p-5 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+      className="flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-3 border-t border-line first:border-t-0 hover:bg-surface-hover transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60"
     >
-      <div className="w-11 h-11 rounded-full bg-accent/10 text-accent flex items-center justify-center flex-shrink-0 text-base font-semibold">
+      <div className="w-9 h-9 rounded-full bg-accent/10 text-accent flex items-center justify-center flex-shrink-0 text-sm font-semibold">
         {person.full_name.charAt(0).toUpperCase()}
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-base font-semibold text-fg group-hover:text-accent transition-colors truncate">
-            {person.full_name}
-          </span>
-          {person.is_principal && (
-            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent">
-              Principal
+      <div className="min-w-0 flex-1 sm:flex sm:items-center sm:gap-4">
+        <div className="min-w-0 sm:w-[38%] sm:flex-none">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-[15px] font-semibold text-fg group-hover:text-accent transition-colors truncate">
+              {person.full_name}
             </span>
-          )}
-          {isNew && (
-            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium border border-emerald-500/40 text-emerald-500">
-              New
-            </span>
-          )}
+            {person.is_principal && (
+              <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent">
+                Principal
+              </span>
+            )}
+            {isNew && (
+              <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium border border-emerald-500/40 text-emerald-500">
+                New
+              </span>
+            )}
+            {isDuplicate && (
+              <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium border border-amber-500/40 text-amber-500">
+                Same email
+              </span>
+            )}
+          </div>
         </div>
-        <div className="text-[15px] text-fg-muted mt-0.5 truncate">{person.role || "—"}</div>
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-fg-muted">
-          {!contact && <span>{channelLabel(person.preferred_channel)}</span>}
-          <span className="inline-flex items-center gap-1.5">
-            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${TONE_DOT[status.tone]}`} />
-            {status.label}
-          </span>
+        <div className="min-w-0 flex-1 text-sm text-fg-muted truncate">{person.role || "—"}</div>
+        <div className="mt-0.5 sm:mt-0 flex flex-wrap items-center gap-x-4 text-[13px] sm:text-sm text-fg-muted sm:w-56 sm:flex-none sm:justify-end">
+          {contact ? (
+            lastContact ? <span>{lastContact}</span> : null
+          ) : (
+            <span className="hidden md:inline">{channelLabel(person.preferred_channel)}</span>
+          )}
+          {(!contact || !lastContact) && (
+            <span className="inline-flex items-center gap-1.5">
+              <span aria-hidden="true" className={`h-2 w-2 rounded-full ${TONE_DOT[status.tone]}`} />
+              {status.label}
+            </span>
+          )}
         </div>
       </div>
     </Link>
@@ -550,7 +586,7 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
 // Page
 // ---------------------------------------------------------------------------
 
-const TAB_COPY: Record<PeopleTab, { label: string; blurb: string; empty: string; add: string }> = {
+const TAB_COPY: Record<PageTab, { label: string; blurb: string; empty: string; add: string }> = {
   team: {
     label: "Team",
     blurb: "People who work with you. They can sign in, message the Executive and approve what their authority covers.",
@@ -563,7 +599,40 @@ const TAB_COPY: Record<PeopleTab, { label: string; blurb: string; empty: string;
     empty: "No contacts yet.",
     add: "Add contact",
   },
+  changes: {
+    label: "Changes I made",
+    blurb: "People I added and details I filled in from your own email. Undo anything that's wrong.",
+    empty: "",
+    add: "Add contact",
+  },
 };
+
+// The People page's tabs: Team and Contacts (peopleKinds), and the contact
+// changes the Executive made, the principal's alone.
+type PageTab = PeopleTab | "changes";
+
+const SORTS: { id: PeopleSort; label: string }[] = [
+  { id: "name", label: "Name" },
+  { id: "recent", label: "Last contact" },
+  { id: "company", label: "Company" },
+];
+
+const KEEPER_LABEL = { on: "On", ask: "Ask me first", off: "Off" } as const;
+
+function FilterChip({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={`h-10 px-3.5 rounded-full border text-sm whitespace-nowrap transition-colors ${
+        on ? "border-accent/60 bg-accent/15 text-fg font-semibold" : "border-line text-fg-muted hover:text-fg"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
 
 export default function PeoplePage() {
   const { mode, loading: workspaceLoading } = useWorkspace();
@@ -571,18 +640,26 @@ export default function PeoplePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [tab, setTab] = useState<PeopleTab | null>(null);
+  const [tab, setTab] = useState<PageTab | null>(null);
   const [switchedFor, setSwitchedFor] = useState<string | null>(null);
   // Contacts are private to the principal. Until the viewer is known (or if
   // the check fails) nobody is offered them; the API enforces it regardless.
   const [viewerIsPrincipal, setViewerIsPrincipal] = useState(false);
   const [viewerLoading, setViewerLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<PeopleFilter>("all");
+  const [sort, setSort] = useState<PeopleSort>("name");
+  const [lastContacts, setLastContacts] = useState<Map<number, LastContact>>(new Map());
 
-  const tabs = tabsFor(viewerIsPrincipal);
+  // What the Executive changed in the contacts: the principal's alone.
+  const [contactChanges, setContactChanges] = useState<ContactChanges | null>(null);
+
+  const tabs: PageTab[] = [...tabsFor(viewerIsPrincipal), ...(contactChanges ? (["changes"] as const) : [])];
   // Open on the mode's default tab once the mode is known; a tab the user
   // picked is kept from then on (and never one this viewer is not offered).
-  const activeTab: PeopleTab =
+  const activeTab: PageTab =
     tab !== null && tabs.includes(tab) ? tab : defaultPeopleTab(mode, viewerIsPrincipal);
+  const listTab: PeopleTab = activeTab === "changes" ? "contacts" : activeTab;
 
   function refresh() {
     setLoading(true);
@@ -592,8 +669,6 @@ export default function PeoplePage() {
       .finally(() => setLoading(false));
   }
 
-  // What the Executive changed in the contacts: the principal's alone.
-  const [contactChanges, setContactChanges] = useState<ContactChanges | null>(null);
   const loadContactChanges = useCallback((next?: ContactChanges) => {
     if (next) {
       setContactChanges(next);
@@ -604,33 +679,48 @@ export default function PeoplePage() {
   }, []);
 
   useEffect(() => {
-    if (viewerIsPrincipal) getContactChanges().then(setContactChanges, () => setContactChanges(null));
+    if (!viewerIsPrincipal) return;
+    getContactChanges().then(setContactChanges, () => setContactChanges(null));
+    getLastContacts().then(
+      (rows) => setLastContacts(new Map(rows.map((r) => [r.person_id, r]))),
+      () => setLastContacts(new Map()),
+    );
   }, [viewerIsPrincipal]);
 
   useEffect(() => {
     refresh();
     // Done for you's contacts line opens the Contacts tab (?tab=contacts).
     const linked = new URLSearchParams(window.location.search).get("tab");
-    if (linked === "team" || linked === "contacts") setTab(linked);
+    if (linked === "team" || linked === "contacts" || linked === "changes") setTab(linked);
     getPeopleViewer()
       .then((v) => setViewerIsPrincipal(v.is_principal))
       .catch(() => setViewerIsPrincipal(false))
       .finally(() => setViewerLoading(false));
   }, []);
 
-  const shown = peopleForTab(people, activeTab, mode);
-  const fresh = activeTab === "contacts" && contactChanges ? newlyAdded(contactChanges.changes) : new Set<number>();
-  const hidden = activeTab === "team" ? hiddenTeamCount(people, mode) : 0;
+  const inTab = peopleForTab(people, listTab, mode);
+  const fresh = listTab === "contacts" && contactChanges ? newlyAdded(contactChanges.changes) : new Set<number>();
+  const dupes = duplicateIds(inTab);
+  const searched = inTab.filter((p) => matchesSearch(p, query));
+  const filtered = searched.filter((p) =>
+    filter === "new" ? fresh.has(p.id) : filter === "needs_look" ? dupes.has(p.id) : true,
+  );
+  const sorted = sortPeople(filtered, listTab === "contacts" ? sort : sort === "recent" ? "name" : sort, lastContacts);
+  const groups = sort === "company" ? groupByCompany(sorted) : [{ key: "all", label: "", people: sorted }];
+  const newCount = inTab.filter((p) => fresh.has(p.id)).length;
+  const changeCount = contactChanges ? cardChanges(contactChanges.changes).length : 0;
+  const hidden = listTab === "team" ? hiddenTeamCount(people, mode) : 0;
   const copy = TAB_COPY[activeTab];
   const tabsId = useId();
   // Local date (YYYY-MM-DD) for "on leave until", sampled once per mount.
   const [today] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const sorts = SORTS.filter((s) => s.id !== "recent" || listTab === "contacts");
 
   return (
     <div className="flex flex-col h-full bg-surface">
       {showAdd && (
         <AddPersonModal
-          initialKind={defaultKindForTab(activeTab)}
+          initialKind={defaultKindForTab(listTab)}
           canAddContacts={viewerIsPrincipal}
           onCreated={(p) => {
             setPeople((prev) => [...prev, p]);
@@ -656,18 +746,21 @@ export default function PeoplePage() {
           </div>
 
           {tabs.length > 1 && (
-            <div className="mb-6">
+            <div className="mb-5">
               <SectionTabs
                 idBase={tabsId}
-                label="Team or contacts"
+                label="Team, contacts or changes"
                 active={activeTab}
-                onChange={setTab}
+                onChange={(t) => {
+                  setTab(t);
+                  setFilter("all");
+                }}
                 disabled={(workspaceLoading || viewerLoading) && tab === null}
-                tabs={tabs.map((t) => ({
-                  id: t,
-                  label: TAB_COPY[t].label,
-                  count: loading ? undefined : peopleForTab(people, t, mode).length,
-                }))}
+                tabs={tabs.map((t) =>
+                  t === "changes"
+                    ? { id: t, label: TAB_COPY[t].label, badge: changeCount || null }
+                    : { id: t, label: TAB_COPY[t].label, count: loading ? undefined : peopleForTab(people, t, mode).length },
+                )}
               />
             </div>
           )}
@@ -679,13 +772,20 @@ export default function PeoplePage() {
               {error}
             </div>
           )}
-          {activeTab === "contacts" && contactChanges && (
+
+          {activeTab === "changes" && contactChanges && (
             <>
               <ContactChangesCard data={contactChanges} onChanged={loadContactChanges} />
+              {changeCount === 0 && (
+                <p className="rounded-2xl border border-line bg-surface-elevated p-5 mb-4 text-[15px] text-fg-muted">
+                  Nothing new since you last looked.
+                </p>
+              )}
               <ContactKeeperSwitch data={contactChanges} onChanged={loadContactChanges} />
             </>
           )}
-          {!loading && !error && shown.length === 0 && (
+
+          {activeTab !== "changes" && !loading && !error && inTab.length === 0 && (
             <div className="rounded-2xl border border-line bg-surface-elevated p-10 text-center">
               <p className="text-fg-muted text-[15px] mb-5">{copy.empty}</p>
               <Button variant="primary" onClick={() => setShowAdd(true)}>
@@ -694,13 +794,86 @@ export default function PeoplePage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {shown.map((person) => (
-              <PersonCard key={person.id} person={person} today={today} isNew={fresh.has(person.id)} />
-            ))}
-          </div>
+          {activeTab !== "changes" && inTab.length > 0 && (
+            <>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center mb-4">
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search name, company or email"
+                  aria-label="Search people"
+                  className="h-11 flex-1 min-w-0 px-4 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent"
+                />
+                <div className="flex items-center gap-2 overflow-x-auto">
+                  {(newCount > 0 || dupes.size > 0) && (
+                    <>
+                      <FilterChip on={filter === "all"} onClick={() => setFilter("all")}>All</FilterChip>
+                      {newCount > 0 && (
+                        <FilterChip on={filter === "new"} onClick={() => setFilter("new")}>New {newCount}</FilterChip>
+                      )}
+                      {dupes.size > 0 && (
+                        <FilterChip on={filter === "needs_look"} onClick={() => setFilter("needs_look")}>
+                          Same email {dupes.size}
+                        </FilterChip>
+                      )}
+                    </>
+                  )}
+                  <label className="flex items-center gap-2 text-sm text-fg-muted whitespace-nowrap">
+                    Sort
+                    <select
+                      value={sort}
+                      onChange={(e) => setSort(e.target.value as PeopleSort)}
+                      className="h-10 px-2.5 rounded-xl bg-surface-input/60 border border-line text-sm text-fg focus:outline-none focus:border-accent"
+                    >
+                      {sorts.map((s) => (
+                        <option key={s.id} value={s.id}>{s.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
 
-          {hidden > 0 && (
+              {sorted.length === 0 && (
+                <p className="rounded-2xl border border-line bg-surface-elevated p-6 text-center text-[15px] text-fg-muted">
+                  No one matches.
+                </p>
+              )}
+
+              {groups.map((g) => (
+                <section key={g.key} className={g.label ? "mb-5" : ""} aria-label={g.label || undefined}>
+                  {g.label && (
+                    <h2 className="text-[15px] font-semibold text-fg mb-2">
+                      {g.label} <span className="text-fg-subtle font-normal">{g.people.length}</span>
+                    </h2>
+                  )}
+                  <div className="rounded-2xl border border-line bg-surface-elevated overflow-hidden">
+                    {g.people.map((person) => (
+                      <PersonRow
+                        key={person.id}
+                        person={person}
+                        today={today}
+                        lastContact={listTab === "contacts" ? lastContactLabel(lastContacts.get(person.id)) : ""}
+                        isNew={fresh.has(person.id)}
+                        isDuplicate={dupes.has(person.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </>
+          )}
+
+          {activeTab === "contacts" && contactChanges && (
+            <p className="text-sm text-fg-muted mt-4">
+              Keep my contacts up to date: <span className="text-fg">{KEEPER_LABEL[contactChanges.mode]}</span>{" "}
+              <button type="button" onClick={() => setTab("changes")} className="font-semibold text-accent hover:underline">
+                Change
+              </button>
+            </p>
+          )}
+
+          {hidden > 0 && activeTab === "team" && (
             <p className="text-sm text-fg-muted mt-5">
               {hidden === 1 ? "1 other team member is" : `${hidden} other team members are`} hidden while you
               use Open Executive just for yourself. Switch to team mode in Settings to see them.

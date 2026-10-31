@@ -7,6 +7,9 @@
 - ``POST /contacts/changes/{id}/accept`` / ``/dismiss`` — Add / Not now on a
   suggestion.
 - ``POST /contacts/changes/seen`` — Got it: clears the card.
+- ``GET /contacts/last-contact`` — when the principal last emailed, heard
+  from or met each person (from ``people.contact_notes``), for the People
+  list's Last contact column and sort. People with nothing yet are left out.
 - ``GET /contacts/{person_id}/note`` — what the Executive remembers about one
   person, contact or teammate (``people.contact_notes``): 404 when it has
   nothing yet. The principal's alone, whoever it is about.
@@ -34,6 +37,17 @@ class ContactChangesOut(BaseModel):
     status: str
     last_run_at: str | None
     changes: list[changes.ContactChange]
+
+
+class LastContact(BaseModel):
+    person_id: int
+    at: str
+    # How: "emailed", "heard" or "met".
+    how: str
+
+
+class LastContactsOut(BaseModel):
+    people: list[LastContact]
 
 
 class KeeperModeIn(BaseModel):
@@ -93,6 +107,33 @@ def post_contact_change_accept(change_id: int, request: Request) -> changes.Cont
 @router.post("/contacts/changes/{change_id}/dismiss", response_model=changes.ContactChange)
 def post_contact_change_dismiss(change_id: int, request: Request) -> changes.ContactChange:
     return _decide(change_id, request, "dismiss")
+
+
+def last_contact(note: contact_notes.ContactNote) -> LastContact | None:
+    """The latest of emailed, heard from and met, or None when none is known."""
+    seen = [
+        (at, how)
+        for at, how in ((note.last_emailed_at, "emailed"), (note.last_heard_at, "heard"), (note.last_met_at, "met"))
+        if at
+    ]
+    if not seen:
+        return None
+    at, how = max(seen)
+    return LastContact(person_id=note.person_id, at=at, how=how)
+
+
+@router.get("/contacts/last-contact", response_model=LastContactsOut)
+def get_last_contacts(request: Request) -> LastContactsOut:
+    _require_principal(request)
+    from openexecutive.people import store as people_store
+
+    ids = [
+        p.id
+        for p in people_store.list_people(include_contacts=True)
+        if p.id is not None and not p.is_principal and not p.archived
+    ]
+    out = [lc for note in contact_notes.get_many(ids).values() if (lc := last_contact(note)) is not None]
+    return LastContactsOut(people=sorted(out, key=lambda lc: lc.person_id))
 
 
 @router.get("/contacts/{person_id}/note", response_model=contact_notes.ContactNote)
