@@ -650,7 +650,9 @@ LOOKUP_PERSON_TOOL: dict[str, Any] = {
         "Look up a person by name or role (case-insensitive substring match) and return "
         "their routing identifiers — person_id, full_name, role, email, slack_user_id, "
         "telegram_chat_id, discord_user_id, preferred_channel, authority_scope, "
-        "is_principal. Use this BEFORE calling send_slack_dm / send_discord_dm / "
+        "is_principal; on the principal's own turn also their contacts, and the "
+        "phone, mobile, address, website and LinkedIn saved for each person "
+        "(`details`). Check here first when asked how to reach someone. Use this BEFORE calling send_slack_dm / send_discord_dm / "
         "send_telegram_message when you don't already have the identifier in this session. "
         "IMPORTANT: to DM someone, pass their CHANNEL identifier (slack_user_id / "
         "discord_user_id / telegram_chat_id) — NOT the person_id. person_id is an internal "
@@ -1281,8 +1283,13 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
         "or edit people at /people."
     )
 
+    # The query as logged. On the principal's turn it may name one of their
+    # private contacts, so it is logged only once it matches someone on the
+    # team (below); the audit log is readable by every signed-in user.
+    audit_query = query
+
     def _audit(ok: bool, matches_count: int, reason: str | None = None) -> None:
-        msg = f"lookup_person query={query!r} matched {matches_count}"
+        msg = f"lookup_person query={audit_query!r} matched {matches_count}"
         if reason:
             msg += f" ({reason})"
         audit_log(
@@ -1291,7 +1298,7 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
             actor="executive",
             details={
                 "tool": "lookup_person", "kind": "lookup", "ok": ok,
-                "query": query, "matches": matches_count,
+                "query": audit_query, "matches": matches_count,
             },
         )
 
@@ -1299,8 +1306,16 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
         _audit(ok=True, matches_count=0, reason="empty query")
         return json.dumps({"matches": [], "hint": hint})
 
+    # Contacts, and everyone's phone numbers and addresses, only on the
+    # principal's own verified turn — the same rule as list_people. Anyone
+    # else gets the team exactly as if no contact existed.
+    from openexecutive.orchestrator.people_tools import contacts_reachable_now
+
+    private_ok = contacts_reachable_now()
+    if private_ok:
+        audit_query = ""
     try:
-        people = list_people()
+        people = list_people(include_contacts=private_ok)
     except Exception:
         logger.exception("lookup_person: list_people failed")
         _audit(ok=False, matches_count=0, reason="list_people failed")
@@ -1323,15 +1338,39 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
                 "preferred_channel": p.preferred_channel,
                 "authority_scope": [s.value for s in p.authority_scope],
                 "response_sla_hours": p.response_sla_hours,
+                **({"kind": p.kind} if private_ok else {}),
+                **(
+                    {"details": [d.model_dump() for d in p.details]}
+                    if p.details and private_ok else {}
+                ),
             })
             if len(matches) >= _LOOKUP_PERSON_MAX_MATCHES:
                 break
 
+    team_matches = sum(
+        1 for p in people
+        if p.kind == "team" and (
+            query in (p.full_name or "").lower() or (p.role and query in p.role.lower())
+        )
+    )
+    if team_matches:
+        audit_query = query
+
     if not matches:
         _audit(ok=True, matches_count=0)
+        if private_ok:
+            # list_people would return no one else here: point at the next
+            # place to look for how to reach them instead.
+            hint = (
+                "No person matched the query, and nobody on People has that name "
+                "or role. To find how to reach them, look in the principal's "
+                "email, then the web, and offer to add them with upsert_person."
+            )
         return json.dumps({"matches": [], "hint": hint})
 
-    _audit(ok=True, matches_count=len(matches))
+    # The audit log is readable by every signed-in user: count the team
+    # matches only, so the principal's turn logs what anyone else's would.
+    _audit(ok=True, matches_count=min(team_matches, _LOOKUP_PERSON_MAX_MATCHES))
     return json.dumps({"matches": matches})
 
 

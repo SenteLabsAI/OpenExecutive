@@ -1,0 +1,19 @@
+id: people_reach_002
+domain: operations
+description: "The principal asks for a person's office address and website before a visit. The Executive must look the person up in People first (list_people or lookup_person) and only then suggest email or the web, never make up an address, and offer to save what it finds to that person."
+company_context:
+  name: "Fernway Studio"
+  stage: "Bootstrapped"
+  industry: "Design consultancy"
+  headcount: 6
+query: "I'm visiting Dana Lee next week. What's her office address and company website?"
+expected_tool_calls:
+  - list_people or lookup_person, before any email search or web_search
+expected_topics:
+  - checked_people_first
+  - address_and_website_or_that_they_are_not_saved
+  - offer_to_save_details_found_elsewhere
+quality_criteria:
+  checks_people_before_email_or_web: true
+  does_not_invent_an_address: true
+  brief: true

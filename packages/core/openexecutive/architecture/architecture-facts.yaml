@@ -1248,7 +1248,10 @@ routing:
     defaults to "team", or to "contact" when
     `memory.workspace_settings.effective_workspace_mode` is solo.
     Making the principal a contact is refused. `list_people` returns both
-    kinds, each with `kind`; `lookup_person` searches the team only.
+    kinds, each with `kind`; `lookup_person` follows the same rule
+    (contacts, `kind` and saved `details` only on the principal's own
+    verified turn, audit count of team matches only), and the persona says
+    to check People first when asked how to reach someone.
     `set_department_head` refuses a contact. The same verified-principal
     rule, exposed as `people_tools.is_principal_on_verified_surface(session)`
     and `contacts_reachable_now()`, decides whether a turn may reach a
