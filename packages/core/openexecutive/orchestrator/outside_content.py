@@ -954,7 +954,9 @@ def _parsed(result: Any) -> Any:
 # it, a reminder to name a file or check an address. Those are written to the
 # model, so the check took them for the mail's own instructions. They are left
 # out of what is checked; the model still gets the whole result.
-_OWN_KEYS = frozenset({"note", "check_attachments", "check_address"})
+# The recall tools (``history_tools``, ``chat_search_tools``) add their own
+# ``guidance`` on how to read the hits.
+_OWN_KEYS = frozenset({"note", "check_attachments", "check_address", "guidance"})
 # Statuses whose message is only the tool's words (nothing found, which
 # thread, nowhere to save, not asked to save), and the key it is under. Any
 # other ``detail`` or ``error`` can carry a file's or thread's name, so it is
@@ -965,7 +967,11 @@ _OWN_MESSAGE_BY_STATUS: dict[str, str] = {
     "no_storage": "detail",
     "none": "detail",
     "not_asked": "error",
+    "unavailable": "error",
 }
+# The recall tools' counts: at 0, their ``result`` is only their own words
+# ("No earlier chat matches. Look it up in the source.").
+_OWN_COUNT_KEYS = ("hits", "notes")
 
 
 def without_own_words(result: Any) -> Any:
@@ -977,11 +983,12 @@ def without_own_words(result: Any) -> Any:
     if not isinstance(parsed, dict):
         return result
     own_message = _OWN_MESSAGE_BY_STATUS.get(str(parsed.get("status")))
+    empty = any(parsed.get(key) == 0 for key in _OWN_COUNT_KEYS)
     kept = {
         key: value for key, value in parsed.items()
-        if key not in _OWN_KEYS and key != own_message
+        if key not in _OWN_KEYS and key != own_message and not (empty and key == "result")
     }
-    if not set(kept) - {"status"}:
+    if not set(kept) - {"status", *_OWN_COUNT_KEYS}:
         return ""
     return json.dumps(kept)
 
