@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -220,6 +222,171 @@ def test_after_an_outside_read_it_saves_only_when_they_asked(
     assert _save({"file": "file:a.pdf", "folder": FOLDER})["status"] == "not_asked"
     pin_turn_delegation(company, "split it and put both in the LOIs folder")
     assert _save({"file": "file:a.pdf", "folder": FOLDER})["status"] == "saved"
+
+
+OUTSIDE_PERMS = ("User: ceo@co.example (owner) [id: 2]", "User: dana@partner.example (reader) [id: 3]",
+                 "Domain: partner.example (reader) [id: 4]", "Anyone with the link (reader) [id: anyoneWithLink]")
+
+
+def test_who_outside_the_team_can_open_a_folder_is_listed() -> None:
+    refused, outside = file_tools.folder_check(
+        _info("John (ceo@co.example)", perms=OUTSIDE_PERMS), FOLDER, ACCOUNT, {"ceo@co.example"},
+    )
+    assert refused is None
+    assert outside == ["dana@partner.example", "Everyone at partner.example", "Anyone with the link"]
+    # An outsider's own folder is still refused, card or not.
+    refused, _ = file_tools.folder_check(_info("Mallory (mallory@outside.example)"), FOLDER, ACCOUNT, set())
+    assert refused is not None and "outside the team" in refused
+
+
+@pytest.fixture
+def shared_drive(drive: list, monkeypatch: pytest.MonkeyPatch) -> list:
+    """The folder is a team folder an outside contact can open."""
+    async def call(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
+        drive.append((name, arguments))
+        if name.endswith("get_drive_file_permissions"):
+            return _info("John (ceo@co.example)", perms=OUTSIDE_PERMS[:2])
+        return (
+            f"Successfully created file '{arguments['file_name']}' (ID: 1NewFileId00000) in folder "
+            f"'Tax Bills' for {ACCOUNT}. Link: https://drive.google.com/file/d/1NewFileId00000/view"
+        )
+
+    async def names(ids: Any) -> dict[str, str]:
+        return {i: "2026 Tax Bills" for i in ids}
+
+    gateway = SimpleNamespace(drive_item_names=names)
+
+    async def active() -> Any:
+        return gateway
+
+    monkeypatch.setattr(save, "_call", call)
+    monkeypatch.setattr("openexecutive.orchestrator.mcp_gateway.ensure_active_gateway", active)
+    return drive
+
+
+def test_a_folder_shared_outside_waits_for_a_card(
+    company: Session, shared_drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_files.keep(company.session_id, {"bill.pdf": b"x"})
+    monkeypatch.setattr(file_tools, "_card_offered", lambda: True)
+    out = _save({"file": "file:bill.pdf", "folder": FOLDER})
+    assert out["status"] == "needs_card" and out["shared_with"] == ["dana@partner.example"]
+    assert "save_files" in out["detail"]
+    assert not any(n.endswith("create_drive_file") for n, _ in shared_drive[1:])
+    # No card on this turn: refused, as before.
+    monkeypatch.setattr(file_tools, "_card_offered", lambda: False)
+    out = _save({"file": "file:bill.pdf", "folder": FOLDER})
+    assert out["status"] == "failed" and "outside the team" in out["detail"]
+
+
+def test_a_save_files_card_shows_who_else_sees_it_and_saves_on_the_tap(
+    company: Session, shared_drive: list,
+) -> None:
+    from openexecutive.delegation import action_cards
+
+    conversation_files.keep(company.session_id, {"scan part 1.pdf": b"page one"})
+    owner = SimpleNamespace(id=1, is_principal=True)
+    checked = action_cards.check(
+        [{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:scan part 1.pdf", "name": "Willow Court 2026 Tax Bill"}]}],
+        owner, now=datetime.now(UTC),
+    )
+    assert isinstance(checked, list)
+    assert asyncio.run(action_cards.describe_save_files(checked, company.session_id)) is None
+    action = checked[0]
+    assert action["summary"] == "Save 1 file to 2026 Tax Bills"
+    assert action["text"] == "Willow Court 2026 Tax Bill.pdf\nAlso open to: dana@partner.example"
+    stored = action["input"]
+    assert stored["session_id"] == company.session_id and stored["files"][0]["kept"] == "Willow Court 2026 Tax Bill.pdf"
+    # A team member's card can't hold one.
+    member = SimpleNamespace(id=2, is_principal=False)
+    assert "owner" in str(action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:a"}]}], member, now=datetime.now(UTC)))
+    # Never on its own; on the tap it saves the kept copy, in another request.
+    assert asyncio.run(action_cards._do_save_files(stored, tapped=False))["status"] == "failed"
+    # Another file kept under the same name before the tap: not what the card showed.
+    conversation_files.keep(company.session_id, {"Willow Court 2026 Tax Bill.pdf": b"something else"})
+    got = asyncio.run(action_cards._do_save_files(stored, tapped=True))
+    assert got["status"] == "failed" and "changed since the card was made" in got["detail"]
+    conversation_files.keep(company.session_id, {"Willow Court 2026 Tax Bill.pdf": b"page one"})
+    token = current_session.set(Session(unattended=True))
+    try:
+        got = asyncio.run(action_cards._do({"kind": "save_files", "input": stored}, owner, tapped=True))
+    finally:
+        current_session.reset(token)
+    assert got == {"status": "done", "detail": "Saved 1 file."}
+    created = [a for n, a in shared_drive[1:] if n.endswith("create_drive_file")]
+    assert created[0]["file_name"] == "Willow Court 2026 Tax Bill.pdf" and created[0]["folder_id"] == FOLDER
+    assert base64.b64decode(created[0]["base64_content"]) == b"page one"
+
+
+def test_a_save_files_card_refuses_what_it_shouldnt_hold(
+    company: Session, shared_drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import action_cards
+
+    owner = SimpleNamespace(id=1, is_principal=True)
+    now = datetime.now(UTC)
+    one = [{"file": "file:a.pdf"}]
+    assert "folder id" in str(action_cards.check([{"kind": "save_files", "folder": "../x", "files": one}], owner, now=now))
+    many = [{"file": f"file:{i}.pdf"} for i in range(action_cards.DRIVE_FILES_MAX + 1)]
+    assert "at most" in str(action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": many}], owner, now=now))
+    twice = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": one + one}], owner, now=now)
+    assert isinstance(twice, list) and len(twice[0]["input"]["files"]) == 1
+    # Never carried out on its own, whatever the settings.
+    assert action_cards._on_its_own_refusal(owner, twice, now) in ("tap_only", "training_off", "act_as_me_off", "signing_off")
+    monkeypatch.setattr("openexecutive.delegation.training.get", lambda _pid: SimpleNamespace(actions=True, actions_without_asking=True))
+    monkeypatch.setattr("openexecutive.delegation.settings.can_delegate", lambda _p: True)
+    monkeypatch.setattr("openexecutive.delegation.settings.is_enabled", lambda _pid: True)
+    monkeypatch.setattr("openexecutive.delegation.handle_it.signing_ok", lambda: True)
+    assert action_cards._on_its_own_refusal(owner, twice, now) == "tap_only"
+    # Two files under one name: no card (one would be lost).
+    conversation_files.keep(company.session_id, {"x.pdf": b"1", "y.pdf": b"2"})
+    same = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [
+        {"file": "file:x.pdf", "name": "Bill"}, {"file": "file:y.pdf", "name": "Bill"},
+    ]}], owner, now=now)
+    assert isinstance(same, list)
+    assert "both be saved as Bill.pdf" in str(asyncio.run(action_cards.describe_save_files(same, company.session_id)))
+    # Open to more outside the team than a card can list: no card.
+    monkeypatch.setattr(action_cards, "OUTSIDE_MAX", 0)
+    assert "too many to show" in str(asyncio.run(action_cards.describe_save_files(twice, company.session_id)))
+    monkeypatch.setattr(action_cards, "OUTSIDE_MAX", 50)
+    # A file nobody has: no card.
+    missing = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:nope.pdf"}]}], owner, now=now)
+    assert isinstance(missing, list)
+    assert "nope.pdf" in str(asyncio.run(action_cards.describe_save_files(missing, company.session_id)))
+
+
+def test_a_team_only_folder_needs_no_card_and_a_lost_copy_isnt_saved(
+    company: Session, drive: list, shared_drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.delegation import action_cards
+
+    async def team_only(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
+        return _info("John (ceo@co.example)")
+
+    monkeypatch.setattr(save, "_call", team_only)
+    conversation_files.keep(company.session_id, {"a.pdf": b"x"})
+    owner = SimpleNamespace(id=1, is_principal=True)
+    checked = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:a.pdf"}]}], owner, now=datetime.now(UTC))
+    assert isinstance(checked, list)
+    assert "no card needed" in str(asyncio.run(action_cards.describe_save_files(checked, company.session_id)))
+    # A kept copy that's gone (a week on): nothing saved, and it says so.
+    stored = {"folder": FOLDER, "session_id": company.session_id, "files": [{"file": "file:gone.pdf", "name": "gone.pdf", "kept": "gone.pdf"}]}
+    got = asyncio.run(action_cards._do_save_files(stored, tapped=True))
+    assert got["status"] == "failed" and "no longer kept" in got["detail"]
+
+
+def test_a_tap_saves_only_for_the_audience_the_card_showed(company: Session, shared_drive: list) -> None:
+    from openexecutive.delegation import action_cards
+
+    conversation_files.keep(company.session_id, {"a.pdf": b"x"})
+    files = [{"file": "file:a.pdf", "name": "a.pdf", "kept": "a.pdf", "sha256": hashlib.sha256(b"x").hexdigest()}]
+    shown = {"folder": FOLDER, "session_id": company.session_id, "files": files, "outside": ["dana@partner.example"]}
+    assert asyncio.run(action_cards._do_save_files(shown, tapped=True))["status"] == "done"
+    # Shared with someone since the card was made: nothing saved.
+    stale = {**shown, "outside": []}
+    got = asyncio.run(action_cards._do_save_files(stale, tapped=True))
+    assert got["status"] == "failed" and "now also open to dana@partner.example" in got["detail"]
+    assert sum(1 for n, _ in shared_drive[1:] if n.endswith("create_drive_file")) == 1
 
 
 def test_save_file_is_owner_only_and_classified_everywhere() -> None:

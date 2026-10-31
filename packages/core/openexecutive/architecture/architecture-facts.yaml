@@ -7158,9 +7158,13 @@ workflows:
     the folder's get_drive_file_permissions answer must have exactly one ID
     line, Type and Owners read at fixed offsets from it, since the name comes
     first and may hold anything, and every Sharing Status entry must be a
-    User of the team; a group, domain, anyone-with-link or outsider share is
-    refused; OneDrive uploads stay in its own drive and never overwrite a
-    name). Opening a mail: file sets TurnDelegation.unchecked_mail, which
+    User of the team; a folder an outsider owns is refused, and one shared
+    with an outsider, group, domain or by link (file_tools.folder_check lists
+    them) returns needs_card, so the save goes on a save_files approval card
+    that names who else can open it - the files are kept for the
+    conversation when the card is made and saved on the owner's tap, never on
+    their own; with no card on the turn it is refused; OneDrive uploads stay
+    in its own drive and never overwrite a name). Opening a mail: file sets TurnDelegation.unchecked_mail, which
     mail_lock_holds honours, so a job printing the file cannot lift the hold;
     a job's results on such a turn are kept marked from mail
     (conversation_files .from_mail.json), and a later turn using one by
