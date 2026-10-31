@@ -42,7 +42,11 @@ LIST_PEOPLE_TOOL: dict[str, Any] = {
         "principal: they are listed only when the principal asks directly, "
         "each with what you remember about them from the principal's own mail "
         "and meetings (`what_you_deal_with`, `topics`, `recent_activity`). "
-        "Use that to suggest who to ask or loop in. Returns a compact JSON list."
+        "Use that to suggest who to ask or loop in. On the principal's own "
+        "turn each person also has the phone, mobile, address, website and "
+        "LinkedIn saved for them (`details`): check here first when asked how "
+        "to reach someone, before their email or the web. Returns a compact "
+        "JSON list."
     ),
     "input_schema": {
         "type": "object",
