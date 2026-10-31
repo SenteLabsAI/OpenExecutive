@@ -20,6 +20,8 @@ anyone else, so nobody learns there is anything here.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -110,16 +112,27 @@ def post_contact_change_dismiss(change_id: int, request: Request) -> changes.Con
 
 
 def last_contact(note: contact_notes.ContactNote) -> LastContact | None:
-    """The latest of emailed, heard from and met, or None when none is known."""
+    """The latest of emailed, heard from and met, or None when none is known.
+
+    The stored times mix formats (a provider's own offset, ``Z``, our UTC
+    isoformat), so they are compared as instants and returned in UTC."""
     seen = [
-        (at, how)
-        for at, how in ((note.last_emailed_at, "emailed"), (note.last_heard_at, "heard"), (note.last_met_at, "met"))
-        if at
+        (moment, how)
+        for raw, how in ((note.last_emailed_at, "emailed"), (note.last_heard_at, "heard"), (note.last_met_at, "met"))
+        if raw and (moment := _instant(raw)) is not None
     ]
     if not seen:
         return None
-    at, how = max(seen)
-    return LastContact(person_id=note.person_id, at=at, how=how)
+    moment, how = max(seen, key=lambda pair: pair[0])
+    return LastContact(person_id=note.person_id, at=moment.isoformat(), how=how)
+
+
+def _instant(raw: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC)
 
 
 @router.get("/contacts/last-contact", response_model=LastContactsOut)

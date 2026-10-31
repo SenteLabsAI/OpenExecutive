@@ -1005,6 +1005,13 @@ def test_the_last_contact_route(client: TestClient, owner: int) -> None:
     assert client.get("/contacts/last-contact", headers={"x-caller-email": "ben@co.example"}).status_code == 404
     body = client.get("/contacts/last-contact", headers={"x-caller-email": OWNER}).json()
     assert body["people"] == [{"person_id": pid, "at": "2026-10-20T15:00:00+00:00", "how": "met"}]
+    # Provider offsets and Z are compared as instants, and come back in UTC.
+    contact_notes.put_activity(
+        pid, last_emailed_at="2026-10-21T09:00:00-07:00", last_met_at=None, next_meeting_at=None,
+        next_meeting_title="", emailed_count=1, met_count=1, last_heard_at="2026-10-21T15:00:00Z",
+    )
+    body = client.get("/contacts/last-contact", headers={"x-caller-email": OWNER}).json()
+    assert body["people"] == [{"person_id": pid, "at": "2026-10-21T16:00:00+00:00", "how": "emailed"}]
     people_store.archive_person(pid)
     assert client.get("/contacts/last-contact", headers={"x-caller-email": OWNER}).json() == {"people": []}
 
