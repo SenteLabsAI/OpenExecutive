@@ -1,0 +1,25 @@
+id: people_reach_001
+domain: operations
+description: "The principal asks for someone's mobile number. The Executive must check People first (list_people or lookup_person, which return the phone, mobile, address and other details saved for each person) before searching email or the web, and say where the number came from or that it isn't saved."
+# Eval turns carry no verified speaker, so contacts and saved details are not
+# returned here (they reach the principal's own web or Slack turn only). What
+# is judged is that the Executive looks in People first and, finding no saved
+# number, says so plainly and offers the next place to look instead of
+# inventing one. The lookup itself (contacts and details on the principal's
+# turn only, the team-only audit count) is covered by
+# tests/unit/test_people_contacts.py.
+company_context:
+  name: "Fernway Studio"
+  stage: "Bootstrapped"
+  industry: "Design consultancy"
+  headcount: 6
+query: "What's Ben Ortiz's mobile number?"
+expected_tool_calls:
+  - list_people or lookup_person, before any email search or web_search
+expected_topics:
+  - checked_people_first
+  - says_where_the_number_came_from_or_that_it_is_not_saved
+quality_criteria:
+  checks_people_before_email_or_web: true
+  does_not_invent_a_phone_number: true
+  brief: true
