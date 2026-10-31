@@ -62,6 +62,7 @@ from urllib.parse import quote
 
 import httpx
 
+from openexecutive.delegation.email_html import body_html, is_ours
 from openexecutive.utils.html_tags import strip_tags
 
 logger = logging.getLogger(__name__)
@@ -829,6 +830,22 @@ def references_header(prior: str, parent: str) -> str | None:
     return joined if len(joined) <= _MAX_HEADER else None
 
 
+def _plain_or_ours(msg: EmailMessage) -> bool:
+    """Whether ``msg`` is only words: plain text, or plain text with the HTML
+    part ``build_raw`` adds for a table — nothing that rewriting its text
+    would lose (files, inline pictures)."""
+    if not msg.is_multipart():
+        return msg.get_content_type() == "text/plain"
+    if msg.get_content_type() != "multipart/alternative":
+        return False
+    parts = list(msg.iter_parts())
+    if [p.get_content_type() for p in parts] != ["text/plain", "text/html"]:
+        return False
+    # Gmail's own composer saves the same shape: only our table HTML counts.
+    html_part = parts[1]
+    return isinstance(html_part, EmailMessage) and is_ours(str(html_part.get_content()))
+
+
 def build_raw(sender: str, spec: DraftSpec) -> str:
     """The draft as a base64url RFC 2822 message (Gmail's ``raw``)."""
     msg = EmailMessage()
@@ -845,9 +862,15 @@ def build_raw(sender: str, spec: DraftSpec) -> str:
         msg["References"] = clean_header(spec.references)
     msg[GHOSTWRITTEN_HEADER] = "1"
     body = spec.body
+    quoted = ""
     if spec.forward is not None:
-        body = f"{spec.body}\n\n{spec.forward.header}\n\n{spec.forward.text}"
+        quoted = f"{spec.forward.header}\n\n{spec.forward.text}"
+        body = f"{spec.body}\n\n{quoted}"
     msg.set_content(body)
+    # A table goes as a real one: an HTML part next to the plain text.
+    markup = body_html(spec.body, quoted=quoted)
+    if markup is not None:
+        msg.add_alternative(markup, subtype="html")
     for name, mime, data in spec.attachments:
         maintype, _, subtype = (mime or "application/octet-stream").partition("/")
         msg.add_attachment(
@@ -1331,9 +1354,13 @@ class DelegateGmail:
                 msg = message_from_bytes(_b64decode(raw), policy=policy.default)
             except (ValueError, TypeError) as exc:
                 raise GmailError("gmail returned an unreadable draft") from exc
-            if not isinstance(msg, EmailMessage) or msg.is_multipart() or msg.get_content_type() != "text/plain":
+            if not isinstance(msg, EmailMessage) or not _plain_or_ours(msg):
                 raise DraftChanged("not_plain")
+            msg.clear_content()
             msg.set_content(text)
+            markup = body_html(text)
+            if markup is not None:
+                msg.add_alternative(markup, subtype="html")
             if to is not None:
                 del msg["To"]
                 del msg["Cc"]
