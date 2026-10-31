@@ -358,6 +358,20 @@ def test_a_team_only_folder_needs_no_card_and_a_lost_copy_isnt_saved(
     assert got["status"] == "failed" and "no longer kept" in got["detail"]
 
 
+def test_a_tap_saves_only_for_the_audience_the_card_showed(company: Session, shared_drive: list) -> None:
+    from openexecutive.delegation import action_cards
+
+    conversation_files.keep(company.session_id, {"a.pdf": b"x"})
+    files = [{"file": "file:a.pdf", "name": "a.pdf", "kept": "a.pdf"}]
+    shown = {"folder": FOLDER, "session_id": company.session_id, "files": files, "outside": ["dana@partner.example"]}
+    assert asyncio.run(action_cards._do_save_files(shown, tapped=True))["status"] == "done"
+    # Shared with someone since the card was made: nothing saved.
+    stale = {**shown, "outside": []}
+    got = asyncio.run(action_cards._do_save_files(stale, tapped=True))
+    assert got["status"] == "failed" and "now also open to dana@partner.example" in got["detail"]
+    assert sum(1 for n, _ in shared_drive[1:] if n.endswith("create_drive_file")) == 1
+
+
 def test_save_file_is_owner_only_and_classified_everywhere() -> None:
     from openexecutive.delegation.lockdown import MAIL_TOUCHED_ALLOWED_TOOLS
     from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS

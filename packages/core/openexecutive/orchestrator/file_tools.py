@@ -236,10 +236,14 @@ def folder_refusal(info: str, folder: str, account: str, team: set[str]) -> str 
     return SHARED_OUTSIDE if outside else None
 
 
-async def _google(gateway: Any, item: Any, folder: str, name: str, *, tapped: bool = False) -> dict[str, Any]:
+async def _google(
+    gateway: Any, item: Any, folder: str, name: str, *, tapped: bool = False, shown: list[str] | None = None,
+) -> dict[str, Any]:
     """Save ``item`` into ``folder`` of the Executive's Google Drive.
-    ``tapped``: the person approved this save on a card, so a folder people
-    outside the team can open is saved into; otherwise ``SharedOutside``."""
+    ``tapped``: the person approved this save on a card that showed
+    ``shown`` as who else can open the folder, so it is saved into unless
+    someone not on that list can open it now; untapped, a folder people
+    outside the team can open raises ``SharedOutside``."""
     from openexecutive.orchestrator.drive_attach import INFO_TOOL
     from openexecutive.orchestrator.mail_file_save import (
         _CREATED_RE,
@@ -262,6 +266,11 @@ async def _google(gateway: Any, item: Any, folder: str, name: str, *, tapped: bo
             raise SaveFailed(refused + ".")
         if outside and not tapped:
             raise SharedOutside(outside)
+        added = [who for who in outside if who not in (shown or [])]
+        if tapped and added:
+            raise SaveFailed(
+                f"That folder is now also open to {', '.join(added[:5])}, which the card didn't show. Ask again."
+            )
     made = await _call(gateway, "google_workspace__create_drive_file", {
         "user_google_email": account,
         "file_name": name,

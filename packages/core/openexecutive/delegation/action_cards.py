@@ -352,7 +352,13 @@ def _check_save_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] | 
     count = f"{len(files)} file" + ("" if len(files) == 1 else "s")
     return {
         "kind": "save_files",
-        "input": {"folder": folder, "files": files, "session_id": _one_line(action.get("session_id"), 200)},
+        "input": {
+            "folder": folder, "files": files, "session_id": _one_line(action.get("session_id"), 200),
+            # Who else can open the folder, as the card showed it (set by
+            # describe_save_files); the tap approves only that audience.
+            "outside": [_one_line(w, 80) for w in (action.get("outside") or [])[:50] if isinstance(w, str)]
+            if isinstance(action.get("outside"), list) else [],
+        },
         "summary": f"Save {count} to Drive", "text": "\n".join(f["name"] or f["file"] for f in files),
     }
 
@@ -409,6 +415,7 @@ async def describe_save_files(actions: list[dict[str, Any]], session_id: str | N
                 return f"save_files: couldn't hold {f['name']} for the card. Try again."
             f["kept"] = kept[0]
         stored["session_id"] = session_id
+        stored["outside"] = outside[:50]
         count = f"{len(stored['files'])} file" + ("" if len(stored["files"]) == 1 else "s")
         action["summary"] = f"Save {count} to {folder_name}"
         shown = ", ".join(outside[:10]) + (f" and {len(outside) - 10} more" if len(outside) > 10 else "")
@@ -856,9 +863,15 @@ async def _do_save_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, s
         item = file_refs.FileItem(name=f["name"], mime=file_refs.guess_mime(f["name"]), data=data, ref=f["file"])
         try:
             async with save._lock():
-                await file_tools._google(gateway, item, stored["folder"], f["name"], tapped=True)
+                await file_tools._google(
+                    gateway, item, stored["folder"], f["name"], tapped=True, shown=stored.get("outside") or [],
+                )
         except save.SaveFailed as exc:
             failed.append(f"{f['name']}: {exc.detail}")
+        except Exception:
+            # Per file, so the files already saved are still reported as saved.
+            logger.warning("action_cards: saving %s failed", f["name"], exc_info=True)
+            failed.append(f"{f['name']}: something went wrong, so it may not have saved")
     if not failed:
         return {"status": "done", "detail": f"Saved {len(files)} file" + ("" if len(files) == 1 else "s") + "."}
     detail = f"{len(files) - len(failed)} of {len(files)} saved. " + "; ".join(failed[:3])
