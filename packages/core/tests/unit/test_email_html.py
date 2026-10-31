@@ -45,7 +45,7 @@ def test_a_table_renders_as_a_styled_table_and_escapes_markup() -> None:
     # Raw HTML stays text; a URL stays text (no anchor); line breaks are kept.
     assert "<b>" not in markup and "&lt;b&gt;x&lt;/b&gt;" in markup
     assert "<a " not in markup and "https://example.com/x" in markup
-    assert "Thanks,<br />" in markup
+    assert "Thanks,<br>" in markup
 
 
 def test_build_raw_sends_text_and_html_with_files() -> None:
@@ -185,3 +185,18 @@ def test_an_outlook_table_draft_can_be_edited_and_a_rich_one_cannot() -> None:
     with pytest.raises(DraftChanged) as err:
         asyncio.run(graph.client().update_draft_text("d1", ol.draft_version("d1", "ck1"), "Hi"))
     assert err.value.reason == "not_plain"
+
+
+def test_only_the_table_is_markdown() -> None:
+    body = (
+        "Totals are 2*3*4 and a\\_b &amp; c.\n"
+        "- not a list\n1. not a list\n    not code\n[1]: http://x.example\n\n"
+        "| a | b |\n|---|---|\n| *x* | [y](http://y.example) |\n"
+    )
+    markup = email_html.body_html(body)
+    assert markup is not None
+    for kept in ("2*3*4", "a\\_b &amp;amp; c.", "- not a list", "1. not a list", "[1]: http://x.example",
+                 "<td style=\"border:1px solid #d0d7de;padding:6px 10px\">*x*</td>", "[y](http://y.example)"):
+        assert kept in markup, kept
+    assert "<ul" not in markup and "<ol" not in markup and "<pre" not in markup
+    assert "<em>" not in markup and "<a " not in markup
