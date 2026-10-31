@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -301,6 +302,11 @@ def test_a_save_files_card_shows_who_else_sees_it_and_saves_on_the_tap(
     assert "owner" in str(action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:a"}]}], member, now=datetime.now(UTC)))
     # Never on its own; on the tap it saves the kept copy, in another request.
     assert asyncio.run(action_cards._do_save_files(stored, tapped=False))["status"] == "failed"
+    # Another file kept under the same name before the tap: not what the card showed.
+    conversation_files.keep(company.session_id, {"Willow Court 2026 Tax Bill.pdf": b"something else"})
+    got = asyncio.run(action_cards._do_save_files(stored, tapped=True))
+    assert got["status"] == "failed" and "changed since the card was made" in got["detail"]
+    conversation_files.keep(company.session_id, {"Willow Court 2026 Tax Bill.pdf": b"page one"})
     token = current_session.set(Session(unattended=True))
     try:
         got = asyncio.run(action_cards._do({"kind": "save_files", "input": stored}, owner, tapped=True))
@@ -339,6 +345,10 @@ def test_a_save_files_card_refuses_what_it_shouldnt_hold(
     ]}], owner, now=now)
     assert isinstance(same, list)
     assert "both be saved as Bill.pdf" in str(asyncio.run(action_cards.describe_save_files(same, company.session_id)))
+    # Open to more outside the team than a card can list: no card.
+    monkeypatch.setattr(action_cards, "OUTSIDE_MAX", 0)
+    assert "too many to show" in str(asyncio.run(action_cards.describe_save_files(twice, company.session_id)))
+    monkeypatch.setattr(action_cards, "OUTSIDE_MAX", 50)
     # A file nobody has: no card.
     missing = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:nope.pdf"}]}], owner, now=now)
     assert isinstance(missing, list)
@@ -369,7 +379,7 @@ def test_a_tap_saves_only_for_the_audience_the_card_showed(company: Session, sha
     from openexecutive.delegation import action_cards
 
     conversation_files.keep(company.session_id, {"a.pdf": b"x"})
-    files = [{"file": "file:a.pdf", "name": "a.pdf", "kept": "a.pdf"}]
+    files = [{"file": "file:a.pdf", "name": "a.pdf", "kept": "a.pdf", "sha256": hashlib.sha256(b"x").hexdigest()}]
     shown = {"folder": FOLDER, "session_id": company.session_id, "files": files, "outside": ["dana@partner.example"]}
     assert asyncio.run(action_cards._do_save_files(shown, tapped=True))["status"] == "done"
     # Shared with someone since the card was made: nothing saved.

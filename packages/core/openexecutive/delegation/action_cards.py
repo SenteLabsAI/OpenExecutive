@@ -86,6 +86,9 @@ KINDS: tuple[str, ...] = ("invite", "message", "add_contact", "drive_files", "sa
 # Kinds that never run without the person's tap.
 TAP_ONLY_KINDS = frozenset({"add_contact", "drive_files", "save_files"})
 HANDLE_MAX = 300
+# Most people outside the team a save_files card lists; a folder open to
+# more gets no card (the tap compares against every one shown).
+OUTSIDE_MAX = 50
 DRIVE_FILES_MAX = 25
 FILE_NAME_MAX = 200
 _DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
@@ -348,7 +351,8 @@ def _check_save_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] | 
             continue
         # Set by describe_save_files when the card is made: the name the
         # file is kept under for the conversation.
-        files.append({"file": handle, "name": name, "kept": _one_line(entry.get("kept"), FILE_NAME_MAX)})
+        files.append({"file": handle, "name": name, "kept": _one_line(entry.get("kept"), FILE_NAME_MAX),
+                      "sha256": sha if re.fullmatch(r"[0-9a-f]{64}", sha := str(entry.get("sha256") or "")) else ""})
     count = f"{len(files)} file" + ("" if len(files) == 1 else "s")
     return {
         "kind": "save_files",
@@ -356,7 +360,7 @@ def _check_save_files(action: dict[str, Any], speaker: Any) -> dict[str, Any] | 
             "folder": folder, "files": files, "session_id": _one_line(action.get("session_id"), 200),
             # Who else can open the folder, as the card showed it (set by
             # describe_save_files); the tap approves only that audience.
-            "outside": [_one_line(w, 80) for w in (action.get("outside") or [])[:50] if isinstance(w, str)]
+            "outside": [_one_line(w, 80) for w in (action.get("outside") or [])[:OUTSIDE_MAX] if isinstance(w, str)]
             if isinstance(action.get("outside"), list) else [],
         },
         "summary": f"Save {count} to Drive", "text": "\n".join(f["name"] or f["file"] for f in files),
@@ -386,7 +390,7 @@ async def describe_save_files(actions: list[dict[str, Any]], session_id: str | N
         stored = action["input"]
         folder = stored["folder"]
         for f in stored["files"]:
-            f["kept"] = ""  # set below, never taken from the proposal
+            f["kept"] = f["sha256"] = ""  # set below, never taken from the proposal
         info = await save._call(gateway, INFO_TOOL, {"user_google_email": account, "file_id": folder})
         if save._failed(info):
             return f"save_files: couldn't open that folder: {save._why(info)}"
@@ -395,6 +399,8 @@ async def describe_save_files(actions: list[dict[str, Any]], session_id: str | N
             return f"save_files: {refused}."
         if not outside:
             return "save_files: only the team can open that folder, so save_file saves into it now; no card needed."
+        if len(outside) > OUTSIDE_MAX:
+            return f"save_files: more than {OUTSIDE_MAX} people outside the team can open that folder, too many to show on a card."
         try:
             names = await gateway.drive_item_names([folder])
         except Exception:
@@ -413,14 +419,20 @@ async def describe_save_files(actions: list[dict[str, Any]], session_id: str | N
             item = got.items[0]
             f["name"] = file_tools._named(f["name"] or None, item.name)
             # Kept by name: two files under one name would keep only the last.
-            if any(o is not f and o.get("kept") == f["name"] for o in stored["files"]):
+            if any(o is not f and o.get("name", "").casefold() == f["name"].casefold() and o.get("kept")
+                   for o in stored["files"]):
                 return f"save_files: two files would both be saved as {f['name']}. Give them different names."
             kept = conversation_files.keep(session_id, {f["name"]: item.data}, from_mail=file_refs.turn_used_mail_files())
             if not kept:
                 return f"save_files: couldn't hold {f['name']} for the card. Try again."
+            if any(o is not f and o.get("kept") == kept[0] for o in stored["files"]):
+                return f"save_files: two files would both be saved as {f['name']}. Give them different names."
             f["kept"] = kept[0]
+            # The bytes the card was made for: a later file kept under the
+            # same name in this chat must not be what the tap saves.
+            f["sha256"] = hashlib.sha256(item.data).hexdigest()
         stored["session_id"] = session_id
-        stored["outside"] = outside[:50]
+        stored["outside"] = outside
         count = f"{len(stored['files'])} file" + ("" if len(stored["files"]) == 1 else "s")
         action["summary"] = f"Save {count} to {folder_name}"
         shown = ", ".join(outside[:10]) + (f" and {len(outside) - 10} more" if len(outside) > 10 else "")
@@ -864,6 +876,9 @@ async def _do_save_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, s
         data = conversation_files.get(stored["session_id"] or None, f["kept"]) if f["kept"] else None
         if data is None:
             failed.append(f"{f['name']}: no longer kept; ask again in the chat")
+            continue
+        if not f.get("sha256") or hashlib.sha256(data).hexdigest() != f["sha256"]:
+            failed.append(f"{f['name']}: changed since the card was made; ask again in the chat")
             continue
         item = file_refs.FileItem(name=f["name"], mime=file_refs.guess_mime(f["name"]), data=data, ref=f["file"])
         try:
