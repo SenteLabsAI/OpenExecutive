@@ -67,7 +67,9 @@ HISTORY_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in HISTORY_TOOLS)
 
 
 def _error(message: str) -> str:
-    return json.dumps({"error": message})
+    # Only this tool's own words: status "unavailable" keeps them out of the
+    # content check (outside_content.without_own_words).
+    return json.dumps({"error": message, "status": "unavailable"})
 
 
 def recall_person(session: Any) -> Any:
