@@ -200,3 +200,8 @@ def test_only_the_table_is_markdown() -> None:
         assert kept in markup, kept
     assert "<ul" not in markup and "<ol" not in markup and "<pre" not in markup
     assert "<em>" not in markup and "<a " not in markup
+
+
+def test_a_header_and_separator_of_different_widths_is_not_a_table() -> None:
+    assert email_html.body_html("Bills:\n| Property | Amount |\n|---|\n| A | $1 |") is None
+    assert email_html.has_table("| Property | Amount |\n|---|---|") is True

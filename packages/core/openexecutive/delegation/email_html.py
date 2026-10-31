@@ -48,6 +48,15 @@ _WHITESPACE = re.compile(r"\s+")
 _FORWARDED = re.compile(r"^-{2,}\s*Forwarded message\s*-{2,}\s*$", re.IGNORECASE | re.MULTILINE)
 
 
+def _cells(row: str) -> int:
+    """How many cells a table row has (as markdown-it counts them: the
+    outer pipes are optional)."""
+    inner = row.strip()
+    inner = inner[1:] if inner.startswith("|") else inner
+    inner = inner[:-1] if inner.endswith("|") else inner
+    return inner.count("|") + 1
+
+
 def _blocks(text: str) -> list[tuple[bool, list[str]]]:
     """``text``'s lines in runs, each marked whether it is a table (a
     header row, its separator row, then the rows with a pipe under them)."""
@@ -57,7 +66,7 @@ def _blocks(text: str) -> list[tuple[bool, list[str]]]:
     while i < len(lines):
         line = lines[i]
         nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        if "|" in line and "|" in nxt and _SEPARATOR.match(nxt):
+        if "|" in line and "|" in nxt and _SEPARATOR.match(nxt) and _cells(line) == _cells(nxt):
             end = i + 2
             while end < len(lines) and "|" in lines[end] and lines[end].strip():
                 end += 1
