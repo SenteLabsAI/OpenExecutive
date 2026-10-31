@@ -702,12 +702,16 @@ export default function PeoplePage() {
   const fresh = listTab === "contacts" && contactChanges ? newlyAdded(contactChanges.changes) : new Set<number>();
   const dupes = duplicateIds(inTab);
   const searched = inTab.filter((p) => matchesSearch(p, query));
+  const newCount = inTab.filter((p) => fresh.has(p.id)).length;
+  // A filter whose chip is gone (the last new contact seen, the duplicate
+  // removed) falls back to everyone, so the list never sticks on empty.
+  const activeFilter: PeopleFilter =
+    (filter === "new" && newCount === 0) || (filter === "needs_look" && dupes.size === 0) ? "all" : filter;
   const filtered = searched.filter((p) =>
-    filter === "new" ? fresh.has(p.id) : filter === "needs_look" ? dupes.has(p.id) : true,
+    activeFilter === "new" ? fresh.has(p.id) : activeFilter === "needs_look" ? dupes.has(p.id) : true,
   );
   const sorted = sortPeople(filtered, listTab === "contacts" ? sort : sort === "recent" ? "name" : sort, lastContacts);
   const groups = sort === "company" ? groupByCompany(sorted) : [{ key: "all", label: "", people: sorted }];
-  const newCount = inTab.filter((p) => fresh.has(p.id)).length;
   const changeCount = contactChanges ? cardChanges(contactChanges.changes).length : 0;
   const hidden = listTab === "team" ? hiddenTeamCount(people, mode) : 0;
   const copy = TAB_COPY[activeTab];
@@ -808,12 +812,12 @@ export default function PeoplePage() {
                 <div className="flex items-center gap-2 overflow-x-auto">
                   {(newCount > 0 || dupes.size > 0) && (
                     <>
-                      <FilterChip on={filter === "all"} onClick={() => setFilter("all")}>All</FilterChip>
+                      <FilterChip on={activeFilter === "all"} onClick={() => setFilter("all")}>All</FilterChip>
                       {newCount > 0 && (
-                        <FilterChip on={filter === "new"} onClick={() => setFilter("new")}>New {newCount}</FilterChip>
+                        <FilterChip on={activeFilter === "new"} onClick={() => setFilter("new")}>New {newCount}</FilterChip>
                       )}
                       {dupes.size > 0 && (
-                        <FilterChip on={filter === "needs_look"} onClick={() => setFilter("needs_look")}>
+                        <FilterChip on={activeFilter === "needs_look"} onClick={() => setFilter("needs_look")}>
                           Same email {dupes.size}
                         </FilterChip>
                       )}
