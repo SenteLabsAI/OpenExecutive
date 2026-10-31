@@ -1307,6 +1307,14 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
     from openexecutive.orchestrator.people_tools import contacts_reachable_now
 
     private_ok = contacts_reachable_now()
+    if private_ok:
+        # list_people would return no one else here: point at the next place
+        # to look for how to reach them instead.
+        hint = (
+            "No person matched the query, and nobody on People has that name or "
+            "role. To find how to reach them, look in the principal's email, then "
+            "the web, and offer to add them with upsert_person."
+        )
     try:
         people = list_people(include_contacts=private_ok)
     except Exception:

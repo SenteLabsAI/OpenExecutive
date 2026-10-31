@@ -1969,3 +1969,13 @@ def test_tools_and_persona_say_to_check_people_first_for_contact_details() -> No
     assert "how to reach someone" in LOOKUP_PERSON_TOOL["description"]
     for persona in (EXECUTIVE_PERSONA_PROMPT, EXECUTIVE_PERSONA_SOLO_PROMPT):
         assert persona.count("When asked how to reach someone") == 1
+
+
+def test_lookup_person_miss_on_the_principals_turn_points_to_email_then_web(
+    roster: SimpleNamespace,
+) -> None:
+    from openexecutive.orchestrator.schedule_tools import handle_lookup_person
+
+    out = _tool(handle_lookup_person, {"query": "nobody"}, _principal_web(roster))
+    assert out["matches"] == []
+    assert "email, then the web" in out["hint"] and "Try list_people" not in out["hint"]
