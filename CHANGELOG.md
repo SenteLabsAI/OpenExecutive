@@ -9,6 +9,19 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.9](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.8...v0.6.9) (2026-10-31)
+
+
+### Added
+
+* **integrations:** ask on a card before saving into a Drive folder shared outside the team ([#672](https://github.com/SenteLabsAI/OpenExecutive/issues/672)) ([c047872](https://github.com/SenteLabsAI/OpenExecutive/commit/c0478724189edeed66f59b19e3834bc087167dcf))
+
+
+### Fixed
+
+* **chat:** stop flagging the past-chat search's own words as email instructions ([#671](https://github.com/SenteLabsAI/OpenExecutive/issues/671)) ([1530e0c](https://github.com/SenteLabsAI/OpenExecutive/commit/1530e0cf40faa01507a31ba2a337f298fce76e40))
+* **people:** read contact signatures before the sent-mail pass ([#666](https://github.com/SenteLabsAI/OpenExecutive/issues/666)) ([337e021](https://github.com/SenteLabsAI/OpenExecutive/commit/337e02188d5e5751fe7e894f1ba887d4b0da8b0e))
+
 ## [0.6.8](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.7...v0.6.8) (2026-10-30)
 
 
