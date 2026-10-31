@@ -62,6 +62,7 @@ from urllib.parse import quote
 
 import httpx
 
+from openexecutive.delegation.email_html import body_html
 from openexecutive.delegation.gmail import (
     _AUTOREPLY_HEADERS,
     _BULK_PRECEDENCE,
@@ -506,6 +507,15 @@ def outlook_link(*, personal: bool, message_id: str | None = None) -> str:
     if message_id and valid_id(_id_of(message_id)):
         return f"{base}/deeplink/read/{quote(_id_of(message_id), safe='')}"
     return f"{base}/drafts"
+
+
+def _body(text: str) -> dict[str, str]:
+    """A draft's ``body`` for Graph: plain text, or HTML when it holds a
+    table (``delegation.email_html``). Outlook keeps one body, not both."""
+    markup = body_html(text)
+    if markup is None:
+        return {"contentType": "text", "content": text}
+    return {"contentType": "html", "content": markup}
 
 
 def _recipients(addresses: list[str]) -> list[dict[str, Any]]:
@@ -1071,7 +1081,7 @@ class DelegateOutlook:
             ):
                 raise DraftChanged("not_plain")
             etag = str(data.get("@odata.etag") or f'W/"{change_key}"')
-            fields: dict[str, Any] = {"body": {"contentType": "text", "content": text}}
+            fields: dict[str, Any] = {"body": _body(text)}
             if to is not None:
                 fields["toRecipients"] = _recipients(to)
                 fields["ccRecipients"] = _recipients(cc or [])
@@ -1106,7 +1116,7 @@ class DelegateOutlook:
         (so Outlook threads it), then given ``spec``'s recipients and text."""
         fields: dict[str, Any] = {
             "subject": clean_header(spec.subject),
-            "body": {"contentType": "text", "content": spec.body},
+            "body": _body(spec.body),
             "toRecipients": _recipients(spec.to),
             "ccRecipients": _recipients(spec.cc),
             "singleValueExtendedProperties": [{"id": GHOSTWRITTEN_PROPERTY, "value": "1"}],
