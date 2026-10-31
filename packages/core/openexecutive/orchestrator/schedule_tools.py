@@ -1283,8 +1283,13 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
         "or edit people at /people."
     )
 
+    # The query as logged. On the principal's turn it may name one of their
+    # private contacts, so it is logged only once it matches someone on the
+    # team (below); the audit log is readable by every signed-in user.
+    audit_query = query
+
     def _audit(ok: bool, matches_count: int, reason: str | None = None) -> None:
-        msg = f"lookup_person query={query!r} matched {matches_count}"
+        msg = f"lookup_person query={audit_query!r} matched {matches_count}"
         if reason:
             msg += f" ({reason})"
         audit_log(
@@ -1293,7 +1298,7 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
             actor="executive",
             details={
                 "tool": "lookup_person", "kind": "lookup", "ok": ok,
-                "query": query, "matches": matches_count,
+                "query": audit_query, "matches": matches_count,
             },
         )
 
@@ -1308,13 +1313,7 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
 
     private_ok = contacts_reachable_now()
     if private_ok:
-        # list_people would return no one else here: point at the next place
-        # to look for how to reach them instead.
-        hint = (
-            "No person matched the query, and nobody on People has that name or "
-            "role. To find how to reach them, look in the principal's email, then "
-            "the web, and offer to add them with upsert_person."
-        )
+        audit_query = ""
     try:
         people = list_people(include_contacts=private_ok)
     except Exception:
@@ -1348,18 +1347,29 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
             if len(matches) >= _LOOKUP_PERSON_MAX_MATCHES:
                 break
 
-    if not matches:
-        _audit(ok=True, matches_count=0)
-        return json.dumps({"matches": [], "hint": hint})
-
-    # The audit log is readable by every signed-in user: count the team
-    # matches only, so the principal's turn logs what anyone else's would.
     team_matches = sum(
         1 for p in people
         if p.kind == "team" and (
             query in (p.full_name or "").lower() or (p.role and query in p.role.lower())
         )
     )
+    if team_matches:
+        audit_query = query
+
+    if not matches:
+        _audit(ok=True, matches_count=0)
+        if private_ok:
+            # list_people would return no one else here: point at the next
+            # place to look for how to reach them instead.
+            hint = (
+                "No person matched the query, and nobody on People has that name "
+                "or role. To find how to reach them, look in the principal's "
+                "email, then the web, and offer to add them with upsert_person."
+            )
+        return json.dumps({"matches": [], "hint": hint})
+
+    # The audit log is readable by every signed-in user: count the team
+    # matches only, so the principal's turn logs what anyone else's would.
     _audit(ok=True, matches_count=min(team_matches, _LOOKUP_PERSON_MAX_MATCHES))
     return json.dumps({"matches": matches})
 

@@ -1979,3 +1979,19 @@ def test_lookup_person_miss_on_the_principals_turn_points_to_email_then_web(
     out = _tool(handle_lookup_person, {"query": "nobody"}, _principal_web(roster))
     assert out["matches"] == []
     assert "email, then the web" in out["hint"] and "Try list_people" not in out["hint"]
+
+
+def test_lookup_person_never_logs_a_contacts_name_on_the_principals_turn(
+    roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.orchestrator.schedule_tools import handle_lookup_person
+
+    rows = _captured_audit(monkeypatch)
+    out = _tool(handle_lookup_person, {"query": "jordan"}, _principal_web(roster))
+    assert [m["full_name"] for m in out["matches"]] == ["Jordan Client"]
+    _tool(handle_lookup_person, {"query": "ben"}, _principal_web(roster))
+    (c_summary, c_details), (t_summary, t_details) = rows
+    assert "jordan" not in c_summary.lower() and "jordan" not in json.dumps(c_details).lower()
+    assert c_details["matches"] == 0
+    # A team match still logs its query as before.
+    assert t_details["query"] == "ben" and t_details["matches"] == 1
