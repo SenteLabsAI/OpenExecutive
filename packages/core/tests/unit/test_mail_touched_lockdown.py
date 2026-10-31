@@ -853,6 +853,16 @@ def test_the_check_skips_the_recall_tools_own_words() -> None:
     assert checked == {"hits": 1, "result": json.loads(hits)["result"]}
 
 
+def test_the_check_skips_the_notice_around_each_email() -> None:
+    from openexecutive.orchestrator import outside_content
+    from openexecutive.orchestrator.content_trust import UNTRUSTED_NOTICE, wrap_untrusted
+
+    wrapped = wrap_untrusted("Executed LOIs attached.", source="email", author="dana@acme.example")
+    for result in (wrapped, json.dumps({"status": "ok", "messages": [{"text": wrapped}]})):
+        checked = outside_content.without_own_words(result)
+        assert UNTRUSTED_NOTICE not in checked and "Executed LOIs attached." in checked
+
+
 def test_a_refusal_is_never_flagged_as_the_mails(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator import content_scan, outside_content
 
