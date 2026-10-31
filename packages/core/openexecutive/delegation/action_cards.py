@@ -385,6 +385,8 @@ async def describe_save_files(actions: list[dict[str, Any]], session_id: str | N
     for action in saves:
         stored = action["input"]
         folder = stored["folder"]
+        for f in stored["files"]:
+            f["kept"] = ""  # set below, never taken from the proposal
         info = await save._call(gateway, INFO_TOOL, {"user_google_email": account, "file_id": folder})
         if save._failed(info):
             return f"save_files: couldn't open that folder: {save._why(info)}"
@@ -410,6 +412,9 @@ async def describe_save_files(actions: list[dict[str, Any]], session_id: str | N
                 return f"save_files: {f['file']} is too large to save."
             item = got.items[0]
             f["name"] = file_tools._named(f["name"] or None, item.name)
+            # Kept by name: two files under one name would keep only the last.
+            if any(o is not f and o.get("kept") == f["name"] for o in stored["files"]):
+                return f"save_files: two files would both be saved as {f['name']}. Give them different names."
             kept = conversation_files.keep(session_id, {f["name"]: item.data}, from_mail=file_refs.turn_used_mail_files())
             if not kept:
                 return f"save_files: couldn't hold {f['name']} for the card. Try again."

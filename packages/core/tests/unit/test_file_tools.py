@@ -332,6 +332,13 @@ def test_a_save_files_card_refuses_what_it_shouldnt_hold(
     monkeypatch.setattr("openexecutive.delegation.settings.is_enabled", lambda _pid: True)
     monkeypatch.setattr("openexecutive.delegation.handle_it.signing_ok", lambda: True)
     assert action_cards._on_its_own_refusal(owner, twice, now) == "tap_only"
+    # Two files under one name: no card (one would be lost).
+    conversation_files.keep(company.session_id, {"x.pdf": b"1", "y.pdf": b"2"})
+    same = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [
+        {"file": "file:x.pdf", "name": "Bill"}, {"file": "file:y.pdf", "name": "Bill"},
+    ]}], owner, now=now)
+    assert isinstance(same, list)
+    assert "both be saved as Bill.pdf" in str(asyncio.run(action_cards.describe_save_files(same, company.session_id)))
     # A file nobody has: no card.
     missing = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": [{"file": "file:nope.pdf"}]}], owner, now=now)
     assert isinstance(missing, list)
