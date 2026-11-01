@@ -87,7 +87,9 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "What the email should say: the points, decision, dates and "
-                    "figures, in plain words. Only what they told you."
+                    "figures, in plain words. Only what they told you. For a "
+                    "table (e.g. figures for several items), say so and give "
+                    "its rows: the email gets a real table."
                 ),
             },
             "thread_id": {
