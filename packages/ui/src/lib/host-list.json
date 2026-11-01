@@ -27,6 +27,7 @@
     ["POST", "/chat"],
     ["POST", "/chat/stop"],
     ["POST", "/chat/add"],
+    ["POST", "/chat/hand-over"],
     ["POST", "/chat/upload"],
     ["GET", "/chat/voice"],
     ["POST", "/chat/transcribe"],

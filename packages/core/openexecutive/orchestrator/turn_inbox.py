@@ -40,6 +40,25 @@ class TurnInbox:
     # own message and mirrored into the session history.
     taken: list[AddedMessage] = field(default_factory=list)
     closed: bool = False
+    # The person asked to finish the work themselves (POST /chat/hand-over).
+    # The loop takes it once, at its next step, and writes up what it has.
+    hand_over_requested: bool = False
+    hand_over_taken: bool = False
+
+    def request_hand_over(self) -> bool:
+        """Ask the turn to stop working and hand over what it has. False once
+        the turn has closed its inbox; asking twice is harmless."""
+        if self.closed:
+            return False
+        self.hand_over_requested = True
+        return True
+
+    def take_hand_over(self) -> bool:
+        """True exactly once, at the first step after a hand-over request."""
+        if self.closed or not self.hand_over_requested or self.hand_over_taken:
+            return False
+        self.hand_over_taken = True
+        return True
 
     def add(self, message_id: str, text: str) -> bool:
         """Queue a message for the running turn. False once the turn has
@@ -70,6 +89,21 @@ class TurnInbox:
 
     def taken_texts(self) -> list[str]:
         return [m.text for m in self.taken]
+
+
+# Added after a round's tool results when the person asks to finish the work
+# themselves. The loop runs no tool after it (orchestrator/executive.py).
+HAND_OVER_NOTE = (
+    "The person has asked to finish this themselves. Do not call any more "
+    "tools. Write up what you found and did so far as a draft they can pick "
+    "up and finish: put the useful material in it, then list in a few short "
+    "lines what is still left to do."
+)
+
+# The reply when the model still asked for a tool and wrote nothing.
+HAND_OVER_EMPTY_REPLY = (
+    "I stopped here so you can finish it. Nothing was ready to hand over yet."
+)
 
 
 def render_added_messages(added: list[AddedMessage]) -> str:
