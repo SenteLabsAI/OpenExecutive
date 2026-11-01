@@ -192,6 +192,8 @@ from openexecutive.orchestrator.session import Session
 from openexecutive.orchestrator.skills_tools import SKILL_TOOL_HANDLERS, SKILL_TOOLS
 from openexecutive.orchestrator.teammate_mail import guard_call_tool
 from openexecutive.orchestrator.turn_inbox import (
+    HAND_OVER_EMPTY_REPLY,
+    HAND_OVER_NOTE,
     TurnInbox,
     render_added_messages,
     with_added,
@@ -2469,6 +2471,9 @@ class Executive:
         # it was asked to do, since a result's first line rarely says it all.
         claim_calls: list[tuple[str, str]] = []
         claim_checked = False
+        # Set once the person asks to finish the work themselves: the next
+        # round writes up what the turn has, and runs no tool.
+        handing_over = False
 
         for iteration in range(1, max_iterations + 1):
             logger.info(
@@ -2625,7 +2630,7 @@ class Executive:
                 await outside_content.settle()
                 # Do what it says: a reply that claims a change no call this
                 # turn made gets one more round to make it or say it can't.
-                if claim_checked or iteration >= max_iterations:
+                if claim_checked or handing_over or iteration >= max_iterations:
                     return
                 claim_checked = True
                 reply_text = "\n".join(
@@ -2653,6 +2658,16 @@ class Executive:
                 # The retry's text gets its paragraph break from
                 # _round_separator, like any other round's.
                 continue
+
+            # Handed over: the write-up asked for a tool anyway. Run nothing;
+            # what it wrote (if anything) is the reply.
+            if handing_over:
+                if not any(
+                    b.get("type") == "text" and str(b.get("text", "")).strip()
+                    for b in response_content
+                ):
+                    yield HAND_OVER_EMPTY_REPLY
+                return
 
             # open_tools is answered here; a use_tool call becomes the call it
             # stands for (same id), so every guard, handler, chip and audit
@@ -3802,6 +3817,10 @@ class Executive:
                 # Audited by the inbox's owner (the web chat route), under
                 # the same privacy as the turn's own message.
                 yield {"type": "message_added", "ids": [m.id for m in added]}
+            if inbox is not None and inbox.take_hand_over():
+                tool_results.append({"type": "text", "text": HAND_OVER_NOTE})
+                handing_over = True
+                yield {"type": "handing_over"}
             current_messages.append({"role": "user", "content": tool_results})
             # Bounded to the messages this loop appended: current_messages
             # is a shallow copy, so anything at a lower index is still owned

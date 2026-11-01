@@ -7,6 +7,7 @@ import FlagsCard from "./FlagsCard";
 import HeldStepsCard, { APPROVE_MESSAGE } from "./HeldStepsCard";
 import BrandMark from "./BrandMark";
 import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
+import TurnSteps from "./TurnSteps";
 import Icon from "./Icon";
 import MicButton from "./MicButton";
 import InfoTip from "./InfoTip";
@@ -32,6 +33,7 @@ import {
   sendTyping,
   setMessageFeedback,
   streamChat,
+  handOverChat,
   type ChatPeople,
   type LiveChatEvent,
 } from "@/lib/api";
@@ -52,6 +54,7 @@ import { confirmRedoText, dropLastTurn, lastTurn } from "@/lib/chatTurns";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { matchingMessages } from "@/lib/chatSearch";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
+import { addStep, showSteps } from "@/lib/turnSteps";
 import {
   composerText,
   markTaken,
@@ -140,6 +143,10 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // The reply whose held steps the person put off with Not now (its index).
   const [heldDismissed, setHeldDismissed] = useState<number | null>(null);
   const [activityLabel, setActivityLabel] = useState<string | null>(null);
+  // The running turn's steps (lib/turnSteps.ts), and whether the person
+  // pressed I'll finish it and the turn is writing up what it has.
+  const [turnSteps, setTurnSteps] = useState<string[]>([]);
+  const [handingOver, setHandingOver] = useState(false);
   const [committeeEnabled, setCommitteeEnabled] = useState(false);
   const [committeePhase, setCommitteePhase] = useState<CommitteePhase | null>(null);
   const turnClock = useTurnClock(isLoading);
@@ -482,6 +489,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setStreamingActions([]);
     setIsConsulting(false);
     setActivityLabel(null);
+    setTurnSteps([]);
+    setHandingOver(false);
     setCommitteePhase(null);
     const { clientTurnId, signal } = beginTurn();
     turnIdRef.current = clientTurnId;
@@ -549,6 +558,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           // `action_taken`: a chip can land while the same round is still
           // running, and clearing there would flicker the line off and on.
           setActivityLabel(item.label);
+          setTurnSteps((prev) => addStep(prev, item.label));
+        } else if (item.type === "handing_over") {
+          setHandingOver(true);
         } else if (item.type === "thinking") {
           setIsConsulting(true);
         } else if (item.type === "phase" && item.phase) {
@@ -688,6 +700,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       }
       setIsConsulting(false);
       setActivityLabel(null);
+      setTurnSteps([]);
+      setHandingOver(false);
       setCommitteePhase(null);
       textareaRef.current?.focus();
     }
@@ -813,6 +827,17 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     msSinceLastEvent: turnClock.msSinceLastEvent,
     fallbackLabel: FALLBACK_ACTIVITY_LABEL,
   });
+
+  // I'll finish it: the turn stops working and writes up what it has. The
+  // button stays off once pressed; if the turn won't take it (it already
+  // finished or was stopped) the reply that arrives is its own.
+  async function handleHandOver() {
+    const id = turnIdRef.current;
+    if (!id || handingOver) return;
+    setHandingOver(true);
+    if (!(await handOverChat(id))) setHandingOver(false);
+  }
+  const stepsShown = isLoading && showSteps(turnSteps) && !committeePhase;
 
   // Fill the composer with the suggestion without sending it, so the user
   // can edit first. The suggestion is kept: clearing the box shows it again.
@@ -1142,6 +1167,19 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 </div>
               ))}
 
+              {stepsShown && (
+                <div className="pl-12">
+                  <TurnSteps
+                    steps={turnSteps}
+                    elapsed={status.elapsed}
+                    handingOver={handingOver}
+                    stopping={isStopping}
+                    onStop={() => void handleStop()}
+                    onHandOver={() => void handleHandOver()}
+                  />
+                </div>
+              )}
+
               {streamingContent && (
                 <Message
                   role="assistant"
@@ -1156,7 +1194,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 />
               )}
 
-              {status.show && !streamingContent && (
+              {status.show && !streamingContent && !stepsShown && (
                 <div className="flex gap-4 mb-8">
                   <div className="flex-shrink-0 mt-1">
                     <BrandMark size="md" consulting />

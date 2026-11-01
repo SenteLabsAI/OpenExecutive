@@ -163,6 +163,12 @@ export interface MessageAdded {
   ids: string[];
 }
 
+// The person pressed I'll finish it (POST /chat/hand-over) and the turn took
+// it: no more tools, the reply is a write-up of what it has so far.
+export interface HandingOver {
+  type: "handing_over";
+}
+
 // The turn held steps after reading something from outside: they wait on the
 // person's go, offered as Approve / Not now under the reply.
 export interface HeldStepsEvent {
@@ -187,6 +193,7 @@ export type StreamItem =
   | Activity
   | SourcesEvent
   | MessageAdded
+  | HandingOver
   | HeldStepsEvent
   | FlagsEvent;
 
@@ -351,6 +358,22 @@ export async function transcribeRecording(recording: Blob, filename: string): Pr
 export async function stopChat(clientTurnId: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/chat/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_turn_id: clientTurnId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// I'll finish it: stop the running turn's work and have it write up what it
+// has for the person to finish. False when the turn won't take it (finished
+// or stopped); the reply that arrives is then the turn's own.
+export async function handOverChat(clientTurnId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/chat/hand-over`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_turn_id: clientTurnId }),

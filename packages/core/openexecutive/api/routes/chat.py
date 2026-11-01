@@ -473,6 +473,18 @@ def _add_to_turn(client_turn_id: str, owner: str, message_id: str, text: str) ->
     return entry.turn_id
 
 
+def _hand_over_turn(client_turn_id: str, owner: str) -> str | None:
+    """Ask a running turn to stop and hand over what it has. Returns its
+    server `turn_id`, or None (no such live turn, not yours, already stopped
+    or finished: indistinguishable, as for `_request_stop`)."""
+    entry = _active_stops.get(client_turn_id)
+    if entry is None or entry.owner != owner or entry.inbox is None:
+        return None
+    if entry.event.is_set() or not entry.inbox.request_hand_over():
+        return None
+    return entry.turn_id
+
+
 # One turn at a time per conversation. A second /chat on a conversation that
 # is still answering (another tab, a retry) waits for the first to finish and
 # persist, rather than running beside it on the same history. The web chat's
@@ -2116,6 +2128,31 @@ async def chat_stop(body: StopChatRequest, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=404, detail="No in-flight turn with that id")
     logger.info("chat.stop_requested turn_id=%s", stopped_turn_id)
     return {"status": "stopping", "turn_id": stopped_turn_id}
+
+
+@router.post("/chat/hand-over")
+async def chat_hand_over(body: StopChatRequest, request: Request) -> dict[str, str]:
+    """Stop an in-flight /chat turn's work and have it hand over what it has.
+
+    The person will finish the task themselves (I'll finish it). The turn
+    takes the request at its next step, says so with a `handing_over` event,
+    runs no more tools and writes up what it found and did as its reply. A
+    request that lands while the final answer is already being written
+    changes nothing: that answer is the hand-over. 404 as for /chat/stop.
+    """
+    client_turn_id = _clean_client_turn_id(body.client_turn_id)
+    turn_id = (
+        _hand_over_turn(
+            client_turn_id,
+            _stop_owner_key(request, _resolve_caller_person_id(request)),
+        )
+        if client_turn_id
+        else None
+    )
+    if turn_id is None:
+        raise HTTPException(status_code=404, detail="No in-flight turn with that id")
+    logger.info("chat.hand_over_requested turn_id=%s", turn_id)
+    return {"status": "handing_over", "turn_id": turn_id}
 
 
 @router.post("/chat/add")
