@@ -427,7 +427,7 @@ async def test_draft_indexes_artifact_into_research_collection(
     assert "Churn is up in SMB." in " ".join(added["texts"])
 
     await artifact_tools.unindex_artifact(result["artifact_id"])
-    assert store.deleted == [("recent_research", {"artifact_id": result["artifact_id"]})]
+    assert ("recent_research", {"artifact_id": result["artifact_id"]}) in store.deleted
 
 
 async def test_indexing_failure_does_not_fail_draft(

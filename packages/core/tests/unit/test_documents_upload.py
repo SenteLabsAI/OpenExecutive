@@ -436,3 +436,38 @@ def test_a_pdf_met_by_busy_parsers_is_a_503_not_an_empty_index(
     store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
     assert store.rows == {}
     assert not (tmp_path / "company" / "docs" / "lease.pdf").exists()
+
+
+def test_reupload_of_a_shorter_version_drops_the_old_tail(client: TestClient) -> None:
+    """Chunk ids are filename + position, so a shorter new version used to
+    overwrite only the first positions and leave the old later chunks
+    searchable."""
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    long_text = " ".join(f"old{i}" for i in range(1500))
+    files = {"file": ("plan.md", io.BytesIO(long_text.encode()), "text/markdown")}
+    assert client.post("/documents", files=files).json()["chunks_indexed"] > 1
+
+    files = {"file": ("plan.md", io.BytesIO(b"short new version"), "text/markdown")}
+    assert client.post("/documents", files=files).json()["chunks_indexed"] == 1
+
+    assert [m["chunk_index"] for m in store.rows.values()] == [0]
+
+
+def test_reupload_leaves_other_documents_alone(client: TestClient) -> None:
+    store: _CapturingStore = client.app.state.store  # type: ignore[attr-defined]
+    long_text = " ".join(f"word{i}" for i in range(1500)).encode()
+    client.post("/documents", files={"file": ("a.md", io.BytesIO(long_text), "text/markdown")})
+    before = {i for i, m in store.rows.items() if m["filename"] == "a.md"}
+    client.post("/documents", files={"file": ("b.md", io.BytesIO(b"tiny"), "text/markdown")})
+    assert {i for i, m in store.rows.items() if m["filename"] == "a.md"} == before
+
+
+def test_an_old_format_doc_upload_asks_for_docx(client: TestClient) -> None:
+    # The OLE2 signature legacy Word files start with: not a zip, so not .docx.
+    legacy = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 512
+    resp = client.post(
+        "/documents",
+        files={"file": ("contract.doc", io.BytesIO(legacy), "application/msword")},
+    )
+    assert resp.status_code == 422
+    assert "Save it as .docx" in resp.json()["detail"]
