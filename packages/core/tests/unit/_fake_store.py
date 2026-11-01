@@ -16,6 +16,22 @@ from __future__ import annotations
 from typing import Any
 
 
+def _matches(meta: dict[str, Any], where: dict[str, Any]) -> bool:
+    """The slice of Chroma's ``where`` the delete paths use: exact match,
+    ``$gte`` and ``$and``."""
+    for key, value in where.items():
+        if key == "$and":
+            if not all(_matches(meta, clause) for clause in value):
+                return False
+        elif isinstance(value, dict) and "$gte" in value:
+            got = meta.get(key)
+            if got is None or got < value["$gte"]:
+                return False
+        elif meta.get(key) != value:
+            return False
+    return True
+
+
 class FakeStore:
     def __init__(self, rows: dict[str, dict[str, Any]] | None = None) -> None:
         self.rows: dict[str, dict[str, Any]] = dict(rows or {})
@@ -31,8 +47,7 @@ class FakeStore:
             self.rows[chunk_id] = meta
 
     def delete_documents(self, collection: str, where: dict[str, Any]) -> None:
-        key, value = next(iter(where.items()))
-        self.rows = {i: m for i, m in self.rows.items() if m.get(key) != value}
+        self.rows = {i: m for i, m in self.rows.items() if not _matches(m, where)}
 
     def iter_chunk_metadata(self, collection: str) -> list[tuple[str, dict[str, Any]]]:
         return list(self.rows.items())

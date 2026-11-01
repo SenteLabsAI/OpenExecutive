@@ -67,6 +67,8 @@ def unreadable_document_error(name: str, exc: Exception) -> HTTPException:
         )
     if isinstance(exc, WorkerStopped):
         reason = "it is too large or took too long to read"
+    elif kind == "LegacyWordDocument":
+        reason = "it is an old Word .doc file. Save it as .docx and upload it again"
     else:
         reason = "the file may be damaged, or not the type its name says"
     return HTTPException(status_code=422, detail=f"Could not read {name}: {reason}.")

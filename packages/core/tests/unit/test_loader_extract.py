@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from openexecutive.knowledge.loader import (
+    LegacyWordDocument,
+    extract_text_from_docx,
     extract_text_from_file,
     extract_text_from_xlsx,
 )
@@ -161,3 +163,52 @@ async def test_async_extractor_converts_a_scanned_pdf(tmp_path: Path, monkeypatc
     csv.write_text("name\nDana\n", encoding="utf-8")
     result = await read_document_text(csv)
     assert result.text == "name\nDana\n" and not result.converted
+
+
+def test_docx_tables_are_read_in_order(tmp_path: Path) -> None:
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Approved vendors:")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vendor"
+    table.cell(0, 1).text = "Terms"
+    table.cell(1, 0).text = "Pinecrest Paper"
+    table.cell(1, 1).text = "Net 45"
+    doc.add_paragraph("Reviewed yearly.")
+    path = tmp_path / "vendors.docx"
+    doc.save(path)
+
+    text = extract_text_from_docx(path)
+    assert text == "Approved vendors:\n\nVendor | Terms\nPinecrest Paper | Net 45\n\nReviewed yearly."
+
+
+def test_docx_merged_cells_are_kept_once(tmp_path: Path) -> None:
+    from docx import Document
+
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 1)).text = "Region"
+    table.cell(0, 2).text = "Target"
+    path = tmp_path / "merged.docx"
+    doc.save(path)
+
+    assert extract_text_from_docx(path) == "Region | Target"
+
+
+def test_a_docx_saved_as_doc_is_read(tmp_path: Path) -> None:
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Renamed but modern.")
+    path = tmp_path / "renamed.doc"
+    doc.save(path)
+
+    assert extract_text_from_docx(path) == "Renamed but modern."
+
+
+def test_an_old_format_doc_raises_by_name(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.doc"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 512)
+    with pytest.raises(LegacyWordDocument):
+        extract_text_from_docx(path)
