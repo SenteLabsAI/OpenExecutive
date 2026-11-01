@@ -9,6 +9,25 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.9](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.8...v0.6.9) (2026-11-01)
+
+
+### Added
+
+* **chat:** show a long turn's steps with Stop and I'll finish it ([#677](https://github.com/SenteLabsAI/OpenExecutive/issues/677)) ([5168b28](https://github.com/SenteLabsAI/OpenExecutive/commit/5168b28bbfc46ebc25e295b2a7a8ab58987ed808))
+* **delegation:** send tables in Act as me drafts as real HTML tables ([#670](https://github.com/SenteLabsAI/OpenExecutive/issues/670)) ([dad574e](https://github.com/SenteLabsAI/OpenExecutive/commit/dad574e6782f57b333ee82411ed80212b20752b5))
+* **integrations:** ask on a card before saving into a Drive folder shared outside the team ([#672](https://github.com/SenteLabsAI/OpenExecutive/issues/672)) ([c047872](https://github.com/SenteLabsAI/OpenExecutive/commit/c0478724189edeed66f59b19e3834bc087167dcf))
+* **people:** add search, sort and a Changes tab to the People page ([#674](https://github.com/SenteLabsAI/OpenExecutive/issues/674)) ([48ab97d](https://github.com/SenteLabsAI/OpenExecutive/commit/48ab97daf1c91dd554eaa830a6dbf285aec30e75))
+
+
+### Fixed
+
+* **chat:** drop chips for failed tools and false flags on calendar notices ([#676](https://github.com/SenteLabsAI/OpenExecutive/issues/676)) ([f719147](https://github.com/SenteLabsAI/OpenExecutive/commit/f71914763198dbcb4bf98501b5aad386bc4f41db))
+* **chat:** stop flagging the past-chat search's own words as email instructions ([#671](https://github.com/SenteLabsAI/OpenExecutive/issues/671)) ([1530e0c](https://github.com/SenteLabsAI/OpenExecutive/commit/1530e0cf40faa01507a31ba2a337f298fce76e40))
+* **knowledge:** drop stale chunks on re-upload and read Word tables ([#678](https://github.com/SenteLabsAI/OpenExecutive/issues/678)) ([8a9d96f](https://github.com/SenteLabsAI/OpenExecutive/commit/8a9d96ff019f29f061c92f7bb8651700eb94183f))
+* **people:** check People first when asked how to reach someone ([#673](https://github.com/SenteLabsAI/OpenExecutive/issues/673)) ([02b865b](https://github.com/SenteLabsAI/OpenExecutive/commit/02b865bf2a61539773ad54bcb06041c5b1be26d0))
+* **people:** read contact signatures before the sent-mail pass ([#666](https://github.com/SenteLabsAI/OpenExecutive/issues/666)) ([337e021](https://github.com/SenteLabsAI/OpenExecutive/commit/337e02188d5e5751fe7e894f1ba887d4b0da8b0e))
+
 ## [0.6.8](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.7...v0.6.8) (2026-10-30)
 
 
