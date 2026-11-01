@@ -116,8 +116,8 @@ class LegacyWordDocument(ValueError):
 def extract_text_from_docx(path: Path) -> str:
     """A Word document's paragraphs and tables, in the order they appear.
 
-    Each table row becomes one line, its cells joined with `` | ``; a merged
-    cell repeats in python-docx, so a run of the same text is kept once."""
+    Each table row becomes one line, its cells joined with `` | ``. A merged
+    cell, which python-docx repeats for each column it spans, is kept once."""
     import zipfile
 
     from docx import Document
@@ -137,11 +137,16 @@ def extract_text_from_docx(path: Path) -> str:
             rows: list[str] = []
             for row in block.rows:
                 cells: list[str] = []
+                last_tc = None
                 for cell in row.cells:
-                    text = " ".join(cell.text.split())
-                    if text and (not cells or cells[-1] != text):
-                        cells.append(text)
-                if cells:
+                    # A merged cell comes back once per grid column it spans,
+                    # as the same underlying <w:tc>: keep it once. Equal text
+                    # in separate cells, and empty cells, keep their place.
+                    if cell._tc is last_tc:
+                        continue
+                    last_tc = cell._tc
+                    cells.append(" ".join(cell.text.split()))
+                if any(cells):
                     rows.append(" | ".join(cells))
             if rows:
                 parts.append("\n".join(rows))

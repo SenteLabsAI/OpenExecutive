@@ -196,6 +196,21 @@ def test_docx_merged_cells_are_kept_once(tmp_path: Path) -> None:
     assert extract_text_from_docx(path) == "Region | Target"
 
 
+def test_docx_equal_and_empty_cells_keep_their_place(tmp_path: Path) -> None:
+    from docx import Document
+
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    for i, value in enumerate(["Q1", "0", "0", "12"]):
+        table.cell(0, i).text = value
+    for i, value in enumerate(["Name", "", "", "Phone"]):
+        table.cell(1, i).text = value
+    path = tmp_path / "equal.docx"
+    doc.save(path)
+
+    assert extract_text_from_docx(path) == "Q1 | 0 | 0 | 12\nName |  |  | Phone"
+
+
 def test_a_docx_saved_as_doc_is_read(tmp_path: Path) -> None:
     from docx import Document
 
