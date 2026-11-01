@@ -3817,7 +3817,9 @@ class Executive:
                 # Audited by the inbox's owner (the web chat route), under
                 # the same privacy as the turn's own message.
                 yield {"type": "message_added", "ids": [m.id for m in added]}
-            if inbox is not None and inbox.take_hand_over():
+            # The last round has no step after it to write anything up in;
+            # its own reply stands, and the request is never taken.
+            if iteration < max_iterations and inbox is not None and inbox.take_hand_over():
                 tool_results.append({"type": "text", "text": HAND_OVER_NOTE})
                 handing_over = True
                 yield {"type": "handing_over"}

@@ -87,7 +87,9 @@ def _tool_round(tool_id: str = "toolu_1") -> FinalMsg:
     )
 
 
-def _run(provider: ScriptedProvider, inbox: TurnInbox) -> tuple[list[Any], _StubGateway]:
+def _run(
+    provider: ScriptedProvider, inbox: TurnInbox, max_iterations: int = 15
+) -> tuple[list[Any], _StubGateway]:
     executive = Executive()
     gateway = _StubGateway()
     executive._mcp_gateway = gateway  # type: ignore[assignment]
@@ -99,6 +101,7 @@ def _run(provider: ScriptedProvider, inbox: TurnInbox) -> tuple[list[Any], _Stub
                 system_blocks=[],
                 messages=[{"role": "user", "content": "put the board pack together"}],
                 model="claude-test",
+                max_iterations=max_iterations,
                 inbox=inbox,
             ):
                 items.append(item)
@@ -152,6 +155,17 @@ def test_hand_over_with_nothing_written_says_so() -> None:
 
     assert gateway.calls == 1
     assert HAND_OVER_EMPTY_REPLY in items
+
+
+def test_hand_over_in_the_last_round_is_not_taken() -> None:
+    inbox = TurnInbox()
+    provider = _HandOverProvider([_tool_round()], inbox)
+    items, _gateway = _run(provider, inbox, max_iterations=1)
+
+    # No round is left to write anything up in: no handing_over event, and
+    # the request stays untaken.
+    assert {"type": "handing_over"} not in items
+    assert not inbox.hand_over_taken
 
 
 # ------------------------------------------------------ /chat/hand-over --
