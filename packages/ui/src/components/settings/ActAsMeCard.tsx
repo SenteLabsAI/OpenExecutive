@@ -247,7 +247,12 @@ export default function ActAsMeCard({
       ) : null}
 
       {settings.calendar && (
-        <CalendarSection calendar={settings.calendar} actAsMeOn={on} onSettings={setSettings} />
+        <CalendarSection
+          calendar={settings.calendar}
+          actAsMeOn={on}
+          mailboxConnected={connected}
+          onSettings={setSettings}
+        />
       )}
 
       {children}
@@ -415,10 +420,13 @@ function InboxSection({
 function CalendarSection({
   calendar,
   actAsMeOn,
+  mailboxConnected,
   onSettings,
 }: {
   calendar: ReadMyCalendar;
   actAsMeOn: boolean;
+  /** The calendar opens through the mailbox: with none it can't be turned on. */
+  mailboxConnected: boolean;
   onSettings: (next: DelegationSettings) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -444,20 +452,22 @@ function CalendarSection({
       description={
         on
           ? "Ask about your day or your week in chat and it reads your own calendar. It never changes it."
-          : actAsMeOn
-            ? "Off: it can't see your calendar. On, it reads it when you ask, and never changes it."
-            : "Set What it writes as you above Off first."
+          : !mailboxConnected
+            ? "Connect your mailbox above first."
+            : actAsMeOn
+              ? "Off: it can't see your calendar. On, it reads it when you ask, and never changes it."
+              : "Set What it writes as you above Off first."
       }
       action={
         <Switch
           checked={on}
           onChange={() => void toggle()}
-          disabled={busy || (!on && !actAsMeOn)}
+          disabled={busy || (!on && (!actAsMeOn || !mailboxConnected))}
           labelledBy="act-as-me-calendar-label"
         />
       }
     >
-      {!on && actAsMeOn && calendar.granted !== true && (
+      {!on && actAsMeOn && mailboxConnected && calendar.granted !== true && (
         <div>
           <p className="text-sm text-fg-muted leading-relaxed">
             {calendar.granted === false

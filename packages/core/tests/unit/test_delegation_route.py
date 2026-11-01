@@ -472,6 +472,13 @@ def test_read_my_calendar_turns_on_only_once_the_calendar_opens(
     assert body["calendar"]["enabled"] is True and calendar.enabled(ids["principal"]) is True
     assert body["calendar"]["granted"] is True
     assert calendar.enabled(ids["teammate"]) is False
+    # The mailbox gone (disconnected, or its sign-in revoked): the switch reads
+    # Off, since nothing can be read, and On again once it's back.
+    gmail["status"] = "not_configured"
+    assert client.get("/delegation", headers=OWNER).json()["calendar"]["enabled"] is False
+    assert calendar.enabled(ids["principal"]) is True
+    gmail["status"] = "connected"
+    assert client.get("/delegation", headers=OWNER).json()["calendar"]["enabled"] is True
     # Act as me off takes it with it, and it is audited privately each way.
     client.put("/delegation", json={"enabled": False}, headers=OWNER)
     assert calendar.enabled(ids["principal"]) is False

@@ -968,6 +968,11 @@ _OWN_MESSAGE_BY_STATUS: dict[str, str] = {
     "none": "detail",
     "not_asked": "error",
     "unavailable": "error",
+    # Read my calendar off, or a sign-in without the calendar, or one that no
+    # longer works: only the tool's words ("They can turn it on in Settings").
+    "calendar_off": "error",
+    "calendar_not_granted": "error",
+    "needs_reconnect": "error",
 }
 # The recall tools' counts: at 0, their ``result`` is only their own words
 # ("No earlier chat matches. Look it up in the source.").
