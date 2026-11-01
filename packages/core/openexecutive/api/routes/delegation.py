@@ -703,7 +703,11 @@ async def _calendar_out(person: Person, status: str) -> CalendarOut:
             granted = await gmail_for(email).calendar_granted()
         except Exception:
             logger.warning("delegation: couldn't tell whether the sign-in includes the calendar", exc_info=True)
-    return CalendarOut(enabled=calendar.enabled(person.id), granted=granted, connect_command=f"{command} --calendar")
+    # On only while the mailbox is connected: the calendar opens through it,
+    # so with none the switch would read On while nothing can be read. The
+    # stored choice stays, and shows again once the mailbox is back.
+    enabled = calendar.enabled(person.id) and status == "connected"
+    return CalendarOut(enabled=enabled, granted=granted, connect_command=f"{command} --calendar")
 
 
 def _inbox_out(person_id: int) -> InboxOut:

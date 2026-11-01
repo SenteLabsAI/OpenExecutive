@@ -115,6 +115,17 @@ def _parse_result(tool_result: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# How a failed call reads as text: the MCP client's and the gateway's error
+# markers (``mcp_gateway._ERROR_TEXT_PREFIXES``). A successful answer that
+# merely opens with the word "Error" is not one.
+_ERROR_TEXT_PREFIXES = ("Error: ", "Error calling tool ", "Tool error:", "Error executing tool ")
+
+
+def _failed_text(tool_result: object) -> bool:
+    """Whether a plain-text tool result reports a failure."""
+    return isinstance(tool_result, str) and tool_result.lstrip().startswith(_ERROR_TEXT_PREFIXES)
+
+
 def _humanize_iso(iso_ts: str) -> str:
     """Render an ISO timestamp as a chip-friendly RELATIVE phrase.
 
@@ -204,6 +215,10 @@ def summarize_action(
         return None
 
     parsed = _parse_result(tool_result)
+    if parsed is None and _failed_text(tool_result):
+        # A connected tool's failure comes back as text, not JSON ("Tool
+        # error: Error calling tool 'create_doc': ..."): nothing was made.
+        return None
     if parsed is not None and "error" in parsed:
         # Tool ran but reported a failure — don't claim the action happened.
         # The Executive's prose will explain what went wrong; we just don't
