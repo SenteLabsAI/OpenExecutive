@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Message from "./Message";
-import FlagsCard from "./FlagsCard";
 import HeldStepsCard, { APPROVE_MESSAGE } from "./HeldStepsCard";
 import BrandMark from "./BrandMark";
 import TurnStatusRow, { useTurnClock } from "./TurnStatusRow";
@@ -1217,9 +1216,6 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   onRetry={canRedo && i === turn.replyIndex ? () => void handleRetry() : undefined}
                   onEdit={canRedo && !editing && i === turn.userIndex ? startEdit : undefined}
                 />
-                {!member && msg.role === "assistant" && msg.flags && msg.flags.length > 0 && (
-                  <FlagsCard flags={msg.flags} />
-                )}
                 {!member &&
                   msg.role === "assistant" &&
                   i === messages.length - 1 &&
@@ -1228,6 +1224,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   msg.held_steps.length > 0 && (
                     <HeldStepsCard
                       steps={msg.held_steps}
+                      reasons={msg.flags}
                       disabled={isLoading}
                       onApprove={() => void handleSend(APPROVE_MESSAGE)}
                       onDismiss={() => setHeldDismissed(i)}

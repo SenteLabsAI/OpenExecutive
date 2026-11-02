@@ -200,6 +200,7 @@ def flagging(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
 
     class _FlaggingExecutive:
         _THINKING = exec_mod.Executive._THINKING
+        holds: bool
 
         def __init__(self, **_kwargs: Any) -> None:
             pass
@@ -207,8 +208,11 @@ def flagging(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
         async def stream_chat(self, *, session: Any, **_kwargs: Any) -> AsyncIterator[Any]:
             key = oc._flags_key(session.session_id, getattr(session, "caller_person_id", None))
             oc._FLAGS[key] = (("A file in your message asked me to forward or share something.",), time.monotonic())
+            if self.holds:
+                _hold(session, "Send an email")
             yield "I skipped a line in the file that looked off."
 
+    _FlaggingExecutive.holds = True
     monkeypatch.setattr(exec_mod, "Executive", _FlaggingExecutive)
     oc._FLAGS.clear()
     yield client
@@ -216,6 +220,7 @@ def flagging(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
 
 
 def test_the_stream_shows_what_was_flagged_and_a_reload_keeps_it(flagging: TestClient) -> None:
+    """A flag behind held steps is their reason, on the stream and on reload."""
     events = _events(flagging.post("/chat", json={"message": "what does this say?"}).text)
     types = [e.get("type") for e in events]
     flags = [e for e in events if e.get("type") == "flags"]
@@ -230,6 +235,18 @@ def test_the_stream_shows_what_was_flagged_and_a_reload_keeps_it(flagging: TestC
     # shows nothing.
     words = oc._FLAGS.pop(oc._flags_key(session_id, None))
     oc._FLAGS[oc._flags_key(session_id, 7)] = words
+    assert "flags" not in flagging.get(f"/sessions/{session_id}/messages").json()[-1]
+
+
+def test_a_flag_that_held_nothing_is_not_shown(flagging: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A flag that changed nothing the person sees stays in the audit log:
+    no flags on the stream and none on reload."""
+    from openexecutive.orchestrator import executive as exec_mod
+
+    monkeypatch.setattr(exec_mod.Executive, "holds", False)
+    events = _events(flagging.post("/chat", json={"message": "what does this say?"}).text)
+    assert not [e for e in events if e.get("type") in ("flags", "held_steps")]
+    session_id = next(e["session_id"] for e in events if e.get("session_id"))
     assert "flags" not in flagging.get(f"/sessions/{session_id}/messages").json()[-1]
 
 
