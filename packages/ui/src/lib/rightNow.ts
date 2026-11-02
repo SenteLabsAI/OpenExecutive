@@ -100,6 +100,26 @@ export function alsoInLine(labels: string[] | null | undefined, total: number | 
   return `${head} — ${list}.`;
 }
 
+/** What the Home card links to. With points, the whole picture. With none
+ * (a quiet day) the card already lists the next meetings, so the link names
+ * what is left: the morning brief alone, the whole picture when there is a
+ * move or more meetings than the card shows, or nothing at all. */
+export type CardLink = "whole" | "morning" | null;
+
+export function cardLink(
+  today: {
+    narrative_points?: unknown[] | null;
+    narrative_move?: string | null;
+    morning_brief?: unknown | null;
+    calendar_next?: unknown[] | null;
+  },
+  shownCalendar: number,
+): CardLink {
+  if ((today.narrative_points ?? []).length > 0) return "whole";
+  if (today.narrative_move?.trim() || (today.calendar_next ?? []).length > shownCalendar) return "whole";
+  return today.morning_brief ? "morning" : null;
+}
+
 // While Right now is being rewritten: its steps, each done, running or still
 // to come, from the step the server reports (reading until it starts).
 export type ProgressState = "done" | "now" | "todo";

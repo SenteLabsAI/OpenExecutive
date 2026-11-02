@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   alsoInLine,
+  cardLink,
   checkedLabel,
   clockLabel,
   isNewSince,
@@ -105,4 +106,14 @@ test("the progress note counts new email since the last header", () => {
   assert.equal(progressNote(1, since), "1 new email since 3:12 PM");
   assert.equal(progressNote(0, since), null);
   assert.equal(progressNote(3, null), null);
+});
+
+test("a quiet card links only to what it doesn't already show", () => {
+  const brief = { at: "2026-11-02T12:00:00Z", text: "x" };
+  const meet = { title: "Call", start: "2026-11-02T20:00:00Z" };
+  assert.equal(cardLink({ narrative_points: [{}] }, 0), "whole");
+  assert.equal(cardLink({ narrative_points: [], morning_brief: brief, calendar_next: [meet] }, 1), "morning");
+  assert.equal(cardLink({ narrative_points: [], morning_brief: brief, calendar_next: [meet, meet] }, 1), "whole");
+  assert.equal(cardLink({ narrative_points: [], narrative_move: "Call Ana" }, 0), "whole");
+  assert.equal(cardLink({ narrative_points: [], narrative_move: " ", calendar_next: [meet] }, 1), null);
 });
