@@ -49,6 +49,7 @@ from openexecutive.orchestrator import (
     outside_content,
     take_the_lead,
     tool_groups,
+    turn_plan,
 )
 from openexecutive.orchestrator import pushback as pushback_mod
 from openexecutive.orchestrator.action_card_tools import (
@@ -876,6 +877,7 @@ def builtin_tool_names() -> frozenset[str]:
         step_script.LIST_SAVED_TOOLS_TOOL,
         tool_groups.OPEN_TOOLS,
         tool_groups.USE_TOOL,
+        turn_plan.PLAN_STEPS,
         WEB_SEARCH_TOOL_NAME,
     })
 
@@ -2474,6 +2476,9 @@ class Executive:
         # Set once the person asks to finish the work themselves: the next
         # round writes up what the turn has, and runs no tool.
         handing_over = False
+        # The plan the turn last showed (plan_steps), so a call that only
+        # moves on keeps the steps.
+        shown_plan: list[str] | None = None
 
         for iteration in range(1, max_iterations + 1):
             logger.info(
@@ -2507,7 +2512,7 @@ class Executive:
                 t for t in filter_tools_for_workspace_mode(
                     [
                         *SPECIALIST_TOOLS, *_offered_skill_tools(), *self._mcp_tools,
-                        *self._script_tools, *delegation_tools,
+                        *self._script_tools, *delegation_tools, turn_plan.PLAN_STEPS_TOOL,
                     ],
                     workspace_mode,
                 )
@@ -2672,9 +2677,20 @@ class Executive:
             # open_tools is answered here; a use_tool call becomes the call it
             # stands for (same id), so every guard, handler, chip and audit
             # row below sees the tool's own name, as for a direct call.
+            # plan_steps is answered here too: nothing runs, and the chat
+            # gets the plan before this round's activity label.
             group_results: dict[str, str] = {}
             for i, tu in enumerate(tool_uses):
-                if tu["name"] == tool_groups.OPEN_TOOLS:
+                if tu["name"] == turn_plan.PLAN_STEPS:
+                    result, plan_event, shown_plan = turn_plan.apply(
+                        tu["input"],
+                        shown_plan,
+                        alone=all(other["name"] == turn_plan.PLAN_STEPS for other in tool_uses),
+                    )
+                    group_results[tu["id"]] = result
+                    if plan_event is not None:
+                        yield plan_event
+                elif tu["name"] == tool_groups.OPEN_TOOLS:
                     group_results[tu["id"]] = tool_groups.open_result(tu["input"], deferred_tools)
                 elif tu["name"] == tool_groups.USE_TOOL:
                     call, error = tool_groups.unwrap(tu)
@@ -2896,7 +2912,11 @@ class Executive:
             # indicator on. Never fatal: a labelling bug must not take the
             # turn down with it.
             try:
-                activity = summarize_activity(tool_uses, iteration=iteration)
+                # The plan call is not what the round is doing.
+                activity = summarize_activity(
+                    [tu for tu in tool_uses if tu["name"] != turn_plan.PLAN_STEPS],
+                    iteration=iteration,
+                )
             except Exception:
                 logger.warning(
                     "activity_label_failed iteration=%d", iteration, exc_info=True

@@ -1849,6 +1849,7 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
     from openexecutive.orchestrator.executive import _ALL_SKILL_TOOLS, SPECIALIST_TOOLS
     from openexecutive.orchestrator.mcp_gateway import MCP_TOOLS
     from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
+    from openexecutive.orchestrator.turn_plan import PLAN_STEPS_TOOL
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
     tool_use = SimpleNamespace(
@@ -1877,6 +1878,7 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
             *MCP_TOOLS,
             CHAT_TOOL_DEFINITION,
             LIST_SAVED_TOOLS_DEFINITION,
+            PLAN_STEPS_TOOL,
         ]
         if t["name"] not in PRINCIPAL_ONLY_TOOLS
     )
