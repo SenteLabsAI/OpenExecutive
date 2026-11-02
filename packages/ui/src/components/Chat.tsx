@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Message from "./Message";
 import FlagsCard from "./FlagsCard";
@@ -63,6 +63,7 @@ import {
 } from "@/lib/queuedMessages";
 import { newClientTurnId } from "@/lib/turn-id";
 import { turnStatus } from "@/lib/turnStatus";
+import { isNearBottom, lastUserIndex, pinScrollTop, pinSpacerHeight } from "@/lib/chatPin";
 
 interface ChatProps {
   onDebugEvent?: (event: DebugEvent) => void;
@@ -160,6 +161,15 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   const [followup, setFollowup] = useState<string | null>(null);
   const followupCtrlRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // Scrolling: the message you send moves to the top of the view with room
+  // under it for the reply (lib/chatPin). Until you send one (an opened
+  // chat, someone else's turn), the view follows the bottom while you are
+  // at it.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const spacerRef = useRef<HTMLDivElement>(null);
+  const [pinned, setPinned] = useState(false);
+  const pinScrollPendingRef = useRef(false);
+  const followBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const adoptedSessionIdRef = useRef<string | undefined>(initialSessionId);
@@ -270,6 +280,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     if (initialSessionId === adoptedSessionIdRef.current) return;
     adoptedSessionIdRef.current = initialSessionId;
     setMessages(initialMessages ?? []);
+    setPinned(false);
+    pinScrollPendingRef.current = false;
+    followBottomRef.current = true;
     setSessionId(initialSessionId);
     setStreamingContent("");
     setFind(initialFind?.trim() || null);
@@ -353,11 +366,60 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     return () => clearInterval(timer);
   }, [live.typing.length]);
 
+  const pinnedIndex = pinned ? lastUserIndex(messages) : null;
+
+  // Size the room under the chat so the pinned message can reach the top,
+  // and keep it sized as the reply, cards or the window change. Written to
+  // the DOM directly: it must apply before the scroll in the same frame.
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const content = messagesRef.current;
+    const spacer = spacerRef.current;
+    if (!scroller || !content || !spacer) return;
+    const size = () => {
+      const msg =
+        pinnedIndex === null
+          ? null
+          : content.querySelector<HTMLElement>(`[data-msg-index="${pinnedIndex}"]`);
+      if (!msg) {
+        spacer.style.height = "0px";
+        return null;
+      }
+      const top = msg.getBoundingClientRect().top;
+      spacer.style.height = `${pinSpacerHeight(
+        scroller.clientHeight,
+        top,
+        content.getBoundingClientRect().bottom,
+      )}px`;
+      return top;
+    };
+    const top = size();
+    if (top !== null && pinScrollPendingRef.current) {
+      pinScrollPendingRef.current = false;
+      scroller.scrollTo({
+        top: pinScrollTop(scroller.scrollTop, top, scroller.getBoundingClientRect().top),
+        behavior: "smooth",
+      });
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => void size());
+    observer.observe(content);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [pinnedIndex, messages.length]);
+
+  // Not pinned: follow new content while at the bottom.
   useEffect(() => {
     // While finding, the chat stays on the match instead.
-    if (find) return;
+    if (find || pinned || !followBottomRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent, find]);
+  }, [messages, streamingContent, live.turn, settling, find, pinned]);
+
+  function onScroll() {
+    const el = scrollerRef.current;
+    if (!el || pinned) return;
+    followBottomRef.current = isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight);
+  }
 
   // Bring the current match into view and mark every occurrence of the words.
   useEffect(() => {
@@ -482,6 +544,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     }
     clearFollowup();
     setMessages((prev) => [...prev, { role: "user", content: userBubbleContent }]);
+    pinScrollPendingRef.current = true;
+    setPinned(true);
     setIsLoading(true);
     isLoadingRef.current = true;
     turnClock.start();
@@ -1017,7 +1081,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         </div>
       )}
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollerRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
         {find && (
           <div
             role="status"
@@ -1240,6 +1304,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           )}
           <div ref={bottomRef} />
         </div>
+        <div ref={spacerRef} aria-hidden="true" />
       </div>
 
       {closed ? (
