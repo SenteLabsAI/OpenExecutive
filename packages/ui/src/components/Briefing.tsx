@@ -794,6 +794,18 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   // day isn't called quiet and the summary line points at it.
   const firstWeekCard = today?.first_week_card ?? null;
   const firstWeek = Boolean(today?.first_week);
+  // Right now already says when nothing needs the reader, so an empty Needs
+  // you would only say it again. It stays in the first week, where its empty
+  // line points at the mailbox step.
+  const hideEmptyNeedsYou =
+    hasBrief &&
+    !firstWeek &&
+    queue.length === 0 &&
+    approvalRows.length === 0 &&
+    !snoozed &&
+    !rerunNotice &&
+    !replies.notice &&
+    !showNeedsYouMenu;
   // The first week's empty Needs you points at the own-mailbox step only
   // while that mailbox isn't connected (null until known, so no flash).
   const [ownMailboxConnected, setOwnMailboxConnected] = useState<boolean | null>(null);
@@ -929,7 +941,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
 
               {/* Needs you — decisions routed to the caller, and replies
                   waiting to be sent. */}
-              <section id={NEEDS_YOU_ID} className="mb-8 scroll-mt-4">
+              {!hideEmptyNeedsYou && (
+                <section id={NEEDS_YOU_ID} className="mb-8 scroll-mt-4">
                 <div className="mb-3 flex items-center gap-2">
                   <h2 className="text-lg font-semibold text-fg">
                     Needs you
@@ -1014,7 +1027,8 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                     Nothing waiting on you. Decisions and replies to send land here.
                   </p>
                 ) : null}
-              </section>
+                </section>
+              )}
 
               {(today.held_back?.length ?? 0) > 0 && <HeldBack items={today.held_back ?? []} />}
 
