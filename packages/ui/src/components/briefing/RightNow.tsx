@@ -10,6 +10,7 @@ import { getMail, replyToMail, type MailView, type Today } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine } from "@/lib/briefing-memory";
 import {
   alsoInLine,
+  cardLink,
   clockLabel,
   isNewSince,
   newSinceLabel,
@@ -366,6 +367,9 @@ export function RightNowCard({
   const points = today.narrative_points ?? [];
   const badge = newSinceLabel(points, baseline);
   const alsoIn = alsoInLine(today.inbox_also, today.inbox_also_total);
+  // A quiet card (no points) lists the next meetings itself.
+  const calendar = points.length === 0 ? (today.calendar_next ?? []).slice(0, CARD_POINTS) : [];
+  const link = cardLink(today, calendar.length);
   return (
     <section aria-labelledby="sec-right-now" className="mb-8 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
       <div className="mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -400,15 +404,29 @@ export function RightNowCard({
               ))}
             </ul>
           )}
+          {calendar.length > 0 && (
+            <ul className="mt-3 border-t border-line pt-2">
+              {calendar.map((e, i) => (
+                <li key={`${i}-${e.title}`} className="flex items-start gap-2.5 py-1">
+                  <span className="w-16 flex-shrink-0 text-[15px] font-semibold tabular-nums text-fg">
+                    {calendarWhen(e.start, e.all_day)}
+                  </span>
+                  <span className="min-w-0 flex-1 text-[15px] text-fg">{e.title}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           {alsoIn && <AlsoIn text={alsoIn} />}
-          <button
-            type="button"
-            onClick={onOpen}
-            aria-haspopup="dialog"
-            className="mt-3 min-h-[40px] rounded-xl px-1 text-[15px] font-semibold text-accent hover:underline"
-          >
-            See the whole picture →
-          </button>
+          {link && (
+            <button
+              type="button"
+              onClick={onOpen}
+              aria-haspopup="dialog"
+              className="mt-3 min-h-[40px] rounded-xl px-1 text-[15px] font-semibold text-accent hover:underline"
+            >
+              {link === "morning" ? "Morning brief →" : "See the whole picture →"}
+            </button>
+          )}
         </>
       ) : null}
     </section>
@@ -442,7 +460,8 @@ export function RightNowBody({
   onContinue?: ContinueHandler;
   actions?: PointActions;
 }) {
-  const [showMorning, setShowMorning] = useState(false);
+  // Unset until tapped: open on a quiet day, when it is what the card links to.
+  const [morningToggled, setShowMorning] = useState<boolean | null>(null);
   if (today.narrative_stale) return <Progress today={today} />;
   if (!today.narrative) {
     return (
@@ -452,6 +471,7 @@ export function RightNowBody({
     );
   }
   const points = today.narrative_points ?? [];
+  const showMorning = morningToggled ?? cardLink(today, CARD_POINTS) === "morning";
   const fresh = points.filter((p) => isNewSince(p, baseline));
   const open = points.filter((p) => !isNewSince(p, baseline));
   const calendar = today.calendar_next ?? [];
@@ -509,7 +529,7 @@ export function RightNowBody({
         <div className="mt-5 border-t border-line pt-3">
           <button
             type="button"
-            onClick={() => setShowMorning((v) => !v)}
+            onClick={() => setShowMorning(!showMorning)}
             aria-expanded={showMorning}
             className="min-h-[40px] text-sm font-medium text-fg-muted hover:text-fg"
           >

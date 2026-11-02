@@ -53,7 +53,7 @@ import { confirmRedoText, dropLastTurn, lastTurn } from "@/lib/chatTurns";
 import { answerSourcesFrom, type AnswerSources } from "@/lib/answerSources";
 import { matchingMessages } from "@/lib/chatSearch";
 import { isAbortError, useStoppableTurn } from "@/lib/use-stoppable-turn";
-import { addStep, showSteps } from "@/lib/turnSteps";
+import { WRITING_FROM_CHARS, addStep, applyPlan, planRows, showSteps, type TurnPlan } from "@/lib/turnSteps";
 import {
   composerText,
   markTaken,
@@ -146,6 +146,10 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // The running turn's steps (lib/turnSteps.ts), and whether the person
   // pressed I'll finish it and the turn is writing up what it has.
   const [turnSteps, setTurnSteps] = useState<string[]>([]);
+  // The plan the turn showed up front, if it sent one, and whether the reply
+  // itself is being written (answer text since the last tool round).
+  const [turnPlan, setTurnPlan] = useState<TurnPlan | null>(null);
+  const [writingReply, setWritingReply] = useState(false);
   const [handingOver, setHandingOver] = useState(false);
   const [committeeEnabled, setCommitteeEnabled] = useState(false);
   const [committeePhase, setCommitteePhase] = useState<CommitteePhase | null>(null);
@@ -553,6 +557,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setIsConsulting(false);
     setActivityLabel(null);
     setTurnSteps([]);
+    setTurnPlan(null);
+    setWritingReply(false);
     setHandingOver(false);
     setCommitteePhase(null);
     const { clientTurnId, signal } = beginTurn();
@@ -568,6 +574,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     // Declared outside the try so the abort path in `catch` can still commit
     // whatever streamed before the stop.
     let accumulated = "";
+    // Answer text since the last tool round (WRITING_FROM_CHARS).
+    let roundText = 0;
     // Local mirror of streamingActions so the closure builds the final
     // message without depending on the async setState applying first.
     const turnActions: ActionTaken[] = [];
@@ -612,6 +620,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         if (item.type === "chunk" && item.content) {
           if (item.session_id) adoptSessionId(item.session_id);
           accumulated += item.content;
+          roundText += item.content.length;
+          if (roundText >= WRITING_FROM_CHARS) setWritingReply(true);
           setIsConsulting(false);
           setActivityLabel(null);
           setStreamingContent(accumulated);
@@ -622,6 +632,10 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
           // running, and clearing there would flicker the line off and on.
           setActivityLabel(item.label);
           setTurnSteps((prev) => addStep(prev, item.label));
+          roundText = 0;
+          setWritingReply(false);
+        } else if (item.type === "plan") {
+          setTurnPlan((prev) => applyPlan(prev, item.steps, item.current));
         } else if (item.type === "handing_over") {
           setHandingOver(true);
         } else if (item.type === "thinking") {
@@ -764,6 +778,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
       setIsConsulting(false);
       setActivityLabel(null);
       setTurnSteps([]);
+      setTurnPlan(null);
+      setWritingReply(false);
       setHandingOver(false);
       setCommitteePhase(null);
       textareaRef.current?.focus();
@@ -900,7 +916,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setHandingOver(true);
     if (!(await handOverChat(id))) setHandingOver(false);
   }
-  const stepsShown = isLoading && showSteps(turnSteps) && !committeePhase;
+  const stepsShown = isLoading && (turnPlan !== null || showSteps(turnSteps)) && !committeePhase;
 
   // Fill the composer with the suggestion without sending it, so the user
   // can edit first. The suggestion is kept: clearing the box shows it again.
@@ -1232,6 +1248,8 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 <div className="pl-12">
                   <TurnSteps
                     steps={turnSteps}
+                    plan={turnPlan ? planRows(turnPlan, { writing: writingReply, handingOver }) : null}
+                    liveLabel={writingReply ? null : activityLabel}
                     elapsed={status.elapsed}
                     handingOver={handingOver}
                     stopping={isStopping}

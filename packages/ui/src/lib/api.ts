@@ -185,6 +185,15 @@ export interface FlagsEvent {
   flags: string[];
 }
 
+// A long turn's plan, every step up front, and the step it is on now
+// (orchestrator/turn_plan.py). Sent again each time it moves on or the plan
+// changes; a turn that sends none shows its steps as they happen.
+export interface PlanEvent {
+  type: "plan";
+  steps: string[];
+  current: number;
+}
+
 export type StreamItem =
   | ChatChunk
   | DebugEvent
@@ -195,7 +204,8 @@ export type StreamItem =
   | MessageAdded
   | HandingOver
   | HeldStepsEvent
-  | FlagsEvent;
+  | FlagsEvent
+  | PlanEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;
