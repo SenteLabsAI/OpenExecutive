@@ -177,8 +177,8 @@ export interface HeldStepsEvent {
   steps: string[];
 }
 
-// What the content check flagged this turn, in plain words: shown under the
-// reply (orchestrator/outside_content.py `pending_flags`).
+// What the content check flagged this turn, in plain words: sent only with
+// held steps, as their reason (orchestrator/outside_content.py `pending_flags`).
 export interface FlagsEvent {
   type: "flags";
   session_id?: string;

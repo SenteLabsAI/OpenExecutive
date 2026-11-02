@@ -1878,8 +1878,10 @@ async def _run_chat_turn(
                 held_evt = {"type": "held_steps", "session_id": session.session_id, "steps": list(held_steps)}
                 yield f"data: {json.dumps(held_evt)}\n\n"
             # What the content check flagged this turn, in plain words
-            # (orchestrator.content_scan): shown under the reply.
-            flags = outside_content.pending_flags(session) if not (stopped or timed_out) else ()
+            # (orchestrator.content_scan): sent only with held steps, as the
+            # reason on their card. A flag that held nothing changed nothing
+            # the person sees, so it stays in the audit log alone.
+            flags = outside_content.pending_flags(session) if held_steps else ()
             if flags:
                 flags_evt = {"type": "flags", "session_id": session.session_id, "flags": list(flags)}
                 yield f"data: {json.dumps(flags_evt)}\n\n"

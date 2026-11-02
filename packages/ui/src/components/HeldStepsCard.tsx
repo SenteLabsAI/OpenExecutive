@@ -6,17 +6,21 @@ import Button from "@/components/ui/Button";
 // else wrote (an email, a file, a web page), shown under its reply while they
 // wait on your OK (orchestrator/outside_content.py `pending_held`). Approve
 // sends "Go ahead" as your next message, the same go as typing it; Not now
-// just hides the card, and the steps stay undone.
+// just hides the card, and the steps stay undone. When the content check
+// flagged what was read (`pending_flags`), its words are the reason shown;
+// a flag that held nothing is never shown on its own.
 
 export const APPROVE_MESSAGE = "Go ahead";
 
 export default function HeldStepsCard({
   steps,
+  reasons = [],
   onApprove,
   onDismiss,
   disabled = false,
 }: {
   steps: string[];
+  reasons?: string[];
   onApprove: () => void;
   onDismiss: () => void;
   disabled?: boolean;
@@ -32,9 +36,20 @@ export default function HeldStepsCard({
           </li>
         ))}
       </ul>
-      <p className="mt-1 text-sm text-fg-muted">
-        I read something from outside your team, so I&apos;m checking with you first.
-      </p>
+      {reasons.length > 0 ? (
+        <div className="mt-1 text-sm text-fg-muted">
+          {reasons.map((reason) => (
+            <p key={reason} className="break-words">
+              {reason}
+            </p>
+          ))}
+          <p>I didn&apos;t follow it, so I&apos;m checking with you first.</p>
+        </div>
+      ) : (
+        <p className="mt-1 text-sm text-fg-muted">
+          I read something from outside your team, so I&apos;m checking with you first.
+        </p>
+      )}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <Button variant="primary" onClick={onApprove} disabled={disabled}>
           Approve
