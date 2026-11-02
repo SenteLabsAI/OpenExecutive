@@ -41,8 +41,9 @@ export interface PlanRow {
 }
 
 // Answer text this long since the last tool round means the turn is writing
-// its reply, not a line before its next tools: the plan moves to its last
-// step ("Write the summary") without waiting for a call that never comes.
+// its reply, not a line before its next tools: from the step before the last,
+// the plan moves to its last step ("Write the summary") without waiting for a
+// call that never comes.
 export const WRITING_FROM_CHARS = 280;
 
 export function applyPlan(
@@ -67,7 +68,9 @@ export function planRows(
   { writing = false, handingOver = false }: { writing?: boolean; handingOver?: boolean } = {},
 ): PlanRow[] {
   const last = plan.steps.length - 1;
-  const current = writing ? last : plan.current;
+  // Only from the step before the last: a long line of text before an early
+  // step's tool calls must not tick the whole plan off.
+  const current = writing && plan.current >= last - 1 ? last : plan.current;
   return plan.steps.map((label, i) => ({
     label,
     state: i < current ? "done" : i === current && !handingOver ? "current" : "todo",

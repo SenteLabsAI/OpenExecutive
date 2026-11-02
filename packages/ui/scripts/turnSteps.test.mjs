@@ -59,7 +59,10 @@ test("an empty plan keeps the one before, and current is clamped", () => {
 });
 
 test("writing the reply moves to the last step; handing over runs none", () => {
-  const plan = applyPlan(null, ["A", "B", "C"], 0);
+  const plan = applyPlan(null, ["A", "B", "C"], 1);
   assert.deepEqual(planRows(plan, { writing: true }).map((r) => r.state), ["done", "done", "current"]);
-  assert.deepEqual(planRows(plan, { handingOver: true }).map((r) => r.state), ["todo", "todo", "todo"]);
+  // Text before an early step's calls is not the reply.
+  const early = applyPlan(null, ["A", "B", "C", "D"], 0);
+  assert.deepEqual(planRows(early, { writing: true }).map((r) => r.state), ["current", "todo", "todo", "todo"]);
+  assert.deepEqual(planRows(plan, { handingOver: true }).map((r) => r.state), ["done", "todo", "todo"]);
 });

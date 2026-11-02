@@ -115,3 +115,10 @@ def test_a_round_with_only_the_plan_is_still_paired_with_an_activity() -> None:
     items = _run(provider)
     assert len(_of(items, "plan")) == 1
     assert len(_of(items, "activity")) == items.count(Executive._THINKING) == 1
+
+
+def test_a_plan_call_on_its_own_is_told_to_ride_with_the_steps_calls() -> None:
+    result, _, _ = turn_plan.apply({"steps": STEPS, "current": 0}, None, alone=True)
+    assert result.endswith(turn_plan.ALONE_NOTE)
+    result, _, _ = turn_plan.apply({"steps": STEPS, "current": 0}, None)
+    assert turn_plan.ALONE_NOTE not in result

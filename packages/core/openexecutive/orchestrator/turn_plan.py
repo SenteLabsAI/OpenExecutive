@@ -72,13 +72,20 @@ def _clean_steps(raw: Any) -> list[str]:
     return steps[:MAX_STEPS]
 
 
-def apply(tool_input: Any, previous: list[str] | None) -> tuple[str, dict[str, Any] | None, list[str] | None]:
+# Said when the plan call came on its own: that cost a round with no work in it.
+ALONE_NOTE = " Next time, make this call in the same response as the step's own calls."
+
+
+def apply(
+    tool_input: Any, previous: list[str] | None, *, alone: bool = False
+) -> tuple[str, dict[str, Any] | None, list[str] | None]:
     """Answer one ``plan_steps`` call.
 
     Returns (the tool result for the model, the ``plan`` event for the chat or
     None, the turn's plan from now on). A call without usable steps keeps the
     plan the turn already showed, so moving on can't wipe it; with no plan yet
-    it shows nothing and says why.
+    it shows nothing and says why. ``alone`` (no other call in the round)
+    adds a reminder to send it with the step's own calls.
     """
     data = tool_input if isinstance(tool_input, dict) else {}
     steps = _clean_steps(data.get("steps")) or (previous or [])
@@ -89,4 +96,5 @@ def apply(tool_input: Any, previous: list[str] | None) -> tuple[str, dict[str, A
         current = 0
     current = max(0, min(current, len(steps) - 1))
     event = {"type": "plan", "steps": steps, "current": current}
-    return f"Shown: step {current + 1} of {len(steps)}.", event, steps
+    result = f"Shown: step {current + 1} of {len(steps)}."
+    return result + (ALONE_NOTE if alone else ""), event, steps

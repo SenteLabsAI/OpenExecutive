@@ -2682,7 +2682,11 @@ class Executive:
             group_results: dict[str, str] = {}
             for i, tu in enumerate(tool_uses):
                 if tu["name"] == turn_plan.PLAN_STEPS:
-                    result, plan_event, shown_plan = turn_plan.apply(tu["input"], shown_plan)
+                    result, plan_event, shown_plan = turn_plan.apply(
+                        tu["input"],
+                        shown_plan,
+                        alone=all(other["name"] == turn_plan.PLAN_STEPS for other in tool_uses),
+                    )
                     group_results[tu["id"]] = result
                     if plan_event is not None:
                         yield plan_event
