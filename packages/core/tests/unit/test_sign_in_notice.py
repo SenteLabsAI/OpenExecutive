@@ -34,18 +34,14 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, str]]:
 
 async def test_a_break_is_told_once_and_again_after_a_reconnect(tmp_path: Path, sent: list[tuple[Any, str]]) -> None:
     db = tmp_path / "e.db"
-    task = sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
-    assert task is not None
-    await task
+    assert await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
     assert len(sent) == 1 and "Act as me" in sent[0][1]
     # Every later check during the same break tells nothing.
-    assert sign_in_notice.note(OWNER, "needs_reconnect", db_path=db) is None
-    assert sign_in_notice.note(OWNER, "error", db_path=db) is None
+    assert not await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
+    assert not await sign_in_notice.note(OWNER, "error", db_path=db)
     # Connected again, then broken again: told again.
-    assert sign_in_notice.note(OWNER, "connected", db_path=db) is None
-    task = sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
-    assert task is not None
-    await task
+    assert not await sign_in_notice.note(OWNER, "connected", db_path=db)
+    assert await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
     assert len(sent) == 2
 
 
@@ -60,16 +56,11 @@ async def test_a_notice_that_cant_go_is_tried_on_the_next_check(
         return SimpleNamespace(ok=False, reason="no channel", channel="")
 
     monkeypatch.setattr(runner, "deliver_to_person", nowhere)
-    task = sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
-    assert task is not None
-    await task
-    task = sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
-    assert task is not None  # unclaimed, so it tries again
-    await task
+    assert await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
+    # Unclaimed, so the next check tries again.
+    assert await sign_in_notice.note(OWNER, "needs_reconnect", db_path=db)
 
 
 async def test_someone_not_in_people_is_told_nothing(tmp_path: Path, sent: list[tuple[Any, str]]) -> None:
-    task = sign_in_notice.note("stranger@x.example", "needs_reconnect", db_path=tmp_path / "e.db")
-    assert task is not None
-    await task
+    await sign_in_notice.note("stranger@x.example", "needs_reconnect", db_path=tmp_path / "e.db")
     assert sent == []

@@ -748,6 +748,9 @@ def test_a_go_is_not_undone_by_text_too_big_to_check(
     # A scanned PDF too big to check whole held every go on 10-19/20.
     from openexecutive.orchestrator import content_scan
 
+    # TOO_BIG is the read that holds without a flag; at Careful (the tests'
+    # level) it doesn't undo the go. Only a flag does, below.
+    assert content_scan.TOO_BIG.holds and not content_scan.TOO_BIG.flagged
     _go_reads_new_text(upserts, monkeypatch, content_scan.TOO_BIG)
     assert upserts == [CONTACT]
 

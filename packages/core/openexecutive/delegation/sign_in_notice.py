@@ -7,7 +7,8 @@ connect it again, and before this they only found out mid-question, when a
 search or a draft failed.
 
 So each time a mailbox status check (``gmail.gmail_status``, the same for
-Gmail and Outlook) finds ``needs_reconnect``, :func:`note` records the break;
+Gmail and Outlook) finds ``needs_reconnect``, :func:`record` hands it to
+:func:`note` in the background, which records the break off the event loop;
 the first time for a break it sends the person one message, the way their
 reminders reach them (``scheduler.runner.deliver_to_person``), saying how to
 connect it again. A check that finds the mailbox connected clears the record,
@@ -24,7 +25,6 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ MESSAGE = (
     "that in Delegate → Act as me."
 )
 # Notices being sent now, held so nothing collects one before it ends.
-_tasks: set[asyncio.Task[None]] = set()
+_tasks: set[asyncio.Task[bool]] = set()
 
 
 def _db(db_path: Path | None) -> Path:
@@ -127,24 +127,37 @@ async def _send(email: str, db_path: Path | None) -> None:
     )
 
 
-def note(email: str, status: str, *, now: datetime | None = None, db_path: Path | None = None) -> Any:
+async def note(
+    email: str, status: str, *, now: datetime | None = None, db_path: Path | None = None,
+) -> bool:
     """Record what a status check of ``email``'s own mailbox found. On a new
-    break (``needs_reconnect``) start the one notice and return its task; on
-    ``connected`` clear the break. Returns None otherwise. Never raises."""
+    break (``needs_reconnect``) send the one notice; on ``connected`` clear
+    the break. The database work runs off the event loop. Returns True when
+    a notice was tried. Never raises."""
     try:
         if not email:
-            return None
+            return False
         if status == "connected":
-            _clear(email, db_path)
-            return None
+            await asyncio.to_thread(_clear, email, db_path)
+            return False
         if status != "needs_reconnect":
-            return None
-        if not _claim(email, now or datetime.now(UTC), db_path):
-            return None
-        task = asyncio.get_running_loop().create_task(_send(email, db_path))
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
-        return task
+            return False
+        if not await asyncio.to_thread(_claim, email, now or datetime.now(UTC), db_path):
+            return False
+        await _send(email, db_path)
+        return True
     except Exception:
         logger.warning("sign_in_notice: couldn't record the status", exc_info=True)
-        return None
+        return False
+
+
+def record(email: str, status: str) -> None:
+    """Start :func:`note` in the background, so the status check that found
+    ``status`` never waits on it. Does nothing outside a running loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(note(email, status))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)

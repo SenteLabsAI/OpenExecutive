@@ -1605,7 +1605,7 @@ async def gmail_status(person_email: str | None, *, gmail: Any = None) -> GmailS
         # (``delegation.sign_in_notice``); a test's own client tells nothing.
         from openexecutive.delegation import sign_in_notice
 
-        sign_in_notice.note(address, status)
+        sign_in_notice.record(address, status)
     return status
 
 

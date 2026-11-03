@@ -91,6 +91,16 @@ def _content_scan_unchecked(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_sign_in_notice(monkeypatch: pytest.MonkeyPatch):
+    """A mailbox status check in a test never records a break in the default
+    database or sends a notice; tests/unit/test_sign_in_notice.py calls
+    ``note`` itself."""
+    from openexecutive.delegation import sign_in_notice
+
+    monkeypatch.setattr(sign_in_notice, "record", lambda email, status: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_claim_check(monkeypatch: pytest.MonkeyPatch):
     """Keep the end-of-turn claim check (orchestrator.claim_check) from making
     a provider call in tests that script a turn; test_claim_check.py turns it
