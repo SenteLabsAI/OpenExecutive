@@ -103,6 +103,13 @@ _LESSON_DENY: tuple[re.Pattern[str], ...] = (
         r"\bskip\w* (the )?(approval|card|sign[- ]?off)s?\b|\bauthori[sz]\w*",
         re.IGNORECASE,
     ),
+    # Handing things to whoever asks: a lesson is about how to do the work
+    # for this person, not about who else gets it.
+    re.compile(
+        r"\b(whoever|whomever|anyone (who|that) asks|anybody (who|that) asks|"
+        r"everyone (who|that) asks|all (of )?(our|the|my) (customers|clients|contacts))\b",
+        re.IGNORECASE,
+    ),
 )
 
 REASON_UNHELPFUL = "unhelpful"
