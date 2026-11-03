@@ -337,28 +337,31 @@ async def test_only_a_recorded_voice_note_is_the_senders_speech(settings, server
 
 
 
-async def test_an_unpaid_request_says_the_credit_ran_out(settings, server, caplog) -> None:
+@pytest.fixture()
+def logged(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The module's warnings, captured directly: a full run's logging setup
+    can keep them from caplog."""
+    lines: list[str] = []
+    monkeypatch.setattr(transcription.logger, "warning", lambda msg, *args: lines.append(msg % args))
+    return lines
+
+
+async def test_an_unpaid_request_says_the_credit_ran_out(settings, server, logged) -> None:
     settings(openrouter_api_key="or-key")
     server["answer"] = (402, {"error": {"message": "This request requires at least $0.50 in balance for audio", "code": 402}})
 
-    with (
-        caplog.at_level("WARNING", logger=transcription.__name__),
-        pytest.raises(transcription.TranscriptionError, match="out of credit"),
-    ):
+    with pytest.raises(transcription.TranscriptionError, match="out of credit"):
         await transcription.transcribe(b"OggS-voice", "voice.ogg", "audio/ogg")
 
-    assert "HTTP 402 (This request requires at least $0.50 in balance for audio)" in caplog.text
+    assert logged == ["transcription failed: HTTP 402 (This request requires at least $0.50 in balance for audio)"]
     assert server["rows"] == []
 
 
-async def test_other_refusals_log_the_server_reason(settings, server, caplog) -> None:
+async def test_other_refusals_log_the_server_reason(settings, server, logged) -> None:
     settings(openrouter_api_key="or-key")
     server["answer"] = (400, {"error": {"message": "Unsupported audio format"}})
 
-    with (
-        caplog.at_level("WARNING", logger=transcription.__name__),
-        pytest.raises(transcription.TranscriptionError, match="didn't answer"),
-    ):
+    with pytest.raises(transcription.TranscriptionError, match="didn't answer"):
         await transcription.transcribe(b"OggS-voice", "voice.ogg", "audio/ogg")
 
-    assert "HTTP 400 (Unsupported audio format)" in caplog.text
+    assert logged == ["transcription failed: HTTP 400 (Unsupported audio format)"]
