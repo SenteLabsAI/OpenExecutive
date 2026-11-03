@@ -57,6 +57,7 @@ from openexecutive.api.routes import (
     today,
     version,
     watchlist,
+    worked_out,
     workflow_designer,
     workflows,
     workspace,
@@ -1001,6 +1002,7 @@ def create_app() -> FastAPI:
     app.include_router(may_do.router, tags=["delegation"])
     app.include_router(history.router, tags=["memories"])
     app.include_router(reflection.router, tags=["memories"])
+    app.include_router(worked_out.router, tags=["memories"])
     app.include_router(audit.router, tags=["audit"])
     app.include_router(departments.router, tags=["departments"])
     app.include_router(people.router, tags=["people"])

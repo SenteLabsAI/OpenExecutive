@@ -1207,6 +1207,7 @@ class Executive:
         working_style: str = "",
         standing_facts: str = "",
         lessons: str = "",
+        worked_out: str = "",
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         history = session.get_recent_history()
@@ -1260,6 +1261,12 @@ class Executive:
         # person's own words. Preferences only, in the user turn.
         if lessons:
             user_content_parts.append({"type": "text", "text": f"<lessons>\n{lessons}\n</lessons>"})
+        # Figures it worked out for this person before (memory.worked_out),
+        # with source and date: their own, ranked against this message.
+        if worked_out:
+            user_content_parts.append(
+                {"type": "text", "text": f"<worked_out>\n{worked_out}\n</worked_out>"}
+            )
 
         # Facts and corrections the principal asked to keep (memory/facts.py).
         # The same block every unattended prompt reads, so a correction made
@@ -1528,6 +1535,11 @@ class Executive:
             lessons = await asyncio.to_thread(
                 build_lessons_block, person_id, user_message, count=not chat_replay.is_replay(session)
             )
+            from openexecutive.memory.worked_out import build_worked_out_block
+
+            worked_out = await asyncio.to_thread(
+                build_worked_out_block, person_id, user_message, session=session
+            )
             if standing_facts is None:
                 # A SQLite read: off the event loop, like the other context.
                 standing_facts = await asyncio.to_thread(render_facts_for_prompt)
@@ -1545,6 +1557,7 @@ class Executive:
                 working_style=working_style,
                 standing_facts=standing_facts,
                 lessons=lessons,
+                worked_out=worked_out,
             )
 
             _emit_memory_snapshot(
@@ -1730,6 +1743,14 @@ class Executive:
                 record_turn(own_text, full_response, session=session,
                             person_id=person_id, calls=turn_calls, mail=touched_mail)
 
+            # What it worked out (memory.worked_out): figures the reply worked
+            # out from what the turn read, kept for this person alone (private
+            # when the turn touched their mailbox).
+            from openexecutive.memory.worked_out import schedule_worked_out_pass
+
+            schedule_worked_out_pass(full_response, turn_calls, session=session,
+                                     person_id=person_id, private=touched_mail)
+
             # Mirror the completed exchange into Honcho so its server-side
             # extraction can update the peer card. Fire-and-forget; the
             # wrapper no-ops when person_id is None or Honcho is disabled.
@@ -1908,6 +1929,11 @@ class Executive:
         lessons = await asyncio.to_thread(
             build_lessons_block, person_id, user_message, count=not chat_replay.is_replay(session)
         )
+        from openexecutive.memory.worked_out import build_worked_out_block
+
+        worked_out = await asyncio.to_thread(
+            build_worked_out_block, person_id, user_message, session=session
+        )
         if standing_facts is None:
             standing_facts = await asyncio.to_thread(render_facts_for_prompt)
         messages = self._build_messages(
@@ -1924,6 +1950,7 @@ class Executive:
             working_style=working_style,
             standing_facts=standing_facts,
             lessons=lessons,
+            worked_out=worked_out,
         )
 
         # ----- Phase 1: drafting -----------------------------------------
@@ -2267,6 +2294,12 @@ class Executive:
             if not chat_replay.is_replay(session):
                 record_turn(own_text, final_response, session=session,
                             person_id=person_id, calls=turn_calls, mail=touched_mail)
+
+            # What it worked out — see stream_chat.
+            from openexecutive.memory.worked_out import schedule_worked_out_pass
+
+            schedule_worked_out_pass(final_response, turn_calls, session=session,
+                                     person_id=person_id, private=touched_mail)
 
         # Mirror the completed exchange into Honcho (see stream_chat for
         # rationale, and for why a turn private to the principal — or one

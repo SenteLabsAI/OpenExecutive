@@ -5318,6 +5318,27 @@ chat:
     iteration, fails open. Why: replies said "Done" or "I'll treat it as
     closed" with no tool call, and the brief kept the item.
     CLAIM_CHECK_ENABLED (default true).
+  worked_out: |
+    What it worked out (memory/worked_out.py). The Executive's own figures
+    ("Reserves held: $330,241, from the DCA statement"), kept per person with
+    source and date so a later turn about the same thing starts from them.
+    Why a separate store: a standing fact must be in the person's own words
+    (fact_tools quote gate), and a document's figure is not; mixing them
+    would let the Executive's inference read as something the person said.
+    Written by a post-turn pass (schedule_worked_out_pass) only after a turn
+    that read a number (a tool result) and answered with one: one forced
+    record_figures call on the notes model, results checked in code
+    (check_figure): every number in the figure is in the reply, the source
+    shares a word with what was read or the reply, and the lesson deny
+    patterns and non-Latin check refuse links, handles, markup, instruction
+    and approval talk. Same subject (stem key) replaces; 200 per person;
+    WORKED_OUT_MAX_PER_DAY passes (default 40); WORKED_OUT_ENABLED. Read back
+    by build_worked_out_block as a <worked_out> user-turn block, up to five
+    by shared words with the message, labelled data and "from before", only
+    on the person's own turn: never shared_chat, unattended, from_mcp_client
+    or from_host. A mail turn's figures are marked private and stay theirs.
+    GET / DELETE /memories/worked-out (api/routes/worked_out.py), the
+    caller's own only.
   chat_review: |
     Conversation review (memory/chat_review.py). The post-turn block keeps a
     verified speaker's turn (principal on a people_tools-verified surface, or
