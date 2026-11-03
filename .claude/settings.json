@@ -16,7 +16,18 @@
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git fetch origin:*)",
+      "Bash(git pull origin:*)",
+      "Bash(git merge origin/main)",
+      "Bash(git push -u origin claude/:*)",
+      "Bash(git checkout -b claude/:*)",
+      "Bash(git checkout claude/:*)",
+      "Bash(git switch claude/:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git remote -v)"
     ]
   },
   "hooks": {
