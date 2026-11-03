@@ -113,3 +113,26 @@ def test_a_turn_that_finishes_early_is_unchanged() -> None:
         for m in provider.calls[-1]["messages"] if isinstance(m["content"], list)
     )
     assert "unable to complete" not in _text(items)
+
+
+def test_a_claim_check_retry_on_the_last_round_is_told_tools_are_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _claim(*_a: Any, **_k: Any) -> str:
+        return "said the invoice was sent"
+
+    monkeypatch.setattr(
+        "openexecutive.orchestrator.executive.claim_check.unbacked_claim", _claim
+    )
+    provider = ScriptedProvider(
+        [
+            FinalMsg([TextBlock("I sent the invoice.")], "end_turn"),
+            FinalMsg([TextBlock("I couldn't send it here.")], "end_turn"),
+        ]
+    )
+    _run(provider, max_iterations=2)
+
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["tool_choice"] == {"type": "none"}
+    retry = provider.calls[1]["messages"][-1]["content"]
+    assert retry[-1] == {"type": "text", "text": LAST_ROUND_NOTE}

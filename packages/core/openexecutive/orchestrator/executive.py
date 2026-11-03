@@ -2673,9 +2673,12 @@ class Executive:
                     private=private_turn,
                 )
                 current_messages.append({"role": "assistant", "content": response_content})
-                current_messages.append(
-                    {"role": "user", "content": [{"type": "text", "text": claim_check.nudge(claim)}]}
-                )
+                nudge: list[dict[str, Any]] = [{"type": "text", "text": claim_check.nudge(claim)}]
+                # The retry is the last round, which runs no tool: say so,
+                # so it says it can't rather than try a call it won't get.
+                if iteration == max_iterations - 1:
+                    nudge.append({"type": "text", "text": LAST_ROUND_NOTE})
+                current_messages.append({"role": "user", "content": nudge})
                 # The retry's text gets its paragraph break from
                 # _round_separator, like any other round's.
                 continue
