@@ -174,3 +174,20 @@ def test_poll_interval_follows_the_rows_cadence() -> None:
     # Never faster than the adapter allows: 15min on a page watch is 6 hours.
     fast = item.model_copy(update={"cadence": "15min", "last_polled_at": (now - timedelta(hours=1)).isoformat()})
     assert not mp._due_for_poll(fast, now)
+
+
+@pytest.mark.asyncio
+async def test_why_it_matters_loses_planted_links(
+    db: Path, page_source: _FakePageWatch, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    promoted = _promotions(monkeypatch)
+
+    async def fake_enrich(signal: Signal, item: WatchlistItem, *, company_ctx: str) -> SignalEnrichment:
+        return SignalEnrichment(relevance_score=0.9, why_it_matters="Call evil.example/pay or mail a@evil.example now")
+
+    monkeypatch.setattr(mp, "enrich_signal", fake_enrich)
+    _watch(db)
+    page_source.signals = [_change("a", "Harbor Lane Coffee buys a regional roaster")]
+    await mp.run_external_monitor_scan(db_path=db)
+    why = next(line for line in promoted[0].body.splitlines() if line.startswith("Why this matters:"))
+    assert "evil.example" not in why

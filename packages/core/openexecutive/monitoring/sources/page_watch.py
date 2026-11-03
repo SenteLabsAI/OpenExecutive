@@ -40,7 +40,7 @@ import re
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -88,6 +88,9 @@ _HEADLINE_MIN_CHARS = 20
 _HEADLINE_MAX_CHARS = 200
 _MAX_LINKS_PER_PAGE = 300
 _MAX_NEW_LINKS = 10
+# Headlines sit near the top of a listing page; the link parse reads only
+# this much of the body, on top of the full-text reduction.
+_LINK_SCAN_BYTES = 512_000
 
 # <script>/<style>/<noscript> blocks: drop content, not just tags, so inline
 # JS/CSS never counts as "visible text". Removed by a linear scan
@@ -323,10 +326,17 @@ class _AnchorParser(HTMLParser):
 def extract_headline_links(body: bytes, base_url: str) -> list[dict[str, str]]:
     """The page's title-like links as ``[{"text", "url"}]``, in page order.
 
-    Absolute http(s) URLs only, fragment and query stripped, one entry per
-    URL. Best effort: a parse failure returns what was collected so far."""
+    Absolute http(s) URLs on the watched page's own site only (its
+    registrable domain), fragment and query stripped, one entry per URL: a
+    link to another site is not the page's news and is never put in front of
+    the person. Only the head of the body is parsed (``_LINK_SCAN_BYTES``).
+    Best effort: a parse failure returns what was collected so far."""
     try:
-        markup = body.decode("utf-8", errors="replace")
+        site = _bare_host(urlsplit(base_url).hostname)
+    except ValueError:
+        return []
+    try:
+        markup = body[:_LINK_SCAN_BYTES].decode("utf-8", errors="replace")
     except Exception:
         return []
     parser = _AnchorParser()
@@ -348,7 +358,9 @@ def extract_headline_links(body: bytes, base_url: str) -> list[dict[str, str]]:
             continue
         if parts.scheme not in ("http", "https") or not parts.netloc:
             continue
-        url = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        if not site or not _same_site(_bare_host(parts.hostname), site):
+            continue
+        url = urlunsplit((parts.scheme, parts.netloc, quote(parts.path, safe="/%:@!$&'()*+,;=-._~"), "", ""))
         if url in seen:
             continue
         seen.add(url)
@@ -356,6 +368,19 @@ def extract_headline_links(body: bytes, base_url: str) -> list[dict[str, str]]:
         if len(out) >= _MAX_LINKS_PER_PAGE:
             break
     return out
+
+
+def _bare_host(host: str | None) -> str:
+    host = (host or "").lower().rstrip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
+def _same_site(host: str, site: str) -> bool:
+    """``host`` is the watched site or a subdomain of it (or it of
+    ``host``): news.acme.example belongs to acme.example and back."""
+    if not host:
+        return False
+    return host == site or host.endswith("." + site) or site.endswith("." + host)
 
 
 def new_headline_links(

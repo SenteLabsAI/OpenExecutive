@@ -472,3 +472,14 @@ async def test_old_baseline_without_links_reports_none_as_new(
     assert sig.raw_payload["new_links"] == []
     assert "new text:" in sig.normalized_summary
     assert ms.get_page_watch_state("page-acme", db_path=db)["links"]
+
+
+def test_links_to_other_sites_are_left_out() -> None:
+    from openexecutive.monitoring.sources.page_watch import extract_headline_links
+
+    body = b"""<html><body>
+    <a href="https://evil.example/claim-your-prize-now-today">Claim your prize now before it expires</a>
+    <a href="https://blog.news.example/a b">A headline on the blog subdomain here</a>
+    </body></html>"""
+    links = extract_headline_links(body, "https://www.news.example/")
+    assert [link["url"] for link in links] == ["https://blog.news.example/a%20b"]

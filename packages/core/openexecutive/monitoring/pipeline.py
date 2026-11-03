@@ -252,6 +252,12 @@ def _grade_query_severity(
     return _cap_to_ceiling(graded, item)
 
 
+def _without_links(text: str) -> str:
+    from openexecutive.delegation.reminders import clean_text
+
+    return clean_text(text).replace("[link]", "").strip() if text else ""
+
+
 def _signal_to_alert_event(
     signal: Signal,
     item: WatchlistItem,
@@ -278,7 +284,9 @@ def _signal_to_alert_event(
     summary = collapse_whitespace(signal.normalized_summary)
     parts: list[str] = [summary]
     if enrichment:
-        why = collapse_whitespace(str(enrichment.get("why_it_matters") or ""))
+        # The model wrote this line after reading outside text: links and
+        # addresses go, so a planted one can't reach the card or a chat DM.
+        why = _without_links(collapse_whitespace(str(enrichment.get("why_it_matters") or "")))
         if why:
             parts.append(f"Why this matters: {why}")
     # Slug + severity hint are required by the triage prompt's
