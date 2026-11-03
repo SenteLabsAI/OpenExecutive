@@ -269,6 +269,9 @@ def _copy_old_decisions(conn: sqlite3.Connection) -> None:
             summary = _clean(d["summary"], STATEMENT_MAX)
             if not summary:
                 continue
+            # Kept as store_decision keeps one: the reason after the summary.
+            rationale = (d["rationale"] if "rationale" in keys else "") or ""
+            statement = _clean(f"{summary} {rationale}", STATEMENT_MAX)
             session = (d["session_id"] if "session_id" in keys else "") or ""
             prefix, sep, _ = session.partition(":")
             subject = _clean(summary.split(".")[0], SUBJECT_MAX) or f"Decision {d['id']}"
@@ -278,7 +281,7 @@ def _copy_old_decisions(conn: sqlite3.Connection) -> None:
                 "created_at, status, recorded_by_role, decision, department, outcome) "
                 "VALUES ('fact', ?, ?, ?, ?, ?, ?, ?, 'principal', 1, ?, ?)",
                 (
-                    subject, f"decision {d['id']}", summary,
+                    subject, f"decision {d['id']}", statement,
                     _COPIED_PREFIX + (prefix if from_channel else ""),
                     session or None, d["timestamp"], "proposed" if from_channel else "active",
                     (d["department"] if "department" in keys else "") or "",

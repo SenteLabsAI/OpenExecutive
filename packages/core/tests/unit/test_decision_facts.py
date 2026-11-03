@@ -56,12 +56,13 @@ def _remember(**payload: Any) -> dict[str, Any]:
 
 
 def _old_decision(db: Path, summary: str, *, days_ago: int, department: str = "", outcome: str = "",
-                  session_id: str = "") -> None:
+                  session_id: str = "", rationale: str = "") -> None:
     with sqlite3.connect(db) as conn:
         conn.execute(
-            "INSERT INTO decisions (timestamp, domain, summary, outcome, department, session_id) "
-            "VALUES (?, 'finance', ?, ?, ?, ?)",
-            ((datetime.now(UTC) - timedelta(days=days_ago)).isoformat(), summary, outcome, department, session_id),
+            "INSERT INTO decisions (timestamp, domain, summary, rationale, outcome, department, session_id) "
+            "VALUES (?, 'finance', ?, ?, ?, ?, ?)",
+            ((datetime.now(UTC) - timedelta(days=days_ago)).isoformat(), summary, rationale, outcome,
+             department, session_id),
         )
 
 
@@ -103,7 +104,8 @@ def test_an_edit_of_a_decision_stays_a_decision_with_its_outcome() -> None:
 
 
 def test_old_decisions_are_copied_in_once(db: Path) -> None:
-    _old_decision(db, "Slow hiring through Q3", days_ago=45, department="people", outcome="Held to plan.")
+    _old_decision(db, "Slow hiring through Q3.", days_ago=45, department="people", outcome="Held to plan.",
+                  rationale="Runway first.")
     _old_decision(db, "Slow hiring through Q3", days_ago=10, session_id="email:t9")
 
     facts.ensure_ready(db)
@@ -116,6 +118,7 @@ def test_old_decisions_are_copied_in_once(db: Path) -> None:
     assert len(rows) == 2, "copied once, and neither replaces the other"
     newest, oldest = rows
     assert oldest.department == "people" and oldest.outcome == "Held to plan."
+    assert oldest.statement == "Slow hiring through Q3. Runway first.", "the reason is kept"
     assert oldest.created_at[:10] == (datetime.now(UTC) - timedelta(days=45)).date().isoformat()
     rendered = facts.render_facts_for_prompt()
     assert "(decided) (via email)" in rendered
