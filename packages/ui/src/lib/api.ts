@@ -6796,3 +6796,44 @@ export async function forgetWorkedOut(id: number): Promise<void> {
   const res = await fetch(`${API_BASE}/memories/worked-out/${id}`, { method: "DELETE" });
   if (!res.ok && res.status !== 404) throw new Error("Couldn't remove it.");
 }
+
+// --- What it remembered lately (memory.changes) ----------------------------
+// The chat's "Memory updated" chip and the Memory page's "New since your last
+// visit". Only the caller's own; null for someone with none to see.
+
+export interface MemoryChange {
+  kind: "fact" | "decision" | "worked_out" | "lesson" | "note";
+  id: number;
+  title: string;
+  // Where a worked-out figure came from; "" for the other kinds.
+  source: string;
+  // "proposed" is a fact waiting for the owner's OK.
+  status: "active" | "proposed";
+  created_at: string;
+  can_undo: boolean;
+}
+
+export async function listMemoryChanges(since: string, sessionId?: string): Promise<MemoryChange[] | null> {
+  const params = new URLSearchParams({ since });
+  if (sessionId) params.set("session_id", sessionId);
+  const res = await fetch(`${API_BASE}/memories/changes?${params.toString()}`);
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw new Error("Couldn't load what it remembered.");
+  return ((await res.json()) as { changes: MemoryChange[] }).changes;
+}
+
+/** Take one change back, through the route its own list uses. */
+export async function undoMemoryChange(change: MemoryChange): Promise<void> {
+  switch (change.kind) {
+    case "fact":
+    case "decision":
+      await retireStandingFact(change.id, "undone right after it was kept");
+      return;
+    case "worked_out":
+      return forgetWorkedOut(change.id);
+    case "lesson":
+      return forgetReflectionLesson(change.id);
+    case "note":
+      return forgetHistoryNote(change.id);
+  }
+}

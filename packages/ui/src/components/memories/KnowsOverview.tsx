@@ -14,6 +14,7 @@ import {
   type WorkedOutFigure,
 } from "@/lib/api";
 import type { PulseData } from "./PulseHeader";
+import { NewSinceCard } from "./MemoryChanges";
 import { figureSourceLine } from "./WorkedOutTab";
 import { Skeleton, formatDate } from "./shared";
 
@@ -99,7 +100,7 @@ function factDetail(f: StandingFact): string {
   return `${kind} · ${formatDate(f.created_at)}${by}`;
 }
 
-export default function KnowsOverview({ pulse }: { pulse: PulseData }) {
+export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; lastVisit: string | null }) {
   const { data } = pulse;
   const [facts, setFacts] = useState<{ rows: StandingFact[]; toApprove: number } | null>(null);
   // undefined while loading; null when this viewer keeps none (the link goes).
@@ -156,6 +157,7 @@ export default function KnowsOverview({ pulse }: { pulse: PulseData }) {
 
   return (
     <div className="space-y-4">
+      <NewSinceCard since={lastVisit} />
       <div className="space-y-2">
         <AboutYouCard title="About you" description="Learned from talking with you. Remove any line that's wrong. Only you see this." />
         {notes !== null && notes !== undefined && (
