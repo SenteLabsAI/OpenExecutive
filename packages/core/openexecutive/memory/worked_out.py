@@ -18,7 +18,8 @@ later figure on the same subject replaces the earlier one.
 **Who reads them.** Each figure is its person's alone: read back only on
 their own turns, in a conversation nobody else reads, ranked against what
 they asked (``build_worked_out_block``, in the user turn, never a cached
-system block). A figure from a turn that touched their mailbox is marked
+system block). Both writing and reading need a turn that is theirs alone: a
+verified speaker in a private conversation, the History notes' rule. A figure from a turn that touched their mailbox is marked
 ``private``; it stays with them the same way. They see and remove their own
 under Memories (``GET`` / ``DELETE /memories/worked-out``).
 
@@ -306,20 +307,33 @@ def _line(fig: dict[str, Any]) -> str:
     return no_tags(f"{fig['subject']}: {fig['figure']} (from {fig['source']}, {when})")
 
 
+def _their_own_turn(session: Any, person_id: int) -> bool:
+    """Whether this turn is ``person_id``'s own, on a surface that verified
+    it is them, in a conversation nobody else reads: the History notes' rule
+    (``history_chat.verified_speaker`` and ``private_chat``), which already
+    refuses email, unattended runs, another app's turns and host pages.
+    Fails closed."""
+    try:
+        from openexecutive.memory.history_chat import private_chat, verified_speaker
+        from openexecutive.people.store import get_person
+
+        if getattr(session, "shared_chat", False) is True:
+            return False
+        person = get_person(person_id)
+        return verified_speaker(session, person) and private_chat(session)
+    except Exception:
+        logger.debug("worked_out: couldn't tell whose turn this is", exc_info=True)
+        return False
+
+
 def build_worked_out_block(person_id: int | None, message: str, *, session: Any,
                            db_path: Path | None = None) -> str:
     """Body of the ``<worked_out>`` block for this speaker's turn, or "".
-    Only on a turn that is theirs alone: never a shared chat, an unattended
-    run or another app's turn. Never raises."""
+    Only on a turn that is theirs alone (``_their_own_turn``). Never raises."""
     try:
         if not _enabled() or person_id is None or session is None:
             return ""
-        if (
-            getattr(session, "shared_chat", False) is True
-            or getattr(session, "unattended", False) is True
-            or getattr(session, "from_mcp_client", False) is True
-            or getattr(session, "from_host", False) is True
-        ):
+        if not _their_own_turn(session, person_id):
             return ""
         figs = [f for f in figures_for(person_id, message, db_path=db_path) if not _denied(_line(f))]
         if not figs:
@@ -462,6 +476,10 @@ def schedule_worked_out_pass(reply: str, calls: list[tuple[str, str]] | None, *,
         ):
             return
         if not eligible(reply, calls):
+            return
+        # Kept only from a turn that is theirs alone, so a forged From line
+        # or a shared thread can't write into someone's figures.
+        if not _their_own_turn(session, person_id):
             return
         snapshot = list(calls or [])
         session_id = str(getattr(session, "session_id", "") or "")

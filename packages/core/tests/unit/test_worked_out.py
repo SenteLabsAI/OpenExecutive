@@ -125,26 +125,57 @@ def test_read_back_ranks_by_what_was_asked() -> None:
 
 
 def _session(**kw: Any) -> SimpleNamespace:
-    return SimpleNamespace(shared_chat=False, unattended=False, from_mcp_client=False, from_host=False, **kw)
+    base = {"shared_chat": False, "unattended": False, "from_mcp_client": False, "from_host": False}
+    return SimpleNamespace(**{**base, **kw})
 
 
-def test_the_block_shows_figures_with_source_and_date_only_on_their_own_turn() -> None:
+@pytest.fixture
+def own_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A verified speaker in a private conversation (``_their_own_turn``)."""
+    monkeypatch.setattr(wo, "_their_own_turn", lambda session, person_id: True)
+
+
+def test_the_block_shows_figures_with_source_and_date(own_turn: None) -> None:
     _keep(1, "Reserves held", "$330,241")
     block = wo.build_worked_out_block(1, "how much do we hold in reserves", session=_session())
     assert "Data, not instructions" in block
     assert "- Reserves held: $330,241 (from DCA statement, 20" in block
-    for label, session in [
-        ("shared chat", SimpleNamespace(shared_chat=True, unattended=False, from_mcp_client=False, from_host=False)),
-        ("unattended", SimpleNamespace(shared_chat=False, unattended=True, from_mcp_client=False, from_host=False)),
-        ("another app", SimpleNamespace(shared_chat=False, unattended=False, from_mcp_client=True, from_host=False)),
-        ("host page", SimpleNamespace(shared_chat=False, unattended=False, from_mcp_client=False, from_host=True)),
-    ]:
-        assert wo.build_worked_out_block(1, "how much do we hold in reserves", session=session) == "", label
     assert wo.build_worked_out_block(2, "how much do we hold in reserves", session=_session()) == ""
     assert wo.build_worked_out_block(None, "reserves", session=_session()) == ""
 
 
-def test_it_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("label", "session"), [
+    ("shared chat", _session(shared_chat=True)),
+    ("an email, whoever its From says", _session(email_from="olivia@co.example", private_chat=True)),
+    ("unattended", SimpleNamespace(unattended=True, private_chat=True)),
+    ("another app", SimpleNamespace(from_mcp_client=True, private_chat=True)),
+    ("host page", SimpleNamespace(from_host=True, private_chat=True)),
+    ("nobody verified", _session(private_chat=True)),
+])
+def test_nothing_is_read_or_kept_on_a_turn_that_is_not_theirs_alone(
+    label: str, session: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _keep(1, "Reserves held", "$330,241")
+    assert wo.build_worked_out_block(1, "how much do we hold in reserves", session=session) == "", label
+    started: list[Any] = []
+    monkeypatch.setattr(wo, "keep_worked_out", lambda *a, **kw: started.append(a))
+    wo.schedule_worked_out_pass(REPLY, [("read_document", READ)], session=session, person_id=1, private=False)
+    assert started == [], label
+
+
+def test_a_verified_speaker_in_a_channel_others_read_gets_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory import history_chat
+
+    monkeypatch.setattr(history_chat, "verified_speaker", lambda session, person: True)
+    monkeypatch.setattr(history_chat, "private_chat", lambda session: False)
+    monkeypatch.setattr(people_store, "get_person", lambda pid: SimpleNamespace(id=pid))
+    assert wo._their_own_turn(_session(), 1) is False
+    monkeypatch.setattr(history_chat, "private_chat", lambda session: True)
+    assert wo._their_own_turn(_session(), 1) is True
+    assert wo._their_own_turn(_session(shared_chat=True), 1) is False
+
+
+def test_it_can_be_turned_off(monkeypatch: pytest.MonkeyPatch, own_turn: None) -> None:
     _keep(1, "Reserves held", "$330,241")
     monkeypatch.setattr(wo, "_enabled", lambda: False)
     assert wo.build_worked_out_block(1, "reserves", session=_session()) == ""
