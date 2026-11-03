@@ -65,8 +65,8 @@ Routes:
                                     words or a tone pill), rewritten like a
                                     reply card's change (same limit);
                                     returns the draft with changed_sentences
-                                    and a note. Both need a caller the API
-                                    knows is that person, never touch a draft
+                                    and a note. All three need a caller the
+                                    API knows is that person; the two writes never touch a draft
                                     changed in the mailbox, and send nothing
   PUT    /delegation/replies/{id}/text — {text}: change a reply's words
   PUT    /delegation/replies/{id}/recipients — {everyone}: the sender only,
@@ -1242,13 +1242,14 @@ def _draft_refused(refused: Any) -> HTTPException:
 @router.get("/delegation/drafts/{row_id}", response_model=ChatDraftOut)
 async def get_chat_draft(request: Request, row_id: int) -> ChatDraftOut:
     """A draft chat wrote as the caller, as its card shows it now
-    (``delegation.chat_draft_card.state``). Their own drafts only."""
+    (``delegation.chat_draft_card.state``). Their own drafts only, for a
+    caller the API can tie to them (it reads their own mail)."""
     from openexecutive.delegation.chat_draft_card import state
     from openexecutive.delegation.reply_send import SendRefused
 
     person = _caller(request)
     try:
-        return ChatDraftOut(**await state(person, row_id))
+        return ChatDraftOut(**await state(person, row_id, caller=api_caller.caller(request)))
     except SendRefused as refused:
         raise _draft_refused(refused) from None
 

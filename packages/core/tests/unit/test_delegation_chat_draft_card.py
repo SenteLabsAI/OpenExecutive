@@ -28,7 +28,7 @@ LATER = NOW + timedelta(minutes=5)
 
 
 def _state(owner: Any, row: int, mailbox: FakeInbox) -> dict[str, Any]:
-    return asyncio.run(chat_draft_card.state(owner, row, gmail=mailbox, now=LATER))
+    return asyncio.run(chat_draft_card.state(owner, row, caller=LOCAL, gmail=mailbox, now=LATER))
 
 
 def _refused(coro: Any) -> SendRefused:
@@ -98,7 +98,9 @@ def test_only_its_own_signed_person_changes_it(db: Path, owner: Any, monkeypatch
     monkeypatch.delenv("OE_LOCAL_LOGIN")
     refused = _refused(chat_draft_card.set_text(owner, row, "Mine", caller=LOCAL, gmail=mailbox, now=LATER))
     assert refused.code == "caller_signing_required"
-    assert _refused(chat_draft_card.state(owner, row + 99, gmail=mailbox)).code == "draft_not_found"
+    # Reading it needs the same provable caller: it is their own mail.
+    assert _refused(chat_draft_card.state(owner, row, caller=LOCAL, gmail=mailbox)).code == "caller_signing_required"
+    assert _refused(chat_draft_card.state(owner, row + 99, caller=LOCAL, gmail=mailbox)).code == "draft_not_found"
     assert "update:d1" not in mailbox.calls
 
 

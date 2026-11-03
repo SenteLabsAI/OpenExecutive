@@ -110,16 +110,22 @@ async def _read(row: Any, client: Any, now: datetime) -> dict[str, Any]:
     return _shown(row, draft)
 
 
-async def state(person: Any, row_id: int, *, gmail: Any = None, now: datetime | None = None) -> dict[str, Any]:
+async def state(
+    person: Any, row_id: int, *, caller: Any, gmail: Any = None, now: datetime | None = None,
+) -> dict[str, Any]:
     """The draft ``row_id`` as its card shows it: ``status`` (``OPEN``,
     ``CHANGED``, ``SENT``, ``REPLACED`` or ``GONE``), and while it waits as
     the card last saw it, who it goes to, its subject and its words, read
     from their mailbox. Raises ``SendRefused``. Changes nothing but marking
-    a draft found missing."""
+    a draft found missing. Like a change, only for a caller the API can tie
+    to the draft's person: it reads their own mail."""
     from openexecutive.audit import rows_for_person
+    from openexecutive.delegation.gmail import normalize_email
+    from openexecutive.delegation.reply_send import _check_caller
 
     row = _row(person, row_id)
     with rows_for_person(person.id):
+        _check_caller(caller, normalize_email(person.email))
         closed = _closed(row)
         if closed is not None:
             return closed
