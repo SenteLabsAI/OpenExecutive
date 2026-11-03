@@ -176,6 +176,15 @@ def _folder_missing(text: str) -> bool:
     return _failed(text) and bool(_MISSING_RE.search(text))
 
 
+# The refusal for a remembered folder the Executive can no longer reach: one
+# made in a Drive it no longer signs in to (the gateway can't read its owner).
+_UNREACHABLE = ("could not read who owns",)
+
+
+def _folder_unreachable(text: str) -> bool:
+    return any(marker in text for marker in _UNREACHABLE)
+
+
 def _why(text: str) -> str:
     """The error a failed call gave, short, for the model."""
     try:
@@ -262,9 +271,10 @@ async def _google(gateway: Any, data: bytes, name: str, mime: str, owner_id: int
         arguments["folder_id"], fresh = await _google_folder(gateway, account)
         made = await _call(gateway, "google_workspace__create_drive_file", arguments)
         created = None if _failed(made) else _CREATED_RE.search(made)
-        if created is not None or fresh or not _folder_missing(made):
+        if created is not None or fresh or not (_folder_missing(made) or _folder_unreachable(made)):
             break
-        # The remembered folder may be gone: make a new one, once.
+        # The remembered folder may be gone, or out of reach (one made in a
+        # Drive the Executive no longer signs in to): make a new one, once.
         saved_files.forget_folder(GOOGLE, account)
     if created is None:
         raise SaveFailed(f"Google Drive didn't take the file: {_why(made)}")

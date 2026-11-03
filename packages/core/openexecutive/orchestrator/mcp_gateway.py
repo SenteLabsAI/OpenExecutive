@@ -2860,6 +2860,27 @@ def _company_item(item: _DriveItem, exec_address: str, domains: frozenset[str]) 
     return True
 
 
+def _company_owned(item: _DriveItem, exec_address: str, domains: frozenset[str]) -> bool:
+    """Whether a Drive item belongs to the company, for writing into it:
+    owned by the Executive or someone on a company domain, or on a shared
+    drive one of whose organizers is. Who else it is shared with doesn't
+    matter here: the company's own folders are often shared with partners,
+    and the person asked for the change (``_company_item`` is the stricter
+    test used to decide whether a read brought in outside words)."""
+    def ours(address: str) -> bool:
+        return address == exec_address or address.rpartition("@")[2] in domains
+
+    # Open to anyone with the link, or a whole other domain: a file there is
+    # public, so nothing is written into it on the model's word alone.
+    if any(kind == "anyone" or (kind == "domain" and who not in domains) for kind, who, _ in item.permissions):
+        return False
+    if item.owner is not None:
+        return ours(item.owner)
+    return item.shared_drive and any(
+        role == "organizer" and kind == "user" and ours(who) for kind, who, role in item.permissions
+    )
+
+
 async def _google_company_items(
     session: Any, ids: Iterable[str], discover: _Discover | None = None,
 ) -> set[str]:
@@ -2943,16 +2964,16 @@ async def _check_google_file_write(
         if item is not None:
             if domains is None:
                 domains = _company_domains_with(exec_address)
-            if _company_item(item, exec_address, domains):
+            if _company_owned(item, exec_address, domains):
                 continue
         return _refuse(
             tool, "file_id", target[:60],
             reason=(
                 f"{tool} may only write to files and folders the Executive's own "
                 "Google account owns, or the company's own: owned by someone at the "
-                "company or on its shared drive, and not shared with anyone outside "
-                "it. This one is not — refusing. Save it to a new file in the "
-                "Executive's Drive and share that with the People who need it."
+                "company or on its shared drive. This one belongs to someone outside "
+                "it — refusing. Save it to a new file in the Executive's Drive and "
+                "share that with the People who need it."
                 + _GOOGLE_WRITE_CARD_HINT
             ),
         )

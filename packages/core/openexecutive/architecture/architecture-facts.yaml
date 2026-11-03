@@ -7158,17 +7158,15 @@ workflows:
     it, orchestrator/conversation_files.py: one folder per conversation named
     by a hash of its id, 7 days, 500 MB in all). ghostwrite_email files,
     run_python_job files (each result comes back with its file: handle) and
-    save_file (orchestrator/file_tools.py: into a Drive folder owned by the
-    Executive's account or a team member and shared only with those people -
-    the folder's get_drive_file_permissions answer must have exactly one ID
-    line, Type and Owners read at fixed offsets from it, since the name comes
-    first and may hold anything, and every Sharing Status entry must be a
-    User of the team; a folder an outsider owns is refused, and one shared
-    with an outsider, group, domain or by link (file_tools.folder_check lists
-    them) returns needs_card, so the save goes on a save_files approval card
-    that names who else can open it - the files are kept for the
-    conversation when the card is made and saved on the owner's tap, never on
-    their own; with no card on the turn it is refused; OneDrive uploads stay
+    save_file (orchestrator/file_tools.py: into a Drive folder the company owns -
+    the Executive's account or a team member; the folder's
+    get_drive_file_permissions answer must have exactly one ID line, Type and
+    Owners read at fixed offsets from it, since the name comes first and may
+    hold anything; a folder an outsider owns is refused, and one shared with
+    an outsider, group, domain or by link is saved into, the answer naming
+    them as also_open_to (file_tools.folder_check). The gateway's own Drive
+    write check (mcp_gateway._company_owned) likewise looks at who owns a
+    file or folder, not who else it is shared with;
     in its own drive and never overwrite a name). Opening a mail: file sets TurnDelegation.unchecked_mail, which
     mail_lock_holds honours, so a job printing the file cannot lift the hold;
     a job's results on such a turn are kept marked from mail
@@ -7182,13 +7180,19 @@ workflows:
     to the turn (turn_files.offer) and kept like web uploads; .ics and .eml
     are read as text. run_python_job
     (no network) and read_document (files on the machine only) moved to
-    MAIL_TOUCHED_ALLOWED_TOOLS with save_file, which after a mail or outside
-    read saves only when the speaker's own words this turn ask for file work.
+    MAIL_TOUCHED_ALLOWED_TOOLS with save_file, which saves whenever asked,
+    whatever words were used. read_document and save_file take files up to
+    100 MB (file_refs.READ_MAX_BYTES); drafts stay at what mail carries.
     Why - on 2026-10-30 an ask to split a signed LOI PDF from an email, file
     both halves in a Drive folder and attach them to a reply was refused five
     times: drafts took Drive files only, the mail read turned Python off,
     Python took only this message's uploads, and its results went nowhere but
     a download link.
+    Later, saving two split PDFs into a company folder shared with a partner
+    still failed for days: the save_files card's tap was refused again by the
+    gateway's sharing check, a one-word answer didn't count as asking, and
+    "my Drive" had nowhere to go. The owner asked for fewer protections, so
+    sharing no longer blocks a save and no file word is needed.
     Python jobs (workflows/python_job.py, run_python_job): Pyodide 314 in Deno,
     one process per job (asyncio.Semaphore(1)), deno run --no-prompt --quiet
     --no-remote --allow-read=<PYTHON_SANDBOX_DIR>,<worker>, env stripped to
@@ -10848,11 +10852,10 @@ delegation:
     orchestrator.mail_file_save) copies one attached file of the speaker's
     own mail into the storage the Executive has connected and shares it with
     them alone, returning {status saved | saved_not_shared | failed |
-    no_storage | too_large, name, where, link}. Only when they asked in their
-    own words this turn: own_words of speaker_text must hold one of
-    _SAVE_WORDS (save, saved, upload, onedrive, or drive after to/in/into/on/my/your/google), checked before
-    the slot (TurnDelegation.files_saved, SAVES_PER_TURN 10) and before the
-    mailbox is opened; else status not_asked. Bytes via
+    no_storage | too_large, name, where, link}. Whenever asked, in any words
+    (TurnDelegation.files_saved, SAVES_PER_TURN 10). A remembered folder the
+    Executive can no longer reach (made in a Drive it no longer signs in to)
+    is made again, once. Bytes via
     mailbox.attachment_bytes, never the model; any type, MAX_ATTACHMENT_BYTES
     (20 MB) checked on the listing and on the bytes; clean_name strips
     path/reserved/control characters and keeps the extension. Storage

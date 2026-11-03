@@ -145,11 +145,12 @@ async def _download(gateway: Any, account: str, file_id: str, index: int) -> tup
     return clean_name(name, index), clean_mime(mimes[-1] if mimes else ""), path
 
 
-async def fetch(file_ids: list[str], viewer: int | None) -> DriveFiles:
+async def fetch(file_ids: list[str], viewer: int | None, *, max_bytes: int | None = None) -> DriveFiles:
     """The bytes of ``file_ids`` (already ``valid_ids``), as the Executive's
     Google account, for ``viewer`` (``saved_files.viewer_person_id``).
     Raises ``AttachError`` when Drive isn't connected, a file is someone
-    else's saved file, or one can't be fetched."""
+    else's saved file, or one can't be fetched. ``max_bytes`` caps them
+    all together (default: what an email can carry)."""
     from openexecutive.delegation.gmail import FORWARD_MAX_BYTES
     from openexecutive.orchestrator.mail_file_save import _exec_account
     from openexecutive.orchestrator.mcp_gateway import (
@@ -163,17 +164,18 @@ async def fetch(file_ids: list[str], viewer: int | None) -> DriveFiles:
         raise AttachError("Google Drive isn't connected")
     _check_whose(file_ids, viewer)
     account = _exec_account()
+    cap = FORWARD_MAX_BYTES if max_bytes is None else max_bytes
     out = DriveFiles()
     total = 0
     for index, file_id in enumerate(file_ids, 1):
         declared = await _declared_size(gateway, account, file_id)
-        if len(out.files) >= MAX_FILES or (declared is not None and total + declared > FORWARD_MAX_BYTES):
+        if len(out.files) >= MAX_FILES or (declared is not None and total + declared > cap):
             out.skipped += 1
             continue
         name, mime, path = await _download(gateway, account, file_id, index)
         try:
             size = path.stat().st_size
-            if total + size > FORWARD_MAX_BYTES:
+            if total + size > cap:
                 out.skipped += 1
                 continue
             data = path.read_bytes()

@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 MAX_FILES = 15
 MAX_TOTAL_BYTES = 25 * 2**20
+# Files only read or saved here (read_document, save_file), never mailed.
+READ_MAX_BYTES = 100 * 2**20
 
 REF_HELP = (
     "A file is named by its handle: mail:<message_id>#<n> for the n-th "
@@ -253,7 +255,7 @@ async def resolve(
             add(await _mail_file(writer, ref))
         else:
             try:
-                fetched = await fetch([ref.value], viewer_person_id())
+                fetched = await fetch([ref.value], viewer_person_id(), max_bytes=max_bytes)
             except AttachError as exc:
                 raise RefError(f"{ref}: {exc}") from exc
             out.skipped += fetched.skipped

@@ -669,7 +669,7 @@ def test_drive_files_go_onto_a_new_draft(
 
     asked: list[tuple[list[str], int | None]] = []
 
-    async def fetch(ids: list[str], viewer: int | None) -> drive_attach.DriveFiles:
+    async def fetch(ids: list[str], viewer: int | None, **_kw: Any) -> drive_attach.DriveFiles:
         asked.append((ids, viewer))
         return drive_attach.DriveFiles(files=[("bill.pdf", "application/pdf", b"%PDF")], skipped=1)
 
@@ -691,7 +691,7 @@ def test_a_drive_file_that_cannot_be_fetched_makes_no_draft(
 ) -> None:
     from openexecutive.orchestrator import drive_attach
 
-    async def fetch(ids: list[str], viewer: int | None) -> drive_attach.DriveFiles:
+    async def fetch(ids: list[str], viewer: int | None, **_kw: Any) -> drive_attach.DriveFiles:
         raise drive_attach.AttachError("Google Drive isn't connected")
 
     monkeypatch.setattr(drive_attach, "fetch", fetch)
@@ -729,7 +729,7 @@ def test_files_chosen_after_an_outside_read_are_named_for_a_check(
     from openexecutive.orchestrator import drive_attach
     from openexecutive.orchestrator import outside_content as oc
 
-    async def fetch(ids: list[str], viewer: int | None) -> drive_attach.DriveFiles:
+    async def fetch(ids: list[str], viewer: int | None, **_kw: Any) -> drive_attach.DriveFiles:
         return drive_attach.DriveFiles(files=[("bill.pdf", "application/pdf", b"%PDF")])
 
     monkeypatch.setattr(drive_attach, "fetch", fetch)

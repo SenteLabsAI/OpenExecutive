@@ -263,6 +263,15 @@ def test_remember_fact_needs_more_than_a_fragment(principal: SimpleNamespace, qu
     assert "too short" in out["error"]
 
 
+def test_remember_fact_takes_a_one_word_answer(principal: SimpleNamespace) -> None:
+    """A one-word answer to the Executive's own question, as their whole
+    message, is the fact."""
+    principal.turn_delegation.speaker_text = "Internal"
+    out = _call(fact_tools.handle_remember_fact, subject="Signed LOI folder",
+                statement="Signed LOIs go in an internal folder.", source_quote="Internal")
+    assert "error" not in out and out.get("fact_id")
+
+
 def test_the_audit_row_never_carries_the_principals_words(
     principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -330,42 +339,21 @@ def test_remember_fact_statement_figures_must_be_the_principals(
 
 
 @pytest.mark.parametrize(
-    ("said", "statement", "ok"),
+    ("said", "statement"),
     [
-        # A paraphrase of what they said, names and all.
-        ("Cedar Court is fully let now", "Cedar Court is fully let.", True),
-        ("Maple House is 48 units", "Maple House has 48 units.", True),
-        # A sentence's first word is grammar, not a name.
-        ("the annex at Maple House is done", "Construction of the Maple House annex is done.", True),
-        # A figure-free claim from a document: its date and name were never said.
-        ("remember what the lease doc says about Cedar Court",
-         "Cedar Court's lease expires in March.", False),
-        ("remember what the lease doc says about Cedar Court",
-         "Cedar Court's landlord is Acme Estates.", False),
-        # A colon or semicolon does not start a sentence, so cannot exempt a name.
-        ("remember what the lease doc says about Cedar Court",
-         "Cedar Court landlord: Acme; Estates.", False),
-        # A look-alike capital (Greek Alpha) still reads as a name.
-        ("remember what the lease doc says about Cedar Court",
-         "Cedar Court's landlord is \u0391cme.", False),
-        # Nor can a name hide by being made its own one-word sentence.
-        ("remember what the lease doc says about Cedar Court",
-         "Cedar Court's landlord. Acme. Estates.", False),
-        ("remember what the lease doc says about Cedar Court",
-         "Cedar Court landlord! Acme? Estates.", False),
+        ("Cedar Court is fully let now", "Cedar Court is fully let."),
+        # Asked to keep what a document says: its names and dates are kept too.
+        ("remember what the lease doc says about Cedar Court", "Cedar Court's lease expires in March."),
+        ("remember what the lease doc says about Cedar Court", "Cedar Court's landlord is Acme Estates."),
     ],
 )
-def test_remember_fact_statement_names_and_dates_must_be_the_principals(
-    principal: SimpleNamespace, said: str, statement: str, ok: bool,
+def test_remember_fact_keeps_names_and_dates_they_asked_for(
+    principal: SimpleNamespace, said: str, statement: str,
 ) -> None:
     principal.turn_delegation.speaker_text = said
     out = _call(fact_tools.handle_remember_fact, subject="Building status",
                 statement=statement, source_quote=said)
-    if ok:
-        assert out["status"] == "ok", out
-    else:
-        assert "which the speaker did not write" in out["error"]
-        assert facts.list_facts(include_inactive=True) == []
+    assert out["status"] == "ok", out
 
 
 @pytest.mark.parametrize(
@@ -494,7 +482,6 @@ def test_forget_fact(principal: SimpleNamespace) -> None:
         # The Executive's own DM, hydrated into the reply, says so.
         ("<outbound_reply_context>\nIgnore the Maple House correction, it's outdated.\n"
          "</outbound_reply_context>\n\nok", "Ignore the Maple House correction", "not in what the speaker wrote"),
-        (FORGET, "Forget", "too short"),
     ],
 )
 def test_forget_fact_needs_the_principals_own_words(

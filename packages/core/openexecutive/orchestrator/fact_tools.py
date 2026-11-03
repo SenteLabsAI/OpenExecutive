@@ -346,7 +346,9 @@ class _Hold:
 
 
 # A quote this short could be found in almost any message ("48", "yes"), so
-# it would prove nothing about what the principal said.
+# it would prove nothing about what the principal said, unless it is their
+# whole message: a one-word answer ("Internal") to the Executive's own
+# question is the fact.
 _QUOTE_MIN_CHARS = 8
 _QUOTE_MIN_WORDS = 2
 
@@ -371,12 +373,13 @@ def _quote_error(quote: str, session: Any) -> str | None:
     if not quote:
         return "source_quote is required: the speaker's exact words from this message."
     nq = _normalize_for_quote_match(quote)
-    if len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS:
+    spoken = _own_words(session)
+    whole = spoken is not None and nq.strip(" .!?") == _normalize_for_quote_match(spoken).strip(" .!?")
+    if not whole and (len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS):
         return (
             "source_quote is too short to show what the speaker said: quote the "
             "whole phrase that states it."
         )
-    spoken = _own_words(session)
     if spoken is None:
         return (
             "refused: this message carries an attachment, and its text can't be told "
@@ -465,36 +468,6 @@ def _bare(word: str) -> str:
     return re.sub(r"['’]s$", "", word).strip("'’-")
 
 
-def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
-    """The names and date words in ``statement`` the principal did not write
-    this turn. A figure-free claim carried in from a document ("Cedar Court's
-    lease expires in March" after "remember what the lease doc says") names
-    something they never said; a paraphrase of what they did say does not.
-
-    A name is a capitalised word, or any word holding a non-ASCII letter (a
-    look-alike capital cannot hide one). Only the statement's very first word
-    is exempt, being capitalised by grammar (a date word never is): exempting
-    every sentence's first word would let a steered model split a document's
-    names into one-word sentences ("Cedar Court's landlord. Acme.").
-    A statement is one fact, so a second sentence gets no such allowance. A
-    name the model writes in lower case is not caught — the gate narrows
-    what a real quote can carry in, it does not prove a paraphrase."""
-    from openexecutive.memory.episodic import _normalize_for_quote_match
-
-    spoken = _normalize_for_quote_match(_own_words(session) or "")
-    said = {_bare(w) for w in _WORD.findall(spoken)}
-    missing: list[str] = []
-    for i, m in enumerate(_WORD.finditer(statement)):
-        bare = _bare(m.group(0))
-        key = bare.lower()
-        if not key or key in _GLUE or key in said:
-            continue
-        name_like = bare[0].isupper() or not bare.isascii()
-        if key in _DATE_WORDS or (name_like and i > 0):
-            missing.append(bare)
-    return missing
-
-
 def _claim_error(label: str, text: str, session: Any) -> str | None:
     """None when every figure, name and date word in ``text`` (a field
     ``remember_fact`` stores and renders) is the principal's own."""
@@ -506,14 +479,9 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
                 "(a document or someone else did) — ask them."
                 + (_PREVIOUS_HINT if label == "previous_value" else "")
             )
-    unsaid = _unsaid_claim_words(text, session)
-    if unsaid:
-        return (
-            f"the {label} names {', '.join(repr(w) for w in unsaid[:5])}, which the "
-            "speaker did not write this turn. Use their terms, or — if it came from "
-            "a document or someone else — ask them to confirm it."
-            + (_PREVIOUS_HINT if label == "previous_value" else "")
-        )
+    # Names and dates are not checked against their words: a short answer
+    # ("Internal") to the Executive's own question names nothing, and the
+    # statement must still name what it is about.
     return None
 
 

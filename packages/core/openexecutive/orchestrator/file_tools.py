@@ -10,19 +10,14 @@ the model chooses the file, the folder and the name:
 - **Who:** the principal (``content_trust.PRINCIPAL_ONLY_TOOLS``). The
   Executive's Drive is the company's.
 - **Where:** a folder of the Executive's own storage. On Google Drive one
-  that only the Executive and the team can see (``folder_check``): a
-  folder an outsider owns is refused, and one an outsider can open (shared
-  with them, a group, a domain or by link) is saved into only on the
-  person's tap, on an approval card that names who else can open it
-  (``action_cards`` ``save_files``), so nothing asked for in a document
-  lands where an outsider can read it unseen. On OneDrive any folder of its own drive, whose upload
-  path can't reach another drive; a name already there gets " (2)". Or,
-  with ``folder`` ``documents``, the company's Documents (the Knowledge
-  page's uploads, ``_documents``), indexed like an upload.
-- **When:** whenever the person asks. A turn that read their mail or anything
-  from outside the team still saves, but only when their own words this turn
-  ask for file work (``asked_for_file_work``), so text in a document can't
-  make it move their files.
+  the company owns (``folder_check``): a folder someone outside the company
+  owns is refused; one the company shares with partners is saved into, and
+  the answer names who else can open it (``also_open_to``). With ``root``,
+  the top of the Executive's own Drive. On OneDrive any folder of its own
+  drive, whose upload path can't reach another drive; a name already there
+  gets " (2)". Or, with ``folder`` ``documents``, the company's Documents
+  (the Knowledge page's uploads, ``_documents``), indexed like an upload.
+- **When:** whenever the person asks.
 
 The calls go through the gateway like any other (``mcp_gateway.code_built_call``),
 so its gates (the acting account, writes kept to the Executive's own drives)
@@ -45,14 +40,6 @@ _FOLDER_MIME = "application/vnd.google-apps.folder"
 _GOOGLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 _ONEDRIVE_ID_RE = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9!._-]{1,200}$")
 _EMAIL_IN_RE = re.compile(r"\(([^()\s]+@[^()\s]+)\)")
-_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
-# Words that ask for file work, in the person's own message.
-_FILE_WORDS = frozenset({
-    "attach", "attached", "attaching", "attachment", "attachments",
-    "copy", "drive", "drop", "file", "files", "folder", "folders", "move",
-    "onedrive", "put", "rename", "save", "saved", "separate", "separated",
-    "seperate", "seperated", "split", "store", "upload", "uploaded",
-})
 
 SAVE_FILE_TOOL: dict[str, Any] = {
     "name": SAVE_FILE,
@@ -93,39 +80,6 @@ def _error(message: str, **extra: Any) -> str:
     return json.dumps({"error": message, **extra})
 
 
-def asked_for_file_work() -> bool:
-    """Whether the speaker's own words this turn (``own_words``: no quoted
-    backstory, no attached file's text) ask to save, move, attach or split a
-    file. Fails closed."""
-    from openexecutive.delegation.settings import own_words, turn_delegation
-    from openexecutive.orchestrator.schedule_tools import current_session
-
-    try:
-        pinned = turn_delegation(current_session.get())
-        typed = own_words(getattr(pinned, "speaker_text", "") or "")
-    except Exception:
-        return False
-    words = {w.lower() for w in _WORD_RE.findall(typed or "")}
-    return bool(words & _FILE_WORDS)
-
-
-def _read_something_outside() -> bool:
-    """Whether this turn read the owner's mail or anything from outside the
-    team. Fails closed."""
-    from openexecutive.delegation.settings import turn_delegation
-    from openexecutive.orchestrator import outside_content
-    from openexecutive.orchestrator.schedule_tools import current_session
-
-    try:
-        pinned = turn_delegation(current_session.get())
-        return (
-            bool(getattr(pinned, "read_mail", False) or getattr(pinned, "unchecked_mail", False))
-            or outside_content.read_outside()
-        )
-    except Exception:
-        return True
-
-
 def _named(raw: Any, fallback: str) -> str:
     """The name to save under: the one asked for, cleaned, keeping the file's
     own extension when the asked-for name has none."""
@@ -154,14 +108,9 @@ def _team_emails() -> set[str]:
 SHARED_OUTSIDE = "That folder is shared with someone outside the team, so I don't save into it"
 
 
-class SharedOutside(Exception):
-    """A team folder that people outside the team can open: saved into only
-    on the person's tap (``action_cards`` ``save_files``). ``outside`` says
-    who, as Drive lists them."""
-
-    def __init__(self, outside: list[str]) -> None:
-        super().__init__(SHARED_OUTSIDE)
-        self.outside = outside
+# How the folder's permissions name anyone with the link, and a whole domain.
+ANYONE_WITH_LINK = "Anyone with the link"
+WHOLE_DOMAIN = "Everyone at "
 
 
 def _viewer(entry: str) -> str:
@@ -172,7 +121,7 @@ def _viewer(entry: str) -> str:
         return entry.split(" (", 1)[0].strip()[:80]
     who = rest.split(" ", 1)[0].strip()
     if kind == "Domain":
-        return f"Everyone at {who}"[:80]
+        return f"{WHOLE_DOMAIN}{who}"[:80]
     if kind == "Group":
         return f"{who} (group)"[:80]
     return who[:80]
@@ -188,8 +137,7 @@ def folder_check(info: str, folder: str, account: str, team: set[str]) -> tuple[
     and owners are the fixed lines right after it. A folder an outsider owns
     is refused. Every permission that isn't the Executive or the team (an
     outsider, a group, a domain, a link, someone else's shared drive's
-    members) is listed: such a folder is saved into only on the person's tap
-    (``SharedOutside``). The lines after the permissions can only add
+    members) is listed, and the save says who else can open it. The lines after the permissions can only add
     entries, which can only add to that list."""
     lines = info.splitlines()
     marks = [i for i, line in enumerate(lines) if line.strip() == f"ID: {folder}"]
@@ -239,11 +187,11 @@ def folder_refusal(info: str, folder: str, account: str, team: set[str]) -> str 
 async def _google(
     gateway: Any, item: Any, folder: str, name: str, *, tapped: bool = False, shown: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Save ``item`` into ``folder`` of the Executive's Google Drive.
-    ``tapped``: the person approved this save on a card that showed
-    ``shown`` as who else can open the folder, so it is saved into unless
-    someone not on that list can open it now; untapped, a folder people
-    outside the team can open raises ``SharedOutside``."""
+    """Save ``item`` into ``folder`` of the Executive's Google Drive. A
+    folder the company owns is saved into whoever else it is shared with
+    (the answer names them, ``also_open_to``); one someone outside the
+    company owns is refused. ``tapped`` and ``shown`` are kept for cards
+    left before saves stopped waiting on a tap; they change nothing."""
     from openexecutive.orchestrator.drive_attach import INFO_TOOL
     from openexecutive.orchestrator.mail_file_save import (
         _CREATED_RE,
@@ -255,6 +203,7 @@ async def _google(
     )
 
     account = _exec_account()
+    outside: list[str] = []
     if folder != "root":
         if not _GOOGLE_ID_RE.fullmatch(folder):
             raise SaveFailed("That isn't a Google Drive folder id.")
@@ -264,12 +213,11 @@ async def _google(
         refused, outside = folder_check(info, folder, account, _team_emails())
         if refused is not None:
             raise SaveFailed(refused + ".")
-        if outside and not tapped:
-            raise SharedOutside(outside)
-        added = [who for who in outside if who not in (shown or [])]
-        if tapped and added:
+        public = [who for who in outside if who == ANYONE_WITH_LINK or who.startswith(WHOLE_DOMAIN)]
+        if public:
             raise SaveFailed(
-                f"That folder is now also open to {', '.join(added[:5])}, which the card didn't show. Ask again."
+                f"That folder is open to {public[0].lower() if public[0].startswith('Anyone') else public[0]}, "
+                "so I don't save into it. Pick a folder shared with named people, or change its sharing."
             )
     made = await _call(gateway, "google_workspace__create_drive_file", {
         "user_google_email": account,
@@ -286,7 +234,10 @@ async def _google(
     link = created.group("link")
     if not link.startswith(("https://drive.google.com/", "https://docs.google.com/")):
         link = f"https://drive.google.com/file/d/{file_id}/view"
-    return {"file_id": file_id, "link": link, "where": "Google Drive"}
+    saved: dict[str, Any] = {"file_id": file_id, "link": link, "where": "Google Drive"}
+    if outside:
+        saved["also_open_to"] = outside[:10]
+    return saved
 
 
 async def _onedrive_names(gateway: Any, drive_id: str, folder: str) -> set[str]:
@@ -392,19 +343,11 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
     if not folder:
         return _error("Pass `folder`: the folder's id from your Drive tools, or root.")
     try:
-        files = await file_refs.resolve([tool_input.get("file")])
+        files = await file_refs.resolve([tool_input.get("file")], max_bytes=file_refs.READ_MAX_BYTES)
     except file_refs.RefError as exc:
         return _error(str(exc))
     if not files.items:
         return _error("That file is too large to save.")
-    # After resolving: a mail file, or one made from mail, marks the turn
-    # as a mail read, which this then sees.
-    if _read_something_outside() and not asked_for_file_work():
-        return _error(
-            "Save a file only when they ask for it in their own words; they haven't "
-            "asked for file work in this message. Do not retry until they do.",
-            status="not_asked",
-        )
     item = files.items[0]
     name = _named(tool_input.get("name"), item.name)
     gateway = await ensure_active_gateway()
@@ -429,8 +372,6 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
                 saved = await _microsoft(gateway, item, folder, name)
     except save.NoStorage:
         return json.dumps({"status": "no_storage", "detail": "Your OneDrive couldn't be reached."})
-    except SharedOutside as exc:
-        return _shared_outside(name, exc.outside)
     except save.SaveFailed as exc:
         return json.dumps({"status": "failed", "detail": f"Couldn't save {name}. {exc.detail}"})
     try:
@@ -448,35 +389,7 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
         "where": saved["where"],
         "link": saved["link"],
         "detail": "Saved. Give them the link." if saved["link"] else f"Saved to {saved['where']}.",
-    })
-
-
-def _card_offered() -> bool:
-    """Whether this turn can leave an approval card (``propose_actions``)."""
-    from openexecutive.orchestrator.action_card_tools import PROPOSE_ACTIONS
-    from openexecutive.orchestrator.delegation_tools import _writer
-
-    try:
-        return not isinstance(_writer(PROPOSE_ACTIONS), str)
-    except Exception:
-        return False
-
-
-def _shared_outside(name: str, outside: list[str]) -> str:
-    """A folder people outside the team can open: the save goes on a card
-    for the person to approve, or is refused when no card can be left."""
-    if not _card_offered():
-        return json.dumps({"status": "failed", "detail": f"Couldn't save {name}. {SHARED_OUTSIDE}."})
-    return json.dumps({
-        "status": "needs_card",
-        "shared_with": outside[:10],
-        "detail": (
-            "That folder is shared with people outside the team, so this save waits for their "
-            "tap. Put every file for this folder on one approval card: propose_actions with kind "
-            "save_files, the folder's id as folder, and files (each file's handle as file and "
-            "the name to save under as name). Nothing is saved until they approve; tell them the "
-            "card is waiting."
-        ),
+        **({"also_open_to": saved["also_open_to"]} if saved.get("also_open_to") else {}),
     })
 
 
