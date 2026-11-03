@@ -75,6 +75,9 @@ PROMPT_MAX_CHARS = 6000
 # With a question: every fact that bears on it, then at most this many of the
 # newest others, so a long list doesn't crowd out the ones that matter.
 PROMPT_UNMATCHED_FACTS = 10
+# How many of the newest active facts a question is ranked over, before
+# ``max_facts`` applies, so an older fact that matches can still come.
+RANK_POOL_FACTS = 1000
 # A fact older than this shows its date, so the reader knows to check it.
 STALE_AFTER_DAYS = 30
 
@@ -640,14 +643,15 @@ def render_facts_for_prompt(
     rows = _read_only_rows(
         "SELECT * FROM facts WHERE status='active' AND kind!='profile' "
         "ORDER BY created_at DESC, id DESC LIMIT ?",
-        (max(1, max_facts),),
+        (max(1, max_facts) if query is None else max(max_facts, RANK_POOL_FACTS),),
         db_path,
     )
     if not rows:
         return ""
     header = FACTS_BLOCK_HEADER
     if query is not None:
-        rows = _rank_for(rows, query)
+        # Rank the whole pool, then cap: the fact that matters may be old.
+        rows = _rank_for(rows, query)[: max(1, max_facts)]
         header = FACTS_BLOCK_HEADER_RANKED
     now = datetime.now(UTC)
     lines = [header]

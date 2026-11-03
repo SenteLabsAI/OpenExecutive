@@ -839,6 +839,15 @@ def test_with_a_question_the_facts_that_bear_on_it_come_first(monkeypatch: pytes
     assert facts.render_facts_for_prompt().count("[fact ") == 5
 
 
+def test_an_old_fact_past_the_cap_still_comes_when_it_matches() -> None:
+    facts.record_fact(subject="Q3 churn target", statement="Our Q3 churn target is 4%.", source_quote="q")
+    for n in range(6):
+        facts.record_fact(subject=f"Office {n}", statement=f"Office {n} opens at nine.", source_quote="q")
+    out = facts.render_facts_for_prompt(query="What is our Q3 churn target?", max_facts=3)
+    assert "Q3 churn target is 4%" in out.splitlines()[1] and out.count("[fact ") == 3
+    assert "churn" not in facts.render_facts_for_prompt(max_facts=3)
+
+
 def test_only_a_fact_over_30_days_old_shows_its_date(db: Path) -> None:
     fresh, _ = facts.record_fact(subject="Units", statement="Maple House has 48 units.", source_quote="q")
     old, _ = facts.record_fact(subject="Leases", statement="Cedar Court renews in May.", source_quote="q")
