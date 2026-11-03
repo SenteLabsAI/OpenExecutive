@@ -36,6 +36,9 @@ MESSAGE = (
 )
 # Notices being sent now, held so nothing collects one before it ends.
 _tasks: set[asyncio.Task[bool]] = set()
+# Addresses already cleared since this process started, so a healthy status
+# check doesn't touch the database every time.
+_clear_known: set[str] = set()
 
 
 def _db(db_path: Path | None) -> Path:
@@ -138,10 +141,13 @@ async def note(
         if not email:
             return False
         if status == "connected":
-            await asyncio.to_thread(_clear, email, db_path)
+            if email not in _clear_known:
+                await asyncio.to_thread(_clear, email, db_path)
+                _clear_known.add(email)
             return False
         if status != "needs_reconnect":
             return False
+        _clear_known.discard(email)
         if not await asyncio.to_thread(_claim, email, now or datetime.now(UTC), db_path):
             return False
         await _send(email, db_path)
