@@ -519,10 +519,13 @@ def _noted(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
-def test_a_sent_reply_is_not_noted_unless_they_turned_it_on(
+def test_a_sent_reply_is_not_noted_once_they_turned_it_off(
     owner: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from openexecutive.memory.history import set_person_settings
+
     calls = _noted(monkeypatch)
+    set_person_settings(owner.id, by="test", reply_notes=False)
     mailbox, card = _card(owner)
     _send(card, mailbox, owner)
     assert calls == []
