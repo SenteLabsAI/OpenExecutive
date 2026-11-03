@@ -737,6 +737,37 @@ def _turn_speaker_id(session: Any) -> int | None:
     return speaker if isinstance(speaker, int) and not isinstance(speaker, bool) else None
 
 
+def _speakers_own_ref(session: Any, channel: str, channel_ref: str) -> bool:
+    """Whether ``channel_ref`` is the turn's speaker's own address on
+    ``channel`` (their People email, Slack, Discord or Telegram id). A
+    follow-up to yourself is allowed from any surface, so "check my inbox at
+    5 and tell me" works from a chat app that seeds no addresses (Google
+    Chat). Fails closed."""
+    speaker = _turn_speaker_id(session)
+    if speaker is None or not channel_ref:
+        return False
+    try:
+        from openexecutive.people.store import get_person
+
+        person = get_person(speaker)
+    except Exception:
+        logger.warning("schedule: couldn't read the speaker", exc_info=True)
+        return False
+    if person is None or getattr(person, "archived", False):
+        return False
+    own = {
+        "email": getattr(person, "email", None),
+        "slack_dm": getattr(person, "slack_user_id", None),
+        "discord_dm": getattr(person, "discord_user_id", None),
+        "telegram": getattr(person, "telegram_chat_id", None),
+    }.get(channel)
+    if not own:
+        return False
+    if channel == "email":
+        return str(own).strip().lower() == channel_ref.strip().lower()
+    return str(own) == channel_ref
+
+
 def _is_principal_recipient(
     channel: str, channel_ref: str, assigned_to_person_id: int | None
 ) -> bool:
@@ -832,12 +863,12 @@ async def handle_schedule_followup(tool_input: dict[str, Any]) -> str:
     seen: set[tuple[str, str]] | None = (
         getattr(session, "seen_channel_refs", None) if session is not None else None
     )
-    if seen is not None and (channel, channel_ref) not in seen:
+    if seen is not None and (channel, channel_ref) not in seen and not _speakers_own_ref(session, channel, channel_ref):
         return json.dumps({
             "error": (
                 f"channel_ref {channel_ref!r} on channel {channel!r} was not seen in this "
                 f"session — refusing to schedule. Only schedule follow-ups to channels the "
-                f"user has actually used."
+                f"user has actually used, or to the speaker's own address."
             ),
         })
 
@@ -2613,7 +2644,7 @@ async def handle_suggest_workflow(tool_input: dict[str, Any]) -> str:
     seen: set[tuple[str, str]] | None = (
         getattr(session, "seen_channel_refs", None) if session is not None else None
     )
-    if seen is not None and (channel, channel_ref) not in seen:
+    if seen is not None and (channel, channel_ref) not in seen and not _speakers_own_ref(session, channel, channel_ref):
         return json.dumps({
             "error": (
                 f"channel_ref {channel_ref!r} on channel {channel!r} was not seen in this "

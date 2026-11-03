@@ -156,3 +156,27 @@ def test_rejects_when_pending_cap_exceeded(
         }
     )
     assert "too many pending" in second["error"]
+
+
+def test_a_follow_up_to_the_speakers_own_address_needs_no_seen_ref(
+    isolated_db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A chat app that seeds no addresses (Google Chat): "check my inbox at 5
+    # and tell me" goes to the speaker's own email.
+    from openexecutive.people import registry as people_registry
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "DB_PATH", isolated_db)
+    people_store.initialize_db(isolated_db)
+    people_registry.invalidate()
+    me = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
+    s = Session(caller_person_id=me)
+    token = current_session.set(s)
+    try:
+        own = _call({"run_at": _future_iso(), "channel": "email", "channel_ref": "Olivia@co.example", "intent": "x"})
+        assert own["status"] == "scheduled"
+        other = _call({"run_at": _future_iso(), "channel": "email", "channel_ref": "eve@x.example", "intent": "x"})
+        assert "not seen in this session" in other["error"]
+    finally:
+        current_session.reset(token)
+        people_registry.invalidate()
