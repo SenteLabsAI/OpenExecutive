@@ -1127,6 +1127,17 @@ def _emit_cache_event(
     )
 
 
+# Added after the tool results of the round before the last. The last round
+# is offered no tool (tool_choice none), so this is the turn's chance to
+# answer from what it has rather than run out of steps mid-task.
+LAST_ROUND_NOTE = (
+    "This is your last step for this message: no more tools can run. Write "
+    "your answer now from what you have gathered so far. If part of the "
+    "request is still undone, say briefly what is left, and that you can "
+    "carry on if they ask."
+)
+
+
 def _round_separator(tail: str, text: str) -> str:
     """What goes between the text already streamed (its last characters,
     ``tail``) and a new round's first ``text``: a paragraph break, less what
@@ -2538,6 +2549,12 @@ class Executive:
                 system=system_blocks,  # type: ignore[arg-type]
                 tools=tools_with_cache,  # type: ignore[arg-type,list-item]
                 messages=current_messages,  # type: ignore[arg-type]
+                # The last round runs no tool, so a turn that used up its
+                # steps still answers from what it gathered instead of
+                # ending on "unable to complete". The tools and system
+                # blocks stay cached; the messages are read uncached this
+                # once, as tool_choice changes. Only a turn at its cap pays it.
+                **({"tool_choice": {"type": "none"}} if iteration == max_iterations else {}),
             ) as stream:
                 async for event in stream:
                     if (
@@ -2658,9 +2675,12 @@ class Executive:
                     private=private_turn,
                 )
                 current_messages.append({"role": "assistant", "content": response_content})
-                current_messages.append(
-                    {"role": "user", "content": [{"type": "text", "text": claim_check.nudge(claim)}]}
-                )
+                nudge: list[dict[str, Any]] = [{"type": "text", "text": claim_check.nudge(claim)}]
+                # The retry is the last round, which runs no tool: say so,
+                # so it says it can't rather than try a call it won't get.
+                if iteration == max_iterations - 1:
+                    nudge.append({"type": "text", "text": LAST_ROUND_NOTE})
+                current_messages.append({"role": "user", "content": nudge})
                 # The retry's text gets its paragraph break from
                 # _round_separator, like any other round's.
                 continue
@@ -3851,6 +3871,8 @@ class Executive:
                 tool_results.append({"type": "text", "text": HAND_OVER_NOTE})
                 handing_over = True
                 yield {"type": "handing_over"}
+            if iteration == max_iterations - 1 and not handing_over:
+                tool_results.append({"type": "text", "text": LAST_ROUND_NOTE})
             current_messages.append({"role": "user", "content": tool_results})
             # Bounded to the messages this loop appended: current_messages
             # is a shallow copy, so anything at a lower index is still owned
