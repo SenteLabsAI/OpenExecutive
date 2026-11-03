@@ -126,7 +126,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "list_saved_tools": (COVERED, "every action step's script lists them"),
     "open_tools": (COVERED, "a step names its tools up front"),
     "use_tool": (COVERED, "a step names its tools up front"),
-    "plan_steps": (COVERED, "a workflow's steps are its plan"),
+    "show_progress": (COVERED, "a workflow shows its own steps"),
     # CHAT_ONLY: needs the person (module docstring).
     "remember_fact": (CHAT_ONLY, "changes what the Executive takes as fact"),
     "forget_fact": (CHAT_ONLY, "changes what the Executive takes as fact"),
@@ -165,7 +165,7 @@ MAX_DEPTH = 3
 def chat_tool_definitions() -> dict[str, dict[str, Any]]:
     """Every tool the chat can offer, by name (definitions as chat offers
     them; web search is the model's server tool and has none here)."""
-    from openexecutive.orchestrator import tool_groups, turn_plan
+    from openexecutive.orchestrator import tool_groups, turn_progress
     from openexecutive.orchestrator.chat_search_tools import CHAT_SEARCH_TOOLS
     from openexecutive.orchestrator.delegation_tools import DELEGATION_TOOLS
     from openexecutive.orchestrator.executive import _offered_skill_tools
@@ -179,7 +179,7 @@ def chat_tool_definitions() -> dict[str, dict[str, Any]]:
         *SPECIALIST_TOOLS, *_offered_skill_tools(), *MCP_TOOLS, *DELEGATION_TOOLS,
         *HISTORY_TOOLS, *CHAT_SEARCH_TOOLS, *KNOWLEDGE_TOOLS, tool_groups.USE_TOOL_TOOL,
         {"name": tool_groups.OPEN_TOOLS},
-        {"name": turn_plan.PLAN_STEPS},
+        {"name": turn_progress.SHOW_PROGRESS},
         {"name": step_script.RUN_SCRIPT_TOOL}, {"name": step_script.LIST_SAVED_TOOLS_TOOL},
     ]
     return {str(t["name"]): t for t in tools}
