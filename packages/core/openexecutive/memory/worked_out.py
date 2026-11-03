@@ -443,11 +443,13 @@ async def keep_worked_out(person_id: int, reply: str, calls: list[tuple[str, str
         from openexecutive.config import get_settings
 
         today = _now().date()
-        if not take_pass(person_id, today.isoformat(), int(get_settings().worked_out_max_per_day),
-                         db_path=db_path):
+        # Off the event loop: both open SQLite, and take_pass waits on a write lock.
+        if not await asyncio.to_thread(take_pass, person_id, today.isoformat(),
+                                       int(get_settings().worked_out_max_per_day), db_path=db_path):
             return []
         figures = await take_figures(reply, calls, today=today, model=model)
-        ids = add_figures(person_id, figures, session_id=session_id, private=private, db_path=db_path)
+        ids = await asyncio.to_thread(add_figures, person_id, figures, session_id=session_id,
+                                      private=private, db_path=db_path)
     except Exception:
         logger.warning("worked_out: keeping figures failed", exc_info=True)
         return []
