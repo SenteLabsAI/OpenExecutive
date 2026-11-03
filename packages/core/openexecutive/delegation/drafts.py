@@ -416,6 +416,41 @@ def latest_waiting(person_id: int, since: datetime, *, db_path: Path | None = No
     return waiting[0][0] if waiting else None
 
 
+def set_version(row_id: int, old: str, new: str, *, db_path: Path | None = None) -> bool:
+    """The chat draft ``row_id`` was rewritten from its card on the person's
+    tap: it is now the version ``new`` (Gmail's message id for the edited
+    draft, or Outlook's change key), so Send under the chat sends it. Only
+    while it is still ``old`` and waiting (compare-and-set); False otherwise."""
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET message_id = ? "  # noqa: S608 — constant table name
+            "WHERE id = ? AND message_id = ? AND gone_at IS NULL AND sent_message_id IS NULL",
+            (new, row_id, old),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def has_newer_in_session(row_id: int, *, db_path: Path | None = None) -> bool:
+    """Whether a later chat draft was written by the same person in the same
+    conversation as ``row_id``: the newer version that replaced it."""
+    conn = _connect(db_path)
+    try:
+        found = conn.execute(
+            f"SELECT 1 FROM {DRAFTS_TABLE} AS newer JOIN {DRAFTS_TABLE} AS old "  # noqa: S608 — constant table name
+            "ON newer.person_id = old.person_id AND newer.session_id = old.session_id "
+            "WHERE old.id = ? AND old.session_id IS NOT NULL AND newer.id > old.id "
+            "AND newer.source = ? LIMIT 1",
+            (row_id, SOURCE_CHAT),
+        ).fetchone()
+    finally:
+        conn.close()
+    return found is not None
+
+
 def mark_gone(row_id: int, now: datetime, *, db_path: Path | None = None) -> None:
     """A chat draft is no longer in the person's Drafts (sent or deleted)."""
     conn = _connect(db_path)

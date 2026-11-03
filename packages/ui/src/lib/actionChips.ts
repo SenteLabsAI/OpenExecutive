@@ -69,3 +69,22 @@ export function opensDetails(group: ChipGroup): boolean {
   const run = group.runs[0];
   return !!run && !run.link && !!run.target && isConnectedTool(group.tool);
 }
+
+interface DraftChip {
+  draft?: { row?: unknown; replaces?: unknown } | null;
+}
+
+/** `actions` without the draft chips a later draft in the same reply
+ * replaced: the Executive wrote the email again before it answered, and only
+ * the version in your Drafts gets a chip and a card. The backend drops them
+ * from a saved reply too (orchestrator/action_chips.py `drop_replaced`); this
+ * covers the reply while it streams. */
+export function dropReplaced<T extends DraftChip>(actions: T[]): T[] {
+  const gone = new Set<number>();
+  for (const a of actions) {
+    const replaces = a.draft?.replaces;
+    if (Array.isArray(replaces)) for (const r of replaces) if (typeof r === "number") gone.add(r);
+  }
+  if (gone.size === 0) return actions;
+  return actions.filter((a) => !(typeof a.draft?.row === "number" && gone.has(a.draft.row)));
+}

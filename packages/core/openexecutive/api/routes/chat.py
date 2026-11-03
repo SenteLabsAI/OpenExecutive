@@ -29,6 +29,7 @@ from openexecutive.audit import log_event as audit_log
 from openexecutive.audit import principal_turn_rows, rows_for_person
 from openexecutive.integrations.attachments import build_attachment_output
 from openexecutive.orchestrator import outside_content
+from openexecutive.orchestrator.action_chips import drop_replaced
 from openexecutive.orchestrator.answer_sources import TurnSources
 from openexecutive.orchestrator.debug_events import DebugCollector
 from openexecutive.orchestrator.turn_inbox import TurnInbox
@@ -1772,7 +1773,9 @@ async def _run_chat_turn(
                             yield f"data: {json.dumps(live_evt)}\n\n"
                         else:
                             if isinstance(item, dict) and item.get("type") == "action_taken":
-                                action_chips.append(item)
+                                # A draft written again in this reply replaces
+                                # the earlier one's chip and card.
+                                action_chips[:] = drop_replaced([*action_chips, item])
                             if (
                                 session.shared_chat
                                 and isinstance(item, dict)

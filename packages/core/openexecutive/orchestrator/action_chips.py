@@ -174,13 +174,37 @@ def _draft_fields(parsed: dict[str, Any]) -> dict[str, Any]:
         value = parsed.get(key)
         return [str(a) for a in value if isinstance(a, str)] if isinstance(value, list) else []
 
+    replaced = parsed.get("replaced_rows")
+    replaces = [
+        r for r in replaced if isinstance(r, int) and not isinstance(r, bool) and 0 < r < row
+    ] if isinstance(replaced, list) else []
     return {"draft": {
         "row": row,
         "to": addresses("to"),
         "cc": addresses("cc"),
         "subject": str(parsed.get("subject") or ""),
         "preview": str(parsed.get("preview") or ""),
+        # Earlier drafts this one replaced: a card for one of them in the
+        # same reply is dropped (``drop_replaced``).
+        **({"replaces": replaces} if replaces else {}),
     }}
+
+
+def drop_replaced(chips: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``chips`` without the draft chips a later draft in the same list
+    replaced: the Executive wrote the email again in the same reply, and only
+    the version in their Drafts gets a card."""
+    gone: set[int] = set()
+    for chip in chips:
+        draft = chip.get("draft") if isinstance(chip, dict) else None
+        if isinstance(draft, dict) and isinstance(draft.get("replaces"), list):
+            gone.update(r for r in draft["replaces"] if isinstance(r, int))
+    if not gone:
+        return chips
+    return [
+        c for c in chips
+        if not (isinstance(c, dict) and isinstance(c.get("draft"), dict) and c["draft"].get("row") in gone)
+    ]
 
 
 def summarize_action(

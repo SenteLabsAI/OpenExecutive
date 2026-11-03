@@ -279,3 +279,19 @@ def test_loose_words_name_no_draft() -> None:
     # Words that fit one draft replace it.
     assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="board", now=NOW)) == ["deleted"]
     assert mailbox.deleted == ["d4"]
+
+
+def test_a_redraft_names_the_rows_it_replaced() -> None:
+    owner = _owner()
+    mailbox = Mailbox()
+    mailbox.add("d1", [DANA])
+    earlier = _record(owner, "d1", "s1")
+    mailbox.add("d2", [DANA])
+    newer = _record(owner, "d2", "s1")
+    retired: list[int] = []
+    replaced = asyncio.run(redrafts.replace_earlier(
+        owner, mailbox, row_id=newer, thread_id="t1", session_id="s1", to=[DANA], subject="Pilot dates",
+        now=NOW, retired=retired,
+    ))
+    assert replaced == 1 and retired == [earlier]
+    assert drafts.has_newer_in_session(earlier) and not drafts.has_newer_in_session(newer)

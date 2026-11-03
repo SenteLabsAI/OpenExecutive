@@ -38,6 +38,22 @@ export interface ChatDraft {
   subject: string;
   // The start of the draft's text, as saved.
   preview: string;
+  // Earlier drafts' rows this one replaced (written again in the same reply).
+  replaces?: number[];
+}
+
+// A chat draft as its card shows it now (GET /delegation/drafts/{row}):
+// waiting in your Drafts ("open", with who it goes to and its words),
+// changed in your mailbox since, sent, replaced by a newer version, or gone.
+export interface ChatDraftState {
+  status: "open" | "changed" | "sent" | "replaced" | "gone";
+  to: string[];
+  cc: string[];
+  subject: string;
+  body: string;
+  // After a change: the sentences that are new, and a line on what changed.
+  changed_sentences: string[];
+  note: string;
 }
 
 // Names the round of tool calls currently in flight, so the progress line can
@@ -2785,6 +2801,45 @@ export async function sendChatDraft(row: number, threadMovedOn = false): Promise
     return { status: "confirm", message, reasons: strings(detail.reasons), recipients: strings(detail.recipients) };
   }
   throw new ReplySendError(message, code);
+}
+
+// The draft as it is now. null when the backend predates it (404 on the
+// route itself) or it isn't yours.
+export async function getChatDraft(row: number, signal?: AbortSignal): Promise<ChatDraftState | null> {
+  const res = await fetch(`${API_BASE}/delegation/drafts/${row}`, { signal });
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw await delegationError(res, "Couldn't read the draft.");
+  return (await res.json()) as ChatDraftState;
+}
+
+async function chatDraftError(res: Response, fallback: string): Promise<ReplySendError> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const detail = (body.detail && typeof body.detail === "object" ? body.detail : {}) as Record<string, unknown>;
+  const message = typeof detail.message === "string" ? detail.message : fallback;
+  return new ReplySendError(message, typeof detail.code === "string" ? detail.code : "error");
+}
+
+// Your own words in the draft, here and in your Drafts. Sends nothing.
+export async function setChatDraftText(row: number, text: string): Promise<ChatDraftState> {
+  const res = await fetch(`${API_BASE}/delegation/drafts/${row}/text`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await chatDraftError(res, "Couldn't save your change.");
+  return (await res.json()) as ChatDraftState;
+}
+
+// Rewrite the draft the way you asked ("Make it shorter", or your own
+// words), here and in your Drafts. Sends nothing.
+export async function changeChatDraft(row: number, text: string): Promise<ChatDraftState> {
+  const res = await fetch(`${API_BASE}/delegation/drafts/${row}/change`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw await chatDraftError(res, "Couldn't change the email.");
+  return (await res.json()) as ChatDraftState;
 }
 
 // A card of actions the Executive suggested from your email (Act as me),

@@ -10752,7 +10752,11 @@ delegation:
     those inbox drafts, exactly as it is in Gmail, when the person taps Send
     on its card (delegation.send), or a draft chat wrote as them when they
     tap Send under it in the chat (delegation.send_chat_draft); no tool
-    sends. The principal may turn
+    sends. That chat card also changes the draft in place on the person's
+    tap (delegation.chat_draft_card: their own words, a tone pill or "Tell
+    me what to change", rewritten in their mailbox only while it is the
+    version chat recorded), and a draft written again in the same reply
+    keeps one card (action_chips.drop_replaced). The principal may turn
     it on, and each team member once the owner lets them. Off by default; off changes nothing —
     prompts, tool lists and prompt caches are byte-identical to an install
     without it.
