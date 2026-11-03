@@ -831,13 +831,13 @@ def test_recent_decisions_apply_the_lookback(db: Path) -> None:
     import sqlite3
 
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE decisions SET timestamp = ? WHERE summary = 'Retire the old CRM'",
+        conn.execute("UPDATE facts SET created_at = ? WHERE statement = 'Retire the old CRM'",
                      ((datetime.now(UTC) - timedelta(days=120)).isoformat(),))
     rows = wp.recent_decisions(db_path=db)
     assert [r.summary for r in rows] == ["Evaluate Brex for expense cards"]
     # An unreadable timestamp is not "recent forever".
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE decisions SET timestamp = 'garbage'")
+        conn.execute("UPDATE facts SET created_at = 'garbage' WHERE decision = 1")
     assert wp.recent_decisions(db_path=db) == []
 
 

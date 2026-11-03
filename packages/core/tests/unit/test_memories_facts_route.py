@@ -304,3 +304,18 @@ def test_a_teammate_edits_only_their_own(monkeypatch: pytest.MonkeyPatch) -> Non
     assert res.status_code == 200
     body = res.json()
     assert body["statement"] == "Cedar Court has 40 units." and body["recorded_by_name"] == "Sam Lee"
+
+
+def test_only_the_principal_changes_or_removes_a_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    kept, _ = facts.record_fact(subject="Expense cards", statement="Going with Brex.", source_quote="",
+                                decision=True, department="finance")
+    teammate = _client(monkeypatch, principal=False)
+    assert teammate.patch(f"/memories/decisions/{kept.id}", json={"summary": "Going with Ramp."}).status_code == 403
+    assert teammate.delete(f"/memories/decisions/{kept.id}").status_code == 403
+    assert [d.summary for d in episodic.list_decisions()] == ["Going with Brex."]
+
+    principal = _client(monkeypatch, principal=True)
+    res = principal.patch(f"/memories/decisions/{kept.id}", json={"summary": "Going with Ramp."})
+    assert res.status_code == 200 and res.json()["summary"] == "Going with Ramp."
+    assert principal.delete(f"/memories/decisions/{res.json()['id']}").status_code == 204
+    assert episodic.list_decisions() == []

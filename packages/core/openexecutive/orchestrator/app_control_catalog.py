@@ -527,7 +527,7 @@ async def _edit_memory(request: Any, ref: str, value: str) -> str:
 
     kind, mid = _memory_ref(ref)
     if kind == "decision":
-        await _call(episodic.patch_decision, mid, episodic.DecisionUpdate(summary=value))
+        await _call(episodic.patch_decision, mid, episodic.DecisionUpdate(summary=value), request)
     elif kind == "initiative":
         await _call(episodic.patch_initiative, mid, episodic.InitiativeUpdate(summary=value))
     else:
@@ -539,12 +539,11 @@ async def _delete_memory(request: Any, ref: str, value: str) -> str:
     from openexecutive.api.routes import episodic
 
     kind, mid = _memory_ref(ref)
-    remove = {
-        "decision": episodic.remove_decision,
-        "initiative": episodic.remove_initiative,
-        "advice": episodic.remove_advice,
-    }[kind]
-    await _call(remove, mid)
+    if kind == "decision":
+        await _call(episodic.remove_decision, mid, request)
+    else:
+        remove = {"initiative": episodic.remove_initiative, "advice": episodic.remove_advice}[kind]
+        await _call(remove, mid)
     return f"Deleted the {kind} from memory"
 
 
