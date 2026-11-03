@@ -182,14 +182,11 @@ def test_same_point_matches_rewording_not_other_items() -> None:
     assert not same("alex", "alex demo")
 
 
-def test_a_dismissed_point_stays_gone_when_its_subject_grows() -> None:
-    gone = right_now.dismiss("principal", "**Google OAuth**: overdue.")
+def test_a_dismissal_never_hides_a_point_that_only_shares_words() -> None:
+    """Dismissal matches the key or the item, not ``same_point``: a new,
+    urgent point that grew from a dismissed subject must still show."""
+    gone = right_now.dismiss("principal", "**Q3 budget**: routine reminder.")
     assert gone is not None
-    assert right_now.is_dismissed("**Google OAuth verification**: still overdue.", None, [gone])
-    assert not right_now.is_dismissed("**Stripe live mode**: overdue.", None, [gone])
-
-
-def test_a_one_word_dismissal_does_not_hide_a_different_point() -> None:
-    gone = right_now.dismiss("principal", "**Pricing**: tiers not set.")
-    assert gone is not None
+    assert right_now.is_dismissed("**Q3 Budget:** reminder again.", None, [gone])
+    assert not right_now.is_dismissed("**Q3 budget overrun**: 20% over.", None, [gone])
     assert not right_now.is_dismissed("**Pricing error in the Northwind invoice**: billed twice.", None, [gone])

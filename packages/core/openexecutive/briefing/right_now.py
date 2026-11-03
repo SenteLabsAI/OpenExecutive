@@ -180,8 +180,8 @@ def same_point(a: str, b: str) -> bool:
     words are shared. One shared word is never enough: "Pricing" must not
     swallow "Pricing error in the invoice". The header rewrites its subjects
     through the day, so an exact key alone made the same item new again on
-    each rewrite (a fresh time, a green dot, a ping) and let a dismissed one
-    back."""
+    each rewrite (a fresh time, a green dot, a ping). Times only: dismissal
+    never uses it (``is_dismissed``)."""
     if a == b:
         return True
     wa, wb = _key_words(a), _key_words(b)
@@ -412,8 +412,11 @@ def is_dismissed(point: str, source: dict[str, Any] | None, gone: list[Dismissed
     the same key, or a reworded point about the same item."""
     if not gone:
         return False
-    key = point_key(point)
-    if any(same_point(key, d.key) for d in gone):
+    # Exact key or the same item, never ``same_point``: a reworded match
+    # here would hide a new point ("Q3 budget overrun" after "Q3 budget" was
+    # dismissed). The header itself is told what was dismissed and not to
+    # raise it again, reworded or not (``dismissed_block``).
+    if point_key(point) in {d.key for d in gone}:
         return True
     identity = source_identity(source)
     return identity is not None and identity in {source_identity(d.source) for d in gone}
