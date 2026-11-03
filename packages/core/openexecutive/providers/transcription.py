@@ -215,7 +215,12 @@ async def transcribe(
             resp.raise_for_status()
             body = resp.json()
         except httpx.HTTPStatusError as exc:
-            logger.warning("transcription failed: HTTP %s", exc.response.status_code)
+            status = exc.response.status_code
+            logger.warning(
+                "transcription failed: HTTP %s (%s)", status, _error_message(exc.response)
+            )
+            if status == 402:
+                raise TranscriptionError("the account that pays for voice notes is out of credit") from exc
             raise TranscriptionError("the speech service didn't answer") from exc
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("transcription failed (%s)", type(exc).__name__)
@@ -227,6 +232,18 @@ async def transcribe(
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     _record(where, usage or {})
     return str(body.get("text") or "").strip()
+
+
+def _error_message(resp: httpx.Response) -> str:
+    """The server's own short reason for a refusal (an OpenAI-style
+    ``{"error": {"message": …}}``), for the log. Never the request."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    message = error.get("message") if isinstance(error, dict) else error
+    return str(message)[:200] if isinstance(message, str) else ""
 
 
 def recording_seconds(data: bytes, filename: str, content_type: str = "") -> float | None:

@@ -335,3 +335,30 @@ async def test_only_a_recorded_voice_note_is_the_senders_speech(settings, server
     assert "[Voice note, transcribed]\nmove my call" in text
     assert "[Attached: podcast.mp3" in text
 
+
+
+async def test_an_unpaid_request_says_the_credit_ran_out(settings, server, caplog) -> None:
+    settings(openrouter_api_key="or-key")
+    server["answer"] = (402, {"error": {"message": "This request requires at least $0.50 in balance for audio", "code": 402}})
+
+    with (
+        caplog.at_level("WARNING", logger=transcription.__name__),
+        pytest.raises(transcription.TranscriptionError, match="out of credit"),
+    ):
+        await transcription.transcribe(b"OggS-voice", "voice.ogg", "audio/ogg")
+
+    assert "HTTP 402 (This request requires at least $0.50 in balance for audio)" in caplog.text
+    assert server["rows"] == []
+
+
+async def test_other_refusals_log_the_server_reason(settings, server, caplog) -> None:
+    settings(openrouter_api_key="or-key")
+    server["answer"] = (400, {"error": {"message": "Unsupported audio format"}})
+
+    with (
+        caplog.at_level("WARNING", logger=transcription.__name__),
+        pytest.raises(transcription.TranscriptionError, match="didn't answer"),
+    ):
+        await transcription.transcribe(b"OggS-voice", "voice.ogg", "audio/ogg")
+
+    assert "HTTP 400 (Unsupported audio format)" in caplog.text
