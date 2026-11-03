@@ -18,7 +18,11 @@ import pytest
 from openexecutive.audit import logger as audit_logger
 from openexecutive.audit.logger import AuditLogger, log_event
 from openexecutive.delegation import settings as dsettings
-from openexecutive.delegation.settings import DelegationOverride, pin_turn_delegation, set_team_members
+from openexecutive.delegation.settings import (
+    DelegationOverride,
+    pin_turn_delegation,
+    set_team_members,
+)
 from openexecutive.memory import episodic, session_store
 from openexecutive.memory import history as h
 from openexecutive.orchestrator import history_tools as ht
@@ -98,10 +102,17 @@ def _recall(session: Session | None, query: str = "") -> dict[str, Any]:
 
 
 def test_only_once_they_turned_reply_notes_on(roster: SimpleNamespace) -> None:
-    assert ht.recall_person(_web(roster.principal)) is None
-    h.set_person_settings(roster.principal, by="test", reply_notes=True)
+    assert ht.recall_person(_web(roster.teammate)) is None
+    h.set_person_settings(roster.teammate, by="test", reply_notes=True)
+    person = ht.recall_person(_web(roster.teammate))
+    assert person is not None and person.id == roster.teammate
+
+
+def test_the_owner_keeps_notes_until_they_turn_it_off(roster: SimpleNamespace) -> None:
     person = ht.recall_person(_web(roster.principal))
     assert person is not None and person.id == roster.principal
+    h.set_person_settings(roster.principal, by="test", reply_notes=False)
+    assert ht.recall_person(_web(roster.principal)) is None
 
 
 @pytest.mark.parametrize(("label", "build"), [
@@ -264,7 +275,7 @@ def test_it_lives_in_its_own_registry_and_is_redacted() -> None:
     assert ht.RECALL_HISTORY not in {t["name"] for t in _ALL_SKILL_TOOLS}
     assert ht.RECALL_HISTORY not in _ALL_SKILL_HANDLERS
     assert set(ht.HISTORY_TOOL_HANDLERS) == ht.HISTORY_TOOL_NAMES
-    assert ht.HISTORY_TOOL_NAMES <= set(_LABELS)
+    assert set(_LABELS) >= ht.HISTORY_TOOL_NAMES
     assert ht.HISTORY_TOOL_NAMES <= MAIL_TOUCHED_ALLOWED_TOOLS
     assert "redacted" in audit_tool_input(ht.RECALL_HISTORY, {"query": "dana"})
     assert "redacted" in str(audit_tool_result_full(ht.RECALL_HISTORY, '{"result": "secret"}'))
@@ -300,6 +311,7 @@ def _offered(provider: ScriptedProvider) -> list[str]:
 
 
 def test_the_loop_offers_it_only_to_someone_who_may_recall(roster: SimpleNamespace) -> None:
+    h.set_person_settings(roster.principal, by="test", reply_notes=False)
     assert ht.RECALL_HISTORY not in _offered(_loop(_web(roster.principal), []))
     h.set_person_settings(roster.principal, by="test", reply_notes=True)
     names = _offered(_loop(_web(roster.principal), []))
@@ -307,6 +319,7 @@ def test_the_loop_offers_it_only_to_someone_who_may_recall(roster: SimpleNamespa
 
 
 def test_a_call_it_was_not_offered_is_an_unknown_tool(roster: SimpleNamespace) -> None:
+    h.set_person_settings(roster.principal, by="test", reply_notes=False)
     provider = _loop(_web(roster.principal), [ToolUseBlock("tu1", ht.RECALL_HISTORY, {})])
     results = provider.calls[1]["messages"][-1]["content"]
     assert results[0]["content"] == f"Unknown tool: {ht.RECALL_HISTORY}"

@@ -205,3 +205,19 @@ def test_reminders_are_claimed_once_a_day() -> None:
     # A new day prunes the old ones.
     assert h.mark_reminded(1, "2026-10-04", now=NOW)
     assert not h.reminded(1, "2026-10-03")
+
+
+def test_the_owner_keeps_notes_until_they_turn_it_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from openexecutive.people import registry
+
+    monkeypatch.setattr(registry, "get_principal", lambda: SimpleNamespace(id=1))
+    assert h.person_settings(1).reply_notes is True
+    assert h.person_settings(2).reply_notes is False
+    assert h.people_keeping_notes() == [1]
+    h.set_person_settings(1, by="t", reply_notes=False)
+    assert h.person_settings(1).reply_notes is False
+    assert h.people_keeping_notes() == []
+    h.set_person_settings(2, by="t", reply_notes=True)
+    assert h.people_keeping_notes() == [2]

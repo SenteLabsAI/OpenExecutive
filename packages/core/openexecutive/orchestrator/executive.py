@@ -236,6 +236,25 @@ def _private_to_principal(session: Any) -> bool:
     return getattr(session, "private_to_principal", False) is True
 
 
+def _mail_turn_words(session: Any, own_text: str, *, touched_mail: bool, host_words: bool) -> str:
+    """What a turn that touched the speaker's own mailbox may still teach:
+    the words they typed, never the reply (it quotes mail and a draft built
+    from it). Empty for any other turn, and for a replay, a host page's words
+    or mail private to the principal from someone else."""
+    if not touched_mail or host_words or chat_replay.is_replay(session) or _private_to_principal(session):
+        return ""
+    return own_text or ""
+
+
+def _sync_mail_turn_words(words: str, *, person_id: int | None, session_id: str | None) -> None:
+    """Peer memory from a mail turn: only the speaker's own words, with no
+    reply, no one else in the session and no department mirror, so what it
+    learns is what they said about their own mail and stays with them."""
+    from openexecutive.memory.honcho_client import sync_turn as _honcho_sync
+
+    _honcho_sync(words, "", person_id=person_id, session_id=session_id, co_present_person_ids=None)
+
+
 def _contacts_in_prompt(session: Any) -> bool:
     """Whether this turn's system prompt lists the principal's contacts.
 
@@ -1588,9 +1607,10 @@ class Executive:
             session.add_user_message(added_text)
         session.add_assistant_message(full_response)
         # A turn that read or drafted in the speaker's own mailbox (Act as me)
-        # stays private to them from here on, and teaches no memory: its reply
-        # quotes a draft built from other people's mail. Read from this turn's
-        # own pin (a concurrent turn on the session has its own).
+        # stays private to them from here on, and teaches only their own
+        # private memory, from what they typed (its reply quotes a draft built
+        # from other people's mail). Read from this turn's own pin (a
+        # concurrent turn on the session has its own).
         touched_mail = delegation_pin.touched_mail
 
         # Audit the Executive's outbound response. Without this, the audit
@@ -1632,9 +1652,11 @@ class Executive:
         # said. A quoted Executive email or a briefing card's body in the
         # prompt would otherwise satisfy that quote gate with the Executive's
         # own words. A turn that touched the speaker's own mailbox (Act as me)
-        # has none to learn from: its reply quotes a draft built from other
-        # people's mail, so should_extract refuses the empty text and every
-        # other pass below is skipped outright.
+        # teaches only what is theirs alone, from what they typed
+        # (``mail_words``): their private notes and their own peer memory,
+        # without the reply (it quotes a draft built from other people's
+        # mail). Its lessons come from the review (``record_turn``'s
+        # ``mail``). Extraction, open loops and style skip it.
         own_text = with_added(_speaker_text(memory_text, user_message), inbox)
         # A host-surface turn (Session.from_host) is kept nowhere either: its
         # words may be a script's on the host's page, never the person's own.
@@ -1644,6 +1666,7 @@ class Executive:
         # loops, style, review or mirror of it (should_extract and
         # schedule_chat_notes refuse a replay session themselves).
         kept = not touched_mail and not host_words and not chat_replay.is_replay(session)
+        mail_words = _mail_turn_words(session, own_text, touched_mail=touched_mail, host_words=host_words)
 
         # Re-bind the audit ContextVars for the duration of these calls so
         # the fire-and-forget tasks they schedule can snapshot the right
@@ -1692,8 +1715,10 @@ class Executive:
             # (history_chat). Their own words only, never the reply.
             from openexecutive.memory.history_chat import schedule_chat_notes
 
-            if not touched_mail:
-                schedule_chat_notes(speaker_text, session=session, person_id=person_id)
+            # A turn that touched their mailbox notes their own words too:
+            # notes are theirs alone (memory.history), and own_text is what
+            # they typed, never the mail or the draft.
+            schedule_chat_notes(speaker_text or mail_words, session=session, person_id=person_id)
 
             # Kept for the conversation review once the chat goes quiet
             # (memory.chat_review): a verified speaker's own words, the reply
@@ -1733,6 +1758,8 @@ class Executive:
                     session_id=session.session_id,
                     co_present_person_ids=co_present_person_ids,
                 )
+            elif mail_words:
+                _sync_mail_turn_words(mail_words, person_id=person_id, session_id=session.session_id)
 
     async def stream_chat_with_committee(
         self,
@@ -2136,7 +2163,7 @@ class Executive:
         for added_text in inbox.taken_texts() if inbox is not None else []:
             session.add_user_message(added_text)
         # Act as me: a turn that touched the speaker's mailbox stays private
-        # and teaches no memory (see stream_chat).
+        # and teaches only their own private memory (see stream_chat).
         touched_mail = delegation_pin.touched_mail
         # Guard against a revision pass that produced no text (only tool_use
         # blocks, model_stop, etc.). Persisting an empty assistant turn
@@ -2208,6 +2235,7 @@ class Executive:
         # private_rows: see stream_chat — the scheduled passes copy it.
         # A replay (memory.replay) is kept nowhere — see stream_chat.
         kept = not touched_mail and not host_words and not chat_replay.is_replay(session)
+        mail_words = _mail_turn_words(session, own_text, touched_mail=touched_mail, host_words=host_words)
         with private_rows(touched_mail):
             if should_extract(speaker_text, session=session):
                 schedule_extraction(
@@ -2231,8 +2259,7 @@ class Executive:
             # Always in the loop — see stream_chat.
             from openexecutive.memory.history_chat import schedule_chat_notes
 
-            if not touched_mail:
-                schedule_chat_notes(speaker_text, session=session, person_id=person_id)
+            schedule_chat_notes(speaker_text or mail_words, session=session, person_id=person_id)
 
             # Conversation review — see stream_chat.
             from openexecutive.memory.chat_review import record_turn
@@ -2261,6 +2288,9 @@ class Executive:
                 session_id=session.session_id,
                 co_present_person_ids=co_present_person_ids,
             )
+        elif mail_words:
+            with private_rows(True):
+                _sync_mail_turn_words(mail_words, person_id=person_id, session_id=session.session_id)
 
         # Reset audit ContextVars at normal completion. The abandoned-stream
         # case (SSE client drop mid-yield) doesn't reach here — accept that

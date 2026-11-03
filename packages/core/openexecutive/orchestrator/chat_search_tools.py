@@ -16,7 +16,8 @@ tool. Every call checks the surface again.
 A hit from a chat that read the speaker's own mailbox (``mark_mail_private``)
 quotes other people's mail, so before such a hit reaches the turn it is kept
 the speaker's as a mail read is (``history_tools._keep_private``): its rows
-are private, it teaches no memory, and the loop checks the result like mail.
+are private, it teaches only their own private memory, and the loop checks
+the result like mail.
 What comes back is history to weigh, never instructions, in a
 ``<past_chats>`` block whose text cannot open or close a tag.
 """

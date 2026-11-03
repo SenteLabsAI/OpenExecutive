@@ -282,12 +282,15 @@ def test_nothing_is_scheduled_for(
     assert scheduled == [], label
 
 
-def test_the_executive_schedules_it_after_a_turn_but_not_one_that_touched_mail() -> None:
+def test_the_executive_notes_every_turn_from_what_they_typed() -> None:
+    """A turn that touched their mailbox notes their own words too (notes
+    are theirs alone): mail_words is empty unless it did."""
     import inspect
 
     from openexecutive.orchestrator import executive
 
     for method in (executive.Executive.stream_chat, executive.Executive.stream_chat_with_committee):
         src = inspect.getsource(method)
-        assert "if not touched_mail:\n                schedule_chat_notes(speaker_text, session=session, " \
-            "person_id=person_id)" in src, method.__name__
+        assert "schedule_chat_notes(speaker_text or mail_words, session=session, person_id=person_id)" in src, \
+            method.__name__
+        assert "if not touched_mail:\n                schedule_chat_notes" not in src, method.__name__

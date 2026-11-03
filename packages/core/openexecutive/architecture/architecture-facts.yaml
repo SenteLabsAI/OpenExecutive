@@ -2938,7 +2938,12 @@ memory:
     - One switch (history_person_settings.reply_notes, the name kept from
       phase 1) covers every channel. Any team member on the People list may
       turn it on (history.can_keep_notes); email notes still only come
-      through Act as me.
+      through Act as me. Unset, it is on for the owner and off for everyone
+      else (history._on_by_default; people_keeping_notes counts the owner
+      too), since notes are theirs alone and a memory that waits for a
+      switch learns nothing.
+    - A chat turn that touched the speaker's own mailbox is noted too, from
+      what they typed (executive._mail_turn_words), never the reply.
     - Chat notes read only own_words(speaker_text) of a verified speaker:
       caller_person_id is them, not unattended, private_to_principal, an
       email turn or an eval override, on the web chat signed in (or local
@@ -11262,10 +11267,16 @@ delegation:
     reply (it carries the preview), the committee rows and both
     tool_invocation rows also pass private explicitly, and anything the turn
     starts afterwards runs under private_rows(touched_mail). The turn teaches
-    no memory: episodic extraction, the open-loop pass, the working-style
-    pass and the Honcho peer and department syncs are all skipped, because
-    its reply quotes a draft built from other people's mail (the extractor's
-    summaries are free text, so quote-gating alone would not keep it out). "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
+    only memory that is the speaker's alone, from what they typed
+    (executive._mail_turn_words): their History notes and their own Honcho
+    peer memory, synced with their words only, no reply, no co-present
+    peers and no department mirror (_sync_mail_turn_words), so what it
+    learns is what they said about their own mail. Episodic extraction,
+    the open-loop pass and the working-style pass are skipped, because its
+    reply quotes a draft built from other people's mail (the extractor's
+    summaries are free text, so quote-gating alone would not keep it out).
+    Mail private to the principal from someone else, a replay and a host
+    page's words teach nothing. "ghostwrite" is in redaction._SENSITIVE_SUBSTRINGS,
     so the tool rows carry no input or result text. The four delegation_*
     events are always private and metadata-only (see audit.event_types).
     The inbox watcher is private the same way: every row a scan or a card
@@ -11286,9 +11297,9 @@ delegation:
     learning skips it. Every later turn in it starts touched_mail
     (settings.pin_turn_delegation reads the flag, failing closed): the
     turn's rows are the owner's, and so are the web chat's rows before it
-    (the inbound chat_turn and the knowledge_retrieval row); no memory pass
-    runs, even when the answer comes from history
-    alone; anyone else speaking there is not offered Act as me. A channel
+    (the inbound chat_turn and the knowledge_retrieval row); only the
+    speaker's own private memory is taught (as above), even when the answer
+    comes from history alone; anyone else speaking there is not offered Act as me. A channel
     adapter's own pre-turn rows (integration_inbound, and the retrieval
     Discord and Telegram run first) are written as before. The inbox
     classifier weighs a team member's sender by the team and their own sent mail, never the principal's contacts. The

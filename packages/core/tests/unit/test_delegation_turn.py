@@ -146,15 +146,18 @@ def _chat_turn_rows() -> list[Any]:
     ]
 
 
-def test_a_turn_that_drafted_stays_private_and_teaches_no_memory(
+def test_a_turn_that_drafted_stays_private_and_teaches_only_from_their_words(
     hooks: dict[str, list[Any]],
 ) -> None:
     session = _turn([ToolUseBlock("tu1", "ghostwrite_email", {"intent": "Yes.", "thread_id": "t1"})])
     assert session.turn_delegation.touched_mail is True
     assert [r.private for r in _chat_turn_rows()] == [True]
-    # Its reply quotes a draft built from other people's mail: no pass learns
-    # from it — not peer memory, extraction, open loops or working style.
-    assert hooks["sync"] == []
+    # Its reply quotes a draft built from other people's mail: peer memory
+    # gets only what they typed, never the reply; extraction, open loops and
+    # working style skip it.
+    assert len(hooks["sync"]) == 1
+    words, reply = hooks["sync"][0][:2]
+    assert words.strip() and reply == ""
     assert hooks["extraction_private"] == []
     assert hooks["open_loops"] == [] and hooks["style"] == []
 
