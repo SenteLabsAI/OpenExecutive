@@ -363,13 +363,18 @@ async def handle_save_file(tool_input: dict[str, Any]) -> str:
             ),
         })
     try:
-        async with save._lock():
-            if provider == DOCUMENTS:
-                saved = await _documents(item, name)
-            elif provider == save.GOOGLE:
+        if provider == save.GOOGLE:
+            # Up to save.GOOGLE_PARALLEL_SAVES at once: a folder id is given
+            # and Drive allows two files of one name, so nothing races.
+            async with save._google_slot():
                 saved = await _google(gateway, item, folder, name)
-            else:
-                saved = await _microsoft(gateway, item, folder, name)
+        else:
+            # Documents and OneDrive pick a free name first, so one at a time.
+            async with save._lock():
+                if provider == DOCUMENTS:
+                    saved = await _documents(item, name)
+                else:
+                    saved = await _microsoft(gateway, item, folder, name)
     except save.NoStorage:
         return json.dumps({"status": "no_storage", "detail": "Your OneDrive couldn't be reached."})
     except save.SaveFailed as exc:
