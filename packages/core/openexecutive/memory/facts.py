@@ -72,6 +72,11 @@ QUOTE_MAX = 1000
 # without limit. Newest first, so the cap drops the oldest.
 PROMPT_MAX_FACTS = 40
 PROMPT_MAX_CHARS = 6000
+# With a question: every fact that bears on it, then at most this many of the
+# newest others, so a long list doesn't crowd out the ones that matter.
+PROMPT_UNMATCHED_FACTS = 10
+# A fact older than this shows its date, so the reader knows to check it.
+STALE_AFTER_DAYS = 30
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -537,6 +542,7 @@ FACTS_BLOCK_HEADER = (
     "STANDING FACTS — facts and corrections the principal, or a teammate, stated "
     "and asked to be kept, newest first. Treat each as true and use it wherever "
     "it applies, over any older figure in documents, memory, alerts or signals. "
+    "A line that shows a date is over 30 days old: where it matters, check it still holds. "
     "A line ending with a teammate's name, as in (per Sam Lee), is that "
     "teammate's word, not the principal's: "
     "credit them where it matters, and where it conflicts with an unmarked line "
@@ -576,16 +582,57 @@ def _attribution(f: Fact) -> str:
     return f" (per {_safe(f.recorded_by_name, 80) or 'a teammate'})"
 
 
+def _rank_for(rows: list[sqlite3.Row], query: str) -> list[sqlite3.Row]:
+    """``rows`` (newest first) with the facts that share a word with ``query``
+    first, most shared words first, then up to ``PROMPT_UNMATCHED_FACTS`` of
+    the newest others."""
+    from openexecutive.memory.lessons import _stems
+
+    want = _stems(query)
+    if not want:
+        return rows[:PROMPT_UNMATCHED_FACTS]
+    scored: list[tuple[int, int, sqlite3.Row]] = []
+    others: list[sqlite3.Row] = []
+    for i, r in enumerate(rows):
+        try:
+            shared = len(want & _stems(f"{r['subject']} {r['statement']}"))
+        except Exception:  # noqa: BLE001 - _row skips it below, as for any bad row.
+            shared = 0
+        if shared:
+            scored.append((-shared, i, r))
+        else:
+            others.append(r)
+    return [r for *_, r in sorted(scored, key=lambda t: (t[0], t[1]))] + others[:PROMPT_UNMATCHED_FACTS]
+
+
+def _dated(created_at: str, now: datetime) -> str:
+    """" — <date>" for a fact over ``STALE_AFTER_DAYS`` old (or of unknown
+    age), else ""."""
+    try:
+        made = datetime.fromisoformat(created_at)
+        if made.tzinfo is None:
+            made = made.replace(tzinfo=UTC)
+        if now - made <= timedelta(days=STALE_AFTER_DAYS):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return f" — {created_at[:10]}"
+
+
 def render_facts_for_prompt(
     *,
+    query: str | None = None,
     max_facts: int = PROMPT_MAX_FACTS,
     max_chars: int = PROMPT_MAX_CHARS,
     db_path: Path | None = None,
 ) -> str:
     """The active facts as prompt lines under ``FACTS_BLOCK_HEADER``, or "" when
-    there are none; a teammate's ends "(per <name>)". Never raises: a store
-    failure leaves the prompt without the block rather than failing the brief,
-    run or turn that asked."""
+    there are none; a teammate's ends "(per <name>)", and one over
+    ``STALE_AFTER_DAYS`` old ends with its date. With ``query`` (the message a
+    chat turn answers), the facts that bear on it come first and only a few
+    others follow (``_rank_for``); without one, newest first. Never raises: a
+    store failure leaves the prompt without the block rather than failing the
+    brief, run or turn that asked."""
     rows = _read_only_rows(
         "SELECT * FROM facts WHERE status='active' AND kind!='profile' "
         "ORDER BY created_at DESC, id DESC LIMIT ?",
@@ -594,8 +641,13 @@ def render_facts_for_prompt(
     )
     if not rows:
         return ""
-    lines = [FACTS_BLOCK_HEADER]
-    used = len(FACTS_BLOCK_HEADER)
+    header = FACTS_BLOCK_HEADER
+    if query is not None:
+        rows = _rank_for(rows, query)
+        header = header.replace("newest first", "the ones that bear on the question first, then the newest")
+    now = datetime.now(UTC)
+    lines = [header]
+    used = len(header)
     for r in rows:
         try:
             f = _row(r)
@@ -606,7 +658,7 @@ def render_facts_for_prompt(
         if f.kind == "correction" and f.previous_statement:
             line += f" (corrects: {_safe(f.previous_statement, 160)})"
         line += _attribution(f)
-        line += f" — {f.created_at[:10]}"
+        line += _dated(f.created_at, now)
         if used + len(line) + 1 > max_chars:
             break
         lines.append(line)

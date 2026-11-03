@@ -2720,6 +2720,15 @@ memory:
     chars, `<`/`>` defanged. Opens the DB read-only (`mode=ro`) and returns
     "" for a missing file or table — it never creates either, because it runs
     on every prompt, including test-built ones. Never raises.
+    SORTED BY THE QUESTION — a chat turn and a specialist consult pass the
+    message as `query`: the facts that share a word stem with it come first,
+    most shared first, then at most `PROMPT_UNMATCHED_FACTS` (10) of the
+    newest others, so a long list cannot crowd out the one that matters.
+    Briefs, reviews and runs pass no query and get every fact, newest first.
+    A fact over `STALE_AFTER_DAYS` (30) old ends with its date; a newer one
+    shows none, and the header says a dated line may need checking. Why: on
+    a test tenant every turn carried every fact unranked, and nothing said a
+    months-old figure might be stale.
     WHERE IT IS INJECTED (always a user turn, never a cached system block):
       - chat: `Executive._build_messages` `<standing_facts>` (stream_chat /
         committee / chat take `standing_facts: str | None`; None reads the
