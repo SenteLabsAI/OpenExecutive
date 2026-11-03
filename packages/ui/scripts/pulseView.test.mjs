@@ -8,7 +8,10 @@ const at = (...args) => new Date(...args).toISOString();
 
 test("pulseViewFor keeps the old tab links working", () => {
   assert.equal(pulseViewFor(null), "overview");
-  assert.equal(pulseViewFor("heartbeat"), "overview");
+  assert.equal(pulseViewFor("heartbeat"), "does");
+  assert.equal(pulseViewFor("does"), "does");
+  assert.equal(pulseViewFor("decisions"), "corrections");
+  assert.equal(pulseViewFor("worked-out"), "worked_out");
   assert.equal(pulseViewFor("memory"), "overview");
   assert.equal(pulseViewFor("nonsense"), "overview");
   assert.equal(pulseViewFor("rhythm"), "schedule");
@@ -23,7 +26,8 @@ test("pulseViewFor keeps the old tab links working", () => {
 });
 
 test("isMemoryView picks out the memory lists", () => {
-  assert.equal(isMemoryView("decisions"), true);
+  assert.equal(isMemoryView("worked_out"), true);
+  assert.equal(isMemoryView("does"), false);
   assert.equal(isMemoryView("history"), true);
   assert.equal(isMemoryView("reflection"), true);
   assert.equal(isMemoryView("schedule"), false);

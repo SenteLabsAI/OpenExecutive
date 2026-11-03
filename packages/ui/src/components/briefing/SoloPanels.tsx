@@ -116,7 +116,7 @@ export function ProjectsPanelBody({ state }: { state: ReturnType<typeof useActiv
               {confirmDrop === p.id && (
                 <div role="alert" className="mt-2 rounded-xl border border-rose-500/30 bg-rose-500/5 px-3 py-2.5">
                   <p className="text-sm text-fg">
-                    Drop &ldquo;{p.title}&rdquo;? The Executive stops tracking it, and it is removed from Pulse.
+                    Drop &ldquo;{p.title}&rdquo;? The Executive stops tracking it, and it is removed from Memory.
                   </p>
                   <div className="mt-2 flex gap-2">
                     <Button size="sm" variant="danger" onClick={() => void close(p, "drop")} disabled={busyId !== null}>

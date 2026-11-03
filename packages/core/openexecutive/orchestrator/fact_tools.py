@@ -701,7 +701,7 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
         return _bad(tool, (
             f"{facts.MAX_PENDING_PROPOSALS_PER_PERSON} of this teammate's facts are already "
             "waiting for the principal's approval. Tell them it will be kept once the "
-            "principal has reviewed those on the Pulse page."
+            "principal has reviewed those on the Memory page."
         ))
     except Exception as exc:
         logger.exception("remember_fact: write failed")
@@ -747,7 +747,7 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
             "statement": fact.statement,
             "message": (
                 f"Kept as a proposal, not in use yet: {why}. The principal approves "
-                "or declines it on the Pulse page. Tell the person you are talking "
+                "or declines it on the Memory page. Tell the person you are talking "
                 "to that, and do not describe it as in effect."
             ),
         })

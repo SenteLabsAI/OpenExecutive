@@ -287,7 +287,7 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
         )
     if existing is None or existing.kind == "profile":
         raise HTTPException(status_code=404, detail="Fact not found")
-    reason = " ".join(((body.reason if body else "") or "retired from the Pulse page").split())
+    reason = " ".join(((body.reason if body else "") or "retired from the Memory page").split())
     retired = retire_fact(fact_id, reason=reason[:280], teammate_id=None if principal else caller)
     if retired is None:
         raise HTTPException(status_code=409, detail="Fact is no longer active")
@@ -376,7 +376,7 @@ def approve_standing_fact(fact_id: int, request: Request) -> Fact:
 def decline_standing_fact(fact_id: int, request: Request, body: FactReview | None = None) -> Fact:
     """Drop a teammate's proposed fact; it is never used. Principal only."""
     _require_principal(request, "decline a teammate's fact")
-    reason = " ".join(((body.reason if body else "") or "declined from the Pulse page").split())
+    reason = " ".join(((body.reason if body else "") or "declined from the Memory page").split())
     declined = decline_fact(fact_id, reason=reason[:280])
     if declined is None:
         raise HTTPException(status_code=409, detail="Fact is not waiting for approval")
