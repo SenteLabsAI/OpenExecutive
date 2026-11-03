@@ -15,7 +15,7 @@ carrying the principal's authority. ``remember_fact`` is also open to a
 teammate on the People list talking from a surface that verified who they are
 (the web app signed in, their own Slack or Discord). Their fact is attributed
 — rendered "(per <name>)", so no prompt reads it as the principal's — and is
-held as a proposal until the principal approves it on the Pulse page, unless
+held as a proposal until the principal approves it on the Memory page, unless
 the principal marked that teammate trusted ("needs my approval" off;
 ``memory.facts``). Even a trusted teammate's fact that would replace one the
 principal set is held. A proposal never renders. Retiring a fact
@@ -32,7 +32,7 @@ A write also needs ``source_quote``: the speaker's exact words from this
 message (at least two words and eight characters), checked against what they
 typed this turn — never the backstory an adapter hydrates a reply with, and
 nothing at all when the message carries an attachment. It is the provenance
-the Pulse page shows the principal, and it keeps the model from storing its
+the Memory page shows the principal, and it keeps the model from storing its
 own inference, a document's figure or text quoted back at the principal as
 something they said. The quote alone only proves they asked; so a
 remember_fact statement's figures, names and date words, and an
@@ -1026,7 +1026,7 @@ def _apply_profile_edit(
         )
         fact_id = row.id
     except Exception:
-        # The profile write already landed; the Pulse page just misses a line.
+        # The profile write already landed; the Memory page just misses a line.
         logger.warning("update_company_profile: provenance row failed", exc_info=True)
 
     _audit(
