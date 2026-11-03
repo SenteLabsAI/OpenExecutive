@@ -342,8 +342,9 @@ async def _open_mailbox(writer: _Writer) -> str | None:
     """Get the speaker's mailbox ready to read, or return why it can't be.
 
     From here on the turn has touched their mailbox: every audit row it
-    writes is private, it teaches only their own private memory, and the conversation is theirs
-    alone (the principal included) before anything is read."""
+    writes is private, it teaches only their own private memory, and the
+    conversation is theirs alone (the principal included) before anything is
+    read."""
     from openexecutive.delegation.gmail import STATUS_MESSAGES, gmail_status
 
     writer.pinned.touched_mail = writer.pinned.read_mail = True
