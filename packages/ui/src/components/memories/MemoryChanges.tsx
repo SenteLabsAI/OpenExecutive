@@ -58,7 +58,7 @@ export function MemoryUpdatedChip({
   since: string;
   /** What an earlier chip in this chat already showed. */
   seen: Set<string>;
-  /** Called once it has rows to show (the chat then drops its own fact chip). */
+  /** Called once it shows a fact or decision (the chat then drops its own fact chip). */
   onShown?: () => void;
 }) {
   const [changes, setChanges] = useState<MemoryChange[]>([]);
@@ -94,9 +94,11 @@ export function MemoryUpdatedChip({
     };
   }, [sessionId, since, seen]);
 
+  // Only a fact or decision row stands in for the chat's own fact chip.
+  const hasFact = changes.some((c) => c.kind === "fact" || c.kind === "decision");
   useEffect(() => {
-    if (changes.length > 0) onShown?.();
-  }, [changes.length, onShown]);
+    if (hasFact) onShown?.();
+  }, [hasFact, onShown]);
 
   if (changes.length === 0) return null;
   const left = changes.filter((c) => state[changeKey(c)] !== "undone");
