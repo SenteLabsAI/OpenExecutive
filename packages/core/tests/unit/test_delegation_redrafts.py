@@ -234,7 +234,7 @@ def test_a_named_replacement_clears_an_earlier_draft_from_another_conversation()
     new_row = _record(owner, "d4", "s-monday")
 
     outcomes = asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine view", now=NOW))
-    assert sorted(outcomes) == ["deleted", "kept_edited"]
+    assert outcomes == ["deleted"]
     assert mailbox.deleted == ["d1"]
     assert sorted(mailbox.saved) == ["d2", "d3", "d4"]
 
@@ -267,6 +267,11 @@ def test_loose_words_name_no_draft() -> None:
     # Short words name nothing, and a part of a word is not the word.
     for words in ("a", "re", "a re", "pin", "dat"):
         assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words=words, now=NOW)) == []
-    # Words that match more drafts than one replacement may delete delete none.
-    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="northpeak", now=NOW)) == []
+    # Words that fit more than one draft name none of them: a first name fits
+    # every draft to that person, so it deletes nothing.
+    for words in ("northpeak", "dana"):
+        assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words=words, now=NOW)) == []
     assert mailbox.deleted == []
+    # Words that fit one draft replace it.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="board", now=NOW)) == ["deleted"]
+    assert mailbox.deleted == ["d4"]

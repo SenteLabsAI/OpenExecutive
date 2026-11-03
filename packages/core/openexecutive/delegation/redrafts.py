@@ -41,9 +41,6 @@ logger = logging.getLogger(__name__)
 _MIN_SUBJECT = 8
 # How far back a named replacement looks for the draft it replaces.
 NAMED_DAYS = 30
-# The most drafts one named replacement deletes; more matches than this mean
-# the words were too loose to name one draft, so it deletes none.
-NAMED_MAX = 3
 _MIN_NAME_WORD = 3
 _WORD = re.compile(r"[\w'-]+")
 
@@ -237,10 +234,11 @@ async def replace_named(
     """After the chat draft ``row_id`` was saved in place of an earlier one
     the person asked to replace: delete ``person_id``'s open chat drafts from
     the last ``NAMED_DAYS`` days, in any conversation, that ``words`` name
-    (every word a whole word of the subject or a recipient). A draft they
-    edited in their mailbox stays, and when more than ``NAMED_MAX`` drafts
-    match, the words named no one draft and none is deleted. Returns each
-    match's outcome (``deleted``, ``already_gone``, ``kept_edited``)."""
+    (every word a whole word of the subject or a recipient). Only one draft
+    is ever replaced: when the words fit more than one unedited draft (a
+    first name that fits every draft to that person) they named none, and
+    nothing is deleted. A draft they edited in their mailbox is never a
+    candidate. Returns the outcome (``deleted`` or ``already_gone``)."""
     now = now or datetime.now(UTC)
     if not words.strip():
         return []
@@ -252,10 +250,16 @@ async def replace_named(
     named: list[tuple[drafts.DraftRow, Any]] = []
     for row in rows:
         readable, found = await _read(client, row)
-        if readable and found is not None and _names_draft(words, found.message):
+        if (
+            readable and found is not None
+            # A draft they edited is theirs: never a candidate.
+            and str(getattr(found.message, "id", "") or "") == row.message_id
+            and _names_draft(words, found.message)
+        ):
             named.append((row, found))
-    if len(named) > NAMED_MAX:
-        logger.info("redrafts: %d drafts matched the named words; deleting none", len(named))
+    if len(named) != 1:
+        if named:
+            logger.info("redrafts: %d drafts matched the named words; deleting none", len(named))
         return []
     outcomes: list[str] = []
     for row, found in named:
