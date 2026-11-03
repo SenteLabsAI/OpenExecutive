@@ -7,6 +7,7 @@ principal under local login. Anyone else gets 403.
 
 Routes:
   GET    /memories/worked-out        — the caller's figures, newest first
+  PATCH  /memories/worked-out/{id}   — change one to their own wording
   DELETE /memories/worked-out/{id}   — remove one of them
 """
 from __future__ import annotations
@@ -30,6 +31,12 @@ class FigureOut(BaseModel):
     as_of: str | None
     private: bool
     created_at: str
+
+
+class FigureEdit(BaseModel):
+    subject: str | None = None
+    figure: str | None = None
+    source: str | None = None
 
 
 class WorkedOutOut(BaseModel):
@@ -57,3 +64,21 @@ async def forget_worked_out(request: Request, figure_id: int) -> dict[str, Any]:
         {"person_id": person.id, "figure_id": figure_id},
     )
     return {"forgotten": 1}
+
+
+@router.patch("/memories/worked-out/{figure_id}", response_model=FigureOut)
+async def edit_worked_out(request: Request, figure_id: int, body: FigureEdit) -> FigureOut:
+    person = _caller(request)
+    assert person.id is not None
+    try:
+        row = worked_out.edit_figure(figure_id, person_id=person.id, subject=body.subject,
+                                     figure=body.figure, source=body.source)
+    except ValueError as exc:
+        raise _refuse(422, "not_allowed", str(exc)) from None
+    if row is None:
+        raise _refuse(404, "not_found", "That figure isn't there any more.")
+    _audit(
+        "worked_out_edited", f"Person {person.id} edited one of their figures",
+        {"person_id": person.id, "figure_id": figure_id},
+    )
+    return FigureOut(**{k: row[k] for k in FigureOut.model_fields})

@@ -51,6 +51,7 @@ from openexecutive.audit import log_event as audit_log
 from openexecutive.audit.context import get_active_ids, set_turn
 from openexecutive.config import get_settings
 
+_CONCLUSION_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 logger = logging.getLogger(__name__)
 
 # Stable peer id for OE's Executive in Honcho's peer model. Using a single
@@ -2225,6 +2226,9 @@ _OVERVIEW_LISTING_TIMEOUT_S = 15.0
 class PersonConclusion(BaseModel):
     content: str
     created_at: str
+    id: str = ""
+    """Honcho's id for the line, so the person can remove it; "" when the
+    server gave none that is safe to echo."""
 
 
 class PersonMemory(BaseModel):
@@ -2292,9 +2296,11 @@ def _safe_lines(text: Any) -> list[str]:
 
 def _to_conclusion(c: Any) -> PersonConclusion:
     """One Honcho conclusion as the page shows it, every line scrubbed."""
+    raw_id = str(getattr(c, "id", "") or "")
     return PersonConclusion(
         content=" ".join(_safe_lines(c.content)),
         created_at=_block_safe_line(_iso(c.created_at)),
+        id=raw_id if _CONCLUSION_ID.fullmatch(raw_id) else "",
     )
 
 
@@ -2445,6 +2451,11 @@ async def people_overview(*, recent: int) -> PeopleMemory:
 
 # Honcho's list routes cap a page at 100 items.
 PERSON_CONCLUSIONS_MAX_PAGE = 100
+# How many pages of a person's own conclusions a remove looks through for
+# the id it was given.
+_FORGET_MAX_PAGES = 20
+# The whole lookup gets this many single-read timeouts, not one per page.
+_FORGET_DEADLINE_PAGES = 3
 
 
 class PersonConclusionsPage(BaseModel):
@@ -2540,3 +2551,70 @@ async def person_conclusions(person_id: int, *, page: int, size: int) -> PersonC
         total=total,
         has_more=has_more,
     )
+
+
+async def forget_person_conclusion(
+    person_id: int, conclusion_id: str,
+) -> Literal["forgotten", "missing", "unavailable"]:
+    """Delete one conclusion peer memory holds about ``person_id`` (a self
+    conclusion, observer == observed == their peer, the scope prefetch
+    reads). Honcho deletes by id across the workspace, so the id must first
+    be found among that peer's own conclusions: an id from anyone else's is
+    ``missing``. ``unavailable`` when peer memory is off or can't be
+    reached. One ``peer_memory`` audit row, ``op=forget``."""
+    from openexecutive.people import registry
+
+    if not _CONCLUSION_ID.fullmatch(conclusion_id or ""):
+        return "missing"
+    settings = get_settings()
+    if not settings.honcho_enabled:
+        return "unavailable"
+    client = await _get_client()
+    if client is None:
+        return "unavailable"
+    person = registry.get_person(person_id)
+    if person is None:
+        return "missing"
+    started = time.monotonic()
+    timeout = base_prefetch_timeout_s(settings.honcho_prefetch_timeout_s)
+    try:
+        matched = await asyncio.wait_for(
+            _matched_peers(client, {person_id: person}), timeout=_OVERVIEW_LISTING_TIMEOUT_S
+        )
+        if not matched:
+            return "missing"
+        _, peer = matched[0]
+
+        async def _search() -> tuple[bool, bool]:
+            for page in range(1, _FORGET_MAX_PAGES + 1):
+                result = await peer.conclusions.aio.list(
+                    page=page, size=PERSON_CONCLUSIONS_MAX_PAGE, reverse=False,
+                )
+                items = list(result.items)
+                if any(str(getattr(c, "id", "")) == conclusion_id for c in items):
+                    return True, True
+                if len(items) < PERSON_CONCLUSIONS_MAX_PAGE:
+                    return False, True
+            return False, False
+
+        # One deadline for the whole lookup, however many pages it reads.
+        found, searched_all = await asyncio.wait_for(_search(), timeout=timeout * _FORGET_DEADLINE_PAGES)
+        if not found:
+            # Past the pages it looks through, the id may still be theirs:
+            # "try again later" is truer than "not yours".
+            return "missing" if searched_all else "unavailable"
+        await asyncio.wait_for(peer.conclusions.aio.delete(conclusion_id), timeout=timeout)
+    except Exception as exc:
+        logger.warning("Honcho conclusion delete failed: %s", type(exc).__name__)
+        _emit_peer_memory(
+            op="forget", person_id=person_id, outcome="error",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            details={"error_type": type(exc).__name__},
+        )
+        return "unavailable"
+    _emit_peer_memory(
+        op="forget", person_id=person_id, outcome="ok",
+        duration_ms=int((time.monotonic() - started) * 1000),
+        details={"conclusion_id": conclusion_id},
+    )
+    return "forgotten"

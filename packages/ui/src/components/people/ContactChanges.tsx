@@ -6,10 +6,13 @@
 // principal's alone; the page shows it only to them.
 
 import Link from "next/link";
+import { useState } from "react";
 
 import Button from "@/components/ui/Button";
 import {
   decideContactChange,
+  editContactNote,
+  removeContactNote,
   markContactChangesSeen,
   setContactKeeperMode,
   type ContactChange,
@@ -201,15 +204,118 @@ export function PersonContactChanges({
 /** On a person's own page (contact or teammate, for the principal only):
  * what the Executive remembers about them, from
  * your own mail and meetings. Nothing when it knows nothing yet. */
-export function PersonContactNote({ note }: { note: ContactNote | null }) {
-  if (!note) return null;
-  const lines = contactActivityLines(note, shortDate);
-  if (!note.note && note.topics.length === 0 && lines.length === 0) return null;
+export function PersonContactNote({
+  note,
+  personId,
+  onChange,
+}: {
+  note: ContactNote | null;
+  personId?: number;
+  onChange?: (note: ContactNote | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const canEdit = personId !== undefined && onChange !== undefined;
+  const lines = note ? contactActivityLines(note, shortDate) : [];
+  const empty = !note || (!note.note && note.topics.length === 0 && lines.length === 0);
+  if (empty && !editing && !canEdit) return null;
+
+  const save = async () => {
+    if (personId === undefined || !onChange) return;
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await editContactNote(personId, draft));
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the note");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    if (personId === undefined || !onChange || !note) return;
+    setBusy(true);
+    setError("");
+    try {
+      await removeContactNote(personId);
+      onChange({ ...note, note: "", topics: [], edited_by_you: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't remove the note");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (empty && !editing) {
+    return (
+      <div className="mb-4">
+        <button
+          onClick={() => {
+            setDraft("");
+            setEditing(true);
+          }}
+          className="min-h-touch text-sm font-medium text-accent hover:underline"
+        >
+          Add a note about them
+        </button>
+      </div>
+    );
+  }
+
   return (
     <section className="rounded-2xl border border-line bg-surface-elevated px-5 py-4 mb-4" aria-label="What I remember">
-      <div className="text-[12px] font-bold uppercase tracking-wide text-fg-subtle">What I remember</div>
-      {note.note && <p className="text-[15px] text-fg mt-1.5 break-words">{note.note}</p>}
-      {note.topics.length > 0 && (
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[12px] font-bold uppercase tracking-wide text-fg-subtle">What I remember</div>
+        {canEdit && !editing && (
+          <div className="flex gap-3">
+            <button
+              onClick={() => {
+                setDraft(note?.note ?? "");
+                setEditing(true);
+              }}
+              className="min-h-touch text-sm font-medium text-accent hover:underline"
+            >
+              Edit
+            </button>
+            {note?.note && (
+              <button
+                onClick={() => void remove()}
+                disabled={busy}
+                className="min-h-touch text-sm text-fg-muted hover:text-fg"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {editing ? (
+        <div className="mt-2 space-y-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={3}
+            maxLength={400}
+            aria-label="What to remember about them"
+            className="w-full rounded-md border border-line bg-surface px-3 py-2 text-[15px] text-fg"
+          />
+          <div className="flex gap-2">
+            <Button variant="primary" size="sm" className="!h-10" disabled={busy || !draft.trim()} onClick={() => void save()}>
+              {busy ? "Saving…" : "Save"}
+            </Button>
+            <Button variant="secondary" size="sm" className="!h-10" disabled={busy} onClick={() => setEditing(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        note?.note && <p className="text-[15px] text-fg mt-1.5 break-words">{note.note}</p>
+      )}
+      {error && <p className="mt-2 text-sm text-fg-muted">{error}</p>}
+      {!editing && note && note.topics.length > 0 && (
         <ul className="flex flex-wrap gap-1.5 mt-2.5" aria-label="Good to ask about">
           {note.topics.map((t) => (
             <li key={t} className="rounded-full border border-line px-2.5 py-0.5 text-[13px] text-fg-muted">
@@ -218,14 +324,18 @@ export function PersonContactNote({ note }: { note: ContactNote | null }) {
           ))}
         </ul>
       )}
-      {lines.length > 0 && (
+      {!editing && lines.length > 0 && (
         <ul className="mt-2.5 space-y-0.5 text-[13px] text-fg-subtle">
           {lines.map((l) => (
             <li key={l}>{l}</li>
           ))}
         </ul>
       )}
-      <p className="mt-2.5 text-[12px] text-fg-subtle">From your own emails and meetings. Only you see this.</p>
+      <p className="mt-2.5 text-[12px] text-fg-subtle">
+        {note?.edited_by_you
+          ? "Your words. It keeps them as you wrote them. Only you see this."
+          : "From your own emails and meetings. Only you see this."}
+      </p>
     </section>
   );
 }

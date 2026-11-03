@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS contact_notes (
     met_count INTEGER NOT NULL DEFAULT 0,
     activity_key TEXT NOT NULL DEFAULT '',
     note_written_at TEXT,
+    note_by_owner INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS contact_note_tries (
@@ -88,6 +89,8 @@ class ContactNote(BaseModel):
     emailed_count: int = 0
     met_count: int = 0
     note_written_at: str | None = None
+    edited_by_you: bool = False
+    """The principal wrote this note: the keeper leaves it as it is."""
     updated_at: str = ""
 
 
@@ -105,6 +108,14 @@ def _conn(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, No
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(contact_notes)")}
+        if "note_by_owner" not in cols:
+            try:
+                conn.execute("ALTER TABLE contact_notes ADD COLUMN note_by_owner INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError as exc:
+                # Another connection added it between the check and here.
+                if "duplicate column" not in str(exc).lower():
+                    raise
         yield conn
         conn.commit()
     finally:
@@ -121,7 +132,8 @@ def _row(row: sqlite3.Row) -> ContactNote:
         last_emailed_at=row["last_emailed_at"], last_heard_at=row["last_heard_at"],
         last_met_at=row["last_met_at"], next_meeting_at=row["next_meeting_at"],
         next_meeting_title=row["next_meeting_title"], emailed_count=row["emailed_count"],
-        met_count=row["met_count"], note_written_at=row["note_written_at"], updated_at=row["updated_at"],
+        met_count=row["met_count"], note_written_at=row["note_written_at"],
+        edited_by_you=row["note_by_owner"] == 1, updated_at=row["updated_at"],
     )
 
 
@@ -192,6 +204,51 @@ def put_note(person_id: int, note: str, topics: list[str], key: str, db_path: Pa
             "note_written_at = excluded.note_written_at, updated_at = excluded.updated_at",
             (person_id, note, json.dumps(topics), key, now, now),
         )
+
+
+def put_owner_note(person_id: int, note: str, db_path: Path | None = None) -> None:
+    """The principal's own wording for the note (already ``clean_note``ed).
+    The keeper leaves it until they remove it."""
+    now = datetime.now(UTC).isoformat()
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO contact_notes (person_id, note, note_written_at, note_by_owner, updated_at) "
+            "VALUES (?, ?, ?, 1, ?) ON CONFLICT(person_id) DO UPDATE SET note = excluded.note, "
+            "note_written_at = excluded.note_written_at, note_by_owner = 1, topics = '[]', "
+            "updated_at = excluded.updated_at",
+            (person_id, note, now, now),
+        )
+
+
+def clear_note(person_id: int, db_path: Path | None = None) -> None:
+    """Remove the note and its topics, keeping the activity (when they last
+    emailed or met). The keeper may write a new one once there is new mail
+    or a new meeting, not from what it already read: ``note_by_owner = -1``
+    until the keeper's next run marks what is there as read
+    (``settle_removed``)."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "UPDATE contact_notes SET note = '', topics = '[]', note_by_owner = -1, note_written_at = NULL, "
+            "updated_at = ? WHERE person_id = ?",
+            (datetime.now(UTC).isoformat(), person_id),
+        )
+
+
+def settle_removed(person_id: int, key: str, db_path: Path | None = None) -> bool:
+    """After a remove, mark ``key`` (the mail and meetings there are now) as
+    read, so a new note waits for new ones. True when there was a remove."""
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE contact_notes SET activity_key = ?, note_by_owner = 0 WHERE person_id = ? AND note_by_owner = -1",
+            (key, person_id),
+        )
+        return cur.rowcount > 0
+
+
+def owner_wrote(person_id: int, db_path: Path | None = None) -> bool:
+    """Whether the principal wrote ``person_id``'s note themselves."""
+    note = get(person_id, db_path)
+    return note is not None and note.edited_by_you
 
 
 def set_key(person_id: int, key: str, db_path: Path | None = None) -> None:

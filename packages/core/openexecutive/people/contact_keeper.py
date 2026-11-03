@@ -1089,9 +1089,13 @@ async def _refresh_notes(
         key = notes.key_for((m[0] for m in sent), (m[0] for m in meetings))
         written = [(when, subject, text) for _id, when, subject, text in sent if text.strip()]
         titled = [(when, title) for _id, when, title in meetings if title]
+        if notes.settle_removed(person_id, key):
+            # Just removed: a new note waits for new mail or a new meeting.
+            continue
         if not written and not titled:
             continue
-        if budget <= 0 or key == notes.activity_key(person_id):
+        if budget <= 0 or key == notes.activity_key(person_id) or notes.owner_wrote(person_id):
+            # The principal's own note stays as they wrote it.
             continue
         budget -= 1
         notes.count_note_try(day_start)

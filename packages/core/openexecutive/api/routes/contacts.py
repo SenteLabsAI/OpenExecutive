@@ -12,7 +12,12 @@
   list's Last contact column and sort. People with nothing yet are left out.
 - ``GET /contacts/{person_id}/note`` — what the Executive remembers about one
   person, contact or teammate (``people.contact_notes``): 404 when it has
-  nothing yet. The principal's alone, whoever it is about.
+  nothing yet, and an empty ``note`` when only the activity is known (as
+  after a remove). The principal's alone, whoever it is about.
+- ``PUT /contacts/{person_id}/note`` — the principal's own wording for it;
+  the keeper then leaves it as written. ``DELETE`` removes the note (the
+  activity stays); the keeper may write a new one only from new mail or
+  meetings.
 
 Contacts are the principal's alone, so every route answers only a caller
 that resolves to the principal (``people.caller_is_principal``): 404 for
@@ -50,6 +55,10 @@ class LastContact(BaseModel):
 
 class LastContactsOut(BaseModel):
     people: list[LastContact]
+
+
+class ContactNoteIn(BaseModel):
+    note: str
 
 
 class KeeperModeIn(BaseModel):
@@ -159,3 +168,49 @@ def get_contact_note(person_id: int, request: Request) -> contact_notes.ContactN
     if note is None or person is None or person.archived:
         raise HTTPException(status_code=404, detail="Not found")
     return note
+
+
+def _note_person(person_id: int) -> None:
+    from openexecutive.people import store as people_store
+
+    person = people_store.get_person(person_id)
+    if person is None or person.is_principal or person.archived:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+def _audit_note(event: str, person_id: int) -> None:
+    try:
+        from openexecutive.audit import log_event
+
+        log_event(event, f"Contact note for person {person_id} changed from the People page",
+                  actor="principal", details={"person_id": person_id}, private=True)
+    except Exception:  # noqa: BLE001 - the change already landed.
+        pass
+
+
+@router.put("/contacts/{person_id}/note", response_model=contact_notes.ContactNote)
+def edit_contact_note(person_id: int, body: ContactNoteIn, request: Request) -> contact_notes.ContactNote:
+    _require_principal(request)
+    _note_person(person_id)
+    if len(" ".join(body.note.split())) > contact_notes.NOTE_MAX:
+        raise HTTPException(status_code=422, detail=f"Keep the note under {contact_notes.NOTE_MAX} characters")
+    note = contact_notes.clean_note(body.note)
+    if not note:
+        raise HTTPException(
+            status_code=422,
+            detail="Write the note in plain words, without links, email addresses, @ or < signs",
+        )
+    contact_notes.put_owner_note(person_id, note)
+    _audit_note("contact_note_edited", person_id)
+    saved = contact_notes.get(person_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return saved
+
+
+@router.delete("/contacts/{person_id}/note", status_code=204)
+def remove_contact_note(person_id: int, request: Request) -> None:
+    _require_principal(request)
+    _note_person(person_id)
+    contact_notes.clear_note(person_id)
+    _audit_note("contact_note_removed", person_id)

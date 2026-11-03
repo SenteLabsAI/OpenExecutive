@@ -281,3 +281,27 @@ def test_each_person_sees_and_removes_only_their_own(client: TestClient, ids: di
 
 def test_a_request_without_a_sign_in_is_refused(client: TestClient, ids: dict[str, int]) -> None:
     assert client.get("/memories/worked-out").status_code == 403
+
+
+def test_each_person_edits_only_their_own(client: TestClient, ids: dict[str, int]) -> None:
+    mine = _keep(ids["principal"], "Reserves held", "$330,241")
+    res = client.patch(f"/memories/worked-out/{mine}", json={"figure": "$331,000", "source": "Oct 31 statement"},
+                       headers=OWNER)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["figure"] == "$331,000" and body["source"] == "Oct 31 statement" and body["subject"] == "Reserves held"
+    assert client.patch(f"/memories/worked-out/{mine}", json={"figure": "$1"}, headers=TEAMMATE).status_code == 404
+    bad = client.patch(f"/memories/worked-out/{mine}", json={"source": "https://x.example"}, headers=OWNER)
+    assert bad.status_code == 422
+    assert wo.list_figures(ids["principal"])[0]["figure"] == "$331,000"
+
+
+def test_an_edit_onto_another_figures_subject_replaces_that_figure() -> None:
+    older = _keep(1, "Reserves held", "$300,000")
+    other = _keep(1, "Cash on hand", "$12,000")
+    _keep(2, "Reserves held", "$12")
+    wo.edit_figure(other, person_id=1, subject="reserves held", figure="$330,241")
+    figures = wo.list_figures(1)
+    assert [(f["id"], f["figure"]) for f in figures] == [(other, "$330,241")]
+    assert older not in [f["id"] for f in figures]
+    assert [f["figure"] for f in wo.list_figures(2)] == ["$12"]

@@ -855,7 +855,7 @@ export default function PersonDetailPage() {
               {viewerIsPrincipal && !editing && !person.is_principal && contactChanges.length > 0 && (
                 <PersonContactChanges changes={contactChanges} onChanged={reloadAfterUndo} />
               )}
-              {viewerIsPrincipal && !editing && !person.is_principal && <PersonContactNote note={contactNote} />}
+              {viewerIsPrincipal && !editing && !person.is_principal && <PersonContactNote note={contactNote} personId={personId} onChange={setContactNote} />}
               {/* Core fields */}
               <section className="rounded-2xl border border-line bg-surface-elevated px-5">
                 {editing ? (

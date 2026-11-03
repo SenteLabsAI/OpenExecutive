@@ -85,9 +85,10 @@ def _client() -> TestClient:
 
 
 class _Conclusion:
-    def __init__(self, content: str, created_at: datetime) -> None:
+    def __init__(self, content: str, created_at: datetime, conclusion_id: str = "") -> None:
         self.content = content
         self.created_at = created_at
+        self.id = conclusion_id
 
 
 class _Page:
@@ -132,6 +133,10 @@ class _ConclusionsAio:
         ordered = list(reversed(self._conclusions)) if reverse else self._conclusions
         start = (page - 1) * size
         return _Page(ordered[start:start + size], self._total, no_total=self._no_total)
+
+    async def delete(self, conclusion_id: str) -> None:
+        self._calls.append({"delete": conclusion_id})
+        self._conclusions = [c for c in self._conclusions if c.id != conclusion_id]
 
 
 class _Conclusions:
@@ -645,3 +650,71 @@ def test_a_malformed_conclusions_page_is_an_error_status(
     assert resp.status_code == 200 and resp.json()["status"] == "error"
     audit = [r["details"] for r in audit_rows if r["event_type"] == "peer_memory"]
     assert audit[-1]["outcome"] == "error" and audit[-1]["error_type"] == "ValueError"
+
+
+# --------------------------------------------------------------------------- #
+# Remove one line (DELETE /memories/people/{id}/conclusions/{conclusion_id})
+# --------------------------------------------------------------------------- #
+
+
+def test_the_page_carries_each_lines_id_and_a_line_can_be_removed(roster: dict[str, int]) -> None:
+    peer = _Peer(str(roster["principal"]), conclusions=[
+        _Conclusion("prefers a short table", _T2, "c_two"), _Conclusion("runs 48 units", _T1, "c_one"),
+    ])
+    with _with_client(_Client([peer])):
+        page = _client().get(f"/memories/people/{roster['principal']}/conclusions").json()
+        assert [c["id"] for c in page["items"]] == ["c_two", "c_one"]
+        resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/c_one")
+        assert resp.status_code == 204
+        left = _client().get(f"/memories/people/{roster['principal']}/conclusions").json()
+    assert [c["content"] for c in left["items"]] == ["prefers a short table"]
+    assert {"delete": "c_one"} in peer.calls
+
+
+def test_only_a_line_among_their_own_is_removed(roster: dict[str, int]) -> None:
+    mine = _Peer(str(roster["principal"]), conclusions=[_Conclusion("runs 48 units", _T1, "c_mine")])
+    theirs = _Peer(str(roster["member"]), conclusions=[_Conclusion("on leave", _T1, "c_theirs")])
+    with _with_client(_Client([mine, theirs])):
+        # Someone else's id, through the caller's own path: not found, nothing deleted.
+        resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/c_theirs")
+        assert resp.status_code == 404
+        assert _client().delete(f"/memories/people/{roster['principal']}/conclusions/bad id!").status_code == 404
+    assert not any("delete" in c for c in mine.calls + theirs.calls)
+
+
+def test_nobody_removes_another_persons_line(roster: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(episodic_route, "_viewer", lambda request: roster["principal"])
+    theirs = _Peer(str(roster["member"]), conclusions=[_Conclusion("on leave", _T1, "c_theirs")])
+    with _with_client(_Client([theirs])):
+        resp = _client().delete(f"/memories/people/{roster['member']}/conclusions/c_theirs")
+    assert resp.status_code == 404 and not any("delete" in c for c in theirs.calls)
+
+
+def test_remove_says_when_memory_is_off(monkeypatch: pytest.MonkeyPatch, roster: dict[str, int]) -> None:
+    monkeypatch.setenv("HONCHO_ENABLED", "false")
+    assert _client().delete(f"/memories/people/{roster['principal']}/conclusions/c_one").status_code == 503
+
+
+def test_a_line_past_the_pages_it_looks_through_is_not_called_missing(
+    roster: dict[str, int], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(honcho_client, "_FORGET_MAX_PAGES", 1)
+    lines = [_Conclusion(f"line {n}", _T1, f"c_{n}") for n in range(honcho_client.PERSON_CONCLUSIONS_MAX_PAGE + 1)]
+    peer = _Peer(str(roster["principal"]), conclusions=lines)
+    last = lines[-1].id
+    with _with_client(_Client([peer])):
+        resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/{last}")
+    assert resp.status_code == 503 and not any("delete" in c for c in peer.calls)
+
+
+def test_a_slow_lookup_answers_within_one_deadline(roster: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(honcho_client, "base_prefetch_timeout_s", lambda _t: 0.05)
+    peer = _Peer(str(roster["principal"]), conclusions=[_Conclusion("runs 48 units", _T1, "c_one")])
+
+    async def _slow(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(peer.conclusions.aio, "list", _slow)
+    with _with_client(_Client([peer])):
+        resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/c_one")
+    assert resp.status_code == 503
