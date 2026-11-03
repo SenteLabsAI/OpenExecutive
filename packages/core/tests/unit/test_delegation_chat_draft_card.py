@@ -164,3 +164,20 @@ def test_send_waits_while_the_card_is_changing_it(db: Path, owner: Any) -> None:
     finally:
         chat_draft_card._CHANGING.discard(row)
     assert refused.code == "busy" and mailbox.sent == []
+
+
+def test_a_draft_with_files_is_changed_in_the_mailbox(db: Path, owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.delegation.gmail import DraftChanged
+
+    mailbox, row = _chat_draft(owner)
+    before = drafts.get_row(row).message_id
+
+    async def not_plain(*_a: Any, **_k: Any) -> str:
+        raise DraftChanged("not_plain")
+
+    monkeypatch.setattr(mailbox, "update_draft_text", not_plain)
+    refused = _refused(chat_draft_card.set_text(owner, row, "Mine", caller=LOCAL, gmail=mailbox, now=LATER))
+    assert refused.code == "draft_not_plain"
+    # The row keeps the version Send compares with.
+    assert drafts.get_row(row).message_id == before
+    assert not drafts.set_version(row, "not-the-version", "x")
