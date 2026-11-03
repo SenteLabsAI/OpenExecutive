@@ -233,9 +233,13 @@ def test_a_named_replacement_clears_an_earlier_draft_from_another_conversation()
     mailbox.add("d4", [DANA], subject="BOV on Big Sky")
     new_row = _record(owner, "d4", "s-monday")
 
-    outcomes = asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine view", now=NOW))
+    # "pine view" fits d1 and the edited d3: two drafts, so it names neither.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine view", now=NOW)) == []
+    outcomes = asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine view dana", now=NOW))
     assert outcomes == ["deleted"]
     assert mailbox.deleted == ["d1"]
+    # The edited one, named alone, stays.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine sam", now=NOW)) == ["kept_edited"]
     assert sorted(mailbox.saved) == ["d2", "d3", "d4"]
 
 

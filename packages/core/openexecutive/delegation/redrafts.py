@@ -237,8 +237,9 @@ async def replace_named(
     (every word a whole word of the subject or a recipient). Only one draft
     is ever replaced: when the words fit more than one unedited draft (a
     first name that fits every draft to that person) they named none, and
-    nothing is deleted. A draft they edited in their mailbox is never a
-    candidate. Returns the outcome (``deleted`` or ``already_gone``)."""
+    nothing is deleted; drafts they edited count toward that. The one draft
+    named stays if they edited it in their mailbox. Returns its outcome
+    (``deleted``, ``already_gone`` or ``kept_edited``)."""
     now = now or datetime.now(UTC)
     if not words.strip():
         return []
@@ -250,12 +251,7 @@ async def replace_named(
     named: list[tuple[drafts.DraftRow, Any]] = []
     for row in rows:
         readable, found = await _read(client, row)
-        if (
-            readable and found is not None
-            # A draft they edited is theirs: never a candidate.
-            and str(getattr(found.message, "id", "") or "") == row.message_id
-            and _names_draft(words, found.message)
-        ):
+        if readable and found is not None and _names_draft(words, found.message):
             named.append((row, found))
     if len(named) != 1:
         if named:
