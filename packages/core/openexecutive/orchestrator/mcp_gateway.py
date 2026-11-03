@@ -478,8 +478,6 @@ _TOO_DEEP = "<too-deep>"
 # server-side file_path are refused for it. Every other upload (an .xlsx kept
 # as an Excel file in Drive, a PNG, a DOCX to Docs) is left alone.
 _NATIVE_SHEET_MIME = "google-apps.spreadsheet"
-# Source types Drive converts into a native Sheet when it rewrites one.
-_SHEET_MIME_RE = re.compile(r"spreadsheet|ms-?excel|openxmlformats.*sheet|opendocument\.spreadsheet|csv")
 # Free text Google mails to someone the roster never checked: an RSVP comment
 # goes to the event's organizer; an out-of-office / focus-time decline message
 # goes to whoever invites the Executive during the window. Refused on every
@@ -821,29 +819,25 @@ def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
 
 def _becomes_sheet(tool: str, arguments: dict[str, Any]) -> bool:
     """True when an upload through ``tool`` is converted into a native Sheet:
-    the Sheets import, or a Drive create whose target type is a native Sheet.
-    A Drive update's target is unknown here, so it counts too.
+    the Sheets import, a Drive create whose target type is a native Sheet,
+    or any Drive update: the file being rewritten may be a native Sheet, and
+    Drive converts plain text and TSV into one too, so a stated type on an
+    update proves nothing.
 
     A Drive create stores the bytes as they are (workspace-mcp's
     create_drive_file never converts), so an .xlsx or .csv saved to Drive
     stays an Excel or CSV file that Google does not evaluate: only an
     explicit ``application/vnd.google-apps.spreadsheet`` target counts."""
     bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
-    if bare == "import_to_google_sheets":
+    if bare in ("import_to_google_sheets", "update_drive_file"):
         return True
-    mimes = [
-        value.lower() for key, value in arguments.items()
-        if isinstance(key, str) and _norm_key(key) in ("mimetype", "contentmimetype")
-        and isinstance(value, str)
-    ]
-    if bare == "create_drive_file":
-        return any(_NATIVE_SHEET_MIME in m for m in mimes)
-    if bare == "update_drive_file":
-        # The file's own type is unknown here. A native Sheet converts only
-        # spreadsheet sources (or an upload with no stated type), so new
-        # bytes of any other type can't become a Sheet.
-        return not mimes or any(_NATIVE_SHEET_MIME in m or _SHEET_MIME_RE.search(m) for m in mimes)
-    return False
+    if bare != "create_drive_file":
+        return False
+    return any(
+        isinstance(key, str) and _norm_key(key) in ("mimetype", "contentmimetype")
+        and isinstance(value, str) and _NATIVE_SHEET_MIME in value.lower()
+        for key, value in arguments.items()
+    )
 
 
 def _formula_fetches(text: str) -> bool:
@@ -870,15 +864,9 @@ def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
     bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
     if not _CELL_WRITER_RE.search(bare):
         return None
-    # A Drive file that doesn't become a Sheet is stored as text or bytes,
-    # never evaluated: "Logo image (PNG)" in a note is not a formula. An
-    # update's HTML can still land in a native Sheet, so that is scanned too.
-    html_update = bare == "update_drive_file" and any(
-        isinstance(k, str) and _norm_key(k) in ("mimetype", "contentmimetype")
-        and isinstance(v, str) and "html" in v.lower()
-        for k, v in arguments.items()
-    )
-    if bare.endswith("drive_file") and not html_update and not _becomes_sheet(tool, arguments):
+    # A Drive create that doesn't become a Sheet is stored as text or bytes,
+    # never evaluated: "Logo image (PNG)" in a note is not a formula.
+    if bare == "create_drive_file" and not _becomes_sheet(tool, arguments):
         return None
     if _becomes_sheet(tool, arguments):
         for key, value in arguments.items():
