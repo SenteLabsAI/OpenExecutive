@@ -703,6 +703,16 @@ def _mirror_to_dept_honcho(
     )
 
 
+def _as_decision(fact: Any) -> Decision:
+    """A decision fact (``memory.facts``) in the shape the decision readers
+    have always returned."""
+    return Decision(
+        id=fact.id, timestamp=fact.created_at, domain=fact.department or "general",
+        summary=fact.statement, outcome=fact.outcome, department=fact.department,
+        session_id=fact.session_id or "",
+    )
+
+
 def store_decision(
     domain: str,
     summary: str,
@@ -712,35 +722,30 @@ def store_decision(
     session_id: str = "",
     person_id: int | None = None,
     db_path: Path | None = None,
-) -> None:
-    now = datetime.now(UTC)
-    dedup_window_start = (now - timedelta(days=7)).isoformat()
-    summary_prefix = summary[:80]
-    with _get_conn(_resolve_db_path(db_path)) as conn:
-        existing = conn.execute(
-            "SELECT id, rationale FROM decisions"
-            " WHERE domain = ? AND timestamp > ? AND substr(summary, 1, 80) = ? AND session_id = ?",
-            (domain, dedup_window_start, summary_prefix, session_id),
-        ).fetchone()
-        if existing:
-            # Don't lose a newly-provided rationale when the prior row had none.
-            if rationale and not existing["rationale"]:
-                conn.execute(
-                    "UPDATE decisions SET rationale = ? WHERE id = ?",
-                    (rationale, existing["id"]),
-                )
-            logger.debug("Skipping duplicate decision in domain=%s (matches row %d)", domain, existing["id"])
-            # Do NOT mirror on a dedup hit — the dept peer already has
-            # the prior note from when the original row landed.
-            return
-        conn.execute(
-            "INSERT INTO decisions (timestamp, domain, summary, rationale, tags, department, session_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (now.isoformat(), domain, summary, rationale, tags, department, session_id),
-        )
-    # Mirror only after the SQL commit lands. Body is concise + structured
-    # so Honcho's representation extractor can pick out summary/rationale
-    # cleanly later.
+) -> Decision:
+    """Keep a decision as a standing fact (``memory.facts``, ``decision=1``)
+    and mirror it into the department's peer memory. Its subject is the
+    whole summary, so two decisions that only start alike stay apart; the
+    same summary again replaces the earlier one."""
+    from openexecutive.memory import facts
+
+    statement = " ".join(f"{summary} {rationale}".split()) if rationale else " ".join(summary.split())
+    subject = " ".join(summary.split())[: facts.SUBJECT_MAX]
+    if not subject:
+        raise ValueError("a decision needs a summary")
+    same = next(
+        (f for f in facts.decision_rows(department=department, limit=50, db_path=db_path)
+         if f.statement == statement and facts.subject_key(f.subject) == facts.subject_key(subject)),
+        None,
+    )
+    if same is not None:
+        # Already kept as it stands: no new row, and the department already
+        # has the note.
+        return _as_decision(same)
+    fact, _ = facts.record_fact(
+        subject=subject, statement=statement, source_quote="", session_id=session_id or None,
+        decision=True, department=department, db_path=db_path,
+    )
     body_parts = [f"Decision ({domain}): {summary}"]
     if rationale:
         body_parts.append(f"Rationale: {rationale}")
@@ -750,6 +755,7 @@ def store_decision(
         body="\n".join(body_parts),
         person_id=person_id,
     )
+    return _as_decision(fact)
 
 
 def store_initiative(
@@ -876,25 +882,13 @@ def get_recent_advice(
 def get_recent_decisions(
     limit: int = 10,
     db_path: Path | None = None,
-    session_id: str = "",
 ) -> list[Decision]:
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
+    """The newest decisions (decision facts), newest first."""
+    from openexecutive.memory import facts
+
+    if not _resolve_db_path(db_path).exists():
         return []
-    with _get_conn(resolved) as conn:
-        if session_id:
-            # Every conversation of a chat app's stream shares what it
-            # decided (memory.conversation_ids).
-            rows = conn.execute(
-                f"SELECT * FROM decisions WHERE {family_clause()}"
-                " ORDER BY timestamp DESC LIMIT ?",
-                (*family_params(session_id), limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM decisions ORDER BY timestamp DESC LIMIT ?", (limit,)
-            ).fetchall()
-    return [Decision(**dict(row)) for row in rows]
+    return [_as_decision(f) for f in facts.decision_rows(limit=limit, db_path=db_path)]
 
 
 def has_department_decision_since(
@@ -902,31 +896,14 @@ def has_department_decision_since(
     since: datetime,
     db_path: Path | None = None,
 ) -> bool:
-    """True when a decision tagged ``department`` was logged after ``since``.
+    """True when a decision tagged ``department`` was made after ``since``.
+    Filtered in SQL, so a busy company's newest decisions cannot hide one
+    department's."""
+    from openexecutive.memory import facts
 
-    Filtered in SQL, so a busy company's newest-N page of decisions cannot
-    hide one department's. Timestamps are UTC ISO strings, compared as text
-    (the same convention ``store_decision``'s dedup window uses).
-    """
-    if not department:
+    if not department or not _resolve_db_path(db_path).exists():
         return False
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
-        return False
-    bound = since.astimezone(UTC).isoformat() if since.tzinfo else since.isoformat()
-    with _get_conn(resolved) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM decisions WHERE department = ? AND timestamp > ? LIMIT 1",
-            (department, bound),
-        ).fetchone()
-    return row is not None
-
-
-def _utc_bound(moment: datetime) -> str:
-    """``moment`` as the UTC ISO text decisions are stamped with (a naive
-    value is read as UTC), for text comparison in SQL."""
-    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-    return aware.astimezone(UTC).isoformat()
+    return bool(facts.decision_rows(since=since, department=department, limit=1, db_path=db_path))
 
 
 def decisions_since(
@@ -935,18 +912,13 @@ def decisions_since(
     limit: int = 20,
     db_path: Path | None = None,
 ) -> list[Decision]:
-    """Decisions logged after ``since``, newest first (the weekly review's
-    "this week's decisions"). Filtered in SQL, compared as UTC ISO text like
-    ``has_department_decision_since``."""
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
+    """Decisions made after ``since``, newest first (the weekly review's
+    "this week's decisions")."""
+    from openexecutive.memory import facts
+
+    if not _resolve_db_path(db_path).exists():
         return []
-    with _get_conn(resolved) as conn:
-        rows = conn.execute(
-            "SELECT * FROM decisions WHERE timestamp > ? ORDER BY timestamp DESC LIMIT ?",
-            (_utc_bound(since), limit),
-        ).fetchall()
-    return [Decision(**dict(row)) for row in rows]
+    return [_as_decision(f) for f in facts.decision_rows(since=since, limit=limit, db_path=db_path)]
 
 
 def decisions_awaiting_outcome(
@@ -955,21 +927,16 @@ def decisions_awaiting_outcome(
     limit: int = 3,
     db_path: Path | None = None,
 ) -> list[Decision]:
-    """Decisions logged before ``older_than`` with no outcome recorded yet,
+    """Decisions made before ``older_than`` with no outcome recorded yet,
     newest first — the weekly review asks "how did this turn out?" about
     these, and ``record_decision_outcome`` fills the outcome in. An outcome
     of only whitespace counts as empty."""
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
+    from openexecutive.memory import facts
+
+    if not _resolve_db_path(db_path).exists():
         return []
-    with _get_conn(resolved) as conn:
-        rows = conn.execute(
-            "SELECT * FROM decisions WHERE timestamp < ? "
-            "AND TRIM(COALESCE(outcome, '')) = '' "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (_utc_bound(older_than), limit),
-        ).fetchall()
-    return [Decision(**dict(row)) for row in rows]
+    rows = facts.decision_rows(before=older_than, awaiting_outcome=True, limit=limit, db_path=db_path)
+    return [_as_decision(f) for f in rows]
 
 
 def get_active_initiatives(db_path: Path | None = None) -> list[Initiative]:
@@ -1003,14 +970,11 @@ def get_recent_initiatives(
 
 
 def list_decisions(db_path: Path | None = None) -> list[Decision]:
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
+    from openexecutive.memory import facts
+
+    if not _resolve_db_path(db_path).exists():
         return []
-    with _get_conn(resolved) as conn:
-        rows = conn.execute(
-            "SELECT * FROM decisions ORDER BY timestamp DESC"
-        ).fetchall()
-    return [Decision(**dict(row)) for row in rows]
+    return [_as_decision(f) for f in facts.decision_rows(limit=1000, db_path=db_path)]
 
 
 def list_initiatives(db_path: Path | None = None) -> list[Initiative]:
@@ -1036,14 +1000,13 @@ def list_advice(db_path: Path | None = None) -> list[Advice]:
 
 
 def get_decision(decision_id: int, db_path: Path | None = None) -> Decision | None:
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
+    """The active decision fact ``decision_id``, else None."""
+    from openexecutive.memory import facts
+
+    if not _resolve_db_path(db_path).exists():
         return None
-    with _get_conn(resolved) as conn:
-        row = conn.execute(
-            "SELECT * FROM decisions WHERE id = ?", (decision_id,)
-        ).fetchone()
-    return Decision(**dict(row)) if row else None
+    fact = facts.get_fact(decision_id, db_path=db_path)
+    return _as_decision(fact) if fact is not None and fact.decision and fact.status == "active" else None
 
 
 def get_initiative(initiative_id: int, db_path: Path | None = None) -> Initiative | None:
@@ -1068,6 +1031,24 @@ def get_advice(advice_id: int, db_path: Path | None = None) -> Advice | None:
     return Advice(**dict(row)) if row else None
 
 
+def current_decision(decision_id: int, db_path: Path | None = None) -> Decision | None:
+    """The decision as it stands now: ``decision_id``, or the edit that
+    replaced it (an edit is a new fact, ``superseded_by``)."""
+    from openexecutive.memory import facts
+
+    seen: set[int] = set()
+    fact_id: int | None = decision_id
+    while fact_id is not None and fact_id not in seen:
+        seen.add(fact_id)
+        fact = facts.get_fact(fact_id, db_path=db_path)
+        if fact is None or not fact.decision:
+            return None
+        if fact.status == "active":
+            return _as_decision(fact)
+        fact_id = fact.superseded_by if fact.status == "superseded" else None
+    return None
+
+
 def update_decision(
     decision_id: int,
     *,
@@ -1078,27 +1059,30 @@ def update_decision(
     tags: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    resolved = _resolve_db_path(db_path)
-    fields: list[tuple[str, str]] = []
-    if domain is not None:
-        fields.append(("domain", domain))
-    if summary is not None:
-        fields.append(("summary", summary))
-    if rationale is not None:
-        fields.append(("rationale", rationale))
-    if outcome is not None:
-        fields.append(("outcome", outcome))
-    if tags is not None:
-        fields.append(("tags", tags))
-    if not fields:
-        return get_decision(decision_id, resolved) is not None
-    set_clause = ", ".join(f"{name} = ?" for name, _ in fields)
-    values = [value for _, value in fields] + [decision_id]
-    with _get_conn(resolved) as conn:
-        cursor = conn.execute(
-            f"UPDATE decisions SET {set_clause} WHERE id = ?", values
+    """Change a decision: ``outcome`` in place; a new ``summary`` or a
+    ``rationale`` (added after the summary, which already holds any earlier
+    reason) as an edit that replaces the fact, keeping it a decision with its
+    department and outcome. ``domain`` and ``tags`` are no longer kept. False
+    when it is no active decision."""
+    from openexecutive.memory import facts
+
+    current = get_decision(decision_id, db_path)
+    if current is None:
+        return False
+    base = summary if summary is not None and " ".join(summary.split()) else current.summary
+    statement = " ".join(f"{base} {rationale or ''}".split())
+    if statement != " ".join(current.summary.split()):
+        old = facts.get_fact(decision_id, db_path=db_path)
+        new, _ = facts.record_fact(
+            subject=old.subject if old is not None else statement[: facts.SUBJECT_MAX],
+            statement=statement, source_quote="", kind="correction",
+            previous_statement=current.summary, replaces_fact_id=decision_id,
+            session_id=current.session_id or None, db_path=db_path,
         )
-        return cursor.rowcount > 0
+        decision_id = new.id
+    if outcome is not None:
+        return facts.set_decision_outcome(decision_id, outcome, db_path=db_path) is not None
+    return True
 
 
 def update_initiative(
@@ -1191,12 +1175,13 @@ def update_advice(
 
 
 def delete_decision(decision_id: int, db_path: Path | None = None) -> bool:
-    resolved = _resolve_db_path(db_path)
-    if not resolved.exists():
+    """Retire a decision fact so it stops rendering anywhere."""
+    from openexecutive.memory import facts
+
+    current = current_decision(decision_id, db_path)
+    if current is None or current.id is None:
         return False
-    with _get_conn(resolved) as conn:
-        cursor = conn.execute("DELETE FROM decisions WHERE id = ?", (decision_id,))
-        return cursor.rowcount > 0
+    return facts.retire_fact(current.id, reason="removed from memory", db_path=db_path) is not None
 
 
 def delete_initiative(initiative_id: int, db_path: Path | None = None) -> bool:
@@ -1519,12 +1504,18 @@ def count_activity_by_day(
     if not resolved.exists():
         return []
     cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
+    from openexecutive.memory import facts
+
+    facts.ensure_ready(resolved)
     # (table, SQL fragment) in display order. Fragment day-expression already
     # filtered to the window via `>= ?`; one cutoff param is bound per arm.
     arms = [
-        ("decisions",
-         "SELECT substr(timestamp, 1, 10) AS day FROM decisions"
-         " WHERE substr(timestamp, 1, 10) >= ?"),
+        # Decisions are standing facts (memory.facts): only the one in force
+        # counts, so an edit (a new row) or a removal doesn't add one.
+        ("facts",
+         "SELECT substr(created_at, 1, 10) AS day FROM facts"
+         " WHERE decision = 1 AND status = 'active'"
+         " AND substr(created_at, 1, 10) >= ?"),
         ("advice_given",
          "SELECT substr(timestamp, 1, 10) AS day FROM advice_given"
          " WHERE substr(timestamp, 1, 10) >= ?"),
@@ -2016,84 +2007,37 @@ def format_for_prompt(
     max_chars: int = 2500,
     session_id: str = "",
 ) -> str:
-    """Render recent decisions, active initiatives, and recent advice for prompt injection.
-
-    When `session_id` is non-empty, decisions and advice are scoped to that
-    session only (for a chat app, every conversation of its stream —
-    `memory.conversation_ids`) — used by Discord/Telegram/Slack/email thread handlers so
-    each conversation sees its own extracted context rather than a global mix
-    from unrelated conversations. Initiatives are always global (company-wide).
-
-    Output is bounded by `max_chars`. When over budget, oldest advice is dropped
-    first, then oldest decisions. Initiatives are always kept.
+    """Render the active initiatives (projects) for prompt injection, at most
+    ten plus a "+N more" line, bounded by ``max_chars``. Company-wide, so
+    ``session_id`` no longer narrows anything. Decisions are standing facts
+    now (``memory.facts``) and render in that block; advice is no longer kept.
     """
-    resolved = _resolve_db_path(db_path)
-    decisions = get_recent_decisions(limit=5, db_path=resolved, session_id=session_id)
-    initiatives = get_active_initiatives(db_path=resolved)
-    advice_items = get_recent_advice(limit=2, db_path=resolved, session_id=session_id)
-
-    if not decisions and not initiatives and not advice_items:
+    del session_id
+    initiatives = get_active_initiatives(db_path=_resolve_db_path(db_path))
+    if not initiatives:
         return ""
-
-    decision_lines: list[str] = []
-    for d in decisions:
-        date = d.timestamp[:10]
-        source = _decision_source(d.session_id)
-        via = f" (via {source})" if source else ""
-        line = f"- {date} [{d.domain}]{via}: {d.summary}"
-        if d.outcome:
-            line += f" (Outcome: {d.outcome})"
-        decision_lines.append(line)
-
-    # Defensive cap on rendered initiatives. Even with extraction-side
-    # dedup, an undisciplined run can sprawl — keep the prompt bounded
-    # and let the overflow show as a single "+N more" line so the model
-    # knows there's context it isn't seeing.
     _MAX_INITIATIVES_RENDERED = 10
-    initiative_lines: list[str] = [
-        f"- {i.title} [{i.status}]: {i.summary}"
-        for i in initiatives[:_MAX_INITIATIVES_RENDERED]
+    lines = ["Active initiatives:"] + [
+        f"- {i.title} [{i.status}]: {i.summary}" for i in initiatives[:_MAX_INITIATIVES_RENDERED]
     ]
     if len(initiatives) > _MAX_INITIATIVES_RENDERED:
-        initiative_lines.append(
-            f"- (+{len(initiatives) - _MAX_INITIATIVES_RENDERED} more active initiatives)"
-        )
-
-    advice_lines: list[str] = [
-        f"- [{a.domain}]: {a.advice_summary}" for a in advice_items
-    ]
-
-    def _render(d_lines: list[str], i_lines: list[str], a_lines: list[str]) -> str:
-        parts: list[str] = []
-        if d_lines:
-            parts.append("Recent decisions:")
-            parts.extend(d_lines)
-        if i_lines:
-            parts.append("\nActive initiatives:")
-            parts.extend(i_lines)
-        if a_lines:
-            parts.append("\nRecent strategic advice:")
-            parts.extend(a_lines)
-        return "\n".join(parts)
-
-    # Drop oldest advice first, then oldest decisions; initiatives are always kept.
-    rendered = _render(decision_lines, initiative_lines, advice_lines)
-    while len(rendered) > max_chars and advice_lines:
-        advice_lines.pop()
-        rendered = _render(decision_lines, initiative_lines, advice_lines)
-    while len(rendered) > max_chars and decision_lines:
-        decision_lines.pop()
-        rendered = _render(decision_lines, initiative_lines, advice_lines)
-
-    return rendered
+        lines.append(f"- (+{len(initiatives) - _MAX_INITIATIVES_RENDERED} more active initiatives)")
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        if out and used + len(line) + 1 > max_chars:
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
 
 
 _EXTRACTION_TOOL: dict[str, Any] = {
     "name": "store_memories",
     "description": (
-        "Extract and store decisions, initiatives, and strategic advice from this conversation turn. "
-        "High bar: most turns produce empty arrays for all three categories. "
-        "Only fill an array when a future session would clearly suffer without that item. "
+        "Extract and store initiatives (named projects) from this conversation turn. "
+        "High bar: most turns produce an empty array. "
+        "Only fill it when a future session would clearly suffer without that item. "
         "When in doubt, leave the array empty. "
         "Source attribution: only extract items the USER originated in the USER QUESTION block. "
         "Prescriptive prose in the EXECUTIVE RESPONSE — including confident 'we will / we should / "
@@ -2108,34 +2052,6 @@ _EXTRACTION_TOOL: dict[str, Any] = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "decisions": {
-                "type": "array",
-                "description": (
-                    "Concrete decisions the user explicitly committed to. Speculation, options still under "
-                    "consideration, and 'we should probably' are NOT decisions — leave empty in those cases. "
-                    "Most turns produce no decisions. The commitment language must come from the USER block; "
-                    "the executive proposing 'we should X' or 'the team will Y' is a proposal, not a decision."
-                ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "domain": {"type": "string", "enum": ["strategy", "finance", "hr", "legal", "operations", "marketing", "product", "board", "general"]},
-                        "summary": {"type": "string", "description": "One sentence: what was decided."},
-                        "rationale": {"type": "string", "description": "Why this decision was made. Leave empty if not stated."},
-                        "user_commitment_quote": {
-                            "type": "string",
-                            "description": (
-                                "Verbatim text from the USER QUESTION block that constitutes the user's "
-                                "commitment to this decision. Must be a declarative statement "
-                                "(e.g. 'we're going with X', 'let's kill Y', 'decided: Z'), NOT a question "
-                                "or a hypothetical. Copy the user's exact wording — paraphrases will be "
-                                "rejected by the post-extraction validator."
-                            ),
-                        },
-                    },
-                    "required": ["domain", "summary", "user_commitment_quote"],
-                },
-            },
             "initiatives": {
                 "type": "array",
                 "description": (
@@ -2168,41 +2084,8 @@ _EXTRACTION_TOOL: dict[str, Any] = {
                     "required": ["title", "status", "summary", "user_commitment_quote"],
                 },
             },
-            "advice": {
-                "type": "array",
-                "description": (
-                    "Company-specific guidance tied to a named situation at THIS company. "
-                    "Universal frameworks, general principles, and anything that would still make sense for a "
-                    "random other company (e.g. 'cash flow is king', 'validate before building') are NEVER advice. "
-                    "Only store advice that would lose meaning if the company name were removed. "
-                    "Most turns produce no advice — leave empty unless the guidance is unmistakably "
-                    "tied to this company's specifics. "
-                    "Store only advice the USER explicitly asked about or endorsed; the executive's "
-                    "own recommendations in the EXECUTIVE RESPONSE are proposals, not durable advice "
-                    "to persist across sessions."
-                ),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "domain": {"type": "string", "enum": ["strategy", "finance", "hr", "legal", "operations", "marketing", "product", "board", "general"]},
-                        "query_summary": {"type": "string", "description": "What the user was asking about (one sentence)."},
-                        "advice_summary": {"type": "string", "description": "The core advice given (one to two sentences)."},
-                        "user_commitment_quote": {
-                            "type": "string",
-                            "description": (
-                                "Verbatim text from the USER QUESTION block where the user names "
-                                "this specific company situation as one worth durable advice — "
-                                "e.g. 'we're navigating X with Y constraint'. Must be a declarative "
-                                "statement, not a question. Copy the user's exact wording — "
-                                "paraphrases will be rejected by the post-extraction validator."
-                            ),
-                        },
-                    },
-                    "required": ["domain", "query_summary", "advice_summary", "user_commitment_quote"],
-                },
-            },
         },
-        "required": ["decisions", "initiatives", "advice"],
+        "required": ["initiatives"],
     },
 }
 
@@ -2214,7 +2097,7 @@ _EXTRACTION_SYSTEM = (
     "Source attribution (read this first): only extract items the USER originated in the "
     "USER QUESTION block. Prescriptive prose in the EXECUTIVE RESPONSE — including confident "
     "'we will / we should / the team will X' framing — is a proposal, not a commitment, and is "
-    "never a decision, initiative, or advice unless the USER explicitly endorses it in their "
+    "never an initiative unless the USER explicitly endorses it in their "
     "own text. The executive's recommendations are the output of the conversation; they only "
     "become memory when the user accepts them.\n"
     "\n"
@@ -2226,15 +2109,8 @@ _EXTRACTION_SYSTEM = (
     "drop any item whose quote does not appear verbatim in the USER QUESTION or whose quote "
     "ends in a question mark — fabricating quotes wastes a tool call.\n"
     "\n"
-    "Required signal for each category:\n"
-    "- Decision: the user explicitly committed to a specific course of action "
-    "(e.g. 'we'll hire 3 engineers in Q3', 'we're killing project X'). "
-    "Speculation, options under consideration, and 'we should probably' are NOT decisions.\n"
-    "- Initiative: a named, ongoing project the user is actively running or just kicked off. "
+    "Required signal: a named, ongoing project the user is actively running or just kicked off. "
     "Generic activities ('improve marketing') are NOT initiatives — there must be a concrete project name or scope.\n"
-    "- Advice: company-specific guidance tied to a named situation at THIS company. "
-    "Universal frameworks, general principles, and anything that would still make sense for a "
-    "random other company are NEVER advice.\n"
     "When in doubt, extract nothing. Saving a marginal item is worse than missing one — "
     "the user can always restate it. Never extract from clarifying questions, small talk, or exploratory discussion."
 )
@@ -2414,12 +2290,7 @@ class _ItemSpec(NamedTuple):
     """The field echoed (truncated) into a drop so a human can identify it."""
 
 
-_DECISIONS = _ItemSpec("decisions", "decision", ("summary",), "summary")
 _INITIATIVES = _ItemSpec("initiatives", "initiative", ("title", "summary"), "title")
-_ADVICE = _ItemSpec(
-    "advice", "advice", ("query_summary", "advice_summary"), "query_summary"
-)
-
 
 def _iter_items(
     payload: dict[str, Any], spec: _ItemSpec, dropped: list[dict[str, str]]
@@ -2502,7 +2373,7 @@ def _accept(
     return True
 
 
-_ITEM_SPECS = (_DECISIONS, _INITIATIVES, _ADVICE)
+_ITEM_SPECS = (_INITIATIVES,)
 
 # How much of an item's label rides in its drop record, in the retry prompt and
 # in the identity the two passes use to recognise the same item. One number,
@@ -2526,32 +2397,16 @@ def _store_item(
     fields, so this is the one place the mapping lives; both extraction passes
     go through it. Raises on a failed write — a locked database must surface
     as the pass's `failure`, not as a healthy-looking `stored=0`."""
-    if spec is _DECISIONS:
-        store_decision(
-            domain=item.get("domain", "general"),
-            summary=item["summary"],
-            rationale=item.get("rationale", ""),
-            session_id=session_id,
-            db_path=db_path,
-        )
-    elif spec is _INITIATIVES:
-        # Extraction only runs on the principal's own words (should_extract),
-        # so the principal is the one updating it.
-        store_initiative(
-            title=item["title"],
-            status=item.get("status", "active"),
-            summary=item["summary"],
-            db_path=db_path,
-            updated_by_person_id=_principal_person_id(),
-        )
-    else:
-        store_advice(
-            domain=item.get("domain", "general"),
-            query_summary=item["query_summary"],
-            advice_summary=item["advice_summary"],
-            session_id=session_id,
-            db_path=db_path,
-        )
+    del spec, session_id
+    # Extraction only runs on the principal's own words (should_extract),
+    # so the principal is the one updating it.
+    store_initiative(
+        title=item["title"],
+        status=item.get("status", "active"),
+        summary=item["summary"],
+        db_path=db_path,
+        updated_by_person_id=_principal_person_id(),
+    )
 
 
 def _run_items(
@@ -2917,8 +2772,8 @@ async def _extract_and_store(
     db_path: Path,
     session_id: str,
 ) -> None:
-    proposed = {"decisions": 0, "initiatives": 0, "advice": 0}
-    stored = {"decisions": 0, "initiatives": 0, "advice": 0}
+    proposed = {spec.key: 0 for spec in _ITEM_SPECS}
+    stored = {spec.key: 0 for spec in _ITEM_SPECS}
     dropped: list[dict[str, str]] = []
     rejected: list[tuple[_ItemSpec, dict[str, Any]]] = []
     accepted: set[tuple[str, str]] = set()

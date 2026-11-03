@@ -9,11 +9,11 @@ from openexecutive.memory.episodic import (
     Advice,
     Decision,
     Initiative,
+    current_decision,
     delete_advice,
     delete_decision,
     delete_initiative,
     get_advice,
-    get_decision,
     get_initiative,
     list_advice,
     list_decisions,
@@ -78,17 +78,22 @@ def get_decisions() -> list[Decision]:
 
 
 @router.patch("/memories/decisions/{decision_id}", response_model=Decision)
-def patch_decision(decision_id: int, body: DecisionUpdate) -> Decision:
+def patch_decision(decision_id: int, body: DecisionUpdate, request: Request) -> Decision:
+    # A decision is a standing fact read on everyone's turns, kept on the
+    # principal's word: only they change or remove one here.
+    _require_principal(request, "change a decision")
     if not update_decision(decision_id, **body.model_dump(exclude_unset=True)):
         raise HTTPException(status_code=404, detail="Decision not found")
-    updated = get_decision(decision_id)
+    # A new summary is an edit, kept as a new fact that replaces this one.
+    updated = current_decision(decision_id)
     if updated is None:
         raise HTTPException(status_code=404, detail="Decision not found")
     return updated
 
 
 @router.delete("/memories/decisions/{decision_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_decision(decision_id: int) -> Response:
+def remove_decision(decision_id: int, request: Request) -> Response:
+    _require_principal(request, "remove a decision")
     if not delete_decision(decision_id):
         raise HTTPException(status_code=404, detail="Decision not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

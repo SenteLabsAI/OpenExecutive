@@ -33,6 +33,13 @@ is stored as ``proposed``. A proposed row never renders; the principal
 approves it (it then replaces what it names) or declines it from the Pulse
 page.
 
+A decision is a fact too (``decision=1``): what the principal decided, in
+their words, with the department it belongs to and, once they say, how it
+turned out (``outcome``). The department check-ins, the weekly review and its
+"how did this turn out?" follow-ups read decisions from here
+(``decision_rows``, through ``episodic``'s decision readers); rows from the
+older ``decisions`` table were copied in once (``_copy_old_decisions``).
+
 ``kind="profile"`` rows are the audit trail of company-profile fields changed
 from chat (``update_company_profile``). The profile itself already renders in
 the cached company block, so those rows are listed on the Pulse page but never
@@ -130,6 +137,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("recorded_by_name", "TEXT NOT NULL DEFAULT ''"),
     ("replaces_fact_id", "INTEGER"),
     ("approved_at", "TEXT"),
+    ("decision", "INTEGER NOT NULL DEFAULT 0"),
+    ("department", "TEXT NOT NULL DEFAULT ''"),
+    ("outcome", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -162,6 +172,11 @@ class Fact(BaseModel):
     # outranks teammates as the principal's own fact does: no teammate may
     # replace or retire it.
     approved_at: str | None = None
+    # A decision the speaker made, its department slug ("" for none) and how
+    # it turned out, in the principal's words, once they say.
+    decision: bool = False
+    department: str = ""
+    outcome: str = ""
 
     @property
     def principal_owned(self) -> bool:
@@ -216,6 +231,78 @@ def _migrate(conn: sqlite3.Connection) -> None:
             # Another connection added it first.
             if "duplicate column" not in str(exc):
                 raise
+    _copy_old_decisions(conn)
+
+
+_OLD_DECISIONS_COPIED = "decisions_copied_to_facts"
+# Where a copied decision was extracted, shown next to it as before. A row
+# taken from mail or a chat app may predate the untrusted-content policy (when
+# any sender's words could be stored), so it is copied in as ``proposed``: it
+# waits for the principal's OK and is not read as their word until then.
+_OLD_DECISION_CHANNELS = {
+    "email": "email", "slack": "Slack", "discord": "Discord",
+    "telegram": "Telegram", "google_chat": "Google Chat",
+}
+_COPIED_PREFIX = "decisions:"
+
+
+def _copy_old_decisions(conn: sqlite3.Connection) -> None:
+    """Copy the rows of the older ``decisions`` table in as decision facts,
+    once per database (a ``facts_meta`` marker, set in the same
+    transaction). Each keeps its date, department, outcome and conversation;
+    a row's own subject key (``decision <id>``) means none supersedes
+    another. One from mail or a chat app waits for the principal's OK."""
+    conn.execute("CREATE TABLE IF NOT EXISTS facts_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    if conn.execute("SELECT 1 FROM facts_meta WHERE key=?", (_OLD_DECISIONS_COPIED,)).fetchone():
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("SELECT 1 FROM facts_meta WHERE key=?", (_OLD_DECISIONS_COPIED,)).fetchone():
+            conn.rollback()
+            return
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='decisions'"
+        ).fetchone()
+        rows = conn.execute("SELECT * FROM decisions ORDER BY timestamp, id").fetchall() if has_table else []
+        for d in rows:
+            keys = d.keys()
+            summary = _clean(d["summary"], STATEMENT_MAX)
+            if not summary:
+                continue
+            # Kept as store_decision keeps one: the reason after the summary.
+            rationale = (d["rationale"] if "rationale" in keys else "") or ""
+            statement = _clean(f"{summary} {rationale}", STATEMENT_MAX)
+            session = (d["session_id"] if "session_id" in keys else "") or ""
+            prefix, sep, _ = session.partition(":")
+            subject = _clean(summary.split(".")[0], SUBJECT_MAX) or f"Decision {d['id']}"
+            from_channel = bool(sep) and prefix in _OLD_DECISION_CHANNELS
+            conn.execute(
+                "INSERT INTO facts (kind, subject, subject_key, statement, source_channel, session_id, "
+                "created_at, status, recorded_by_role, decision, department, outcome) "
+                "VALUES ('fact', ?, ?, ?, ?, ?, ?, ?, 'principal', 1, ?, ?)",
+                (
+                    subject, f"decision {d['id']}", statement,
+                    _COPIED_PREFIX + (prefix if from_channel else ""),
+                    session or None, d["timestamp"], "proposed" if from_channel else "active",
+                    (d["department"] if "department" in keys else "") or "",
+                    _clean(d["outcome"], STATEMENT_MAX),
+                ),
+            )
+        conn.execute(
+            "INSERT INTO facts_meta (key, value) VALUES (?, ?)",
+            (_OLD_DECISIONS_COPIED, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def ensure_ready(db_path: Path | None = None) -> None:
+    """Create and migrate the store (copying the older decisions in once),
+    for a reader that queries the table with its own SQL."""
+    with _conn(db_path):
+        pass
 
 
 def subject_key(subject: str) -> str:
@@ -256,6 +343,9 @@ def _row(r: sqlite3.Row) -> Fact:
         recorded_by_name=_col(r, "recorded_by_name", ""),
         replaces_fact_id=_col(r, "replaces_fact_id", None),
         approved_at=_col(r, "approved_at", None),
+        decision=bool(_col(r, "decision", 0)),
+        department=_col(r, "department", ""),
+        outcome=_col(r, "outcome", ""),
     )
 
 
@@ -274,9 +364,15 @@ def record_fact(
     recorded_by_role: RecordedByRole = "principal",
     recorded_by_name: str = "",
     proposed: bool = False,
+    decision: bool | None = None,
+    department: str | None = None,
     db_path: Path | None = None,
 ) -> tuple[Fact, list[Fact]]:
     """Store a fact and supersede what it replaces, in one transaction.
+
+    ``decision`` marks a decision the speaker made and ``department`` names
+    its department. Left as None, both carry over from the decision it
+    replaces (an edit of a decision is still one), else not a decision.
 
     What it replaces: the active row ``replaces_fact_id`` names (when given
     and still active) plus every active row with the same subject key. A
@@ -348,6 +444,9 @@ def record_fact(
         stored_kind: FactKind = kind
         if kind == "fact" and (replaced or previous):
             stored_kind = "correction"
+        was_decision = next((f for f in replaced if f.decision), None)
+        is_decision = bool(was_decision) if decision is None else decision
+        area = department if department is not None else (was_decision.department if was_decision else "")
         # What a proposal would replace, shown to the principal and applied on
         # approval: the fact it named, else the one with its subject.
         target = None
@@ -357,15 +456,19 @@ def record_fact(
         cur = conn.execute(
             "INSERT INTO facts (kind, subject, subject_key, statement, previous_statement, "
             "source_quote, source_channel, session_id, turn_id, recorded_by_person_id, "
-            "created_at, status, recorded_by_role, recorded_by_name, replaces_fact_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "created_at, status, recorded_by_role, recorded_by_name, replaces_fact_id, "
+            "decision, department, outcome) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 stored_kind, subject, key, statement, previous,
                 _clean(source_quote, QUOTE_MAX), _clean(source_channel, 40),
                 session_id, turn_id, recorded_by_person_id, now,
                 "proposed" if proposed else "active",
                 recorded_by_role, _clean(recorded_by_name, 120),
-                target,
+                target, 1 if is_decision and kind != "profile" else 0,
+                _clean(area, 60) if is_decision else "",
+                # An edit of a decision keeps how it turned out.
+                was_decision.outcome if is_decision and was_decision is not None else "",
             ),
         )
         new_id = int(cur.lastrowid or 0)
@@ -532,6 +635,60 @@ def retire_fact(
     return _row(r) if r else None
 
 
+def decision_rows(
+    *,
+    since: datetime | None = None,
+    before: datetime | None = None,
+    department: str | None = None,
+    awaiting_outcome: bool = False,
+    limit: int = 20,
+    db_path: Path | None = None,
+) -> list[Fact]:
+    """Active decisions, newest first: made after ``since`` / before
+    ``before``, in ``department``, and with ``awaiting_outcome`` only those
+    with no outcome yet. Filtered in SQL before the limit."""
+    where = ["status='active'", "decision=1"]
+    args: list[Any] = []
+    if since is not None:
+        where.append("created_at > ?")
+        args.append(_utc_text(since))
+    if before is not None:
+        where.append("created_at < ?")
+        args.append(_utc_text(before))
+    if department is not None:
+        where.append("department = ?")
+        args.append(department)
+    if awaiting_outcome:
+        where.append("TRIM(COALESCE(outcome, '')) = ''")
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM facts WHERE {' AND '.join(where)} "  # noqa: S608 - fixed clauses
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (*args, max(1, limit)),
+        ).fetchall()
+    return [_row(r) for r in rows]
+
+
+def set_decision_outcome(fact_id: int, outcome: str, db_path: Path | None = None) -> Fact | None:
+    """Record how an active decision turned out. None when ``fact_id`` is no
+    active decision."""
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE facts SET outcome=? WHERE id=? AND status='active' AND decision=1",
+            (_clean(outcome, STATEMENT_MAX), fact_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        r = conn.execute("SELECT * FROM facts WHERE id=?", (fact_id,)).fetchone()
+    return _row(r) if r else None
+
+
+def _utc_text(moment: datetime) -> str:
+    """``moment`` as the UTC ISO text rows are stamped with (naive is UTC)."""
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return aware.astimezone(UTC).isoformat()
+
+
 def _safe(text: str, limit: int) -> str:
     # The principal's own words, but still rendered as data: angle brackets
     # cannot open or close a prompt tag.
@@ -546,6 +703,7 @@ _FACTS_HEADER_TEMPLATE = (
     "and asked to be kept, {order}. Treat each as true and use it wherever "
     "it applies, over any older figure in documents, memory, alerts or signals. "
     "A line that shows a date is over {stale_days} days old: where it matters, check it still holds. "
+    "A line marked (decided) is a decision that was made, with its outcome once known. "
     "A line ending with a teammate's name, as in (per Sam Lee), is that "
     "teammate's word, not the principal's: "
     "credit them where it matters, and where it conflicts with an unmarked line "
@@ -585,6 +743,9 @@ def _read_only_rows(sql: str, params: tuple[Any, ...], db_path: Path | None) -> 
 
 
 def _attribution(f: Fact) -> str:
+    if f.source_channel.startswith(_COPIED_PREFIX):
+        where = _OLD_DECISION_CHANNELS.get(f.source_channel[len(_COPIED_PREFIX):], "")
+        return f" (via {where})" if where else ""
     if f.recorded_by_role != "teammate":
         return ""
     return f" (per {_safe(f.recorded_by_name, 80) or 'a teammate'})"
@@ -665,6 +826,8 @@ def render_facts_for_prompt(
         line = f"- [fact {f.id}] {_safe(f.subject, SUBJECT_MAX)}: {_safe(f.statement, STATEMENT_MAX)}"
         if f.kind == "correction" and f.previous_statement:
             line += f" (corrects: {_safe(f.previous_statement, 160)})"
+        if f.decision:
+            line += f" (decided; outcome: {_safe(f.outcome, 200)})" if f.outcome.strip() else " (decided)"
         line += _attribution(f)
         line += _dated(f.created_at, now)
         if used + len(line) + 1 > max_chars:

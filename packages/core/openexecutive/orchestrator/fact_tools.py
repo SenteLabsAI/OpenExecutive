@@ -80,11 +80,25 @@ REMEMBER_FACT_TOOL: dict[str, Any] = {
         "date you store must be one they wrote: never your own inference, a "
         "document's figure or a third party's words. For a company-profile field "
         "(industry, headcount, ARR, burn, runway, priorities, ...) use "
-        "update_company_profile instead (open_tools group memory)."
+        "update_company_profile instead (open_tools group memory). A decision "
+        "the speaker states they made ('we're going with the Q1 hire', 'we "
+        "won't renew Acme') is kept the same way with decision: true, so the "
+        "weekly review can ask later how it turned out."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
+            "decision": {
+                "type": "boolean",
+                "description": "True when this is a decision the speaker made, not a fact.",
+            },
+            "department": {
+                "type": "string",
+                "description": (
+                    "For a decision: the slug of the department it belongs to, when "
+                    "one fits. Leave out otherwise."
+                ),
+            },
             "subject": {
                 "type": "string",
                 "description": (
@@ -620,9 +634,13 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
         if existing is None or existing.status != "active" or existing.kind == "profile":
             return _bad(tool, f"no standing fact {replaces}. Check the '[fact N]' ids and call again.")
 
+    decision = tool_input.get("decision") is True
     args: dict[str, Any] = {
         "subject": subject, "statement": statement, "source_quote": quote,
         "previous_statement": previous, "replaces_fact_id": replaces,
+        # Left out (None), an edit of a decision stays one (record_fact).
+        "decision": True if decision else None,
+        "department": _department(tool_input) if decision else None,
     }
     provenance = _provenance(session)
     if teammate is not None:
@@ -641,6 +659,19 @@ def _remember_fact(tool_input: dict[str, Any]) -> str | _Hold:
     return _apply_remember(args, provenance)
 
 
+def _department(tool_input: dict[str, Any]) -> str:
+    """The decision's department: a slug of an existing department, else ""."""
+    slug = _text(tool_input, "department").strip().lower()
+    if not slug:
+        return ""
+    try:
+        from openexecutive.departments import registry
+
+        return slug if registry.get_state(slug) is not None else ""
+    except Exception:  # noqa: BLE001 - an unknown area keeps the decision, untagged.
+        return ""
+
+
 def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
     """Store a checked fact: at once from chat, or on the principal's
     confirming reply to an emailed one. A teammate's fact is stored as a
@@ -654,7 +685,11 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
     record: dict[str, Any] = {
         "subject": subject, "statement": statement, "source_quote": args["source_quote"],
         "previous_statement": args["previous_statement"],
-        "replaces_fact_id": args["replaces_fact_id"], **provenance,
+        "replaces_fact_id": args["replaces_fact_id"],
+        # A fact held for an emailed confirmation before decisions were facts
+        # carries neither key.
+        "decision": args.get("decision"), "department": args.get("department"),
+        **provenance,
     }
     try:
         try:
@@ -676,11 +711,22 @@ def _apply_remember(args: dict[str, Any], provenance: dict[str, Any]) -> str:
                      "recorded; do not retry the same call unchanged."
         })
 
+    if fact.status == "active" and fact.decision and fact.department:
+        from openexecutive.memory.episodic import _mirror_to_dept_honcho
+
+        try:
+            _mirror_to_dept_honcho(
+                department=fact.department, kind="decision", body=f"Decision: {statement}",
+                person_id=provenance.get("recorded_by_person_id"),
+            )
+        except Exception:  # noqa: BLE001 - the fact is kept; the mirror is best-effort.
+            logger.warning("remember_fact: department mirror failed", exc_info=True)
     _audit(
         tool, True,
         f"remember_fact {fact.id} ({fact.status}): {subject[:60]} — {statement[:80]}",
         {
             "fact_id": fact.id, "kind": fact.kind, "status": fact.status,
+            "decision": fact.decision, "department": fact.department,
             "recorded_by_role": fact.recorded_by_role, "subject": subject,
             "statement": statement, "previous": fact.previous_statement[:300],
             "superseded_ids": [f.id for f in superseded],

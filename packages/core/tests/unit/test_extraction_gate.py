@@ -102,11 +102,9 @@ def test_a_turn_that_is_only_an_attachment_is_skipped() -> None:
 
 
 class _Stores(NamedTuple):
-    """The three persistence calls, mocked so a test can assert on arguments."""
+    """The persistence call, mocked so a test can assert on arguments."""
 
-    decision: mock.MagicMock
     initiative: mock.MagicMock
-    advice: mock.MagicMock
 
 
 # --------------------------------------------------------------------- #
@@ -318,9 +316,7 @@ async def _run_pass_full(
         rows.append({"event_type": event_type, "summary": summary, **kw})
 
     with (
-        mock.patch.object(episodic, "store_decision") as store_decision,
         mock.patch.object(episodic, "store_initiative") as store_initiative,
-        mock.patch.object(episodic, "store_advice") as store_advice,
         mock.patch("openexecutive.audit.log_event", _capture),
         mock.patch("openexecutive.audit.usage.log_model_usage"),
         mock.patch("openexecutive.config.get_settings"),
@@ -341,7 +337,7 @@ async def _run_pass_full(
         )
 
     return _Pass(
-        _Stores(store_decision, store_initiative, store_advice),
+        _Stores(store_initiative),
         [r for r in rows if r["event_type"] == "memory_extraction"],
         create,
     )
@@ -356,26 +352,26 @@ async def test_extraction_audits_proposed_stored_and_dropped(db: Path) -> None:
     wrote no row.
     """
     stores, audit = await _run_pass(db_path=db, payload={
-        "decisions": [
+        "initiatives": [
             # Valid: the quote is the user's own words, terminated.
-            {"domain": "finance", "summary": "Cut burn to 400k",
-             "user_commitment_quote": "Cut burn to 400k"},
+            {"title": "Cut burn to 400k",
+             "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"},
             # Invalid: quote is not in the user message at all.
-            {"domain": "finance", "summary": "Sell the building",
-             "user_commitment_quote": "sell the building"},
+            {"title": "Sell the building",
+             "status": "active", "summary": "s", "user_commitment_quote": "sell the building"},
         ],
     }, retry_payload={})  # the corrective pass finds nothing to re-quote
 
-    assert stores.decision.call_count == 1
-    assert stores.decision.call_args.kwargs["summary"] == "Cut burn to 400k", (
+    assert stores.initiative.call_count == 1
+    assert stores.initiative.call_args.kwargs["title"] == "Cut burn to 400k", (
         "the item that survived must be the one with a valid quote"
     )
     assert len(audit) == 1
-    assert audit[0]["details"]["proposed"]["decisions"] == 2
-    assert audit[0]["details"]["stored"]["decisions"] == 1
+    assert audit[0]["details"]["proposed"]["initiatives"] == 2
+    assert audit[0]["details"]["stored"]["initiatives"] == 1
     assert audit[0]["details"]["dropped_count"] == 1
     assert audit[0]["details"]["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": "Sell the building"}
+        {"kind": "initiative", "reason": "bad_quote", "label": "Sell the building"}
     ]
     assert audit[0]["details"]["failure"] == ""
     assert audit[0]["details"]["retry"] == {
@@ -399,10 +395,10 @@ async def test_extraction_audits_proposed_stored_and_dropped(db: Path) -> None:
 @pytest.mark.parametrize(
     "payload,reason",
     [
-        ({"decisions": "Cut burn"}, "not_a_list"),
-        ({"decisions": 7}, "not_a_list"),
-        ({"decisions": ["Cut burn to 400k"]}, "item_not_a_dict"),
-        ({"decisions": [None]}, "item_not_a_dict"),
+        ({"initiatives": "Cut burn"}, "not_a_list"),
+        ({"initiatives": 7}, "not_a_list"),
+        ({"initiatives": ["Cut burn to 400k"]}, "item_not_a_dict"),
+        ({"initiatives": [None]}, "item_not_a_dict"),
     ],
     ids=["str", "int", "list-of-str", "list-of-null"],
 )
@@ -411,11 +407,11 @@ async def test_malformed_items_are_dropped_not_raised(
 ) -> None:
     stores, audit = await _run_pass(payload, db)
 
-    assert [s.call_count for s in stores] == [0, 0, 0]
+    assert [s.call_count for s in stores] == [0]
     assert len(audit) == 1, "the pass must still audit itself"
     assert audit[0]["details"]["failure"] == "", "must not have raised"
     assert audit[0]["details"]["dropped"] == [
-        {"kind": "decision", "reason": reason}
+        {"kind": "initiative", "reason": reason}
     ], "the kind must match the singular spelling used by per-item drops"
 
 
@@ -423,46 +419,18 @@ async def test_malformed_items_are_dropped_not_raised(
 async def test_a_null_kind_is_not_a_drop(db: Path) -> None:
     """The model omitting a kind is normal, not malformed."""
     _, audit = await _run_pass(
-        db_path=db, payload={"decisions": None, "initiatives": []}
+        db_path=db, payload={"initiatives": None}
     )
 
     assert audit[0]["details"]["dropped"] == []
-    assert audit[0]["details"]["proposed"] == {
-        "decisions": 0, "initiatives": 0, "advice": 0
-    }
-
-
-@pytest.mark.asyncio
-async def test_one_malformed_kind_does_not_lose_the_others(db: Path) -> None:
-    """A bad `decisions` value used to abort the pass before `initiatives`
-    was ever read, silently discarding good items alongside the bad one."""
-    stores, audit = await _run_pass(db_path=db, payload={
-        "decisions": "oops",
-        "initiatives": [
-            {"title": "Cut burn", "summary": "Down to 400k",
-             "user_commitment_quote": "Cut burn to 400k"},
-        ],
-    })
-
-    assert stores.initiative.call_args.kwargs == {
-        "title": "Cut burn",
-        "status": "active",
-        "summary": "Down to 400k",
-        "db_path": db,
-        # No principal on this roster, so the update credits nobody.
-        "updated_by_person_id": None,
-    }
-    assert audit[0]["details"]["stored"]["initiatives"] == 1
-    assert audit[0]["details"]["dropped"] == [
-        {"kind": "decision", "reason": "not_a_list"}
-    ]
+    assert audit[0]["details"]["proposed"] == {"initiatives": 0}
 
 
 @pytest.mark.asyncio
 async def test_a_non_dict_payload_is_dropped(db: Path) -> None:
-    stores, audit = await _run_pass(["decisions"], db)
+    stores, audit = await _run_pass(["initiatives"], db)
 
-    assert [s.call_count for s in stores] == [0, 0, 0]
+    assert [s.call_count for s in stores] == [0]
     assert audit[0]["details"]["dropped"] == [
         {"kind": "pass", "reason": "payload_not_a_dict"}
     ]
@@ -472,16 +440,13 @@ async def test_a_non_dict_payload_is_dropped(db: Path) -> None:
 @pytest.mark.parametrize(
     "payload,expected",
     [
-        ({"decisions": [{"summary": "", "user_commitment_quote": "Cut burn to 400k"}]},
-         {"kind": "decision", "reason": "missing_field", "field": "summary"}),
-        ({"initiatives": [{"summary": "Down to 400k",
+        ({"initiatives": [{"title": "Cut burn", "status": "active", "summary": "",
                            "user_commitment_quote": "Cut burn to 400k"}]},
+         {"kind": "initiative", "reason": "missing_field", "field": "summary"}),
+        ({"initiatives": [{"summary": "Down to 400k", "user_commitment_quote": "Cut burn to 400k"}]},
          {"kind": "initiative", "reason": "missing_field", "field": "title"}),
-        ({"advice": [{"query_summary": "How much runway?",
-                      "user_commitment_quote": "Cut burn to 400k"}]},
-         {"kind": "advice", "reason": "missing_field", "field": "advice_summary"}),
     ],
-    ids=["decision-summary", "initiative-title", "advice-summary"],
+    ids=["initiative-summary", "initiative-title"],
 )
 async def test_an_incomplete_item_is_recorded_as_a_drop(
     payload: dict[str, Any], expected: dict[str, str], db: Path
@@ -499,17 +464,17 @@ async def test_proposed_equals_stored_plus_dropped(db: Path) -> None:
     """The arithmetic an operator reads the row for. One item of every
     outcome: stored, bad quote, incomplete, and a malformed non-dict."""
     _, audit = await _run_pass(db_path=db, payload={
-        "decisions": [
-            {"summary": "Cut burn to 400k", "user_commitment_quote": "Cut burn to 400k"},
-            {"summary": "Sell the building", "user_commitment_quote": "sell the building"},
-            {"summary": "", "user_commitment_quote": "Cut burn to 400k"},
+        "initiatives": [
+            {"title": "Cut burn to 400k", "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"},
+            {"title": "Sell the building", "status": "active", "summary": "s", "user_commitment_quote": "sell the building"},
+            {"title": "", "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"},
             "not a dict",
         ],
     }, retry_payload={})  # the bad quote triggers a retry; it re-quotes nothing
 
     details = audit[0]["details"]
-    assert details["proposed"]["decisions"] == 3, "the non-dict never becomes an item"
-    assert details["stored"]["decisions"] == 1
+    assert details["proposed"]["initiatives"] == 3, "the non-dict never becomes an item"
+    assert details["stored"]["initiatives"] == 1
     assert details["dropped_count"] == 3, "two rejected items plus the non-dict"
 
     # A malformed shape is a drop that was never a proposed item, so it is
@@ -574,28 +539,27 @@ _VALID_INITIATIVE = {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "decision",
+    "bad",
     [
-        {"summary": "S", "user_commitment_quote": 5},
-        {"summary": 123, "user_commitment_quote": "nope"},
-        {"summary": ["a"], "user_commitment_quote": None},
+        {"title": "S", "status": "active", "summary": "s", "user_commitment_quote": 5},
+        {"title": 123, "status": "active", "summary": "s", "user_commitment_quote": "nope"},
+        {"title": ["a"], "status": "active", "summary": "s", "user_commitment_quote": None},
     ],
     ids=["int-quote", "int-summary", "list-summary"],
 )
 async def test_non_string_fields_do_not_abort_the_pass(
-    decision: dict[str, Any], db: Path
+    bad: dict[str, Any], db: Path
 ) -> None:
     stores, audit = await _run_pass(
         db_path=db,
-        payload={"decisions": [decision], "initiatives": [_VALID_INITIATIVE]},
+        payload={"initiatives": [bad, _VALID_INITIATIVE]},
         retry_payload={},  # a rejected quote triggers a retry; it re-quotes nothing
     )
 
     assert audit[0]["details"]["failure"] == "", "the pass must not have raised"
     assert stores.initiative.call_count == 1, (
-        "a bad decision must not cost the valid initiative beside it"
+        "a bad item must not cost the valid one beside it"
     )
-    assert stores.decision.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -610,8 +574,8 @@ async def test_a_failed_write_is_not_counted_as_stored(db: Path) -> None:
     class _Block:
         type = "tool_use"
         name = "store_memories"
-        input = {"decisions": [
-            {"summary": "Cut burn to 400k", "user_commitment_quote": "Cut burn to 400k"},
+        input = {"initiatives": [
+            {"title": "Cut burn to 400k", "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"},
         ]}
 
     class _Response:
@@ -621,7 +585,7 @@ async def test_a_failed_write_is_not_counted_as_stored(db: Path) -> None:
 
     with (
         mock.patch.object(
-            episodic, "store_decision",
+            episodic, "store_initiative",
             side_effect=sqlite3.OperationalError("database is locked"),
         ),
         mock.patch(
@@ -643,7 +607,7 @@ async def test_a_failed_write_is_not_counted_as_stored(db: Path) -> None:
         )
 
     audit = [r for r in rows if r["event_type"] == "memory_extraction"]
-    assert audit[0]["details"]["stored"]["decisions"] == 0, (
+    assert audit[0]["details"]["stored"]["initiatives"] == 0, (
         "nothing was written, so nothing may be reported as stored"
     )
     assert audit[0]["details"]["failure"] == "OperationalError"
@@ -700,14 +664,14 @@ async def test_a_garbage_pass_does_not_read_as_an_empty_one(db: Path) -> None:
     """`proposed` counts only items the model emitted as objects, so a payload
     that was nothing but garbage would otherwise read `proposed=0 stored=0` —
     identical to a turn with nothing to extract. `malformed` separates them."""
-    _, audit = await _run_pass(db_path=db, payload={"decisions": ["a", "b"]})
+    _, audit = await _run_pass(db_path=db, payload={"initiatives": ["a", "b"]})
 
     details = audit[0]["details"]
-    assert details["proposed"]["decisions"] == 0
+    assert details["proposed"]["initiatives"] == 0
     assert details["malformed_count"] == 2
     assert "malformed=2" in audit[0]["summary"]
 
-    _, quiet = await _run_pass(db_path=db, payload={"decisions": []})
+    _, quiet = await _run_pass(db_path=db, payload={"initiatives": []})
     assert quiet[0]["details"]["malformed_count"] == 0
 
 
@@ -723,26 +687,25 @@ async def test_a_garbage_pass_does_not_read_as_an_empty_one(db: Path) -> None:
 
 _USER = "therea re only 2 properties in SVN scope. Tell the team."
 _BAD = {
-    "domain": "operations",
-    "summary": "SVN scope is two properties",
-    "user_commitment_quote": "There are only two properties in SVN's scope",
+    "title": "SVN scope is two properties",
+    "status": "active", "summary": "s", "user_commitment_quote": "There are only two properties in SVN's scope",
 }
-_GOOD = {**_BAD, "user_commitment_quote": "therea re only 2 properties in SVN scope"}
+_GOOD = {**_BAD, "status": "active", "summary": "s", "user_commitment_quote": "therea re only 2 properties in SVN scope"}
 
 
 @pytest.mark.asyncio
 async def test_a_bad_quote_is_retried_once_and_recovered(db: Path) -> None:
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [_GOOD]},
+        {"initiatives": [_BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [_GOOD]},
     )
 
     assert result.create.await_count == 2, "exactly one corrective call"
-    assert result.stores.decision.call_count == 1
-    assert result.stores.decision.call_args.kwargs["summary"] == _BAD["summary"]
+    assert result.stores.initiative.call_count == 1
+    assert result.stores.initiative.call_args.kwargs["title"] == _BAD["title"]
     details = result.audit[0]["details"]
-    assert details["proposed"]["decisions"] == 1, "a recovery is not a new proposal"
-    assert details["stored"]["decisions"] == 1
+    assert details["proposed"]["initiatives"] == 1, "a recovery is not a new proposal"
+    assert details["stored"]["initiatives"] == 1
     assert details["dropped"] == [], "the recovered item's drop record is released"
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "recovered": 1}
     assert result.audit[0]["summary"].endswith("retry=1/1")
@@ -753,7 +716,7 @@ async def test_the_retry_prompt_names_the_rejected_item_and_forces_the_tool(
     db: Path,
 ) -> None:
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER, retry_payload={},
+        {"initiatives": [_BAD]}, db, user_message=_USER, retry_payload={},
     )
 
     first, second = result.create.call_args_list
@@ -762,7 +725,7 @@ async def test_the_retry_prompt_names_the_rejected_item_and_forces_the_tool(
         "the retry sees the same turn the first pass saw"
     )
     assert "REJECTED ITEMS" in content
-    assert _BAD["summary"] in content and _BAD["user_commitment_quote"] in content
+    assert _BAD["title"] in content and _BAD["user_commitment_quote"] in content
     assert "character-for-character" in content
     assert second.kwargs["tool_choice"] == {"type": "tool", "name": "store_memories"}
     assert second.kwargs["system"] == first.kwargs["system"]
@@ -772,7 +735,7 @@ async def test_the_retry_prompt_names_the_rejected_item_and_forces_the_tool(
 async def test_no_retry_without_a_bad_quote_drop(db: Path) -> None:
     """A missing field is not something a second call can fix."""
     result = await _run_pass_full(
-        {"decisions": [{"summary": "", "user_commitment_quote": "Cut burn to 400k"}]},
+        {"initiatives": [{"title": "", "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"}]},
         db,
     )
 
@@ -784,15 +747,15 @@ async def test_no_retry_without_a_bad_quote_drop(db: Path) -> None:
 @pytest.mark.asyncio
 async def test_a_retry_that_still_fails_keeps_the_original_drop(db: Path) -> None:
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [_BAD]},
+        {"initiatives": [_BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [_BAD]},
     )
 
     details = result.audit[0]["details"]
     assert details["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": _BAD["summary"]}
+        {"kind": "initiative", "reason": "bad_quote", "label": _BAD["title"]}
     ], "still invalid: one record, not two"
-    assert details["stored"]["decisions"] == 0
+    assert details["stored"]["initiatives"] == 0
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "still_invalid": 1}, (
         "the second bad quote is counted, not filed as a second drop"
     )
@@ -806,15 +769,15 @@ async def test_extra_retry_items_count_as_new_proposals(db: Path) -> None:
     """Told to add nothing, the model may still add; a valid extra item is
     real, so it is stored and counted as proposed — never as a recovery, in
     whichever order it arrives."""
-    extra = {"summary": "Tell the team", "user_commitment_quote": "Tell the team"}
+    extra = {"title": "Tell the team", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [extra, _GOOD]},
+        {"initiatives": [_BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [extra, _GOOD]},
     )
 
     details = result.audit[0]["details"]
-    assert details["proposed"]["decisions"] == 2
-    assert details["stored"]["decisions"] == 2
+    assert details["proposed"]["initiatives"] == 2
+    assert details["stored"]["initiatives"] == 2
     assert details["dropped"] == []
     assert details["retry"]["recovered"] == 1
 
@@ -822,52 +785,33 @@ async def test_extra_retry_items_count_as_new_proposals(db: Path) -> None:
 @pytest.mark.asyncio
 async def test_a_re_submitted_stored_item_is_not_stored_twice(db: Path) -> None:
     """The model re-sending everything must not double-count `stored`."""
-    valid = {"summary": "Tell the team", "user_commitment_quote": "Tell the team"}
+    valid = {"title": "Tell the team", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     result = await _run_pass_full(
-        {"decisions": [valid, _BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [valid, _GOOD]},
+        {"initiatives": [valid, _BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [valid, _GOOD]},
     )
 
     details = result.audit[0]["details"]
-    assert result.stores.decision.call_count == 2, "valid once, recovered once"
-    assert details["proposed"]["decisions"] == 2
-    assert details["stored"]["decisions"] == 2
+    assert result.stores.initiative.call_count == 2, "valid once, recovered once"
+    assert details["proposed"]["initiatives"] == 2
+    assert details["stored"]["initiatives"] == 2
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "recovered": 1, "repeated": 1}
 
 
 @pytest.mark.asyncio
-async def test_a_recovery_of_one_kind_does_not_release_another(db: Path) -> None:
-    result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER,
-        retry_payload={"initiatives": [{
-            "title": "SVN scope", "summary": "Two properties",
-            "user_commitment_quote": "therea re only 2 properties in SVN scope",
-        }]},
-    )
-
-    details = result.audit[0]["details"]
-    assert details["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": _BAD["summary"]}
-    ]
-    assert details["proposed"] == {"decisions": 1, "initiatives": 1, "advice": 0}
-    assert details["stored"] == {"decisions": 0, "initiatives": 1, "advice": 0}
-    assert details["retry"]["recovered"] == 0
-
-
-@pytest.mark.asyncio
 async def test_a_retry_failure_keeps_the_first_pass_results(db: Path) -> None:
-    valid = {"summary": "Tell the team", "user_commitment_quote": "Tell the team"}
+    valid = {"title": "Tell the team", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     result = await _run_pass_full(
-        {"decisions": [valid, _BAD]}, db, user_message=_USER,
+        {"initiatives": [valid, _BAD]}, db, user_message=_USER,
         retry_payload=RuntimeError("upstream 529"),
     )
 
     details = result.audit[0]["details"]
     assert details["failure"] == "", "the pass itself did not fail"
     assert not result.audit[0]["summary"].startswith("FAILED")
-    assert details["stored"]["decisions"] == 1
+    assert details["stored"]["initiatives"] == 1
     assert details["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": _BAD["summary"]}
+        {"kind": "initiative", "reason": "bad_quote", "label": _BAD["title"]}
     ]
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "failure": "RuntimeError"}
 
@@ -882,7 +826,7 @@ async def test_a_cancelled_retry_is_logged_as_failed(db: Path) -> None:
         rows.append({"event_type": event_type, "summary": summary, **kw})
 
     with (
-        mock.patch.object(episodic, "store_decision"),
+        mock.patch.object(episodic, "store_initiative"),
         mock.patch("openexecutive.audit.log_event", _capture),
         mock.patch("openexecutive.audit.usage.log_model_usage"),
         mock.patch("openexecutive.config.get_settings"),
@@ -890,7 +834,7 @@ async def test_a_cancelled_retry_is_logged_as_failed(db: Path) -> None:
         mock.patch("openexecutive.providers.get_provider") as provider,
     ):
         provider.return_value.messages_create = mock.AsyncMock(
-            side_effect=[_tool_response({"decisions": [_BAD]}), asyncio.CancelledError()]
+            side_effect=[_tool_response({"initiatives": [_BAD]}), asyncio.CancelledError()]
         )
         with pytest.raises(asyncio.CancelledError):
             await episodic.extract_and_store(_USER, "ok", db_path=db, session_id="s-1")
@@ -898,7 +842,7 @@ async def test_a_cancelled_retry_is_logged_as_failed(db: Path) -> None:
     audit = [r for r in rows if r["event_type"] == "memory_extraction"]
     assert audit[0]["summary"].startswith("FAILED(CancelledError)")
     assert audit[0]["details"]["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": _BAD["summary"]}
+        {"kind": "initiative", "reason": "bad_quote", "label": _BAD["title"]}
     ]
     assert audit[0]["details"]["retry"] == {**_NO_RETRY, "rejected": 1}, (
         "a zeroed block would deny the retry that the drop record proves was owed"
@@ -935,18 +879,18 @@ async def test_a_reworded_re_submission_is_a_new_proposal_and_the_drop_stands(
     """A valid item that matches no drop record by label is not a recovery,
     even if the model meant it as one — "reworded" and "different" cannot be
     told apart, and crediting it would erase the bad-quote census."""
-    reworded = {**_GOOD, "summary": "Only two properties are in SVN's scope"}
+    reworded = {**_GOOD, "title": "Only two properties are in SVN's scope"}
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [reworded]},
+        {"initiatives": [_BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [reworded]},
     )
 
     details = result.audit[0]["details"]
-    assert result.stores.decision.call_count == 1, "the valid item is still kept"
-    assert details["proposed"]["decisions"] == 2
-    assert details["stored"]["decisions"] == 1
+    assert result.stores.initiative.call_count == 1, "the valid item is still kept"
+    assert details["proposed"]["initiatives"] == 2
+    assert details["stored"]["initiatives"] == 1
     assert details["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": _BAD["summary"]}
+        {"kind": "initiative", "reason": "bad_quote", "label": _BAD["title"]}
     ]
     assert details["retry"]["recovered"] == 0
 
@@ -957,16 +901,16 @@ async def test_a_re_sent_stored_item_with_a_reworded_label_is_repeated(
 ) -> None:
     """The model rewords labels but keeps a quote that passed, so the quote
     is what identifies a re-send. Same quote, new label: stored once."""
-    valid = {"summary": "Tell the team about it", "user_commitment_quote": "Tell the team"}
-    reworded = {**valid, "summary": "Tell the whole team about it"}
+    valid = {"title": "Tell the team about it", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
+    reworded = {**valid, "title": "Tell the whole team about it"}
     result = await _run_pass_full(
-        {"decisions": [valid, _BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [reworded, _GOOD]},
+        {"initiatives": [valid, _BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [reworded, _GOOD]},
     )
 
     details = result.audit[0]["details"]
-    assert result.stores.decision.call_count == 2, "valid once, recovered once"
-    assert details["stored"]["decisions"] == 2
+    assert result.stores.initiative.call_count == 2, "valid once, recovered once"
+    assert details["stored"]["initiatives"] == 2
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "recovered": 1, "repeated": 1}
 
 
@@ -976,14 +920,14 @@ async def test_a_corrected_item_sharing_a_stored_label_is_still_recovered(
 ) -> None:
     """Two items with the same summary, one stored and one rejected: the
     corrected one carries a different quote, so it is not a re-send."""
-    stored_twin = {**_BAD, "user_commitment_quote": "Tell the team"}
+    stored_twin = {**_BAD, "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     result = await _run_pass_full(
-        {"decisions": [stored_twin, _BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [_GOOD]},
+        {"initiatives": [stored_twin, _BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [_GOOD]},
     )
 
     details = result.audit[0]["details"]
-    assert result.stores.decision.call_count == 2
+    assert result.stores.initiative.call_count == 2
     assert details["dropped"] == []
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "recovered": 1}
 
@@ -993,14 +937,14 @@ async def test_retry_garbage_is_counted_not_hidden(db: Path) -> None:
     """A retry that returned only garbage must not read like one that
     obediently returned empty arrays — the ambiguity the row exists to remove."""
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": "nope", "advice": ["x"], "initiatives": [_BAD]},
+        {"initiatives": [_BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": ["nope", "x", _BAD]},
     )
 
     details = result.audit[0]["details"]
     assert details["malformed_count"] == 0, "the first pass was clean"
     assert details["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": _BAD["summary"]}
+        {"kind": "initiative", "reason": "bad_quote", "label": _BAD["title"]}
     ], "retry drops never become first-pass drop records"
     assert details["retry"] == {
         **_NO_RETRY, "rejected": 1, "malformed": 2, "still_invalid": 1,
@@ -1014,16 +958,16 @@ async def test_a_correctly_requoted_item_sharing_a_stored_sentence_is_recovered(
     """Two commitments can rest on one sentence. A re-submission whose label
     matches a pending drop is a recovery even though its (now correct) quote
     already supports a stored item — the drop record is checked first."""
-    first = {"summary": "Cut burn to 400k", "user_commitment_quote": "Cut burn to 400k"}
-    freeze_bad = {"summary": "Freeze hiring", "user_commitment_quote": "We will freeze hiring"}
-    freeze_good = {**freeze_bad, "user_commitment_quote": "Cut burn to 400k"}
+    first = {"title": "Cut burn to 400k", "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"}
+    freeze_bad = {"title": "Freeze hiring", "status": "active", "summary": "s", "user_commitment_quote": "We will freeze hiring"}
+    freeze_good = {**freeze_bad, "status": "active", "summary": "s", "user_commitment_quote": "Cut burn to 400k"}
     result = await _run_pass_full(
-        {"decisions": [first, freeze_bad]}, db, user_message="Cut burn to 400k.",
-        retry_payload={"decisions": [freeze_good]},
+        {"initiatives": [first, freeze_bad]}, db, user_message="Cut burn to 400k.",
+        retry_payload={"initiatives": [freeze_good]},
     )
 
     details = result.audit[0]["details"]
-    assert [c.kwargs["summary"] for c in result.stores.decision.call_args_list] == [
+    assert [c.kwargs["title"] for c in result.stores.initiative.call_args_list] == [
         "Cut burn to 400k", "Freeze hiring",
     ]
     assert details["dropped"] == []
@@ -1036,17 +980,17 @@ async def test_a_re_sent_item_whose_quote_gained_a_full_stop_is_repeated(
 ) -> None:
     """Asked to re-copy character-for-character, the model may add or drop the
     terminator; that must not mint a new identity and a second `stored`."""
-    valid = {"summary": "Tell the team", "user_commitment_quote": "Tell the team"}
+    valid = {"title": "Tell the team", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     result = await _run_pass_full(
-        {"decisions": [valid, _BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [
-            {**valid, "user_commitment_quote": "Tell the team."}, _GOOD,
+        {"initiatives": [valid, _BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [
+            {**valid, "status": "active", "summary": "s", "user_commitment_quote": "Tell the team."}, _GOOD,
         ]},
     )
 
     details = result.audit[0]["details"]
-    assert result.stores.decision.call_count == 2, "valid once, recovered once"
-    assert details["proposed"]["decisions"] == 2
+    assert result.stores.initiative.call_count == 2, "valid once, recovered once"
+    assert details["proposed"]["initiatives"] == 2
     assert details["retry"] == {**_NO_RETRY, "rejected": 1, "recovered": 1, "repeated": 1}
 
 
@@ -1054,10 +998,10 @@ async def test_a_re_sent_item_whose_quote_gained_a_full_stop_is_repeated(
 async def test_an_invalid_re_send_is_still_invalid_not_repeated(db: Path) -> None:
     """Validation comes first: an item with a stored quote but no summary was
     never a re-send of anything."""
-    valid = {"summary": "Tell the team", "user_commitment_quote": "Tell the team"}
+    valid = {"title": "Tell the team", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     result = await _run_pass_full(
-        {"decisions": [valid, _BAD]}, db, user_message=_USER,
-        retry_payload={"decisions": [{"summary": "", "user_commitment_quote": "Tell the team"}]},
+        {"initiatives": [valid, _BAD]}, db, user_message=_USER,
+        retry_payload={"initiatives": [{"title": "", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}]},
     )
 
     assert result.audit[0]["details"]["retry"] == {
@@ -1073,7 +1017,7 @@ class _NoToolCall:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "retry_payload",
-    [["decisions"], _NoToolCall()],
+    [["initiatives"], _NoToolCall()],
     ids=["payload-not-a-dict", "no-tool-call"],
 )
 async def test_retry_garbage_above_item_level_is_counted(
@@ -1082,7 +1026,7 @@ async def test_retry_garbage_above_item_level_is_counted(
     """A retry that returned a non-dict payload, or no `store_memories` call at
     all, must not read like one that obediently returned empty arrays."""
     result = await _run_pass_full(
-        {"decisions": [_BAD]}, db, user_message=_USER, retry_payload=retry_payload,
+        {"initiatives": [_BAD]}, db, user_message=_USER, retry_payload=retry_payload,
     )
 
     assert result.audit[0]["details"]["retry"] == {
@@ -1101,10 +1045,10 @@ async def test_a_store_failure_before_the_retry_still_reports_what_was_owed(
     def _capture(event_type: str, summary: str, **kw: Any) -> None:
         rows.append({"event_type": event_type, "summary": summary, **kw})
 
-    valid = {"summary": "Tell the team", "user_commitment_quote": "Tell the team"}
+    valid = {"title": "Tell the team", "status": "active", "summary": "s", "user_commitment_quote": "Tell the team"}
     with (
         mock.patch.object(
-            episodic, "store_decision", side_effect=sqlite3.OperationalError("locked")
+            episodic, "store_initiative", side_effect=sqlite3.OperationalError("locked")
         ),
         mock.patch("openexecutive.audit.log_event", _capture),
         mock.patch("openexecutive.audit.usage.log_model_usage"),
@@ -1112,7 +1056,7 @@ async def test_a_store_failure_before_the_retry_still_reports_what_was_owed(
         mock.patch.object(episodic, "get_active_initiatives", return_value=[]),
         mock.patch("openexecutive.providers.get_provider") as provider,
     ):
-        create = mock.AsyncMock(return_value=_tool_response({"decisions": [_BAD, valid]}))
+        create = mock.AsyncMock(return_value=_tool_response({"initiatives": [_BAD, valid]}))
         provider.return_value.messages_create = create
         await episodic.extract_and_store(_USER, "ok", db_path=db, session_id="s-1")
 
@@ -1126,13 +1070,13 @@ async def test_a_store_failure_before_the_retry_still_reports_what_was_owed(
 async def test_a_null_quote_is_not_the_word_none(db: Path) -> None:
     """`str(None)` is "None", which a user message can contain."""
     _, audit = await _run_pass(
-        {"decisions": [{"summary": "Nothing is sold", "user_commitment_quote": None}]},
+        {"initiatives": [{"title": "Nothing is sold", "status": "active", "summary": "s", "user_commitment_quote": None}]},
         db, user_message="None of them are sold.", retry_payload={},
     )
 
-    assert audit[0]["details"]["stored"]["decisions"] == 0
+    assert audit[0]["details"]["stored"]["initiatives"] == 0
     assert audit[0]["details"]["dropped"] == [
-        {"kind": "decision", "reason": "bad_quote", "label": "Nothing is sold"}
+        {"kind": "initiative", "reason": "bad_quote", "label": "Nothing is sold"}
     ]
 
 
@@ -1140,7 +1084,7 @@ def test_the_retry_prompt_shows_a_null_quote_as_empty() -> None:
     """The model wrote JSON null, not the word "None"; the prompt must not
     tell it otherwise."""
     prompt = episodic._retry_prompt(
-        "USER QUESTION:\nx", [(episodic._DECISIONS, {"summary": "X", "user_commitment_quote": None})]
+        "USER QUESTION:\nx", [(episodic._INITIATIVES, {"title": "X", "status": "active", "summary": "s", "user_commitment_quote": None})]
     )
-    assert '- decision "X": quote given ""' in prompt
+    assert '- initiative "X": quote given ""' in prompt
     assert "None" not in prompt

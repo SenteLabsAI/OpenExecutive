@@ -21,7 +21,7 @@ def test_format_for_prompt_reads_the_patched_db_path(
 ) -> None:
     db_path = tmp_path / "episodic.db"
     episodic.initialize_db(db_path)
-    episodic.store_decision("strategy", "Open a second warehouse in Leeds", db_path=db_path)
+    episodic.store_initiative("Open a second warehouse in Leeds", "active", db_path=db_path)
     monkeypatch.setattr(episodic, "DB_PATH", db_path)
 
     assert "Open a second warehouse in Leeds" in episodic.format_for_prompt()

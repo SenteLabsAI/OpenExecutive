@@ -87,6 +87,11 @@ def gather_engagement_activity(
     if not db_path.exists():
         return activity
 
+    if not read_only:
+        # Decisions are standing facts now; this copies an older DB's in once.
+        from openexecutive.memory import facts
+
+        facts.ensure_ready(db_path)
     if read_only:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     else:
@@ -101,16 +106,27 @@ def gather_engagement_activity(
         }
         rng = (since_iso, until_iso)
 
-        if "decisions" in tables:
+        # Decisions live as standing facts once the store copied them in
+        # (facts_meta); a parked slot from before that still has its own table.
+        copied = "facts_meta" in tables and conn.execute(
+            "SELECT 1 FROM facts_meta WHERE key = 'decisions_copied_to_facts'"
+        ).fetchone() is not None
+        source = (
+            "(SELECT created_at AS timestamp, CASE WHEN department != '' THEN department "
+            "ELSE 'general' END AS domain, statement AS summary, outcome FROM facts "
+            "WHERE decision = 1 AND status = 'active')"
+            if copied else "decisions"
+        )
+        if copied or "decisions" in tables:
             activity.decisions_total = _count(
                 conn,
-                "SELECT COUNT(*) FROM decisions "
+                f"SELECT COUNT(*) FROM {source} "  # noqa: S608 - one of two fixed sources
                 "WHERE timestamp >= ? AND timestamp <= ? "
                 "AND TRIM(COALESCE(summary, '')) != ''",
                 rng,
             )
             rows = conn.execute(
-                "SELECT timestamp, domain, summary, outcome FROM decisions "
+                f"SELECT timestamp, domain, summary, outcome FROM {source} "  # noqa: S608
                 "WHERE timestamp >= ? AND timestamp <= ? "
                 "ORDER BY timestamp DESC LIMIT ?",
                 (*rng, _MAX_LISTED),
