@@ -20,60 +20,94 @@ export function showSteps(steps: string[]): boolean {
   return steps.length >= STEPS_SHOWN_FROM;
 }
 
-// The plan a long turn shows up front (`plan` events from the backend's
-// `plan_steps`, orchestrator/turn_plan.py): every step, with the done ones
-// ticked, the current one running and the rest still to do. A turn that
-// sends no plan keeps the steps above, added as they happen.
+// What a long turn shows while it works (`progress` events from the
+// backend's `show_progress`, orchestrator/turn_progress.py): the task, what it
+// is doing now, what it has used and what it has found so far. The card stays
+// the same size however long the turn runs: the first few sources and the
+// newest few findings show, the rest fold into a count.
 
-export interface TurnPlan {
-  steps: string[];
-  current: number;
-  // The steps the turn first showed: a step not among them was added later.
-  first: string[];
-}
-
-export type PlanStepState = "done" | "current" | "todo";
-
-export interface PlanRow {
-  label: string;
-  state: PlanStepState;
-  added: boolean;
+export interface TurnProgress {
+  task: string;
+  now: string;
+  used: string[];
+  found: string[];
 }
 
 // Answer text this long since the last tool round means the turn is writing
-// its reply, not a line before its next tools: from the step before the last,
-// the plan moves to its last step ("Write the summary") without waiting for a
-// call that never comes.
+// its reply, not a line before its next tools.
 export const WRITING_FROM_CHARS = 280;
 
-export function applyPlan(
-  prev: TurnPlan | null,
-  steps: unknown,
-  current: unknown,
-): TurnPlan | null {
-  const clean = Array.isArray(steps)
-    ? steps.filter((s): s is string => typeof s === "string" && s.trim() !== "").map((s) => s.trim())
+export const USED_SHOWN = 3;
+export const FOUND_SHOWN = 3;
+
+function cleanLines(raw: unknown): string[] {
+  return Array.isArray(raw)
+    ? raw.filter((s): s is string => typeof s === "string" && s.trim() !== "").map((s) => s.trim())
     : [];
-  if (clean.length === 0) return prev;
-  const at = typeof current === "number" && Number.isFinite(current) ? Math.trunc(current) : 0;
-  return {
-    steps: clean,
-    current: Math.max(0, Math.min(at, clean.length - 1)),
-    first: prev ? prev.first : clean,
-  };
 }
 
-export function planRows(
-  plan: TurnPlan,
-  { writing = false, handingOver = false }: { writing?: boolean; handingOver?: boolean } = {},
-): PlanRow[] {
-  const last = plan.steps.length - 1;
-  // Only from the step before the last: a long line of text before an early
-  // step's tool calls must not tick the whole plan off.
-  const current = writing && plan.current >= last - 1 ? last : plan.current;
-  return plan.steps.map((label, i) => ({
-    label,
-    state: i < current ? "done" : i === current && !handingOver ? "current" : "todo",
-    added: !plan.first.includes(label),
-  }));
+function cleanLine(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+// Each event carries the whole picture so far, so it replaces the last one;
+// one with nothing in it keeps what was showing.
+export function applyProgress(
+  prev: TurnProgress | null,
+  item: { task?: unknown; now?: unknown; used?: unknown; found?: unknown },
+): TurnProgress | null {
+  const next = {
+    task: cleanLine(item.task),
+    now: cleanLine(item.now),
+    used: cleanLines(item.used),
+    found: cleanLines(item.found),
+  };
+  if (!next.task && !next.now && next.used.length === 0 && next.found.length === 0) return prev;
+  return next;
+}
+
+// The first few, then how many more: the first things a turn reads are
+// usually what it was asked about.
+export function firstFew(items: string[], n: number): { shown: string[]; more: number } {
+  return { shown: items.slice(0, n), more: Math.max(0, items.length - n) };
+}
+
+// The newest few, and how many earlier ones fold away.
+export function newestFew(items: string[], n: number): { shown: string[]; earlier: number } {
+  return { shown: items.slice(-n), earlier: Math.max(0, items.length - n) };
+}
+
+// What the turn read, counted by kind from each round's `activity` `reads`,
+// for when the turn names nothing itself ("3 emails", "2 files").
+export type ReadCounts = Record<string, number>;
+
+export function addReads(prev: ReadCounts, reads: unknown): ReadCounts {
+  if (!reads || typeof reads !== "object") return prev;
+  let next = prev;
+  for (const [kind, n] of Object.entries(reads as Record<string, unknown>)) {
+    if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) continue;
+    if (next === prev) next = { ...prev };
+    next[kind] = (next[kind] ?? 0) + Math.trunc(n);
+  }
+  return next;
+}
+
+const PLURALS: Record<string, string> = {
+  person: "people",
+  "web search": "web searches",
+};
+
+// Kinds read once a turn, or not worth counting, say what they are.
+const UNCOUNTED: Record<string, string> = {
+  calendar: "Your calendar",
+  "connected app": "Connected apps",
+};
+
+export function readChips(reads: ReadCounts): string[] {
+  return Object.entries(reads)
+    .filter(([, n]) => n > 0)
+    .map(([kind, n]) => {
+      if (UNCOUNTED[kind]) return UNCOUNTED[kind];
+      return n === 1 ? `1 ${kind}` : `${n} ${PLURALS[kind] ?? `${kind}s`}`;
+    });
 }
