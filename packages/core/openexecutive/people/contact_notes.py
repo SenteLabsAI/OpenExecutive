@@ -110,7 +110,12 @@ def _conn(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, No
         conn.executescript(_SCHEMA)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(contact_notes)")}
         if "note_by_owner" not in cols:
-            conn.execute("ALTER TABLE contact_notes ADD COLUMN note_by_owner INTEGER NOT NULL DEFAULT 0")
+            try:
+                conn.execute("ALTER TABLE contact_notes ADD COLUMN note_by_owner INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError as exc:
+                # Another connection added it between the check and here.
+                if "duplicate column" not in str(exc).lower():
+                    raise
         yield conn
         conn.commit()
     finally:

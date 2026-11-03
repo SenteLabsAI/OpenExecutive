@@ -2454,6 +2454,8 @@ PERSON_CONCLUSIONS_MAX_PAGE = 100
 # How many pages of a person's own conclusions a remove looks through for
 # the id it was given.
 _FORGET_MAX_PAGES = 20
+# The whole lookup gets this many single-read timeouts, not one per page.
+_FORGET_DEADLINE_PAGES = 3
 
 
 class PersonConclusionsPage(BaseModel):
@@ -2582,19 +2584,21 @@ async def forget_person_conclusion(
         if not matched:
             return "missing"
         _, peer = matched[0]
-        found = searched_all = False
-        for page in range(1, _FORGET_MAX_PAGES + 1):
-            result = await asyncio.wait_for(
-                peer.conclusions.aio.list(page=page, size=PERSON_CONCLUSIONS_MAX_PAGE, reverse=False),
-                timeout=timeout,
-            )
-            items = list(result.items)
-            if any(str(getattr(c, "id", "")) == conclusion_id for c in items):
-                found = True
-                break
-            if len(items) < PERSON_CONCLUSIONS_MAX_PAGE:
-                searched_all = True
-                break
+
+        async def _search() -> tuple[bool, bool]:
+            for page in range(1, _FORGET_MAX_PAGES + 1):
+                result = await peer.conclusions.aio.list(
+                    page=page, size=PERSON_CONCLUSIONS_MAX_PAGE, reverse=False,
+                )
+                items = list(result.items)
+                if any(str(getattr(c, "id", "")) == conclusion_id for c in items):
+                    return True, True
+                if len(items) < PERSON_CONCLUSIONS_MAX_PAGE:
+                    return False, True
+            return False, False
+
+        # One deadline for the whole lookup, however many pages it reads.
+        found, searched_all = await asyncio.wait_for(_search(), timeout=timeout * _FORGET_DEADLINE_PAGES)
         if not found:
             # Past the pages it looks through, the id may still be theirs:
             # "try again later" is truer than "not yours".

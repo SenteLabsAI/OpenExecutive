@@ -705,3 +705,16 @@ def test_a_line_past_the_pages_it_looks_through_is_not_called_missing(
     with _with_client(_Client([peer])):
         resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/{last}")
     assert resp.status_code == 503 and not any("delete" in c for c in peer.calls)
+
+
+def test_a_slow_lookup_answers_within_one_deadline(roster: dict[str, int], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(honcho_client, "base_prefetch_timeout_s", lambda _t: 0.05)
+    peer = _Peer(str(roster["principal"]), conclusions=[_Conclusion("runs 48 units", _T1, "c_one")])
+
+    async def _slow(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(peer.conclusions.aio, "list", _slow)
+    with _with_client(_Client([peer])):
+        resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/c_one")
+    assert resp.status_code == 503
