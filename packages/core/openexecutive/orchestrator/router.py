@@ -232,8 +232,9 @@ async def route_to_specialist(
     only).
 
     ``standing_facts`` is the STANDING FACTS block (``memory.facts``) the
-    same way: "" sends none, ``None`` reads the store — so a workflow step's
-    analysis uses the principal's corrections just as a chat consult does.
+    same way: "" sends none, ``None`` reads the store, the facts that bear
+    on ``query`` first — so a workflow step's analysis uses the principal's
+    corrections just as a chat consult does.
     """
     agent = SPECIALIST_REGISTRY.get(specialist_name)
     if agent is None:
@@ -245,7 +246,7 @@ async def route_to_specialist(
     if standing_facts is None:
         from openexecutive.memory.facts import render_facts_for_prompt
 
-        standing_facts = await asyncio.to_thread(render_facts_for_prompt)
+        standing_facts = await asyncio.to_thread(render_facts_for_prompt, query=query)
     with trace_span("specialist {specialist}", specialist=specialist_name, actor=actor):
         return await agent.analyze(
             query=query,
