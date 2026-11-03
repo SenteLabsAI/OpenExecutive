@@ -6,6 +6,10 @@ they send it. Two things leave it behind with nobody meaning to send it:
 - a redraft: they asked for a change and a new draft was saved in the same
   thread, or in the same conversation to the same people about the same
   thing (:func:`replace_earlier`);
+- a named replacement: the person asked for a new draft in place of an
+  earlier one of the Executive's, from any conversation in the last
+  ``NAMED_DAYS`` days, and the model named it by words of its subject or a
+  recipient (:func:`replace_named`);
 - the Executive sent that email itself, from its own mailbox, in the same
   conversation, to the same people and in the same thread or about the same
   thing (:func:`clear_after_send`).
@@ -25,7 +29,8 @@ or the send.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from openexecutive.delegation import drafts
@@ -34,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 
 _MIN_SUBJECT = 8
+# How far back a named replacement looks for the draft it replaces.
+NAMED_DAYS = 30
+_MIN_NAME_WORD = 3
+_WORD = re.compile(r"[\w'-]+")
 
 
 def same_topic(a: str, b: str) -> bool:
@@ -198,3 +207,62 @@ async def clear_after_send(
             _audit(person_id, f"Removed drafts the Executive sent itself for person {person_id}", outcomes)
             deleted += outcomes.count("deleted")
     return deleted
+
+
+def _names_draft(words: str, message: Any) -> bool:
+    """Whether every word of ``words`` is a whole word of the draft's subject
+    or one of its recipients (case aside). At least one word must be
+    ``_MIN_NAME_WORD`` characters long, so "a" or "re" alone names nothing."""
+    hay = set(_WORD.findall(" ".join([
+        str(getattr(message, "subject", "") or ""),
+        *sorted(_people(message, "to", "cc")),
+    ]).lower()))
+    terms = _WORD.findall(words.lower())
+    if not terms or max(len(t) for t in terms) < _MIN_NAME_WORD:
+        return False
+    return all(t in hay for t in terms)
+
+
+async def replace_named(
+    person_id: int,
+    client: Any,
+    *,
+    row_id: int,
+    words: str,
+    now: datetime | None = None,
+) -> list[str]:
+    """After the chat draft ``row_id`` was saved in place of an earlier one
+    the person asked to replace: delete ``person_id``'s open chat drafts from
+    the last ``NAMED_DAYS`` days, in any conversation, that ``words`` name
+    (every word a whole word of the subject or a recipient). Only one draft
+    is ever replaced: when the words fit more than one unedited draft (a
+    first name that fits every draft to that person) they named none, and
+    nothing is deleted; drafts they edited count toward that. The one draft
+    named stays if they edited it in their mailbox. Returns its outcome
+    (``deleted``, ``already_gone`` or ``kept_edited``)."""
+    now = now or datetime.now(UTC)
+    if not words.strip():
+        return []
+    try:
+        rows = drafts.open_chat_drafts_of(person_id, since=now - timedelta(days=NAMED_DAYS), before_id=row_id)
+    except Exception:
+        logger.warning("redrafts: couldn't read the open drafts", exc_info=True)
+        return []
+    named: list[tuple[drafts.DraftRow, Any]] = []
+    for row in rows:
+        readable, found = await _read(client, row)
+        if readable and found is not None and _names_draft(words, found.message):
+            named.append((row, found))
+    if len(named) != 1:
+        if named:
+            logger.info("redrafts: %d drafts matched the named words; deleting none", len(named))
+        return []
+    outcomes: list[str] = []
+    for row, found in named:
+        try:
+            outcomes.append(await _retire(client, row, found, now))
+        except Exception:
+            logger.warning("redrafts: couldn't delete draft row %s", row.id, exc_info=True)
+    if outcomes:
+        _audit(person_id, f"Replaced {outcomes.count('deleted')} earlier draft(s) they named", outcomes)
+    return outcomes

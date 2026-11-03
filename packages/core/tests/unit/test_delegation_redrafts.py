@@ -216,3 +216,66 @@ def test_a_given_mailbox_opens_only_its_own_persons_drafts(monkeypatch: pytest.M
         "s1", {DANA}, subject="Pilot dates", client=mine, client_person_id=owner, now=NOW,
     ))
     assert gone == 2 and mine.deleted == ["d1"] and theirs.deleted == ["d2"]
+
+
+def test_a_named_replacement_clears_an_earlier_draft_from_another_conversation() -> None:
+    owner = _owner()
+    mailbox = Mailbox()
+    mailbox.add("d1", [DANA], subject="Pine View LOIs")
+    _record(owner, "d1", "s-friday")  # Friday's chat
+    mailbox.add("d2", [DANA], subject="Budget for Q4")
+    _record(owner, "d2", "s-friday")  # also to Dana, not named: stays
+    mailbox.add("d3", [SAM], subject="Pine View LOIs", version="m-edited")
+    drafts.record(
+        owner, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d3", message_id="m-d3", now=NOW,
+        session_id="s-friday",
+    )  # edited in the mailbox since: theirs, stays
+    mailbox.add("d4", [DANA], subject="BOV on Big Sky")
+    new_row = _record(owner, "d4", "s-monday")
+
+    # "pine view" fits d1 and the edited d3: two drafts, so it names neither.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine view", now=NOW)) == []
+    outcomes = asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine view dana", now=NOW))
+    assert outcomes == ["deleted"]
+    assert mailbox.deleted == ["d1"]
+    # The edited one, named alone, stays.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="pine sam", now=NOW)) == ["kept_edited"]
+    assert sorted(mailbox.saved) == ["d2", "d3", "d4"]
+
+
+def test_a_named_replacement_matches_a_recipient_and_skips_old_drafts() -> None:
+    from datetime import timedelta
+
+    owner = _owner()
+    mailbox = Mailbox()
+    mailbox.add("d1", [DANA], subject="Pilot dates")
+    drafts.record(
+        owner, source=drafts.SOURCE_CHAT, thread_id="t1", draft_id="d1", message_id="m-d1",
+        now=NOW - timedelta(days=redrafts.NAMED_DAYS + 1), session_id="s1",
+    )
+    mailbox.add("d2", [DANA], subject="Pilot dates")
+    _record(owner, "d2", "s1")
+    new_row = _record(owner, "d3", "s2")
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="dana", now=NOW)) == ["deleted"]
+    assert mailbox.deleted == ["d2"]
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="  ", now=NOW)) == []
+
+
+def test_loose_words_name_no_draft() -> None:
+    owner = _owner()
+    mailbox = Mailbox()
+    for n, subject in enumerate(["A plan", "Pilot dates", "Pine View LOIs", "Budget for Q4", "Board pack"]):
+        mailbox.add(f"d{n}", [DANA], subject=subject)
+        _record(owner, f"d{n}", "s1")
+    new_row = _record(owner, "d9", "s2")
+    # Short words name nothing, and a part of a word is not the word.
+    for words in ("a", "re", "a re", "pin", "dat"):
+        assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words=words, now=NOW)) == []
+    # Words that fit more than one draft name none of them: a first name fits
+    # every draft to that person, so it deletes nothing.
+    for words in ("northpeak", "dana"):
+        assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words=words, now=NOW)) == []
+    assert mailbox.deleted == []
+    # Words that fit one draft replace it.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="board", now=NOW)) == ["deleted"]
+    assert mailbox.deleted == ["d4"]

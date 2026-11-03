@@ -556,7 +556,7 @@ def test_the_signals_the_product_recorded_reach_the_grader(db: Path, roster: Sim
     _review(db)
     content = _grade_content(provider)
     assert ("[1] SIGNALS: thumbs down: it never made the alert; stopped the reply; "
-            "the reply claimed a change no tool made; tool create_alert failed") in content
+            "the reply claimed a change no tool made, and was sent back once to make it or say so; tool create_alert failed") in content
     assert "[2] SIGNALS: took the turn back to ask again" in content
     first, second = _turns(db)
     assert first["message_id"] == mid and second["message_id"] is None

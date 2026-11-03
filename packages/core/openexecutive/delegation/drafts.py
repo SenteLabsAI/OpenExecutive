@@ -228,6 +228,39 @@ def open_chat_drafts(
     ]
 
 
+def open_chat_drafts_of(
+    person_id: int, *, since: datetime, before_id: int | None = None, db_path: Path | None = None,
+) -> list[DraftRow]:
+    """``person_id``'s chat drafts written since ``since`` in any
+    conversation, not yet sent or gone, newest first (at most
+    ``_SETTLE_MAX``)."""
+    sql = (
+        "SELECT id, person_id, source, thread_id, draft_id, message_id, sent_message_id, "
+        f"created_at, gone_at FROM {DRAFTS_TABLE} "  # noqa: S608 — constant table name
+        "WHERE source = ? AND person_id = ? AND created_at >= ? "
+        "AND sent_message_id IS NULL AND gone_at IS NULL"
+    )
+    params: list[object] = [SOURCE_CHAT, person_id, since.isoformat()]
+    if before_id is not None:
+        sql += " AND id < ?"
+        params.append(before_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(_SETTLE_MAX)
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+    return [
+        DraftRow(
+            id=int(r[0]), person_id=int(r[1]), source=str(r[2] or ""), thread_id=str(r[3] or ""),
+            draft_id=str(r[4] or ""), message_id=str(r[5] or ""), sent_message_id=str(r[6] or ""),
+            created_at=str(r[7] or ""), gone_at=str(r[8] or ""),
+        )
+        for r in rows
+    ]
+
+
 def claim_send(row_id: int, now: datetime, *, db_path: Path | None = None) -> bool:
     """Take a chat draft for sending (compare-and-set): False when it is
     already sent, gone or being sent, so a double tap sends once. A claimed
