@@ -1512,6 +1512,8 @@ export interface Advice {
 export interface PersonConclusion {
   content: string;
   created_at: string;
+  // "" when it can't be removed from here.
+  id?: string;
 }
 
 export interface PersonMemory {
@@ -1611,6 +1613,17 @@ export async function retireStandingFact(id: number, reason = ""): Promise<Stand
     body: JSON.stringify({ reason }),
   });
   if (!res.ok) throw new Error("Failed to retire standing fact");
+  return res.json();
+}
+
+// Change what a standing fact says. The old wording is kept as what it corrects.
+export async function editStandingFact(id: number, statement: string): Promise<StandingFact> {
+  const res = await fetch(`${API_BASE}/memories/facts/${id}/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ statement }),
+  });
+  if (!res.ok) throw new Error(res.status === 403 ? "You can't change this fact" : "Couldn't save that change");
   return res.json();
 }
 
@@ -1751,6 +1764,17 @@ export async function listPersonConclusions(
   );
   if (!res.ok) throw new Error("Failed to list person conclusions");
   return res.json();
+}
+
+// Remove one line of what it learned about you (your own only).
+export async function forgetPersonConclusion(personId: number, conclusionId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/memories/people/${personId}/conclusions/${encodeURIComponent(conclusionId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error("Couldn't remove that line");
+  // The overview is shared for a few seconds; the next read must be fresh.
+  peopleMemoryShared = null;
 }
 
 export interface ScheduledAction {
@@ -4913,6 +4937,8 @@ export interface ContactNote {
   emailed_count: number;
   met_count: number;
   note_written_at: string | null;
+  // You wrote this note; it keeps your words.
+  edited_by_you?: boolean;
   updated_at: string;
 }
 
@@ -4928,6 +4954,23 @@ export async function getContactNote(personId: number): Promise<ContactNote | nu
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Request failed: ${res.statusText}`);
   return res.json();
+}
+
+// Your own wording for what it remembers about someone; it keeps your words.
+export async function editContactNote(personId: number, note: string): Promise<ContactNote> {
+  const res = await fetch(`${API_BASE}/contacts/${personId}/note`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+  if (res.status === 422) throw new Error("Write it in plain words, without links or addresses");
+  if (!res.ok) throw new Error("Couldn't save the note");
+  return res.json();
+}
+
+export async function removeContactNote(personId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/contacts/${personId}/note`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Couldn't remove the note");
 }
 
 export function setContactKeeperMode(mode: ContactKeeperMode): Promise<ContactChanges> {

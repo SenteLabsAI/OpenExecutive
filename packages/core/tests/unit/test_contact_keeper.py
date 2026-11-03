@@ -1163,3 +1163,33 @@ def test_a_restart_does_not_push_the_next_run_back(owner: int, monkeypatch: pyte
     # Due six hours after the last run, not six after the restart.
     assert asyncio.run(tick(NOW + keeper.RUN_EVERY + timedelta(minutes=1))) is True
     assert started == [NOW + keeper.RUN_EVERY + timedelta(minutes=1)]
+
+
+def test_the_principal_edits_or_removes_a_note_and_the_keeper_keeps_their_words(
+    client: TestClient, owner: int, written: list[Any],
+) -> None:
+    from openexecutive.people import contact_notes
+
+    box = FakeMailbox()
+    box.sent = [_wrote(PRIYA, "Can you price the roof?", days_ago=1), _wrote(PRIYA, "Thanks.", days_ago=2)]
+    _run(box)
+    _run(box)
+    person = _contact(PRIYA)
+    mine = {"x-caller-email": OWNER}
+    people_store.upsert_person(full_name="Ben Teammate", email="ben@co.example")
+    people_registry.invalidate()
+    url = f"/contacts/{person.id}/note"
+    assert client.put(url, json={"note": "Roofing."}, headers={"x-caller-email": "ben@co.example"}).status_code == 404
+    assert client.put(url, json={"note": "see https://x.example"}, headers=mine).status_code == 422
+    body = client.put(url, json={"note": "Priya handles the roof bids for Cedar Court."}, headers=mine).json()
+    assert body["note"] == "Priya handles the roof bids for Cedar Court." and body["edited_by_you"] is True
+    # New mail: the keeper leaves the principal's wording as it is.
+    box.sent.append(_wrote(PRIYA, "The roof bid is in.", days_ago=0))
+    asked = len(written)
+    _run(box)
+    assert len(written) == asked
+    assert contact_notes.get(person.id).note == "Priya handles the roof bids for Cedar Court."
+    # Remove: the note goes, the activity stays.
+    assert client.delete(url, headers=mine).status_code == 204
+    after = contact_notes.get(person.id)
+    assert after.note == "" and after.edited_by_you is False and after.last_emailed_at is not None

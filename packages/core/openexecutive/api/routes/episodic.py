@@ -24,11 +24,13 @@ from openexecutive.memory.episodic import (
 )
 from openexecutive.memory.facts import (
     Fact,
+    PrincipalFactConflict,
     approval_rules,
     approve_fact,
     decline_fact,
     get_fact,
     list_facts,
+    record_fact,
     retire_fact,
     set_needs_approval,
 )
@@ -37,6 +39,7 @@ from openexecutive.memory.honcho_client import (
     PeopleMemory,
     PersonConclusionsPage,
     PersonMemory,
+    forget_person_conclusion,
     people_overview,
     person_conclusions,
 )
@@ -158,6 +161,10 @@ class FactsPage(BaseModel):
 
 class FactRetire(BaseModel):
     reason: str = ""
+
+
+class FactEdit(BaseModel):
+    statement: str
 
 
 class FactReview(BaseModel):
@@ -288,6 +295,53 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
         actor="principal" if principal else "teammate",
     )
     return retired
+
+
+@router.post("/memories/facts/{fact_id}/edit", response_model=Fact)
+def edit_standing_fact(fact_id: int, body: FactEdit, request: Request) -> Fact:
+    """Change what an active fact says. The edit is recorded as a correction
+    that replaces it (same subject; the old wording kept as what it
+    corrects), through ``record_fact``'s own checks. Who may: as for retire,
+    the principal any fact, a teammate only their own, whose edit follows
+    their usual approval rule."""
+    principal = _caller_is_principal(request)
+    existing = get_fact(fact_id)
+    caller = None if principal else _caller_id(request)
+    if not principal and not (existing is not None and _is_own_teammate_fact(existing, caller)):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the principal, or the teammate who recorded it, can edit a standing fact",
+        )
+    if existing is None or existing.kind == "profile":
+        raise HTTPException(status_code=404, detail="Fact not found")
+    if existing.status != "active":
+        raise HTTPException(status_code=409, detail="Fact is no longer active")
+    statement = " ".join(body.statement.split())
+    if not statement or statement == existing.statement:
+        raise HTTPException(status_code=422, detail="Say what the fact should say now")
+    try:
+        fact, replaced = record_fact(
+            subject=existing.subject, statement=statement, source_quote=statement,
+            kind="correction", previous_statement=existing.statement, replaces_fact_id=fact_id,
+            source_channel="web",
+            recorded_by_person_id=None if principal else caller,
+            recorded_by_role="principal" if principal else "teammate",
+            recorded_by_name="" if principal else existing.recorded_by_name,
+        )
+    except PrincipalFactConflict:
+        raise HTTPException(status_code=403, detail="Only the principal can change this fact") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    _audit_fact(
+        "fact_edited", f"Standing fact {fact_id} edited: {existing.subject[:80]}",
+        {"fact_id": fact_id, "new_fact_id": fact.id, "subject": existing.subject,
+         "before": existing.statement, "after": fact.statement, "status": fact.status,
+         "superseded_ids": [f.id for f in replaced],
+         "by": "principal" if principal else "teammate",
+         **({} if principal else {"caller_person_id": caller})},
+        actor="principal" if principal else "teammate",
+    )
+    return fact
 
 
 def _require_principal(request: Request, what: str) -> None:
@@ -435,3 +489,20 @@ async def list_person_conclusions(
     if result is None:
         raise HTTPException(status_code=404, detail="Person not found in peer memory")
     return result
+
+
+@router.delete("/memories/people/{person_id}/conclusions/{conclusion_id}",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def forget_conclusion(person_id: int, conclusion_id: str, request: Request) -> Response:
+    """Remove one line of what peer memory concluded about the caller. Only
+    their own, and only one found among their own conclusions: anything else
+    is 404, as for an id that does not exist. 503 when peer memory can't be
+    reached."""
+    if _viewer(request) != person_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    outcome = await forget_person_conclusion(person_id, conclusion_id)
+    if outcome == "unavailable":
+        raise HTTPException(status_code=503, detail="Memory is unavailable right now. Try again shortly.")
+    if outcome != "forgotten":
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

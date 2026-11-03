@@ -281,3 +281,16 @@ def test_each_person_sees_and_removes_only_their_own(client: TestClient, ids: di
 
 def test_a_request_without_a_sign_in_is_refused(client: TestClient, ids: dict[str, int]) -> None:
     assert client.get("/memories/worked-out").status_code == 403
+
+
+def test_each_person_edits_only_their_own(client: TestClient, ids: dict[str, int]) -> None:
+    mine = _keep(ids["principal"], "Reserves held", "$330,241")
+    res = client.patch(f"/memories/worked-out/{mine}", json={"figure": "$331,000", "source": "Oct 31 statement"},
+                       headers=OWNER)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["figure"] == "$331,000" and body["source"] == "Oct 31 statement" and body["subject"] == "Reserves held"
+    assert client.patch(f"/memories/worked-out/{mine}", json={"figure": "$1"}, headers=TEAMMATE).status_code == 404
+    bad = client.patch(f"/memories/worked-out/{mine}", json={"source": "https://x.example"}, headers=OWNER)
+    assert bad.status_code == 422
+    assert wo.list_figures(ids["principal"])[0]["figure"] == "$331,000"

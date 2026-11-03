@@ -242,6 +242,40 @@ def forget_figure(figure_id: int, *, person_id: int, db_path: Path | None = None
         conn.close()
 
 
+def edit_figure(figure_id: int, *, person_id: int, subject: str | None = None, figure: str | None = None,
+                source: str | None = None, db_path: Path | None = None) -> dict[str, Any] | None:
+    """Change one of ``person_id``'s own figures to their wording. None when
+    it isn't theirs or doesn't exist; ``ValueError`` when the new wording is
+    empty, too long or carries a link, handle, markup or instruction talk.
+    Their edit needs no number from a reply: it is their own word."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ? AND person_id = ?",  # noqa: S608
+                           (int(figure_id), int(person_id))).fetchone()
+        if row is None:
+            return None
+        new = {
+            "subject": " ".join((subject if subject is not None else row["subject"]).split()),
+            "figure": " ".join((figure if figure is not None else row["figure"]).split()),
+            "source": " ".join((source if source is not None else row["source"]).split()),
+        }
+        if not (3 <= len(new["subject"]) <= _SUBJECT_MAX and 1 <= len(new["figure"]) <= _FIGURE_MAX
+                and 2 <= len(new["source"]) <= _SOURCE_MAX):
+            raise ValueError("Keep the subject, figure and source short, and fill in each.")
+        if any(_denied(t) for t in new.values()):
+            raise ValueError("Write it in plain words, without links, addresses or markup.")
+        conn.execute(
+            f"UPDATE {TABLE} SET subject = ?, subject_key = ?, figure = ?, source = ? "  # noqa: S608
+            "WHERE id = ? AND person_id = ?",
+            (new["subject"], _key(new["subject"]), new["figure"], new["source"], int(figure_id), int(person_id)),
+        )
+        conn.commit()
+        saved = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (int(figure_id),)).fetchone()  # noqa: S608
+    finally:
+        conn.close()
+    return _out(saved) if saved is not None else None
+
+
 def take_pass(person_id: int, day: str, limit: int, *, db_path: Path | None = None) -> bool:
     """Count one pass for ``person_id`` on ``day``; False once ``limit`` ran.
     Fails closed."""

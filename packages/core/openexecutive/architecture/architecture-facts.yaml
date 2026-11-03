@@ -5328,6 +5328,21 @@ chat:
     iteration, fails open. Why: replies said "Done" or "I'll treat it as
     closed" with no tool call, and the brief kept the item.
     CLAIM_CHECK_ENABLED (default true).
+  memory_editing: |
+    Everything it keeps about a person can be changed by that person, in
+    their own words (Rufus's rule: gate who sees a memory, not what is
+    kept). About you: `DELETE /memories/people/{id}/conclusions/{cid}`
+    removes one Honcho self-conclusion; Honcho deletes by id across the
+    workspace, so the id must first be found among the caller's own
+    conclusions (`forget_person_conclusion`). Standing facts:
+    `POST /memories/facts/{id}/edit` records a correction that replaces the
+    fact through `record_fact` (same checks, same teammate rules as retire).
+    Contact notes: `PUT /contacts/{id}/note` pins the principal's wording
+    (`note_by_owner`, the keeper skips it); `DELETE` clears it. What it
+    worked out: `PATCH /memories/worked-out/{id}`, the caller's own only,
+    with the same link/markup/instruction refusals as the pass. A removed
+    peer-memory line can still sit in an old chat that search_past_chats
+    reads; that search is the person's own chats only.
   worked_out: |
     What it worked out (memory/worked_out.py). The Executive's own figures
     ("Reserves held: $330,241, from the DCA statement"), kept per person with
