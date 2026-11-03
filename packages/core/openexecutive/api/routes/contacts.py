@@ -12,7 +12,8 @@
   list's Last contact column and sort. People with nothing yet are left out.
 - ``GET /contacts/{person_id}/note`` — what the Executive remembers about one
   person, contact or teammate (``people.contact_notes``): 404 when it has
-  nothing yet. The principal's alone, whoever it is about.
+  nothing yet, and an empty ``note`` when only the activity is known (as
+  after a remove). The principal's alone, whoever it is about.
 - ``PUT /contacts/{person_id}/note`` — the principal's own wording for it;
   the keeper then leaves it as written. ``DELETE`` removes the note (the
   activity stays); the keeper may write a new one only from new mail or
