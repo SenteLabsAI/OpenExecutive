@@ -222,9 +222,16 @@ OUTCOME_SUPPRESSED_BASELINE = "suppressed_baseline"
 # at capture time. Persisted for the audit trail + dedup; never promoted.
 OUTCOME_SUPPRESSED_STALE = "suppressed_stale"
 OUTCOME_FAILED = "failed"
+# A page_watch change that cleared every gate while its watch had already
+# alerted within PAGE_WATCH_DIGEST_HOURS. Held, not dropped: the next scan
+# after the window folds every held change into ONE alert (the daily digest
+# for a busy page), and each held row then moves to ``alerted``.
+OUTCOME_HELD_DIGEST = "held_digest"
+PAGE_WATCH_DIGEST_HOURS = 24
 
 _VALID_OUTCOMES = frozenset({
     OUTCOME_ALERTED,
+    OUTCOME_HELD_DIGEST,
     OUTCOME_SUPPRESSED_BASELINE,
     OUTCOME_SUPPRESSED_STALE,
     OUTCOME_SUPPRESSED_DRY_RUN,

@@ -182,6 +182,19 @@ def _maybe_send_reminders(now: datetime) -> bool:
         return False
 
 
+def _maybe_check_mail_watches(now: datetime) -> bool:
+    """Act as me's watch_for_email: look in the person's own mailbox for the
+    email they are waiting on and tell them when it lands
+    (delegation/mail_watch.py). A hook, like the reminders. Never raises."""
+    try:
+        from openexecutive.delegation.mail_watch import maybe_check
+
+        return maybe_check(now)
+    except Exception:
+        logger.exception("scheduler: mail watches failed to start")
+        return False
+
+
 def _maybe_send_monthly_value(now: datetime) -> bool:
     """The owner's monthly tally of what the Executive did, once, on the
     first weekday of the month (briefing/value_summary.py). A hook like the
@@ -384,6 +397,7 @@ async def run_scheduler(
             _maybe_keep_contacts(now)
             _maybe_remind_notes(now)
             _maybe_send_reminders(now)
+            _maybe_check_mail_watches(now)
             _maybe_release_held(now)
             _maybe_push_cards(now)
             _maybe_send_monthly_value(now)

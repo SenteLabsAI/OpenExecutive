@@ -124,6 +124,9 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "cancel_calendar_event",
     # A reminder to the speaker alone, as fixed text with no links.
     "remind_me",
+    # A watch on the speaker's own mailbox that tells them alone when an
+    # awaited email lands (sender name and subject, cleaned).
+    "watch_for_email",
     # Cards and drafts a person approves before anything happens.
     "propose_actions",
     "propose_form_values",

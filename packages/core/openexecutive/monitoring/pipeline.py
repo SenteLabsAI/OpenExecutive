@@ -41,14 +41,18 @@ from openexecutive.memory.episodic import insert_scheduled_action
 from openexecutive.monitoring import store
 from openexecutive.monitoring.enrichment import build_company_context, enrich_signal
 from openexecutive.monitoring.models import (
+    MODE_ACTIVE,
     MODE_DRY_RUN,
     OUTCOME_ALERTED,
     OUTCOME_FAILED,
+    OUTCOME_HELD_DIGEST,
     OUTCOME_SUPPRESSED_BASELINE,
     OUTCOME_SUPPRESSED_BELOW_FLOOR,
     OUTCOME_SUPPRESSED_DRY_RUN,
     OUTCOME_SUPPRESSED_LOW_RELEVANCE,
     OUTCOME_SUPPRESSED_STALE,
+    PAGE_WATCH_DIGEST_HOURS,
+    SOURCE_KIND_PAGE_WATCH,
     SOURCE_KIND_QUERY,
     Signal,
     WatchlistItem,
@@ -94,6 +98,25 @@ def _poll_floor_minutes_for(signal_type: str) -> int:
     return src.default_poll_interval_minutes
 
 
+# The row's own ``cadence`` in minutes. ``real_time`` asks for the adapter's
+# floor; an unknown value falls back to it too.
+_CADENCE_MINUTES: dict[str, int] = {
+    "real_time": 0,
+    "15min": 15,
+    "hourly": 60,
+    "daily": 24 * 60,
+    "weekly": 7 * 24 * 60,
+}
+
+
+def _poll_interval_minutes(item: WatchlistItem) -> int:
+    """How often this row is checked: its own cadence, never faster than the
+    adapter allows. A page watch set to weekly is checked weekly, not on the
+    adapter's 6-hour floor; one set to 15min is still held to that floor."""
+    floor = _poll_floor_minutes_for(item.signal_type)
+    return max(floor, _CADENCE_MINUTES.get(item.cadence, 0))
+
+
 def _due_for_poll(item: WatchlistItem, now: datetime) -> bool:
     if item.last_polled_at is None:
         return True
@@ -103,8 +126,7 @@ def _due_for_poll(item: WatchlistItem, now: datetime) -> bool:
         return True
     if last.tzinfo is None:
         last = last.replace(tzinfo=UTC)
-    floor = timedelta(minutes=_poll_floor_minutes_for(item.signal_type))
-    return now - last >= floor
+    return now - last >= timedelta(minutes=_poll_interval_minutes(item))
 
 
 # --------------------------------------------------------------------- #
@@ -197,6 +219,12 @@ def _cap_to_ceiling(
 # explicit cap is honoured.
 _QUERY_RELEVANCE_HIGH = 0.8
 _QUERY_RELEVANCE_MEDIUM = 0.5
+# Sources that can't judge their own severity and emit every signal LOW, so
+# the relevance read grades them before the floor gate. ``page_watch`` is the
+# same case as ``query``: a page diff is LOW by construction, and every
+# research watch lands at a MEDIUM floor, so without grading no page change
+# could ever reach the principal.
+_RELEVANCE_GRADED_SOURCES = frozenset({SOURCE_KIND_QUERY, SOURCE_KIND_PAGE_WATCH})
 
 
 def _grade_query_severity(
@@ -222,6 +250,12 @@ def _grade_query_severity(
     else:
         graded = AlertSeverity.LOW
     return _cap_to_ceiling(graded, item)
+
+
+def _without_links(text: str) -> str:
+    from openexecutive.delegation.reminders import clean_text
+
+    return clean_text(text).replace("[link]", "").strip() if text else ""
 
 
 def _signal_to_alert_event(
@@ -250,7 +284,9 @@ def _signal_to_alert_event(
     summary = collapse_whitespace(signal.normalized_summary)
     parts: list[str] = [summary]
     if enrichment:
-        why = collapse_whitespace(str(enrichment.get("why_it_matters") or ""))
+        # The model wrote this line after reading outside text: links and
+        # addresses go, so a planted one can't reach the card or a chat DM.
+        why = _without_links(collapse_whitespace(str(enrichment.get("why_it_matters") or "")))
         if why:
             parts.append(f"Why this matters: {why}")
     # Slug + severity hint are required by the triage prompt's
@@ -264,6 +300,13 @@ def _signal_to_alert_event(
     if signal.published_at:
         parts.append(f"Published: {signal.published_at}")
     parts.append(f"Discovered: {signal.captured_at}")
+    # What a page change added, one headline per line, so the card names
+    # the news rather than "the page changed". Collapsed like the summary.
+    new_links = signal.raw_payload.get("new_links") or []
+    for link in new_links[:10] if isinstance(new_links, list) else []:
+        if isinstance(link, dict) and link.get("url"):
+            text = _without_links(collapse_whitespace(str(link.get("text") or "")))[:200]
+            parts.append(f"New: {text} — {_safe_url(str(link['url']))}")
     target = signal.raw_payload.get("target_url")
     if target:
         parts.append(f"Source: {target}")
@@ -297,8 +340,8 @@ async def promote_signal_to_alert(
     signal_id: int,
     db_path: Path | None = None,
     enrichment: dict | None = None,
-) -> None:
-    """Promote a stored signal into the alerts pipeline.
+) -> bool:
+    """Promote a stored signal into the alerts pipeline. True when scheduled.
 
     Schedules the triage evaluation as fire-and-forget so a slow LLM
     call cannot stall the scan loop. The signal row is marked
@@ -326,7 +369,7 @@ async def promote_signal_to_alert(
         store.mark_signal_processed(
             signal_id, OUTCOME_FAILED, promoted_alert_id=None, db_path=db_path
         )
-        return
+        return False
 
     store.mark_signal_processed(
         signal_id, OUTCOME_ALERTED, promoted_alert_id=None, db_path=db_path
@@ -349,6 +392,118 @@ async def promote_signal_to_alert(
             "provenance_url": _safe_url(signal.provenance_url),
         },
     )
+    return True
+
+
+# --------------------------------------------------------------------- #
+# Page-watch daily digest
+# --------------------------------------------------------------------- #
+
+
+def _fired_within(item: WatchlistItem, now: datetime, hours: int) -> bool:
+    if not item.last_fired_at:
+        return False
+    try:
+        fired = datetime.fromisoformat(item.last_fired_at)
+    except ValueError:
+        return False
+    if fired.tzinfo is None:
+        fired = fired.replace(tzinfo=UTC)
+    return now - fired < timedelta(hours=hours)
+
+
+def _hold_for_digest(item: WatchlistItem, now: datetime) -> bool:
+    """A busy page alerts at most once per digest window: the first change
+    after a quiet spell goes out at once, later ones wait for the digest."""
+    return (
+        item.signal_type == SOURCE_KIND_PAGE_WATCH
+        and _fired_within(item, now, PAGE_WATCH_DIGEST_HOURS)
+    )
+
+
+def _digest_signal(item: WatchlistItem, held: list[dict]) -> tuple[Signal, dict | None]:
+    """Fold a watch's held changes (oldest first) into one Signal, plus the
+    newest held enrichment for its "why this matters" line."""
+    newest = held[-1]
+    links: list[dict] = []
+    seen: set[str] = set()
+    texts: list[str] = []
+    for row in reversed(held):  # newest headlines first
+        payload = row.get("raw_payload") or {}
+        for link in payload.get("new_links") or []:
+            url = str(link.get("url") or "") if isinstance(link, dict) else ""
+            if url and url not in seen:
+                seen.add(url)
+                links.append(link)
+        if not payload.get("new_links") and payload.get("added_text"):
+            texts.append(str(payload["added_text"])[:300])
+    worst = max(
+        (AlertSeverity(row.get("severity_hint") or "low") for row in held),
+        key=lambda sev: SEVERITY_RANK[sev.value],
+    )
+    label = (newest.get("raw_payload") or {}).get("label") or item.slug
+    first_seen = str(held[0].get("captured_at") or "")[:10]
+    if links:
+        titles = "; ".join(_without_links(str(link.get("text") or "")) for link in links[:3])
+        more = len(links) - 3
+        detail = f"new: {titles}" + (f" (+{more} more)" if more > 0 else "")
+    else:
+        detail = "new text: " + (_without_links(texts[0])[:160] if texts else "see the page")
+    summary = f"[{label}] {len(held)} changes since {first_seen} — {detail}"
+    readable = "\n".join(
+        f"- {_without_links(str(link.get('text') or ''))} ({_safe_url(str(link.get('url') or ''))})"
+        for link in links[:10]
+    ) or "\n".join(_without_links(t) for t in texts[:3])
+    signal = Signal(
+        watchlist_id=item.id or 0,
+        source_kind=SOURCE_KIND_PAGE_WATCH,
+        source_external_id=f"digest:{newest['id']}",
+        captured_at=str(newest.get("captured_at") or datetime.now(UTC).isoformat()),
+        normalized_summary=summary[:500],
+        raw_payload={
+            "label": label,
+            "target_url": item.target,
+            "digest_of": [row["id"] for row in held],
+            "new_links": links[:10],
+            "summary": readable,
+        },
+        provenance_url=item.target,
+        severity_hint=_cap_to_ceiling(worst, item),
+        dedup_key=f"page_watch_digest:{item.id}:{newest['id']}",
+    )
+    enrichment = newest.get("enrichment") or None
+    return signal, enrichment
+
+
+async def _flush_page_watch_digests(
+    now: datetime, *, db_path: Path | None = None,
+) -> int:
+    """Send one combined alert for each watch whose held changes have waited
+    out the digest window. Returns how many digests were sent."""
+    sent = 0
+    for watchlist_id in store.watchlist_ids_with_held_signals(db_path=db_path):
+        item = store.get_watchlist_item(watchlist_id, db_path=db_path)
+        # A watch paused or put back in dry-run keeps its held changes until
+        # it is live again; a deleted one has no rows left to send.
+        if item is None or not item.enabled or item.mode != MODE_ACTIVE:
+            continue
+        if _fired_within(item, now, PAGE_WATCH_DIGEST_HOURS):
+            continue
+        held = store.list_held_signals(watchlist_id, db_path=db_path)
+        if not held:
+            continue
+        signal, enrichment = _digest_signal(item, held)
+        newest_id = int(held[-1]["id"])
+        if not await promote_signal_to_alert(
+            signal, item, signal_id=newest_id, db_path=db_path, enrichment=enrichment,
+        ):
+            # The newest row is marked failed; the rest stay held and go
+            # out with the next digest.
+            continue
+        for row in held[:-1]:
+            store.mark_signal_processed(int(row["id"]), OUTCOME_ALERTED, db_path=db_path)
+        sent += 1
+    return sent
 
 
 # --------------------------------------------------------------------- #
@@ -874,7 +1029,7 @@ async def _poll_one_watchlist_item(
         # signal that's already being floor-suppressed).
         enrichment_payload: dict | None = None
         enriched = False
-        if signal.source_kind == SOURCE_KIND_QUERY:
+        if signal.source_kind in _RELEVANCE_GRADED_SOURCES:
             should_promote, enrichment_payload = await _maybe_enrich(
                 signal, item, signal_id, company_ctx=company_ctx, db_path=db_path,
             )
@@ -908,6 +1063,15 @@ async def _poll_one_watchlist_item(
             )
             if not should_promote:
                 continue
+
+        if _hold_for_digest(item, now):
+            # The watch already alerted inside the digest window: keep this
+            # change for the one combined alert the window's end sends.
+            # The row was written LOW, before grading; keep the graded value
+            # so the digest goes out at the gravest held change's severity.
+            store.set_signal_severity(signal_id, signal.severity_hint.value, db_path=db_path)
+            _suppress(signal_id, item, signal, OUTCOME_HELD_DIGEST, db_path=db_path)
+            continue
 
         await promote_signal_to_alert(
             signal, item, signal_id=signal_id, db_path=db_path,
@@ -1056,6 +1220,11 @@ async def run_external_monitor_scan(
                     "failed": failed,
                 },
             )
+
+    try:
+        await _flush_page_watch_digests(now, db_path=db_path)
+    except Exception:
+        logger.exception("monitoring.pipeline: page-watch digest flush failed")
 
     scan_duration_ms = int(
         (datetime.now(UTC) - poll_start).total_seconds() * 1000
