@@ -438,6 +438,19 @@ def test_a_draft_they_edited_is_never_replaced(roster: SimpleNamespace, composer
     assert row is not None and not row.gone_at
 
 
+def test_a_draft_can_replace_one_from_another_chat_it_names(roster: SimpleNamespace, composer: list[str]) -> None:
+    mailbox = DraftingMailbox()
+    first = _run(_session(mailbox), {"intent": "Yes to Oct 5.", "thread_id": "t1"})
+    # Another conversation, a new email: nothing replaced unless it is named.
+    other = _session(mailbox)
+    plain = _run(other, {"intent": "Send the Q3 numbers", "to": [TEAM]})
+    assert "replaced_earlier_drafts" not in plain and "d1" in mailbox.saved
+    named = _run(other, {"intent": "Yes to Oct 5, final.", "to": [DANA], "replaces": "dana brand refresh"})
+    assert named["replaced_earlier_drafts"] == 1
+    assert mailbox.deleted == ["d1"] and "d2" in mailbox.saved
+    assert ddrafts.get_row(first["draft_row"]).gone_at  # type: ignore[union-attr]
+
+
 def test_a_new_email_replaces_only_its_own_earlier_version(roster: SimpleNamespace, composer: list[str]) -> None:
     mailbox = DraftingMailbox()
     session = _session(mailbox)

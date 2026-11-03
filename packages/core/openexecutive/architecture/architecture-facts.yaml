@@ -11615,6 +11615,15 @@ delegation:
     claim kept, never resent. Records sent_message_id, a private
     delegation_chat_draft_sent row, and a history note when Always in the
     loop is on. may_do's chat_drafts row reads "Drafts, sent on your tap".
+  sign_in_notice: |
+    delegation.sign_in_notice. gmail_status (Gmail and Outlook alike, real
+    clients only) calls note(address, status): needs_reconnect claims a row
+    in delegation_sign_in_notices (email, broken_at, noticed_at) and, once
+    per break, sends the person one message via deliver_to_person (private
+    delegation_sign_in_notice_sent audit row); a failed delivery unclaims it
+    for the next check; connected deletes the row. Why: on 11-01 the owner's
+    sign-in expired and they only found out when mail and calendar steps
+    failed mid-question, over two days.
   replaced_chat_drafts: |
     delegation.redrafts. Each delegation_drafts row keeps its conversation
     (session_id, ghostwrite's pinned session or current_session). A redraft
@@ -11632,6 +11641,13 @@ delegation:
     a later unrelated email to the same person never deletes a draft. Retire = get_draft: gone → gone_at only; version
     changed (edited by the person) → kept; else delete_draft + gone_at. A
     failed read leaves the row. Private delegation_draft_replaced audit row.
+    Named replacement: ghostwrite_email's replaces (words from an earlier
+    draft's subject or recipient) runs redrafts.replace_named after the new
+    row is recorded: the person's open chat drafts from the last NAMED_DAYS
+    (30) days, any conversation, that every word matches, retired the same
+    way (an edited one is kept, kept_edited_drafts in the result). Why: on
+    10-31 a redraft in a new chat left Friday's draft in place and the reply
+    told the person to delete it themselves.
     Why: three redrafts in one chat stayed in the principal's Drafts after
     the Executive sent the note itself, and the brief kept calling them
     waiting.

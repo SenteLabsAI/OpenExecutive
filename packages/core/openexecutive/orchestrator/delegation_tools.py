@@ -146,6 +146,18 @@ GHOSTWRITE_EMAIL_TOOL: dict[str, Any] = {
                 "items": {"type": "string"},
                 "description": "Google Drive file ids to attach (the same as drive:<id> in `files`).",
             },
+            "replaces": {
+                "type": "string",
+                "description": (
+                    "When they want this draft IN PLACE OF an earlier draft of "
+                    "yours (from this chat or another), a few words from that "
+                    "draft's subject or its recipient's name or address, e.g. "
+                    "'Andrew BOV'. Once this one is saved, each earlier draft of "
+                    "yours that every word matches is deleted from their Drafts, "
+                    "unless they edited it there. Never tell them to delete it "
+                    "themselves. Leave it out for a new email."
+                ),
+            },
             "forward_message_id": {
                 "type": "string",
                 "description": (
@@ -512,7 +524,10 @@ async def _forward(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> 
             text=sender_new_text(original.text or "") or (original.text or ""),
         ),
     ))
-    plan = {"to": to, "cc": cc, "flags": [], "not_in_people": not_in_people([*to, *cc], writer.pinned.speaker_text, roster)}
+    plan: dict[str, Any] = {
+        "to": to, "cc": cc, "flags": [], "not_in_people": not_in_people([*to, *cc], writer.pinned.speaker_text, roster),
+        "replaces": tool_input.get("replaces") if isinstance(tool_input.get("replaces"), str) else "",
+    }
     if getattr(draft, "skipped_attachments", 0):
         plan["flags"].append("attachments_left_off")
     composed.subject = subject
@@ -537,6 +552,7 @@ async def _draft(writer: _Writer, intent: str, tool_input: dict[str, Any]) -> tu
     plan = _plan(writer, thread, tool_input, roster)
     if isinstance(plan, str):
         return plan, False
+    plan["replaces"] = tool_input.get("replaces") if isinstance(tool_input.get("replaces"), str) else ""
     attached = await _attachments(writer, tool_input)
     if isinstance(attached, str):
         return attached, False
@@ -633,7 +649,7 @@ async def _drafted(
     """Audit a saved draft (metadata only), take out the earlier drafts it
     replaces (``delegation.redrafts``) and return what the model sees."""
     from openexecutive.delegation.gmail import mailbox_link
-    from openexecutive.delegation.redrafts import replace_earlier
+    from openexecutive.delegation.redrafts import replace_earlier, replace_named
 
     flags = [*plan["flags"], *composed.flags]
     questions = list(composed.open_questions)
@@ -642,12 +658,18 @@ async def _drafted(
     session_id = _session_id(writer)
     row_id = _record(writer.person.id, thread, draft, session_id)
     replaced = 0
+    kept_edited = 0
     if row_id:
         replaced = await replace_earlier(
             writer.person.id, writer.mailbox, row_id=row_id,
             thread_id=thread.id if thread is not None else None, session_id=session_id, to=plan["to"],
             subject=composed.subject,
         )
+        named = str(plan.get("replaces") or "").strip()[:200]
+        if named:
+            outcomes = await replace_named(writer.person.id, writer.mailbox, row_id=row_id, words=named)
+            replaced += outcomes.count("deleted")
+            kept_edited = outcomes.count("kept_edited")
     _audit(writer.person.id, f"Drafted an email as person {writer.person.id} in their own mailbox", {
         "thread_id": thread.id if thread is not None else None,
         "draft_id": draft.draft_id,
@@ -669,6 +691,8 @@ async def _drafted(
         **({"draft_row": row_id} if row_id else {}),
         # Earlier drafts of this email, deleted from their Drafts (unedited ones only).
         **({"replaced_earlier_drafts": replaced} if replaced else {}),
+        # Named for replacing but edited in their mailbox since: theirs, kept.
+        **({"kept_edited_drafts": kept_edited} if kept_edited else {}),
         "gmail_link": link,
         "to": plan["to"],
         "cc": plan["cc"],

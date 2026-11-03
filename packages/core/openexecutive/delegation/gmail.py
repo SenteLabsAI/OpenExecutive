@@ -1600,7 +1600,20 @@ async def gmail_status(person_email: str | None, *, gmail: Any = None) -> GmailS
     status = await _gmail_status(address, gmail=gmail)
     if memo is not None:
         memo[address] = status
+    if gmail is None or _real_client(gmail):
+        # A break of the saved sign-in is told to the person once
+        # (``delegation.sign_in_notice``); a test's own client tells nothing.
+        from openexecutive.delegation import sign_in_notice
+
+        sign_in_notice.note(address, status)
     return status
+
+
+def _real_client(client: Any) -> bool:
+    """Whether ``client`` is a real mailbox client (``gmail_for``'s)."""
+    from openexecutive.delegation.outlook import DelegateOutlook
+
+    return isinstance(client, (DelegateGmail, DelegateOutlook))
 
 
 async def _gmail_status(address: str, *, gmail: Any = None) -> GmailStatus:
