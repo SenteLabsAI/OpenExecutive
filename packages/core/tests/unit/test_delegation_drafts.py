@@ -44,7 +44,7 @@ def test_each_draft_is_one_row_of_ids(db: Path) -> None:
         row = conn.execute("SELECT * FROM delegation_drafts").fetchone()
     # Ids and times only: never an address, a subject or text.
     assert cols == ["id", "person_id", "source", "thread_id", "draft_id", "message_id",
-                    "sent_message_id", "created_at", "gone_at", "session_id"]
+                    "sent_message_id", "created_at", "gone_at", "session_id", "replaced_by"]
     assert row[1:7] == (1, "chat", "t1", "d1", "m-d1", None)
     with pytest.raises(ValueError):
         _record(1, "email", "t1", "d2")
@@ -331,7 +331,7 @@ def test_an_older_table_gets_the_gone_at_and_session_id_columns(tmp_path: Path) 
         )
         ensure_schema(conn)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(delegation_drafts)")]
-    assert cols[-2:] == ["gone_at", "session_id"]
+    assert cols[-3:] == ["gone_at", "session_id", "replaced_by"]
 
 
 def test_open_chat_drafts_by_thread_or_conversation() -> None:

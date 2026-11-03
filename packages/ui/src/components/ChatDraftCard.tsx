@@ -163,7 +163,7 @@ export default function ChatDraftCard({ draft }: { draft: ChatDraft }) {
         <Who to={draft.to} cc={[]} subject={draft.subject} />
         <p className="mt-2 text-sm text-fg-muted">
           {status === "replaced"
-            ? "Replaced by a newer version below."
+            ? "Replaced by a newer version."
             : status === "sent"
               ? "Sent."
               : "It isn't in your Drafts any more."}

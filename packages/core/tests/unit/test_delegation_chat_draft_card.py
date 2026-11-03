@@ -113,8 +113,12 @@ def test_a_replaced_version_folds(db: Path, owner: Any) -> None:
         for d, m in (("dx", "mx"), (made.draft_id, made.message_id))
     ]
     drafts.mark_gone(conn_rows[0], LATER)
+    # Gone, with a later draft in the same conversation that didn't replace
+    # it (another email): just gone.
+    assert _state(owner, conn_rows[0], mailbox)["status"] == chat_draft_card.GONE
+    # Retired for the newer version: replaced.
+    drafts.mark_replaced(conn_rows[0], conn_rows[1])
     assert _state(owner, conn_rows[0], mailbox)["status"] == chat_draft_card.REPLACED
-    # Gone with nothing newer in its conversation: just gone.
     drafts.mark_gone(first, LATER)
     assert _state(owner, first, mailbox)["status"] == chat_draft_card.GONE
 

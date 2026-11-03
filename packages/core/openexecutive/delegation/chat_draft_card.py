@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 OPEN = "open"            # waiting in their Drafts, as the card last saw it
 CHANGED = "changed"      # changed in their mailbox since: theirs to send there
 SENT = "sent"
-REPLACED = "replaced"    # a newer version was written in the same conversation
+REPLACED = "replaced"    # retired for a newer version (``replaced_by``)
 GONE = "gone"            # no longer in their Drafts (sent or deleted there)
 
 # Rows being changed right now, in this process: one change at a time per draft.
@@ -55,12 +55,10 @@ def _row(person: Any, row_id: int) -> Any:
 def _closed(row: Any) -> dict[str, Any] | None:
     """The state of a draft that isn't waiting any more, from the database
     alone; None while it waits."""
-    from openexecutive.delegation import drafts
-
     if row.sent_message_id:
         return {"status": SENT}
     if row.gone_at:
-        return {"status": REPLACED if drafts.has_newer_in_session(row.id) else GONE}
+        return {"status": REPLACED if row.replaced_by else GONE}
     return None
 
 
@@ -106,7 +104,8 @@ async def _read(row: Any, client: Any, now: datetime) -> dict[str, Any]:
         raise SendRefused(502, "gmail_error", "Couldn't read the draft in your mailbox. Try again in a moment.") from exc
     if draft is None:
         drafts.mark_gone(row.id, now)
-        return {"status": REPLACED if drafts.has_newer_in_session(row.id) else GONE}
+        fresh = drafts.get_row(row.id)
+        return {"status": REPLACED if fresh is not None and fresh.replaced_by else GONE}
     return _shown(row, draft)
 
 

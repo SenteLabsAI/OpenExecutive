@@ -154,8 +154,10 @@ async def replace_earlier(
             logger.info("redrafts: couldn't retire draft row %s", row.id, exc_info=True)
             continue
         outcomes.append(outcome)
-        if retired is not None and outcome != "kept_edited":
-            retired.append(row.id)
+        if outcome != "kept_edited":
+            drafts.mark_replaced(row.id, row_id)
+            if retired is not None:
+                retired.append(row.id)
     if outcomes:
         _audit(person_id, f"Replaced earlier drafts for person {person_id}", outcomes)
     return outcomes.count("deleted")
@@ -271,8 +273,10 @@ async def replace_named(
             logger.warning("redrafts: couldn't delete draft row %s", row.id, exc_info=True)
             continue
         outcomes.append(outcome)
-        if retired is not None and outcome != "kept_edited":
-            retired.append(row.id)
+        if outcome != "kept_edited":
+            drafts.mark_replaced(row.id, row_id)
+            if retired is not None:
+                retired.append(row.id)
     if outcomes:
         _audit(person_id, f"Replaced {outcomes.count('deleted')} earlier draft(s) they named", outcomes)
     return outcomes

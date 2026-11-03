@@ -294,4 +294,7 @@ def test_a_redraft_names_the_rows_it_replaced() -> None:
         now=NOW, retired=retired,
     ))
     assert replaced == 1 and retired == [earlier]
-    assert drafts.has_newer_in_session(earlier) and not drafts.has_newer_in_session(newer)
+    got = drafts.get_row(earlier)
+    assert got is not None and got.replaced_by == newer
+    later = drafts.get_row(newer)
+    assert later is not None and later.replaced_by is None

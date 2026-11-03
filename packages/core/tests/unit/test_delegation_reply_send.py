@@ -448,15 +448,17 @@ def test_only_the_send_path_sends_and_only_its_four_doors_reach_it() -> None:
     assert _uses("send_for_workflow") == {"delegation/workflow_email.py"}
     assert _uses("send_chat_draft") == {"api/routes/delegation.py"}
     assert _uses("handle_send_email_as_me") == {"workflows/tool_catalog.py"}
-    # card_drafts, answers and the edit routes use its refusals and caller check only.
+    # card_drafts, answers, the chat draft card and the edit routes use its
+    # refusals and caller check only.
     assert _importers("openexecutive.delegation.reply_send") == {
         "api/routes/decisions.py", "api/routes/delegation.py", "delegation/inbox.py", "delegation/card_drafts.py",
-        "delegation/answers.py", "delegation/workflow_email.py",
+        "delegation/answers.py", "delegation/workflow_email.py", "delegation/chat_draft_card.py",
     }
     assert _importers("openexecutive.delegation.reply_send.SendRefused") >= {"delegation/answers.py"}
-    assert not ({"send_draft", "send_approved_reply", "send_on_its_own", "send_for_workflow", "send_chat_draft"} & {
-        n for n, files in _index()[0].items() if "delegation/answers.py" in files
-    })
+    for only_refuses in ("delegation/answers.py", "delegation/chat_draft_card.py"):
+        assert not ({"send_draft", "send_approved_reply", "send_on_its_own", "send_for_workflow", "send_chat_draft"} & {
+            n for n, files in _index()[0].items() if only_refuses in files
+        })
 
 
 def test_only_dismiss_deletes_a_draft() -> None:
