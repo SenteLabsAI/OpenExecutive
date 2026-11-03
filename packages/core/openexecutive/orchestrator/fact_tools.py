@@ -345,11 +345,12 @@ class _Hold:
     summary: str
 
 
-# Any quote of their own words counts, however short: a one-word answer
-# ("Internal") to the Executive's own question is the fact. It must still
-# be in this message (``_quote_error``).
-_QUOTE_MIN_CHARS = 1
-_QUOTE_MIN_WORDS = 1
+# A quote this short could be found in almost any message ("48", "yes"), so
+# it would prove nothing about what the principal said, unless it is their
+# whole message: a one-word answer ("Internal") to the Executive's own
+# question is the fact.
+_QUOTE_MIN_CHARS = 8
+_QUOTE_MIN_WORDS = 2
 
 
 def _own_words(session: Any) -> str | None:
@@ -372,12 +373,13 @@ def _quote_error(quote: str, session: Any) -> str | None:
     if not quote:
         return "source_quote is required: the speaker's exact words from this message."
     nq = _normalize_for_quote_match(quote)
-    if len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS:
+    spoken = _own_words(session)
+    whole = spoken is not None and nq.strip(" .!?") == _normalize_for_quote_match(spoken).strip(" .!?")
+    if not whole and (len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS):
         return (
             "source_quote is too short to show what the speaker said: quote the "
             "whole phrase that states it."
         )
-    spoken = _own_words(session)
     if spoken is None:
         return (
             "refused: this message carries an attachment, and its text can't be told "
@@ -442,6 +444,28 @@ def _number_in_own_words(value: float, session: Any) -> bool:
     if spoken is None:
         return False
     return any(_same(value, said) for said in _numbers_in(spoken))
+
+
+# Words a statement may use without the principal having said them: its
+# glue, not its claim. Everything else that is capitalised (a name, a
+# place, a product) or names a date must be in the principal's own words.
+_GLUE = frozenset({
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it", "its",
+    "of", "on", "or", "our", "the", "their", "this", "that", "to", "we", "with",
+})
+_DATE_WORDS = frozenset({
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december", "jan", "feb", "mar", "apr",
+    "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "sunday", "q1", "q2", "q3", "q4",
+})
+# Any letter, not only ASCII: a name that opens with a look-alike capital
+# ("Αcme", a Greek Alpha) must still read as a word.
+_WORD = re.compile(r"[^\W\d_][\w&'’-]*")
+
+
+def _bare(word: str) -> str:
+    return re.sub(r"['’]s$", "", word).strip("'’-")
 
 
 def _claim_error(label: str, text: str, session: Any) -> str | None:
