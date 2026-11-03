@@ -2,19 +2,18 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { getActivity, getHistory, getReflection, listStandingFacts, type ActivityItem } from "@/lib/api";
+import { getActivity, type ActivityItem } from "@/lib/api";
 import Icon from "@/components/Icon";
-import { upcomingLabel, whenLabel, type MemoryView } from "@/lib/pulseView";
+import { upcomingLabel, whenLabel } from "@/lib/pulseView";
 import { SUMMARY_KINDS, activityLine, writeUpHref, writeUpLabel } from "./CadenceSection";
 import type { PulseData } from "./PulseHeader";
 import { Skeleton, metaFor } from "./shared";
 import { MonthCountLine } from "./ValueSection";
 
-// The Pulse overview's three blocks under the heartbeat: the next few things
-// the Executive will do (Coming up), the month's count and the last few it
-// did (Done for you), and
-// a tile per kind of memory. Each links to its full list on its own screen
-// (`/memories?tab=…`), so the overview stays short.
+// Memory → What it does, under the heartbeat: the next few things the
+// Executive will do (Coming up), and the month's count and the last few it
+// did (Done for you). Each links to its full list on its own screen
+// (`/memories?tab=…`), so the tab stays short. Also the focused screen frame.
 
 const PREVIEW_ROWS = 4;
 
@@ -226,169 +225,28 @@ export function DoneForYou() {
   );
 }
 
-interface TileSpec {
-  view: MemoryView;
-  label: string;
-  count: number | null;
-  detail?: string;
-  flag?: string;
-}
-
-function Tile({ spec, wide }: { spec: TileSpec; wide: boolean }) {
-  return (
-    <Link
-      href={`/memories?tab=${spec.view}`}
-      className={`group rounded-2xl border border-line bg-surface p-4 sm:p-5 min-w-0 hover:border-accent/50 hover:bg-surface-overlay transition-colors ${
-        wide ? "col-span-2 sm:col-span-1" : ""
-      }`}
-    >
-      <div className="text-3xl font-bold tabular-nums text-fg leading-tight">
-        {spec.count === null ? <Skeleton className="h-8 w-10" /> : spec.count}
-      </div>
-      <div className="mt-1 text-[15px] font-semibold text-fg">{spec.label}</div>
-      {spec.flag ? (
-        <span className="mt-2 inline-block rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-semibold text-amber-500">
-          {spec.flag}
-        </span>
-      ) : (
-        spec.detail && (
-          <div className="mt-1 text-sm text-fg-muted line-clamp-2" title={spec.detail}>
-            {spec.detail}
-          </div>
-        )
-      )}
-    </Link>
-  );
-}
-
-/** Newest first by an ISO timestamp field. */
-function newest<T>(rows: T[], at: (row: T) => string): T | null {
-  return rows.reduce<T | null>((best, r) => (!best || at(r) > at(best) ? r : best), null);
-}
-
-/** A tile per kind of memory; each opens its list. */
-export function MemoryTiles({ pulse }: { pulse: PulseData }) {
-  const { data } = pulse;
-  const [facts, setFacts] = useState<{ active: number; toApprove: number } | null>(null);
-  // undefined while loading; null when this viewer has no notes (the tile goes).
-  const [notes, setNotes] = useState<number | null | undefined>(undefined);
-  // Likewise for Learning (the conversation review's grades).
-  const [misses, setMisses] = useState<number | null | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    listStandingFacts()
-      .then((page) => {
-        if (cancelled) return;
-        setFacts({
-          active: page.facts.filter((f) => f.status === "active").length,
-          toApprove: page.can_review ? page.facts.filter((f) => f.status === "proposed").length : 0,
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setFacts({ active: 0, toApprove: 0 });
-      });
-    getHistory()
-      .then((state) => {
-        if (!cancelled) setNotes(state ? state.notes.length : null);
-      })
-      .catch(() => {
-        if (!cancelled) setNotes(null);
-      });
-    getReflection()
-      .then((state) => {
-        if (!cancelled) setMisses(state ? state.misses.length : null);
-      })
-      .catch(() => {
-        if (!cancelled) setMisses(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const latestDecision = data ? newest(data.decisions, (d) => d.timestamp) : null;
-  const latestAdvice = data ? newest(data.advice, (a) => a.timestamp) : null;
-  const tiles: TileSpec[] = [
-    {
-      view: "decisions",
-      label: "Decisions",
-      count: data ? data.decisions.length : null,
-      detail: latestDecision ? `Latest: ${latestDecision.summary}` : undefined,
-    },
-    {
-      view: "initiatives",
-      label: "Projects",
-      count: data ? data.initiatives.length : null,
-      detail: data
-        ? `${data.initiatives.filter((i) => i.status === "active").length} active`
-        : undefined,
-    },
-    {
-      view: "advice",
-      label: "Advice",
-      count: data ? data.advice.length : null,
-      detail: latestAdvice ? `Latest: ${latestAdvice.query_summary}` : undefined,
-    },
-    {
-      view: "corrections",
-      label: "Facts you taught it",
-      count: facts ? facts.active : null,
-      flag: facts && facts.toApprove > 0 ? `${facts.toApprove} to approve` : undefined,
-      detail: "Used in every answer",
-    },
-  ];
-  if (notes !== null) {
-    tiles.push({
-      view: "history",
-      label: "Your notes",
-      count: notes ?? null,
-      detail: "Only you see these",
-    });
-  }
-  if (misses !== null) {
-    tiles.push({
-      view: "reflection",
-      label: "Learning",
-      count: misses ?? null,
-      detail: "Fell short, and what it learned",
-    });
-  }
-
-  return (
-    <section aria-labelledby="pulse-memory-heading">
-      <h2 id="pulse-memory-heading" className="text-lg font-semibold text-fg mb-3">
-        What it remembers
-      </h2>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        {tiles.map((t, i) => (
-          // An odd last tile spans the phone's two columns.
-          <Tile key={t.view} spec={t} wide={tiles.length % 2 === 1 && i === tiles.length - 1} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
 /** A focused screen behind the overview: a way back, a title, one job. */
 export function FocusedScreen({
   title,
   description,
+  backHref = "/memories",
   children,
 }: {
   title: string;
   description: string;
+  /** The tab it was opened from. */
+  backHref?: string;
   children: ReactNode;
 }) {
   return (
     <div className="space-y-5">
       <header>
         <Link
-          href="/memories"
+          href={backHref}
           className="inline-flex h-10 items-center gap-1 rounded-xl px-2 -ml-2 text-sm font-semibold text-accent hover:bg-surface-overlay transition-colors"
         >
           <Icon name="arrow-left" size="w-4 h-4" />
-          Pulse
+          Memory
         </Link>
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg mt-1">{title}</h1>
         <p className="text-[15px] text-fg-muted mt-1.5 max-w-2xl">{description}</p>

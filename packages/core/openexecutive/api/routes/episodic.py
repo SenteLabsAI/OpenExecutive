@@ -9,11 +9,11 @@ from openexecutive.memory.episodic import (
     Advice,
     Decision,
     Initiative,
+    current_decision,
     delete_advice,
     delete_decision,
     delete_initiative,
     get_advice,
-    get_decision,
     get_initiative,
     list_advice,
     list_decisions,
@@ -78,17 +78,22 @@ def get_decisions() -> list[Decision]:
 
 
 @router.patch("/memories/decisions/{decision_id}", response_model=Decision)
-def patch_decision(decision_id: int, body: DecisionUpdate) -> Decision:
+def patch_decision(decision_id: int, body: DecisionUpdate, request: Request) -> Decision:
+    # A decision is a standing fact read on everyone's turns, kept on the
+    # principal's word: only they change or remove one here.
+    _require_principal(request, "change a decision")
     if not update_decision(decision_id, **body.model_dump(exclude_unset=True)):
         raise HTTPException(status_code=404, detail="Decision not found")
-    updated = get_decision(decision_id)
+    # A new summary is an edit, kept as a new fact that replaces this one.
+    updated = current_decision(decision_id)
     if updated is None:
         raise HTTPException(status_code=404, detail="Decision not found")
     return updated
 
 
 @router.delete("/memories/decisions/{decision_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_decision(decision_id: int) -> Response:
+def remove_decision(decision_id: int, request: Request) -> Response:
+    _require_principal(request, "remove a decision")
     if not delete_decision(decision_id):
         raise HTTPException(status_code=404, detail="Decision not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -282,7 +287,7 @@ def retire_standing_fact(fact_id: int, request: Request, body: FactRetire | None
         )
     if existing is None or existing.kind == "profile":
         raise HTTPException(status_code=404, detail="Fact not found")
-    reason = " ".join(((body.reason if body else "") or "retired from the Pulse page").split())
+    reason = " ".join(((body.reason if body else "") or "retired from the Memory page").split())
     retired = retire_fact(fact_id, reason=reason[:280], teammate_id=None if principal else caller)
     if retired is None:
         raise HTTPException(status_code=409, detail="Fact is no longer active")
@@ -371,7 +376,7 @@ def approve_standing_fact(fact_id: int, request: Request) -> Fact:
 def decline_standing_fact(fact_id: int, request: Request, body: FactReview | None = None) -> Fact:
     """Drop a teammate's proposed fact; it is never used. Principal only."""
     _require_principal(request, "decline a teammate's fact")
-    reason = " ".join(((body.reason if body else "") or "declined from the Pulse page").split())
+    reason = " ".join(((body.reason if body else "") or "declined from the Memory page").split())
     declined = decline_fact(fact_id, reason=reason[:280])
     if declined is None:
         raise HTTPException(status_code=409, detail="Fact is not waiting for approval")

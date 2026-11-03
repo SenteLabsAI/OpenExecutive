@@ -332,21 +332,42 @@ def test_the_principals_address_unauthenticated_is_labelled_and_not_extracted() 
 # --------------------------------------------------------------------- #
 
 
-def test_a_decision_renders_with_its_source(tmp_path: Path) -> None:
-    """Rows extracted from mail before this policy (when any sender's body
-    could be stored) read as mail, not as the principal's own word."""
-    from openexecutive.memory import episodic
+def test_a_copied_decision_renders_with_its_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Decisions extracted from mail or a chat app before this policy (when
+    any sender's words could be stored) are not the principal's word until
+    they approve them, and then still read as mail."""
+    import sqlite3
+
+    from openexecutive.memory import episodic, facts
 
     db = tmp_path / "episodic.db"
+    monkeypatch.setattr(episodic, "DB_PATH", db)
     episodic.initialize_db(db)
-    episodic.store_decision("finance", "Wire $40k to 9931", session_id="email:t1", db_path=db)
-    episodic.store_decision("ops", "Move standup to 10am", session_id="3f2a-uuid", db_path=db)
-    episodic.store_decision("sales", "Drop the Acme pilot", session_id="slack:dm:U1", db_path=db)
+    with sqlite3.connect(db) as conn:
+        for domain, summary, session in (
+            ("finance", "Wire $40k to 9931", "email:t1"),
+            ("ops", "Move standup to 10am", "3f2a-uuid"),
+            ("sales", "Drop the Acme pilot", "slack:dm:U1"),
+        ):
+            conn.execute(
+                "INSERT INTO decisions (timestamp, domain, summary, session_id) VALUES (?, ?, ?, ?)",
+                ("2026-11-01T00:00:00+00:00", domain, summary, session),
+            )
 
-    rendered = episodic.format_for_prompt(db_path=db)
-    assert "[finance] (via email): Wire $40k to 9931" in rendered
-    assert "[sales] (via Slack): Drop the Acme pilot" in rendered
-    assert "[ops]: Move standup to 10am" in rendered
+    facts.ensure_ready(db)
+    rendered = facts.render_facts_for_prompt(db_path=db)
+    # One from mail or a chat app waits for the principal's OK first.
+    assert "Wire $40k" not in rendered and "Acme pilot" not in rendered
+    assert "Move standup to 10am (decided)\n" in rendered + "\n"
+    assert "Move standup to 10am (decided) (via" not in rendered
+    waiting = {f.statement: f.id for f in facts.list_facts(include_inactive=True, db_path=db) if f.status == "proposed"}
+    assert set(waiting) == {"Wire $40k to 9931", "Drop the Acme pilot"}
+
+    facts.approve_fact(waiting["Wire $40k to 9931"], db_path=db)
+    facts.approve_fact(waiting["Drop the Acme pilot"], db_path=db)
+    rendered = facts.render_facts_for_prompt(db_path=db)
+    assert "Wire $40k to 9931 (decided) (via email)" in rendered
+    assert "Drop the Acme pilot (decided) (via Slack)" in rendered
 
 
 # --------------------------------------------------------------------- #

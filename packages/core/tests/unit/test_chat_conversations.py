@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from openexecutive.integrations import conversations as chat_conversations
 from openexecutive.integrations import telegram_bot
-from openexecutive.memory import conversations, episodic, session_store
+from openexecutive.memory import conversations, session_store
 from openexecutive.memory.conversation_ids import (
     base_session_id,
     conversation_id,
@@ -266,13 +266,6 @@ def test_web_chats_and_threads_are_not_cut(db: Path) -> None:
 
 
 # ── what still sees the whole stream ─────────────────────────────────────
-
-
-def test_decisions_follow_the_stream(db: Path) -> None:
-    for sid in (BASE, f"{BASE}~2", "telegram:99"):
-        episodic.store_decision("finance", f"from {sid}", session_id=sid, db_path=db)
-    got = {d.summary for d in episodic.get_recent_decisions(db_path=db, session_id=f"{BASE}~3")}
-    assert got == {f"from {BASE}", f"from {BASE}~2"}
 
 
 def test_an_approval_asked_before_the_cut_is_answered_after_it() -> None:

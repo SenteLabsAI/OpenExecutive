@@ -1562,6 +1562,13 @@ def _seed_episodic_memory(memory_path: Path, settings: Any) -> dict[str, int]:
                 ),
             )
         counts["decisions"] = len(decisions)
+        # Decisions are standing facts now: drop the decision facts and the
+        # copied-once marker, so the next facts read copies these rows in.
+        facts_cols = {r[1] for r in conn.execute("PRAGMA table_info(facts)")}
+        if "decision" in facts_cols:
+            conn.execute("DELETE FROM facts WHERE decision = 1")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_meta'").fetchone():
+            conn.execute("DELETE FROM facts_meta WHERE key = 'decisions_copied_to_facts'")
 
         initiatives = data.get("initiatives", [])
         for row in initiatives:

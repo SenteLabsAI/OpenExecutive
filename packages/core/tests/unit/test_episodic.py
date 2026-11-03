@@ -14,7 +14,6 @@ from openexecutive.memory.episodic import (
     get_decision,
     get_initiative,
     get_recent_advice,
-    get_recent_decisions,
     initialize_db,
     list_advice,
     list_decisions,
@@ -57,16 +56,33 @@ def test_decision_update_and_delete(db: Path) -> None:
     decision_id = items[0].id
     assert decision_id is not None
 
-    ok = update_decision(decision_id, summary="Expand to Germany only", outcome="approved", db_path=db)
+    assert items[0].summary == "Expand to EU Larger market"
+
+    assert update_decision(decision_id, outcome="approved", db_path=db) is True
+    ok = update_decision(decision_id, summary="Expand to Germany only", db_path=db)
     assert ok is True
-    refreshed = get_decision(decision_id, db_path=db)
-    assert refreshed is not None
+    # An edit replaces the fact, keeping it a decision with its outcome.
+    [refreshed] = list_decisions(db_path=db)
+    assert refreshed.id != decision_id
     assert refreshed.summary == "Expand to Germany only"
     assert refreshed.outcome == "approved"
-    assert refreshed.rationale == "Larger market"
+    assert get_decision(decision_id, db_path=db) is None
 
-    assert delete_decision(decision_id, db_path=db) is True
+    assert delete_decision(refreshed.id, db_path=db) is True
     assert list_decisions(db_path=db) == []
+
+
+def test_decisions_that_only_start_alike_stay_apart(db: Path) -> None:
+    from openexecutive.memory import facts
+
+    facts.record_fact(subject="We're going with the Q1 hire", statement="The Q1 hire is a backend role.",
+                      source_quote="", db_path=db)
+    store_decision("people", "We're going with the Q1 hire. Backend engineer.", db_path=db)
+    store_decision("people", "We're going with the Q1 hire. Designer, not engineer.", db_path=db)
+    assert len(list_decisions(db_path=db)) == 2
+    assert len(facts.list_facts(db_path=db)) == 3, "a plain fact that shares the first sentence stays"
+    store_decision("people", "We're going with the Q1 hire. Designer, not engineer.", db_path=db)
+    assert len(list_decisions(db_path=db)) == 2
 
 
 def test_initiative_update_bumps_timestamp(db: Path) -> None:
@@ -102,110 +118,23 @@ def test_format_for_prompt_empty_when_no_data(db: Path) -> None:
     assert format_for_prompt(db_path=db) == ""
 
 
-def test_format_for_prompt_renders_decisions_and_initiatives(db: Path) -> None:
+def test_format_for_prompt_renders_only_initiatives(db: Path) -> None:
+    """Decisions are standing facts now and render in that block; advice is
+    no longer kept, so neither shows here."""
     store_decision("strategy", "Expand to EU", rationale="Larger market", db_path=db)
+    store_advice("finance", "Should we raise?", "Yes, raise in Q3.", db_path=db)
     store_initiative("Hire CFO", "active", "Find a CFO by Q2", db_path=db)
 
-    rendered = format_for_prompt(db_path=db)
-    assert "Recent decisions:" in rendered
-    assert "Expand to EU" in rendered
-    assert "[strategy]" in rendered
-    assert "Active initiatives:" in rendered
+    rendered = format_for_prompt(db_path=db, session_id="discord:thread:A")
+    assert rendered.startswith("Active initiatives:")
     assert "Hire CFO" in rendered
-
-
-def test_format_for_prompt_trims_oldest_decisions_when_over_max_chars(db: Path) -> None:
-    # Store 8 decisions; each ~150 chars in rendered form. Cap at 400 chars to
-    # force trimming. Oldest must be dropped first (newest-first semantics).
-    for n in range(8):
-        store_decision(
-            domain="strategy",
-            summary=f"Decision number {n} with some padding text " + ("x" * 80),
-            rationale="r",
-            db_path=db,
-        )
-    store_initiative("Keep me", "active", "stays even when decisions trimmed", db_path=db)
-
-    rendered = format_for_prompt(db_path=db, max_chars=400)
-    assert len(rendered) <= 400
-    # Initiatives are preserved through trimming.
-    assert "Keep me" in rendered
-    # Newest decision (index 7) survives; oldest (index 0) should be dropped.
-    assert "Decision number 7" in rendered
-    assert "Decision number 0" not in rendered
-
-
-def test_format_for_prompt_default_max_chars_is_generous(db: Path) -> None:
-    """Existing callers (Executive user turn) should be unaffected by trimming."""
-    for n in range(5):
-        store_decision("strategy", f"Short decision {n}", db_path=db)
-    rendered = format_for_prompt(db_path=db)  # default max_chars
-    for n in range(5):
-        assert f"Short decision {n}" in rendered
-
-
-def _backdate_decision(db: Path, decision_id: int, days_ago: int) -> None:
-    ts = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE decisions SET timestamp = ? WHERE id = ?", (ts, decision_id))
+    assert "Expand to EU" not in rendered and "raise in Q3" not in rendered
 
 
 def _backdate_advice(db: Path, advice_id: int, days_ago: int) -> None:
     ts = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE advice_given SET timestamp = ? WHERE id = ?", (ts, advice_id))
-
-
-def test_decision_dedup_within_seven_days(db: Path) -> None:
-    """Re-storing the same decision (domain + 80-char summary prefix) within 7d should be a no-op."""
-    store_decision("strategy", "Expand to EU next year", db_path=db)
-    store_decision("strategy", "Expand to EU next year", db_path=db)
-    assert len(list_decisions(db_path=db)) == 1
-
-    # Different domain → not a dup, even with the same summary.
-    store_decision("operations", "Expand to EU next year", db_path=db)
-    assert len(list_decisions(db_path=db)) == 2
-
-    # Different summary prefix → not a dup.
-    store_decision("strategy", "Different decision entirely", db_path=db)
-    assert len(list_decisions(db_path=db)) == 3
-
-
-def test_decision_dedup_boundary_six_vs_eight_days(db: Path) -> None:
-    """At 6d ago dedup still fires; at 8d ago it does not (window is 7d)."""
-    store_decision("strategy", "Decision A", db_path=db)
-    first_id = list_decisions(db_path=db)[0].id
-    assert first_id is not None
-
-    # Backdate to 6 days ago — within window, second store should dedup.
-    _backdate_decision(db, first_id, days_ago=6)
-    store_decision("strategy", "Decision A", db_path=db)
-    assert len(list_decisions(db_path=db)) == 1
-
-    # Backdate to 8 days ago — outside window, second store should land.
-    _backdate_decision(db, first_id, days_ago=8)
-    store_decision("strategy", "Decision A", db_path=db)
-    assert len(list_decisions(db_path=db)) == 2
-
-
-def test_decision_dedup_fills_missing_rationale(db: Path) -> None:
-    """When a dup hits and the prior row had no rationale, the new rationale lands."""
-    store_decision("strategy", "Launch in EU", rationale="", db_path=db)
-    [first] = list_decisions(db_path=db)
-    assert first.rationale == ""
-    assert first.id is not None
-
-    store_decision("strategy", "Launch in EU", rationale="Larger TAM", db_path=db)
-    assert len(list_decisions(db_path=db)) == 1
-    refreshed = get_decision(first.id, db_path=db)
-    assert refreshed is not None
-    assert refreshed.rationale == "Larger TAM"
-
-    # A second dup with a different rationale should NOT overwrite the existing one.
-    store_decision("strategy", "Launch in EU", rationale="Some other reason", db_path=db)
-    refreshed = get_decision(first.id, db_path=db)
-    assert refreshed is not None
-    assert refreshed.rationale == "Larger TAM"
 
 
 def test_advice_dedup_within_seven_days(db: Path) -> None:
@@ -268,24 +197,6 @@ def test_store_advice_persists_session_id(db: Path) -> None:
     assert items[0].session_id == "telegram:42"
 
 
-def test_get_recent_decisions_scoped_excludes_other_sessions(db: Path) -> None:
-    store_decision("finance", "Cut costs", session_id="discord:thread:A", db_path=db)
-    store_decision("strategy", "Enter EU", session_id="discord:thread:B", db_path=db)
-    store_decision("ops", "Hire COO", session_id="", db_path=db)  # unscoped/global
-
-    scoped = get_recent_decisions(db_path=db, session_id="discord:thread:A")
-    assert len(scoped) == 1
-    assert scoped[0].domain == "finance"
-
-
-def test_get_recent_decisions_global_returns_all(db: Path) -> None:
-    store_decision("finance", "Cut costs", session_id="discord:thread:A", db_path=db)
-    store_decision("strategy", "Enter EU", session_id="discord:thread:B", db_path=db)
-
-    all_decisions = get_recent_decisions(db_path=db, session_id="")
-    assert len(all_decisions) == 2
-
-
 def test_get_recent_advice_scoped_excludes_other_sessions(db: Path) -> None:
     store_advice("hr", "q1", "Prioritise culture", session_id="discord:thread:A", db_path=db)
     store_advice("legal", "q2", "Consult lawyer", session_id="discord:thread:B", db_path=db)
@@ -295,34 +206,6 @@ def test_get_recent_advice_scoped_excludes_other_sessions(db: Path) -> None:
     assert scoped[0].domain == "hr"
 
 
-def test_format_for_prompt_scopes_decisions_and_advice_keeps_initiatives(db: Path) -> None:
-    """Decisions and advice are scoped to the session; initiatives stay global."""
-    store_decision("finance", "Thread A decision", session_id="discord:thread:A", db_path=db)
-    store_decision("strategy", "Thread B decision", session_id="discord:thread:B", db_path=db)
-    store_advice("hr", "Thread A advice q", "Thread A advice body", session_id="discord:thread:A", db_path=db)
-    store_initiative("Company-wide initiative", "active", db_path=db)
-
-    prompt = format_for_prompt(db_path=db, session_id="discord:thread:A")
-
-    # Thread A's data is present
-    assert "Thread A decision" in prompt
-    assert "Thread A advice body" in prompt
-    # Thread B's decision is excluded
-    assert "Thread B decision" not in prompt
-    # Initiative is always included (company-wide)
-    assert "Company-wide initiative" in prompt
-
-
-def test_format_for_prompt_empty_session_id_returns_all(db: Path) -> None:
-    """Empty session_id → global mode: returns decisions from all sessions."""
-    store_decision("finance", "Decision A", session_id="discord:thread:A", db_path=db)
-    store_decision("strategy", "Decision B", session_id="discord:thread:B", db_path=db)
-
-    prompt = format_for_prompt(db_path=db, session_id="")
-    assert "Decision A" in prompt
-    assert "Decision B" in prompt
-
-
 def test_format_for_prompt_scoped_empty_when_no_session_data(db: Path) -> None:
     """A session with no extracted decisions/advice gets empty episodic context."""
     store_decision("finance", "Someone else's decision", session_id="discord:thread:other", db_path=db)
@@ -330,19 +213,6 @@ def test_format_for_prompt_scoped_empty_when_no_session_data(db: Path) -> None:
     prompt = format_for_prompt(db_path=db, session_id="discord:thread:mine")
     # No decisions for this session; initiatives empty too
     assert prompt == ""
-
-
-def test_dedup_does_not_suppress_same_decision_across_sessions(db: Path) -> None:
-    """Two sessions producing the same decision must each get their own row —
-    dedup must not fire across session boundaries. Without this, thread B
-    would silently lose its decision because thread A stored the same one first."""
-    store_decision("finance", "Cut costs", session_id="discord:thread:A", db_path=db)
-    store_decision("finance", "Cut costs", session_id="discord:thread:B", db_path=db)
-
-    all_items = list_decisions(db_path=db)
-    assert len(all_items) == 2
-    session_ids = {d.session_id for d in all_items}
-    assert session_ids == {"discord:thread:A", "discord:thread:B"}
 
 
 def test_dedup_still_works_within_same_session(db: Path) -> None:
@@ -445,13 +315,13 @@ def test_extraction_prompt_includes_source_attribution_rule() -> None:
     assert "EXECUTIVE RESPONSE" in _EXTRACTION_SYSTEM
     assert "proposal" in _EXTRACTION_SYSTEM.lower()
 
-    # The decisions/initiatives/advice schema descriptions must each restate
+    # The initiatives schema description must restate
     # the USER-only attribution rule so the LLM sees it at field level too.
     tool_desc = _EXTRACTION_TOOL["description"]
     assert "USER QUESTION" in tool_desc
 
     props = _EXTRACTION_TOOL["input_schema"]["properties"]
-    for field in ("decisions", "initiatives", "advice"):
+    for field in ("initiatives",):
         field_desc = props[field]["description"]
         assert "USER" in field_desc, (
             f"{field} description must mention USER attribution: {field_desc!r}"
@@ -582,7 +452,8 @@ def test_extraction_schema_requires_user_commitment_quote_on_every_item() -> Non
     from openexecutive.memory.episodic import _EXTRACTION_TOOL
 
     props = _EXTRACTION_TOOL["input_schema"]["properties"]
-    for field in ("decisions", "initiatives", "advice"):
+    assert set(props) == {"initiatives"}, "decisions and advice are no longer extracted"
+    for field in ("initiatives",):
         item_schema = props[field]["items"]
         item_props = item_schema["properties"]
         required = item_schema["required"]
@@ -759,104 +630,6 @@ def test_is_valid_user_commitment_treats_newline_as_sentence_terminator() -> Non
         "going with fixed POC",
         "OK, going with fixed POC\n\nShould we do a midpoint demo?",
     ) is True
-
-
-def test_extract_and_store_drops_decision_with_question_quote(
-    db: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """End-to-end: the LLM returns a decision whose quote is the user's
-    question. The validator drops it before SQL, so list_decisions is empty.
-    This reproduces the May 27 incident in miniature.
-    """
-    import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from openexecutive.memory import episodic as ep
-
-    fake_tool_use = SimpleNamespace(
-        type="tool_use",
-        name="store_memories",
-        input={
-            "decisions": [
-                {
-                    "domain": "strategy",
-                    "summary": "First $30K deal will be fixed-scope POC, not hourly.",
-                    "rationale": "Fixed scope anchors to outcomes.",
-                    "user_commitment_quote": (
-                        "Should we scope the first $30K deal as fixed POC or hourly engagement?"
-                    ),
-                }
-            ],
-            "initiatives": [],
-            "advice": [],
-        },
-    )
-    fake_response = SimpleNamespace(content=[fake_tool_use])
-    create_mock = AsyncMock(return_value=fake_response)
-    fake_provider = SimpleNamespace(messages_create=create_mock)
-    monkeypatch.setattr("openexecutive.providers.get_provider", lambda _m: fake_provider)
-    monkeypatch.setattr(
-        "openexecutive.config.get_settings",
-        lambda: SimpleNamespace(routing_model="claude-test"),
-    )
-
-    user_msg = "Should we scope the first $30K deal as fixed POC or hourly engagement?"
-    asst_msg = "Fixed POC. Don't sell hours. [long opinionated reply]"
-    asyncio.run(ep.extract_and_store(user_msg, asst_msg, db_path=db))
-
-    assert ep.list_decisions(db_path=db) == [], (
-        "decision with question-mark quote must be dropped by the validator"
-    )
-    assert create_mock.await_count == 2, (
-        "a bad quote earns one corrective call; the replayed quote is rejected again"
-    )
-
-
-def test_extract_and_store_stores_decision_with_valid_quote(
-    db: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Positive case: when the user does declaratively commit and the LLM
-    quotes the commitment verbatim, the decision lands in SQL.
-    """
-    import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from openexecutive.memory import episodic as ep
-
-    fake_tool_use = SimpleNamespace(
-        type="tool_use",
-        name="store_memories",
-        input={
-            "decisions": [
-                {
-                    "domain": "strategy",
-                    "summary": "Going with fixed-scope POC for the first $30K deal.",
-                    "rationale": "User committed.",
-                    "user_commitment_quote": "we're going with fixed POC",
-                }
-            ],
-            "initiatives": [],
-            "advice": [],
-        },
-    )
-    fake_response = SimpleNamespace(content=[fake_tool_use])
-    create_mock = AsyncMock(return_value=fake_response)
-    fake_provider = SimpleNamespace(messages_create=create_mock)
-    monkeypatch.setattr("openexecutive.providers.get_provider", lambda _m: fake_provider)
-    monkeypatch.setattr(
-        "openexecutive.config.get_settings",
-        lambda: SimpleNamespace(routing_model="claude-test"),
-    )
-
-    user_msg = "OK, we're going with fixed POC over hourly for the first $30K deal."
-    asst_msg = "Smart call. Here's how to structure the SOW..."
-    asyncio.run(ep.extract_and_store(user_msg, asst_msg, db_path=db))
-
-    decisions = ep.list_decisions(db_path=db)
-    assert len(decisions) == 1
-    assert "fixed-scope POC" in decisions[0].summary
 
 
 def test_extract_and_store_drops_initiative_with_hallucinated_quote(
