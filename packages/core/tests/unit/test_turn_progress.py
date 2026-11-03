@@ -56,6 +56,21 @@ def test_later_calls_add_used_and_found_and_keep_the_task() -> None:
     assert event["found"] == ["Term is 7 years; the March email agreed 10."]
 
 
+def test_a_call_without_now_leaves_the_live_line_to_the_activity() -> None:
+    _, _, shown = turn_progress.apply({"task": TASK, "now": "Reading the LOI"}, None)
+    _, event, _ = turn_progress.apply({"used": ["Q3.xlsx"]}, shown)
+    assert event is not None and event["now"] == "" and event["task"] == TASK
+
+
+def test_findings_keep_the_newest() -> None:
+    shown = None
+    for i in range(turn_progress.MAX_FOUND + 2):
+        _, _, shown = turn_progress.apply({"now": "x", "found": [f"f{i}"]}, shown)
+    assert shown is not None
+    assert shown.found[-1] == f"f{turn_progress.MAX_FOUND + 1}"
+    assert len(shown.found) == turn_progress.MAX_FOUND
+
+
 def test_nothing_to_show_shows_nothing() -> None:
     result, event, shown = turn_progress.apply({"now": "  "}, None)
     assert event is None and shown is None
@@ -70,8 +85,8 @@ def test_lines_are_cleaned_and_lists_capped() -> None:
     )
     assert event is not None
     assert event["now"] == "Reading the files"
-    # Newest kept.
-    assert event["used"] == raw_used[-turn_progress.MAX_USED:]
+    # The first sources are kept.
+    assert event["used"] == raw_used[: turn_progress.MAX_USED]
     # At most two findings a call.
     assert event["found"] == ["a", "b"]
     _, event, _ = turn_progress.apply({"now": "x" * 300}, shown)

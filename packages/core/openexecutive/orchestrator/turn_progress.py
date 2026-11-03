@@ -89,6 +89,7 @@ class Progress:
     """The turn's progress so far, as the chat last saw it."""
 
     task: str = ""
+    # This call's own line, empty when it gave none.
     now: str = ""
     used: list[str] = field(default_factory=list)
     found: list[str] = field(default_factory=list)
@@ -103,15 +104,17 @@ class Progress:
         }
 
 
-def _add(kept: list[str], new: list[str], cap: int) -> list[str]:
+def _add(kept: list[str], new: list[str], cap: int, *, newest: bool) -> list[str]:
     seen = {item.casefold() for item in kept}
     out = list(kept)
     for item in new:
         if item.casefold() not in seen:
             seen.add(item.casefold())
             out.append(item)
-    # Keep the newest: the card is about where the work is now.
-    return out[-cap:]
+    # Sources keep the first ones (what the person asked about, which the card
+    # shows first, and a dropped one can't come back as new); findings keep the
+    # newest (the card shows those).
+    return out[-cap:] if newest else out[:cap]
 
 
 # Said when the call came on its own: that cost a round with no work in it.
@@ -125,17 +128,19 @@ def apply(
 
     Returns (the tool result for the model, the ``progress`` event for the
     chat or None, the turn's progress from now on). ``used`` and ``found``
-    add to what the turn already showed; ``task`` and ``now`` replace it, and
-    a call without them keeps the old ones. A first call with nothing to show
+    add to what the turn already showed; ``task`` replaces it, and a call
+    without one keeps the old one; ``now`` is only ever this call's. A first call with nothing to show
     shows nothing and says why. ``alone`` (no other call in the round) adds a
     reminder to send it with the round's own calls.
     """
     data = tool_input if isinstance(tool_input, dict) else {}
     prev = progress or Progress()
     task = _line(data.get("task")) or prev.task
-    now = _line(data.get("now")) or prev.now
-    used = _add(prev.used, _lines(data.get("used")), MAX_USED)
-    found = _add(prev.found, _lines(data.get("found"))[:2], MAX_FOUND)
+    # Only this call's own words: an old `now` sent again would pin the live
+    # line to an earlier round instead of falling back to its activity label.
+    now = _line(data.get("now"))
+    used = _add(prev.used, _lines(data.get("used")), MAX_USED, newest=False)
+    found = _add(prev.found, _lines(data.get("found"))[:2], MAX_FOUND, newest=True)
     if not (task or now or used or found):
         return json.dumps({"error": "Say what you are doing now in `now`."}), None, progress
     shown = Progress(task=task, now=now, used=used, found=found)
