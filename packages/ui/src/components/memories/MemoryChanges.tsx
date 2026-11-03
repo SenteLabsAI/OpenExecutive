@@ -51,6 +51,7 @@ export function MemoryUpdatedChip({
   since,
   until,
   seen,
+  onShown,
 }: {
   sessionId: string;
   since: string;
@@ -58,6 +59,8 @@ export function MemoryUpdatedChip({
   until?: string;
   /** What an earlier chip in this chat already showed. */
   seen: Set<string>;
+  /** Called once it has rows to show (the chat then drops its own fact chip). */
+  onShown?: () => void;
 }) {
   const [changes, setChanges] = useState<MemoryChange[]>([]);
   const [open, setOpen] = useState(false);
@@ -93,6 +96,10 @@ export function MemoryUpdatedChip({
     };
   }, [sessionId, since, until, seen]);
 
+  useEffect(() => {
+    if (changes.length > 0) onShown?.();
+  }, [changes.length, onShown]);
+
   if (changes.length === 0) return null;
   const left = changes.filter((c) => state[changeKey(c)] !== "undone");
   return (
@@ -117,7 +124,7 @@ export function MemoryUpdatedChip({
                 {c.title}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-sm text-fg-muted">
-                <span>{c.status === "proposed" ? "Waiting for your OK" : "From what you just said"}</span>
+                <span>{chipCaption(c)}</span>
                 {c.can_undo && <span aria-hidden>·</span>}
                 <UndoButton change={c} state={state[changeKey(c)] ?? "idle"} onUndo={() => void undo(c)} />
                 <span aria-hidden>·</span>
@@ -131,6 +138,13 @@ export function MemoryUpdatedChip({
       )}
     </div>
   );
+}
+
+function chipCaption(c: MemoryChange): string {
+  if (c.status === "proposed") return "Waiting for your OK";
+  if (c.kind === "worked_out") return c.source ? `Worked out from ${c.source}` : "Worked out from what it read";
+  if (c.kind === "lesson") return "Learned from this chat";
+  return "From what you just said";
 }
 
 const PREVIEW = 3;

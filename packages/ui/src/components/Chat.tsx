@@ -153,6 +153,12 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // windows; `memorySeen` keeps a change on one chip only.
   const [memoryWatch, setMemoryWatch] = useState<Record<number, { sessionId: string; since: string; until?: string }>>({});
   const memorySeen = useMemo(() => new Set<string>(), []);
+  // Replies whose Memory updated chip has rows: only those drop their own
+  // remember_fact chip, so a saved fact always shows one or the other.
+  const [memoryShown, setMemoryShown] = useState<Set<number>>(() => new Set());
+  const markMemoryShown = useCallback((id: number) => {
+    setMemoryShown((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }, []);
   const [isConsulting, setIsConsulting] = useState(false);
   // The reply whose held steps the person put off with Not now (its index).
   const [heldDismissed, setHeldDismissed] = useState<number | null>(null);
@@ -1250,7 +1256,7 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   actions={
                     msg.role !== "assistant"
                       ? undefined
-                      : msg.id && memoryWatch[msg.id]
+                      : msg.id && memoryShown.has(msg.id)
                         ? // The Memory updated chip below says it, with an Undo.
                           msg.actions?.filter((a) => a.tool !== "remember_fact")
                         : msg.actions
@@ -1272,7 +1278,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   onEdit={canRedo && !editing && i === turn.userIndex ? startEdit : undefined}
                   memory={
                     msg.role === "assistant" && msg.id && memoryWatch[msg.id] ? (
-                      <MemoryUpdatedChip {...memoryWatch[msg.id]} seen={memorySeen} />
+                      <MemoryUpdatedChip
+                        {...memoryWatch[msg.id]}
+                        seen={memorySeen}
+                        onShown={() => markMemoryShown(msg.id as number)}
+                      />
                     ) : undefined
                   }
                 />
