@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -10,9 +10,13 @@ import { getMail, replyToMail, type MailView, type Today } from "@/lib/api";
 import { MEMORY_ACTIONS, briefingMemoryLine } from "@/lib/briefing-memory";
 import {
   alsoInLine,
+  buildMoveSeed,
   cardLink,
   clockLabel,
   isNewSince,
+  isPutOff,
+  laterMark,
+  moveMail,
   newSinceLabel,
   pointTarget,
   progressNote,
@@ -34,7 +38,10 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 // change or edit. A point about a card in Needs you has Show me. Every
 // point has a ✕ that dismisses it for the rest of the day (POST
 // /today/dismiss). While it is being rewritten, its steps show in place of
-// the old read, which is no longer current.
+// the old read, which is no longer current. The card leads with Do next
+// (the header's Move today line) and buttons that start it: Do it opens a
+// chat where the Executive gets going, View email and Reply open the top
+// point's email, and Later puts it away until the move changes.
 
 // How many points the Home card shows; the panel has them all.
 const CARD_POINTS = 3;
@@ -336,6 +343,81 @@ function Progress({ today }: { today: Today }) {
   );
 }
 
+const LATER_KEY = "oe.rightNow.later";
+
+const LATER_EVENT = "oe-right-now-later";
+// A private window has no storage: Later still holds until reload.
+let laterFallback: string | null = null;
+
+function readLater(): string | null {
+  try {
+    return window.localStorage.getItem(LATER_KEY) ?? laterFallback;
+  } catch {
+    return laterFallback;
+  }
+}
+
+function writeLater(value: string): void {
+  laterFallback = value;
+  try {
+    window.localStorage.setItem(LATER_KEY, value);
+  } catch {
+    // Kept in memory above.
+  }
+  window.dispatchEvent(new Event(LATER_EVENT));
+}
+
+function subscribeLater(onChange: () => void): () => void {
+  window.addEventListener(LATER_EVENT, onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    window.removeEventListener(LATER_EVENT, onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+// Do next on the Home card: the move, and buttons that start it.
+function MoveBox({ move, points, actions }: { move: string; points: TimedPoint[]; actions?: PointActions }) {
+  const [open, setOpen] = useState<"view" | "reply" | null>(null);
+  // The server render has no storage, so it shows the box.
+  const stored = useSyncExternalStore(subscribeLater, readLater, () => null);
+  if (isPutOff(stored, move, new Date())) return null;
+  const mail = actions?.replies ? moveMail(points, move) : null;
+  const onContinue = actions?.onContinue;
+  const doIt = onContinue
+    ? () => onContinue(buildMoveSeed(move), briefingMemoryLine(MEMORY_ACTIONS.narrative, move))
+    : undefined;
+  const later = () => writeLater(laterMark(move, new Date()));
+  return (
+    <div className="mt-3 rounded-xl bg-accent/10 px-4 py-3">
+      <h3 className="text-xs font-bold uppercase tracking-wide text-accent">Do next</h3>
+      <p className="mt-1 text-[16px] font-semibold leading-snug text-fg">{move}</p>
+      {mail && open ? (
+        <MailPanel
+          target={mail}
+          replies={actions!.replies!}
+          startWithReply={open === "reply"}
+          onTalk={doIt}
+          onClose={() => setOpen(null)}
+        />
+      ) : (
+        <div className="mt-2.5 flex flex-wrap gap-2">
+          {doIt && (
+            <Button variant="primary" size="sm" onClick={doIt}>Do it</Button>
+          )}
+          {mail && (
+            <>
+              <Button size="sm" onClick={() => setOpen("view")}>View email</Button>
+              <Button size="sm" onClick={() => setOpen("reply")}>Reply</Button>
+            </>
+          )}
+          <Button size="sm" onClick={later}>Later</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Lead({ today }: { today: Today }) {
   const lead = today.narrative_lead;
   if (lead) return <p className="text-[17px] font-semibold leading-snug text-fg">{lead}</p>;
@@ -392,6 +474,9 @@ export function RightNowCard({
       ) : today.narrative ? (
         <>
           <Lead today={today} />
+          {today.narrative_move?.trim() && (
+            <MoveBox move={today.narrative_move.trim()} points={points} actions={actions} />
+          )}
           {points.length > 0 && (
             <ul className="mt-2">
               {points.slice(0, CARD_POINTS).map((p, i) => (

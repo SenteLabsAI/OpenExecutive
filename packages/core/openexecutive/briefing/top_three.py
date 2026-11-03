@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
 
+from openexecutive.utils.clock import clock
+
 logger = logging.getLogger(__name__)
 
 TOP_THREE_MAX = 3
@@ -523,7 +525,7 @@ def assign_slots(
             if end - g_start < _MIN_BLOCK:
                 queue.pop(0)
                 continue
-            slot = f"{g_start.astimezone(tz):%H:%M}–{end.astimezone(tz):%H:%M}"
+            slot = f"{clock(g_start.astimezone(tz))}–{clock(end.astimezone(tz))}"
             queue[0] = (end, g_end)
             break
         out.append({**item, "slot": slot})
@@ -555,9 +557,9 @@ def render_events(events: list[CalendarEvent], tz: tzinfo) -> list[dict[str, str
         (e.start, e.end, e.title) for e in events if e.start is not None and e.end is not None
     )
     for start, end, title in timed:
-        when = f"{start.astimezone(tz):%H:%M}"
+        when = clock(start.astimezone(tz))
         if end > start:
-            when += f"–{end.astimezone(tz):%H:%M}"
+            when += f"–{clock(end.astimezone(tz))}"
         rows.append({"time": when, "title": title})
     return rows
 

@@ -171,7 +171,7 @@ def test_only_a_date_is_all_day_and_unreadable_times_are_dropped() -> None:
         [CalendarEvent("x", None, None, all_day=True)], UTC_ZONE
     )
     assert top_three.render_events(events, UTC_ZONE) == [
-        {"time": "all day", "title": "Holiday"}, {"time": "09:00", "title": "Reminder"},
+        {"time": "all day", "title": "Holiday"}, {"time": "9:00 AM", "title": "Reminder"},
     ]
     text = (
         "Successfully retrieved 2 events from calendar 'primary' for x@example.com:\n"
@@ -233,7 +233,7 @@ def test_each_item_gets_its_own_block_until_the_day_runs_out() -> None:
     items = [{"key": f"k{i}"} for i in range(3)]
     gaps = top_three.free_gaps(_DAY, now=NOW, tz=UTC_ZONE, work=(time(9), time(13)))
     slotted = top_three.assign_slots(items, gaps, UTC_ZONE)
-    assert [s["slot"] for s in slotted] == ["09:00–09:30", "12:00–13:00", ""]
+    assert [s["slot"] for s in slotted] == ["9:00 AM–9:30 AM", "12:00 PM–1:00 PM", ""]
 
 
 def test_calendar_hash_is_coarse() -> None:
