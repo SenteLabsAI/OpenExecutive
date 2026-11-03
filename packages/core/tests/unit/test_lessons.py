@@ -109,6 +109,12 @@ def test_a_lesson_may_rephrase_what_they_asked_about_mail(roster: SimpleNamespac
         assert lessons.lesson_overreach(lesson, quote) is None
 
 
+@pytest.mark.parametrize("quote", ["do it", "ok", "yes go"])
+def test_a_filler_reply_backs_no_lesson(quote: str) -> None:
+    assert lessons.lesson_overreach("Send every invoice to the board without asking.", quote) == (
+        "the lesson isn't about what they said")
+
+
 def test_a_duplicate_is_refused_and_the_oldest_makes_room(roster: SimpleNamespace,
                                                           monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lessons, "MAX_ACTIVE", 2)
