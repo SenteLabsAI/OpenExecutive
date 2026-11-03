@@ -179,8 +179,7 @@ def _reaches(lesson: dict[str, Any], row: sqlite3.Row) -> bool:
     matches the person's words and reaches their turns."""
     if lesson["turn_row_id"] is not None and int(lesson["turn_row_id"]) == int(row["id"]):
         return True
-    mine = int(lesson["person_id"]) == int(row["person_id"])
-    if not mine and not lesson["shared"]:
+    if int(lesson["person_id"]) != int(row["person_id"]):
         return False
     return lessons._matches(lesson, str(row["message"]))
 

@@ -5322,18 +5322,18 @@ chat:
     speaker's mailbox, and every turn of a mail-private conversation, is kept
     too, for their own review only: tools kept by name with only a failure
     marker (no result text, the results are other people's mail), no
-    remember_fact in its fix loop, its lessons never shared, the Reflection
+    remember_fact in its fix loop, its lessons kept with its owner, the Reflection
     screen shows it to its owner alone (_session_access), and the review and
     replay passes over it write every audit row as that person's own
     (chat_review_turns.mail, mail_private_turns, rows_for_person). One
     chat_review __internal__ action per conversation fires 30 minutes after
     the last turn (pushed back while the chat goes on) and runs one small
     tool loop per person (CHAT_REVIEW_MODEL, default ROUTING_MODEL; 5 rounds,
-    8 changes, CHAT_REVIEW_MAX_PER_DAY 10 per person) on the unreviewed turns
+    8 changes, CHAT_REVIEW_MAX_PER_DAY 50 per person) on the unreviewed turns
     only. Replies are shown as untrusted content, tool results not at all.
     Tools replay through the chat handlers in a session rebuilt from the
     recorded surface, so their checks hold; every change needs a source_quote
-    of 4+ of the person's own words and its target named in their words,
+    of 2+ of the person's own words and its target sharing a word (rough stem) with them,
     code-checked. It closes loops, keeps facts, cancels or moves follow-ups
     the person scheduled (never by sharing a thread),
     leaves an item out of the brief, learns a reply-style rule
@@ -5363,13 +5363,15 @@ chat:
     chat or DM, nor a mail-private conversation).
     Lessons (memory/lessons.py): for a turn graded a miss the fix loop is
     offered learn_lesson (the turn is marked MISS in what it reads): one
-    sentence this workspace wants done differently, quoted from the
-    person's words (from that turn or later; the lesson must be what the
-    quote says, and at most two content words beyond it), through the
-    working-style deny-list plus the lessons' own (information-moving
-    verbs, everyone/everything words) without the about-the-writing
-    requirement, re-checked on every render. Stored in chat_review_lessons
-    (shared = learned in a channel or group thread that never read mail); chat_review_lesson_uses
+    sentence this workspace wants done differently, backed by the
+    person's own words anywhere in that chat (it shares a word with the
+    quote, by rough stem, and adds at most eight content words beyond it).
+    No word list: a lesson may mention mail, sending, people, links or
+    amounts, since it authorizes nothing and every send still goes through
+    the safety levels; only its length (8-240 chars) is re-checked on every
+    render. The review's audit row lists each refused learn/fix and why
+    (refused: tool + check wording or reason code, never their text).
+    Stored in chat_review_lessons (shared is legacy, always 0); chat_review_lesson_uses
     records which turn id, and whose, saw which lesson. Reaches a turn by keyword match (two shared content words
     between lesson+quote and the message, or the name the lesson defines, like
     "Atlas means ..." or "your name is R2", written mid-sentence in the message;
@@ -5377,7 +5379,7 @@ chat:
     turn as a <lessons> user-turn block (build_lessons_block, counted as
     shown against the active turn id), each specialist call under its
     <failure_cases> block (router._lessons_for_call). A lesson reaches its
-    own person's turns; the principal's reach everyone's only when shared.
+    own person's turns only, wherever it was learned.
     When the review grades a turn that saw a lesson, note_outcome bumps
     fine_after or miss_after for the lesson's own person's turns only;
     shown 5+ times with more misses than fine it retires itself

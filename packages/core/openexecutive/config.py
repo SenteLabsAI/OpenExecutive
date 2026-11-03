@@ -1150,7 +1150,7 @@ class Settings(BaseSettings):
     # ROUTING_MODEL.
     chat_review_enabled: bool = Field(True, alias="CHAT_REVIEW_ENABLED")
     chat_review_quiet_minutes: int = Field(30, ge=1, alias="CHAT_REVIEW_QUIET_MINUTES")
-    chat_review_max_per_day: int = Field(10, ge=0, alias="CHAT_REVIEW_MAX_PER_DAY")
+    chat_review_max_per_day: int = Field(50, ge=0, alias="CHAT_REVIEW_MAX_PER_DAY")
     chat_review_model: str = Field("", alias="CHAT_REVIEW_MODEL")
     # Replay of the misses (memory.replay): nightly, the turns the review
     # graded a miss run again with today's lessons and facts, in a dry run,
