@@ -400,7 +400,10 @@ _STOPWORDS = frozenset(
      "would", "should", "could", "just", "about", "out", "off", "up", "down", "into", "over", "when",
      "what", "than", "then", "there", "here", "also", "always", "never", "rather", "instead", "want",
      "wants", "wanted", "need", "needs", "thing", "things", "something", "every", "each", "some",
-     "more", "most", "very", "really", "like", "make", "made", "does", "did", "done", "mean", "means"]
+     "more", "most", "very", "really", "like", "make", "made", "does", "did", "done", "mean", "means",
+     # Filler replies ("ok thanks", "sounds good") name nothing, so they back nothing.
+     "thanks", "thank", "sounds", "sound", "good", "great", "okay", "sure", "fine", "yeah", "cool",
+     "perfect", "alright", "awesome", "right", "away", "got"]
 )
 
 

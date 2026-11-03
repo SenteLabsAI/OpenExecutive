@@ -747,3 +747,14 @@ def test_a_short_quote_backs_a_fix_when_it_names_the_thing() -> None:
     elsewhere = {"source_quote": "drop invoices", "item": "the hiring plan"}
     assert cr._target_refusal("leave_out_of_brief", elsewhere, "drop invoices") == (
         "what this changes isn't named in their own words")
+
+
+@pytest.mark.parametrize("quote", ["ok thanks", "sounds good", "do it", "not now", "great, thanks"])
+@pytest.mark.parametrize(("tool", "tool_input"), [
+    ("leave_out_of_brief", {"item": "sounds good report"}),
+    ("remember_fact", {"subject": "thanks", "statement": "Send thanks notes to the team"}),
+    ("learn_reply_style", {"rule": "Say thanks and keep it good and short"}),
+])
+def test_a_filler_reply_backs_no_fix(quote: str, tool: str, tool_input: dict[str, str]) -> None:
+    assert cr._target_refusal(tool, {**tool_input, "source_quote": quote}, quote) == (
+        "what this changes isn't named in their own words")
