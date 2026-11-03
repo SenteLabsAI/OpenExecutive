@@ -5368,8 +5368,8 @@ chat:
     quote, by rough stem, and adds at most eight content words beyond it).
     It may mention mail, sending, people or amounts, since it authorizes
     nothing and every send still goes through the safety levels; it may not
-    carry a link, handle, markup, identifier or instruction talk
-    (_LESSON_DENY), re-checked with its length (8-240 chars) on every render. The review's audit row lists each refused learn/fix and why
+    carry a link, handle, markup, identifier, instruction or approval talk
+    (_LESSON_DENY) or non-Latin letters, re-checked with its length (8-240 chars) on every render. The review's audit row lists each refused learn/fix and why
     (refused: tool + check wording or reason code, never their text).
     Stored in chat_review_lessons (shared is legacy, always 0); chat_review_lesson_uses
     records which turn id, and whose, saw which lesson. Reaches a turn by keyword match (two shared content words

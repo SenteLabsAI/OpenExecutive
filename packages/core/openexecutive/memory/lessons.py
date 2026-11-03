@@ -35,8 +35,9 @@ it" as a lesson about summarizing a message. It may talk about mail,
 sending, people or amounts, because it authorizes nothing: every send,
 share or post still goes through the safety levels and approval cards,
 whatever a lesson says. It may not carry a link, a handle, markup, an
-identifier or talk about the model's instructions (``_LESSON_DENY``),
-which is how text steers a later prompt.
+identifier, talk about the model's instructions or about something being
+approved (``_LESSON_DENY``), nor letters outside Latin script, which is how
+text steers a later prompt.
 
 **Retirement.** Each lesson counts how often it reached a turn (``shown``)
 and how those turns were then graded (``fine_after``, ``miss_after``), its
@@ -92,6 +93,14 @@ _LESSON_DENY: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(ignore|disregard|override|bypass|instruction|instructions|"
         r"prompt|prompts|jailbreak|system message)\b",
+        re.IGNORECASE,
+    ),
+    # Talk that would stand in for an approval. The approval cards and
+    # safety levels hold in code either way; this keeps a lesson from even
+    # claiming one.
+    re.compile(
+        r"\b(as|already|pre)[- ]?approved\b|\bwithout (an? )?(approval|sign[- ]?off)\b|"
+        r"\bskip\w* (the )?(approval|card|sign[- ]?off)s?\b|\bauthori[sz]\w*",
         re.IGNORECASE,
     ),
 )
@@ -158,6 +167,12 @@ def lesson_rejection(text: str, *, roster_names: list[str] | None = None) -> str
         return "too_short"
     if len(text) > MAX_CHARS:
         return "too_long"
+    from openexecutive.attunement.style import _non_latin_letter
+
+    # Letters outside Latin script would let "ignоre" (Cyrillic о) past the
+    # word checks below.
+    if _non_latin_letter(text):
+        return "non_latin_letters"
     if any(pattern.search(text) for pattern in _LESSON_DENY):
         return "denied_content"
     return None
