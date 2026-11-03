@@ -1091,6 +1091,9 @@ async def _refresh_notes(
         titled = [(when, title) for _id, when, title in meetings if title]
         if not written and not titled:
             continue
+        if notes.settle_removed(person_id, key):
+            # Just removed: a new note waits for new mail or a new meeting.
+            continue
         if budget <= 0 or key == notes.activity_key(person_id) or notes.owner_wrote(person_id):
             # The principal's own note stays as they wrote it.
             continue

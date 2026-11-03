@@ -133,7 +133,7 @@ def _row(row: sqlite3.Row) -> ContactNote:
         last_met_at=row["last_met_at"], next_meeting_at=row["next_meeting_at"],
         next_meeting_title=row["next_meeting_title"], emailed_count=row["emailed_count"],
         met_count=row["met_count"], note_written_at=row["note_written_at"],
-        edited_by_you=bool(row["note_by_owner"]), updated_at=row["updated_at"],
+        edited_by_you=row["note_by_owner"] == 1, updated_at=row["updated_at"],
     )
 
 
@@ -223,13 +223,26 @@ def put_owner_note(person_id: int, note: str, db_path: Path | None = None) -> No
 def clear_note(person_id: int, db_path: Path | None = None) -> None:
     """Remove the note and its topics, keeping the activity (when they last
     emailed or met). The keeper may write a new one once there is new mail
-    or a new meeting, not from what it already read."""
+    or a new meeting, not from what it already read: ``note_by_owner = -1``
+    until the keeper's next run marks what is there as read
+    (``settle_removed``)."""
     with _conn(db_path) as conn:
         conn.execute(
-            "UPDATE contact_notes SET note = '', topics = '[]', note_by_owner = 0, note_written_at = NULL, "
+            "UPDATE contact_notes SET note = '', topics = '[]', note_by_owner = -1, note_written_at = NULL, "
             "updated_at = ? WHERE person_id = ?",
             (datetime.now(UTC).isoformat(), person_id),
         )
+
+
+def settle_removed(person_id: int, key: str, db_path: Path | None = None) -> bool:
+    """After a remove, mark ``key`` (the mail and meetings there are now) as
+    read, so a new note waits for new ones. True when there was a remove."""
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE contact_notes SET activity_key = ?, note_by_owner = 0 WHERE person_id = ? AND note_by_owner = -1",
+            (key, person_id),
+        )
+        return cur.rowcount > 0
 
 
 def owner_wrote(person_id: int, db_path: Path | None = None) -> bool:

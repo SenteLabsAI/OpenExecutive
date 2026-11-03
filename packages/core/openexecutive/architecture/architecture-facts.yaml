@@ -5338,7 +5338,9 @@ chat:
     `POST /memories/facts/{id}/edit` records a correction that replaces the
     fact through `record_fact` (same checks, same teammate rules as retire).
     Contact notes: `PUT /contacts/{id}/note` pins the principal's wording
-    (`note_by_owner`, the keeper skips it); `DELETE` clears it. What it
+    (`note_by_owner`, the keeper skips it); `DELETE` clears it, and the
+    keeper's next run marks the mail it already read so a new note waits
+    for new mail or a new meeting. What it
     worked out: `PATCH /memories/worked-out/{id}`, the caller's own only,
     with the same link/markup/instruction refusals as the pass. A removed
     peer-memory line can still sit in an old chat that search_past_chats

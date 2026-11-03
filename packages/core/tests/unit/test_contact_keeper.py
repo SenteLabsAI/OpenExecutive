@@ -1196,3 +1196,12 @@ def test_the_principal_edits_or_removes_a_note_and_the_keeper_keeps_their_words(
     assert client.delete(url, headers=mine).status_code == 204
     after = contact_notes.get(person.id)
     assert after.note == "" and after.edited_by_you is False and after.last_emailed_at is not None
+    # The keeper doesn't rewrite it from mail it already read, only from new mail.
+    asked = len(written)
+    _run(box)
+    assert len(written) == asked and contact_notes.get(person.id).note == ""
+    new = _wrote(PRIYA, "Bids are due Friday.", days_ago=0)
+    new.id = "w-new"
+    box.sent.append(new)
+    _run(box)
+    assert len(written) == asked + 1
