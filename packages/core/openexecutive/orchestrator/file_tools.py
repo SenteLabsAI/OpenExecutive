@@ -108,6 +108,11 @@ def _team_emails() -> set[str]:
 SHARED_OUTSIDE = "That folder is shared with someone outside the team, so I don't save into it"
 
 
+# How the folder's permissions name anyone with the link, and a whole domain.
+ANYONE_WITH_LINK = "Anyone with the link"
+WHOLE_DOMAIN = "Everyone at "
+
+
 def _viewer(entry: str) -> str:
     """One permission line, as the card shows who else can open the folder:
     the address, a domain or "Anyone with the link", without the role and id."""
@@ -116,7 +121,7 @@ def _viewer(entry: str) -> str:
         return entry.split(" (", 1)[0].strip()[:80]
     who = rest.split(" ", 1)[0].strip()
     if kind == "Domain":
-        return f"Everyone at {who}"[:80]
+        return f"{WHOLE_DOMAIN}{who}"[:80]
     if kind == "Group":
         return f"{who} (group)"[:80]
     return who[:80]
@@ -132,8 +137,7 @@ def folder_check(info: str, folder: str, account: str, team: set[str]) -> tuple[
     and owners are the fixed lines right after it. A folder an outsider owns
     is refused. Every permission that isn't the Executive or the team (an
     outsider, a group, a domain, a link, someone else's shared drive's
-    members) is listed: such a folder is saved into only on the person's tap
-    (``SharedOutside``). The lines after the permissions can only add
+    members) is listed, and the save says who else can open it. The lines after the permissions can only add
     entries, which can only add to that list."""
     lines = info.splitlines()
     marks = [i for i, line in enumerate(lines) if line.strip() == f"ID: {folder}"]
@@ -209,7 +213,7 @@ async def _google(
         refused, outside = folder_check(info, folder, account, _team_emails())
         if refused is not None:
             raise SaveFailed(refused + ".")
-        public = [who for who in outside if who == "Anyone with the link" or who.startswith("Everyone at ")]
+        public = [who for who in outside if who == ANYONE_WITH_LINK or who.startswith(WHOLE_DOMAIN)]
         if public:
             raise SaveFailed(
                 f"That folder is open to {public[0].lower() if public[0].startswith('Anyone') else public[0]}, "
