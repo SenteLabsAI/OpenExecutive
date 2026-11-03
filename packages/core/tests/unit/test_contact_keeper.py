@@ -1181,6 +1181,7 @@ def test_the_principal_edits_or_removes_a_note_and_the_keeper_keeps_their_words(
     url = f"/contacts/{person.id}/note"
     assert client.put(url, json={"note": "Roofing."}, headers={"x-caller-email": "ben@co.example"}).status_code == 404
     assert client.put(url, json={"note": "see https://x.example"}, headers=mine).status_code == 422
+    assert client.put(url, json={"note": "Roofing. " * 60}, headers=mine).status_code == 422
     body = client.put(url, json={"note": "Priya handles the roof bids for Cedar Court."}, headers=mine).json()
     assert body["note"] == "Priya handles the roof bids for Cedar Court." and body["edited_by_you"] is True
     # The keeper's topics described its own note, so they go with it.

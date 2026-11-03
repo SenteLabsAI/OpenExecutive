@@ -191,9 +191,14 @@ def _audit_note(event: str, person_id: int) -> None:
 def edit_contact_note(person_id: int, body: ContactNoteIn, request: Request) -> contact_notes.ContactNote:
     _require_principal(request)
     _note_person(person_id)
+    if len(" ".join(body.note.split())) > contact_notes.NOTE_MAX:
+        raise HTTPException(status_code=422, detail=f"Keep the note under {contact_notes.NOTE_MAX} characters")
     note = contact_notes.clean_note(body.note)
     if not note:
-        raise HTTPException(status_code=422, detail="Write the note in plain words, without links or addresses")
+        raise HTTPException(
+            status_code=422,
+            detail="Write the note in plain words, without links, email addresses, @ or < signs",
+        )
     contact_notes.put_owner_note(person_id, note)
     _audit_note("contact_note_edited", person_id)
     saved = contact_notes.get(person_id)

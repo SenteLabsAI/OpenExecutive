@@ -2582,7 +2582,7 @@ async def forget_person_conclusion(
         if not matched:
             return "missing"
         _, peer = matched[0]
-        found = False
+        found = searched_all = False
         for page in range(1, _FORGET_MAX_PAGES + 1):
             result = await asyncio.wait_for(
                 peer.conclusions.aio.list(page=page, size=PERSON_CONCLUSIONS_MAX_PAGE, reverse=False),
@@ -2593,9 +2593,12 @@ async def forget_person_conclusion(
                 found = True
                 break
             if len(items) < PERSON_CONCLUSIONS_MAX_PAGE:
+                searched_all = True
                 break
         if not found:
-            return "missing"
+            # Past the pages it looks through, the id may still be theirs:
+            # "try again later" is truer than "not yours".
+            return "missing" if searched_all else "unavailable"
         await asyncio.wait_for(peer.conclusions.aio.delete(conclusion_id), timeout=timeout)
     except Exception as exc:
         logger.warning("Honcho conclusion delete failed: %s", type(exc).__name__)

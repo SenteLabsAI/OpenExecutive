@@ -693,3 +693,15 @@ def test_nobody_removes_another_persons_line(roster: dict[str, int], monkeypatch
 def test_remove_says_when_memory_is_off(monkeypatch: pytest.MonkeyPatch, roster: dict[str, int]) -> None:
     monkeypatch.setenv("HONCHO_ENABLED", "false")
     assert _client().delete(f"/memories/people/{roster['principal']}/conclusions/c_one").status_code == 503
+
+
+def test_a_line_past_the_pages_it_looks_through_is_not_called_missing(
+    roster: dict[str, int], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(honcho_client, "_FORGET_MAX_PAGES", 1)
+    lines = [_Conclusion(f"line {n}", _T1, f"c_{n}") for n in range(honcho_client.PERSON_CONCLUSIONS_MAX_PAGE + 1)]
+    peer = _Peer(str(roster["principal"]), conclusions=lines)
+    last = lines[-1].id
+    with _with_client(_Client([peer])):
+        resp = _client().delete(f"/memories/people/{roster['principal']}/conclusions/{last}")
+    assert resp.status_code == 503 and not any("delete" in c for c in peer.calls)
