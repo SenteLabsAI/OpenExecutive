@@ -9,6 +9,34 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.6.9](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.8...v0.6.9) (2026-11-03)
+
+
+### Added
+
+* **chat:** show a long turn's plan up front ([#680](https://github.com/SenteLabsAI/OpenExecutive/issues/680)) ([a1f81d2](https://github.com/SenteLabsAI/OpenExecutive/commit/a1f81d233b40ab1f6ce51cc769de25e942b1af20))
+* **chat:** show a long turn's steps with Stop and I'll finish it ([#677](https://github.com/SenteLabsAI/OpenExecutive/issues/677)) ([5168b28](https://github.com/SenteLabsAI/OpenExecutive/commit/5168b28bbfc46ebc25e295b2a7a8ab58987ed808))
+* **chat:** show what a long turn is doing and has found, not a step list ([#688](https://github.com/SenteLabsAI/OpenExecutive/issues/688)) ([aa62c5e](https://github.com/SenteLabsAI/OpenExecutive/commit/aa62c5e15ba58d06eee557531a42bb6ce5f44d03))
+* **delegation:** send tables in Act as me drafts as real HTML tables ([#670](https://github.com/SenteLabsAI/OpenExecutive/issues/670)) ([dad574e](https://github.com/SenteLabsAI/OpenExecutive/commit/dad574e6782f57b333ee82411ed80212b20752b5))
+* **integrations:** ask on a card before saving into a Drive folder shared outside the team ([#672](https://github.com/SenteLabsAI/OpenExecutive/issues/672)) ([c047872](https://github.com/SenteLabsAI/OpenExecutive/commit/c0478724189edeed66f59b19e3834bc087167dcf))
+* **people:** add search, sort and a Changes tab to the People page ([#674](https://github.com/SenteLabsAI/OpenExecutive/issues/674)) ([48ab97d](https://github.com/SenteLabsAI/OpenExecutive/commit/48ab97daf1c91dd554eaa830a6dbf285aec30e75))
+
+
+### Fixed
+
+* **briefing:** keep Right now points stable and lead with the next step ([#687](https://github.com/SenteLabsAI/OpenExecutive/issues/687)) ([f246fb3](https://github.com/SenteLabsAI/OpenExecutive/commit/f246fb3ba42342281aba0694efb97aa672bf8c2e))
+* **chat:** drop chips for failed tools and false flags on calendar notices ([#676](https://github.com/SenteLabsAI/OpenExecutive/issues/676)) ([f719147](https://github.com/SenteLabsAI/OpenExecutive/commit/f71914763198dbcb4bf98501b5aad386bc4f41db))
+* **chat:** show a content flag only as the reason for a held step ([#682](https://github.com/SenteLabsAI/OpenExecutive/issues/682)) ([f50cca4](https://github.com/SenteLabsAI/OpenExecutive/commit/f50cca4b760c9d7857de2f376899913f0f47b4e3))
+* **chat:** stop flagging the past-chat search's own words as email instructions ([#671](https://github.com/SenteLabsAI/OpenExecutive/issues/671)) ([1530e0c](https://github.com/SenteLabsAI/OpenExecutive/commit/1530e0cf40faa01507a31ba2a337f298fce76e40))
+* **files:** save into company folders shared with partners without a file word ([#686](https://github.com/SenteLabsAI/OpenExecutive/issues/686)) ([ec4d27a](https://github.com/SenteLabsAI/OpenExecutive/commit/ec4d27a0d0b78072132cf327ad364710012e0edf))
+* **integrations:** let Excel and CSV files save to Drive as files ([#690](https://github.com/SenteLabsAI/OpenExecutive/issues/690)) ([ac62dc2](https://github.com/SenteLabsAI/OpenExecutive/commit/ac62dc2d41eedb47ab896db05ecc0a3d88e44e99))
+* **knowledge:** drop stale chunks on re-upload and read Word tables ([#678](https://github.com/SenteLabsAI/OpenExecutive/issues/678)) ([8a9d96f](https://github.com/SenteLabsAI/OpenExecutive/commit/8a9d96ff019f29f061c92f7bb8651700eb94183f))
+* **orchestrator:** answer from what the turn has when it runs out of steps ([#689](https://github.com/SenteLabsAI/OpenExecutive/issues/689)) ([36acbe5](https://github.com/SenteLabsAI/OpenExecutive/commit/36acbe5698ba3959aa223bb227443b55513a64db))
+* **people:** check People first when asked how to reach someone ([#673](https://github.com/SenteLabsAI/OpenExecutive/issues/673)) ([02b865b](https://github.com/SenteLabsAI/OpenExecutive/commit/02b865bf2a61539773ad54bcb06041c5b1be26d0))
+* **people:** read contact signatures before the sent-mail pass ([#666](https://github.com/SenteLabsAI/OpenExecutive/issues/666)) ([337e021](https://github.com/SenteLabsAI/OpenExecutive/commit/337e02188d5e5751fe7e894f1ba887d4b0da8b0e))
+* **ui:** move each sent message to the top of the chat ([#679](https://github.com/SenteLabsAI/OpenExecutive/issues/679)) ([dfbf00f](https://github.com/SenteLabsAI/OpenExecutive/commit/dfbf00f2499f2d397dd60f9a12afabcb310c2c51))
+* **ui:** stop Home saying nothing needs you twice ([#681](https://github.com/SenteLabsAI/OpenExecutive/issues/681)) ([02fc26c](https://github.com/SenteLabsAI/OpenExecutive/commit/02fc26c570ddae9a365de50fd542540023e61204))
+
 ## [0.6.8](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.7...v0.6.8) (2026-10-30)
 
 
