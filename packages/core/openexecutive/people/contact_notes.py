@@ -209,7 +209,7 @@ def put_owner_note(person_id: int, note: str, db_path: Path | None = None) -> No
         conn.execute(
             "INSERT INTO contact_notes (person_id, note, note_written_at, note_by_owner, updated_at) "
             "VALUES (?, ?, ?, 1, ?) ON CONFLICT(person_id) DO UPDATE SET note = excluded.note, "
-            "note_written_at = excluded.note_written_at, note_by_owner = 1, "
+            "note_written_at = excluded.note_written_at, note_by_owner = 1, topics = '[]', "
             "updated_at = excluded.updated_at",
             (person_id, note, now, now),
         )

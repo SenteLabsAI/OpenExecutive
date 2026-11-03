@@ -1183,6 +1183,8 @@ def test_the_principal_edits_or_removes_a_note_and_the_keeper_keeps_their_words(
     assert client.put(url, json={"note": "see https://x.example"}, headers=mine).status_code == 422
     body = client.put(url, json={"note": "Priya handles the roof bids for Cedar Court."}, headers=mine).json()
     assert body["note"] == "Priya handles the roof bids for Cedar Court." and body["edited_by_you"] is True
+    # The keeper's topics described its own note, so they go with it.
+    assert contact_notes.get(person.id).topics == []
     # New mail: the keeper leaves the principal's wording as it is.
     box.sent.append(_wrote(PRIYA, "The roof bid is in.", days_ago=0))
     asked = len(written)

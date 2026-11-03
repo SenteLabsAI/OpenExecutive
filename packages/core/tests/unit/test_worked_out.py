@@ -294,3 +294,14 @@ def test_each_person_edits_only_their_own(client: TestClient, ids: dict[str, int
     bad = client.patch(f"/memories/worked-out/{mine}", json={"source": "https://x.example"}, headers=OWNER)
     assert bad.status_code == 422
     assert wo.list_figures(ids["principal"])[0]["figure"] == "$331,000"
+
+
+def test_an_edit_onto_another_figures_subject_replaces_that_figure() -> None:
+    older = _keep(1, "Reserves held", "$300,000")
+    other = _keep(1, "Cash on hand", "$12,000")
+    _keep(2, "Reserves held", "$12")
+    wo.edit_figure(other, person_id=1, subject="reserves held", figure="$330,241")
+    figures = wo.list_figures(1)
+    assert [(f["id"], f["figure"]) for f in figures] == [(other, "$330,241")]
+    assert older not in [f["id"] for f in figures]
+    assert [f["figure"] for f in wo.list_figures(2)] == ["$12"]

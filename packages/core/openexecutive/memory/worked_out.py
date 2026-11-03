@@ -264,6 +264,10 @@ def edit_figure(figure_id: int, *, person_id: int, subject: str | None = None, f
             raise ValueError("Keep the subject, figure and source short, and fill in each.")
         if any(_denied(t) for t in new.values()):
             raise ValueError("Write it in plain words, without links, addresses or markup.")
+        # Their wording now names this subject: an older figure kept under
+        # the same subject would contradict it, so it goes.
+        conn.execute(f"DELETE FROM {TABLE} WHERE person_id = ? AND subject_key = ? AND id != ?",  # noqa: S608
+                     (int(person_id), _key(new["subject"]), int(figure_id)))
         conn.execute(
             f"UPDATE {TABLE} SET subject = ?, subject_key = ?, figure = ?, source = ? "  # noqa: S608
             "WHERE id = ? AND person_id = ?",
