@@ -320,7 +320,7 @@ def test_quiet_defaults_add_keywords_and_medium_floor() -> None:
     cadence_pw, _, _ = wp.quiet_defaults(
         _proposal(signal_type="page_watch", target="https://acme.com/pricing"), [],
     )
-    assert cadence_pw == "weekly"
+    assert cadence_pw == "daily"
 
 
 # --------------------------------------------------------------------- #

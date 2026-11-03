@@ -65,6 +65,7 @@ from openexecutive.monitoring.models import (
 from openexecutive.monitoring.research.models import ResearchFinding
 from openexecutive.monitoring.sources._http import validate_target_url
 from openexecutive.monitoring.sources.base import collapse_whitespace
+from openexecutive.monitoring.target_validation import page_watch_target_problem
 from openexecutive.monitoring.validation import normalize_target, registrable_domain
 
 logger = logging.getLogger(__name__)
@@ -166,7 +167,9 @@ _QUIET_DEFAULTS: dict[str, tuple[str, AlertSeverity]] = {
     SOURCE_KIND_EDGAR: ("daily", AlertSeverity.MEDIUM),
     SOURCE_KIND_RSS: ("daily", AlertSeverity.MEDIUM),
     SOURCE_KIND_VENDOR_STATUS: ("hourly", AlertSeverity.MEDIUM),
-    SOURCE_KIND_PAGE_WATCH: ("weekly", AlertSeverity.MEDIUM),
+    # Daily, not weekly: a news page changes most days, and the digest keeps
+    # it to one alert a day whatever the poll rate.
+    SOURCE_KIND_PAGE_WATCH: ("daily", AlertSeverity.MEDIUM),
     SOURCE_KIND_QUERY: ("weekly", AlertSeverity.MEDIUM),
 }
 _STOCK_DEFAULT_PCT = 5
@@ -1410,6 +1413,13 @@ def _auto_disable_reason(item: WatchlistItem) -> str:
         return f"dismissed {item.dismiss_count} of {item.fired_count} alerts (trust {item.trust_score:.2f})"
     if _consecutive_poll_failures(item.slug) >= _POLL_FAILURES_TO_DISABLE:
         return f"{_POLL_FAILURES_TO_DISABLE} consecutive poll failures"
+    if item.signal_type == SOURCE_KIND_PAGE_WATCH:
+        # A watch added before research was held to index pages: one
+        # article, a document or a sign-in wall polls forever and never
+        # changes, so it is retired like a dead source.
+        problem = page_watch_target_problem(item.target)
+        if problem:
+            return problem
     return ""
 
 

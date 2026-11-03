@@ -29,6 +29,7 @@ from openexecutive.monitoring.models import (
     ORIGIN_EXECUTIVE,
     ORIGIN_RESEARCH_PROPOSED,
     RESEARCH_ORIGINS,
+    SOURCE_KIND_PAGE_WATCH,
     is_valid_cadence,
     is_valid_mode,
 )
@@ -36,6 +37,7 @@ from openexecutive.monitoring.sources import list_registered_kinds
 from openexecutive.monitoring.sources._http import validate_target_url
 from openexecutive.monitoring.target_validation import (
     WatchlistTargetError,
+    page_watch_target_problem,
     validate_and_normalize_target,
 )
 from openexecutive.monitoring.validation import (
@@ -323,7 +325,11 @@ PROPOSE_WATCH_TOOL: dict[str, Any] = {
                 "description": (
                     "Concrete, real target: a ticker (stock/edgar), a feed or page URL "
                     "taken from a finding's urls (rss/vendor_status/page_watch), or a "
-                    "search query (query). Never invent a URL."
+                    "search query (query). Never invent a URL. For a news source, "
+                    "watch the page that lists new items (a news, insights or press "
+                    "page) or its RSS feed: never one article, a PDF or other "
+                    "document, or a social profile (those never change and are "
+                    "refused)."
                 ),
             },
             "grounding_entity": {
@@ -547,6 +553,16 @@ async def handle_propose_watch(tool_input: dict[str, Any], collector: list[Any])
     if isinstance(validated, str):
         return validated
     slug, signal_type, target, config, trigger = validated
+
+    if signal_type == SOURCE_KIND_PAGE_WATCH and (problem := page_watch_target_problem(target)):
+        # A research watch on a page that never changes polls forever and
+        # reports nothing. Say what to watch instead so the model can
+        # re-propose in the same turn.
+        return _err(
+            tool,
+            f"target {target!r} would never report anything: {problem}. Propose the "
+            "site's news, insights or press page, or its RSS feed, instead.",
+        )
 
     normalized = normalize_target(signal_type, target)
     if ms.is_declined(normalized):
