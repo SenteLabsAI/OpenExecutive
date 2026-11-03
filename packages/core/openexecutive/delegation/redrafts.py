@@ -29,6 +29,7 @@ or the send.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -40,6 +41,11 @@ logger = logging.getLogger(__name__)
 _MIN_SUBJECT = 8
 # How far back a named replacement looks for the draft it replaces.
 NAMED_DAYS = 30
+# The most drafts one named replacement deletes; more matches than this mean
+# the words were too loose to name one draft, so it deletes none.
+NAMED_MAX = 3
+_MIN_NAME_WORD = 3
+_WORD = re.compile(r"[\w'-]+")
 
 
 def same_topic(a: str, b: str) -> bool:
@@ -207,14 +213,17 @@ async def clear_after_send(
 
 
 def _names_draft(words: str, message: Any) -> bool:
-    """Whether every word of ``words`` is in the draft's subject or one of
-    its recipients (case aside)."""
-    hay = " ".join([
+    """Whether every word of ``words`` is a whole word of the draft's subject
+    or one of its recipients (case aside). At least one word must be
+    ``_MIN_NAME_WORD`` characters long, so "a" or "re" alone names nothing."""
+    hay = set(_WORD.findall(" ".join([
         str(getattr(message, "subject", "") or ""),
         *sorted(_people(message, "to", "cc")),
-    ]).lower()
-    terms = [w for w in words.lower().split() if w]
-    return bool(terms) and all(t in hay for t in terms)
+    ]).lower()))
+    terms = _WORD.findall(words.lower())
+    if not terms or max(len(t) for t in terms) < _MIN_NAME_WORD:
+        return False
+    return all(t in hay for t in terms)
 
 
 async def replace_named(
@@ -228,9 +237,10 @@ async def replace_named(
     """After the chat draft ``row_id`` was saved in place of an earlier one
     the person asked to replace: delete ``person_id``'s open chat drafts from
     the last ``NAMED_DAYS`` days, in any conversation, that ``words`` name
-    (every word in the subject or a recipient). A draft they edited in their
-    mailbox stays. Returns each match's outcome (``deleted``,
-    ``already_gone``, ``kept_edited``)."""
+    (every word a whole word of the subject or a recipient). A draft they
+    edited in their mailbox stays, and when more than ``NAMED_MAX`` drafts
+    match, the words named no one draft and none is deleted. Returns each
+    match's outcome (``deleted``, ``already_gone``, ``kept_edited``)."""
     now = now or datetime.now(UTC)
     if not words.strip():
         return []
@@ -239,11 +249,16 @@ async def replace_named(
     except Exception:
         logger.warning("redrafts: couldn't read the open drafts", exc_info=True)
         return []
-    outcomes: list[str] = []
+    named: list[tuple[drafts.DraftRow, Any]] = []
     for row in rows:
         readable, found = await _read(client, row)
-        if not readable or found is None or not _names_draft(words, found.message):
-            continue
+        if readable and found is not None and _names_draft(words, found.message):
+            named.append((row, found))
+    if len(named) > NAMED_MAX:
+        logger.info("redrafts: %d drafts matched the named words; deleting none", len(named))
+        return []
+    outcomes: list[str] = []
+    for row, found in named:
         try:
             outcomes.append(await _retire(client, row, found, now))
         except Exception:

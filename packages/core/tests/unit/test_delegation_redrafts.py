@@ -255,3 +255,18 @@ def test_a_named_replacement_matches_a_recipient_and_skips_old_drafts() -> None:
     assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="dana", now=NOW)) == ["deleted"]
     assert mailbox.deleted == ["d2"]
     assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="  ", now=NOW)) == []
+
+
+def test_loose_words_name_no_draft() -> None:
+    owner = _owner()
+    mailbox = Mailbox()
+    for n, subject in enumerate(["A plan", "Pilot dates", "Pine View LOIs", "Budget for Q4", "Board pack"]):
+        mailbox.add(f"d{n}", [DANA], subject=subject)
+        _record(owner, f"d{n}", "s1")
+    new_row = _record(owner, "d9", "s2")
+    # Short words name nothing, and a part of a word is not the word.
+    for words in ("a", "re", "a re", "pin", "dat"):
+        assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words=words, now=NOW)) == []
+    # Words that match more drafts than one replacement may delete delete none.
+    assert asyncio.run(redrafts.replace_named(owner, mailbox, row_id=new_row, words="northpeak", now=NOW)) == []
+    assert mailbox.deleted == []

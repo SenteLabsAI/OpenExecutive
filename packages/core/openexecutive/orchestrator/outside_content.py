@@ -1116,7 +1116,7 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
                     state, MAIL, tuple(verdict.categories), _mail_label(entries[n]),
                     getattr(verdict, "evidence", ""),
                 )
-            if state.mode == outside_mode.ASK and not go_turn(state):
+            if state.mode == outside_mode.ASK:
                 pinned.mail_held = True
             return json.dumps({**parsed, key: trimmed}), LEFT_OUT_NOTICE.format(count=len(flagged))
     if verdict.flagged:
