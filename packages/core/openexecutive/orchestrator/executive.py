@@ -1542,7 +1542,7 @@ class Executive:
             )
             if standing_facts is None:
                 # A SQLite read: off the event loop, like the other context.
-                standing_facts = await asyncio.to_thread(render_facts_for_prompt)
+                standing_facts = await asyncio.to_thread(render_facts_for_prompt, query=user_message)
             messages = self._build_messages(
                 session,
                 user_message,
@@ -1935,7 +1935,7 @@ class Executive:
             build_worked_out_block, person_id, user_message, session=session
         )
         if standing_facts is None:
-            standing_facts = await asyncio.to_thread(render_facts_for_prompt)
+            standing_facts = await asyncio.to_thread(render_facts_for_prompt, query=user_message)
         messages = self._build_messages(
             session,
             user_message,
