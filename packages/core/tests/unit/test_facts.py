@@ -827,12 +827,14 @@ def test_with_a_question_the_facts_that_bear_on_it_come_first(monkeypatch: pytes
         facts.record_fact(subject=f"Office {n}", statement=f"Office {n} opens at nine.", source_quote="q")
     out = facts.render_facts_for_prompt(query="What reserves does Pine View II hold?")
     lines = out.splitlines()
-    assert "bear on the question first" in lines[0]
+    assert lines[0] == facts.FACTS_BLOCK_HEADER_RANKED
     assert "Pine View II" in lines[1]
     # Then only the newest two of the others.
     assert len(lines) == 4 and "Office 3" in lines[2] and "Office 2" in lines[3]
     # With nothing in common, the newest few still come.
     assert facts.render_facts_for_prompt(query="hello").count("[fact ") == 2
+    # A follow-up with no words to match ("ok, do it") keeps every fact.
+    assert facts.render_facts_for_prompt(query="ok, do it").count("[fact ") == 5
     # Without a question (briefs, reviews, runs): every fact, newest first.
     assert facts.render_facts_for_prompt().count("[fact ") == 5
 
