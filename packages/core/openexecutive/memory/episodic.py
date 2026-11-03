@@ -1059,20 +1059,22 @@ def update_decision(
     tags: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """Change a decision: ``outcome`` in place; a new ``summary`` (with any
-    ``rationale``) as an edit that replaces the fact, keeping it a decision
-    with its department and outcome. ``domain`` and ``tags`` are no longer
-    kept. False when it is no active decision."""
+    """Change a decision: ``outcome`` in place; a new ``summary`` or a
+    ``rationale`` (added after the summary, which already holds any earlier
+    reason) as an edit that replaces the fact, keeping it a decision with its
+    department and outcome. ``domain`` and ``tags`` are no longer kept. False
+    when it is no active decision."""
     from openexecutive.memory import facts
 
     current = get_decision(decision_id, db_path)
     if current is None:
         return False
-    if summary is not None and " ".join(summary.split()) and summary != current.summary:
-        statement = " ".join(f"{summary} {rationale or ''}".split())
+    base = summary if summary is not None and " ".join(summary.split()) else current.summary
+    statement = " ".join(f"{base} {rationale or ''}".split())
+    if statement != " ".join(current.summary.split()):
         old = facts.get_fact(decision_id, db_path=db_path)
         new, _ = facts.record_fact(
-            subject=old.subject if old is not None else summary[: facts.SUBJECT_MAX],
+            subject=old.subject if old is not None else statement[: facts.SUBJECT_MAX],
             statement=statement, source_quote="", kind="correction",
             previous_statement=current.summary, replaces_fact_id=decision_id,
             session_id=current.session_id or None, db_path=db_path,

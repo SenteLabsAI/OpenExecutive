@@ -146,3 +146,12 @@ def test_the_readers_see_decision_facts(db: Path) -> None:
     assert episodic.update_decision(old.id, outcome="Margin held.")
     assert episodic.decisions_awaiting_outcome(now - timedelta(days=30)) == []
     assert len(episodic.list_decisions()) == 2, "a plain fact is no decision"
+
+
+def test_a_reason_alone_is_kept_on_the_decision() -> None:
+    kept, _ = facts.record_fact(subject="Pricing", statement="Raise prices 5%.", source_quote="", decision=True)
+    assert episodic.update_decision(kept.id, rationale="Costs rose 8%.")
+    [now] = episodic.list_decisions()
+    assert now.summary == "Raise prices 5%. Costs rose 8%."
+    assert episodic.update_decision(now.id, domain="legal", tags="x")
+    assert [d.id for d in episodic.list_decisions()] == [now.id], "nothing else is kept, so nothing changes"
