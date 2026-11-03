@@ -95,6 +95,9 @@ EVENT_TYPES: tuple[str, ...] = (
     "delegation_chat_draft_sent",   # the person tapped Send under a draft chat wrote as them, and it went as written
     "delegation_reminder_set",      # remind_me stored a reminder for the person who asked (no text in the row)
     "delegation_reminder_sent",     # a reminder went to the person who set it, as its stored text
+    "delegation_mail_watch_set",    # watch_for_email set a watch on the person's own mailbox (no address in the row)
+    "delegation_mail_watch_found",  # the awaited email landed and the person was told (sender name + subject only)
+    "delegation_mail_watch_expired",  # nothing came before the watch ran out; the person was told
     "delegation_actions_proposed",  # propose_actions left a person a card of actions to approve (kinds only)
     "delegation_actions_approved",  # the person approved an action card; details.outcomes says what each did
     "delegation_actions_dismissed", # the person dismissed an action card

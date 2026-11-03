@@ -39,6 +39,7 @@ from openexecutive.monitoring.models import (
     ORIGIN_MANUAL,
     ORIGIN_RESEARCH,
     ORIGIN_RESEARCH_PROPOSED,
+    OUTCOME_HELD_DIGEST,
     OUTCOME_SUPPRESSED_BASELINE,
     Signal,
     WatchlistDecline,
@@ -198,6 +199,11 @@ def initialize_db(db_path: Path | None = None) -> None:
         # research_proposed). Pre-existing rows are 'manual': nothing the
         # research policy owns predates the column.
         _ensure_column(conn, "watchlist", "origin", "TEXT NOT NULL DEFAULT 'manual'")
+        # The headline links a page_watch page carried at its last poll
+        # (JSON list of {"text", "url"}), so a change can be reported as the
+        # new headlines it added. '[]' on rows from before the column: the
+        # next poll records the links without reporting any as new.
+        _ensure_column(conn, "page_watch_state", "links_json", "TEXT NOT NULL DEFAULT '[]'")
 
 
 def _migrate_baselined_at(conn: sqlite3.Connection) -> None:
@@ -989,6 +995,18 @@ def mark_signal_processed(
         )
 
 
+def set_signal_severity(
+    signal_id: int, severity: str, *, db_path: Path | None = None,
+) -> None:
+    """Overwrite a signal's recorded severity (after relevance grading)."""
+    AlertSeverity(severity)  # reject a value the column must never hold
+    with _get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE external_signals SET severity_hint = ? WHERE id = ?",
+            (severity, signal_id),
+        )
+
+
 def get_page_watch_state(
     slug: str, db_path: Path | None = None
 ) -> dict[str, Any] | None:
@@ -998,11 +1016,19 @@ def get_page_watch_state(
         return None
     with _get_conn(db_path) as conn:
         row = conn.execute(
-            "SELECT slug, content_hash, text_snapshot, updated_at "
+            "SELECT slug, content_hash, text_snapshot, links_json, updated_at "
             "FROM page_watch_state WHERE slug = ?",
             (slug,),
         ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    state = dict(row)
+    try:
+        links = json.loads(state.pop("links_json", None) or "[]")
+    except ValueError:
+        links = []
+    state["links"] = links if isinstance(links, list) else []
+    return state
 
 
 def upsert_page_watch_state(
@@ -1010,18 +1036,24 @@ def upsert_page_watch_state(
     content_hash: str,
     text_snapshot: str,
     *,
+    links: list[dict[str, str]] | None = None,
     db_path: Path | None = None,
 ) -> None:
     """Insert or replace the page_watch baseline for a slug."""
     with _get_conn(db_path) as conn:
         conn.execute(
-            "INSERT INTO page_watch_state (slug, content_hash, text_snapshot, updated_at) "
-            "VALUES (?, ?, ?, ?) "
+            "INSERT INTO page_watch_state "
+            "(slug, content_hash, text_snapshot, links_json, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(slug) DO UPDATE SET "
             "content_hash = excluded.content_hash, "
             "text_snapshot = excluded.text_snapshot, "
+            "links_json = excluded.links_json, "
             "updated_at = excluded.updated_at",
-            (slug, content_hash, text_snapshot, datetime.now(UTC).isoformat()),
+            (
+                slug, content_hash, text_snapshot, json.dumps(links or []),
+                datetime.now(UTC).isoformat(),
+            ),
         )
 
 
@@ -1101,6 +1133,39 @@ def list_signals_for_watchlist(
     return [_row_to_signal_dict(row) for row in rows]
 
 
+
+
+def list_held_signals(
+    watchlist_id: int, db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Signals of one watch held for its daily digest, oldest first."""
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM external_signals "
+            "WHERE watchlist_id = ? AND processed_outcome = ? "
+            "ORDER BY captured_at ASC, id ASC",
+            (watchlist_id, OUTCOME_HELD_DIGEST),
+        ).fetchall()
+    return [_row_to_signal_dict(row) for row in rows]
+
+
+def watchlist_ids_with_held_signals(db_path: Path | None = None) -> list[int]:
+    """Watches that have at least one signal waiting for their digest."""
+    resolved = _resolve_db_path(db_path)
+    if not resolved.exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT watchlist_id FROM external_signals "
+            "WHERE processed_outcome = ?",
+            (OUTCOME_HELD_DIGEST,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 # Re-export for callers that prefer ``store.DB_PATH`` over importing from
 # memory.episodic — keeps the public surface symmetric with alerts.store.
 __all__ = [
@@ -1113,6 +1178,7 @@ __all__ = [
     "initialize_db",
     "insert_signal",
     "insert_watchlist_item",
+    "list_held_signals",
     "list_recent_signals",
     "list_signals_for_watchlist",
     "list_watchlist",
@@ -1123,8 +1189,10 @@ __all__ = [
     "recent_alert_statuses",
     "remove_watchlist_config_key",
     "set_enabled",
+    "set_signal_severity",
     "set_watchlist_config_key",
     "update_signal_enrichment",
     "update_watchlist_fields",
     "upsert_page_watch_state",
+    "watchlist_ids_with_held_signals",
 ]

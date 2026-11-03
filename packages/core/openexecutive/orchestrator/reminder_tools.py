@@ -116,5 +116,96 @@ async def handle_remind_me(tool_input: dict[str, Any]) -> str:
     })
 
 
-REMINDER_TOOLS: list[dict[str, Any]] = [REMIND_ME_TOOL]
-REMINDER_TOOL_HANDLERS: dict[str, Any] = {REMIND_ME: handle_remind_me}
+WATCH_FOR_EMAIL = "watch_for_email"
+
+WATCH_FOR_EMAIL_TOOL: dict[str, Any] = {
+    "name": WATCH_FOR_EMAIL,
+    "description": (
+        "Watch the person's own mailbox for an email they are waiting on, and tell "
+        "them on their own channel the moment it lands (sender name and subject, "
+        "never the email's text). Use it for \"let me know when Dana's email comes "
+        "in\" instead of a reminder or a scheduled check. `from` is the sender's "
+        "email address: look it up first (their contacts or past mail) if you only "
+        "have a name. `about` is an optional word the subject must contain. It "
+        "stops after the first match or after `days` (default 7), and tells them "
+        "if nothing came."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "from": {"type": "string", "description": "The sender's email address."},
+            "about": {"type": "string", "description": "Optional word the subject must contain."},
+            "days": {"type": "integer", "description": "How many days to watch, 1-30 (default 7)."},
+        },
+        "required": ["from"],
+    },
+}
+
+
+async def handle_watch_for_email(tool_input: dict[str, Any]) -> str:
+    from openexecutive.audit import log_event
+    from openexecutive.delegation import mail_watch
+    from openexecutive.delegation.gmail import (
+        _EMAIL_RE,
+        STATUS_MESSAGES,
+        gmail_status,
+        normalize_email,
+    )
+    from openexecutive.orchestrator.delegation_tools import NOT_CONNECTED_NOTE, _writer
+    from openexecutive.scheduler.runner import delivery_order, email_ready
+
+    writer = _writer(WATCH_FOR_EMAIL)
+    if isinstance(writer, str):
+        return writer
+    sender = normalize_email(str(tool_input.get("from") or ""))
+    if not _EMAIL_RE.fullmatch(sender):
+        return _error("Pass `from` as the sender's email address. Look it up first if you only have a name.")
+    if sender == writer.email:
+        return _error("That is their own address. Ask who they are waiting on.")
+    try:
+        days = int(tool_input.get("days") or mail_watch.DEFAULT_DAYS)
+    except (TypeError, ValueError):
+        days = mail_watch.DEFAULT_DAYS
+    days = max(1, min(days, mail_watch.MAX_DAYS))
+    about = mail_watch.clean_about(str(tool_input.get("about") or ""))
+    if not delivery_order(writer.person, email_ready=email_ready()):
+        return _error("I have no way to reach them on their own (no DM or email set up), so I can't tell them when it lands.")
+    # Only whether the mailbox can be read: nothing in it is opened on this
+    # turn, so setting a watch never counts as having read their mail.
+    status = await gmail_status(writer.email, gmail=writer.mailbox)
+    if status != "connected":
+        return json.dumps({"error": STATUS_MESSAGES[status], "status": status, "note": NOT_CONNECTED_NOTE})
+    try:
+        if mail_watch.pending_count(writer.person.id) >= mail_watch.MAX_PENDING:
+            return _error(f"They already have {mail_watch.MAX_PENDING} email watches open. Let some finish first.")
+        now = datetime.now(UTC)
+        watch_id = mail_watch.add(
+            writer.person.id, sender, about, now + timedelta(days=days), now=now,
+        )
+    except Exception:
+        logger.warning("watch_for_email: couldn't store the watch", exc_info=True)
+        return _error("Couldn't set the watch just now. Try again in a moment.")
+    log_event(
+        "delegation_mail_watch_set", f"Set an email watch for person {writer.person.id}",
+        actor="executive",
+        details={"person_id": writer.person.id, "watch_id": watch_id, "days": days},
+        private=True, private_to_person=writer.person.id,
+    )
+    return json.dumps({
+        "status": "watching",
+        "from": sender,
+        "about": about,
+        "days": days,
+        "note": (
+            f"Their mailbox is checked every {int(mail_watch.CHECK_EVERY.total_seconds() // 60)} "
+            "minutes; they get one message on their own channel when it lands, or after "
+            f"{days} days if it doesn't."
+        ),
+    })
+
+
+REMINDER_TOOLS: list[dict[str, Any]] = [REMIND_ME_TOOL, WATCH_FOR_EMAIL_TOOL]
+REMINDER_TOOL_HANDLERS: dict[str, Any] = {
+    REMIND_ME: handle_remind_me,
+    WATCH_FOR_EMAIL: handle_watch_for_email,
+}

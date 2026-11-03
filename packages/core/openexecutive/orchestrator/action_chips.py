@@ -86,6 +86,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     "save_my_email_attachment",
     # Act as me: a reminder to the speaker alone
     "remind_me",
+    # Act as me: a watch on the speaker's own mailbox for an awaited email
+    "watch_for_email",
     # Act as me: a card of actions left for the speaker to approve
     "propose_actions",
     # Meetings: booked, or proposed on an approval card
@@ -325,6 +327,15 @@ def summarize_action(
         text = str((parsed or {}).get("text") or "")[:120]
         summary = f"Reminder set for {when}" if when else "Reminder set"
         payload["summary"] = f"{summary}: {text}" if text else summary
+        payload["target"] = None
+    elif tool_name == "watch_for_email":
+        # Only a stored watch earns a chip; the address stays out of it.
+        if (parsed or {}).get("status") != "watching":
+            return None
+        days = (parsed or {}).get("days")
+        payload["summary"] = (
+            f"Watching your inbox for that email for {days} days" if days else "Watching your inbox for that email"
+        )
         payload["target"] = None
     elif tool_name == "propose_actions":
         # A card carried out on its own (allowed in training) says what it did.
