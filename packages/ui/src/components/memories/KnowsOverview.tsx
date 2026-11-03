@@ -24,6 +24,7 @@ import { Skeleton, formatDate } from "./shared";
 // own figures, with where they came from). Learning sits under them.
 
 const PREVIEW_ROWS = 3;
+const COULD_NOT_LOAD = "Couldn't load this list. Try again in a moment.";
 
 function Group({
   title,
@@ -105,6 +106,8 @@ export default function KnowsOverview({ pulse }: { pulse: PulseData }) {
   const [figures, setFigures] = useState<WorkedOutFigure[] | null | undefined>(undefined);
   const [notes, setNotes] = useState<number | null | undefined>(undefined);
   const [misses, setMisses] = useState<number | null | undefined>(undefined);
+  // A list that couldn't be read says so, rather than looking empty.
+  const [failed, setFailed] = useState<{ facts?: boolean; figures?: boolean }>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -116,14 +119,18 @@ export default function KnowsOverview({ pulse }: { pulse: PulseData }) {
         setFacts({ rows: [...proposed, ...active], toApprove: proposed.length });
       })
       .catch(() => {
-        if (!cancelled) setFacts({ rows: [], toApprove: 0 });
+        if (cancelled) return;
+        setFailed((f) => ({ ...f, facts: true }));
+        setFacts({ rows: [], toApprove: 0 });
       });
     listWorkedOut()
       .then((rows) => {
         if (!cancelled) setFigures(rows);
       })
       .catch(() => {
-        if (!cancelled) setFigures([]);
+        if (cancelled) return;
+        setFailed((f) => ({ ...f, figures: true }));
+        setFigures([]);
       });
     getHistory()
       .then((state) => {
@@ -177,7 +184,10 @@ export default function KnowsOverview({ pulse }: { pulse: PulseData }) {
           count={facts ? facts.rows.length : null}
           flag={facts && facts.toApprove > 0 ? `${facts.toApprove} to approve` : undefined}
         >
-          <Rows loading={facts === null} empty="Nothing yet. Tell it a fact or a correction in chat and it keeps it.">
+          <Rows
+            loading={facts === null}
+            empty={failed.facts ? COULD_NOT_LOAD : "Nothing yet. Tell it a fact or a correction in chat and it keeps it."}
+          >
             {(facts?.rows ?? []).slice(0, PREVIEW_ROWS).map((f) => (
               <Row key={f.id} title={f.statement} detail={factDetail(f)} />
             ))}
@@ -191,7 +201,10 @@ export default function KnowsOverview({ pulse }: { pulse: PulseData }) {
             href="/memories?tab=worked_out"
             count={figures === undefined ? null : figures.length}
           >
-            <Rows loading={figures === undefined} empty="Nothing yet. Figures it works out from your documents show up here.">
+            <Rows
+              loading={figures === undefined}
+              empty={failed.figures ? COULD_NOT_LOAD : "Nothing yet. Figures it works out from your documents show up here."}
+            >
               {(figures ?? []).slice(0, PREVIEW_ROWS).map((f) => (
                 <Row key={f.id} title={`${f.subject}: ${f.figure}`} detail={figureSourceLine(f)} />
               ))}
