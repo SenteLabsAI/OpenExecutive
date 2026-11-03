@@ -735,3 +735,15 @@ def test_misses_are_listed_per_person_and_forgotten_by_their_owner(db: Path, ros
     assert not cr.forget_miss(miss["id"] + 50, caller_person_id=roster.principal.id, db_path=db)
     assert cr.forget_miss(miss["id"], caller_person_id=roster.principal.id, db_path=db)
     assert cr.list_misses(person_id=None, db_path=db) == []
+
+
+def test_a_short_quote_backs_a_fix_when_it_names_the_thing() -> None:
+    """Two of their words are enough, and one word in common (by stem) ties
+    the change to them; a change about something else is still refused."""
+    ok = {"source_quote": "drop invoices", "item": "the overdue invoice reminder"}
+    assert cr._target_refusal("leave_out_of_brief", ok, "drop invoices") is None
+    one_word = {"source_quote": "invoices", "item": "the overdue invoice reminder"}
+    assert "at least" in (cr._target_refusal("leave_out_of_brief", one_word, "invoices") or "")
+    elsewhere = {"source_quote": "drop invoices", "item": "the hiring plan"}
+    assert cr._target_refusal("leave_out_of_brief", elsewhere, "drop invoices") == (
+        "what this changes isn't named in their own words")

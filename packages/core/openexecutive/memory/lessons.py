@@ -31,11 +31,12 @@ principal the ones from chats they may open.
 **What it may say.** Anything the person's own words back: beyond the
 words the quote carries it may add at most ``MAX_NEW_WORDS`` content words,
 enough to rephrase "summarized it instead of just letting me know he sent
-it" as a lesson about summarizing a message. There is no word list: a
-lesson may talk about mail, sending or sharing, because it authorizes
-nothing. Every send, share or post still goes through the safety levels
-and approval cards like any other action, whatever a lesson says. Length
-is the only other check.
+it" as a lesson about summarizing a message. It may talk about mail,
+sending, people or amounts, because it authorizes nothing: every send,
+share or post still goes through the safety levels and approval cards,
+whatever a lesson says. It may not carry a link, a handle, markup, an
+identifier or talk about the model's instructions (``_LESSON_DENY``),
+which is how text steers a later prompt.
 
 **Retirement.** Each lesson counts how often it reached a turn (``shown``)
 and how those turns were then graded (``fine_after``, ``miss_after``), its
@@ -77,6 +78,23 @@ RETIRE_AFTER_SHOWN = 5
 # Two shared content words: one common word ("report") matches too much.
 # The name a lesson defines is enough (``_defined_names``).
 _MATCH_WORDS = 2
+
+# What a lesson may not carry: something that points somewhere (a link or a
+# handle), markup or an identifier (a tool name), or talk to the model about
+# its instructions. These are how text tries to steer a later prompt; none
+# of them is needed to say what someone wants done differently. Words about
+# mail, sending, people or amounts are fine: a lesson authorizes nothing.
+_LESSON_DENY: tuple[re.Pattern[str], ...] = (
+    re.compile(r"https?://|www\.|\.(com|io|net|org|ai)\b", re.IGNORECASE),
+    re.compile(r"@\w"),
+    re.compile(r"[<>{}`\[\]]"),
+    re.compile(r"\b\w+_\w+\b"),
+    re.compile(
+        r"\b(ignore|disregard|override|bypass|instruction|instructions|"
+        r"prompt|prompts|jailbreak|system message)\b",
+        re.IGNORECASE,
+    ),
+)
 
 REASON_UNHELPFUL = "unhelpful"
 REASON_FORGOTTEN = "forgotten"
@@ -131,15 +149,17 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
 
 
 def lesson_rejection(text: str, *, roster_names: list[str] | None = None) -> str | None:
-    """Why ``text`` may not be a lesson, or None when it may: too short or
-    too long. No word list (see "What it may say"): a lesson can't act, so
-    what it mentions needs no gate. ``roster_names`` is accepted for older
-    callers and unused."""
+    """Why ``text`` may not be a lesson, or None when it may: its length, or
+    something in ``_LESSON_DENY``. ``roster_names`` is accepted for older
+    callers and unused: a lesson stays with its own person, so naming
+    someone is fine."""
     del roster_names
     if len(text) < MIN_CHARS:
         return "too_short"
     if len(text) > MAX_CHARS:
         return "too_long"
+    if any(pattern.search(text) for pattern in _LESSON_DENY):
+        return "denied_content"
     return None
 
 
@@ -147,8 +167,10 @@ def _stem(word: str) -> str:
     """A rough stem, so "summarized" and "summarize" count as one word."""
     for suffix in ("izing", "ized", "izes", "ize", "ing", "ied", "ies", "ed", "es", "ly", "s"):
         if word.endswith(suffix) and len(word) - len(suffix) >= 4:
-            return word[: -len(suffix)]
-    return word
+            word = word[: -len(suffix)]
+            break
+    # "invoice" and "invoices" both end as "invoic".
+    return word[:-1] if word.endswith("e") and len(word) > 4 else word
 
 
 def _stems(text: str) -> set[str]:
@@ -490,7 +512,8 @@ def _lines(lessons: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any
     kept: list[dict[str, Any]] = []
     for lesson in lessons:
         clean = _normalize(lesson["text"])
-        # Re-checked on every render (length only now).
+        # Re-checked on every render: a lesson kept under an older check
+        # never reaches a turn if it fails this one.
         if lesson_rejection(clean) is None:
             line = scrub_block_line(clean, _BLOCK_CLOSE)
             if line:
