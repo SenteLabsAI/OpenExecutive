@@ -29,7 +29,7 @@ test("the main menu is seven places, team is the default", () => {
     "Company → /people",
     "Delegate → /delegate/act-as-me",
     "Knowledge → /knowledge",
-    "Pulse → /memories",
+    "Memory → /memories",
   ]);
   assert.deepEqual(buildDestinations({ mode: "team" }), buildDestinations());
 });

@@ -1539,21 +1539,6 @@ export async function listDecisions(): Promise<Decision[]> {
   return res.json();
 }
 
-export async function updateDecision(id: number, patch: Partial<Omit<Decision, "id" | "timestamp">>): Promise<Decision> {
-  const res = await fetch(`${API_BASE}/memories/decisions/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) throw new Error("Failed to update decision");
-  return res.json();
-}
-
-export async function deleteDecision(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/memories/decisions/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to delete decision");
-}
-
 /** A standing fact or correction the principal or a teammate asked the
  * Executive to keep (`memory/facts.py`). Every prompt that produces output
  * reads the active ones — a teammate's attributed "(per <name>)"; `proposed`
@@ -1582,6 +1567,10 @@ export interface StandingFact {
   recorded_by_name: string;
   /** A proposal: the active fact it replaces once approved. */
   replaces_fact_id: number | null;
+  /** A decision that was made, with its department and, once known, outcome. */
+  decision?: boolean;
+  department?: string;
+  outcome?: string;
 }
 
 export interface StandingFactsPage {
@@ -6760,4 +6749,50 @@ export async function rollbackSavedTool(name: string, version: number): Promise<
   });
   if (!res.ok) throw await savedToolError(res, "Couldn't switch the version.");
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// What it worked out: the signed-in person's own figures (GET/PATCH/DELETE
+// /memories/worked-out). Each person sees only theirs.
+// ---------------------------------------------------------------------------
+
+export interface WorkedOutFigure {
+  id: number;
+  subject: string;
+  figure: string;
+  source: string;
+  as_of: string | null;
+  private: boolean;
+  created_at: string;
+}
+
+/** The caller's figures, newest first; null for someone with none to keep
+ *  (not signed in, or not on the People list). */
+export async function listWorkedOut(): Promise<WorkedOutFigure[] | null> {
+  const res = await fetch(`${API_BASE}/memories/worked-out`);
+  if (res.status === 403 || res.status === 404) return null;
+  if (!res.ok) throw new Error("Couldn't load what it worked out.");
+  return ((await res.json()) as { figures: WorkedOutFigure[] }).figures;
+}
+
+export async function editWorkedOut(
+  id: number,
+  patch: { subject?: string; figure?: string; source?: string },
+): Promise<WorkedOutFigure> {
+  const res = await fetch(`${API_BASE}/memories/worked-out/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { detail?: { message?: string } | string } | null;
+    const detail = body?.detail;
+    throw new Error(typeof detail === "object" && detail?.message ? detail.message : "Couldn't save that change.");
+  }
+  return res.json();
+}
+
+export async function forgetWorkedOut(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/memories/worked-out/${id}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 404) throw new Error("Couldn't remove it.");
 }
