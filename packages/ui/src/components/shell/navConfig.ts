@@ -269,10 +269,10 @@ export function hubForPath(pathname: string, opts: BuildOpts = {}): Hub | null {
 
 export const PULSE_NAV_ITEM: NavItem = {
   href: "/memories",
-  label: "Pulse",
+  label: "Memory",
   icon: "activity",
   description:
-    "The Executive's memory and heartbeat — what it knows and the rhythm it runs on.",
+    "What the Executive knows and where it came from, and what it does on its own.",
 };
 
 /** A main-menu entry. A hub's entry is active on any of its tabs. */
@@ -519,7 +519,7 @@ export const SETTINGS_PAGES: SettingsPageDef[] = [
     label: "About you",
     href: "/settings/memory",
     icon: "user",
-    description: "What the Executive has learned about you, and the private notes it keeps.",
+    description: "Whether it keeps notes of what you say, what you share with the team, and how long notes last.",
     hashes: ["memory"],
   },
   {

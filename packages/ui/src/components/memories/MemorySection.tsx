@@ -3,16 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   deleteAdvice,
-  deleteDecision,
   deleteInitiative,
   listAdvice,
-  listDecisions,
   listInitiatives,
   updateAdvice,
-  updateDecision,
   updateInitiative,
   type Advice,
-  type Decision,
   type Initiative,
 } from "@/lib/api";
 import Button from "@/components/ui/Button";
@@ -20,16 +16,17 @@ import OverflowMenu from "@/components/ui/OverflowMenu";
 import CorrectionsTab from "./CorrectionsTab";
 import HistoryTab from "./HistoryTab";
 import ReflectionTab from "./ReflectionTab";
+import WorkedOutTab from "./WorkedOutTab";
 import type { MemoryView } from "@/lib/pulseView";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 
-// Counts are shown on the Pulse overview's tiles, not here.
+// Counts are shown on the Memory page's groups, not here.
 const ignoreCount = () => {};
 
 // ---------------------------------------------------------------------------
-// One memory list, on its own screen behind a Pulse tile.
+// One memory list, on its own screen behind the Memory page.
 // ---------------------------------------------------------------------------
 
 export default function MemoryList({ view }: { view: MemoryView }) {
@@ -43,7 +40,7 @@ export default function MemoryList({ view }: { view: MemoryView }) {
 
   return (
     <div className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5 py-1">
-      {view === "decisions" && <DecisionsTab onCount={ignoreCount} />}
+      {view === "worked_out" && <WorkedOutTab />}
       {view === "initiatives" && <InitiativesTab onCount={ignoreCount} />}
       {view === "advice" && <AdviceTab onCount={ignoreCount} />}
       {view === "corrections" && <CorrectionsTab onCount={ignoreCount} />}
@@ -53,175 +50,6 @@ export default function MemoryList({ view }: { view: MemoryView }) {
         ) : (
           <EmptyState message="There are no notes for you here. They're kept for people on the People list, once they're signed in." />
         ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Decisions
-// ---------------------------------------------------------------------------
-
-function DecisionsTab({ onCount }: { onCount: (n: number) => void }) {
-  const [items, setItems] = useState<Decision[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<number | null>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const rows = await listDecisions();
-      setItems(rows);
-      onCount(rows.length);
-    } finally {
-      setLoading(false);
-    }
-  }, [onCount]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const handleDelete = useCallback(async (id: number) => {
-    if (!window.confirm("Delete this memory? This cannot be undone.")) return;
-    try {
-      await deleteDecision(id);
-    } catch {
-      window.alert("Failed to delete.");
-      return;
-    }
-    void refresh();
-  }, [refresh]);
-
-  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
-  if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
-
-  return (
-    <div className="divide-y divide-line">
-      {items.map((d) => (
-        <DecisionRow
-          key={d.id}
-          decision={d}
-          editing={editingId === d.id}
-          onEdit={() => setEditingId(d.id)}
-          onCancel={() => setEditingId(null)}
-          onSave={async (patch) => {
-            try {
-              await updateDecision(d.id, patch);
-            } catch {
-              window.alert("Failed to save.");
-              return;
-            }
-            setEditingId(null);
-            void refresh();
-          }}
-          onDelete={() => handleDelete(d.id)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function DecisionRow({
-  decision,
-  editing,
-  onEdit,
-  onCancel,
-  onSave,
-  onDelete,
-}: {
-  decision: Decision;
-  editing: boolean;
-  onEdit: () => void;
-  onCancel: () => void;
-  onSave: (patch: Partial<Decision>) => void;
-  onDelete: () => void;
-}) {
-  const [domain, setDomain] = useState(decision.domain);
-  const [summary, setSummary] = useState(decision.summary);
-  const [rationale, setRationale] = useState(decision.rationale);
-  const [outcome, setOutcome] = useState(decision.outcome);
-  const [tags, setTags] = useState(decision.tags);
-
-  useEffect(() => {
-    if (editing) {
-      setDomain(decision.domain);
-      setSummary(decision.summary);
-      setRationale(decision.rationale);
-      setOutcome(decision.outcome);
-      setTags(decision.tags);
-    }
-  }, [editing, decision]);
-
-  return (
-    <div className="py-3.5">
-      <div className="flex items-center justify-between gap-3 mb-1">
-        <div className="flex items-center gap-2 text-sm text-fg-muted">
-          <span className="px-2 py-0.5 rounded-lg bg-surface-overlay text-fg font-medium capitalize">{editing ? domain : decision.domain}</span>
-          <span>{formatDate(decision.timestamp)}</span>
-        </div>
-        {!editing && (
-          <OverflowMenu
-            size="sm"
-            label="Memory actions"
-            items={[
-              { label: "Edit", onSelect: onEdit },
-              { label: "Delete", danger: true, onSelect: onDelete },
-            ]}
-          />
-        )}
-      </div>
-      {editing ? (
-        <div className="space-y-2">
-          <select
-            value={domain}
-            onChange={(e) => setDomain(e.target.value)}
-            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
-          <input
-            type="text"
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            placeholder="Summary"
-            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-          <textarea
-            value={rationale}
-            onChange={(e) => setRationale(e.target.value)}
-            placeholder="Rationale"
-            rows={2}
-            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-          <input
-            type="text"
-            value={outcome}
-            onChange={(e) => setOutcome(e.target.value)}
-            placeholder="Outcome"
-            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-          <input
-            type="text"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="Tags"
-            className="w-full bg-surface border border-line rounded-xl px-3 py-2.5 text-[15px] text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
-          />
-          <div className="flex gap-2 justify-end">
-            <Button variant="ghost" size="sm" className="!h-10" onClick={onCancel}>Cancel</Button>
-            <Button variant="primary" size="sm" className="!h-10" onClick={() => onSave({ domain, summary, rationale, outcome, tags })}>
-              Save
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-1">
-          <div className="text-[15px] font-medium text-fg line-clamp-2" title={decision.summary}>{decision.summary}</div>
-          {decision.rationale && <div className="text-sm text-fg-muted line-clamp-2" title={`Rationale: ${decision.rationale}`}><span className="text-fg-muted">Rationale: </span>{decision.rationale}</div>}
-          {decision.outcome && <div className="text-sm text-fg-muted line-clamp-2" title={`Outcome: ${decision.outcome}`}><span className="text-fg-muted">Outcome: </span>{decision.outcome}</div>}
-          {decision.tags && <div className="text-sm text-fg-subtle truncate" title={`Tags: ${decision.tags}`}>Tags: {decision.tags}</div>}
-        </div>
-      )}
     </div>
   );
 }

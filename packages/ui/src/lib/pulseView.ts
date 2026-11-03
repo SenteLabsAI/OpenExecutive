@@ -1,14 +1,17 @@
-// Pure helpers for the Pulse page: which screen a `?tab=` link opens, and the
-// short "when" labels on its Coming up and Done for you lists. Kept free of
+// Pure helpers for the Memory page (it was Pulse): which screen a `?tab=`
+// link opens, and the short "when" labels on its Coming up and Done for you
+// lists. Kept free of
 // React so scripts/pulseView.test.mjs can run them under plain node.
 
-/** The Pulse overview, or one of the focused screens it links to. */
+/** The Memory page's two tabs ("overview" is What it knows, "does" What it
+ *  does), or one of the focused screens they link to. */
 export type PulseView =
   | "overview"
+  | "does"
   | "value"
   | "schedule"
   | "activity"
-  | "decisions"
+  | "worked_out"
   | "initiatives"
   | "advice"
   | "corrections"
@@ -16,7 +19,7 @@ export type PulseView =
   | "reflection";
 
 export const MEMORY_VIEWS = [
-  "decisions",
+  "worked_out",
   "initiatives",
   "advice",
   "corrections",
@@ -26,10 +29,10 @@ export const MEMORY_VIEWS = [
 export type MemoryView = (typeof MEMORY_VIEWS)[number];
 
 /**
- * The screen a `?tab=` value opens. The page used to have tabs, so older
- * links (the chat chip's `?tab=corrections`, Settings' `?tab=history`, the
- * old Heartbeat views) still land on the matching screen; anything else is
- * the overview.
+ * The screen a `?tab=` value opens. Older links (the chat chip's
+ * `?tab=corrections`, Settings' `?tab=history`, the old Heartbeat views, the
+ * Decisions list, now kept as facts) still land on the matching screen;
+ * anything else is What it knows.
  */
 export function pulseViewFor(tab: string | null | undefined): PulseView {
   switch (tab) {
@@ -39,10 +42,18 @@ export function pulseViewFor(tab: string | null | undefined): PulseView {
       return "schedule";
     case "activity":
       return "activity";
+    case "does":
+    case "heartbeat":
+      return "does";
+    // Decisions are kept as facts now, with the rest of what you taught it.
+    case "decisions":
+      return "corrections";
+    case "worked-out":
+    case "worked_out":
+      return "worked_out";
     case "value":
     case "month":
       return "value";
-    case "decisions":
     case "initiatives":
     case "advice":
     case "corrections":

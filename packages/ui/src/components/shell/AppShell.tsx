@@ -42,7 +42,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   people: "People",
   departments: "Departments",
   goals: "Goals",
-  memories: "Pulse",
+  memories: "Memory",
   knowledge: "Knowledge",
   jobs: "Workflows",
   artifacts: "Documents",

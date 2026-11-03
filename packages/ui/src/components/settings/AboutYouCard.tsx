@@ -14,7 +14,7 @@ import {
 } from "@/lib/api";
 import { cardEntry, noteAboutYou } from "@/lib/aboutYou";
 
-// Settings → About you: what peer memory has learned about the signed-in
+// Memory → About you: what peer memory has learned about the signed-in
 // person, derived server-side from their conversations. GET /memories/people
 // returns only the caller's own entry (the principal's included), so this is
 // one person's profile and notes. Each note can be removed (yours only).
@@ -29,7 +29,10 @@ const CARD_PREVIEW_LINES = 4;
 // of its bottom.
 const NOTES_SCROLL_SLACK_PX = 48;
 
-export default function AboutYouCard() {
+export default function AboutYouCard({
+  title = "Your profile",
+  description = "Learned from your chats and replies. Only you see this.",
+}: { title?: string; description?: string } = {}) {
   const [data, setData] = useState<PeopleMemory | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -60,8 +63,8 @@ export default function AboutYouCard() {
 
   return (
     <SettingsCard
-      title="Your profile"
-      description={["Learned from your chats and replies. Only you see this.", learned].filter(Boolean).join(" ")}
+      title={title}
+      description={[description, learned].filter(Boolean).join(" ")}
     >
       {loading ? (
         <p className="text-[15px] text-fg-muted">Loading…</p>

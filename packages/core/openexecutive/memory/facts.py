@@ -868,9 +868,9 @@ def render_teammate_changes(
         if f.previous_statement:
             what += f" (was: {_safe(f.previous_statement, 160)})"
         if f.status == "proposed":
-            lines.append(f"- {who} proposed {what} — waiting for your approval on the Pulse page")
+            lines.append(f"- {who} proposed {what} — waiting for your approval on the Memory page")
         else:
-            lines.append(f"- {who} recorded {what} — in use now; retire it on the Pulse page if it is wrong")
+            lines.append(f"- {who} recorded {what} — in use now; retire it on the Memory page if it is wrong")
     if not lines:
         return ""
     return "\n".join([

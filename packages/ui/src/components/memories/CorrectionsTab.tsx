@@ -45,6 +45,8 @@ const KIND_PILL: Record<StandingFact["kind"], string> = {
 const HISTORY_STATUSES = new Set<StandingFact["status"]>(["superseded", "retired", "declined"]);
 
 function channelLabel(channel: string): string {
+  // A decision copied from the older decisions list: where it came from.
+  if (channel.startsWith("decisions:")) channel = channel.slice("decisions:".length);
   if (!channel) return "chat";
   if (channel === "web") return "web chat";
   if (channel === "google_chat") return "Google Chat";
@@ -268,7 +270,7 @@ function FactRow({
       <div className="flex items-start justify-between gap-3 mb-1.5">
         <div className="flex flex-wrap items-center gap-2 text-sm text-fg-muted min-w-0 pt-1.5">
           <span className={`px-2 py-0.5 rounded border font-medium ${KIND_PILL[fact.kind]}`}>
-            {KIND_LABEL[fact.kind]}
+            {fact.decision ? "Decision" : KIND_LABEL[fact.kind]}
           </span>
           <span className="truncate" title={fact.subject}>{fact.subject}</span>
           <span>· {formatDate(fact.created_at)} via {channelLabel(fact.source_channel)}</span>
@@ -327,7 +329,12 @@ function FactRow({
           </div>
         </div>
       ) : (
-        <div className="text-[15px] text-fg">{fact.statement}</div>
+        <div className="text-[15px] text-fg">
+          {fact.statement}
+          {fact.decision && fact.outcome && (
+            <div className="text-sm text-fg-muted mt-1">Outcome: {fact.outcome}</div>
+          )}
+        </div>
       )}
       {fact.previous_statement && (
         <div className="text-sm text-fg-muted mt-0.5">

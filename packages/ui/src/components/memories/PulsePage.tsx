@@ -1,29 +1,26 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { isMemoryView, pulseViewFor, type PulseView } from "@/lib/pulseView";
 import RhythmSection, { FollowUpsCard, RecentActivity } from "./CadenceSection";
+import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
+import KnowsOverview from "./KnowsOverview";
 import MemoryList from "./MemorySection";
 import { HeartbeatCard, usePulseData } from "./PulseHeader";
-import { ComingUp, DoneForYou, FocusedScreen, MemoryTiles } from "./PulseOverview";
+import { ComingUp, DoneForYou, FocusedScreen } from "./PulseOverview";
 import { ValueScreen } from "./ValueSection";
 
-// The Pulse page is the Executive's memory + heartbeat: what it knows
-// (durable episodic memory) and the rhythm it runs on (recurring briefs,
-// reflections, department check-ins, and internal scans). Both halves are
-// built from data that already exists — episodic memory rows and the
-// scheduled_actions queue grouped by `kind`.
-//
-// Layout: one overview with no tabs (the heartbeat card with its numbers,
-// a tile per kind of memory, then Coming up beside Done for you, which opens
-// with the owner's count of what it did for them this month), and a
-// focused screen behind each link, picked by `?tab=` so the older tab links
-// still land (lib/pulseView.ts). What it has learned about the signed-in
-// person is theirs alone, so it lives in Settings → About you, not here.
+// The Memory page (it was Pulse): what the Executive knows and what it does.
+// Two tabs. What it knows: About you, About the company, What you taught it,
+// What it worked out, and Learning (KnowsOverview). What it does: the
+// heartbeat card with its numbers, then Coming up beside Done for you. Each
+// links to a focused screen picked by `?tab=`, so older links still land
+// (lib/pulseView.ts). What it learned about the signed-in person is theirs
+// alone; its switches stay in Settings → About you.
 
-const SCREENS: Record<Exclude<PulseView, "overview">, { title: string; description: string }> = {
+const SCREENS: Record<Exclude<PulseView, "overview" | "does">, { title: string; description: string }> = {
   value: {
     title: "Done for you",
     description: "What the Executive did for you, counted from the record.",
@@ -36,21 +33,21 @@ const SCREENS: Record<Exclude<PulseView, "overview">, { title: string; descripti
     title: "Activity",
     description: "What the Executive did on its own, newest first.",
   },
-  decisions: {
-    title: "Decisions",
-    description: "Decisions picked up from your chats. Future answers build on them.",
+  worked_out: {
+    title: "What it worked out",
+    description: "Figures from its own work, with where they came from and when. Only you see these.",
   },
   initiatives: {
     title: "Projects",
     description: "The projects it's tracking, from planned to completed.",
   },
   advice: {
-    title: "Advice",
-    description: "Advice its specialists gave, by topic.",
+    title: "Older advice",
+    description: "Advice its specialists gave before it kept figures instead.",
   },
   corrections: {
-    title: "Facts you taught it",
-    description: "Facts and corrections you asked it to keep.",
+    title: "What you taught it",
+    description: "Facts, corrections and decisions you asked it to keep.",
   },
   history: {
     title: "Your notes",
@@ -83,10 +80,13 @@ export default function PulsePage() {
 
   return (
     <div ref={top} className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-      {view === "overview" ? (
-        <Overview />
+      {view === "overview" || view === "does" ? (
+        <Overview view={view} />
       ) : (
-        <FocusedScreen {...SCREENS[view]}>
+        <FocusedScreen
+          {...SCREENS[view]}
+          backHref={view === "schedule" || view === "activity" || view === "value" ? "/memories?tab=does" : "/memories"}
+        >
           {view === "schedule" && (
             <div className="space-y-5">
               <RhythmSection />
@@ -102,22 +102,43 @@ export default function PulsePage() {
   );
 }
 
+type Tab = "overview" | "does";
+
 /** Loaded each time it's shown, so counts reflect edits made on a list. */
-function Overview() {
+function Overview({ view }: { view: Tab }) {
+  const router = useRouter();
   const pulse = usePulseData();
+  const idBase = useId();
   return (
     <>
       <header>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Pulse</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-fg">Memory</h1>
         <p className="text-[15px] text-fg-muted mt-1.5 max-w-2xl">
-          What your Executive does on its own, and what it remembers.
+          What your Executive knows and where it came from, and what it does on its own.
         </p>
       </header>
-      <HeartbeatCard pulse={pulse} />
-      <MemoryTiles pulse={pulse} />
-      <div className="grid gap-6 md:grid-cols-2">
-        <ComingUp pulse={pulse} />
-        <DoneForYou />
+      <SectionTabs<Tab>
+        tabs={[
+          { id: "overview", label: "What it knows" },
+          { id: "does", label: "What it does" },
+        ]}
+        active={view}
+        onChange={(id) => router.replace(id === "does" ? "/memories?tab=does" : "/memories")}
+        label="Memory"
+        idBase={idBase}
+      />
+      <div {...sectionPanelProps(idBase, view)} className="space-y-6">
+        {view === "overview" ? (
+          <KnowsOverview pulse={pulse} />
+        ) : (
+          <>
+            <HeartbeatCard pulse={pulse} />
+            <div className="grid gap-6 md:grid-cols-2">
+              <ComingUp pulse={pulse} />
+              <DoneForYou />
+            </div>
+          </>
+        )}
       </div>
     </>
   );
