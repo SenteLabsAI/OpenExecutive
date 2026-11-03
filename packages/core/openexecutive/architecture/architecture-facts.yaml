@@ -7185,6 +7185,13 @@ workflows:
     MAIL_TOUCHED_ALLOWED_TOOLS with save_file, which saves whenever asked,
     whatever words were used. read_document and save_file take files up to
     100 MB (file_refs.READ_MAX_BYTES); drafts stay at what mail carries.
+    Google saves run up to mail_file_save.GOOGLE_PARALLEL_SAVES (4) at once
+    (_google_slot: a folder id is given and Drive keeps two files of one
+    name, so nothing races); Documents and OneDrive saves pick a free name
+    first, so they stay one at a time under mail_file_save._lock. Why - on
+    2026-11-03 filing two emails' attachments (about 50 files) into Drive
+    folders took ~4 s a file in a row and ran past the 300 s chat deadline
+    with half of them unsaved; CHAT_STREAM_TIMEOUT_S went to 600 s the same day.
     Why - on 2026-10-30 an ask to split a signed LOI PDF from an email, file
     both halves in a Drive folder and attach them to a reply was refused five
     times: drafts took Drive files only, the mail read turned Python off,

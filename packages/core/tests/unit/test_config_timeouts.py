@@ -19,10 +19,10 @@ def _required_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_chat_turn_ceiling_defaults() -> None:
     s = Settings(_env_file=None)
-    assert s.chat_stream_timeout_s == 300.0
+    assert s.chat_stream_timeout_s == 600.0
     assert s.committee_extra_timeout_s == 60.0
     # The route sums them for a Committee turn.
-    assert s.chat_stream_timeout_s + s.committee_extra_timeout_s == 360.0
+    assert s.chat_stream_timeout_s + s.committee_extra_timeout_s == 660.0
 
 
 def test_interview_did_not_inherit_the_chat_ceiling() -> None:

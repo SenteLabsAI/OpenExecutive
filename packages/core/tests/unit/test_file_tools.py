@@ -568,3 +568,32 @@ def test_a_file_made_from_mail_saves_when_asked_in_any_words(company: Session, d
     company.turn_delegation = TurnDelegation(offered=True, session_id=company.session_id)
     pin_turn_delegation(company, "Svane them")
     assert _save({"file": "file:half.pdf", "folder": FOLDER})["status"] == "saved"
+
+
+def test_drive_saves_run_a_few_at_once(
+    company: Session, drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filing a whole email's attachments: Google saves overlap, up to
+    GOOGLE_PARALLEL_SAVES at a time, instead of one after another."""
+    names = [f"Report {i}.xlsx" for i in range(10)]
+    conversation_files.keep(company.session_id, {n: b"x" for n in names})
+    inner = save._call
+    running = {"now": 0, "most": 0}
+
+    async def slow(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        await asyncio.sleep(0.01)
+        running["now"] -= 1
+        return await inner(gateway, name, arguments)
+
+    monkeypatch.setattr(save, "_call", slow)
+
+    async def all_of_them() -> list[str]:
+        return await asyncio.gather(*(
+            file_tools.handle_save_file({"file": f"file:{n}", "folder": FOLDER}) for n in names
+        ))
+
+    results = [json.loads(r) for r in asyncio.run(all_of_them())]
+    assert all(r["status"] == "saved" for r in results)
+    assert running["most"] == save.GOOGLE_PARALLEL_SAVES
