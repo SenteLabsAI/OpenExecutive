@@ -77,7 +77,12 @@ export function MemoryUpdatedChip({
             mine.current.add(changeKey(c));
             seen.add(changeKey(c));
           });
-          setChanges(shown);
+          // Keep what it already showed: an undone row is gone from the
+          // server's answer but stays here, struck through.
+          setChanges((prev) => {
+            const had = new Set(prev.map(changeKey));
+            return [...prev, ...shown.filter((c) => !had.has(changeKey(c)))];
+          });
         })
         .catch(() => {});
     };
