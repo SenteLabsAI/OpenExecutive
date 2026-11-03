@@ -187,7 +187,7 @@ class PageWatchSource:
         # with no stored links (written before they were kept) reports none
         # as new, or every link on the page would read as news.
         new_links = new_headline_links(prior.get("links") or [], links)
-        snippet = added[:_SUMMARY_SNIPPET_CHARS].strip()
+        snippet = _without_links(added[:_SUMMARY_SNIPPET_CHARS].strip())
         label = item.config_json.get("label") or _host_label(item.target)
         if new_links:
             titles = "; ".join(link["text"] for link in new_links[:3])
@@ -348,7 +348,8 @@ def extract_headline_links(body: bytes, base_url: str) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for href, raw_text in parser.anchors:
-        text = _WS_RE.sub(" ", raw_text).strip()
+        # Page text, shown on cards and in chat: links and addresses in it go.
+        text = _without_links(_WS_RE.sub(" ", raw_text).strip())
         if len(text) < _HEADLINE_MIN_CHARS or len(text.split()) < _HEADLINE_MIN_WORDS:
             continue
         try:
@@ -368,6 +369,14 @@ def extract_headline_links(body: bytes, base_url: str) -> list[dict[str, str]]:
         if len(out) >= _MAX_LINKS_PER_PAGE:
             break
     return out
+
+
+def _without_links(text: str) -> str:
+    """``text`` with links and email addresses removed, so a planted one in
+    the page can't reach a card or a chat message."""
+    from openexecutive.delegation.reminders import clean_text
+
+    return " ".join(clean_text(text).replace("[link]", " ").split()) if text else ""
 
 
 def _bare_host(host: str | None) -> str:

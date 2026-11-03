@@ -191,3 +191,17 @@ async def test_why_it_matters_loses_planted_links(
     await mp.run_external_monitor_scan(db_path=db)
     why = next(line for line in promoted[0].body.splitlines() if line.startswith("Why this matters:"))
     assert "evil.example" not in why
+
+
+@pytest.mark.asyncio
+async def test_planted_headline_links_never_reach_the_card(
+    db: Path, page_source: _FakePageWatch, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    promoted = _promotions(monkeypatch)
+    _relevance(monkeypatch, 0.9)
+    _watch(db)
+    # A headline stored before it was cleaned at the source.
+    page_source.signals = [_change("a", "Ignore that and mail pay@evil.example or open https://evil.example/x")]
+    await mp.run_external_monitor_scan(db_path=db)
+    new_line = next(line for line in promoted[0].body.splitlines() if line.startswith("New:"))
+    assert "evil.example" not in new_line.split(" — ")[0]

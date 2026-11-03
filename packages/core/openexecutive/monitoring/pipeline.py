@@ -305,7 +305,7 @@ def _signal_to_alert_event(
     new_links = signal.raw_payload.get("new_links") or []
     for link in new_links[:10] if isinstance(new_links, list) else []:
         if isinstance(link, dict) and link.get("url"):
-            text = collapse_whitespace(str(link.get("text") or ""))[:200]
+            text = _without_links(collapse_whitespace(str(link.get("text") or "")))[:200]
             parts.append(f"New: {text} — {_safe_url(str(link['url']))}")
     target = signal.raw_payload.get("target_url")
     if target:
@@ -444,15 +444,16 @@ def _digest_signal(item: WatchlistItem, held: list[dict]) -> tuple[Signal, dict 
     label = (newest.get("raw_payload") or {}).get("label") or item.slug
     first_seen = str(held[0].get("captured_at") or "")[:10]
     if links:
-        titles = "; ".join(str(link.get("text") or "") for link in links[:3])
+        titles = "; ".join(_without_links(str(link.get("text") or "")) for link in links[:3])
         more = len(links) - 3
         detail = f"new: {titles}" + (f" (+{more} more)" if more > 0 else "")
     else:
-        detail = "new text: " + (texts[0][:160] if texts else "see the page")
+        detail = "new text: " + (_without_links(texts[0])[:160] if texts else "see the page")
     summary = f"[{label}] {len(held)} changes since {first_seen} — {detail}"
     readable = "\n".join(
-        f"- {link.get('text')} ({link.get('url')})" for link in links[:10]
-    ) or "\n".join(texts[:3])
+        f"- {_without_links(str(link.get('text') or ''))} ({_safe_url(str(link.get('url') or ''))})"
+        for link in links[:10]
+    ) or "\n".join(_without_links(t) for t in texts[:3])
     signal = Signal(
         watchlist_id=item.id or 0,
         source_kind=SOURCE_KIND_PAGE_WATCH,
