@@ -173,6 +173,47 @@ def test_a_mailbox_failure_keeps_the_watch(
     assert mail_watch.pending_count(principal_id) == 1 and delivered == []
 
 
+def test_a_broken_mailbox_still_ends_the_watch_on_time(
+    principal_id: int, inbox: _Inbox, delivered: list[tuple[int, str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(*_a: Any, **_k: Any) -> list[MailMessage]:
+        raise RuntimeError("credential revoked")
+
+    monkeypatch.setattr(inbox, "recent_from", broken)
+    mail_watch.add(principal_id, DANA, "", NOW + timedelta(days=1), now=NOW)
+    assert asyncio.run(mail_watch.check_due(NOW + timedelta(days=2))) == 1
+    assert len(delivered) == 1 and "stopped watching" in delivered[0][1]
+    assert mail_watch.pending_count(principal_id) == 0
+
+
+def test_a_subject_watch_reads_past_the_newest_five(
+    principal_id: int, inbox: _Inbox, delivered: list[tuple[int, str]],
+) -> None:
+    mail_watch.add(principal_id, DANA, "contract", NOW + timedelta(days=7), now=NOW)
+    inbox.mail = [_mail(NOW + timedelta(minutes=50 - i), subject=f"Note {i}") for i in range(6)]
+    inbox.mail.append(_mail(NOW + timedelta(minutes=10), subject="The contract"))
+    assert asyncio.run(mail_watch.check_due(NOW + timedelta(hours=1))) == 1
+
+
+def test_an_undelivered_message_is_tried_again(
+    principal_id: int, inbox: _Inbox, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = [False, True]
+    sent: list[str] = []
+
+    async def deliver(person: Any, text: str, *, label: str = "") -> Any:
+        sent.append(text)
+        return SimpleNamespace(ok=results.pop(0), channel="email", reason="down")
+
+    monkeypatch.setattr("openexecutive.scheduler.runner.deliver_to_person", deliver)
+    mail_watch.add(principal_id, DANA, "", NOW + timedelta(days=7), now=NOW)
+    inbox.mail = [_mail(NOW + timedelta(minutes=30))]
+    assert asyncio.run(mail_watch.check_due(NOW + timedelta(hours=1))) == 0
+    assert mail_watch.pending_count(principal_id) == 1
+    assert asyncio.run(mail_watch.check_due(NOW + timedelta(hours=2))) == 1
+    assert len(sent) == 2 and mail_watch.pending_count(principal_id) == 0
+
+
 # --------------------------------------------------------------------------- #
 # Wiring
 # --------------------------------------------------------------------------- #

@@ -41,6 +41,9 @@ MAX_ABOUT = 60
 # Mail read per check: the newest few from the sender are enough to find one
 # that arrived since the watch was set.
 _RECENT_LIMIT = 5
+_RECENT_LIMIT_ABOUT = 25  # the most recent_from returns
+# How long after a watch ends it keeps retrying a message it could not deliver.
+_DELIVERY_GRACE = timedelta(days=1)
 
 _last_scan_at: datetime | None = None
 _task: asyncio.Task[int] | None = None
@@ -137,6 +140,20 @@ def _claim(watch_id: int, outcome: str, now: datetime, db_path: Path | None) -> 
         conn.close()
 
 
+def _release(watch_id: int, db_path: Path | None) -> None:
+    """Reopen a watch whose message couldn't be delivered, so the next pass tries again."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"UPDATE {MAIL_WATCH_TABLE} SET claimed_at = NULL, outcome = NULL "  # noqa: S608
+            "WHERE id = ? AND cancelled_at IS NULL",
+            (watch_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def cancel(person_id: int, watch_id: int, *, now: datetime, db_path: Path | None = None) -> bool:
     conn = _connect(db_path)
     try:
@@ -208,11 +225,20 @@ async def _check_one(watch: MailWatch, now: datetime, db_path: Path | None) -> s
     with rows:
         message = None
         email = normalize_email(person.email)
-        if await gmail_status(email) == "connected":
-            days = max(1, (now - since).days + 1)
-            client = gmail_for(email)
-            recent = await client.recent_from(watch.sender, days=days, limit=_RECENT_LIMIT)
-            message = next((m for m in recent if _matches(watch, m, since)), None)
+        try:
+            if await gmail_status(email) == "connected":
+                days = max(1, (now - since).days + 1)
+                client = gmail_for(email)
+                # The subject word is matched here, not in the query, so read
+                # the most the mailbox allows when one is set.
+                limit = _RECENT_LIMIT_ABOUT if watch.about else _RECENT_LIMIT
+                recent = await client.recent_from(watch.sender, days=days, limit=limit)
+                message = next((m for m in recent if _matches(watch, m, since)), None)
+        except Exception:
+            if now < expires:
+                raise
+            # A mailbox that stays broken still ends the watch on time.
+            logger.warning("mail_watch: mailbox read failed for expiring watch %s", watch.id, exc_info=True)
         if message is not None:
             text, outcome = found_text(watch, message), "found"
         elif now >= expires:
@@ -222,6 +248,11 @@ async def _check_one(watch: MailWatch, now: datetime, db_path: Path | None) -> s
         if not _claim(watch.id, outcome, now, db_path):
             return "waiting"  # another worker ended it
         delivery = await deliver_to_person(person, text, label="Email watch")
+        if not delivery.ok and now < expires + _DELIVERY_GRACE:
+            # Couldn't reach them: reopen it so the next pass tells them.
+            _release(watch.id, db_path)
+            logger.warning("mail_watch: couldn't deliver watch %s (%s)", watch.id, delivery.reason)
+            return "waiting"
         log_event(
             "delegation_mail_watch_found" if outcome == "found" else "delegation_mail_watch_expired",
             f"Told person {watch.person_id} about a mail watch ({outcome})",
