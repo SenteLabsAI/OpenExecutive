@@ -370,10 +370,17 @@ def mail_lock_holds(pinned: Any, *, reading_now: bool = False) -> bool:
         if pinned is None or not (getattr(pinned, "read_mail", False) is True or reading_now):
             return False
         state = outside_content.current()
-        if state is None or state.mode == outside_mode.ASK:
+        if state is None:
             return True
         if outside_content.trusted_turn():
             return False
+        if outside_content.go_turn(state):
+            # The person just said go to what the last turn held: only a mail
+            # read the check flagged holds it again, at Careful too (and a
+            # round that reads mail, until its check is in).
+            return bool(reading_now or getattr(pinned, "mail_held", False) is True)
+        if state.mode == outside_mode.ASK:
+            return True
         return bool(
             reading_now
             or getattr(pinned, "mail_held", False) is True

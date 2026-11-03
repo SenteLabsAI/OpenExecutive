@@ -705,15 +705,20 @@ def test_a_go_may_read_the_same_text_again(upserts: list[dict[str, Any]], monkey
     assert upserts == [CONTACT]
 
 
-def test_a_go_still_holds_after_new_text(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
+def _go_reads_new_text(
+    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, verdict: Any,
+) -> None:
+    """A held turn, then a go turn that reads a doc it hadn't read before
+    (checked as ``verdict``) and then makes the held step."""
     from openexecutive.orchestrator import content_scan
 
-    async def clean(content: object, *, model: str | None = None) -> content_scan.Verdict:
-        return content_scan.CLEAN
-
-    monkeypatch.setattr(content_scan, "scan", clean)
     session, gateway = Session(), _Gateway()
     _held_contact_turn(session, gateway)
+
+    async def scan(content: object, *, model: str | None = None) -> content_scan.Verdict:
+        return verdict
+
+    monkeypatch.setattr(content_scan, "scan", scan)
     other = {"name": "google_workspace__get_doc_content", "arguments": {"document_id": "d2"}}
     async def call_tool(tool_input: dict[str, Any]) -> str:
         gateway.calls.append(tool_input)
@@ -726,6 +731,33 @@ def test_a_go_still_holds_after_new_text(upserts: list[dict[str, Any]], monkeypa
         [ToolUseBlock("tu5", "upsert_person", CONTACT)],
         gateway=gateway, session=session, message="go",
     )
+
+
+def test_a_go_is_not_undone_by_new_text_the_check_passes(
+    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import content_scan
+
+    _go_reads_new_text(upserts, monkeypatch, content_scan.CLEAN)
+    assert upserts == [CONTACT]
+
+
+def test_a_go_is_not_undone_by_text_too_big_to_check(
+    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A scanned PDF too big to check whole held every go on 10-19/20.
+    from openexecutive.orchestrator import content_scan
+
+    _go_reads_new_text(upserts, monkeypatch, content_scan.TOO_BIG)
+    assert upserts == [CONTACT]
+
+
+def test_a_go_still_holds_after_new_text_the_check_flags(
+    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import content_scan
+
+    _go_reads_new_text(upserts, monkeypatch, content_scan.Verdict(flagged=True, categories=("instructions",)))
     assert upserts == []
 
 

@@ -49,7 +49,10 @@ When that next message is a go ("go", "yes, do it", "Go. Pull the scans",
 refused once (``defers_read``), so the steps the person just approved run
 before a new read holds them again. It runs only what the model calls in that
 turn, under every usual check, so it trusts the person's go no more than
-before; it only stops a re-read from undoing it. A shared chat, or mail from
+before; it only stops a re-read from undoing it. For the same reason, on that
+turn (``go_turn``) only a read the check flags holds it again, at Careful and
+Balanced alike: one that is merely unchecked or too big to check (a scanned
+PDF) does not. A shared chat, or mail from
 someone not in People, remembers nothing.
 
 How much a read holds is the owner's safety level (``orchestrator.outside_mode``),
@@ -505,6 +508,24 @@ def go_first_error(label: str) -> str:
     )})
 
 
+def go_turn(state: TurnOutside | None) -> bool:
+    """Whether ``state``'s turn answers a go to what the last turn held
+    (``go_first``). On such a turn, at Careful and Balanced alike, only a read
+    the check flags holds the turn again: a read that is merely unchecked or
+    too big to check no longer undoes the person's go."""
+    return state is not None and bool(state.go_first)
+
+
+def _read_holds(state: TurnOutside, verdict: Any) -> bool:
+    """Whether a checked read holds the turn at Careful or Balanced
+    (``verdict`` is a ``content_scan.Verdict``)."""
+    from openexecutive.orchestrator import outside_mode
+
+    if go_turn(state):
+        return bool(verdict.flagged)
+    return state.mode == outside_mode.ASK or (state.mode == outside_mode.OUTSIDERS and bool(verdict.holds))
+
+
 def current() -> TurnOutside | None:
     """The record of the turn in progress: this task's own, else the one on
     the bound session (``begin_turn``). None once that turn has ended."""
@@ -676,8 +697,7 @@ def _apply(state: TurnOutside, source: str, verdict: Any, *, warned: bool) -> No
     if verdict.flagged:
         _flag(state, source, tuple(verdict.categories), evidence=getattr(verdict, "evidence", ""))
     if (
-        state.mode == outside_mode.ASK
-        or (state.mode == outside_mode.OUTSIDERS and verdict.holds)
+        (state.mode != outside_mode.TRUST and _read_holds(state, verdict))
         or (state.mode == outside_mode.TRUST and verdict.holds and not warned)
     ):
         state.sources.add(source)
@@ -713,7 +733,7 @@ def mark(source: str) -> None:
     state = current()
     if state is None:
         return
-    if state.mode != outside_mode.ASK and source != SENDER:
+    if source != SENDER and (state.mode != outside_mode.ASK or go_turn(state)):
         return
     state.sources.add(source)
 
@@ -1096,7 +1116,7 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
                     state, MAIL, tuple(verdict.categories), _mail_label(entries[n]),
                     getattr(verdict, "evidence", ""),
                 )
-            if state.mode == outside_mode.ASK:
+            if state.mode == outside_mode.ASK and not go_turn(state):
                 pinned.mail_held = True
             return json.dumps({**parsed, key: trimmed}), LEFT_OUT_NOTICE.format(count=len(flagged))
     if verdict.flagged:
@@ -1104,7 +1124,7 @@ async def check_mail_read(pinned: Any, result: Any) -> tuple[Any, str]:
             state, MAIL, tuple(verdict.categories), _mail_label(_parsed(result)),
             getattr(verdict, "evidence", ""),
         )
-    if state.mode == outside_mode.ASK or (state.mode == outside_mode.OUTSIDERS and verdict.holds):
+    if state.mode != outside_mode.TRUST and _read_holds(state, verdict):
         pinned.mail_held = True
     if verdict.flagged:
         return result, FLAG_NOTICE.format(what=content_scan.describe(verdict.categories))

@@ -766,6 +766,32 @@ def test_the_lockdown_follows_the_safety_level(
         current_session.reset(token)
 
 
+@pytest.mark.parametrize(
+    ("mode", "pin", "holds"),
+    [
+        ("ask", {"mail_vetted": True}, False),
+        ("ask", {"mail_vetted": True, "mail_held": True}, True),
+        ("outsiders", {}, False),
+        ("outsiders", {"mail_held": True}, True),
+    ],
+)
+def test_after_a_go_only_a_flagged_mail_read_holds_again(
+    monkeypatch: pytest.MonkeyPatch, mode: str, pin: dict[str, Any], holds: bool,
+) -> None:
+    from openexecutive.orchestrator import content_trust, outside_content
+
+    monkeypatch.setattr(content_trust, "principal_only_withheld", lambda session: frozenset())
+    session, token, state = _pinned_turn(mode, **pin)
+    state.go_first = ("run_script",)
+    try:
+        assert lockdown.mail_lock_holds(session.turn_delegation) is holds  # type: ignore[attr-defined]
+        # A round that reads mail still waits for its check.
+        assert lockdown.mail_lock_holds(session.turn_delegation, reading_now=True)  # type: ignore[attr-defined]
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
+
+
 def test_a_turn_with_no_safety_state_holds_after_any_mail_read() -> None:
     # A workflow or a script outside chat: fail closed, as before.
     session = Session()
