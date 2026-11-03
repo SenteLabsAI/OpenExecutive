@@ -209,6 +209,12 @@ async def _google(
         refused, outside = folder_check(info, folder, account, _team_emails())
         if refused is not None:
             raise SaveFailed(refused + ".")
+        public = [who for who in outside if who == "Anyone with the link" or who.startswith("Everyone at ")]
+        if public:
+            raise SaveFailed(
+                f"That folder is open to {public[0].lower() if public[0].startswith('Anyone') else public[0]}, "
+                "so I don't save into it. Pick a folder shared with named people, or change its sharing."
+            )
     made = await _call(gateway, "google_workspace__create_drive_file", {
         "user_google_email": account,
         "file_name": name,

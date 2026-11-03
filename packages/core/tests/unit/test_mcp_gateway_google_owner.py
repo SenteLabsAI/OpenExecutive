@@ -182,8 +182,6 @@ def test_a_rename_of_a_company_file_runs() -> None:
 @pytest.mark.usefixtures("_company")
 @pytest.mark.parametrize("extra", [
     "User: kyle@vendor.example (reader) [id: 3]",
-    "Domain: vendor.example (commenter) [id: 3]",
-    "Anyone with the link (reader) [id: anyoneWithLink]",
     "deleted (writer) [id: 9]",
     # A group can hold anyone, even one with a company address.
     f"Group: staff@{COMPANY} (reader) [id: 3]",
@@ -197,6 +195,21 @@ def test_a_company_file_shared_outside_still_runs(extra: str) -> None:
     gateway, session_call = _gateway({"d1": text})
     out = json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))
     assert "error" not in out and _ran(session_call, "update_drive_file")
+
+
+@pytest.mark.usefixtures("_company")
+@pytest.mark.parametrize("extra", [
+    "Domain: vendor.example (commenter) [id: 3]",
+    "Anyone with the link (reader) [id: anyoneWithLink]",
+])
+def test_a_company_file_open_to_anyone_or_another_domain_is_refused(extra: str) -> None:
+    text = _item(
+        "d1", f"Owners: John (john@{COMPANY})",
+        [f"User: john@{COMPANY} (owner) [id: 1]", extra],
+    )
+    gateway, session_call = _gateway({"d1": text})
+    assert "error" in json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))
+    assert not _ran(session_call, "update_drive_file")
 
 
 @pytest.mark.usefixtures("_company")

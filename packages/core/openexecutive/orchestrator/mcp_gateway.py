@@ -2870,6 +2870,10 @@ def _company_owned(item: _DriveItem, exec_address: str, domains: frozenset[str])
     def ours(address: str) -> bool:
         return address == exec_address or address.rpartition("@")[2] in domains
 
+    # Open to anyone with the link, or a whole other domain: a file there is
+    # public, so nothing is written into it on the model's word alone.
+    if any(kind == "anyone" or (kind == "domain" and who not in domains) for kind, who, _ in item.permissions):
+        return False
     if item.owner is not None:
         return ours(item.owner)
     return item.shared_drive and any(

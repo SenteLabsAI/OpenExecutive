@@ -369,6 +369,20 @@ def test_a_team_only_folder_needs_no_card_and_a_lost_copy_isnt_saved(
     assert got["status"] == "failed" and "no longer kept" in got["detail"]
 
 
+def test_a_folder_open_to_anyone_with_the_link_gets_nothing(
+    company: Session, drive: list, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def call(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
+        drive.append((name, arguments))
+        return _info("John (ceo@co.example)", perms=OUTSIDE_PERMS)
+
+    monkeypatch.setattr(save, "_call", call)
+    conversation_files.keep(company.session_id, {"a.pdf": b"x"})
+    out = _save({"file": "file:a.pdf", "folder": FOLDER})
+    assert out["status"] == "failed" and "Everyone at partner.example" in out["detail"]
+    assert not any(n.endswith("create_drive_file") for n, _ in drive[1:])
+
+
 def test_a_card_left_before_saves_stopped_waiting_still_saves_on_the_tap(
     company: Session, shared_drive: list,
 ) -> None:
