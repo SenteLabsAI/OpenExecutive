@@ -182,7 +182,7 @@ def test_a_broken_mailbox_still_ends_the_watch_on_time(
     monkeypatch.setattr(inbox, "recent_from", broken)
     mail_watch.add(principal_id, DANA, "", NOW + timedelta(days=1), now=NOW)
     assert asyncio.run(mail_watch.check_due(NOW + timedelta(days=2))) == 1
-    assert len(delivered) == 1 and "stopped watching" in delivered[0][1]
+    assert len(delivered) == 1 and "couldn't read your mailbox" in delivered[0][1]
     assert mail_watch.pending_count(principal_id) == 0
 
 

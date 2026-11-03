@@ -194,7 +194,7 @@ def found_text(watch: MailWatch, message: Any) -> str:
     return f"{line}, \"{subject}\"." if subject else f"{line}."
 
 
-def expired_text(watch: MailWatch) -> str:
+def expired_text(watch: MailWatch, *, unreadable: bool = False) -> str:
     from openexecutive.memory.workspace_settings import get_user_timezone
 
     created = _parse(watch.created_at)
@@ -203,6 +203,11 @@ def expired_text(watch: MailWatch) -> str:
         local = created.astimezone(get_user_timezone())
         when = f" since {local:%b} {local.day}"
     about = f" about \"{watch.about}\"" if watch.about else ""
+    if unreadable:
+        return (
+            f"I couldn't read your mailbox, so I can't tell whether the email{about} you were waiting on came in. "
+            "I've stopped watching for it."
+        )
     return f"No email{about} from the sender you were waiting on came in{when}. I've stopped watching for it."
 
 
@@ -224,6 +229,7 @@ async def _check_one(watch: MailWatch, now: datetime, db_path: Path | None) -> s
     rows = private_rows() if person.is_principal else rows_for_person(watch.person_id)
     with rows:
         message = None
+        unreadable = True
         email = normalize_email(person.email)
         try:
             if await gmail_status(email) == "connected":
@@ -234,6 +240,7 @@ async def _check_one(watch: MailWatch, now: datetime, db_path: Path | None) -> s
                 limit = _RECENT_LIMIT_ABOUT if watch.about else _RECENT_LIMIT
                 recent = await client.recent_from(watch.sender, days=days, limit=limit)
                 message = next((m for m in recent if _matches(watch, m, since)), None)
+                unreadable = False
         except Exception:
             if now < expires:
                 raise
@@ -242,7 +249,7 @@ async def _check_one(watch: MailWatch, now: datetime, db_path: Path | None) -> s
         if message is not None:
             text, outcome = found_text(watch, message), "found"
         elif now >= expires:
-            text, outcome = expired_text(watch), "expired"
+            text, outcome = expired_text(watch, unreadable=unreadable), "expired"
         else:
             return "waiting"
         if not _claim(watch.id, outcome, now, db_path):
