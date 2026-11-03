@@ -2550,8 +2550,9 @@ class Executive:
                 messages=current_messages,  # type: ignore[arg-type]
                 # The last round runs no tool, so a turn that used up its
                 # steps still answers from what it gathered instead of
-                # ending on "unable to complete". The tool list stays the
-                # same, so its cached prefix does too.
+                # ending on "unable to complete". The tools and system
+                # blocks stay cached; the messages are read uncached this
+                # once, as tool_choice changes. Only a turn at its cap pays it.
                 **({"tool_choice": {"type": "none"}} if iteration == max_iterations else {}),
             ) as stream:
                 async for event in stream:
