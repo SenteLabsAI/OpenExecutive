@@ -165,6 +165,8 @@ _KEY_FILLER = frozenset({
 })
 # Two keys with at least this share of words in common name the same point.
 _SAME_POINT_OVERLAP = 0.5
+# ... and at least this many words in common.
+_SAME_POINT_MIN_WORDS = 2
 
 
 def _key_words(key: str) -> frozenset[str]:
@@ -172,19 +174,23 @@ def _key_words(key: str) -> frozenset[str]:
 
 
 def same_point(a: str, b: str) -> bool:
-    """Whether two point keys name the same thing, reworded: one's words are
-    all in the other ("Dogwood View" and "Dogwood View dog bite"), or half
-    of all their words are shared. The header rewrites its subjects through
-    the day, so an exact key alone made the same item new again on each
-    rewrite (a fresh time, a green dot, a ping) and let a dismissed one back."""
+    """Whether two point keys name the same thing, reworded: they share at
+    least two words (filler dropped), and either one's words are all in the
+    other ("Dogwood View" and "Dogwood View dog bite") or half of all their
+    words are shared. One shared word is never enough: "Pricing" must not
+    swallow "Pricing error in the invoice". The header rewrites its subjects
+    through the day, so an exact key alone made the same item new again on
+    each rewrite (a fresh time, a green dot, a ping) and let a dismissed one
+    back."""
     if a == b:
         return True
     wa, wb = _key_words(a), _key_words(b)
-    if not wa or not wb:
+    shared = len(wa & wb)
+    if shared < _SAME_POINT_MIN_WORDS:
         return False
     if wa <= wb or wb <= wa:
         return True
-    return len(wa & wb) / len(wa | wb) >= _SAME_POINT_OVERLAP
+    return shared / len(wa | wb) >= _SAME_POINT_OVERLAP
 
 
 def record_points(

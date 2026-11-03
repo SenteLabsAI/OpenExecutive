@@ -177,6 +177,9 @@ def test_same_point_matches_rewording_not_other_items() -> None:
     assert not same("dogwood view dog bite", "dogwood lawsuit")
     assert not same("stripe live mode", "launch blockers")
     assert not same("the", "a")  # filler alone names nothing
+    # One shared word is not the same item.
+    assert not same("pricing", "pricing error in the northwind invoice")
+    assert not same("alex", "alex demo")
 
 
 def test_a_dismissed_point_stays_gone_when_its_subject_grows() -> None:
@@ -184,3 +187,9 @@ def test_a_dismissed_point_stays_gone_when_its_subject_grows() -> None:
     assert gone is not None
     assert right_now.is_dismissed("**Google OAuth verification**: still overdue.", None, [gone])
     assert not right_now.is_dismissed("**Stripe live mode**: overdue.", None, [gone])
+
+
+def test_a_one_word_dismissal_does_not_hide_a_different_point() -> None:
+    gone = right_now.dismiss("principal", "**Pricing**: tiers not set.")
+    assert gone is not None
+    assert not right_now.is_dismissed("**Pricing error in the Northwind invoice**: billed twice.", None, [gone])
