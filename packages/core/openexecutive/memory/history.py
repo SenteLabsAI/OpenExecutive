@@ -26,8 +26,9 @@ alone, never the principal, and only in a conversation nobody else can read
 (``orchestrator.history_tools``), even when it was noted in a shared thread. Each person sees, corrects, pins and
 forgets their own notes in Memories → History (``/memories/history``).
 
-**Switches.** Each person turns it on for themselves (``reply_notes``,
-absent means off; despite the name it covers every channel). Any team member
+**Switches.** Each person turns it on for themselves (``reply_notes``;
+despite the name it covers every channel). Absent means on for the owner and
+off for everyone else (``_on_by_default``). Any team member
 on the People list may (``can_keep_notes``); notes from email replies still
 need Act as me, which writes them. The owner sets how long notes last for the company
 (``retention_days``: 30, 90, 365, or until forgotten; 90 when unset), and a
@@ -263,11 +264,29 @@ def set_company_retention(days: Any, *, by: str, db_path: Path | None = None, no
     return value
 
 
+def _on_by_default(person_id: int | None) -> bool:
+    """Whether "Keep track of what happens" is on for someone who never set
+    it: the owner, whose notes are theirs alone. Everyone else turns it on
+    themselves. False when the roster can't be read."""
+    if person_id is None:
+        return False
+    try:
+        from openexecutive.people.registry import get_principal
+
+        owner = get_principal()
+    except Exception:
+        logger.warning("history: couldn't read who the owner is", exc_info=True)
+        return False
+    return owner is not None and owner.id == person_id
+
+
 def person_settings(person_id: int | None, *, db_path: Path | None = None) -> PersonSettings:
-    """A person's own switches. Off, and the company default, when unset or
-    unreadable."""
-    if person_id is None or not _db_path(db_path).exists():
+    """A person's own switches. When unset: on for the owner, off for
+    everyone else, with the company's note length. Off when unreadable."""
+    if person_id is None:
         return PersonSettings()
+    if not _db_path(db_path).exists():
+        return PersonSettings(reply_notes=_on_by_default(person_id))
     try:
         conn = _connect(db_path)
         try:
@@ -281,7 +300,7 @@ def person_settings(person_id: int | None, *, db_path: Path | None = None) -> Pe
         logger.warning("history: couldn't read a person's settings — treating them as off", exc_info=True)
         return PersonSettings()
     if row is None:
-        return PersonSettings()
+        return PersonSettings(reply_notes=_on_by_default(person_id))
     return PersonSettings(reply_notes=bool(row[0]), retention_days=int(row[1]) if row[1] is not None else None)
 
 
@@ -705,12 +724,28 @@ def people_keeping_notes(*, db_path: Path | None = None) -> list[int]:
             rows = conn.execute(
                 f"SELECT person_id FROM {PERSON_TABLE} WHERE reply_notes = 1 ORDER BY person_id",  # noqa: S608 — constant table name
             ).fetchall()
+            ids = {int(r[0]) for r in rows}
+            # The owner keeps notes unless they turned it off.
+            try:
+                from openexecutive.people.registry import get_principal
+
+                owner = get_principal()
+            except Exception:
+                logger.warning("history: couldn't read who the owner is", exc_info=True)
+                owner = None
+            if owner is not None and owner.id is not None and owner.id not in ids:
+                unset = conn.execute(
+                    f"SELECT 1 FROM {PERSON_TABLE} WHERE person_id = ?",  # noqa: S608 — constant table name
+                    (owner.id,),
+                ).fetchone() is None
+                if unset:
+                    ids.add(int(owner.id))
         finally:
             conn.close()
     except Exception:
         logger.warning("history: couldn't read who keeps notes", exc_info=True)
         return []
-    return [int(r[0]) for r in rows]
+    return sorted(ids)
 
 
 def reminded(person_id: int, day: str, *, db_path: Path | None = None) -> bool:

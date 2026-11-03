@@ -85,7 +85,8 @@ def test_each_person_sees_only_their_own(client: TestClient, ids: dict[str, int]
     _add(ids["teammate"])
     mine = client.get("/memories/history", headers=OWNER).json()
     assert len(mine["notes"]) == 1 and mine["notes"][0]["quote"] == "I'll send the price list on Friday"
-    assert mine["reply_notes"] is False and mine["effective_retention_days"] == 90
+    # On for the owner until they turn it off; off for everyone else.
+    assert mine["reply_notes"] is True and mine["effective_retention_days"] == 90
     assert mine["retention_choices"] == [30, 90, 365, None]
     assert mine["can_keep_notes"] is True and mine["can_note_replies"] is True
     assert mine["can_set_company_retention"] is True
@@ -93,6 +94,7 @@ def test_each_person_sees_only_their_own(client: TestClient, ids: dict[str, int]
     assert len(theirs["notes"]) == 1 and theirs["notes"][0]["id"] != mine["notes"][0]["id"]
     # A teammate keeps notes from chat without Act as me; email ones need it.
     assert theirs["can_keep_notes"] is True and theirs["can_note_replies"] is False
+    assert theirs["reply_notes"] is False
     assert theirs["can_set_company_retention"] is False
     assert client.get("/memories/history?q=venue", headers=OWNER).json()["notes"] == []
 
