@@ -72,11 +72,17 @@ def test_decision_update_and_delete(db: Path) -> None:
     assert list_decisions(db_path=db) == []
 
 
-def test_a_decision_on_the_same_subject_replaces_the_earlier(db: Path) -> None:
-    store_decision("strategy", "Expand to EU next year", db_path=db)
-    store_decision("strategy", "Expand to EU next year. Starting with Spain", db_path=db)
-    [only] = list_decisions(db_path=db)
-    assert only.summary == "Expand to EU next year. Starting with Spain"
+def test_decisions_that_only_start_alike_stay_apart(db: Path) -> None:
+    from openexecutive.memory import facts
+
+    facts.record_fact(subject="We're going with the Q1 hire", statement="The Q1 hire is a backend role.",
+                      source_quote="", db_path=db)
+    store_decision("people", "We're going with the Q1 hire. Backend engineer.", db_path=db)
+    store_decision("people", "We're going with the Q1 hire. Designer, not engineer.", db_path=db)
+    assert len(list_decisions(db_path=db)) == 2
+    assert len(facts.list_facts(db_path=db)) == 3, "a plain fact that shares the first sentence stays"
+    store_decision("people", "We're going with the Q1 hire. Designer, not engineer.", db_path=db)
+    assert len(list_decisions(db_path=db)) == 2
 
 
 def test_initiative_update_bumps_timestamp(db: Path) -> None:

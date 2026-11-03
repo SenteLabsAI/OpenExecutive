@@ -724,12 +724,15 @@ def store_decision(
     db_path: Path | None = None,
 ) -> Decision:
     """Keep a decision as a standing fact (``memory.facts``, ``decision=1``)
-    and mirror it into the department's peer memory. A decision on the same
-    subject replaces the earlier one."""
+    and mirror it into the department's peer memory. Its subject is the
+    whole summary, so two decisions that only start alike stay apart; the
+    same summary again replaces the earlier one."""
     from openexecutive.memory import facts
 
     statement = " ".join(f"{summary} {rationale}".split()) if rationale else " ".join(summary.split())
-    subject = " ".join(summary.split(".")[0].split())[: facts.SUBJECT_MAX] or "Decision"
+    subject = " ".join(summary.split())[: facts.SUBJECT_MAX]
+    if not subject:
+        raise ValueError("a decision needs a summary")
     same = next(
         (f for f in facts.decision_rows(department=department, limit=50, db_path=db_path)
          if f.statement == statement and facts.subject_key(f.subject) == facts.subject_key(subject)),
@@ -1505,11 +1508,11 @@ def count_activity_by_day(
     # (table, SQL fragment) in display order. Fragment day-expression already
     # filtered to the window via `>= ?`; one cutoff param is bound per arm.
     arms = [
-        # Decisions are standing facts (memory.facts); a proposed one is
-        # not in force yet.
+        # Decisions are standing facts (memory.facts): only the one in force
+        # counts, so an edit (a new row) or a removal doesn't add one.
         ("facts",
          "SELECT substr(created_at, 1, 10) AS day FROM facts"
-         " WHERE decision = 1 AND status != 'proposed' AND status != 'declined'"
+         " WHERE decision = 1 AND status = 'active'"
          " AND substr(created_at, 1, 10) >= ?"),
         ("advice_given",
          "SELECT substr(timestamp, 1, 10) AS day FROM advice_given"
