@@ -213,14 +213,13 @@ def test_an_outsiders_folder_gets_nothing(company: Session, drive: list) -> None
     assert not any(n.endswith("create_drive_file") for n, _ in drive[1:])
 
 
-def test_after_an_outside_read_it_saves_only_when_they_asked(
+def test_after_an_outside_read_it_saves_without_their_exact_words(
     company: Session, drive: list, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A turn that read outside content still saves on a short answer
+    ("Internal"): no file word is needed in that message."""
     conversation_files.keep(company.session_id, {"a.pdf": b"x"})
-    monkeypatch.setattr(file_tools, "_read_something_outside", lambda: True)
-    pin_turn_delegation(company, "what does this email say?")
-    assert _save({"file": "file:a.pdf", "folder": FOLDER})["status"] == "not_asked"
-    pin_turn_delegation(company, "split it and put both in the LOIs folder")
+    pin_turn_delegation(company, "Internal")
     assert _save({"file": "file:a.pdf", "folder": FOLDER})["status"] == "saved"
 
 
@@ -264,19 +263,14 @@ def shared_drive(drive: list, monkeypatch: pytest.MonkeyPatch) -> list:
     return drive
 
 
-def test_a_folder_shared_outside_waits_for_a_card(
-    company: Session, shared_drive: list, monkeypatch: pytest.MonkeyPatch,
+def test_a_folder_shared_outside_is_saved_into_and_says_who_else_sees_it(
+    company: Session, shared_drive: list,
 ) -> None:
     conversation_files.keep(company.session_id, {"bill.pdf": b"x"})
-    monkeypatch.setattr(file_tools, "_card_offered", lambda: True)
     out = _save({"file": "file:bill.pdf", "folder": FOLDER})
-    assert out["status"] == "needs_card" and out["shared_with"] == ["dana@partner.example"]
-    assert "save_files" in out["detail"]
-    assert not any(n.endswith("create_drive_file") for n, _ in shared_drive[1:])
-    # No card on this turn: refused, as before.
-    monkeypatch.setattr(file_tools, "_card_offered", lambda: False)
-    out = _save({"file": "file:bill.pdf", "folder": FOLDER})
-    assert out["status"] == "failed" and "outside the team" in out["detail"]
+    assert out["status"] == "saved" and out["also_open_to"] == ["dana@partner.example"]
+    created = [a for n, a in shared_drive[1:] if n.endswith("create_drive_file")]
+    assert created[0]["folder_id"] == FOLDER
 
 
 def test_a_save_files_card_shows_who_else_sees_it_and_saves_on_the_tap(
@@ -375,17 +369,15 @@ def test_a_team_only_folder_needs_no_card_and_a_lost_copy_isnt_saved(
     assert got["status"] == "failed" and "no longer kept" in got["detail"]
 
 
-def test_a_tap_saves_only_for_the_audience_the_card_showed(company: Session, shared_drive: list) -> None:
+def test_a_card_left_before_saves_stopped_waiting_still_saves_on_the_tap(
+    company: Session, shared_drive: list,
+) -> None:
     from openexecutive.delegation import action_cards
 
     conversation_files.keep(company.session_id, {"a.pdf": b"x"})
     files = [{"file": "file:a.pdf", "name": "a.pdf", "kept": "a.pdf", "sha256": hashlib.sha256(b"x").hexdigest()}]
-    shown = {"folder": FOLDER, "session_id": company.session_id, "files": files, "outside": ["dana@partner.example"]}
+    shown = {"folder": FOLDER, "session_id": company.session_id, "files": files, "outside": []}
     assert asyncio.run(action_cards._do_save_files(shown, tapped=True))["status"] == "done"
-    # Shared with someone since the card was made: nothing saved.
-    stale = {**shown, "outside": []}
-    got = asyncio.run(action_cards._do_save_files(stale, tapped=True))
-    assert got["status"] == "failed" and "now also open to dana@partner.example" in got["detail"]
     assert sum(1 for n, _ in shared_drive[1:] if n.endswith("create_drive_file")) == 1
 
 
@@ -555,12 +547,10 @@ def test_documents_takes_a_file_when_asked_and_without_drive(
     assert refused["status"] == "failed" and "PDF, Word" in refused["detail"]
 
 
-def test_a_file_made_from_mail_saves_only_when_they_asked(company: Session, drive: list) -> None:
+def test_a_file_made_from_mail_saves_when_asked_in_any_words(company: Session, drive: list) -> None:
     from openexecutive.delegation.settings import TurnDelegation
 
     conversation_files.keep(company.session_id, {"half.pdf": b"x"}, from_mail=True)
     company.turn_delegation = TurnDelegation(offered=True, session_id=company.session_id)
-    pin_turn_delegation(company, "what's new today?")
-    assert _save({"file": "file:half.pdf", "folder": FOLDER})["status"] == "not_asked"
-    pin_turn_delegation(company, "save the half to the LOIs folder")
+    pin_turn_delegation(company, "Svane them")
     assert _save({"file": "file:half.pdf", "folder": FOLDER})["status"] == "saved"

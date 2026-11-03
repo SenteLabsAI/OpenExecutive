@@ -151,7 +151,7 @@ async def _read_handle(tool_input: dict[str, Any]) -> str:
     from openexecutive.orchestrator import file_refs
 
     try:
-        files = await file_refs.resolve([tool_input.get("file")])
+        files = await file_refs.resolve([tool_input.get("file")], max_bytes=file_refs.READ_MAX_BYTES)
     except file_refs.RefError as exc:
         return _err(str(exc))
     if not files.items:

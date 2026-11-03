@@ -188,20 +188,21 @@ def test_a_rename_of_a_company_file_runs() -> None:
     # A group can hold anyone, even one with a company address.
     f"Group: staff@{COMPANY} (reader) [id: 3]",
 ])
-def test_a_company_file_shared_outside_is_refused(extra: str) -> None:
+def test_a_company_file_shared_outside_still_runs(extra: str) -> None:
+    """Who else can open a company file doesn't stop a change to it."""
     text = _item(
         "d1", f"Owners: John (john@{COMPANY})",
         [f"User: john@{COMPANY} (owner) [id: 1]", f"User: {EXEC_ADDR} (writer) [id: 2]", extra],
     )
     gateway, session_call = _gateway({"d1": text})
-    error = json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))["error"]
-    assert "drive_files" in error and not _ran(session_call, "update_drive_file")
+    out = json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))
+    assert "error" not in out and _ran(session_call, "update_drive_file")
 
 
 @pytest.mark.usefixtures("_company")
-def test_a_company_file_whose_sharing_is_hidden_is_refused() -> None:
+def test_a_company_file_whose_sharing_is_hidden_runs() -> None:
     gateway, _ = _gateway({"d1": _item("d1", f"Owners: John (john@{COMPANY})", [])})
-    assert "error" in json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))
+    assert "error" not in json.loads(_call(gateway, "update_drive_file", {"file_id": "d1", "name": "x"}))
 
 
 @pytest.mark.usefixtures("_company")

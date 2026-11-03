@@ -345,10 +345,11 @@ class _Hold:
     summary: str
 
 
-# A quote this short could be found in almost any message ("48", "yes"), so
-# it would prove nothing about what the principal said.
-_QUOTE_MIN_CHARS = 8
-_QUOTE_MIN_WORDS = 2
+# Any quote of their own words counts, however short: a one-word answer
+# ("Internal") to the Executive's own question is the fact. It must still
+# be in this message (``_quote_error``).
+_QUOTE_MIN_CHARS = 1
+_QUOTE_MIN_WORDS = 1
 
 
 def _own_words(session: Any) -> str | None:
@@ -443,58 +444,6 @@ def _number_in_own_words(value: float, session: Any) -> bool:
     return any(_same(value, said) for said in _numbers_in(spoken))
 
 
-# Words a statement may use without the principal having said them: its
-# glue, not its claim. Everything else that is capitalised (a name, a
-# place, a product) or names a date must be in the principal's own words.
-_GLUE = frozenset({
-    "a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it", "its",
-    "of", "on", "or", "our", "the", "their", "this", "that", "to", "we", "with",
-})
-_DATE_WORDS = frozenset({
-    "january", "february", "march", "april", "may", "june", "july", "august",
-    "september", "october", "november", "december", "jan", "feb", "mar", "apr",
-    "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "monday", "tuesday",
-    "wednesday", "thursday", "friday", "saturday", "sunday", "q1", "q2", "q3", "q4",
-})
-# Any letter, not only ASCII: a name that opens with a look-alike capital
-# ("Αcme", a Greek Alpha) must still read as a word.
-_WORD = re.compile(r"[^\W\d_][\w&'’-]*")
-
-
-def _bare(word: str) -> str:
-    return re.sub(r"['’]s$", "", word).strip("'’-")
-
-
-def _unsaid_claim_words(statement: str, session: Any) -> list[str]:
-    """The names and date words in ``statement`` the principal did not write
-    this turn. A figure-free claim carried in from a document ("Cedar Court's
-    lease expires in March" after "remember what the lease doc says") names
-    something they never said; a paraphrase of what they did say does not.
-
-    A name is a capitalised word, or any word holding a non-ASCII letter (a
-    look-alike capital cannot hide one). Only the statement's very first word
-    is exempt, being capitalised by grammar (a date word never is): exempting
-    every sentence's first word would let a steered model split a document's
-    names into one-word sentences ("Cedar Court's landlord. Acme.").
-    A statement is one fact, so a second sentence gets no such allowance. A
-    name the model writes in lower case is not caught — the gate narrows
-    what a real quote can carry in, it does not prove a paraphrase."""
-    from openexecutive.memory.episodic import _normalize_for_quote_match
-
-    spoken = _normalize_for_quote_match(_own_words(session) or "")
-    said = {_bare(w) for w in _WORD.findall(spoken)}
-    missing: list[str] = []
-    for i, m in enumerate(_WORD.finditer(statement)):
-        bare = _bare(m.group(0))
-        key = bare.lower()
-        if not key or key in _GLUE or key in said:
-            continue
-        name_like = bare[0].isupper() or not bare.isascii()
-        if key in _DATE_WORDS or (name_like and i > 0):
-            missing.append(bare)
-    return missing
-
-
 def _claim_error(label: str, text: str, session: Any) -> str | None:
     """None when every figure, name and date word in ``text`` (a field
     ``remember_fact`` stores and renders) is the principal's own."""
@@ -506,14 +455,9 @@ def _claim_error(label: str, text: str, session: Any) -> str | None:
                 "(a document or someone else did) — ask them."
                 + (_PREVIOUS_HINT if label == "previous_value" else "")
             )
-    unsaid = _unsaid_claim_words(text, session)
-    if unsaid:
-        return (
-            f"the {label} names {', '.join(repr(w) for w in unsaid[:5])}, which the "
-            "speaker did not write this turn. Use their terms, or — if it came from "
-            "a document or someone else — ask them to confirm it."
-            + (_PREVIOUS_HINT if label == "previous_value" else "")
-        )
+    # Names and dates are not checked against their words: a short answer
+    # ("Internal") to the Executive's own question names nothing, and the
+    # statement must still name what it is about.
     return None
 
 
