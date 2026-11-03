@@ -244,9 +244,12 @@ def hold(
     mcp: bool,
     session_id: str | None = None,
     db_path: Path | None = None,
+    held: bool = False,
 ) -> int:
     """Make a held action a decision for its approver, with a card on Today.
-    The same action still waiting is that card, not a new one."""
+    The same action still waiting is that card, not a new one. ``held``: the
+    owner's level put it on a card (``orchestrator.levels``), so Approve may
+    carry out any step the Executive runs, not only a send."""
     from openexecutive.alerts.models import PRIVATE_ALERT_TAG, AlertSeverity
     from openexecutive.alerts.store import insert_alert
     from openexecutive.audit import log_event
@@ -261,7 +264,8 @@ def hold(
     base = "department_action:" + hashlib.sha256(
         # Someone on no People entry is told apart by their chat.
         json.dumps(
-            [person.id if person.id is not None else f"session:{session_id}", tool, tool_input, mcp],
+            [person.id if person.id is not None else f"session:{session_id}", tool, tool_input, mcp]
+            + (["held"] if held else []),
             sort_keys=True, default=str,
         ).encode()
     ).hexdigest()[:32]
@@ -291,6 +295,7 @@ def hold(
         # Everything the call says, in full: the card shows this before it
         # can be approved, since the summary keeps only the start.
         "details": _details(tool_input),
+        **({"held": True} if held else {}),
     }
     decision_id = create_decision_instance(
         decision_class=DECISION_CLASS,
@@ -309,7 +314,10 @@ def hold(
             source=DECISION_ALERT_SOURCE,
             external_id=external_id,
             severity=AlertSeverity.HIGH.value if escalated else AlertSeverity.MEDIUM.value,
-            headline=f"{who} asked the Executive to: {shown}"[:160],
+            headline=(
+                f"Waiting for your OK: {shown}" if held and person.is_principal
+                else f"{who} asked the Executive to: {shown}"
+            )[:160],
             body=f"{shown}\n\nIt waited because {verdict.reason}.",
             suggested_action=shown,
             topic_tags=[

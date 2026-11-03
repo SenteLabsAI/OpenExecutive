@@ -20,7 +20,6 @@ from openexecutive.audit.logger import AuditLogger
 from openexecutive.memory import episodic, session_store
 from openexecutive.orchestrator.schedule_tools import (
     MCP_CLIENT_WITHHELD_TOOLS,
-    SHARED_CHAT_REFUSAL,
     SHARED_CHAT_WITHHELD_TOOLS,
     current_session,
     shared_chat_withholds,
@@ -159,15 +158,16 @@ def test_every_withheld_name_is_a_real_tool() -> None:
     assert MCP_CLIENT_WITHHELD_TOOLS | {"resolve_roster_request"} >= SHARED_CHAT_WITHHELD_TOOLS
 
 
-def test_a_turn_others_wrote_into_is_not_offered_the_withheld_tools(people: dict[str, int]) -> None:
+def _held(result: str) -> bool:
+    parsed = json.loads(result)
+    return parsed.get("status") == "waiting_for_approval" and isinstance(parsed.get("decision_instance_id"), int)
+
+
+def test_a_turn_others_wrote_into_is_offered_every_tool(people: dict[str, int]) -> None:
+    # The one check decides at dispatch (orchestrator.levels): nothing is hidden.
     steered = _run_loop(_shared_turn(people["alex"], True), [], _gateway()).offered[0]
     clear = _run_loop(_shared_turn(people["alex"], False), [], _gateway()).offered[0]
-    assert not SHARED_CHAT_WITHHELD_TOOLS & set(steered)
-    assert "message_person" in clear
-    assert steered == sorted(steered)
-    assert steered == [n for n in clear if n not in SHARED_CHAT_WITHHELD_TOOLS]
-    # Stable: the same prefix on the next such turn.
-    assert _run_loop(_shared_turn(people["alex"], True), [], _gateway()).offered[0] == steered
+    assert steered == clear == sorted(steered)
 
 
 @pytest.mark.parametrize(
@@ -181,13 +181,12 @@ def test_a_turn_others_wrote_into_refuses_a_withheld_tool(people: dict[str, int]
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {tool: handler}):
         provider = _run_loop(_shared_turn(people["alex"], True), [tool_use])
     handler.assert_not_awaited()
-    error = json.loads(_results(provider)["tu-1"])["error"]
-    assert tool in error and SHARED_CHAT_REFUSAL in error
-    refused = [
+    assert _held(_results(provider)["tu-1"])
+    held = [
         e for e in audit_logger.get_audit_logger().query(event_type="tool_invocation", limit=50)
-        if e.details.get("refused") == "shared_chat"
+        if e.details.get("held") == "shared_chat"
     ]
-    assert [e.details["tool"] for e in refused] == [tool]
+    assert [e.details["tool"] for e in held] == [tool]
 
 
 def test_a_turn_others_wrote_into_refuses_through_use_tool(people: dict[str, int]) -> None:
@@ -201,7 +200,7 @@ def test_a_turn_others_wrote_into_refuses_through_use_tool(people: dict[str, int
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_department_message": handler}):
         provider = _run_loop(_shared_turn(people["alex"], True), [use])
     handler.assert_not_awaited()
-    assert SHARED_CHAT_REFUSAL in json.loads(_results(provider)["tu-1"])["error"]
+    assert _held(_results(provider)["tu-1"])
 
 
 @pytest.mark.parametrize(
@@ -227,8 +226,7 @@ def test_a_turn_others_wrote_into_sends_no_mail_or_invites_through_the_gateway(
     )
     provider = _run_loop(_shared_turn(people["alex"], True), [call], gateway)
     gateway.call_tool.assert_not_awaited()
-    error = json.loads(_results(provider)["tu-1"])["error"]
-    assert name in error and SHARED_CHAT_REFUSAL in error
+    assert _held(_results(provider)["tu-1"])
 
 
 def test_mail_reads_and_the_owners_own_turn_are_left_alone() -> None:

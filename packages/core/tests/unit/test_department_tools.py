@@ -789,10 +789,10 @@ def test_store_failures_reach_the_model_as_the_type_only(monkeypatch: pytest.Mon
         assert secret not in result["error"] and "tenant-7" not in result["error"]
 
 
-def test_unattended_loop_neither_offers_nor_runs_create_goal() -> None:
+def test_unattended_loop_puts_create_goal_on_a_card() -> None:
     """The scheduler's proactive trigger runs the chat loop on a Session with
-    unattended=True: create_goal is not in the tools sent to the model, and a
-    call the model emits anyway gets an error tool_result and writes nothing."""
+    unattended=True: a create_goal the model emits waits for the owner's OK
+    and writes nothing."""
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.schedule_tools import set_session
     from openexecutive.orchestrator.session import Session
@@ -828,9 +828,11 @@ def test_unattended_loop_neither_offers_nor_runs_create_goal() -> None:
     offered_out: list[str] = []
     items = asyncio.run(_go())
     offered = set(offered_out)
-    assert "create_goal" not in offered and "update_department_goal" in offered
+    assert "update_department_goal" in offered
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
-    assert "unattended" in result["error"]
+    # It waits on an Approve card; this test DB has no decisions table, so
+    # the model is told it couldn't be carded. Either way it never runs.
+    assert result.get("status") == "waiting_for_approval" or "Approve card" in result["error"]
     assert dept_store.list_goals("engineering") == []
     assert not [i for i in items if isinstance(i, dict) and i.get("type") == "action_taken"]
 

@@ -218,20 +218,22 @@ def test_off_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
 
 
-def test_a_private_turn_is_not_offered_it_and_is_refused(
+def test_a_private_turn_is_offered_it_and_it_waits(
     monkeypatch: pytest.MonkeyPatch, audit: list[dict[str, Any]]
 ) -> None:
     monkeypatch.setattr("openexecutive.orchestrator.executive.turn_is_private_to_principal", lambda: True)
     gateway = _Gateway()
     provider = _script_turn()
     _run(provider, gateway)
-    assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
-    assert "not available on this turn" in json.loads(_any_result(provider, "tu-s"))["error"]
+    # Offered: the one check decides at dispatch (orchestrator.levels). A
+    # script can't wait on an Approve card, so the model is told, not dropped.
+    assert "run_script" in [t.get("name") for t in provider.calls[0]["tools"]]
+    assert "can't wait on a card" in json.loads(_any_result(provider, "tu-s"))["error"]
     assert gateway.calls == []
-    assert any(r["details"].get("refused") == "private_turn" for r in audit)
+    assert any(r["details"].get("held") == "private_turn" for r in audit)
 
 
-def test_someone_elses_turn_is_not_offered_it_and_is_refused(
+def test_someone_elses_turn_does_not_run_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`run_script` is the principal's own, like run_python_job beside it.
@@ -252,8 +254,7 @@ def test_someone_elses_turn_is_not_offered_it_and_is_refused(
     gateway = _Gateway()
     provider = _script_turn()
     _run(provider, gateway)
-    assert "run_script" not in [t.get("name") for t in provider.calls[0]["tools"]]
-    assert "only the principal" in json.loads(_any_result(provider, "tu-s"))["error"]
+    assert "can't wait on a card" in json.loads(_any_result(provider, "tu-s"))["error"]
     assert gateway.calls == []
 
 
@@ -286,9 +287,9 @@ def test_a_turn_that_read_the_owners_mail_refuses_the_whole_script(
     gateway = _Gateway()
     provider = _script_turn()
     _run(provider, gateway)
-    assert "read the user's own mail" in json.loads(_any_result(provider, "tu-s"))["error"]
+    assert "can't wait on a card" in json.loads(_any_result(provider, "tu-s"))["error"]
     assert gateway.calls == []
-    assert any(r["details"].get("refused") == "mail_touched" for r in audit)
+    assert any(r["details"].get("held") == "mail_touched" for r in audit)
 
 
 def test_a_later_turn_of_a_mail_conversation_is_not_locked_once_the_mail_is_out_of_view(
@@ -451,8 +452,7 @@ def test_someone_elses_turn_is_not_offered_or_run_saved_tools(
         _FinalMsg([_TextBlock("Done.")], "end_turn"),
     ])
     _run(provider, gateway)
-    assert "list_saved_tools" not in [t.get("name") for t in provider.calls[0]["tools"]]
-    assert "only the principal" in json.loads(_any_result(provider, "tu-l"))["error"]
+    assert "can't wait on a card" in json.loads(_any_result(provider, "tu-l"))["error"]
     assert "principal's own turns" in json.loads(_any_result(provider, "tu-r"))["error"]
     assert gateway.calls == []
 

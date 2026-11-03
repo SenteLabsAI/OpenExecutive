@@ -270,6 +270,12 @@ def test_the_handlers_refuse_on_their_own() -> None:
     asyncio.run(go())
 
 
+def _card(provider: Any, tool_use_id: str) -> bool:
+    """Whether the step went on an Approve card for the owner
+    (orchestrator.levels.hold) instead of running."""
+    result = json.loads(_result(provider, tool_use_id))
+    return result.get("status") == "waiting_for_approval" and isinstance(result.get("decision_instance_id"), int)
+
 # --- the chat loop ----------------------------------------------------------
 
 
@@ -281,9 +287,8 @@ def test_a_write_after_a_read_is_refused_for_the_rest_of_the_turn(audit: list[di
         gateway=gateway,
     )
     assert gateway.calls == [READ_DOC]
-    error = json.loads(_result(provider, "tu2"))["error"]
-    assert "outside the team" in error and "next message" in error
-    rows = [r for r in audit if r["details"].get("refused") == "outside_content"]
+    assert _card(provider, "tu2")
+    rows = [r for r in audit if r["details"].get("held") == "outside_content"]
     assert len(rows) == 1 and rows[0]["details"]["tool"] == WRITE_DOC["name"]
     assert rows[0]["details"]["sources"] == [oc.GATEWAY]
 
@@ -328,7 +333,7 @@ def test_the_hold_survives_a_task_per_step(audit: list[dict[str, Any]]) -> None:
 
     asyncio.run(route())
     assert gateway.calls == [READ_DOC]
-    assert "outside the team" in json.loads(_result(provider, "tu2"))["error"]
+    assert _card(provider, "tu2")
 
 
 def test_a_turn_for_mail_from_outside_people_writes_nothing_but_an_alert(
@@ -351,9 +356,10 @@ def test_a_turn_for_mail_from_outside_people_writes_nothing_but_an_alert(
         session=Session(sender_off_team=True),
     )
     assert gateway.calls == []
-    assert "not in People" in json.loads(_result(provider, "tu1"))["error"]
+    # What a stranger's mail asks for waits on the owner's Approve card.
+    assert _card(provider, "tu1")
     assert [a["subject"] for a in alerts] == ["Invoice due"]
-    rows = [r for r in audit if r["details"].get("refused") == "outside_content"]
+    rows = [r for r in audit if r["details"].get("held") == "stranger_mail"]
     assert [r["details"]["sources"] for r in rows] == [[oc.SENDER]]
 
 
@@ -361,7 +367,7 @@ def test_a_read_holds_the_writes_beside_it_but_runs_itself() -> None:
     gateway = _Gateway()
     provider = _run([ToolUseBlock("tu1", "call_tool", READ_DOC), ToolUseBlock("tu2", "call_tool", SEND)], gateway=gateway)
     assert gateway.calls == [READ_DOC]
-    assert "outside the team" in json.loads(_result(provider, "tu2"))["error"]
+    assert _card(provider, "tu2")
 
 
 def test_writes_alone_run() -> None:
@@ -378,7 +384,7 @@ def test_a_web_search_in_the_same_response_holds_its_writes() -> None:
     gateway = _Gateway()
     provider = _run([_WebResult(), ToolUseBlock("tu1", "call_tool", SEND)], gateway=gateway)
     assert gateway.calls == []
-    assert "outside the team" in json.loads(_result(provider, "tu1"))["error"]
+    assert _card(provider, "tu1")
 
 
 def test_balanced_lets_a_write_beside_a_web_search_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -401,7 +407,7 @@ def test_no_contact_is_added_after_a_read(upserts: list[dict[str, Any]]) -> None
         gateway=gateway,
     )
     assert upserts == []
-    assert "outside the team" in json.loads(_result(provider, "tu2"))["error"]
+    assert _card(provider, "tu2")
 
 
 def test_an_attachment_holds_writes_from_the_first_round(upserts: list[dict[str, Any]]) -> None:
@@ -511,7 +517,7 @@ def test_a_scripts_writes_after_its_reads_are_refused() -> None:
     script = 'for f in drive__list_items(folder="x"):\n    drive__move_file(file_id=f["id"], folder_id="y")'
     provider = _run([ToolUseBlock("tu1", "run_script", {"script": script})], gateway=gateway)
     assert [c["name"] for c in gateway.calls] == ["drive__list_items"]
-    assert "outside the team" in _result(provider, "tu1")
+    assert '"waiting_for_approval": true' in _result(provider, "tu1")
 
 
 def test_a_vendor_app_read_counts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -624,7 +630,6 @@ def test_upsert_person_holds_a_new_person_and_a_new_address_only(monkeypatch: py
     assert asyncio.run(readdress()) == {existing}
 
 
-
 # --- the person's go to what a turn held -----------------------------------
 
 
@@ -644,139 +649,6 @@ def _any_result(provider: ScriptedProvider, use_id: str) -> str:
     raise AssertionError(f"no result for {use_id}")
 
 
-def _held_contact_turn(session: Session, gateway: _Gateway) -> None:
-    """A turn that read a doc, then had adding the contact held."""
-    _run(
-        [ToolUseBlock("tu1", "call_tool", READ_DOC)],
-        [ToolUseBlock("tu2", "upsert_person", CONTACT)],
-        gateway=gateway, session=session, message="read the doc and add Mallory",
-    )
-
-
-def test_a_go_runs_the_held_step_before_a_new_read(upserts: list[dict[str, Any]]) -> None:
-    session, gateway = Session(), _Gateway()
-    _held_contact_turn(session, gateway)
-    assert upserts == []
-    assert oc._HELD[f"{session.session_id}|"][0] == ("upsert_person",)
-    # Their go: the model reads again and adds the contact in one round. The
-    # read waits, so the contact is added; the read runs in the next round.
-    provider = _run(
-        [ToolUseBlock("tu3", "call_tool", READ_DOC), ToolUseBlock("tu4", "upsert_person", CONTACT)],
-        [ToolUseBlock("tu5", "call_tool", READ_DOC)],
-        gateway=gateway, session=session, message="Go, and add him",
-    )
-    assert upserts == [CONTACT]
-    deferred = json.loads(_any_result(provider, "tu3"))["error"]
-    assert "reads wait one round" in deferred
-    # It names nothing the last turn held, so it can't nudge a planted call.
-    assert "upsert_person" not in deferred
-    assert gateway.calls == [READ_DOC, READ_DOC]
-    # Spent: nothing is remembered for a third turn.
-    assert f"{session.session_id}|" not in oc._HELD
-
-
-def test_only_a_go_defers_a_read(upserts: list[dict[str, Any]]) -> None:
-    session, gateway = Session(), _Gateway()
-    _held_contact_turn(session, gateway)
-    _run([ToolUseBlock("tu3", "call_tool", READ_DOC)], gateway=gateway, session=session,
-         message="what else is in that doc?")
-    assert gateway.calls == [READ_DOC, READ_DOC]
-    assert f"{session.session_id}|" not in oc._HELD
-
-
-def test_a_go_may_read_the_same_text_again(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
-    # The go turn reads the very doc the held turn read (to find what to
-    # change) before making the held step: the same text holds nothing new.
-    from openexecutive.orchestrator import content_scan
-
-    async def clean(content: object, *, model: str | None = None) -> content_scan.Verdict:
-        return content_scan.CLEAN
-
-    monkeypatch.setattr(content_scan, "scan", clean)
-    session, gateway = Session(), _Gateway()
-    _held_contact_turn(session, gateway)
-    assert upserts == []
-    _run(
-        [ToolUseBlock("tu3", "call_tool", READ_DOC)],
-        [ToolUseBlock("tu4", "call_tool", READ_DOC)],
-        [ToolUseBlock("tu5", "upsert_person", CONTACT)],
-        gateway=gateway, session=session, message="go",
-    )
-    assert upserts == [CONTACT]
-
-
-def _go_reads_new_text(
-    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, verdict: Any,
-) -> None:
-    """A held turn, then a go turn that reads a doc it hadn't read before
-    (checked as ``verdict``) and then makes the held step."""
-    from openexecutive.orchestrator import content_scan
-
-    session, gateway = Session(), _Gateway()
-    _held_contact_turn(session, gateway)
-
-    async def scan(content: object, *, model: str | None = None) -> content_scan.Verdict:
-        return verdict
-
-    monkeypatch.setattr(content_scan, "scan", scan)
-    other = {"name": "google_workspace__get_doc_content", "arguments": {"document_id": "d2"}}
-    async def call_tool(tool_input: dict[str, Any]) -> str:
-        gateway.calls.append(tool_input)
-        return json.dumps({"text": "something else"})
-
-    monkeypatch.setattr(gateway, "call_tool", call_tool)
-    _run(
-        [ToolUseBlock("tu3", "call_tool", READ_DOC)],
-        [ToolUseBlock("tu4", "call_tool", other)],
-        [ToolUseBlock("tu5", "upsert_person", CONTACT)],
-        gateway=gateway, session=session, message="go",
-    )
-
-
-def test_a_go_is_not_undone_by_new_text_the_check_passes(
-    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from openexecutive.orchestrator import content_scan
-
-    _go_reads_new_text(upserts, monkeypatch, content_scan.CLEAN)
-    assert upserts == [CONTACT]
-
-
-def test_a_go_is_not_undone_by_text_too_big_to_check(
-    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A scanned PDF too big to check whole held every go on 10-19/20.
-    from openexecutive.orchestrator import content_scan
-
-    # TOO_BIG is the read that holds without a flag; at Careful (the tests'
-    # level) it doesn't undo the go. Only a flag does, below.
-    assert content_scan.TOO_BIG.holds and not content_scan.TOO_BIG.flagged
-    _go_reads_new_text(upserts, monkeypatch, content_scan.TOO_BIG)
-    assert upserts == [CONTACT]
-
-
-def test_a_go_still_holds_after_new_text_the_check_flags(
-    upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from openexecutive.orchestrator import content_scan
-
-    _go_reads_new_text(upserts, monkeypatch, content_scan.Verdict(flagged=True, categories=("instructions",)))
-    assert upserts == []
-
-
-def test_a_stale_hold_defers_nothing(upserts: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
-    session, gateway = Session(), _Gateway()
-    _held_contact_turn(session, gateway)
-    names, at, seen = oc._HELD[f"{session.session_id}|"]
-    oc._HELD[f"{session.session_id}|"] = (names, at - oc.HELD_TTL_SECONDS - 1, seen)
-    state = oc.begin_turn(session, user_message="go")
-    try:
-        assert state.go_first == ()
-        assert oc.defers_read("call_tool", READ_DOC) is False
-    finally:
-        oc.end_turn(state)
-
-
 def test_mail_from_outside_people_remembers_no_hold() -> None:
     session = Session(sender_off_team=True)
     state = oc.begin_turn(session, user_message="add me as a contact")
@@ -785,23 +657,6 @@ def test_mail_from_outside_people_remembers_no_hold() -> None:
     finally:
         oc.end_turn(state)
     assert f"{session.session_id}|" not in oc._HELD
-
-
-def test_a_shared_chat_remembers_no_hold(upserts: list[dict[str, Any]]) -> None:
-    session, gateway = Session(shared_chat=True), _Gateway()
-    _held_contact_turn(session, gateway)
-    assert oc._HELD == {}
-
-
-def test_a_hold_is_the_speakers_own(upserts: list[dict[str, Any]]) -> None:
-    session, gateway = Session(caller_person_id=1), _Gateway()
-    _held_contact_turn(session, gateway)
-    session.caller_person_id = 2
-    state = oc.begin_turn(session, user_message="go")
-    try:
-        assert state.go_first == ()
-    finally:
-        oc.end_turn(state)
 
 
 @pytest.mark.parametrize(("message", "go"), [
@@ -875,7 +730,7 @@ def test_a_file_shared_in_from_outside_still_holds_the_turn() -> None:
         gateway=gateway,
     )
     assert gateway.calls == [READ_THEIRS]
-    assert "drive_files" in json.loads(_result(provider, "tu2"))["error"]
+    assert _card(provider, "tu2")
 
 
 def test_a_script_renames_the_company_files_it_read() -> None:
@@ -895,24 +750,34 @@ RENAME_WITH_CONTENT = {
 
 
 @pytest.mark.parametrize("write", [EDIT_OURS, RENAME_WITH_CONTENT])
-def test_after_a_company_read_only_a_rename_or_move_goes_through(write: dict[str, Any]) -> None:
-    # The company's files hold words from anyone who can edit them, so
-    # anything but a rename or move still waits for a go.
+def test_after_a_company_read_any_write_goes_through(write: dict[str, Any]) -> None:
+    # The company's own Drive is never outside content (Rufus, 2026-11-03).
     gateway = _CompanyGateway({OURS})
-    provider = _run(
+    _run(
         [ToolUseBlock("tu1", "call_tool", READ_OURS)],
         [ToolUseBlock("tu2", "call_tool", write)],
         gateway=gateway,
     )
-    assert gateway.calls == [READ_OURS]
-    assert "error" in json.loads(_result(provider, "tu2"))
+    assert gateway.calls == [READ_OURS, write]
 
 
-def test_a_script_that_reads_a_company_file_cannot_edit_it() -> None:
+def test_a_script_that_reads_a_company_file_can_edit_it() -> None:
     gateway = _CompanyGateway({OURS})
     script = (
         f'google_workspace__get_drive_file_content(file_id="{OURS}")\n'
         f'google_workspace__modify_doc_text(document_id="{OURS}", text="Paid")'
     )
     _run([ToolUseBlock("tu1", "run_script", {"script": script})], gateway=gateway)
-    assert [c["name"] for c in gateway.calls] == [READ_OURS["name"]]
+    assert [c["name"] for c in gateway.calls] == [READ_OURS["name"], EDIT_OURS["name"]]
+
+
+def test_a_search_of_the_company_drive_is_not_outside() -> None:
+    gateway = _Gateway()
+    search = {"name": "google_workspace__search_drive_files", "arguments": {"query": "withdrawal"}}
+    _run(
+        [ToolUseBlock("tu1", "call_tool", search)],
+        [ToolUseBlock("tu2", "call_tool", SEND)],
+        gateway=gateway,
+    )
+    assert gateway.calls == [search, SEND]
+    assert oc.source_of("call_tool", {"name": "microsoft_365__search-onedrive-files", "arguments": {}}) is None

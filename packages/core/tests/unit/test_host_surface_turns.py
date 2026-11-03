@@ -22,8 +22,6 @@ from openexecutive.departments import store as dept_store
 from openexecutive.memory import episodic
 from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS, principal_only_withheld
 from openexecutive.orchestrator.schedule_tools import (
-    HOST_REFUSAL,
-    MCP_CLIENT_WITHHELD_TOOLS,
     current_session,
     host_turn,
     mcp_rules_turn,
@@ -91,16 +89,12 @@ def test_a_host_turn_is_read_only() -> None:
 
 
 def test_the_tools_a_host_turn_is_offered(principal: int) -> None:
-    from openexecutive.orchestrator.executive import _ALL_SKILL_TOOLS
 
     host = _run_loop(_web_turn(principal, host=True), [], _gateway()).offered[0]
     own = _run_loop(_web_turn(principal, host=False), [], _gateway()).offered[0]
-    assert not MCP_CLIENT_WITHHELD_TOOLS & set(host)
-    assert not PRINCIPAL_ONLY_TOOLS & set(host)
+    # Nothing is hidden: the one check decides at dispatch (orchestrator.levels).
     assert host == sorted(host)
-    assert set(host) < set(own)
-    skill_names = {t["name"] for t in _ALL_SKILL_TOOLS}
-    assert set(host) & skill_names == HOST_TURN_SKILL_TOOLS, sorted(host)
+    assert set(host) <= set(own)
     assert {"consult_specialist", "search_tools", "call_tool"} <= set(host)
     assert "recall_history" not in host
     # Stable: the same prefix on the next host turn.
@@ -113,7 +107,7 @@ def test_principal_only_tools_are_withheld_on_a_host_turn(principal: int) -> Non
 
 
 @pytest.mark.parametrize("tool", ["message_person", "create_calendar_event", "ack_alert", "schedule_followup"])
-def test_a_host_turn_refuses_what_would_act(principal: int, tool: str) -> None:
+def test_a_host_turn_puts_what_would_act_on_a_card(principal: int, tool: str) -> None:
     from openexecutive.orchestrator import executive as executive_module
 
     handler = AsyncMock(return_value=json.dumps({"status": "done"}))
@@ -121,8 +115,7 @@ def test_a_host_turn_refuses_what_would_act(principal: int, tool: str) -> None:
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {tool: handler}):
         provider = _run_loop(_web_turn(principal, host=True), [tool_use])
     handler.assert_not_awaited()
-    error = json.loads(_results(provider)["tu-1"])["error"]
-    assert tool in error and HOST_REFUSAL in error
+    assert json.loads(_results(provider)["tu-1"])["status"] == "waiting_for_approval"
 
 
 def test_a_host_turn_gets_no_act_as_me(principal: int) -> None:

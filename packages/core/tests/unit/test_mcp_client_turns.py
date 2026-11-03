@@ -154,8 +154,13 @@ def _refusals() -> list[Any]:
     return [
         e
         for e in audit_logger.get_audit_logger().query(event_type="tool_invocation", limit=200)
-        if e.details.get("refused") == "mcp_client"
+        if e.details.get("held") == "mcp_client"
     ]
+
+
+def _held(result: str) -> bool:
+    parsed = json.loads(result)
+    return parsed.get("status") == "waiting_for_approval" and isinstance(parsed.get("decision_instance_id"), int)
 
 
 # --- the sets ---------------------------------------------------------------
@@ -204,22 +209,6 @@ def test_the_gateway_allow_list_holds_no_send_or_draft() -> None:
 # --- the chat loop ----------------------------------------------------------
 
 
-def test_an_mcp_client_turn_is_not_offered_the_withheld_tools(roster: SimpleNamespace) -> None:
-    mcp_turn = _run_loop(_mcp_turn(roster.teammate), [], _gateway())
-    offered = mcp_turn.offered[0]
-    normal = _run_loop(Session(caller_person_id=roster.teammate), [], _gateway()).offered[0]
-    assert not MCP_CLIENT_WITHHELD_TOOLS & set(offered)
-    # Withheld before the sort: the normal list minus the set, still sorted.
-    assert offered == sorted(offered)
-    assert offered == [n for n in normal if n not in MCP_CLIENT_WITHHELD_TOOLS]
-    assert {"consult_specialist", "search_tools", "call_tool", "list_people"} <= set(offered)
-    # Stable: the same prefix on the next such turn.
-    assert _run_loop(_mcp_turn(roster.teammate), [], _gateway()).offered[0] == offered
-    tools = mcp_turn.calls[0]["tools"]
-    client = [t for t in tools if "input_schema" in t]
-    assert "cache_control" in client[-1]
-
-
 @pytest.mark.parametrize(
     "tool",
     ["message_person", "send_slack_dm", "create_calendar_event", "ack_alert", "upsert_person"],
@@ -234,8 +223,8 @@ def test_an_mcp_client_turn_refuses_a_withheld_tool_the_model_emits_anyway(
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {tool: handler}):
         provider = _run_loop(_mcp_turn(roster.principal), [tool_use])
     handler.assert_not_awaited()
-    error = json.loads(_results(provider)["tu-1"])["error"]
-    assert tool in error and MCP_CLIENT_REFUSAL in error
+    # Another AI app's step waits on the owner's Approve card (orchestrator.levels).
+    assert _held(_results(provider)["tu-1"])
     assert [e.details["tool"] for e in _refusals()] == [tool]
 
 
@@ -250,7 +239,7 @@ def test_an_mcp_client_turn_refuses_through_use_tool(roster: SimpleNamespace) ->
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}):
         provider = _run_loop(_mcp_turn(roster.principal), [use])
     handler.assert_not_awaited()
-    assert MCP_CLIENT_REFUSAL in json.loads(_results(provider)["tu-1"])["error"]
+    assert _held(_results(provider)["tu-1"])
 
 
 def test_an_mcp_client_turn_gets_no_act_as_me_or_extension_tools(
@@ -283,8 +272,7 @@ def test_an_mcp_client_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> 
     )
     provider = _run_loop(_mcp_turn(roster.principal), [tool_use], gateway)
     gateway.load_mcp_server.assert_not_awaited()
-    assert "load_mcp_server" not in provider.offered[0]
-    assert MCP_CLIENT_REFUSAL in json.loads(_results(provider)["tu-1"])["error"]
+    assert "can't wait on a card" in json.loads(_results(provider)["tu-1"])["error"]
 
 
 # --- gateway tools: reads only ----------------------------------------------
@@ -343,13 +331,13 @@ def test_an_mcp_client_turn_reaches_gateway_reads_only(roster: SimpleNamespace) 
     ):
         provider = _run_loop(_mcp_turn(roster.principal), uses, gateway)
     results = _results(provider)
-    # A search shows only the reads.
-    assert "google_workspace__search_drive_files" in results["tu-1"]
-    assert "send_gmail_message" not in results["tu-1"] and "slack__" not in results["tu-1"]
-    for refused in ("tu-2", "tu-3", "tu-4"):
-        assert MCP_CLIENT_REFUSAL in json.loads(results[refused])["error"]
+    # A search shows every tool; the one check decides at dispatch.
+    assert results["tu-1"] == _SEARCH_TEXT
+    # Mail only to the owner runs; the draft and the Slack post wait on cards.
+    for held in ("tu-3", "tu-4"):
+        assert _held(results[held])
     called = [args["tool_name"] for name, args in reached if name == "call_tool"]
-    assert called == ["google_workspace__search_drive_files"]
+    assert called == ["google_workspace__send_gmail_message", "google_workspace__search_drive_files"]
 
 
 def test_the_gateway_itself_refuses_a_send_on_an_mcp_client_turn(roster: SimpleNamespace) -> None:
@@ -361,7 +349,7 @@ def test_the_gateway_itself_refuses_a_send_on_an_mcp_client_turn(roster: SimpleN
         with set_session(_mcp_turn(roster.principal)):
             return str(await gateway.call_tool({
                 "name": "google_workspace__send_gmail_message",
-                "arguments": {"to": OWNER_EMAIL, "subject": "s", "body": "b"},
+                "arguments": {"to": TEAM_EMAIL, "subject": "s", "body": "b"},
             }))
 
     out = asyncio.run(_go())
@@ -376,18 +364,6 @@ def _teammate_run(person_id: int) -> Session:
     return Session(unattended=True, run_for_person_id=person_id)
 
 
-def test_a_teammates_scheduled_run_is_read_only(roster: SimpleNamespace) -> None:
-    """The runner sends what such a run writes; the run itself sends,
-    schedules and writes nothing (`schedule_tools.read_only_turn`)."""
-    from openexecutive.orchestrator.schedule_tools import read_only_turn
-
-    assert read_only_turn(_teammate_run(roster.teammate))
-    assert not read_only_turn(Session(unattended=True))
-    offered = set(_run_loop(_teammate_run(roster.teammate), [], _gateway()).offered[0])
-    assert not MCP_CLIENT_WITHHELD_TOOLS & offered
-    assert not {"message_person", "send_slack_dm", "schedule_followup", "suggest_workflow"} & offered
-
-
 def test_a_teammates_scheduled_run_refuses_a_send_the_model_emits(
     roster: SimpleNamespace,
 ) -> None:
@@ -400,7 +376,7 @@ def test_a_teammates_scheduled_run_refuses_a_send_the_model_emits(
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"message_person": handler}):
         provider = _run_loop(_teammate_run(roster.teammate), [tool_use])
     handler.assert_not_awaited()
-    assert "message_person" in json.loads(_results(provider)["tu-1"])["error"]
+    assert _held(_results(provider)["tu-1"])
 
 
 def test_the_gateway_refuses_a_send_on_a_teammates_scheduled_run(
@@ -414,7 +390,7 @@ def test_the_gateway_refuses_a_send_on_a_teammates_scheduled_run(
         with set_session(_teammate_run(roster.teammate)):
             return str(await gateway.call_tool({
                 "name": "google_workspace__send_gmail_message",
-                "arguments": {"to": OWNER_EMAIL, "subject": "s", "body": "b"},
+                "arguments": {"to": "x@elsewhere.example", "subject": "s", "body": "b"},
             }))
 
     assert "error" in json.loads(asyncio.run(_go()))

@@ -1578,9 +1578,18 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
 
     tool = str(payload.get("tool") or "")
     tool_input = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+    from openexecutive.orchestrator import levels
+
     token = current_session.set(Session(unattended=True))
     try:
-        with grant_contact_egress() if by_principal else nullcontext():
+        with (
+            grant_contact_egress() if by_principal else nullcontext(),
+            # The tap approves this one call: a skill that runs others
+            # (a workflow, research) keeps every check for them.
+            levels.approved()
+            if by_principal and payload.get("held") is True and tool not in levels.NOT_RELAXED_SKILLS
+            else nullcontext(),
+        ):
             if payload.get("mcp"):
                 from openexecutive.orchestrator.mcp_gateway import get_active_gateway
 
@@ -1591,7 +1600,8 @@ async def carry_out(payload: dict[str, Any], *, by_principal: bool) -> str:
             else:
                 from openexecutive.orchestrator.executive import _ALL_SKILL_HANDLERS
 
-                if tool not in ACTING_TOOLS or tool not in _ALL_SKILL_HANDLERS:
+                allowed = tool in _ALL_SKILL_HANDLERS and (tool in ACTING_TOOLS or payload.get("held") is True)
+                if not allowed:
                     raise RuntimeError(f"{tool} can't be done from here.")
                 result = await _ALL_SKILL_HANDLERS[tool](tool_input)
     finally:

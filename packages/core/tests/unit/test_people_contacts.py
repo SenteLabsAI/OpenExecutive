@@ -499,12 +499,17 @@ def test_email_to_a_contact_only_on_the_principals_turn(
     out, sent = _send(CONTACT_EMAIL, _sessions(roster)[surface])
     assert (sent.await_count == 1) is allowed
     if not allowed:
-        # Refused exactly like a stranger: nothing says the address is a contact.
+        # Below Hands-off it waits on an Approve card on a turn someone is in
+        # (orchestrator.levels); with no turn, refused exactly like a
+        # stranger: nothing says the address is a contact.
+        parsed = json.loads(out)
+        if parsed.get("status") == "waiting_for_approval":
+            return
         stranger, _ = _send("stranger@elsewhere.example", _sessions(roster)[surface])
-        assert json.loads(out)["error"] == json.loads(stranger)["error"].replace(
+        assert parsed["error"] == json.loads(stranger)["error"].replace(
             "stranger@elsewhere.example", CONTACT_EMAIL
         )
-        assert "contact" not in json.loads(out)["error"]
+        assert "contact" not in parsed["error"]
 
 
 @pytest.mark.parametrize("surface", [
@@ -515,8 +520,14 @@ def test_email_to_the_team_is_unchanged(roster: SimpleNamespace, surface: str) -
     assert sent.await_count == 1
 
 
-def test_a_stranger_is_still_refused_with_the_roster_message(roster: SimpleNamespace) -> None:
+def test_a_stranger_waits_on_an_approve_card(roster: SimpleNamespace) -> None:
     out, sent = _send("stranger@elsewhere.example", _principal_web(roster))
+    assert sent.await_count == 0
+    assert json.loads(out)["status"] == "waiting_for_approval"
+
+
+def test_with_no_turn_a_stranger_is_refused_with_the_roster_message(roster: SimpleNamespace) -> None:
+    out, sent = _send("stranger@elsewhere.example", None)
     assert sent.await_count == 0
     assert "EMAIL_ALLOWED_SENDERS" in json.loads(out)["error"]
 
@@ -1528,7 +1539,7 @@ def test_a_private_turn_emails_the_principal_and_nobody_else(roster: SimpleNames
     _, to_principal = _send(OWNER_EMAIL, _private_turn(roster))
     out, to_teammate = _send(TEAM_EMAIL, _private_turn(roster))
     assert to_principal.await_count == 1 and to_teammate.await_count == 0
-    assert "EMAIL_ALLOWED_SENDERS" in json.loads(out)["error"]
+    assert json.loads(out)["status"] == "waiting_for_approval"
 
 
 def test_a_private_turn_messages_the_principal_and_nobody_else(
