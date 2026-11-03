@@ -58,6 +58,7 @@ from datetime import UTC, datetime, tzinfo
 from typing import Any
 
 from openexecutive.alerts.lifecycle import parse_aware
+from openexecutive.utils.clock import clock
 
 logger = logging.getLogger(__name__)
 
@@ -101,16 +102,16 @@ def _one_line(value: Any, limit: int = _TEXT_MAX) -> str:
 
 
 def _local_hhmm(iso: str | None, tz: tzinfo, now: datetime | None = None) -> str:
-    """"14:05", or "Wed 14 Oct 14:05" when ``now`` is given and the moment
-    falls on another local day: the brief's window reaches into yesterday,
-    and a bare time read as today put yesterday's mail on today."""
+    """"2:05 PM", or "Wed 14 Oct 2:05 PM" when ``now`` is given and the
+    moment falls on another local day: the brief's window reaches into
+    yesterday, and a bare time read as today put yesterday's mail on today."""
     dt = parse_aware(iso)
     if dt is None:
         return "--:--"
     local = dt.astimezone(tz)
     if now is not None and local.date() != now.astimezone(tz).date():
-        return f"{local:%a} {local.day} {local:%b %H:%M}"
-    return f"{local:%H:%M}"
+        return f"{local:%a} {local.day} {local:%b} {clock(local)}"
+    return clock(local)
 
 
 def _principal() -> Any:
@@ -474,13 +475,28 @@ def _drafts(
     count = drafts.count_waiting(principal.id, since)
     if not count:
         return 0, []
+    waiting = drafts.waiting_drafts(principal.id, since)
+    # A draft addressed only to the reader (one the Executive saved for them
+    # to keep, like signed papers mailed to themselves) is not mail anyone is
+    # waiting on: Right now called one "still sitting in drafts, unsent".
+    own = {a.casefold() for a in [principal.email, *principal.email_aliases] if a}
+    count = max(0, count - sum(1 for d in waiting if _only_to(d.to, own)))
     # Only the ones a settle pass has read: a bare time names nothing (the
     # count still covers them).
     return count, [
         draft_line(d, tz, now)
-        for d in drafts.waiting_drafts(principal.id, since)
-        if d.to or d.subject
+        for d in waiting
+        if (d.to or d.subject) and not _only_to(d.to, own)
     ]
+
+
+def _only_to(recipients: Any, own: set[str]) -> bool:
+    """Whether every recipient of a draft is one of the reader's own
+    addresses (and there is at least one)."""
+    from email.utils import parseaddr
+
+    addresses = [parseaddr(str(r))[1].casefold() for r in recipients or ()]
+    return bool(own) and bool(addresses) and all(a in own for a in addresses)
 
 
 def draft_line(draft: Any, tz: tzinfo, now: datetime | None = None) -> str:
@@ -617,9 +633,9 @@ def _calendar_lines(events: list[Any], now: datetime, tz: tzinfo) -> list[str]:
             continue
         if e.end == e.start and e.start < now:
             continue
-        when = f"{e.start.astimezone(tz):%H:%M}"
+        when = clock(e.start.astimezone(tz))
         if e.end > e.start:
-            when += f"–{e.end.astimezone(tz):%H:%M}"
+            when += f"–{clock(e.end.astimezone(tz))}"
         state = "IN PROGRESS " if e.start <= now < e.end else ""
         lines.append(f"{state}{when} {_one_line(e.title, 80)}")
     return (all_day + lines)[:_CALENDAR_MAX]
@@ -638,7 +654,7 @@ def _met_today_lines(events: list[Any], now: datetime, tz: tzinfo) -> list[str]:
         reverse=True,
     )
     return [
-        f"{e.start.astimezone(tz):%H:%M}–{e.end.astimezone(tz):%H:%M} {_one_line(e.title, 80)}"
+        f"{clock(e.start.astimezone(tz))}–{clock(e.end.astimezone(tz))} {_one_line(e.title, 80)}"
         for e in over[:_MET_TODAY_MAX]
     ]
 
@@ -674,7 +690,7 @@ def _chat_asks(now: datetime, tz: tzinfo) -> tuple[list[str], list[dict[str, Any
     ids: list[int] = []
     for ask in chat_asks.waiting(principal.id, now):
         try:
-            at = datetime.fromisoformat(ask.asked_at).astimezone(tz).strftime("%H:%M")
+            at = clock(datetime.fromisoformat(ask.asked_at).astimezone(tz))
         except ValueError:
             at = ""
         lines.append(
@@ -819,7 +835,7 @@ def _waiting_lines(items: list[Any], now: datetime, tz: tzinfo) -> list[str]:
         local = w.sent_at.astimezone(tz)
         days = (today - local.date()).days
         when = (
-            f"today at {local:%H:%M}" if days == 0
+            f"today at {clock(local)}" if days == 0
             else "yesterday" if days == 1
             else f"{days} days ago ({local:%a} {local.day} {local:%b})"
         )

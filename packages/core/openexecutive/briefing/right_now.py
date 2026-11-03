@@ -8,7 +8,9 @@ of state that needs, next to the header's own table:
 
 - ``briefing_point_seen``: per scope and local day, when a point (keyed by its
   bold subject) first appeared in a written header. Recorded when a header is
-  written, so a point keeps its time across rewrites that reword it.
+  written, so a point keeps its time across rewrites that reword it: a new
+  key about the same item, or with the same words (``same_point``), takes
+  the earlier time and is not new.
 - ``briefing_reader_seen``: per scope, when the reader last looked at it.
 - ``briefing_point_source``: per scope and local day, what each point of the
   latest header is about (an email, a card), so Home can open it. Replaced
@@ -155,10 +157,46 @@ class Recorded:
     new: list[str] = field(default_factory=list)
 
 
-def record_points(scope: str, text: str, written_at: str) -> Recorded:
+# Words a subject's key keeps when it is reworded: "Pricing and the Alex
+# demo" and "Pricing and Alex" are the same point.
+_KEY_FILLER = frozenset({
+    "a", "an", "and", "the", "of", "for", "to", "on", "in", "at", "with", "from",
+    "re", "fwd", "fw", "your", "you", "new", "update", "s",
+})
+# Two keys with at least this share of words in common name the same point.
+_SAME_POINT_OVERLAP = 0.5
+
+
+def _key_words(key: str) -> frozenset[str]:
+    return frozenset(w for w in key.split() if w not in _KEY_FILLER)
+
+
+def same_point(a: str, b: str) -> bool:
+    """Whether two point keys name the same thing, reworded: one's words are
+    all in the other ("Dogwood View" and "Dogwood View dog bite"), or half
+    of all their words are shared. The header rewrites its subjects through
+    the day, so an exact key alone made the same item new again on each
+    rewrite (a fresh time, a green dot, a ping) and let a dismissed one back."""
+    if a == b:
+        return True
+    wa, wb = _key_words(a), _key_words(b)
+    if not wa or not wb:
+        return False
+    if wa <= wb or wb <= wa:
+        return True
+    return len(wa & wb) / len(wa | wb) >= _SAME_POINT_OVERLAP
+
+
+def record_points(
+    scope: str, text: str, written_at: str, sources: dict[str, dict[str, Any]] | None = None,
+) -> Recorded:
     """Note when each of this header's points first appeared today. A point
-    already recorded keeps its earlier time. Returns what was new (for
-    ``briefing.right_now_ping``). Never raises."""
+    already recorded keeps its earlier time, also when it is reworded: a key
+    not seen before takes the time of an earlier one about the same item
+    (``sources``, this header's ``point_key`` → item, against the last
+    header's) or with the same words (``same_point``). Returns what was new
+    (for ``briefing.right_now_ping``). Call it before ``record_sources``
+    replaces the last header's items. Never raises."""
     day = _day_of(written_at)
     if day is None:
         return Recorded()
@@ -171,23 +209,43 @@ def record_points(scope: str, text: str, written_at: str) -> Recorded:
         return Recorded()
     try:
         initialize_db()
+        earlier_items = {
+            ident: k for k, src in point_sources(scope, day).items()
+            if (ident := source_identity(src)) is not None
+        }
         with narrative_cache._get_conn() as conn:
             known = {
-                r["point_key"] for r in conn.execute(
-                    "SELECT point_key FROM briefing_point_seen WHERE scope = ? AND day = ?", (scope, day),
+                r["point_key"]: r["first_seen"] for r in conn.execute(
+                    "SELECT point_key, first_seen FROM briefing_point_seen WHERE scope = ? AND day = ?",
+                    (scope, day),
                 ).fetchall()
             }
+            rows: list[tuple[str, str, str, str]] = []
+            new: list[str] = []
+            for k in sorted(by_key):
+                if k in known:
+                    continue
+                ident = source_identity((sources or {}).get(k))
+                match = earlier_items.get(ident) if ident else None
+                times = [known[match]] if match is not None and match in known else [
+                    t for old, t in known.items() if same_point(k, old)
+                ]
+                if times:
+                    rows.append((scope, day, k, min(times)))
+                else:
+                    rows.append((scope, day, k, written_at))
+                    new.append(by_key[k])
             conn.executemany(
                 "INSERT OR IGNORE INTO briefing_point_seen "
                 "(scope, day, point_key, first_seen) VALUES (?, ?, ?, ?)",
-                [(scope, day, k, written_at) for k in sorted(by_key)],
+                rows,
             )
             # Times are only read for the local today; earlier days go.
             conn.execute("DELETE FROM briefing_point_seen WHERE day < ?", (day,))
     except Exception:
         logger.exception("right_now: recording points failed (scope=%s)", scope)
         return Recorded()
-    return Recorded(new=[p for k, p in by_key.items() if k not in known])
+    return Recorded(new=new)
 
 
 def point_times(scope: str, day: str) -> dict[str, str]:
@@ -348,7 +406,8 @@ def is_dismissed(point: str, source: dict[str, Any] | None, gone: list[Dismissed
     the same key, or a reworded point about the same item."""
     if not gone:
         return False
-    if point_key(point) in {d.key for d in gone}:
+    key = point_key(point)
+    if any(same_point(key, d.key) for d in gone):
         return True
     identity = source_identity(source)
     return identity is not None and identity in {source_identity(d.source) for d in gone}
@@ -416,6 +475,7 @@ __all__ = [
     "point_times",
     "record_points",
     "record_sources",
+    "same_point",
     "seen_at",
     "source_identity",
     "split_narrative",

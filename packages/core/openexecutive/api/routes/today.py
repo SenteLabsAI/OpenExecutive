@@ -2318,7 +2318,7 @@ async def _regen_briefing_narrative_locked(
     ))
     from openexecutive.briefing import right_now
 
-    recorded = right_now.record_points(scope, text, written_at)
+    recorded = right_now.record_points(scope, text, written_at, pointed)
     right_now.record_sources(scope, written_at, pointed)
     if scope == narrative_cache.DEFAULT_SCOPE and recorded.new:
         from openexecutive.briefing.right_now_ping import maybe_ping

@@ -3,10 +3,14 @@ import { test } from "node:test";
 
 import {
   alsoInLine,
+  buildMoveSeed,
   cardLink,
   checkedLabel,
   clockLabel,
   isNewSince,
+  isPutOff,
+  laterMark,
+  moveMail,
   newSinceLabel,
   pointTarget,
   progressNote,
@@ -116,4 +120,28 @@ test("a quiet card links only to what it doesn't already show", () => {
   assert.equal(cardLink({ narrative_points: [], morning_brief: brief, calendar_next: [meet, meet] }, 1), "whole");
   assert.equal(cardLink({ narrative_points: [], narrative_move: "Call Ana" }, 0), "whole");
   assert.equal(cardLink({ narrative_points: [], narrative_move: " ", calendar_next: [meet] }, 1), null);
+});
+
+test("Do next: the seed quotes the move", () => {
+  const seed = buildMoveSeed("  Read Annamarie's email. ");
+  assert.match(seed, /"Read Annamarie's email\."/);
+  assert.match(seed, /before it goes/);
+});
+
+test("Do next opens the top point's email only", () => {
+  const mail = { text: "**A**", source: { kind: "mail", message_id: "m1", thread_id: "t1", decision_id: 4 } };
+  const alert = { text: "**B**", source: { kind: "alert", alert_id: 3 } };
+  assert.deepEqual(moveMail([mail, alert]), { kind: "mail", threadId: "t1", messageId: "m1", cardId: 4 });
+  assert.equal(moveMail([alert, mail]), null);
+  assert.equal(moveMail([]), null);
+});
+
+test("Later puts away this move for today only", () => {
+  const now = at(15, 0);
+  const mark = laterMark("Call Dana.", now);
+  assert.equal(isPutOff(mark, "Call Dana. ", now), true);
+  assert.equal(isPutOff(mark, "Email Kim.", now), false);
+  assert.equal(isPutOff(mark, "Call Dana.", new Date(now.getTime() + 86_400_000)), false);
+  assert.equal(isPutOff("not json", "Call Dana.", now), false);
+  assert.equal(isPutOff(null, "Call Dana.", now), false);
 });

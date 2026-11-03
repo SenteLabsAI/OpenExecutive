@@ -144,3 +144,44 @@ export function progressNote(newMail: number | null | undefined, since: string |
   if (!newMail || newMail < 1 || !when) return null;
   return `${newMail} new email${newMail === 1 ? "" : "s"} since ${when}`;
 }
+
+// Do next: the header's Move today line, on the Home card with buttons that
+// start it. "Later" puts it away until the move changes or the day ends.
+
+/** The chat that "Do it" opens: the Executive starts on the move, doing what
+ * it can and showing anything to send or approve first. */
+export function buildMoveSeed(move: string): string {
+  return (
+    `Let's do this now, from Right now:\n\n"${move.trim()}"\n\n` +
+    `Start on it: do the parts you can, and show me anything that needs my ` +
+    `OK (an email to send, a meeting to book) before it goes.`
+  );
+}
+
+/** The email the move is about: the top point's, when it has one. The move
+ * follows the opener, which the top point spells out. */
+export function moveMail(points: TimedPoint[]): Extract<NonNullable<PointTarget>, { kind: "mail" }> | null {
+  const top = points[0] ? pointTarget(points[0]) : null;
+  return top && top.kind === "mail" ? top : null;
+}
+
+function localDay(now: Date): string {
+  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+}
+
+/** What "Later" stores: this move, today. */
+export function laterMark(move: string, now: Date): string {
+  return JSON.stringify({ day: localDay(now), move: move.trim() });
+}
+
+/** Whether a stored "Later" covers this move today (a new move shows again,
+ * and so does every move the next day). */
+export function isPutOff(stored: string | null | undefined, move: string, now: Date): boolean {
+  if (!stored) return false;
+  try {
+    const v = JSON.parse(stored) as { day?: unknown; move?: unknown };
+    return v.day === localDay(now) && v.move === move.trim();
+  } catch {
+    return false;
+  }
+}

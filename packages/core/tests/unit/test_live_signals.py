@@ -176,6 +176,47 @@ async def test_a_waiting_draft_is_named_in_stuck(monkeypatch: pytest.MonkeyPatch
     assert 'to dana@example.com — "Pilot pricing"' in text
 
 
+async def test_a_draft_to_the_reader_alone_is_not_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A draft the Executive saved to the reader (papers mailed to
+    themselves) is not mail anyone waits on: Right now called one unsent."""
+    from openexecutive.delegation import drafts, gmail
+    from openexecutive.people import store as people_store
+
+    principal = SimpleNamespace(id=1, email="owner@example.com", email_aliases=["me@alias.example"])
+    monkeypatch.setattr(people_store, "find_principal_person", lambda *a, **k: principal)
+    monkeypatch.setattr(drafts, "_seen", {})
+    now = datetime.now(UTC)
+    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d1", message_id="m1", now=now)
+    drafts.record(1, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="d2", message_id="m2", now=now)
+    recipients = {
+        "d1": ["Owner <OWNER@example.com>", "me@alias.example"],
+        "d2": ["dana@example.com", "owner@example.com"],
+    }
+
+    class Waiting:
+        def __init__(self, email: str) -> None:
+            pass
+
+        async def get_draft(self, draft_id: str) -> Any:
+            message = SimpleNamespace(to=recipients[draft_id], cc=[], subject=f"Subject {draft_id}")
+            return SimpleNamespace(draft_id=draft_id, message=message)
+
+    monkeypatch.setattr(gmail, "gmail_for", Waiting)
+    await live_signals.settle_principal_drafts()
+
+    signals = live_signals.gather_live_signals(_since(), include_private=True)
+    text = "\n".join(live_signals.render_live_blocks(signals, window="today so far"))
+    assert signals.drafts == 1
+    assert "Subject d2" in text and "Subject d1" not in text
+
+
+def test_times_reach_the_context_as_a_12_hour_clock() -> None:
+    at = datetime(2026, 11, 2, 14, 41, tzinfo=UTC)
+    assert live_signals._local_hhmm(at.isoformat(), UTC) == "2:41 PM"
+    assert live_signals._local_hhmm(at.replace(hour=0, minute=5).isoformat(), UTC) == "12:05 AM"
+    assert live_signals._local_hhmm(at.isoformat(), UTC, at + timedelta(days=1)) == "Mon 2 Nov 2:41 PM"
+
+
 def test_window_excludes_older_rows(audit: AuditLogger) -> None:
     _email(audit, "sam@x.com", "old news")
     later = datetime.now(UTC) + timedelta(seconds=1)
@@ -225,8 +266,8 @@ def test_calendar_lists_what_is_left_of_today() -> None:
 
     assert signals.calendar is not None
     assert signals.calendar[0] == "all day: Holiday"
-    assert signals.calendar[1].startswith("IN PROGRESS 13:30–14:30 Board prep")
-    assert signals.calendar[2] == "16:00–17:00 Call with the auditor"
+    assert signals.calendar[1].startswith("IN PROGRESS 1:30 PM–2:30 PM Board prep")
+    assert signals.calendar[2] == "4:00 PM–5:00 PM Call with the auditor"
     assert not any("Standup" in line for line in signals.calendar)
 
 
@@ -240,8 +281,8 @@ def test_meetings_that_ended_today_are_kept_apart() -> None:
 
     signals = live_signals.gather_live_signals(_since(), now=now, include_private=True, calendar=events)
 
-    assert signals.met_today == ("12:00–13:00 Update call", "09:00–10:00 Standup")
-    assert signals.calendar == ("15:00–16:00 Later",)
+    assert signals.met_today == ("12:00 PM–1:00 PM Update call", "9:00 AM–10:00 AM Standup")
+    assert signals.calendar == ("3:00 PM–4:00 PM Later",)
 
 
 def test_unanswered_mail_reaches_only_the_principal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,7 +299,7 @@ def test_unanswered_mail_reaches_only_the_principal(monkeypatch: pytest.MonkeyPa
     shared = live_signals.gather_live_signals(_since(), now=now, include_private=False)
 
     assert own.waiting == (
-        "to leonard@co.test, sent today at 11:00, no reply yet: SVN numbers",
+        "to leonard@co.test, sent today at 11:00 AM, no reply yet: SVN numbers",
         "to andrew@co.test, b@co.test, sent 3 days ago (Fri 25 Sep), no reply yet: Proposal",
     )
     assert shared.waiting == ()
@@ -364,7 +405,7 @@ def test_the_calendar_is_placed_at_the_real_time() -> None:
     signals = live_signals.gather_live_signals(
         _since(), now=now, include_private=True, calendar=events,
     )
-    assert signals.calendar == ("IN PROGRESS 10:30–11:00 Pricing review", "14:00–14:30 Call")
+    assert signals.calendar == ("IN PROGRESS 10:30 AM–11:00 AM Pricing review", "2:00 PM–2:30 PM Call")
 
 
 # --------------------------------------------------------------------------- #
@@ -405,9 +446,9 @@ def test_a_time_on_another_day_carries_its_date() -> None:
     """The brief's window reaches into yesterday: a bare time read as today,
     so yesterday's 'call tomorrow' landed under Today."""
     now = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
-    assert live_signals._local_hhmm("2026-10-15T09:05:00+00:00", UTC, now) == "09:05"
-    assert live_signals._local_hhmm("2026-10-14T16:23:00+00:00", UTC, now) == "Wed 14 Oct 16:23"
-    assert live_signals._local_hhmm("2026-10-14T16:23:00+00:00", UTC) == "16:23"
+    assert live_signals._local_hhmm("2026-10-15T09:05:00+00:00", UTC, now) == "9:05 AM"
+    assert live_signals._local_hhmm("2026-10-14T16:23:00+00:00", UTC, now) == "Wed 14 Oct 4:23 PM"
+    assert live_signals._local_hhmm("2026-10-14T16:23:00+00:00", UTC) == "4:23 PM"
 
 
 def test_inbound_from_yesterday_is_dated(audit: AuditLogger) -> None:

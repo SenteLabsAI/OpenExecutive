@@ -43,6 +43,7 @@ from openexecutive.alerts.lifecycle import parse_aware
 from openexecutive.briefing.narrative import QUIET_PRINCIPAL, QUIET_VIEWER
 from openexecutive.briefing.reader import Reader, mask, reader_line
 from openexecutive.briefing.right_now import Dismissed, dismissed_block, source_identity
+from openexecutive.utils.clock import clock
 
 if TYPE_CHECKING:
     from openexecutive.briefing.live_signals import LiveSignals
@@ -100,7 +101,10 @@ def _age_label(iso: str | None, now: datetime) -> str:
 
 def _hhmm(iso: str | None, tz: tzinfo) -> str:
     when = parse_aware(iso)
-    return when.astimezone(tz).strftime("%a %H:%M") if when is not None else "unscheduled"
+    if when is None:
+        return "unscheduled"
+    local = when.astimezone(tz)
+    return f"{local:%a} {clock(local)}"
 
 
 class _Tagger:

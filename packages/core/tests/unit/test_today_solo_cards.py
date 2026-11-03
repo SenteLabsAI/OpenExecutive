@@ -172,7 +172,7 @@ def test_the_items_match_the_morning_brief_with_a_calendar(
     _connect(monkeypatch, gw)
     body = _get(client, "/today/top-three", PRINCIPAL_EMAIL)
     assert gw.calls == 1
-    assert [i["slot"] for i in body["items"]] == ["10:00–11:00", "11:00–12:00"]
+    assert [i["slot"] for i in body["items"]] == ["10:00 AM–11:00 AM", "11:00 AM–12:00 PM"]
     # Same items, order and slots as the brief builds from the same input.
     items, _calendar = asyncio.run(picked.real([dict(_OVERDUE)], now=NOW))
     assert body["items"] == items and gw.calls == 2
