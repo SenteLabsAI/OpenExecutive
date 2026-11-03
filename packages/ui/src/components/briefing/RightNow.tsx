@@ -382,7 +382,7 @@ function MoveBox({ move, points, actions }: { move: string; points: TimedPoint[]
   // The server render has no storage, so it shows the box.
   const stored = useSyncExternalStore(subscribeLater, readLater, () => null);
   if (isPutOff(stored, move, new Date())) return null;
-  const mail = actions?.replies ? moveMail(points) : null;
+  const mail = actions?.replies ? moveMail(points, move) : null;
   const onContinue = actions?.onContinue;
   const doIt = onContinue
     ? () => onContinue(buildMoveSeed(move), briefingMemoryLine(MEMORY_ACTIONS.narrative, move))

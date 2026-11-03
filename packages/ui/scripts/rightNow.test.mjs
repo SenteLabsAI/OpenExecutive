@@ -128,12 +128,14 @@ test("Do next: the seed quotes the move", () => {
   assert.match(seed, /before it goes/);
 });
 
-test("Do next opens the top point's email only", () => {
-  const mail = { text: "**A**", source: { kind: "mail", message_id: "m1", thread_id: "t1", decision_id: 4 } };
-  const alert = { text: "**B**", source: { kind: "alert", alert_id: 3 } };
-  assert.deepEqual(moveMail([mail, alert]), { kind: "mail", threadId: "t1", messageId: "m1", cardId: 4 });
-  assert.equal(moveMail([alert, mail]), null);
-  assert.equal(moveMail([]), null);
+test("Do next opens the top point's email only when the move names it", () => {
+  const mail = { text: "**Dogwood View**: lawsuit", source: { kind: "mail", message_id: "m1", thread_id: "t1", decision_id: 4 } };
+  const alert = { text: "**Board deck**", source: { kind: "alert", alert_id: 3 } };
+  const move = "Read Annamarie's Dogwood email before you log off.";
+  assert.deepEqual(moveMail([mail, alert], move), { kind: "mail", threadId: "t1", messageId: "m1", cardId: 4 });
+  assert.equal(moveMail([mail], "Move the 3 PM call to Friday."), null);
+  assert.equal(moveMail([alert, mail], move), null);
+  assert.equal(moveMail([], move), null);
 });
 
 test("Later puts away this move for today only", () => {

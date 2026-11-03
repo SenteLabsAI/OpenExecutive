@@ -158,11 +158,19 @@ export function buildMoveSeed(move: string): string {
   );
 }
 
-/** The email the move is about: the top point's, when it has one. The move
- * follows the opener, which the top point spells out. */
-export function moveMail(points: TimedPoint[]): Extract<NonNullable<PointTarget>, { kind: "mail" }> | null {
+/** The email the move is about: the top point's, and only when the move
+ * names a word of that point's bold subject ("Dogwood" in both). A move
+ * about something else must not offer to reply to an unrelated email. */
+export function moveMail(
+  points: TimedPoint[],
+  move: string,
+): Extract<NonNullable<PointTarget>, { kind: "mail" }> | null {
   const top = points[0] ? pointTarget(points[0]) : null;
-  return top && top.kind === "mail" ? top : null;
+  if (!top || top.kind !== "mail") return null;
+  const subject = /\*\*(.+?)\*\*/.exec(points[0].text)?.[1] ?? "";
+  const words = (text: string) => new Set(text.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+  const inMove = words(move);
+  return [...words(subject)].some((w) => inMove.has(w)) ? top : null;
 }
 
 function localDay(now: Date): string {
