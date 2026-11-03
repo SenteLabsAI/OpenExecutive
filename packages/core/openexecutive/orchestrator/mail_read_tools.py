@@ -15,7 +15,7 @@ so they are fenced the same way:
   never in ``_ALL_SKILL_TOOLS``; the handler re-checks the pin and the surface.
 - **Private.** Before the first read each marks the turn as having read the
   owner's mail (``TurnDelegation.touched_mail`` and ``read_mail``): its audit rows are private,
-  it teaches no memory, the conversation is theirs alone, and nothing that
+  it teaches only their own private memory, the conversation is theirs alone, and nothing that
   opens a link, runs a script or workflow, or posts to everyone runs for the rest
   of the turn (``delegation.lockdown``).
 - **Read-only.** Nothing is changed, labelled, drafted or sent. A calendar

@@ -123,7 +123,10 @@ def test_noted_today_block_recaps_today_and_what_is_due_tomorrow(roster: SimpleN
 
 
 def test_only_an_owner_with_the_switch_on_keeps_notes_for_a_brief(roster: SimpleNamespace) -> None:
-    assert hb.owner_keeping_notes() is None
+    # On for the owner until they turn it off.
+    owner = hb.owner_keeping_notes()
+    assert owner is not None and owner.id == roster.owner
+    h.set_person_settings(roster.owner, by="test", reply_notes=False)
     _keep(roster.teammate)
     assert hb.owner_keeping_notes() is None
     _keep(roster.owner)
@@ -196,6 +199,7 @@ def test_no_notes_in_the_brief_with_the_owners_switch_off(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _capture(monkeypatch)
+    h.set_person_settings(roster.owner, by="test", reply_notes=False)
     _note(roster.owner, "the price list goes to Dana", due=TODAY)
     events = asyncio.run(_brief(delivered=True))
     assert "FROM YOUR NOTES" not in str(calls[-1]["rendered_context"])
@@ -422,8 +426,9 @@ def test_a_failed_send_is_not_repeated_the_same_day(
 def test_the_senders_rows_are_the_persons_own_and_off_the_activity_rail(
     roster: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, db: Path,
 ) -> None:
-    from openexecutive.audit import context as audit_context
     import sqlite3
+
+    from openexecutive.audit import context as audit_context
     from openexecutive.orchestrator import schedule_tools
     from openexecutive.scheduler import runner
 

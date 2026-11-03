@@ -87,7 +87,7 @@ class TurnDelegation:
     enabled: bool = False
     offered: bool = False
     # The turn is its speaker's alone: every audit row it writes is private
-    # (``people_tools``) and it teaches no memory. Set before a read of their
+    # (``people_tools``) and it teaches only their own private memory. Set before a read of their
     # mailbox or notes, and from the start of every turn in a conversation
     # that once read them (``_carry_kept_private``).
     touched_mail: bool = False
@@ -473,7 +473,7 @@ def history_len(session: Any) -> int | None:
 def _carry_kept_private(pinned: TurnDelegation) -> None:
     """A conversation that once read someone's mail (``mark_mail_private``)
     stays theirs on every later turn: its rows are private to them and it
-    teaches no memory, however it is answered (``touched_mail``). Nobody else
+    teaches only their own private memory, however it is answered (``touched_mail``). Nobody else
     drafts in it. The turn's own lockdown is not carried (``read_mail``):
     history keeps only the speaker's words and the Executive's replies, never
     the mail a tool returned, and a later message is the person asking again
