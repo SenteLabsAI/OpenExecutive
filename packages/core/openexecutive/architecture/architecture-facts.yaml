@@ -2437,7 +2437,7 @@ knowledge:
 memory:
   episodic_db: ./episodic_memory.db
   tables:
-    - "decisions — legacy. Copied once into facts as decision facts (facts_meta marker decisions_copied_to_facts); no longer written."
+    - "decisions — legacy. Copied once into facts as decision facts (facts_meta marker decisions_copied_to_facts; a row from mail or a chat app as proposed, for the principal to approve); no longer written."
     - initiatives
     - "advice_given — legacy. No longer written; old rows stay readable."
     - scheduled_actions

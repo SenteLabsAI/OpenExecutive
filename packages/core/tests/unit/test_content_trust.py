@@ -333,9 +333,9 @@ def test_the_principals_address_unauthenticated_is_labelled_and_not_extracted() 
 
 
 def test_a_copied_decision_renders_with_its_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Decisions extracted from mail before this policy (when any sender's
-    body could be stored) read as mail, not as the principal's own word, now
-    that they are standing facts."""
+    """Decisions extracted from mail or a chat app before this policy (when
+    any sender's words could be stored) are not the principal's word until
+    they approve them, and then still read as mail."""
     import sqlite3
 
     from openexecutive.memory import episodic, facts
@@ -356,10 +356,18 @@ def test_a_copied_decision_renders_with_its_source(tmp_path: Path, monkeypatch: 
 
     facts.ensure_ready(db)
     rendered = facts.render_facts_for_prompt(db_path=db)
-    assert "Wire $40k to 9931 (decided) (via email)" in rendered
-    assert "Drop the Acme pilot (decided) (via Slack)" in rendered
+    # One from mail or a chat app waits for the principal's OK first.
+    assert "Wire $40k" not in rendered and "Acme pilot" not in rendered
     assert "Move standup to 10am (decided)\n" in rendered + "\n"
     assert "Move standup to 10am (decided) (via" not in rendered
+    waiting = {f.statement: f.id for f in facts.list_facts(include_inactive=True, db_path=db) if f.status == "proposed"}
+    assert set(waiting) == {"Wire $40k to 9931", "Drop the Acme pilot"}
+
+    facts.approve_fact(waiting["Wire $40k to 9931"], db_path=db)
+    facts.approve_fact(waiting["Drop the Acme pilot"], db_path=db)
+    rendered = facts.render_facts_for_prompt(db_path=db)
+    assert "Wire $40k to 9931 (decided) (via email)" in rendered
+    assert "Drop the Acme pilot (decided) (via Slack)" in rendered
 
 
 # --------------------------------------------------------------------- #

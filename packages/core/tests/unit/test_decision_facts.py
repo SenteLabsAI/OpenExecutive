@@ -108,6 +108,10 @@ def test_old_decisions_are_copied_in_once(db: Path) -> None:
 
     facts.ensure_ready(db)
     facts.ensure_ready(db)
+    # The one from mail waits for the principal's OK.
+    [waiting] = [f for f in facts.list_facts(include_inactive=True) if f.status == "proposed"]
+    assert [f.department for f in facts.decision_rows()] == ["people"]
+    facts.approve_fact(waiting.id)
     rows = facts.decision_rows()
     assert len(rows) == 2, "copied once, and neither replaces the other"
     newest, oldest = rows

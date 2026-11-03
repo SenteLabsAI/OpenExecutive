@@ -235,9 +235,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 _OLD_DECISIONS_COPIED = "decisions_copied_to_facts"
-# Where a copied decision was extracted, shown next to it as before: a row
-# taken from mail before the untrusted-content policy (when any sender's body
-# could be stored) must read as mail, not as the principal's own word.
+# Where a copied decision was extracted, shown next to it as before. A row
+# taken from mail or a chat app may predate the untrusted-content policy (when
+# any sender's words could be stored), so it is copied in as ``proposed``: it
+# waits for the principal's OK and is not read as their word until then.
 _OLD_DECISION_CHANNELS = {
     "email": "email", "slack": "Slack", "discord": "Discord",
     "telegram": "Telegram", "google_chat": "Google Chat",
@@ -250,7 +251,7 @@ def _copy_old_decisions(conn: sqlite3.Connection) -> None:
     once per database (a ``facts_meta`` marker, set in the same
     transaction). Each keeps its date, department, outcome and conversation;
     a row's own subject key (``decision <id>``) means none supersedes
-    another."""
+    another. One from mail or a chat app waits for the principal's OK."""
     conn.execute("CREATE TABLE IF NOT EXISTS facts_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     if conn.execute("SELECT 1 FROM facts_meta WHERE key=?", (_OLD_DECISIONS_COPIED,)).fetchone():
         return
@@ -271,14 +272,15 @@ def _copy_old_decisions(conn: sqlite3.Connection) -> None:
             session = (d["session_id"] if "session_id" in keys else "") or ""
             prefix, sep, _ = session.partition(":")
             subject = _clean(summary.split(".")[0], SUBJECT_MAX) or f"Decision {d['id']}"
+            from_channel = bool(sep) and prefix in _OLD_DECISION_CHANNELS
             conn.execute(
                 "INSERT INTO facts (kind, subject, subject_key, statement, source_channel, session_id, "
                 "created_at, status, recorded_by_role, decision, department, outcome) "
-                "VALUES ('fact', ?, ?, ?, ?, ?, ?, 'active', 'principal', 1, ?, ?)",
+                "VALUES ('fact', ?, ?, ?, ?, ?, ?, ?, 'principal', 1, ?, ?)",
                 (
                     subject, f"decision {d['id']}", summary,
-                    _COPIED_PREFIX + (prefix if sep and prefix in _OLD_DECISION_CHANNELS else ""),
-                    session or None, d["timestamp"],
+                    _COPIED_PREFIX + (prefix if from_channel else ""),
+                    session or None, d["timestamp"], "proposed" if from_channel else "active",
                     (d["department"] if "department" in keys else "") or "",
                     _clean(d["outcome"], STATEMENT_MAX),
                 ),
