@@ -35,6 +35,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     # reads ./episodic_memory.db, a dev database when one is there, and its
     # principal changes what this test sees.
     monkeypatch.setattr(people_store, "DB_PATH", path)
+    # The owner's notes are on by default, and who the owner is comes from
+    # the roster cache, which an earlier test on this worker may have filled.
+    monkeypatch.setattr("openexecutive.people.registry.get_principal", lambda: None)
     episodic.initialize_db(path)
     monkeypatch.setattr(audit_logger, "_default_logger", AuditLogger(db_path=path))
     yield path

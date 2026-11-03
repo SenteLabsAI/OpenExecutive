@@ -17,6 +17,9 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", path)
     episodic.initialize_db(path)
+    # Who the owner is comes from the roster cache, which an earlier test on
+    # this worker may have filled; the owner's notes are on by default.
+    monkeypatch.setattr("openexecutive.people.registry.get_principal", lambda: None)
     return path
 
 

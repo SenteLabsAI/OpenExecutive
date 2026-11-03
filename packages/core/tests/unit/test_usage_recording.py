@@ -200,8 +200,9 @@ def test_memory_extractor_retry_records_its_own_usage(
     ep.initialize_db(db)
     bad_quote = SimpleNamespace(
         type="tool_use", name="store_memories",
-        input={"decisions": [{
-            "summary": "Cut burn", "user_commitment_quote": "we will cut the burn",
+        input={"initiatives": [{
+            "title": "Cut burn", "status": "active", "summary": "Down to 400k",
+            "user_commitment_quote": "we will cut the burn",
         }]},
     )
     first = _response(input_tokens=12, output_tokens=2)
