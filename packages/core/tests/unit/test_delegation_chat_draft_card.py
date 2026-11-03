@@ -153,6 +153,15 @@ def test_the_routes_read_and_change_the_callers_own_draft(owner: Any, monkeypatc
     mailbox.edit("d1")
     resp = client.put(f"/delegation/drafts/{row}/text", json={"text": "Mine"}, headers=headers)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "draft_changed"
+    # Without signed sign-ins the API can't tie the caller to the owner: no
+    # read, no change.
+    monkeypatch.delenv("OE_LOCAL_LOGIN")
+    for resp in (
+        client.get(f"/delegation/drafts/{row}", headers=headers),
+        client.put(f"/delegation/drafts/{row}/text", json={"text": "Mine"}, headers=headers),
+        client.post(f"/delegation/drafts/{row}/change", json={"text": "Shorter"}, headers=headers),
+    ):
+        assert resp.status_code == 409 and resp.json()["detail"]["code"] == "caller_signing_required"
     assert mailbox.sent == []
 
 
