@@ -27,7 +27,7 @@ from openexecutive.orchestrator.executive import (
 from openexecutive.orchestrator.form_tools import PROPOSE_FORM_VALUES
 from openexecutive.orchestrator.router import SPECIALIST_TOOLS
 from openexecutive.orchestrator.session import Session
-from openexecutive.orchestrator.turn_plan import PLAN_STEPS_TOOL
+from openexecutive.orchestrator.turn_progress import SHOW_PROGRESS_TOOL
 
 # --------------------------------------------------------------------- #
 # Fake provider plumbing (mirrors test_executive_response_audit.py)
@@ -191,7 +191,7 @@ def test_tool_list_is_cache_stable_and_includes_form_tool() -> None:
     # sandbox is installed; this turn isn't the principal's.
     # The less common tools are behind open_tools/use_tool (tool_groups).
     direct, _ = tool_groups.split(
-        t for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, PLAN_STEPS_TOOL] if t["name"] != python_job.TOOL_NAME
+        t for t in [*SPECIALIST_TOOLS, *_ALL_SKILL_TOOLS, SHOW_PROGRESS_TOOL] if t["name"] != python_job.TOOL_NAME
     )
     expected = sorted(t["name"] for t in direct)
     assert PROPOSE_FORM_VALUES in sent_names

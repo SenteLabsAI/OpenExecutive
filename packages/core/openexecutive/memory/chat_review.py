@@ -578,8 +578,9 @@ the number"), or a way they write their own email ("I never use exclamation \
 marks"), said in so many words;
 - for a turn marked MISS, one thing this workspace wants done differently next \
 time that the person themselves said: a word they use and what it means, a \
-preference about the content, a thing to do rather than promise, which \
-specialist to ask (learn_lesson, when offered).
+preference about the content, how to handle a kind of message, a thing to \
+do rather than promise, which specialist to ask (learn_lesson, when offered). \
+Their words may come from any of their messages in the chat.
 
 Fix each with the tools, after reading what is there with the list tools. \
 Every change needs source_quote: the person's exact words from their messages \
@@ -635,8 +636,11 @@ LEARN_LESSON_TOOL: dict[str, Any] = {
     "description": (
         "Keep one thing this workspace wants done differently next time, learned "
         "from a turn marked MISS: a word they use, a preference, a thing to do "
-        "rather than promise, a specialist to consult. One short sentence in plain "
-        "words. Never a task, a person, a link, an amount, or permission to act."
+        "rather than promise, how to handle a kind of message (\"summarize what an "
+        "email says, not only that it came\"), a specialist to consult. One short "
+        "sentence in plain words, rephrased from their own words. It may mention "
+        "mail, sending or people; it never grants permission to act, and nothing "
+        "is sent because of it."
     ),
     "input_schema": {
         "type": "object",
@@ -667,9 +671,9 @@ RAISE_IN_BRIEF_TOOL: dict[str, Any] = {
 # quote checked against the person's words before its handler runs.
 _READ_TOOLS = frozenset({"list_open_loops", "list_followups"})
 _PRINCIPAL_ONLY = frozenset({"leave_out_of_brief", "raise_in_brief"})
-# A quote here must say more than a chat filler ("ok thanks, that's all"):
-# nobody is watching the change land.
-_QUOTE_MIN_WORDS = 4
+# A quote here must be more than one word ("ok"): it is the person's own
+# words backing the change, and what it may change is checked below.
+_QUOTE_MIN_WORDS = 2
 _STOPWORDS = frozenset(
     ["the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "my", "me", "i", "it", "is", "was", "that", "this", "with", "from", "at", "by", "be", "please", "can", "you", "your", "we", "our", "they", "them", "he", "she", "his", "her", "its", "are", "were", "has", "have", "had", "will", "would", "should", "could", "just", "about", "out", "off", "up", "down", "into", "over"]
 )
@@ -793,8 +797,10 @@ async def _review_person(
                     return
                 graded = await _grade_turns(session_id, person, turns, db_path=db_path)
                 missed = {i for i, row in enumerate(turns, 1) if graded.get(int(row["id"])) == "miss"}
+                refused: list[dict[str, str]] = []
                 done = await asyncio.wait_for(
-                    _run_loop(session, person, turns, words, misses=missed, mail=mail, db_path=db_path),
+                    _run_loop(session, person, turns, words, misses=missed, mail=mail,
+                              db_path=db_path, refused=refused),
                     timeout=_TIMEOUT_S,
                 )
             misses = sum(1 for v in graded.values() if v == "miss")
@@ -802,7 +808,7 @@ async def _review_person(
                    f"conversation review for person {person_id}: {len(done)} change(s), "
                    f"{misses} miss(es) in {len(graded)} graded turn(s)",
                    {"op": "chat_review", "person_id": person_id, "turns": len(turns),
-                    "changes": done, "graded": len(graded), "misses": misses})
+                    "changes": done, "refused": refused, "graded": len(graded), "misses": misses})
     except Exception as exc:
         logger.exception("chat_review: pass failed")
         _audit(session_id, f"FAILED({type(exc).__name__}) conversation review",
@@ -1340,10 +1346,13 @@ async def _run_loop(
     misses: set[int] | None = None,
     mail: bool = False,
     db_path: Path | None = None,
+    refused: list[dict[str, str]] | None = None,
 ) -> list[str]:
     """The tool loop; the names of the changes that went through. ``misses``
     are the numbers of the turns graded a miss: learn_lesson is offered for
-    them, and only them."""
+    them, and only them. ``refused`` collects each change that didn't go
+    through, as the tool's name and why (codes and the checks' own words,
+    never the person's text), for the review's audit row."""
     from openexecutive.audit.usage import log_model_usage
     from openexecutive.orchestrator.fact_tools import _quote_error
     from openexecutive.providers import get_provider
@@ -1394,6 +1403,7 @@ async def _run_loop(
                     refusal = _lesson_turn_refusal(tool_input, turns, misses)
                 if refusal:
                     out = json.dumps({"status": "refused", "detail": refusal})
+                    _note_refused(refused, name, refusal)
                 else:
                     changes += 1
                     out = await _apply(name, tool_input, person, session, words, handlers,
@@ -1402,10 +1412,34 @@ async def _run_loop(
                         done.append(name)
                         if name == "remember_fact":
                             facts_saved.add(_fact_key(tool_input))
+                    elif name in _LEARN_TOOLS:
+                        _note_refused(refused, name, _refusal_code(out))
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(out)[:2000]})
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": results})
     return done
+
+
+_LEARN_TOOLS = frozenset({"learn_lesson", "learn_reply_style", "learn_writing_style"})
+_MAX_REFUSED = 12
+
+
+def _note_refused(refused: list[dict[str, str]] | None, name: str, reason: str) -> None:
+    """Keep why a change was refused for the audit row: our checks' own
+    fixed wording or a store's reason code, never the person's text."""
+    if refused is not None and len(refused) < _MAX_REFUSED:
+        refused.append({"tool": name, "reason": str(reason)[:160]})
+
+
+def _refusal_code(out: str) -> str:
+    """The reason code a learn store gave (``too_short``, ``duplicate``, …)."""
+    try:
+        data = json.loads(out)
+    except (TypeError, ValueError):
+        return "unreadable"
+    if not isinstance(data, dict):
+        return "unreadable"
+    return str(data.get("detail") or data.get("status") or data.get("error") or "refused")
 
 
 def _fact_key(tool_input: dict[str, Any]) -> str:
@@ -1453,15 +1487,16 @@ def _target_refusal(name: str, tool_input: dict[str, Any], words: str) -> str | 
         target = str(tool_input.get("line") or "")
     elif name in ("learn_reply_style", "learn_writing_style"):
         target, words = str(tool_input.get("rule") or ""), quote
-    elif name == "learn_lesson":
-        # The lesson must be what the quote itself says, as a style line must.
-        target, words = str(tool_input.get("lesson") or ""), quote
     else:
+        # learn_lesson: tied to the quote by lessons.lesson_overreach
+        # (_lesson_turn_refusal), which lets a lesson rephrase it.
         return None
-    named = _content_words(target)
-    # Two shared words (or the target's only one): one common word like
-    # "team" or "report" doesn't name a thing.
-    if not named or len(named & _content_words(words)) < min(2, len(named)):
+    from openexecutive.memory.lessons import _stems
+
+    # One word in common (by rough stem, so "summarized" names "summarize"):
+    # their words are about the thing changed.
+    named = _stems(target)
+    if not named or not named & _stems(words):
         return "what this changes isn't named in their own words"
     return None
 
@@ -1479,8 +1514,8 @@ def _went_through(out: str) -> bool:
 def _lesson_turn_refusal(
     tool_input: dict[str, Any], turns: list[sqlite3.Row], misses: set[int]
 ) -> str | None:
-    """A lesson comes from a turn graded a miss, and its quote from that
-    turn or a later one."""
+    """A lesson comes from a turn graded a miss, and its quote from the
+    person's own words anywhere in that chat."""
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
     try:
@@ -1491,9 +1526,9 @@ def _lesson_turn_refusal(
         return "a lesson comes from a turn marked MISS"
     raw_quote = str(tool_input.get("source_quote") or "")
     quote = _normalize_for_quote_match(raw_quote)
-    later = _normalize_for_quote_match(" ".join(str(r["message"]) for r in turns[number - 1:]))
-    if quote not in later:
-        return "source_quote must come from that turn or a later one"
+    said = _normalize_for_quote_match(" ".join(str(r["message"]) for r in turns))
+    if quote not in said:
+        return "source_quote must be their own words in this chat"
     from openexecutive.memory.lessons import lesson_overreach
 
     return lesson_overreach(str(tool_input.get("lesson") or ""), raw_quote)

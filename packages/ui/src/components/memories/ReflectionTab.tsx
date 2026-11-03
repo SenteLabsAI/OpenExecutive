@@ -287,7 +287,7 @@ export default function ReflectionTab() {
               <div className="pb-2">
                 {live.length > 0 && seesEveryone && (
                   <p className="text-sm text-fg-muted pt-3">
-                    A lesson you taught it in a channel or group chat reaches everyone&apos;s chats.
+                    Each lesson applies only to the chats of the person it came from.
                   </p>
                 )}
                 {live.map((l, i) => (
@@ -643,7 +643,6 @@ function LessonRow({
           {formatDate(lesson.created_at)}
           {seesEveryone && lesson.person_name && ` · ${lesson.person_name}`}
           {` · ${lesson.retired_reason ? RETIRED_LABEL[lesson.retired_reason] : went}`}
-          {seesEveryone && lesson.shared && " · reaches everyone"}
         </>
       }
     >

@@ -61,6 +61,9 @@ export interface Activity {
   // Canonical tool behind the label; for MCP this is the underlying tool name.
   tool: string;
   iteration?: number;
+  // What the round read that the turn hadn't yet, counted by kind
+  // ("email", "file", "person"…), for the long-turn card.
+  reads?: Record<string, number>;
 }
 
 export interface ChatChunk {
@@ -185,13 +188,16 @@ export interface FlagsEvent {
   flags: string[];
 }
 
-// A long turn's plan, every step up front, and the step it is on now
-// (orchestrator/turn_plan.py). Sent again each time it moves on or the plan
-// changes; a turn that sends none shows its steps as they happen.
-export interface PlanEvent {
-  type: "plan";
-  steps: string[];
-  current: number;
+// What a long turn shows while it works (orchestrator/turn_progress.py): the
+// task, what it is doing now, and everything it has used and found so far.
+// Sent again whenever it changes; a turn that sends none shows its activity
+// line and the reads counted from its rounds.
+export interface ProgressEvent {
+  type: "progress";
+  task: string;
+  now: string;
+  used: string[];
+  found: string[];
 }
 
 export type StreamItem =
@@ -205,7 +211,7 @@ export type StreamItem =
   | HandingOver
   | HeldStepsEvent
   | FlagsEvent
-  | PlanEvent;
+  | ProgressEvent;
 
 export interface StreamChatOptions {
   committeeReview?: boolean;

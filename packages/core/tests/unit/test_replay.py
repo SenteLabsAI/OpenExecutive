@@ -358,7 +358,11 @@ def test_a_new_lesson_present_at_two_broken_liked_turns_retires_and_a_closed_mis
     assert lessons.get_lesson(newer)["retired_reason"] == lessons.REASON_REPLAY
 
 
-def test_a_teammates_turn_never_retires_the_principals_shared_lesson(roster: SimpleNamespace) -> None:
+def test_a_principals_lesson_from_an_older_shared_chat_never_reaches_a_teammates_turn(
+    roster: SimpleNamespace,
+) -> None:
+    """Lessons stay with their own person, so an older row marked shared
+    neither reaches a teammate's replay nor gets retired by it."""
     conn = lessons._connect(None)
     conn.execute(f"INSERT INTO {lessons.TABLE} (person_id, text, quote, session_id, shared, created_at) "  # noqa: S608
                  "VALUES (?, 'The board deck means the Q4 board deck', 'the board deck', 'slack:channel:C1:ts', 1, ?)",
@@ -369,7 +373,7 @@ def test_a_teammates_turn_never_retires_the_principals_shared_lesson(roster: Sim
     theirs = _turn(roster.teammate.id, verdict="fine", kept=1)
     for _ in range(3):
         result = _run(theirs, replay.WHY_PROTECT, passed=False, new_lessons=lessons.lessons_since(None))
-        assert result is not None and shared in result["lesson_ids"] and result["retired"] == []
+        assert result is None or (shared not in result["lesson_ids"] and result["retired"] == [])
     assert lessons.get_lesson(shared)["retired_at"] is None
 
 

@@ -22,21 +22,22 @@ needs no vector index, and the match is what makes the counters below mean
 something. The block says the current request wins and nothing in it
 authorizes an action, as the style block does.
 
-**Who sees a lesson.** A lesson reaches its own person's turns. The
-principal's lessons learned in a shared space (a channel or group thread,
-where everyone read the chat) reach every speaker's turns; one learned in
-the principal's own chat stays with the principal, as a teammate's stays
-with the teammate, so nothing said in someone's own chat is paraphrased
-into another person's turn. A chat that read its owner's mail is theirs
-alone even in a shared space, so its lessons stay theirs too. The Reflection screen lists each person their
-own and the principal the ones from chats they may open.
+**Who sees a lesson.** Only its own person's turns: the principal's reach
+the principal, a teammate's reach that teammate, wherever the chat
+happened, so nothing said in one person's chat is paraphrased into
+another's turn. The Reflection screen lists each person their own and the
+principal the ones from chats they may open.
 
-**What it may say.** The lesson must be the quote's own point: beyond the
-words the quote carries it may add at most ``MAX_NEW_WORDS`` content words
-(enough for "ask the finance specialist", not for a sentence smuggled in
-behind a real quote). The deny-list adds to the style rules' list the
-verbs that move information (email, share, post, export, attach...) and
-the words that widen a request to everyone or everything.
+**What it may say.** Anything the person's own words back: beyond the
+words the quote carries it may add at most ``MAX_NEW_WORDS`` content words,
+enough to rephrase "summarized it instead of just letting me know he sent
+it" as a lesson about summarizing a message. It may talk about mail,
+sending, people or amounts, because it authorizes nothing: every send,
+share or post still goes through the safety levels and approval cards,
+whatever a lesson says. It may not carry a link, a handle, markup, an
+identifier, talk about the model's instructions or about something being
+approved (``_LESSON_DENY``), nor letters outside Latin script, which is how
+text steers a later prompt.
 
 **Retirement.** Each lesson counts how often it reached a turn (``shown``)
 and how those turns were then graded (``fine_after``, ``miss_after``), its
@@ -73,24 +74,42 @@ MIN_CHARS = 8
 MAX_CHARS = 240
 MAX_ACTIVE = 40
 MAX_PER_TURN = 6
-MAX_NEW_WORDS = 2
+MAX_NEW_WORDS = 8
 RETIRE_AFTER_SHOWN = 5
 # Two shared content words: one common word ("report") matches too much.
 # The name a lesson defines is enough (``_defined_names``).
 _MATCH_WORDS = 2
 
-# Beyond the style rules' deny-list (which has the acting verbs and the
-# instruction talk): the verbs that move information somewhere, and the
-# words that widen a request to everyone or everything. A lesson is a
-# definition or a preference; none of these belongs in one.
-_LESSON_DENY = re.compile(
-    r"\b(email|emails|emailed|mail|mails|mailed|share|shares|shared|post|posts|posted|"
-    r"publish\w*|release\w*|submit\w*|export\w*|attach\w*|upload\w*|"
-    r"give|gives|gave|hand|hands|handed|tell|tells|told|show|shows|showed|"
-    r"disclos\w*|spell out|copy|copies|paste|whoever|whomever|anyone|anybody|"
-    r"everyone|everybody|whole|entire|full|all of|every request|every message|"
-    r"treat|treats|treated|approved|external|outside|channel|channels|address|addresses)\b",
-    re.IGNORECASE,
+# What a lesson may not carry: something that points somewhere (a link or a
+# handle), markup or an identifier (a tool name), or talk to the model about
+# its instructions. These are how text tries to steer a later prompt; none
+# of them is needed to say what someone wants done differently. Words about
+# mail, sending, people or amounts are fine: a lesson authorizes nothing.
+_LESSON_DENY: tuple[re.Pattern[str], ...] = (
+    re.compile(r"https?://|www\.|\.(com|io|net|org|ai)\b", re.IGNORECASE),
+    re.compile(r"@\w"),
+    re.compile(r"[<>{}`\[\]]"),
+    re.compile(r"\b\w+_\w+\b"),
+    re.compile(
+        r"\b(ignore|disregard|override|bypass|instruction|instructions|"
+        r"prompt|prompts|jailbreak|system message)\b",
+        re.IGNORECASE,
+    ),
+    # Talk that would stand in for an approval. The approval cards and
+    # safety levels hold in code either way; this keeps a lesson from even
+    # claiming one.
+    re.compile(
+        r"\b(as|already|pre)[- ]?approved\b|\bwithout (an? )?(approval|sign[- ]?off)\b|"
+        r"\bskip\w* (the )?(approval|card|sign[- ]?off)s?\b|\bauthori[sz]\w*",
+        re.IGNORECASE,
+    ),
+    # Handing things to whoever asks: a lesson is about how to do the work
+    # for this person, not about who else gets it.
+    re.compile(
+        r"\b(whoever|whomever|anyone (who|that) asks|anybody (who|that) asks|"
+        r"everyone (who|that) asks|all (of )?(our|the|my) (customers|clients|contacts))\b",
+        re.IGNORECASE,
+    ),
 )
 
 REASON_UNHELPFUL = "unhelpful"
@@ -146,34 +165,48 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
 
 
 def lesson_rejection(text: str, *, roster_names: list[str] | None = None) -> str | None:
-    """Why ``text`` may not be a lesson, or None when it may. The style
-    rules' deny-list (no link, handle, amount, markup, identifier, action
-    verb, instruction talk, nudge to act unchecked, roster name), without
-    the requirement that it be about the writing."""
-    from openexecutive.attunement import style
-
+    """Why ``text`` may not be a lesson, or None when it may: its length, or
+    something in ``_LESSON_DENY``. ``roster_names`` is accepted for older
+    callers and unused: a lesson stays with its own person, so naming
+    someone is fine."""
+    del roster_names
     if len(text) < MIN_CHARS:
         return "too_short"
     if len(text) > MAX_CHARS:
         return "too_long"
-    if style._non_latin_letter(text):
+    from openexecutive.attunement.style import _non_latin_letter
+
+    # Letters outside Latin script would let "ignоre" (Cyrillic о) past the
+    # word checks below.
+    if _non_latin_letter(text):
         return "non_latin_letters"
-    for pattern in style._DENY_PATTERNS:
-        if pattern.search(text):
-            return "denied_content"
-    if _LESSON_DENY.search(text):
+    if any(pattern.search(text) for pattern in _LESSON_DENY):
         return "denied_content"
-    names = roster_names if roster_names is not None else style._roster_names()
-    if style._names_a_person(text, names):
-        return "names_a_person"
     return None
 
 
+def _stem(word: str) -> str:
+    """A rough stem, so "summarized" and "summarize" count as one word."""
+    for suffix in ("izing", "ized", "izes", "ize", "ing", "ied", "ies", "ed", "es", "ly", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            word = word[: -len(suffix)]
+            break
+    # "invoice" and "invoices" both end as "invoic".
+    return word[:-1] if word.endswith("e") and len(word) > 4 else word
+
+
+def _stems(text: str) -> set[str]:
+    return {_stem(w) for w in _content_words(text)}
+
+
 def lesson_overreach(text: str, quote: str) -> str | None:
-    """Why ``text`` says more than ``quote`` does, or None: a lesson may add
-    at most ``MAX_NEW_WORDS`` content words to the quote it rests on."""
-    new = _content_words(text) - _content_words(quote)
-    if len(new) > MAX_NEW_WORDS:
+    """Why ``text`` isn't backed by ``quote``, or None. The lesson must be
+    about what the quote says (a word in common) and may add at most
+    ``MAX_NEW_WORDS`` content words to rephrase it."""
+    said, lesson = _stems(quote), _stems(text)
+    if not lesson & said:
+        return "the lesson isn't about what they said"
+    if len(lesson - said) > MAX_NEW_WORDS:
         return "the lesson says more than the quote does"
     return None
 
@@ -182,23 +215,6 @@ def _normalize(text: str) -> str:
     from openexecutive.attunement.style import _normalize
 
     return _normalize(text)
-
-
-def _shared_space(session_id: str, db_path: Path | None = None) -> bool:
-    """Whether the chat was a channel or group thread everyone there read
-    (``api.routes.chat._shared_space``) and never read its owner's mail
-    (``session_store.mark_mail_private``: then it is theirs alone, wherever
-    it happened). Fails closed: not shared."""
-    try:
-        from openexecutive.api.routes.chat import _shared_space
-        from openexecutive.memory.episodic import _resolve_db_path
-        from openexecutive.memory.session_store import session_mail_private
-
-        if not _shared_space(str(session_id)):
-            return False
-        return not session_mail_private(str(session_id), db_path=_resolve_db_path(db_path))
-    except Exception:
-        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -218,7 +234,8 @@ def add_lesson(
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Keep one lesson; ``(lesson, None)`` when stored, ``(None, reason)``
     when not. The caller has checked ``quote`` against the person's words.
-    ``private``: learned from a chat that read mail, so never shared.
+    ``private`` is accepted for older callers: every lesson stays with
+    its own person now.
     A duplicate of a live lesson is refused; past ``MAX_ACTIVE`` live
     lessons the oldest retires to make room."""
     clean = _normalize(text)
@@ -226,7 +243,7 @@ def add_lesson(
     if rejection:
         return None, rejection
     now = _now().isoformat()
-    shared = not private and _shared_space(session_id, db_path)
+    del private
     conn = _connect(db_path)
     try:
         # One writer at a time: two reviews landing together must not both
@@ -248,7 +265,7 @@ def add_lesson(
         cur = conn.execute(
             f"INSERT INTO {TABLE} (person_id, text, quote, session_id, shared, turn_row_id, created_at) "  # noqa: S608
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (int(person_id), clean, _normalize(quote)[:400], str(session_id), 1 if shared else 0,
+            (int(person_id), clean, _normalize(quote)[:400], str(session_id), 0,
              turn_row_id, now),
         )
         conn.commit()
@@ -390,7 +407,10 @@ _STOPWORDS = frozenset(
      "would", "should", "could", "just", "about", "out", "off", "up", "down", "into", "over", "when",
      "what", "than", "then", "there", "here", "also", "always", "never", "rather", "instead", "want",
      "wants", "wanted", "need", "needs", "thing", "things", "something", "every", "each", "some",
-     "more", "most", "very", "really", "like", "make", "made", "does", "did", "done", "mean", "means"]
+     "more", "most", "very", "really", "like", "make", "made", "does", "did", "done", "mean", "means",
+     # Filler replies ("ok thanks", "sounds good") name nothing, so they back nothing.
+     "thanks", "thank", "sounds", "sound", "good", "great", "okay", "sure", "fine", "yeah", "cool",
+     "perfect", "alright", "awesome", "right", "away", "got"]
 )
 
 
@@ -453,23 +473,18 @@ def lessons_for(
     person_id: int | None, message: str, *, db_path: Path | None = None
 ) -> list[dict[str, Any]]:
     """The live lessons that reach this speaker's turn about ``message``:
-    the speaker's own, and the principal's from shared spaces. Never
-    raises."""
+    the speaker's own only. Never raises."""
     if person_id is None:
         return []
     try:
-        from openexecutive.people.store import find_principal_person
-
         if not _content_words(message) and not _names(message, sentence_starts=False):
             return []
-        principal = find_principal_person()
-        principal_id = int(principal.id) if principal is not None and principal.id is not None else -1
         conn = _connect(db_path)
         try:
             rows = conn.execute(
                 f"SELECT * FROM {TABLE} WHERE retired_at IS NULL "  # noqa: S608
-                "AND (person_id = ? OR (person_id = ? AND shared = 1)) ORDER BY created_at DESC, id DESC",
-                (int(person_id), principal_id),
+                "AND person_id = ? ORDER BY created_at DESC, id DESC",
+                (int(person_id),),
             ).fetchall()
         finally:
             conn.close()
@@ -516,17 +531,15 @@ def _lines(lessons: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any
     (not even the roster) when there is no lesson to show."""
     if not lessons:
         return [], []
-    from openexecutive.attunement.style import _roster_names
     from openexecutive.utils.prompt_blocks import scrub_block_line
 
-    roster = _roster_names()
     out: list[str] = []
     kept: list[dict[str, Any]] = []
     for lesson in lessons:
         clean = _normalize(lesson["text"])
-        # Re-checked on every render: a lesson kept under an older, weaker
-        # check never reaches a turn.
-        if lesson_rejection(clean, roster_names=roster) is None:
+        # Re-checked on every render: a lesson kept under an older check
+        # never reaches a turn if it fails this one.
+        if lesson_rejection(clean) is None:
             line = scrub_block_line(clean, _BLOCK_CLOSE)
             if line:
                 out.append(line)
