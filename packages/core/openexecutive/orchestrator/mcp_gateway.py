@@ -475,9 +475,9 @@ _TOO_DEEP = "<too-deep>"
 # upload (XLSX, ODS, XLS) hides its formulas behind zip members, XML encodings
 # and character references — nothing a scan here can read reliably. So such an
 # upload may only be text `content`, which is scanned; base64_content and a
-# server-side file_path are refused for it. Every other upload (a PNG to
-# Drive, a DOCX to Docs) is left alone.
-_SHEET_MIME_RE = re.compile(r"spreadsheet|ms-?excel|openxmlformats.*sheet|opendocument\.spreadsheet|csv")
+# server-side file_path are refused for it. Every other upload (an .xlsx kept
+# as an Excel file in Drive, a PNG, a DOCX to Docs) is left alone.
+_NATIVE_SHEET_MIME = "google-apps.spreadsheet"
 # Free text Google mails to someone the roster never checked: an RSVP comment
 # goes to the event's organizer; an out-of-office / focus-time decline message
 # goes to whoever invites the Executive during the window. Refused on every
@@ -819,20 +819,25 @@ def _nested_fetch_key(value: Any, depth: int = 0) -> str | None:
 
 def _becomes_sheet(tool: str, arguments: dict[str, Any]) -> bool:
     """True when an upload through ``tool`` is converted into a native Sheet:
-    the Sheets import, or a Drive create whose target type is a spreadsheet.
-    A Drive update's target is unknown here, so it counts too."""
+    the Sheets import, a Drive create whose target type is a native Sheet,
+    or any Drive update: the file being rewritten may be a native Sheet, and
+    Drive converts plain text and TSV into one too, so a stated type on an
+    update proves nothing.
+
+    A Drive create stores the bytes as they are (workspace-mcp's
+    create_drive_file never converts), so an .xlsx or .csv saved to Drive
+    stays an Excel or CSV file that Google does not evaluate: only an
+    explicit ``application/vnd.google-apps.spreadsheet`` target counts."""
     bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
     if bare in ("import_to_google_sheets", "update_drive_file"):
         return True
     if bare != "create_drive_file":
         return False
-    for key, value in arguments.items():
-        if (
-            isinstance(key, str) and _norm_key(key) in ("mimetype", "contentmimetype")
-            and isinstance(value, str) and _SHEET_MIME_RE.search(value.lower())
-        ):
-            return True
-    return False
+    return any(
+        isinstance(key, str) and _norm_key(key) in ("mimetype", "contentmimetype")
+        and isinstance(value, str) and _NATIVE_SHEET_MIME in value.lower()
+        for key, value in arguments.items()
+    )
 
 
 def _formula_fetches(text: str) -> bool:
@@ -858,6 +863,10 @@ def _check_sheet_formulas(tool: str, arguments: dict[str, Any]) -> str | None:
     formulas cannot be read from here; else a JSON error."""
     bare = tool[len(_GW_PREFIX):] if tool.startswith(_GW_PREFIX) else tool
     if not _CELL_WRITER_RE.search(bare):
+        return None
+    # A Drive create that doesn't become a Sheet is stored as text or bytes,
+    # never evaluated: "Logo image (PNG)" in a note is not a formula.
+    if bare == "create_drive_file" and not _becomes_sheet(tool, arguments):
         return None
     if _becomes_sheet(tool, arguments):
         for key, value in arguments.items():

