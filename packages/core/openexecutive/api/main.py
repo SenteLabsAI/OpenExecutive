@@ -41,6 +41,7 @@ from openexecutive.api.routes import (
     history,
     knowledge,
     may_do,
+    memory_changes,
     notifications,
     onboarding,
     people,
@@ -1003,6 +1004,7 @@ def create_app() -> FastAPI:
     app.include_router(history.router, tags=["memories"])
     app.include_router(reflection.router, tags=["memories"])
     app.include_router(worked_out.router, tags=["memories"])
+    app.include_router(memory_changes.router, tags=["memories"])
     app.include_router(audit.router, tags=["audit"])
     app.include_router(departments.router, tags=["departments"])
     app.include_router(people.router, tags=["people"])

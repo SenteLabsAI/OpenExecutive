@@ -12,6 +12,7 @@ import MicButton from "./MicButton";
 import InfoTip from "./InfoTip";
 import OverflowMenu from "./ui/OverflowMenu";
 import { SharePanel } from "./sessions/ChatHistory";
+import { MemoryUpdatedChip } from "./memories/MemoryChanges";
 import {
   MAX_FILES_PER_TURN,
   mergePickedFiles,
@@ -147,6 +148,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // Inline action chips that arrived for the in-flight assistant message.
   // Reset on every turn; frozen onto the message at `done` event time.
   const [streamingActions, setStreamingActions] = useState<ActionTaken[]>([]);
+  // Replies this browser saw finish, by row id: the window the "Memory
+  // updated" chip under each looks in. A later turn closes the earlier
+  // windows; `memorySeen` keeps a change on one chip only.
+  const [memoryWatch, setMemoryWatch] = useState<Record<number, { sessionId: string; since: string; until?: string }>>({});
+  const memorySeen = useMemo(() => new Set<string>(), []);
   const [isConsulting, setIsConsulting] = useState(false);
   // The reply whose held steps the person put off with Not now (its index).
   const [heldDismissed, setHeldDismissed] = useState<number | null>(null);
@@ -564,6 +570,15 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setIsLoading(true);
     isLoadingRef.current = true;
     turnClock.start();
+    // Back a little, so a clock a few seconds ahead of the server's still
+    // catches what this turn keeps.
+    const turnSince = new Date(Date.now() - 30_000).toISOString();
+    setMemoryWatch((prev) => {
+      const closed: typeof prev = {};
+      const now = new Date().toISOString();
+      for (const [id, w] of Object.entries(prev)) closed[Number(id)] = w.until ? w : { ...w, until: now };
+      return closed;
+    });
     setStreamingContent("");
     setStreamingActions([]);
     setIsConsulting(false);
@@ -748,6 +763,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
         // Only a complete, persisted reply gets a follow-up: a stopped one
         // is half an answer, and without an id there is nothing to key on.
         if (!wasStopped && replyId && doneSessionId) loadFollowup(doneSessionId);
+        if (replyId && doneSessionId) {
+          const watched = { sessionId: doneSessionId, since: turnSince };
+          const id = replyId;
+          setMemoryWatch((prev) => ({ ...prev, [id]: watched }));
+        }
       }
       setStreamingContent("");
       setStreamingActions([]);
@@ -1227,7 +1247,14 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 <Message
                   role={msg.role}
                   content={msg.content}
-                  actions={msg.role === "assistant" ? msg.actions : undefined}
+                  actions={
+                    msg.role !== "assistant"
+                      ? undefined
+                      : msg.id && memoryWatch[msg.id]
+                        ? // The Memory updated chip below says it, with an Undo.
+                          msg.actions?.filter((a) => a.tool !== "remember_fact")
+                        : msg.actions
+                  }
                   stopped={msg.role === "assistant" ? msg.stopped : undefined}
                   sources={msg.role === "assistant" ? msg.sources : undefined}
                   feedback={msg.role === "assistant" && !member ? msg.feedback : undefined}
@@ -1243,6 +1270,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                   }
                   onRetry={canRedo && i === turn.replyIndex ? () => void handleRetry() : undefined}
                   onEdit={canRedo && !editing && i === turn.userIndex ? startEdit : undefined}
+                  memory={
+                    msg.role === "assistant" && msg.id && memoryWatch[msg.id] ? (
+                      <MemoryUpdatedChip {...memoryWatch[msg.id]} seen={memorySeen} />
+                    ) : undefined
+                  }
                 />
                 {!member &&
                   msg.role === "assistant" &&
