@@ -149,9 +149,9 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
   // Reset on every turn; frozen onto the message at `done` event time.
   const [streamingActions, setStreamingActions] = useState<ActionTaken[]>([]);
   // Replies this browser saw finish, by row id: the window the "Memory
-  // updated" chip under each looks in. A later turn closes the earlier
-  // windows; `memorySeen` keeps a change on one chip only.
-  const [memoryWatch, setMemoryWatch] = useState<Record<number, { sessionId: string; since: string; until?: string }>>({});
+  // updated" chip under each looks in; `memorySeen` keeps a change on one
+  // chip only.
+  const [memoryWatch, setMemoryWatch] = useState<Record<number, { sessionId: string; since: string }>>({});
   const memorySeen = useMemo(() => new Set<string>(), []);
   // Replies whose Memory updated chip has rows: only those drop their own
   // remember_fact chip, so a saved fact always shows one or the other.
@@ -579,12 +579,6 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     // Back a little, so a clock a few seconds ahead of the server's still
     // catches what this turn keeps.
     const turnSince = new Date(Date.now() - 30_000).toISOString();
-    setMemoryWatch((prev) => {
-      const closed: typeof prev = {};
-      const now = new Date().toISOString();
-      for (const [id, w] of Object.entries(prev)) closed[Number(id)] = w.until ? w : { ...w, until: now };
-      return closed;
-    });
     setStreamingContent("");
     setStreamingActions([]);
     setIsConsulting(false);

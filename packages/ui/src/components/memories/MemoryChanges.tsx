@@ -45,18 +45,17 @@ function UndoButton({ change, state, onUndo }: { change: MemoryChange; state: Ro
 
 /** Under a chat reply: "✓ Memory updated · 1 lesson", opening to the rows.
  * Looks a few times after the reply, since some of what it keeps is worked
- * out just after. Shows nothing when nothing was kept. */
+ * out just after; a later turn doesn't stop those looks, and `seen` puts
+ * each change on the first chip that finds it. Shows nothing when nothing
+ * was kept. */
 export function MemoryUpdatedChip({
   sessionId,
   since,
-  until,
   seen,
   onShown,
 }: {
   sessionId: string;
   since: string;
-  /** Set once a later turn starts: what came after belongs to that one. */
-  until?: string;
   /** What an earlier chip in this chat already showed. */
   seen: Set<string>;
   /** Called once it has rows to show (the chat then drops its own fact chip). */
@@ -69,7 +68,6 @@ export function MemoryUpdatedChip({
   const mine = useRef(new Set<string>());
 
   useEffect(() => {
-    if (until) return;
     let cancelled = false;
     const look = () => {
       listMemoryChanges(since, sessionId)
@@ -94,7 +92,7 @@ export function MemoryUpdatedChip({
       cancelled = true;
       timers.forEach((t) => window.clearTimeout(t));
     };
-  }, [sessionId, since, until, seen]);
+  }, [sessionId, since, seen]);
 
   useEffect(() => {
     if (changes.length > 0) onShown?.();
