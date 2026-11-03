@@ -154,9 +154,28 @@ def test_the_routes_read_and_change_the_callers_own_draft(owner: Any, monkeypatc
     resp = client.put(f"/delegation/drafts/{row}/text", json={"text": "Friday at 11.\n\nOlivia"}, headers=headers)
     assert resp.status_code == 200 and resp.json()["body"] == "Friday at 11.\n\nOlivia"
     assert client.post(f"/delegation/drafts/{row}/change", json={"text": ""}, headers=headers).status_code == 422
+    # What to change: up to 500 characters.
+    assert client.post(f"/delegation/drafts/{row}/change", json={"text": "x" * 501}, headers=headers).status_code == 422
+
+    async def rewrite(person: Any, payload: dict[str, Any], answers: list[Any], **kw: Any) -> Any:
+        return "Friday at 11 works.\n\nOlivia", {"conversation": [{"kind": "note", "text": "Done."}]}, []
+
+    monkeypatch.setattr("openexecutive.delegation.answers.rewrite", rewrite)
+    resp = client.post(f"/delegation/drafts/{row}/change", json={"text": "x" * 500}, headers=headers)
+    assert resp.status_code == 200 and resp.json()["note"] == "Done."
+    # Someone else's draft reads the same as none at all.
+    theirs = drafts.record(owner.id + 1, source=drafts.SOURCE_CHAT, thread_id=None, draft_id="dz",
+                           message_id="mz", now=NOW)
+    for resp in (
+        client.get(f"/delegation/drafts/{theirs}", headers=headers),
+        client.put(f"/delegation/drafts/{theirs}/text", json={"text": "Mine"}, headers=headers),
+        client.post(f"/delegation/drafts/{theirs}/change", json={"text": "Shorter"}, headers=headers),
+    ):
+        assert resp.status_code == 404 and resp.json()["detail"]["code"] == "draft_not_found"
     mailbox.edit("d1")
     resp = client.put(f"/delegation/drafts/{row}/text", json={"text": "Mine"}, headers=headers)
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "draft_changed"
+    assert resp.json()["detail"]["state"] == {"status": "changed"}
     # Without signed sign-ins the API can't tie the caller to the owner: no
     # read, no change.
     monkeypatch.delenv("OE_LOCAL_LOGIN")
