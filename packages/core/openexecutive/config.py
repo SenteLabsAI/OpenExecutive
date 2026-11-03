@@ -448,11 +448,12 @@ class Settings(BaseSettings):
     # Whole-turn wall-clock ceiling for a streaming chat turn. Raised from 120s
     # because deep multi-specialist turns were being cut off mid-answer. A
     # ceiling this high is only tolerable because the user can end a turn
-    # themselves — see POST /chat/stop in api/routes/chat.py.
-    chat_stream_timeout_s: float = Field(300.0, alias="CHAT_STREAM_TIMEOUT_S")
+    # themselves — see POST /chat/stop in api/routes/chat.py. Raised again to
+    # 600s: filing two emails' worth of attachments to Drive ran past 300s.
+    chat_stream_timeout_s: float = Field(600.0, alias="CHAT_STREAM_TIMEOUT_S")
 
     # Extra wall-clock allowance added to chat_stream_timeout_s when a request
-    # opts in to Committee review (so 360s in total at the defaults). Committee
+    # opts in to Committee review (so 660s in total at the defaults). Committee
     # adds three reviewer calls + one full-pass revision on top of the draft,
     # typically 5–12s.
     committee_extra_timeout_s: float = Field(60.0, alias="COMMITTEE_EXTRA_TIMEOUT_S")

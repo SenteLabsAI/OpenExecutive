@@ -139,6 +139,24 @@ def _lock() -> asyncio.Lock:
     return lock
 
 
+# Saves of named files into a named Drive folder: Drive keeps two files of
+# one name side by side, so these need no lock, only a cap on how many go to
+# the workspace server at once. A turn filing a whole email's attachments
+# otherwise spent ~4s per file in a row and ran out of time.
+GOOGLE_PARALLEL_SAVES = 4
+_GOOGLE_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _google_slot() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = _GOOGLE_SLOTS.get(loop)
+    if slots is None:
+        slots = _GOOGLE_SLOTS[loop] = asyncio.Semaphore(GOOGLE_PARALLEL_SAVES)
+    return slots
+
+
 async def _call(gateway: Any, name: str, arguments: dict[str, Any]) -> str:
     """One code-built gateway call (``code_built_call``), discovering the tool
     first if this gateway session hasn't yet."""
