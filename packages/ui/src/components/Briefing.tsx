@@ -148,6 +148,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   // Cards untouched for a few days fold into one "Older (N)" line.
   const [showOlder, setShowOlder] = useState(false);
   const [clearingOlder, setClearingOlder] = useState(false);
+  const [olderNotice, setOlderNotice] = useState<string | null>(null);
   // "Re-check relevance" runs the Executive's review on demand.
   const [recheckBusy, setRecheckBusy] = useState(false);
   // The card just snoozed, for the "Snoozed until …" notice and its Undo.
@@ -794,9 +795,15 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const hiddenCount = currentQueue.length - visibleQueue.length;
   const handleClearOlder = async () => {
     setClearingOlder(true);
-    await Promise.allSettled(olderQueue.map((item) => item.clear()));
+    setOlderNotice(null);
+    const results = await Promise.allSettled(olderQueue.map((item) => item.clear()));
+    const failed = results.filter((r) => r.status === "rejected").length;
     setClearingOlder(false);
-    setShowOlder(false);
+    if (failed > 0) {
+      setOlderNotice(`${failed} of ${results.length} didn't clear. They're still under Older. Try again.`);
+    } else {
+      setShowOlder(false);
+    }
     refreshToday();
   };
 
@@ -1041,6 +1048,11 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                             {clearingOlder ? "Clearing…" : "Clear all"}
                           </button>
                         </div>
+                        {olderNotice && (
+                          <p className="px-4 pb-3 text-sm text-red-500" role="status">
+                            {olderNotice}
+                          </p>
+                        )}
                         {showOlder && (
                           <div className="space-y-4 border-t border-line p-3">
                             {olderQueue.map((item) => (
