@@ -284,6 +284,8 @@ def test_loose_words_name_no_draft() -> None:
 def test_a_redraft_names_the_rows_it_replaced() -> None:
     owner = _owner()
     mailbox = Mailbox()
+    # Sent from their mailbox already: not in Drafts any more.
+    sent = _record(owner, "d0", "s1")
     mailbox.add("d1", [DANA])
     earlier = _record(owner, "d1", "s1")
     mailbox.add("d2", [DANA])
@@ -293,7 +295,10 @@ def test_a_redraft_names_the_rows_it_replaced() -> None:
         owner, mailbox, row_id=newer, thread_id="t1", session_id="s1", to=[DANA], subject="Pilot dates",
         now=NOW, retired=retired,
     ))
-    assert replaced == 1 and retired == [earlier]
+    assert replaced == 1 and earlier in retired
+    # Only the draft this redraft took out reads as replaced.
+    gone = drafts.get_row(sent)
+    assert gone is not None and gone.gone_at and gone.replaced_by is None
     got = drafts.get_row(earlier)
     assert got is not None and got.replaced_by == newer
     later = drafts.get_row(newer)
