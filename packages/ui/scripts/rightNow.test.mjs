@@ -15,6 +15,8 @@ import {
   pointTarget,
   progressNote,
   progressSteps,
+  rowTarget,
+  rowWhen,
   seenBaseline,
 } from "../src/lib/rightNow.ts";
 
@@ -146,4 +148,25 @@ test("Later puts away this move for today only", () => {
   assert.equal(isPutOff(mark, "Call Dana.", new Date(now.getTime() + 86_400_000)), false);
   assert.equal(isPutOff("not json", "Call Dana.", now), false);
   assert.equal(isPutOff(null, "Call Dana.", now), false);
+});
+
+test("rowWhen: a clock time today, Yesterday, else month and day", () => {
+  const now = new Date(2026, 10, 4, 15, 0);
+  assert.equal(rowWhen(new Date(2026, 10, 4, 10, 48).toISOString(), now), "10:48 AM");
+  assert.equal(rowWhen(new Date(2026, 10, 3, 21, 5).toISOString(), now), "Yesterday");
+  assert.equal(rowWhen(new Date(2026, 10, 1, 9, 0).toISOString(), now), "Nov 1");
+  assert.equal(rowWhen(null, now), null);
+  assert.equal(rowWhen("not a time", now), null);
+});
+
+test("rowTarget: a row opens what its source names, like a point", () => {
+  assert.deepEqual(rowTarget({ source: { kind: "mail", thread_id: "t1", message_id: "m1" } }), {
+    kind: "mail", threadId: "t1", messageId: "m1", cardId: null,
+  });
+  assert.deepEqual(rowTarget({ source: { kind: "link", url: "https://chat.example.com/x", app: "Slack" } }), {
+    kind: "link", url: "https://chat.example.com/x", app: "Slack",
+  });
+  // A draft with only a thread opens nothing.
+  assert.equal(rowTarget({ source: { kind: "mail", thread_id: "t1" } }), null);
+  assert.equal(rowTarget({ source: null }), null);
 });

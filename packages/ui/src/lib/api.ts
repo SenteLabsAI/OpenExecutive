@@ -5535,6 +5535,27 @@ export interface PointSource {
   alert_id?: number | null;
 }
 
+// One row of Home's Right now list: what it is, who it is from or to, its
+// subject, the newest activity on it (ISO UTC), why it is listed, and what
+// Home can open from it. `key` is what dismissRightNowRow takes.
+export interface RightNowRow {
+  key: string;
+  kind: "mail" | "draft" | "chat";
+  who: string;
+  subject: string;
+  at: string;
+  note?: string;
+  source?: {
+    kind: "mail" | "alert" | "link";
+    message_id?: string | null;
+    thread_id?: string | null;
+    decision_id?: number | null;
+    alert_id?: number | null;
+    url?: string | null;
+    app?: string | null;
+  } | null;
+}
+
 export interface MorningBriefItem {
   at: string;
   text: string;
@@ -5573,6 +5594,8 @@ export interface Today {
   // own inbox from people they don't deal with. Optional for older API builds.
   narrative_checked_at?: string | null;
   inbox_also?: string[];
+  // The owner's Right now list (empty for anyone else, and from older API builds).
+  right_now?: RightNowRow[];
   inbox_also_total?: number;
   // The owner's own: today's delivered morning brief and the meetings still
   // ahead today.
@@ -5617,13 +5640,13 @@ export async function markTodaySeen(): Promise<string | null> {
   return body.seen_at ?? null;
 }
 
-// The reader cleared a Right now point: gone for the rest of the day, and
-// the Executive doesn't raise it again. True when it was kept.
-export async function dismissTodayPoint(text: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/today/dismiss`, {
+// The owner cleared a Right now row: gone until something newer lands on it.
+// True when it was kept.
+export async function dismissRightNowRow(key: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/today/right-now/dismiss`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ key }),
   });
   if (!res.ok) return false;
   const body = (await res.json()) as { dismissed?: boolean };
