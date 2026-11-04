@@ -496,6 +496,8 @@ async def _process_and_reply(
                 channel_context_block=build_channel_context_block("telegram", cards_here=cards_here),
                 person_id=person_id,
                 cards=cards if cards_here else None,
+                # The quote is not the person's words: memory keeps their own.
+                memory_text=own_text if reply_context else None,
             )
             from openexecutive.orchestrator.disclosure import with_chat_line
 

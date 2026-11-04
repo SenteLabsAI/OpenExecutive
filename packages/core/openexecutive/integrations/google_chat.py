@@ -331,6 +331,10 @@ async def _process_and_reply(
         retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
         episodic_context = format_for_prompt()
 
+        own_text = message_text
+        # Quoted only for people on the team: the quote is text the sender
+        # chose, as an attachment's is.
+        reply_context = reply_context if _sender_on_roster(sender_email) else ""
         if reply_context:
             from openexecutive.integrations.reply_context import with_context
 
@@ -358,6 +362,8 @@ async def _process_and_reply(
             episodic_context=episodic_context,
             channel_context_block=build_channel_context_block("google_chat"),
             attachment_blocks=image_blocks or None,
+            # The quote is not the person's words: memory keeps their own.
+            memory_text=own_text if reply_context else None,
         )
         from openexecutive.orchestrator.disclosure import with_chat_line
 

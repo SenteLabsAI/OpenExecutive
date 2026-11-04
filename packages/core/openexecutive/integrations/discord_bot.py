@@ -1135,6 +1135,8 @@ async def _handle_message(
                 cards=cards if cards_here else None,
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,
+                # The quote is not the person's words: memory keeps their own.
+                memory_text=own_text if reply_context else None,
             )
 
             # Late routing: for the @mention auto-thread path, the router

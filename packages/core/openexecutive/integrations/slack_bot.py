@@ -1275,7 +1275,7 @@ async def create_slack_app():
                     attachment_blocks=att_image_blocks or None,
                     # Peer memory records what the sender wrote and the files'
                     # names, never a document's text as their words.
-                    memory_text=own_words if files else None,
+                    memory_text=own_words if (files or reply_quote) else None,
                 )
 
                 # No unfurls: Slack would fetch a link in the reply on its own,
