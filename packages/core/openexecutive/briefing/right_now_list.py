@@ -236,12 +236,14 @@ def _draft_rows(principal: Any, since: datetime, now: datetime) -> list[Row]:
         if not (d.to or d.subject) or _only_to(d.to, own) or not d.row_id:
             continue
         at = parse_aware(d.created_at)
+        if at is None:
+            continue  # no stable time, so a dismissal could never hold
         out.append(Row(
             key=f"draft:{d.row_id}",
             kind="draft",
             who=_one_line(", ".join(_named(a, True) for a in d.to), 80) or "No one yet",
             subject=_one_line(d.subject, 120) or "(no subject)",
-            at=(at or now).isoformat(),
+            at=at.isoformat(),
             note="In your Drafts, not sent",
             source={"kind": "mail", "thread_id": d.thread_id} if d.thread_id else {},
         ))
