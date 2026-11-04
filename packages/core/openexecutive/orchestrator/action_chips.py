@@ -268,6 +268,11 @@ def summarize_action(
         # extension's tool is never held there; what it waits on is its
         # chip's to describe.
         payload["summary"] = "Waiting for approval"
+        payload["link"] = "/today"
+        # The chat shows the card itself under its message, by this id.
+        decision_id = parsed.get("decision_instance_id")
+        if isinstance(decision_id, int) and not isinstance(decision_id, bool):
+            payload["decision_id"] = decision_id
         return payload
     if extension:
         # An installed extension's tool (orchestrator/extensions.py) words

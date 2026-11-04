@@ -394,11 +394,18 @@ def test_declining_is_recorded(
 # ── wired into a chat turn ────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("hands_off", [False, True])
 @pytest.mark.parametrize("who", ["sam", "owner"])
 def test_a_teammates_chat_turn_goes_through_the_gate(
-    team: dict[str, Person], monkeypatch: pytest.MonkeyPatch, who: str,
+    team: dict[str, Person], monkeypatch: pytest.MonkeyPatch, who: str, hands_off: bool,
 ) -> None:
-    """A team member's send waits; the owner's own goes, as before."""
+    """A team member's send waits; the owner's own goes, as before. Hands-off
+    is the owner's trust in their own Executive: it doesn't waive the range
+    they set for their people."""
+    if hands_off:
+        from openexecutive.orchestrator import outside_mode
+
+        monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
     from unittest.mock import patch
 
     from openexecutive.orchestrator.executive import Executive

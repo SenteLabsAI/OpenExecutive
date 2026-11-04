@@ -486,14 +486,15 @@ def test_a_booked_meeting_says_booked() -> None:
     assert "decision_id" not in chip
 
 
-def test_a_held_send_is_not_a_done_chip() -> None:
+def test_a_held_send_carries_its_card() -> None:
     chip = summarize_action(
         tool_name="send_slack_dm",
         tool_input={"channel_ref": "U1", "text": "hi"},
         tool_result=json.dumps({"status": "waiting_for_approval", "decision_instance_id": 9}),
     )
     assert chip is not None and chip["summary"] == "Waiting for approval"
-    assert "decision_id" not in chip
+    # It carries its card, so the chat shows Approve under the reply.
+    assert chip["decision_id"] == 9 and chip["link"] == "/today"
 
 
 def test_a_cancelled_meeting_says_so() -> None:

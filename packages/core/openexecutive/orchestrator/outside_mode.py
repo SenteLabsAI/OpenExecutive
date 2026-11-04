@@ -165,17 +165,10 @@ def _read_channels(db_path: Path | None = None) -> dict[str, str] | None:
 
 
 def channel_mode(channel: str | None) -> str:
-    """The level a turn on ``channel`` starts from: the channel's own when
-    it has one, else the company's (``get_mode``). Channels that can't be
-    read are ``ask``, like an unreadable level, so a channel set to Careful
-    never runs looser."""
-    if not channel:
-        return get_mode()
-    stored = _read_channels()
-    if stored is None:
-        return ASK
-    own = stored.get(channel)
-    return own if own is not None else get_mode()
+    """The level a turn on ``channel`` runs at: the company's, on every
+    channel alike (``get_mode``). Levels set apart per channel are no longer
+    read: one level drives every channel."""
+    return get_mode()
 
 
 def set_mode(
@@ -235,26 +228,41 @@ def channel_of(session: Any) -> str | None:
     return channel if channel in CHANNELS else None
 
 
+def _someone_else(session: Any) -> bool:
+    """Whether the turn's words may be someone other than the owner's: mail
+    from someone not in People, a shared chat someone else wrote in since the
+    owner did, another AI app or a host page, or a teammate. Hands-off is the
+    owner's trust in their own Executive, so it never covers these."""
+    if getattr(session, "sender_off_team", False) is True:
+        return True
+    if getattr(session, "shared_chat", False) is True and getattr(session, "others_spoke_last", False) is True:
+        return True
+    if getattr(session, "from_mcp_client", False) is True or getattr(session, "from_host", False) is True:
+        return True
+    caller = getattr(session, "caller_person_id", None)
+    if isinstance(caller, int) and not isinstance(caller, bool):
+        from openexecutive.people.store import get_person
+
+        person = get_person(caller)
+        return person is not None and not person.is_principal
+    return False
+
+
 def for_turn(session: Any) -> str:
-    """The setting as it applies to ``session``'s turn. Never raises: an
+    """The setting as it applies to ``session``'s turn: the company's level,
+    the same on every channel and for every kind of turn (web chat, email,
+    chat apps, scheduled work). Hands-off is for the owner's own turns: one
+    whose words may be someone else's (``_someone_else``) runs at Balanced,
+    so what it asks for comes to the owner as an Approve card
+    (``orchestrator.levels``). Never raises: an
     error is ``ASK``."""
     try:
         if session is None:
             return ASK
-        if getattr(session, "sender_off_team", False) is True:
-            return ASK
-        if getattr(session, "shared_chat", False) is True:
-            return ASK
-        if getattr(session, "from_mcp_client", False) is True:
-            return ASK
-        mode = channel_mode(channel_of(session))
-        if mode != TRUST:
-            return mode
-        from openexecutive.orchestrator.content_trust import principal_only_withheld
-
-        # The principal, on an interactive surface that isn't email, in a
-        # chat nobody else writes into.
-        return TRUST if not principal_only_withheld(session) else OUTSIDERS
+        mode = get_mode()
+        if mode == TRUST and _someone_else(session):
+            return OUTSIDERS
+        return mode
     except Exception:
         logger.warning("outside_mode: couldn't tell the setting for this turn — asking every time", exc_info=True)
         return ASK

@@ -24,7 +24,6 @@ from openexecutive.audit.redaction import (
 from openexecutive.audit.usage import log_model_usage
 from openexecutive.config import get_settings
 from openexecutive.delegation.lockdown import (
-    mail_touched_withheld_error,
     mail_turn_withholds,
 )
 from openexecutive.delegation.settings import (
@@ -46,6 +45,7 @@ from openexecutive.orchestrator import (
     claim_check,
     department_gate,
     extensions,
+    levels,
     outside_content,
     take_the_lead,
     tool_groups,
@@ -91,7 +91,6 @@ from openexecutive.orchestrator.chat_search_tools import (
 )
 from openexecutive.orchestrator.content_trust import (
     principal_only_withheld,
-    principal_only_withheld_error,
 )
 from openexecutive.orchestrator.correction_tools import (
     CORRECTION_TOOL_HANDLERS,
@@ -176,17 +175,11 @@ from openexecutive.orchestrator.schedule_tools import (
     current_session,
     filter_tools_for_workspace_mode,
     mcp_client_acting,
-    mcp_client_allows_mcp_tool,
-    mcp_client_withheld_error,
     mcp_client_withholds,
     mcp_rules_turn,
-    private_turn_allows_mcp_tool,
-    private_turn_withheld_error,
     private_turn_withholds,
-    shared_chat_withheld_error,
     shared_chat_withholds,
     tools_withheld_in_mode,
-    unattended_withheld_error,
     withheld_tool_error,
 )
 from openexecutive.orchestrator.session import Session
@@ -221,7 +214,6 @@ from openexecutive.providers.translator import reasoning_replay_block
 from openexecutive.workflows import python_job, step_script, turn_files
 from openexecutive.workflows.action_step import looks_like_error
 from openexecutive.workflows.python_job import PYTHON_JOB_TOOL_HANDLERS, PYTHON_JOB_TOOLS
-from openexecutive.workflows.tool_catalog import filter_search_results
 
 logger = logging.getLogger(__name__)
 
@@ -2435,11 +2427,12 @@ class Executive:
         # faked below, after the gates.
         replaying = chat_replay.is_replay(current_session.get())
         replay_withheld = chat_replay.WITHHELD_TOOLS if replaying else frozenset()
-        not_offered = (
-            unattended_withheld | private_withheld | principal_withheld | sandbox_missing
-            | mcp_client_withheld | shared_withheld | replay_withheld
-        )
+        # The gates' tools are offered at every level: the one check
+        # (orchestrator.levels) decides at dispatch whether a call they
+        # notice runs (Hands-off) or waits on an Approve card.
+        not_offered = sandbox_missing | replay_withheld
         withheld_tools = tools_withheld_in_mode(workspace_mode) | not_offered
+        turn_level = levels.turn_level(current_session.get())
         # Act as me: ghostwrite_email joins the toolkit only on a turn
         # pin_turn_delegation offered it to. Its own registry, never
         # _ALL_SKILL_TOOLS, and a per-turn handler map built from it — so on
@@ -2493,6 +2486,9 @@ class Executive:
         # A team member's turn (not the principal's): every send or edit goes
         # through their department's authority first (department_gate), as
         # unattended work goes through the scheduler's and Take the lead's.
+        # The owner set those ranges for their people, so Hands-off (the
+        # owner's own trust in their Executive) doesn't waive them; a step
+        # outside a range is an Approve card for its approver.
         seat = None if unattended_withheld else department_gate.speaker(current_session.get())
         seat_session_id = getattr(current_session.get(), "session_id", None)
         if seat is not None:
@@ -2829,48 +2825,37 @@ class Executive:
                 if self._script_tools
                 and tu["name"] in (step_script.RUN_SCRIPT_TOOL, step_script.LIST_SAVED_TOOLS_TOOL)
             ]
-            # A turn private to the principal is not offered run_script
-            # (PRIVATE_TURN_WITHHELD_TOOLS); the same guard refuses it.
-            if (private_turn or mcp_client) and script_tool_uses:
-                withheld_uses = [*withheld_uses, *script_tool_uses]
-                script_tool_uses = []
-            # list_saved_tools is principal-only (PRINCIPAL_ONLY_TOOLS).
-            refused_scripts = [tu for tu in script_tool_uses if tu["name"] in principal_withheld]
-            if refused_scripts:
-                withheld_uses = [*withheld_uses, *refused_scripts]
-                script_tool_uses = [tu for tu in script_tool_uses if tu not in refused_scripts]
-            # A private turn is not offered load_mcp_server either (it
-            # reaches any URL), nor any MCP tool through call_tool but those
-            # in PRIVATE_TURN_MCP_TOOLS (Google Workspace reads, and the Gmail
-            # send the gateway narrows to the principal), and the same guard
-            # refuses them.
-            withheld_mcp_uses = [
-                tu for tu in mcp_tool_uses
-                if private_turn and private_turn_withholds(tu["name"], tu["input"])
-            ]
-            withheld_mcp_uses += [
-                tu for tu in mcp_tool_uses
-                if tu["name"] in principal_withheld and tu not in withheld_mcp_uses
-            ]
-            # A turn from another AI app: gateway reads only
-            # (MCP_CLIENT_MCP_TOOLS), never load_mcp_server.
-            withheld_mcp_uses += [
-                tu for tu in mcp_tool_uses
-                if mcp_client
-                and mcp_client_withholds(tu["name"], tu["input"], acting=mcp_acting)
-                and tu not in withheld_mcp_uses
-            ]
-            # A shared chat others have written into: no mail send, reply,
-            # forward or draft through the gateway.
-            withheld_mcp_uses += [
-                tu for tu in mcp_tool_uses
-                if others_spoke
-                and shared_chat_withholds(tu["name"], tu["input"])
-                and tu not in withheld_mcp_uses
-            ]
-            if withheld_mcp_uses:
-                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in withheld_mcp_uses]
-                withheld_uses = [*withheld_uses, *withheld_mcp_uses]
+            # What the gates notice (they decide nothing): a step the
+            # owner's level then runs or puts on an Approve card
+            # (orchestrator.levels.decide, below).
+            script_ids = {tu["id"] for tu in script_tool_uses}
+
+            def _noticed(tu: dict[str, Any], script_ids: set[str] = script_ids) -> str | None:
+                name, given = tu["name"], tu["input"]
+                is_mcp = name in MCP_TOOL_NAMES
+                is_script = tu["id"] in script_ids
+                if name in unattended_withheld:
+                    return levels.UNATTENDED
+                if name in principal_withheld:
+                    return levels.NOT_OWNER
+                if private_turn and (
+                    name in private_withheld or is_script or (is_mcp and private_turn_withholds(name, given))
+                ):
+                    return levels.PRIVATE
+                if mcp_client and (
+                    name in mcp_client_withheld or is_script
+                    or (is_mcp and mcp_client_withholds(name, given, acting=mcp_acting))
+                ):
+                    return levels.AI_APP
+                if others_spoke and (name in shared_withheld or (is_mcp and shared_chat_withholds(name, given))):
+                    return levels.SHARED
+                return None
+
+            gate_reasons: dict[str, str] = {
+                tu["id"]: reason
+                for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
+                if (reason := _noticed(tu)) is not None
+            }
             # Act as me: once the turn has read the principal's own mail (in
             # an earlier round, or with a ghostwrite_email, a mailbox read or
             # recall_history in this one — a round's tools run together),
@@ -2898,10 +2883,6 @@ class Executive:
                         tu["name"], tu["input"], reading_now=reads_mail_now, pinned=pinned_delegation
                     )
                 ]
-            if mail_touched_uses:
-                skill_tool_uses = [tu for tu in skill_tool_uses if tu not in mail_touched_uses]
-                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in mail_touched_uses]
-                script_tool_uses = [tu for tu in script_tool_uses if tu not in mail_touched_uses]
             # Outside content: once the turn has read anything from outside
             # the team (an earlier round, or a web search in this response),
             # what the Act as me lockdown withholds, contact writes and every
@@ -2930,10 +2911,28 @@ class Executive:
                         tu["name"], tu["input"], pending=[source for _, source in round_sources]
                     )
                 ]
-            if outside_uses:
-                skill_tool_uses = [tu for tu in skill_tool_uses if tu not in outside_uses]
-                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu not in outside_uses]
-                script_tool_uses = [tu for tu in script_tool_uses if tu not in outside_uses]
+            # The one check: each step a gate noticed runs or waits on an
+            # Approve card, by the owner's level (orchestrator.levels).
+            stranger = outside_content.answers_off_team_mail()
+            noticed: dict[str, tuple[dict[str, Any], str]] = {
+                tu["id"]: (tu, gate_reasons[tu["id"]])
+                for tu in [*skill_tool_uses, *mcp_tool_uses, *script_tool_uses]
+                if tu["id"] in gate_reasons
+            }
+            for tu in mail_touched_uses:
+                noticed.setdefault(tu["id"], (tu, levels.OWN_MAIL))
+            for tu in outside_uses:
+                noticed.setdefault(tu["id"], (tu, levels.STRANGER if stranger else levels.OUTSIDE))
+            held_uses = [
+                (tu, reason) for tu, reason in noticed.values()
+                if levels.decide(reason, mode=turn_level) == levels.CARD
+                and not levels.only_to_owner(tu["name"], tu["input"])
+            ]
+            held_ids = {tu["id"] for tu, _ in held_uses}
+            if held_ids:
+                skill_tool_uses = [tu for tu in skill_tool_uses if tu["id"] not in held_ids]
+                mcp_tool_uses = [tu for tu in mcp_tool_uses if tu["id"] not in held_ids]
+                script_tool_uses = [tu for tu in script_tool_uses if tu["id"] not in held_ids]
 
             specialist_calls = [
                 {
@@ -3026,22 +3025,33 @@ class Executive:
 
             event_cursor = len(debug_collector._events) if debug_collector else 0
             session_id = getattr(current_session.get(), "session_id", None)
-            for tu in mail_touched_uses:
-                # Fail closed, with a trace private to the principal (the
-                # turn's rows already are). A call_tool is named by the tool
-                # it asked for.
+            for tu, reason in held_uses:
+                # Never dropped: the exact step goes on an Approve card for
+                # the owner, or the model is told why it didn't run.
                 kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
                 label = tu["name"]
+                held_tool, held_input, held_mcp = tu["name"], tu["input"], False
                 if label == "call_tool" and isinstance(tu["input"], dict):
                     named = tu["input"].get("name")
                     label = named[:200] if isinstance(named, str) and named else label
-                logger.warning(
-                    "%s:%s refused — the turn read the principal's own mail",
-                    kind, _loggable_tool(label),
+                    arguments = tu["input"].get("arguments")
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except (ValueError, RecursionError):
+                            arguments = None
+                    if isinstance(named, str) and named and isinstance(arguments, dict | None):
+                        held_tool, held_input, held_mcp = named, dict(arguments or {}), True
+                can_card = (
+                    tu["id"] not in script_ids
+                    and (held_mcp or tu["name"] not in MCP_TOOL_NAMES)
+                    and isinstance(held_input, dict)
+                    and levels.carriable(held_tool, mcp=held_mcp)
                 )
+                logger.info("%s:%s held for approval (%s)", kind, _loggable_tool(label), reason)
                 audit_log(
                     "tool_invocation",
-                    f"{kind}:{label} refused: the turn read the principal's own mail",
+                    f"{kind}:{label} waiting for approval: {reason}",
                     session_id=session_id,
                     turn_id=turn_id,
                     actor="executive",
@@ -3050,152 +3060,28 @@ class Executive:
                         "kind": kind,
                         "iteration": iteration,
                         "ok": False,
-                        "refused": "mail_touched",
-                    },
-                    private=True,
-                )
-                results_by_id[tu["id"]] = mail_touched_withheld_error(label)
-            for tu in outside_uses:
-                kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
-                label = tu["name"]
-                if label == "call_tool" and isinstance(tu["input"], dict):
-                    named = tu["input"].get("name")
-                    label = named[:200] if isinstance(named, str) and named else label
-                logger.warning(
-                    "%s:%s refused — the turn read outside content",
-                    kind, _loggable_tool(label),
-                )
-                audit_log(
-                    "tool_invocation",
-                    f"{kind}:{label} refused: the turn read content from outside the team",
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    actor="executive",
-                    details={
-                        "tool": label,
-                        "kind": kind,
-                        "iteration": iteration,
-                        "ok": False,
-                        "refused": "outside_content",
+                        "held": reason,
+                        "card": can_card,
                         "sources": sorted(getattr(outside_content.current(), "sources", ())),
                     },
                     private=private_turn or bool(
                         pinned_delegation is not None and pinned_delegation.touched_mail
-                    ),
+                    ) or reason in (levels.OWN_MAIL, levels.PRIVATE),
                 )
-                results_by_id[tu["id"]] = outside_content.outside_withheld_error(label)
+                if not can_card:
+                    results_by_id[tu["id"]] = levels.not_carriable_error(label, reason)
+                    continue
+                held_result = await asyncio.to_thread(
+                    levels.hold, held_tool, held_input, mcp=held_mcp, reason=reason,
+                    session=current_session.get(),
+                )
+                results_by_id[tu["id"]] = held_result
+                # The card shows under this reply (the web chat) and goes to
+                # the chat app the turn came from (Executive.chat's cards).
+                held_chip = levels.waiting_chip(held_result, label=label, iteration=iteration)
+                if held_chip is not None:
+                    yield held_chip
             for tu in withheld_uses:
-                if mcp_client and mcp_client_withholds(tu["name"], tu["input"], acting=mcp_acting):
-                    # Fail closed: never run, and leave a trace. A call_tool
-                    # is named by the tool it asked for.
-                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
-                    label = tu["name"]
-                    if label == "call_tool" and isinstance(tu["input"], dict):
-                        named = tu["input"].get("name")
-                        label = named[:200] if isinstance(named, str) and named else label
-                    logger.warning(
-                        "%s:%s refused — the turn comes from an MCP client",
-                        kind, _loggable_tool(label),
-                    )
-                    audit_log(
-                        "tool_invocation",
-                        f"{kind}:{label} refused: the turn comes from another AI app",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        actor="executive",
-                        details={
-                            "tool": label,
-                            "kind": kind,
-                            "iteration": iteration,
-                            "ok": False,
-                            "refused": "mcp_client",
-                        },
-                        private=private_turn,
-                    )
-                    results_by_id[tu["id"]] = mcp_client_withheld_error(label, acting=mcp_acting)
-                    continue
-                if private_turn and private_turn_withholds(tu["name"], tu["input"]):
-                    # Fail closed: never run, and leave a trace — private to
-                    # the principal like every row this turn writes. A
-                    # call_tool is named by the tool it asked for.
-                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
-                    label = tu["name"]
-                    if label == "call_tool" and isinstance(tu["input"], dict):
-                        named = tu["input"].get("name")
-                        label = named[:200] if isinstance(named, str) and named else label
-                    logger.warning(
-                        "%s:%s refused — the turn is private to the principal",
-                        kind, _loggable_tool(label),
-                    )
-                    audit_log(
-                        "tool_invocation",
-                        f"{kind}:{label} refused: the turn is private to the principal",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        actor="executive",
-                        details={
-                            "tool": label,
-                            "kind": kind,
-                            "iteration": iteration,
-                            "ok": False,
-                            "refused": "private_turn",
-                        },
-                        private=True,
-                    )
-                    results_by_id[tu["id"]] = private_turn_withheld_error(label)
-                    continue
-                if others_spoke and shared_chat_withholds(tu["name"], tu["input"]):
-                    kind = "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill"
-                    label = tu["name"]
-                    if label == "call_tool" and isinstance(tu["input"], dict):
-                        named = tu["input"].get("name")
-                        label = named[:200] if isinstance(named, str) and named else label
-                    logger.warning(
-                        "%s:%s refused — others wrote in this shared chat since its owner",
-                        kind, _loggable_tool(label),
-                    )
-                    audit_log(
-                        "tool_invocation",
-                        f"{kind}:{label} refused: others wrote in this shared chat since its owner",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        actor="executive",
-                        details={
-                            "tool": label,
-                            "kind": kind,
-                            "iteration": iteration,
-                            "ok": False,
-                            "refused": "shared_chat",
-                        },
-                        private=private_turn,
-                    )
-                    results_by_id[tu["id"]] = shared_chat_withheld_error(label)
-                    continue
-                if tu["name"] in unattended_withheld:
-                    logger.warning("skill:%s refused — not offered in an unattended run", tu["name"])
-                    results_by_id[tu["id"]] = unattended_withheld_error(tu["name"])
-                    continue
-                if tu["name"] in principal_withheld:
-                    logger.warning(
-                        "%s refused — offered only while the principal is speaking", tu["name"]
-                    )
-                    audit_log(
-                        "tool_invocation",
-                        f"{tu['name']} refused: the principal is not speaking on this turn",
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        actor="executive",
-                        details={
-                            "tool": tu["name"],
-                            "kind": "mcp" if tu["name"] in MCP_TOOL_NAMES else "skill",
-                            "iteration": iteration,
-                            "ok": False,
-                            "refused": "not_principal",
-                        },
-                        private=private_turn,
-                    )
-                    results_by_id[tu["id"]] = principal_only_withheld_error(tu["name"])
-                    continue
                 logger.warning(
                     "skill:%s refused — not offered in %s mode", tu["name"], workspace_mode
                 )
@@ -3484,12 +3370,6 @@ class Executive:
                         results_by_id[tu["id"]] = _tool_error_result(tool_label, raw)
                         continue
                     result = raw
-                    if private_turn and tu["name"] == "search_tools":
-                        # Offer a private turn PRIVATE_TURN_MCP_TOOLS only.
-                        result = filter_search_results(result, private_turn_allows_mcp_tool)
-                    if mcp_client and tu["name"] == "search_tools":
-                        # And a turn from another AI app MCP_CLIENT_MCP_TOOLS.
-                        result = filter_search_results(result, mcp_client_allows_mcp_tool)
                     logger.info("← %s  result=%s", tool_label, _log_value(tool_label, result))
                     results_by_id[tu["id"]] = result
                     # MCP chip emission. search_tools is read-only (gets
@@ -3591,17 +3471,32 @@ class Executive:
                         (tool, arguments) if own else ("call_tool", {"name": tool, "arguments": arguments})
                     )
                     await outside_content.settle()
+                    # A script's call is checked as a direct one would be:
+                    # what a gate notices runs or waits on an Approve card,
+                    # by the owner's level (orchestrator.levels).
+                    script_reason: str | None = None
                     if outside_content.read_outside() and outside_content.outside_withholds(
                         probe_name, probe_input
                     ):
-                        return outside_content.outside_withheld_error(tool[:200]), True
-                    # The owner's mail this turn read holds what a direct call
-                    # would hold (delegation.lockdown.mail_turn_withholds):
-                    # an alert or a roster change at any level.
-                    if pinned_delegation is not None and mail_turn_withholds(
+                        script_reason = (
+                            levels.STRANGER if outside_content.answers_off_team_mail() else levels.OUTSIDE
+                        )
+                    elif pinned_delegation is not None and mail_turn_withholds(
                         probe_name, probe_input, pinned=pinned_delegation
                     ):
-                        return mail_touched_withheld_error(tool[:200]), True
+                        script_reason = levels.OWN_MAIL
+                    if (
+                        script_reason is not None
+                        and levels.decide(script_reason, mode=turn_level) == levels.CARD
+                        and not levels.only_to_owner(probe_name, probe_input)
+                    ):
+                        if isinstance(arguments, dict) and levels.carriable(tool, mcp=not own):
+                            held = await asyncio.to_thread(
+                                levels.hold, tool, dict(arguments), mcp=not own,
+                                reason=script_reason, session=current_session.get(),
+                            )
+                            return held, False
+                        return levels.not_carriable_error(tool[:200], script_reason), True
                     if not own:
                         await outside_content.vet_reads(
                             [{"name": probe_name, "input": probe_input}], self._mcp_gateway
@@ -3855,7 +3750,7 @@ class Executive:
                 (tu, source) for tu in dispatch_uses
                 if (source := outside_content.source_of(tu["name"], tu["input"])) is not None
             ]:
-                if tu not in outside_uses and tu not in mail_touched_uses and tu not in withheld_uses:
+                if tu["id"] not in held_ids and tu not in withheld_uses:
                     notice = await outside_content.mark_read(
                         source, tu["input"], results_by_id.get(tu["id"], ""), self._mcp_gateway
                     )

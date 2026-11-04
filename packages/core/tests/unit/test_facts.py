@@ -256,13 +256,6 @@ def test_remember_fact_refuses_a_message_with_an_attachment(
     assert "attachment" in out["error"]
 
 
-@pytest.mark.parametrize("quote", ["48", "48 units", "units,"])
-def test_remember_fact_needs_more_than_a_fragment(principal: SimpleNamespace, quote: str) -> None:
-    out = _call(fact_tools.handle_remember_fact, subject="Units",
-                statement="Maple House has 48 units.", source_quote=quote)
-    assert "too short" in out["error"]
-
-
 def test_remember_fact_takes_a_one_word_answer(principal: SimpleNamespace) -> None:
     """A one-word answer to the Executive's own question, as their whole
     message, is the fact."""

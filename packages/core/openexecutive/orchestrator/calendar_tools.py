@@ -765,8 +765,11 @@ async def handle_create_calendar_event(tool_input: dict[str, Any]) -> str:
             "error": f"start is more than {settings.calendar_horizon_days} days out",
         })
 
-    # 5. Cap: business hours / weekday, in the company's time zone.
-    if not _check_business_hours(start, settings.calendar_business_hours_start,
+    # 5. Cap: business hours / weekday, in the company's time zone. Not under
+    # Hands-off (orchestrator.levels): the owner chose to let it act.
+    from openexecutive.orchestrator import levels
+
+    if not levels.relaxed() and not _check_business_hours(start, settings.calendar_business_hours_start,
                                  settings.calendar_business_hours_end):
         return json.dumps({
             "error": (

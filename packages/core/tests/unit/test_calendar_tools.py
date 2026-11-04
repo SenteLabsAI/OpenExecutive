@@ -1090,8 +1090,10 @@ def _new_york(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(calendar_tools, "_local_tz", lambda: ZoneInfo("America/New_York"))
 
 
-def _weekday(days_out: int = 3) -> datetime:
-    day = datetime.now(UTC) + timedelta(days=days_out)
+def _weekday(days_out: int = 3, tz: Any = UTC) -> datetime:
+    # A weekday on ``tz``'s calendar: just after midnight UTC on a Monday is
+    # still Sunday in New York.
+    day = (datetime.now(UTC) + timedelta(days=days_out)).astimezone(tz)
     while day.weekday() >= 5:
         day += timedelta(days=1)
     return day
@@ -1103,7 +1105,7 @@ def test_business_hours_are_read_on_the_company_clock(monkeypatch: pytest.Monkey
 
     _new_york(monkeypatch)
     _add_person("Alice", "alice@example.com")
-    day = _weekday().astimezone(ZoneInfo("America/New_York"))
+    day = _weekday(tz=ZoneInfo("America/New_York"))
     start = day.replace(hour=14, minute=0, second=0, microsecond=0)
     result = _call({
         "title": "Sync", "start": _iso(start), "end": _iso(start + timedelta(minutes=30)),
@@ -1125,7 +1127,7 @@ def test_early_morning_in_new_york_is_still_outside_hours(monkeypatch: pytest.Mo
 
     _new_york(monkeypatch)
     _add_person("Alice", "alice@example.com")
-    start = _weekday().astimezone(ZoneInfo("America/New_York")).replace(hour=7, minute=0, second=0, microsecond=0)
+    start = _weekday(tz=ZoneInfo("America/New_York")).replace(hour=7, minute=0, second=0, microsecond=0)
     result = _call({
         "title": "Sync", "start": _iso(start), "end": _iso(start + timedelta(minutes=30)),
         "attendee_person_ids": [1], "confidence": 0.9,

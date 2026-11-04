@@ -43,7 +43,7 @@ from .test_action_cards import _invite, _message
 
 # The autouse temp DB and fresh turn pin of Act as me's tests.
 from .test_delegation_tools import OWNER, TEAM, db, fresh_turn_state  # noqa: F401
-from .test_mcp_client_turns import _gateway, _real_gateway, _results, _run_loop
+from .test_mcp_client_turns import _gateway, _held, _real_gateway, _results, _run_loop
 
 OUTWARD = (
     "message_person", "send_slack_dm", "send_discord_dm", "send_telegram_message",
@@ -154,7 +154,8 @@ def test_only_a_turn_that_may_act_is_a_verified_surface(roster: SimpleNamespace)
 def test_an_acting_turn_is_offered_its_own_stable_list(roster: SimpleNamespace) -> None:
     offered = _run_loop(_acting(roster.principal), [], _gateway()).offered[0]
     assert offered == sorted(offered)
-    assert not MCP_CLIENT_ACTING_WITHHELD_TOOLS & set(offered)
+    # Nothing is hidden: the one check decides at dispatch (orchestrator.levels).
+    assert MCP_CLIENT_ACTING_WITHHELD_TOOLS & set(offered)
     assert {"remember_fact", "close_open_loop", "schedule_followup", act.PROPOSE_ACTIONS} <= set(offered)
     assert "ghostwrite_email" not in offered and "recall_history" not in offered
     assert _run_loop(_acting(roster.principal), [], _gateway()).offered[0] == offered
@@ -168,7 +169,7 @@ def test_an_acting_turn_is_offered_its_own_stable_list(roster: SimpleNamespace) 
     ["message_person", "create_calendar_event", "run_workflow", "save_workflow",
      "upsert_person", "archive_person", "set_department_head"],
 )
-def test_an_acting_turn_refuses_what_it_is_not_offered(roster: SimpleNamespace, tool: str) -> None:
+def test_an_acting_turn_puts_a_withheld_step_on_a_card(roster: SimpleNamespace, tool: str) -> None:
     from openexecutive.orchestrator import executive as executive_module
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
@@ -176,7 +177,7 @@ def test_an_acting_turn_refuses_what_it_is_not_offered(roster: SimpleNamespace, 
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {tool: handler}):
         provider = _run_loop(_acting(roster.principal), [tool_use])
     handler.assert_not_awaited()
-    assert MCP_CLIENT_ACTING_REFUSAL in json.loads(_results(provider)["tu-1"])["error"]
+    assert _held(_results(provider)["tu-1"])
 
 
 def test_an_acting_turn_runs_a_change_inside_open_executive(roster: SimpleNamespace) -> None:
@@ -197,7 +198,7 @@ def test_the_gateway_still_refuses_a_send_on_an_acting_turn(roster: SimpleNamesp
         with set_session(_acting(roster.principal)):
             return str(await gateway.call_tool({
                 "name": "google_workspace__send_gmail_message",
-                "arguments": {"to": "olivia@co.example", "subject": "s", "body": "b"},
+                "arguments": {"to": "ben@co.example", "subject": "s", "body": "b"},
             }))
 
     assert MCP_CLIENT_ACTING_REFUSAL in json.loads(asyncio.run(_go()))["error"]
@@ -477,7 +478,7 @@ def test_planting_someone_then_messaging_them_never_sends_on_its_own(
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"upsert_person": upsert}):
         provider = _run_loop(_acting(roster.principal), [tool_use])
     upsert.assert_not_awaited()
-    assert MCP_CLIENT_ACTING_REFUSAL in json.loads(_results(provider)["tu-1"])["error"]
+    assert _held(_results(provider)["tu-1"])
     assert people_store.find_person_by_email("eve@attacker.example", include_contacts=True) is None
     planted = people_store.upsert_person(full_name="Eve Planted", email="eve@attacker.example")
     result = _ai_propose(roster.principal, {"why": "x", "actions": [_message(planted)]})
