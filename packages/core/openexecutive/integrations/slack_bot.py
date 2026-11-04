@@ -1249,6 +1249,16 @@ async def create_slack_app():
                 reply_quote = ""
                 if is_threaded_reply and (mode == "dm" or not history):
                     reply_quote = _thread_root_context(thread_replies, event, _bot_user_id)
+                    # A channel thread can be started by anyone: quote its
+                    # start only from the team, the Executive or the sender.
+                    root_author = str((thread_replies or [{}])[0].get("user") or "")
+                    if (
+                        reply_quote
+                        and mode != "dm"
+                        and root_author not in (_bot_user_id, event.get("user"))
+                        and not await asyncio.to_thread(_find_slack_sender, root_author)
+                    ):
+                        reply_quote = ""
                 if reply_quote:
                     from openexecutive.integrations.reply_context import with_context
 

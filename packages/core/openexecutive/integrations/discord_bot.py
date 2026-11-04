@@ -1255,7 +1255,7 @@ async def _handle_message(
     # must not bubble up to the on_message handler.
     if is_first_turn and response is not None and on_first_turn_complete is not None:
         try:
-            await on_first_turn_complete(text, response)
+            await on_first_turn_complete(own_text, response)
         except Exception:
             logger.exception(
                 "Discord: on_first_turn_complete hook failed for session %s", session_id
@@ -1275,7 +1275,7 @@ async def _handle_message(
             _schedule_thread_rename(
                 route_result.promoted_thread,
                 f"discord:thread:{route_result.promoted_thread_id}",
-                text,
+                own_text,
                 response,
             )
         except Exception:

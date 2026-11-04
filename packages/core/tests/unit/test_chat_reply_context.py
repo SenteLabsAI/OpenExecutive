@@ -300,3 +300,51 @@ async def test_discord_turn_memory_keeps_their_words() -> None:
     kwargs = executive.return_value.chat.await_args.kwargs
     assert kwargs["user_message"].startswith(f"{QUOTE}\n\nWhy?")
     assert kwargs["memory_text"] == "Why?"
+
+
+@pytest.mark.usefixtures("turn_db")
+def test_slack_dm_thread_turn_quotes_the_start_and_memory_keeps_their_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from contextlib import ExitStack, suppress
+    from unittest.mock import AsyncMock, MagicMock
+
+    from openexecutive.config import get_settings
+    from openexecutive.integrations import slack_bot
+    from openexecutive.people import store as people_store
+
+    people_store.upsert_person(full_name="Dana Doe", is_principal=True, slack_user_id="U1")
+    stub = get_settings().model_copy(update={"slack_bot_token": "xoxb-test", "slack_app_token": "xapp-test"})
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: stub)
+    monkeypatch.setattr(
+        "slack_sdk.web.async_client.AsyncWebClient.auth_test", AsyncMock(return_value={"user_id": "UBOT"})
+    )
+    monkeypatch.setattr(slack_bot, "_bot_user_id", None)
+    event = {"text": "Why?", "user": "U1", "channel": "D1", "channel_type": "im",
+             "ts": "2.0", "thread_ts": "1.0"}
+    root = {"ts": "1.0", "user": "UBOT", "text": "I recommend we drop the vendor."}
+    executive = MagicMock()
+    executive.return_value.chat = AsyncMock(return_value="ok")
+
+    async def _go() -> None:
+        app, handler = await slack_bot.create_slack_app()
+        try:
+            listeners = {x.ack_function.__name__: x.ack_function for x in app._async_listeners}
+            client = MagicMock()
+            client.conversations_replies = AsyncMock(return_value={"messages": [root, event]})
+            await listeners["handle_message"](event=event, say=AsyncMock(), client=client)
+        finally:
+            with suppress(Exception):
+                await handler.close_async()
+            http = getattr(app.client, "session", None)
+            if http is not None and not http.closed:
+                await http.close()
+
+    with ExitStack() as stack:
+        _turn_stubs(stack, executive)
+        asyncio.run(_go())
+    kwargs = executive.return_value.chat.await_args.kwargs
+    assert kwargs["user_message"].startswith(QUOTE + "\n\n")
+    assert kwargs["user_message"].endswith("Why?")
+    assert kwargs["memory_text"] == "Why?"
