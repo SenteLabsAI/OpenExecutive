@@ -612,10 +612,12 @@ def _message_content(message: dict[str, Any]) -> tuple[str, list[TelegramFile]]:
     return text, attachment_file_ids
 
 
-def _reply_context(message: dict[str, Any]) -> str:
+def _reply_context(message: dict[str, Any], token: str = "") -> str:
     """The message this one answers, when the person used Telegram's Reply
     (``integrations.reply_context``); "" otherwise. A highlighted part of it
-    (Telegram's quote) is used in place of the whole."""
+    (Telegram's quote) is used in place of the whole. ``token`` names this
+    bot (its id is the part before the colon), so another bot's post in a
+    group isn't taken for the Executive's."""
     from openexecutive.integrations import reply_context
 
     replied = message.get("reply_to_message")
@@ -636,7 +638,8 @@ def _reply_context(message: dict[str, Any]) -> str:
     raw_from = message.get("from")
     from_user: dict[str, Any] = raw_from if isinstance(raw_from, dict) else {}
     writer = reply_context.whose(
-        by_executive=sender.get("is_bot") is True,
+        by_executive=sender.get("is_bot") is True
+        and str(sender.get("id")) == token.partition(":")[0],
         by_sender=sender.get("id") is not None and sender.get("id") == from_user.get("id"),
         name=" ".join(filter(None, [sender.get("first_name"), sender.get("last_name")])),
     )
@@ -847,6 +850,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
         message_id=message_id,
         token=settings.telegram_bot_token,
         attachment_file_ids=attachment_file_ids or None,
-        reply_context=_reply_context(message),
+        reply_context=_reply_context(message, settings.telegram_bot_token or ""),
     )
     return {}
