@@ -8,6 +8,9 @@ import {
   approveAlert,
   approveDecision,
   bulkAckAlerts,
+  dismissActionCard,
+  dismissInviteCard,
+  dismissReplyCard,
   dismissRightNowRow,
   getDelegation,
   getToday,
@@ -26,6 +29,7 @@ import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
 import { goalTotals, realDepartments } from "@/lib/glance";
 import { groupHandled } from "@/lib/handled";
+import { NEEDS_YOU_OLDER_AFTER_DAYS, ageAnchor, groupByRequest, newestAnchor, splitOlder } from "@/lib/needsYou";
 import { BRIEFING_REFRESH_INTERVAL_MS, shouldRefreshOnFocus } from "@/lib/narrativeFreshness";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
@@ -49,12 +53,8 @@ import { RightNowList } from "./briefing/RightNow";
 import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
-import {
-  NEEDS_YOU_DISMISS_OLDER_THAN_DAYS,
-  TONE_TEXT,
-  olderThan,
-  type ContinueHandler,
-} from "./briefing/shared";
+import RequestGroupCard from "./briefing/RequestGroupCard";
+import { TONE_TEXT, type ContinueHandler } from "./briefing/shared";
 import {
   DueSoonPanelBody,
   ProjectsPanelBody,
@@ -145,6 +145,9 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const [actedAlertIds, setActedAlertIds] = useState<Set<number>>(new Set());
   // "Needs you" shows NEEDS_YOU_VISIBLE cards; the rest sit behind one toggle.
   const [showAllNeedsYou, setShowAllNeedsYou] = useState(false);
+  // Cards untouched for a few days fold into one "Older (N)" line.
+  const [showOlder, setShowOlder] = useState(false);
+  const [clearingOlder, setClearingOlder] = useState(false);
   // "Re-check relevance" runs the Executive's review on demand.
   const [recheckBusy, setRecheckBusy] = useState(false);
   // The card just snoozed, for the "Snoozed until …" notice and its Undo.
@@ -479,12 +482,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const mineIds = new Set(mineProposals.map((p) => p.alert_id));
   const otherProposals =
     callerId == null || solo ? [] : actionProposals.filter((p) => !mineIds.has(p.alert_id));
-  // A roster request is answered on its card, never swept (the server skips
-  // it too), so it is not counted here.
-  const staleNeedsYouIds = olderThan(
-    mineProposals.filter((p) => !p.roster_request),
-    NEEDS_YOU_DISMISS_OLDER_THAN_DAYS,
-  );
   const handledOvernight = today?.handled_overnight ?? [];
   const handledRows = groupHandled(handledOvernight);
   const inFlight = today?.in_flight ?? [];
@@ -676,11 +673,40 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   }
 
   // The Needs you queue: replies waiting first (they came in first, as their
-  // own section did), then the proposals in score order.
-  type QueueItem = { key: string; render: (emphasized: boolean) => React.ReactNode };
+  // own section did), then the proposals in score order, with the approvals
+  // one request held together shown as one card. Each item knows how old it
+  // is and how Clear all closes it: a card untouched for a few days folds
+  // into the "Older (N)" line (lib/needsYou.ts).
+  type QueueItem = {
+    key: string;
+    // Age anchor (ISO): when it came, or last changed.
+    at: string;
+    // Never folds: a card answered only on itself, or one being sent.
+    keep?: boolean;
+    // Closes it the way its own Skip would, and drops it from the page.
+    clear: () => Promise<void>;
+    render: (emphasized: boolean) => React.ReactNode;
+  };
+  const hideAlerts = (ids: number[]) =>
+    setActedAlertIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+  const clearProposal = async (p: ProposalItem) => {
+    if (p.decision_instance_id != null) await rejectDecision(p.decision_instance_id);
+    else await ackAlert(p.alert_id, "dismissed");
+    hideAlerts([p.alert_id]);
+  };
   const queue: QueueItem[] = [
     ...replies.cards.map((card) => ({
       key: `reply-${card.decision_id}`,
+      at: card.created_at,
+      keep: card.status === "executing",
+      clear: async () => {
+        await dismissReplyCard(card.decision_id);
+        replies.gone(card.decision_id);
+      },
       render: (emphasized: boolean) => (
         <ReplyCardItem
           card={card}
@@ -693,53 +719,95 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     })),
     ...inviteCards.cards.map((card) => ({
       key: `invite-${card.decision_id}`,
+      at: card.created_at,
+      clear: async () => {
+        await dismissInviteCard(card.decision_id);
+        inviteCards.gone(card.decision_id);
+      },
       render: (emphasized: boolean) => (
         <InviteCardItem card={card} onGone={inviteCards.gone} emphasized={emphasized} />
       ),
     })),
     ...actionCards.cards.map((card) => ({
       key: `actions-${card.decision_id}`,
+      at: card.created_at,
+      clear: async () => {
+        await dismissActionCard(card.decision_id);
+        actionCards.gone(card.decision_id);
+      },
       render: (emphasized: boolean) => (
         <ActionCardItem card={card} onGone={actionCards.gone} emphasized={emphasized} />
       ),
     })),
-    ...mineProposals.map((p) => ({
-      key: `alert-${p.alert_id}`,
-      render: (emphasized: boolean) => (
-        <ProposalCard
-          proposal={p}
-          people={today?.people ?? []}
-          onContinue={onContinue}
-          onApprove={handleApprove}
-          onDismiss={handleDismiss}
-          onSnooze={handleSnooze}
-          onRerun={handleRerun}
-          onApproveWithEdits={handleApproveWithEdits}
-          defaultBodyExpanded={emphasized}
-          emphasized={emphasized}
-        />
-      ),
-    })),
+    ...groupByRequest(mineProposals).map((group): QueueItem => {
+      if (group.length > 1) {
+        return {
+          key: `request-${group[0].group_key}`,
+          at: newestAnchor(group),
+          clear: async () => {
+            const results = await Promise.allSettled(group.map(clearProposal));
+            if (results.some((r) => r.status === "rejected")) throw new Error("Some didn't clear");
+          },
+          render: (emphasized: boolean) => (
+            <RequestGroupCard
+              proposals={group}
+              emphasized={emphasized}
+              onResolved={(done) => {
+                hideAlerts(done.map((p) => p.alert_id));
+                refreshToday();
+              }}
+            />
+          ),
+        };
+      }
+      const p = group[0];
+      return {
+        key: `alert-${p.alert_id}`,
+        at: ageAnchor(p),
+        // A roster request is answered on its card, never swept.
+        keep: Boolean(p.roster_request),
+        clear: () => clearProposal(p),
+        render: (emphasized: boolean) => (
+          <ProposalCard
+            proposal={p}
+            people={today?.people ?? []}
+            onContinue={onContinue}
+            onApprove={handleApprove}
+            onDismiss={handleDismiss}
+            onSnooze={handleSnooze}
+            onRerun={handleRerun}
+            onApproveWithEdits={handleApproveWithEdits}
+            defaultBodyExpanded={emphasized}
+            emphasized={emphasized}
+          />
+        ),
+      };
+    }),
   ];
-  const visibleQueue = showAllNeedsYou ? queue : queue.slice(0, NEEDS_YOU_VISIBLE);
-  const hiddenCount = queue.length - visibleQueue.length;
+  const { current: currentQueue, older: olderQueue } = splitOlder(
+    queue,
+    (item) => item.at,
+    new Date(),
+    (item) => Boolean(item.keep),
+  );
+  const visibleQueue = showAllNeedsYou ? currentQueue : currentQueue.slice(0, NEEDS_YOU_VISIBLE);
+  const hiddenCount = currentQueue.length - visibleQueue.length;
+  const handleClearOlder = async () => {
+    setClearingOlder(true);
+    await Promise.allSettled(olderQueue.map((item) => item.clear()));
+    setClearingOlder(false);
+    setShowOlder(false);
+    refreshToday();
+  };
 
   const needsYouMenu = [
-    ...(staleNeedsYouIds.length > 0
-      ? [
-          {
-            label: `Dismiss ${staleNeedsYouIds.length} older than ${NEEDS_YOU_DISMISS_OLDER_THAN_DAYS} days`,
-            onSelect: () => void handleBulkDismiss(staleNeedsYouIds),
-          },
-        ]
-      : []),
     {
       label: recheckBusy ? "Re-checking…" : "Re-check relevance",
       onSelect: () => void handleRecheck(),
       disabled: recheckBusy,
     },
   ];
-  const showNeedsYouMenu = staleNeedsYouIds.length > 0 || mineProposals.length > 0;
+  const showNeedsYouMenu = mineProposals.length > 0;
 
   // Right now's rows: what is waiting on the owner that Needs you doesn't show.
   const rightNowRows = today?.right_now ?? [];
@@ -938,7 +1006,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                     {visibleQueue.map((item, i) => (
                       <div key={item.key}>{item.render(i === 0)}</div>
                     ))}
-                    {(hiddenCount > 0 || (showAllNeedsYou && queue.length > NEEDS_YOU_VISIBLE)) && (
+                    {(hiddenCount > 0 || (showAllNeedsYou && currentQueue.length > NEEDS_YOU_VISIBLE)) && (
                       <div className="flex justify-center">
                         <button
                           type="button"
@@ -947,6 +1015,39 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                         >
                           {showAllNeedsYou ? "Show fewer" : `Show ${hiddenCount} more`}
                         </button>
+                      </div>
+                    )}
+                    {olderQueue.length > 0 && (
+                      <div className="rounded-2xl border border-line bg-surface-elevated">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[15px] font-semibold text-fg">Older ({olderQueue.length})</p>
+                            <p className="text-sm text-fg-muted">Untouched for {NEEDS_YOU_OLDER_AFTER_DAYS} days or more</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowOlder((v) => !v)}
+                            aria-expanded={showOlder}
+                            className={buttonClass("secondary", "sm")}
+                          >
+                            {showOlder ? "Hide" : "Show"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleClearOlder()}
+                            disabled={clearingOlder}
+                            className={buttonClass("ghost", "sm")}
+                          >
+                            {clearingOlder ? "Clearing…" : "Clear all"}
+                          </button>
+                        </div>
+                        {showOlder && (
+                          <div className="space-y-4 border-t border-line p-3">
+                            {olderQueue.map((item) => (
+                              <div key={item.key}>{item.render(false)}</div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

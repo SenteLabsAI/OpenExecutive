@@ -236,6 +236,11 @@ class ProposalItem(BaseModel):
     # `body` already carries a Markdown rendering for every format.
     artifact_format: str | None = None
     artifact_url: str | None = None
+    # Approvals one request held together (the same chat turn asking for the
+    # same kind of step, e.g. saving four files): every card of the request
+    # carries the same opaque key, so Needs you shows them as one card with a
+    # box per item. None on a card that stands alone.
+    group_key: str | None = None
 
 
 def _proposal_body(alert: Alert) -> str:
@@ -385,6 +390,50 @@ def _watch_trust_by_slug(alerts: list[Any]) -> dict[str, float]:
     except Exception:
         logger.debug("today: watch trust lookup failed", exc_info=True)
         return {}
+
+
+def _group_requests(items: list[ProposalItem]) -> None:
+    """Give the approvals one request held together the same ``group_key``:
+    open decision-backed cards from the same conversation for the same kind
+    of step (the tool, or the decision class). A key only two or more cards
+    share is set; the rest stay None. Never raises."""
+    import hashlib
+
+    from openexecutive.memory.decision_ledger import STATUS_PROPOSED, get_decision_instances
+    from openexecutive.orchestrator.take_the_lead import TRAINING_TAG
+
+    # A Take the lead training card is answered on its own (it asks whether
+    # to do it alone next time), so it never joins a group.
+    ids = [
+        p.decision_instance_id for p in items
+        if p.decision_instance_id is not None and TRAINING_TAG not in p.topic_tags
+    ]
+    if len(ids) < 2:
+        return
+    try:
+        instances = get_decision_instances(ids)
+    except Exception:
+        logger.debug("today: grouping approvals failed", exc_info=True)
+        return
+    keys: dict[int, str] = {}
+    for p in items:
+        inst = instances.get(p.decision_instance_id or 0)
+        if inst is None or TRAINING_TAG in p.topic_tags or inst.status != STATUS_PROPOSED or not inst.originating_session_id:
+            continue
+        try:
+            payload = json.loads(inst.proposed_payload_json or "{}")
+        except ValueError:
+            payload = {}
+        step = str(payload.get("tool") or "") if isinstance(payload, dict) else ""
+        raw = "|".join((inst.originating_session_id, inst.decision_class, step))
+        keys[p.alert_id] = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    counts: dict[str, int] = {}
+    for key in keys.values():
+        counts[key] = counts.get(key, 0) + 1
+    for p in items:
+        shared = keys.get(p.alert_id)
+        if shared is not None and counts[shared] > 1:
+            p.group_key = shared
 
 
 def _parse_decision_instance_id(topic_tags: list[str]) -> int | None:
@@ -1049,6 +1098,7 @@ def _build_today(
     # team" and collapses the monitoring tail.
     proposal_items.sort(key=lambda p: p.created_at, reverse=True)
     proposal_items.sort(key=lambda p: (0 if p.category == "action" else 1, -p.score))
+    _group_requests(proposal_items)
 
     response = TodayResponse(
         departments=dept_items,

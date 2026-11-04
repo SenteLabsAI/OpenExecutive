@@ -180,6 +180,23 @@ def get_decision_instance(
     return DecisionInstance(**dict(row))
 
 
+def get_decision_instances(
+    instance_ids: list[int],
+    db_path: Path | None = None,
+) -> dict[int, DecisionInstance]:
+    """The rows with these ids, by id (missing ids are left out)."""
+    ids = sorted({i for i in instance_ids if i})[:500]
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    with _get_conn(db_path or _db_path()) as conn:
+        rows = conn.execute(
+            f"SELECT * FROM decision_instances WHERE id IN ({marks})",  # noqa: S608 — placeholders only
+            ids,
+        ).fetchall()
+    return {int(r["id"]): DecisionInstance(**dict(r)) for r in rows}
+
+
 def get_live_by_idem(
     idempotency_key: str,
     db_path: Path | None = None,

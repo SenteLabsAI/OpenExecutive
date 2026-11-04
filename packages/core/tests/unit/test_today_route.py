@@ -506,6 +506,54 @@ def test_today_non_decision_alert_has_null_decision_instance_id(
     assert proposals[0]["decision_instance_id"] is None
 
 
+def test_approvals_one_request_held_share_a_group_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Approvals held from the same chat turn for the same kind of step share
+    one group key, so Needs you shows them as one card. A card from another
+    chat, another kind of step, or one already answered stands alone."""
+    db = tmp_path / "groups.db"
+    _setup_isolated_db(db, monkeypatch)
+
+    def held(session: str | None, tool: str, n: int) -> int:
+        decision_id = decision_ledger.create_decision_instance(
+            decision_class="department_action", department="ops",
+            originating_session_id=session,
+            proposed_payload={"tool": tool, "input": {"name": f"file-{n}"}},
+            idempotency_key=None, gate_mode="propose",
+            approver_person_id=None, confidence=None, db_path=db,
+        )
+        alert_store.insert_alert(
+            source="decision",
+            external_id=f"decision:{decision_id}",
+            severity="medium",
+            headline=f"Waiting for your OK: save file-{n}",
+            body="...",
+            topic_tags=[f"decision_instance:{decision_id}", "decision_class:department_action"],
+            routed_to_person_id=5,
+            db_path=db,
+        )
+        return decision_id
+
+    for n in range(3):
+        held("chat-1", "drive_save", n)
+    held("chat-1", "send_email", 3)
+    held("chat-2", "drive_save", 4)
+    held(None, "drive_save", 5)
+    answered = held("chat-3", "drive_save", 6)
+    held("chat-3", "drive_save", 7)
+    decision_ledger.mark_resolved(answered, decision_ledger.STATUS_REJECTED, db_path=db)
+
+    proposals = _make_client().get("/today").json()["proposals"]
+    by_name = {p["headline"].rsplit("-", 1)[1]: p["group_key"] for p in proposals}
+    group = {by_name["0"], by_name["1"], by_name["2"]}
+    assert len(group) == 1 and None not in group
+    assert by_name["3"] is None and by_name["4"] is None and by_name["5"] is None
+    assert by_name["7"] is None
+    # The key says nothing about the conversation it came from.
+    assert "chat-1" not in next(iter(group))
+
+
 # --------------------------------------------------------------------------- #
 # Awaiting workflow count
 # --------------------------------------------------------------------------- #
