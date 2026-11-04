@@ -180,6 +180,27 @@ def get_decision_instance(
     return DecisionInstance(**dict(row))
 
 
+def get_decision_instances(
+    instance_ids: list[int],
+    db_path: Path | None = None,
+) -> dict[int, DecisionInstance]:
+    """The rows with these ids, by id (missing ids are left out)."""
+    ids = sorted({i for i in instance_ids if i})
+    out: dict[int, DecisionInstance] = {}
+    if not ids:
+        return out
+    with _get_conn(db_path or _db_path()) as conn:
+        for start in range(0, len(ids), 500):  # stays under SQLite's variable limit
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT * FROM decision_instances WHERE id IN ({marks})",  # noqa: S608 — placeholders only
+                chunk,
+            ).fetchall()
+            out.update({int(r["id"]): DecisionInstance(**dict(r)) for r in rows})
+    return out
+
+
 def get_live_by_idem(
     idempotency_key: str,
     db_path: Path | None = None,
