@@ -42,7 +42,9 @@ export default function RequestGroupCard({
   onResolved: (done: ProposalItem[]) => void;
   emphasized?: boolean;
 }) {
-  const [ticked, setTicked] = useState<Set<number>>(() => new Set(proposals.map((p) => p.alert_id)));
+  // The items the reader unticked; everything else is ticked, so an item
+  // that joins the group after a refresh starts ticked like the rest.
+  const [unticked, setUnticked] = useState<Set<number>>(() => new Set());
   const [held, setHeld] = useState<Record<number, HeldActionPayload>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export default function RequestGroupCard({
     return () => controller.abort();
   }, [loadKey]);
 
-  const chosen = proposals.filter((p) => ticked.has(p.alert_id));
+  const chosen = proposals.filter((p) => !unticked.has(p.alert_id));
   const loaded = needsLoad.every((p) => held[p.decision_instance_id as number] != null);
 
   async function run(items: ProposalItem[], act: (id: number) => Promise<unknown>) {
@@ -86,7 +88,7 @@ export default function RequestGroupCard({
   }
 
   function toggle(id: number) {
-    setTicked((prev) => {
+    setUnticked((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -117,7 +119,7 @@ export default function RequestGroupCard({
                 <input
                   type="checkbox"
                   className="mt-1 h-4 w-4 shrink-0 accent-[rgb(var(--accent-strong))]"
-                  checked={ticked.has(p.alert_id)}
+                  checked={!unticked.has(p.alert_id)}
                   onChange={() => toggle(p.alert_id)}
                   disabled={busy}
                   aria-label={rowText(p.headline)}
