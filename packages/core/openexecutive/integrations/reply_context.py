@@ -14,6 +14,7 @@ from __future__ import annotations
 
 # The most of an answered message carried into the reply, in characters.
 QUOTE_MAX = 1500
+NAME_MAX = 40
 
 EXECUTIVE = "your earlier message"
 SENDER = "their own earlier message"
@@ -25,7 +26,9 @@ def whose(*, by_executive: bool, by_sender: bool, name: str = "") -> str:
         return EXECUTIVE
     if by_sender:
         return SENDER
-    name = " ".join(name.split())
+    # A display name is the writer's own choice: keep it short, so it names
+    # someone and can't pass for a sentence.
+    name = " ".join(name.split())[:NAME_MAX].rstrip()
     return f"an earlier message from {name}" if name else "an earlier message"
 
 

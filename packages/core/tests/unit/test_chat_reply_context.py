@@ -20,6 +20,8 @@ def test_quote_and_with_context() -> None:
         "an earlier message from Sam Lee"
     )
     assert reply_context.whose(by_executive=False, by_sender=False) == "an earlier message"
+    long = reply_context.whose(by_executive=False, by_sender=False, name="x" * 200)
+    assert long == "an earlier message from " + "x" * reply_context.NAME_MAX
 
 
 # --------------------------------------------------------------------------- Slack
