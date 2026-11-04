@@ -85,7 +85,10 @@ def test_every_kind_of_turn_runs_at_the_companys_level(
     _use(monkeypatch, mode)
     session = Session()
     setattr(session, attr, True)
-    assert outside_mode.for_turn(session) == mode
+    # Another AI app's words may not be the owner's: Hands-off is for the
+    # owner's own turns (orchestrator.outside_mode._someone_else).
+    expected = outside_mode.OUTSIDERS if (attr, mode) == ("from_mcp_client", outside_mode.TRUST) else mode
+    assert outside_mode.for_turn(session) == expected
 
 
 @pytest.mark.parametrize("channel", ["email", "slack", "telegram", "google_chat", "discord", "teams"])

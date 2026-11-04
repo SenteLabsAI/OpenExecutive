@@ -159,7 +159,7 @@ def decide(reason: str, *, mode: str | None = None) -> str:
     try:
         # Hands-off is the owner's trust in their own Executive: it gives no
         # one else the owner's powers, and no stranger's mail its say-so.
-        if reason in (STRANGER, NOT_OWNER):
+        if reason in (STRANGER, NOT_OWNER, SHARED, AI_APP):
             return CARD
         current = mode if mode is not None else turn_level()
         if current == outside_mode.TRUST:
