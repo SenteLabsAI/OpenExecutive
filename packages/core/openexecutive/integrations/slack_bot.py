@@ -383,6 +383,31 @@ def _count_distinct_humans(
     return len(humans)
 
 
+def _thread_root_context(
+    thread_replies: list[dict] | None, event: dict, bot_user_id: str | None
+) -> str:
+    """The message a reply in a Slack thread was written under: the thread's
+    first message (``integrations.reply_context``). "" when the reply isn't
+    in a thread, or Slack didn't hand the thread back."""
+    from openexecutive.integrations import reply_context
+
+    if not thread_replies:
+        return ""
+    root = thread_replies[0]
+    if not isinstance(root, dict) or str(root.get("ts") or "") == str(event.get("ts") or ""):
+        return ""
+    author = str(root.get("user") or root.get("bot_id") or "")
+    by_executive = bool(bot_user_id) and str(root.get("user") or "") == bot_user_id
+    if not by_executive and root.get("bot_id") and not root.get("user"):
+        # A message the app posted through chat.postMessage carries only its bot id.
+        by_executive = True
+    writer = reply_context.whose(
+        by_executive=by_executive,
+        by_sender=bool(author) and author == str(event.get("user") or ""),
+    )
+    return reply_context.quote(writer, str(root.get("text") or ""))
+
+
 def _replies_to_gate_history(
     messages: list[dict], bot_user_id: str | None
 ) -> list[dict]:
@@ -1218,6 +1243,18 @@ async def create_slack_app():
                     # Before the words, as Discord and Telegram inline it.
                     chat_user_message = f"{att_text}\n\n{chat_user_message}"
 
+                # A reply under a message in a thread says which message it
+                # answers. A DM is one conversation, so the thread's first
+                # message may be any earlier one; a channel thread's own
+                # history already holds its start, unless it's new to us.
+                reply_quote = ""
+                if is_threaded_reply and (mode == "dm" or not history):
+                    reply_quote = _thread_root_context(thread_replies, event, _bot_user_id)
+                if reply_quote:
+                    from openexecutive.integrations.reply_context import with_context
+
+                    chat_user_message = with_context(reply_quote, chat_user_message)
+
                 from openexecutive.integrations.channel_cards import shows_cards
 
                 # A DM shows the reply's cards with Approve and Skip buttons
@@ -1287,7 +1324,9 @@ async def create_slack_app():
                     title=_session_title(sender_person, mode),
                     created_at=session.created_at.isoformat(),
                     owner_person_id=person_id,
-                    user_text=_format_user_content(own_words, speaker),
+                    user_text=_format_user_content(
+                        f"{reply_quote}\n\n{own_words}" if reply_quote else own_words, speaker
+                    ),
                     assistant_text=response,
                     also_session_id=also_session_id,
                     sender_person_id=sender_person.id,

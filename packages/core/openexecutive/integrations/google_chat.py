@@ -244,7 +244,10 @@ async def _process_and_reply(
     service_account_email: str | None,
     attachments: list[dict] | None = None,
     sender_email: str = "",
+    reply_context: str = "",
 ) -> None:
+    """One Chat message's turn. ``reply_context`` is the message it quotes
+    (``integrations.reply_context``), put in front of the words."""
     if not space_name:
         logger.error("Google Chat: missing space_name for message %s, cannot reply", message_name)
         return
@@ -328,6 +331,10 @@ async def _process_and_reply(
         retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
         episodic_context = format_for_prompt()
 
+        if reply_context:
+            from openexecutive.integrations.reply_context import with_context
+
+            message_text = with_context(reply_context, message_text)
         chat_message = message_text
         image_blocks: list[dict] = []
         if attachments and _sender_on_roster(sender_email):
@@ -419,6 +426,8 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
         # upload route records one.
         cleaned = f"(Attached files: {', '.join(map(_attachment_name, attachments))})"
 
+    from openexecutive.integrations import reply_context
+
     background_tasks.add_task(
         _process_and_reply,
         message_text=cleaned,
@@ -426,6 +435,7 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
         space_name=body.get("space", {}).get("name", ""),
         thread_name=message.get("thread", {}).get("name", ""),
         message_name=message.get("name", ""),
+        reply_context=reply_context.google_chat(message),
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
         attachments=attachments,

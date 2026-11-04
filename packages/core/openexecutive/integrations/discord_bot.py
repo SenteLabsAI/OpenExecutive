@@ -760,6 +760,37 @@ async def handle_card_tap(interaction: Any) -> None:
         logger.exception("Discord: couldn't update card %d after the tap", decision_id)
 
 
+async def _reply_context(message: Any, bot_user: Any) -> str:
+    """The message ``message`` answers, when the person used Discord's Reply
+    (``integrations.reply_context``); "" otherwise, and for a forward."""
+    import discord
+
+    from openexecutive.integrations import reply_context
+
+    reference = getattr(message, "reference", None)
+    if reference is None or getattr(reference, "message_id", None) is None:
+        return ""
+    if str(getattr(getattr(reference, "type", None), "name", "reply")) != "reply":
+        return ""
+    replied = getattr(reference, "resolved", None) or getattr(reference, "cached_message", None)
+    if not isinstance(replied, discord.Message):
+        try:
+            replied = await message.channel.fetch_message(reference.message_id)
+        except Exception:
+            logger.info("Discord: couldn't read the message %s answers", getattr(message, "id", "?"))
+            return ""
+    quoted = _clean_message(replied.content or "")
+    if not quoted and replied.attachments:
+        quoted = "[" + ", ".join(a.filename for a in replied.attachments[:5]) + "]"
+    author = replied.author
+    writer = reply_context.whose(
+        by_executive=bot_user is not None and author.id == bot_user.id,
+        by_sender=author.id == message.author.id,
+        name=getattr(author, "display_name", None) or getattr(author, "name", "") or "",
+    )
+    return reply_context.quote(writer, quoted)
+
+
 # The rows this handler writes before the turn binds its session (the inbound
 # row, the knowledge retrieval, alert triage) are private when the principal
 # sent the message and they name one of their contacts.
@@ -788,8 +819,14 @@ async def _handle_message(
     co_present_discord_user_ids: list[str] | None = None,
     response_router: Callable[[str], Awaitable[MentionRouteResult]] | None = None,
     send_card: Callable[[int, str], Awaitable[None]] | None = None,
+    reply_context: str = "",
 ) -> None:
     """Core handler shared by on_message and slash commands.
+
+    `reply_context` is the message this one answers (Discord's Reply), from
+    `_reply_context`: put in front of the words for the Executive's turn and
+    the stored history only, after the waiting-question resolver, alert
+    triage and the response gate have read the person's own words.
 
     `on_first_turn_complete(user_msg, assistant_msg)` runs after a successful
     reply has been sent and persisted, but ONLY when there was no prior
@@ -990,6 +1027,11 @@ async def _handle_message(
                         },
                     )
                     return
+
+    if reply_context:
+        from openexecutive.integrations.reply_context import with_context
+
+        text = with_context(reply_context, text)
 
     # Author-prefixed content for the Executive and the persisted user turn.
     # In threads this becomes `[Alice]: ...`; in DMs it's identical to `text`.
@@ -1692,6 +1734,7 @@ def create_discord_bot():
         # replies that arrive in the same DM or thread channel.
         await _handle_message(
             send_card=send_card,
+            reply_context=await _reply_context(message, bot.user),
             text=cleaned,
             attachment_count=len(message.attachments or []),
             discord_user_id=discord_user_id,
