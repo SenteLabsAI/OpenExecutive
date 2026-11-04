@@ -54,6 +54,10 @@ class WaitingDraft:
     created_at: str
     to: tuple[str, ...] = ()
     subject: str = ""
+    # Its row in the drafts table, and the thread it answers ("" for a new
+    # email): what Home's Right now keys and opens it by.
+    row_id: int = 0
+    thread_id: str = ""
 
 
 # (person id, row id) -> (to, subject) as the last ``settle_waiting`` read them from the
@@ -403,9 +407,11 @@ def waiting_drafts(
     newest first, each with who it goes to and its subject when a settle
     pass has read them (empty until one has)."""
     out = []
-    for row_id, _, created_at, _ in _waiting_rows(person_id, since, db_path):
+    for row_id, _, created_at, thread_id in _waiting_rows(person_id, since, db_path):
         to, subject = _seen.get((person_id, row_id), ((), ""))
-        out.append(WaitingDraft(created_at=created_at, to=to, subject=subject))
+        out.append(WaitingDraft(
+            created_at=created_at, to=to, subject=subject, row_id=row_id, thread_id=thread_id,
+        ))
     return out
 
 

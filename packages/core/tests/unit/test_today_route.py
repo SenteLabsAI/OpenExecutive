@@ -2711,6 +2711,47 @@ def test_a_dismissed_point_leaves_right_now(
     assert refreshed
 
 
+def test_right_now_lists_rows_for_the_owner_and_a_dismissal_sticks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openexecutive.briefing import right_now_list
+    from openexecutive.integrations import chat_asks
+
+    db = tmp_path / "rn-list.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(
+        full_name="Pat Principal", is_principal=True, email="p@co.com", db_path=db,
+    )
+    people_store.upsert_person(full_name="Dana Lee", email="dana@co.com", db_path=db)
+    people_registry.invalidate()
+    monkeypatch.setattr(today_route, "_regen_briefing_narrative", _noop_regen)
+    monkeypatch.setattr(right_now_list, "_mail_rows", lambda *a: [])
+    monkeypatch.setattr(right_now_list, "_draft_rows", lambda *a: [])
+    asked = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    monkeypatch.setattr(chat_asks, "waiting", lambda pid, now=None: [
+        chat_asks.ChatAsk(
+            id=4, channel="slack", place_name="ops", from_name="Kim Ono", text="Sign off on the budget?",
+            link="https://chat.example.com/m/4", asked_at=asked,
+        ),
+    ])
+    c = _make_client()
+    owner = {"x-caller-email": "p@co.com"}
+
+    rows = c.get("/today", headers=owner).json()["right_now"]
+
+    assert [(r["key"], r["kind"], r["who"]) for r in rows] == [("chat:4", "chat", "Kim Ono")]
+    assert rows[0]["source"]["kind"] == "link"
+    # A teammate has no list, and can't clear the owner's.
+    teammate = {"x-caller-email": "dana@co.com"}
+    assert c.get("/today", headers=teammate).json()["right_now"] == []
+    assert c.post("/today/right-now/dismiss", json={"key": "chat:4"}, headers=teammate).json() == {"dismissed": False}
+    # Only a row it lists.
+    assert c.post("/today/right-now/dismiss", json={"key": "chat:99"}, headers=owner).json() == {"dismissed": False}
+
+    assert c.post("/today/right-now/dismiss", json={"key": "chat:4"}, headers=owner).json() == {"dismissed": True}
+    assert c.get("/today", headers=owner).json()["right_now"] == []
+
+
 def test_an_unrostered_look_is_not_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

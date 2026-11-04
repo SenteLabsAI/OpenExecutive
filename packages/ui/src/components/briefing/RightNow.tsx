@@ -1,182 +1,120 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useEffect, useState } from "react";
 
 import { ReplyCardItem, type useReplyCards } from "@/components/RepliesWaiting";
 import Button, { buttonClass } from "@/components/ui/Button";
-import { getMail, replyToMail, type MailView, type Today } from "@/lib/api";
-import { MEMORY_ACTIONS, briefingMemoryLine } from "@/lib/briefing-memory";
-import {
-  alsoInLine,
-  buildMoveSeed,
-  cardLink,
-  clockLabel,
-  isNewSince,
-  isPutOff,
-  laterMark,
-  moveMail,
-  newSinceLabel,
-  pointTarget,
-  progressNote,
-  progressSteps,
-  type PointTarget,
-  type TimedPoint,
-} from "@/lib/rightNow";
+import { getMail, replyToMail, type MailView, type RightNowRow } from "@/lib/api";
+import { clockLabel, rowTarget, rowWhen, type PointTarget } from "@/lib/rightNow";
 import { mailboxName, safeGmailLink } from "@/lib/replyCards";
 
 import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 
-// Right now: the Executive's live read of the day (the /today header, which
-// is rewritten as things change), shown as a card at the top of Home with
-// the whole picture in a side panel. Points that appeared since the reader
-// last looked today get a green dot. A point about an email in your own
-// inbox has View email and Reply under it: View opens the email right there
-// (GET /delegation/mail), with the reply card already on its conversation;
-// Reply writes one (POST /delegation/mail/reply) and shows it to send,
-// change or edit. A point about a card in Needs you has Show me. Every
-// point has a ✕ that dismisses it for the rest of the day (POST
-// /today/dismiss). While it is being rewritten, its steps show in place of
-// the old read, which is no longer current. The card leads with Do next
-// (the header's Move today line) and buttons that start it: Do it opens a
-// chat where the Executive gets going, View email and Reply open the top
-// point's email, and Later puts it away until the move changes.
-
-// How many points the Home card shows; the panel has them all.
-const CARD_POINTS = 3;
-
-// One line of Markdown (a point's bold subject, a link) without the block
-// wrapper, so it sits inside a row.
-function Inline({ text }: { text: string }) {
-  return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children }) => <>{children}</> }}>
-      {text}
-    </ReactMarkdown>
-  );
-}
-
-// Flatten a point's Markdown to the plain words handed to chat.
-function plainText(text: string): string {
-  return text.replace(/\*\*|__|`/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
-}
+// Right now: a plain list at the top of Home of what is waiting on the
+// owner that Needs you doesn't already show (GET /today `right_now`): mail
+// the Executive couldn't draft a reply to, or that came after a reply card
+// was written; drafts still in their own mailbox; chat messages asking them
+// something. Built from the records on every load, never written by a
+// model, so a row reads the same each time. An email row has View email and
+// Reply (GET /delegation/mail, POST /delegation/mail/reply), a chat row
+// opens the message in its app, and every row has a ✕ (POST
+// /today/right-now/dismiss) that keeps it gone until something newer lands
+// on it. With nothing waiting, the card isn't shown.
 
 type Replies = ReturnType<typeof useReplyCards>;
 
-// What a point's buttons need from Home.
-export interface PointActions {
+// What a row's buttons need from Home.
+export interface RowActions {
   replies?: Replies;
-  onShowAlert?: (alertId: number) => void;
   onContinue?: ContinueHandler;
-  // A point with nothing to open is a button that talks it through (the
-  // panel), or plain text (the Home card).
-  plainRows?: boolean;
-  // Clears a point for the rest of the day.
-  onDismiss?: (point: TimedPoint) => void;
+  onDismiss?: (row: RightNowRow) => void;
 }
 
-function DismissButton({ text, onClick }: { text: string; onClick: () => void }) {
+const KIND_ICON: Record<RightNowRow["kind"], string> = { mail: "✉", draft: "✎", chat: "💬" };
+const KIND_LABEL: Record<RightNowRow["kind"], string> = { mail: "Email", draft: "Draft", chat: "Chat message" };
+
+function DismissButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`Dismiss: ${text}`}
+      aria-label={`Dismiss: ${label}`}
       title="Dismiss"
-      className="-mr-1 -mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-fg-muted transition hover:bg-accent/10 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      className="-mr-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-fg-muted transition hover:bg-accent/10 hover:text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     >
       <span aria-hidden className="text-base leading-none">✕</span>
     </button>
   );
 }
 
-function PointRow({
-  point,
-  isNew,
-  actions,
-}: {
-  point: TimedPoint;
-  isNew: boolean;
-  actions?: PointActions;
-}) {
+function ListRow({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
   const [open, setOpen] = useState<"view" | "reply" | null>(null);
-  const target = pointTarget(point);
+  const target = rowTarget(row);
+  const label = `${row.who} — ${row.subject}`;
+  const when = rowWhen(row.at, new Date());
   const onContinue = actions?.onContinue;
-  const text = plainText(point.text);
-  const talk = onContinue
-    ? () => onContinue(buildNarrativeSeed(text), briefingMemoryLine(MEMORY_ACTIONS.narrative, text))
-    : undefined;
-  const when = clockLabel(point.since);
-  const onDismiss = actions?.onDismiss;
-  const dismiss = onDismiss ? <DismissButton text={text} onClick={() => onDismiss(point)} /> : null;
-  const body = (
-    <>
-      <span
-        aria-hidden
-        className={`mt-[0.45rem] h-2 w-2 flex-shrink-0 rounded-full ${isNew ? "bg-emerald-500" : "bg-line-strong"}`}
-      />
-      <span className="min-w-0 flex-1 text-[15px] text-fg [&_strong]:font-semibold">
-        <Inline text={point.text} />
-        {isNew && <span className="sr-only"> (new)</span>}
-      </span>
-      {when && <span className="flex-shrink-0 pt-0.5 text-xs tabular-nums text-fg-muted">{when}</span>}
-    </>
-  );
-  // No email or card behind it: the whole row talks it through, as before.
-  if (!target || (target.kind === "alert" && !actions?.onShowAlert) || (target.kind === "mail" && !actions?.replies)) {
-    if (!talk || actions?.plainRows) {
-      return (
-        <li className="flex items-start gap-2.5 border-t border-line py-2 first:border-t-0">
-          {body}
-          {dismiss}
-        </li>
-      );
-    }
-    return (
-      <li className="flex items-start gap-1 border-t border-line first:border-t-0">
-        <button
-          type="button"
-          onClick={talk}
-          aria-label={`Discuss: ${text}`}
-          className="-ml-2 flex min-w-0 flex-1 items-start gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-accent/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        >
-          {body}
-        </button>
-        {dismiss && <div className="pt-2">{dismiss}</div>}
-      </li>
-    );
-  }
+  const talk = onContinue ? () => onContinue(buildNarrativeSeed(label)) : undefined;
+  const mailTarget = target?.kind === "mail" && actions?.replies ? target : null;
   return (
-    <li className="border-t border-line py-2 first:border-t-0">
-      <div className="flex items-start gap-2.5">
-        {body}
-        {dismiss}
-      </div>
-      {target.kind === "mail" && open ? (
-        <MailPanel
-          target={target}
-          replies={actions!.replies!}
-          startWithReply={open === "reply"}
-          onTalk={talk}
-          onClose={() => setOpen(null)}
-        />
-      ) : (
-        <div className="ml-[18px] mt-2 flex flex-wrap gap-2">
-          {target.kind === "mail" ? (
-            <>
-              <Button size="sm" onClick={() => setOpen("view")}>View email</Button>
-              <Button size="sm" onClick={() => setOpen("reply")}>Reply</Button>
-            </>
-          ) : target.kind === "link" ? (
-            <Button size="sm" onClick={() => window.open(target.url, "_blank", "noopener,noreferrer")}>
-              Open in {target.app}
-            </Button>
-          ) : (
-            <Button size="sm" onClick={() => actions!.onShowAlert!(target.alertId)}>Show me</Button>
-          )}
-          {talk && <Button size="sm" onClick={talk}>Talk it through</Button>}
+    <li className="border-t border-line py-2.5 first:border-t-0">
+      <div className="flex items-start gap-3">
+        <span
+          aria-hidden
+          className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-accent/5 text-sm text-fg-muted"
+        >
+          {KIND_ICON[row.kind]}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] text-fg">
+            <span className="sr-only">{KIND_LABEL[row.kind]}: </span>
+            <span className="font-semibold">{row.who}</span>
+            <span className="text-fg-muted"> — {row.subject}</span>
+          </p>
+          {row.note && <p className="text-sm text-fg-muted">{row.note}</p>}
         </div>
-      )}
+        {when && <span className="flex-shrink-0 pt-1 text-xs tabular-nums text-fg-muted">{when}</span>}
+        {actions?.onDismiss && <DismissButton label={label} onClick={() => actions.onDismiss?.(row)} />}
+      </div>
+      {mailTarget && actions?.replies && open ? (
+        <div className="ml-11">
+          <MailPanel
+            target={mailTarget}
+            replies={actions.replies}
+            startWithReply={open === "reply"}
+            onTalk={talk}
+            onClose={() => setOpen(null)}
+          />
+        </div>
+      ) : mailTarget ? (
+        <div className="ml-11 mt-2 flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => setOpen("view")}>View email</Button>
+          <Button size="sm" onClick={() => setOpen("reply")}>Reply</Button>
+        </div>
+      ) : target?.kind === "link" ? (
+        <div className="ml-11 mt-2 flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => window.open(target.url, "_blank", "noopener,noreferrer")}>
+            Open in {target.app}
+          </Button>
+        </div>
+      ) : null}
     </li>
+  );
+}
+
+/** Home's Right now card: the rows, or nothing when none are waiting. */
+export function RightNowList({ rows, actions }: { rows: RightNowRow[]; actions?: RowActions }) {
+  if (rows.length === 0) return null;
+  return (
+    <section aria-labelledby="sec-right-now" className="mb-8 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
+      <h2 id="sec-right-now" className="mb-1 text-lg font-semibold text-fg">
+        Right now
+      </h2>
+      <ul>
+        {rows.map((r) => (
+          <ListRow key={r.key} row={r} actions={actions} />
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -307,326 +245,6 @@ function MailPanel({
         {onTalk && <Button size="sm" onClick={onTalk}>Talk it through</Button>}
         <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
       </div>
-    </div>
-  );
-}
-
-/** Right now being rewritten: a spinner and its steps, and how many emails
- * came since the last read. Shown instead of that read. */
-function Progress({ today }: { today: Today }) {
-  const progress = today.narrative_progress;
-  const steps = progressSteps(progress?.step);
-  const note = progressNote(progress?.new_mail, progress?.since);
-  return (
-    <div aria-live="polite" aria-busy="true">
-      <ol className="flex flex-col gap-3">
-        {steps.map((s, i) => (
-          <li key={s.label}>
-            <div className={`flex items-center gap-3 text-[15px] ${s.state === "todo" ? "text-fg-muted" : "text-fg"} ${s.state === "now" ? "font-semibold" : ""}`}>
-              {s.state === "done" ? (
-                <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-xs font-bold text-emerald-700 dark:text-emerald-300" aria-hidden>
-                  ✓
-                </span>
-              ) : s.state === "now" ? (
-                <span className="h-5 w-5 flex-shrink-0 animate-spin rounded-full border-2 border-accent/25 border-t-accent" aria-hidden />
-              ) : (
-                <span className="h-5 w-5 flex-shrink-0 rounded-full border-2 border-line" aria-hidden />
-              )}
-              {s.label}
-            </div>
-            {i === 0 && note && <p className="ml-8 mt-0.5 text-sm text-fg-muted">{note}</p>}
-          </li>
-        ))}
-      </ol>
-      <p className="mt-3 border-t border-line pt-2 text-sm text-fg-muted">Usually under a minute.</p>
-    </div>
-  );
-}
-
-const LATER_KEY = "oe.rightNow.later";
-
-const LATER_EVENT = "oe-right-now-later";
-// A private window has no storage: Later still holds until reload.
-let laterFallback: string | null = null;
-
-function readLater(): string | null {
-  try {
-    return window.localStorage.getItem(LATER_KEY) ?? laterFallback;
-  } catch {
-    return laterFallback;
-  }
-}
-
-function writeLater(value: string): void {
-  laterFallback = value;
-  try {
-    window.localStorage.setItem(LATER_KEY, value);
-  } catch {
-    // Kept in memory above.
-  }
-  window.dispatchEvent(new Event(LATER_EVENT));
-}
-
-function subscribeLater(onChange: () => void): () => void {
-  window.addEventListener(LATER_EVENT, onChange);
-  window.addEventListener("storage", onChange);
-  return () => {
-    window.removeEventListener(LATER_EVENT, onChange);
-    window.removeEventListener("storage", onChange);
-  };
-}
-
-// Do next on the Home card: the move, and buttons that start it.
-function MoveBox({ move, points, actions }: { move: string; points: TimedPoint[]; actions?: PointActions }) {
-  const [open, setOpen] = useState<"view" | "reply" | null>(null);
-  // The server render has no storage, so it shows the box.
-  const stored = useSyncExternalStore(subscribeLater, readLater, () => null);
-  if (isPutOff(stored, move, new Date())) return null;
-  const mail = actions?.replies ? moveMail(points, move) : null;
-  const onContinue = actions?.onContinue;
-  const doIt = onContinue
-    ? () => onContinue(buildMoveSeed(move), briefingMemoryLine(MEMORY_ACTIONS.narrative, move))
-    : undefined;
-  const later = () => writeLater(laterMark(move, new Date()));
-  return (
-    <div className="mt-3 rounded-xl bg-accent/10 px-4 py-3">
-      <h3 className="text-xs font-bold uppercase tracking-wide text-accent">Do next</h3>
-      <p className="mt-1 text-[16px] font-semibold leading-snug text-fg">{move}</p>
-      {mail && open ? (
-        <MailPanel
-          target={mail}
-          replies={actions!.replies!}
-          startWithReply={open === "reply"}
-          onTalk={doIt}
-          onClose={() => setOpen(null)}
-        />
-      ) : (
-        <div className="mt-2.5 flex flex-wrap gap-2">
-          {doIt && (
-            <Button variant="primary" size="sm" onClick={doIt}>Do it</Button>
-          )}
-          {mail && (
-            <>
-              <Button size="sm" onClick={() => setOpen("view")}>View email</Button>
-              <Button size="sm" onClick={() => setOpen("reply")}>Reply</Button>
-            </>
-          )}
-          <Button size="sm" onClick={later}>Later</Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Lead({ today }: { today: Today }) {
-  const lead = today.narrative_lead;
-  if (lead) return <p className="text-[17px] font-semibold leading-snug text-fg">{lead}</p>;
-  // A header that opens with a point has no lead: its points show below.
-  if ((today.narrative_points ?? []).length > 0) return null;
-  // An older API without the split: the whole header as written.
-  return (
-    <div className="prose prose-invert max-w-none text-[15px] prose-p:my-1 prose-strong:text-fg">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{today.narrative ?? ""}</ReactMarkdown>
-    </div>
-  );
-}
-
-/** The Home card: when it was updated, what's new, the opener and the top
- * points, or its steps while it is being rewritten. */
-export function RightNowCard({
-  today,
-  baseline,
-  updatedLabel,
-  onOpen,
-  actions,
-}: {
-  today: Today;
-  baseline: Date | null;
-  updatedLabel: string | null;
-  onOpen: () => void;
-  actions?: PointActions;
-}) {
-  const points = today.narrative_points ?? [];
-  const badge = newSinceLabel(points, baseline);
-  const alsoIn = alsoInLine(today.inbox_also, today.inbox_also_total);
-  // A quiet card (no points) lists the next meetings itself.
-  const calendar = points.length === 0 ? (today.calendar_next ?? []).slice(0, CARD_POINTS) : [];
-  const link = cardLink(today, calendar.length);
-  return (
-    <section aria-labelledby="sec-right-now" className="mb-8 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
-      <div className="mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <h2 id="sec-right-now" className="text-lg font-semibold text-fg">
-          Right now
-        </h2>
-        {updatedLabel && (
-          <span className="whitespace-nowrap text-sm text-fg-muted" aria-live="polite">
-            {updatedLabel}
-          </span>
-        )}
-        {badge && (
-          <span className="whitespace-nowrap rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
-            {badge}
-          </span>
-        )}
-      </div>
-      {today.narrative_stale ? (
-        <Progress today={today} />
-      ) : today.narrative ? (
-        <>
-          <Lead today={today} />
-          {today.narrative_move?.trim() && (
-            <MoveBox move={today.narrative_move.trim()} points={points} actions={actions} />
-          )}
-          {points.length > 0 && (
-            <ul className="mt-2">
-              {points.slice(0, CARD_POINTS).map((p, i) => (
-                <PointRow
-                  key={`${i}-${p.text}`}
-                  point={p}
-                  isNew={isNewSince(p, baseline)}
-                  actions={actions ? { ...actions, plainRows: true } : undefined}
-                />
-              ))}
-            </ul>
-          )}
-          {calendar.length > 0 && (
-            <ul className="mt-3 border-t border-line pt-2">
-              {calendar.map((e, i) => (
-                <li key={`${i}-${e.title}`} className="flex items-start gap-2.5 py-1">
-                  <span className="w-16 flex-shrink-0 text-[15px] font-semibold tabular-nums text-fg">
-                    {calendarWhen(e.start, e.all_day)}
-                  </span>
-                  <span className="min-w-0 flex-1 text-[15px] text-fg">{e.title}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {alsoIn && <AlsoIn text={alsoIn} />}
-          {link && (
-            <button
-              type="button"
-              onClick={onOpen}
-              aria-haspopup="dialog"
-              className="mt-3 min-h-[40px] rounded-xl px-1 text-[15px] font-semibold text-accent hover:underline"
-            >
-              {link === "morning" ? "Morning brief →" : "See the whole picture →"}
-            </button>
-          )}
-        </>
-      ) : null}
-    </section>
-  );
-}
-
-// Mail from people the reader doesn't deal with: one quiet line, never a point.
-function AlsoIn({ text }: { text: string }) {
-  return <p className="mt-2 border-t border-dashed border-line pt-2 text-sm text-fg-muted">{text}</p>;
-}
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <h3 className="mb-1 mt-5 text-xs font-bold uppercase tracking-wide text-fg-muted">{children}</h3>;
-}
-
-function calendarWhen(start: string | null | undefined, allDay: boolean | undefined): string {
-  if (allDay || !start) return "All day";
-  return clockLabel(start) ?? "";
-}
-
-/** The side panel: the opener, the points split into new and still open,
- * the Move today line, what's next on the calendar and the morning brief. */
-export function RightNowBody({
-  today,
-  baseline,
-  onContinue,
-  actions,
-}: {
-  today: Today;
-  baseline: Date | null;
-  onContinue?: ContinueHandler;
-  actions?: PointActions;
-}) {
-  // Unset until tapped: open on a quiet day, when it is what the card links to.
-  const [morningToggled, setShowMorning] = useState<boolean | null>(null);
-  if (today.narrative_stale) return <Progress today={today} />;
-  if (!today.narrative) {
-    return (
-      <div aria-live="polite" className="rounded-xl bg-accent/5 px-4 py-3 text-[15px] text-fg-muted">
-        Nothing yet today.
-      </div>
-    );
-  }
-  const points = today.narrative_points ?? [];
-  const showMorning = morningToggled ?? cardLink(today, CARD_POINTS) === "morning";
-  const fresh = points.filter((p) => isNewSince(p, baseline));
-  const open = points.filter((p) => !isNewSince(p, baseline));
-  const calendar = today.calendar_next ?? [];
-  const morning = today.morning_brief;
-  const alsoIn = alsoInLine(today.inbox_also, today.inbox_also_total);
-  const list = (items: TimedPoint[], isNew: boolean) => (
-    <ul>
-      {items.map((p, i) => (
-        <PointRow key={`${i}-${p.text}`} point={p} isNew={isNew} actions={{ ...actions, onContinue }} />
-      ))}
-    </ul>
-  );
-  return (
-    <div>
-      <Lead today={today} />
-      {fresh.length > 0 && baseline ? (
-        <>
-          <SectionLabel>New since {clockLabel(baseline.toISOString())}</SectionLabel>
-          {list(fresh, true)}
-          {open.length > 0 && (
-            <>
-              <SectionLabel>Still open</SectionLabel>
-              {list(open, false)}
-            </>
-          )}
-        </>
-      ) : (
-        open.length > 0 && <div className="mt-3">{list(open, false)}</div>
-      )}
-      {alsoIn && <AlsoIn text={alsoIn} />}
-      {today.narrative_move && (
-        <p className="mt-4 rounded-xl bg-accent/5 px-3 py-2.5 text-[15px] text-fg">
-          <span className="font-semibold">Move today:</span> {today.narrative_move}
-        </p>
-      )}
-      {calendar.length > 0 && (
-        <>
-          <SectionLabel>Next on your calendar</SectionLabel>
-          <ul>
-            {calendar.map((e, i) => (
-              <li key={`${i}-${e.title}`} className="flex items-start gap-2.5 border-t border-line py-2 first:border-t-0">
-                <span className="w-16 flex-shrink-0 text-[15px] font-semibold tabular-nums text-fg">
-                  {calendarWhen(e.start, e.all_day)}
-                </span>
-                <span className="min-w-0 flex-1 text-[15px] text-fg">{e.title}</span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      {onContinue && points.length > 0 && (
-        <p className="mt-4 text-sm text-fg-muted">Tap a point to talk it through.</p>
-      )}
-      {morning && (
-        <div className="mt-5 border-t border-line pt-3">
-          <button
-            type="button"
-            onClick={() => setShowMorning(!showMorning)}
-            aria-expanded={showMorning}
-            className="min-h-[40px] text-sm font-medium text-fg-muted hover:text-fg"
-          >
-            Earlier today: {clockLabel(morning.at)} morning brief {showMorning ? "▾" : "›"}
-          </button>
-          {showMorning && (
-            <div className="prose prose-invert mt-2 max-w-none text-[15px] prose-p:my-2 prose-ul:my-2 prose-headings:text-fg prose-strong:text-fg">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{morning.text}</ReactMarkdown>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
