@@ -1737,7 +1737,11 @@ def create_discord_bot():
         # replies that arrive in the same DM or thread channel.
         await _handle_message(
             send_card=send_card,
-            reply_context=await _reply_context(message, bot.user),
+            # Only for someone on People: reading an old message is an API
+            # call, and an unrostered sender's turn is dropped anyway.
+            reply_context=(
+                await _reply_context(message, bot.user) if _is_rostered(discord_user_id) else ""
+            ),
             text=cleaned,
             attachment_count=len(message.attachments or []),
             discord_user_id=discord_user_id,
