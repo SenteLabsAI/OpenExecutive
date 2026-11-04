@@ -4,7 +4,8 @@
 // turn asking for the same kind of step, e.g. saving four files): a box per
 // item, all ticked, then "Approve N" for the ticked ones and "Skip all".
 // Every item is decision-backed, so Approve and Skip go through /decisions,
-// as each card would on its own. Held chat steps keep their rule: Approve
+// as each card would on its own (a Skip of one already answered elsewhere
+// counts as done). Held chat steps keep their rule: Approve
 // stays off until what each one would do has loaded.
 
 import { useEffect, useState } from "react";
@@ -12,8 +13,8 @@ import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import {
   approveDecision,
+  dismissActionCard,
   getHeldAction,
-  rejectDecision,
   type HeldActionPayload,
   type ProposalItem,
 } from "@/lib/api";
@@ -164,7 +165,7 @@ export default function RequestGroupCard({
         >
           {approveLabel(chosen.length)}
         </Button>
-        <Button variant="ghost" disabled={busy} onClick={() => void run(proposals, rejectDecision)}>
+        <Button variant="ghost" disabled={busy} onClick={() => void run(proposals, dismissActionCard)}>
           Skip all
         </Button>
       </div>

@@ -695,7 +695,9 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
       return next;
     });
   const clearProposal = async (p: ProposalItem) => {
-    if (p.decision_instance_id != null) await rejectDecision(p.decision_instance_id);
+    // Same reject as Skip, but one already answered elsewhere (404/409)
+    // counts as cleared.
+    if (p.decision_instance_id != null) await dismissActionCard(p.decision_instance_id);
     else await ackAlert(p.alert_id, "dismissed");
     hideAlerts([p.alert_id]);
   };
