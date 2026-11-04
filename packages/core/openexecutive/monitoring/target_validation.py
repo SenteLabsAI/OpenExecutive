@@ -22,7 +22,9 @@ no network I/O.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import feedparser
 import httpx
@@ -50,6 +52,55 @@ _MIN_PAGE_TEXT_CHARS = 200
 # characters never need more, and the insert path runs on the request
 # thread, so the work is bounded whatever the server sends.
 _READABILITY_SCAN_BYTES = 262_144
+
+
+# Sites that show a signed-out visitor a sign-in wall instead of the content,
+# so a page watch there sees the same wall on every poll and never changes.
+_SIGN_IN_WALL_HOSTS = (
+    "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com",
+    "tiktok.com", "glassdoor.com", "threads.net",
+)
+# Document files: a fixed report or deck whose bytes never change, and whose
+# "text" is binary to the page reader.
+_DOCUMENT_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip")
+_MONTHS = (
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+)
+_DATE_IN_PATH_RES = (
+    re.compile(r"/20\d\d/\d{1,2}(/|$)"),            # /2026/10/...
+    re.compile(r"20\d\d-\d{1,2}-\d{1,2}"),           # 2026-10-15
+    re.compile(r"(?:^|[/-])(?:" + "|".join(_MONTHS) + r")-\d{1,2}-20\d\d"),  # october-15-2026
+)
+# A last path segment of this many hyphen-separated words is an article's
+# title slug ("the-great-tightening-how-senior-housing-is-entering"), not a
+# section of a site.
+_ARTICLE_SLUG_MIN_WORDS = 6
+
+
+def page_watch_target_problem(url: str) -> str:
+    """Why ``url`` would make a page watch that never reports anything, or
+    ``""`` when it looks like a page that changes as news is added.
+
+    No network: judged from the URL alone, for the research workflow, which
+    must watch a site's news or insights page (or its feed), not one article,
+    one document or a profile behind a sign-in wall."""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return "not a valid URL"
+    host = (parts.hostname or "").lower()
+    path = parts.path.lower().rstrip("/")
+    if any(host == h or host.endswith("." + h) for h in _SIGN_IN_WALL_HOSTS):
+        return f"{host} shows a sign-in wall to the watcher, so the page never changes"
+    if path.endswith(_DOCUMENT_SUFFIXES):
+        return "a document file is a fixed copy that never changes"
+    if any(rx.search(path) for rx in _DATE_IN_PATH_RES):
+        return "a dated single article never changes once published"
+    last = path.rsplit("/", 1)[-1]
+    if len([w for w in last.split("-") if w]) >= _ARTICLE_SLUG_MIN_WORDS:
+        return "a single article never changes once published"
+    return ""
 
 
 class WatchlistTargetError(Exception):
@@ -157,4 +208,8 @@ async def _feed_check(
     return ("feed", body) if parsed.get("version") else ("not_feed", body)
 
 
-__all__ = ["WatchlistTargetError", "validate_and_normalize_target"]
+__all__ = [
+    "WatchlistTargetError",
+    "page_watch_target_problem",
+    "validate_and_normalize_target",
+]

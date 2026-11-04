@@ -114,6 +114,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "my_email_read_before": (AS_ME, "mail opened for the person before"),
     "my_calendar": (AS_ME, "the person's own calendar"),
     "remind_me": (AS_ME, "a reminder for the person"),
+    "watch_for_email": (AS_ME, "a watch on the person's own mailbox"),
     "propose_actions": (AS_ME, "an approval card from the person's mail"),
     "recall_history": (AS_ME, "the person's own conversation notes"),
     "search_past_chats": (AS_ME, "the person's own earlier chats"),

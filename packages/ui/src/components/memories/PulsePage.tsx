@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { readLastVisit, writeLastVisit } from "@/lib/memoryChanges";
 import { isMemoryView, pulseViewFor, type PulseView } from "@/lib/pulseView";
 import RhythmSection, { FollowUpsCard, RecentActivity } from "./CadenceSection";
 import SectionTabs, { sectionPanelProps } from "@/components/ui/SectionTabs";
@@ -67,6 +68,12 @@ export default function PulsePage() {
   const wanted = useSearchParams().get("tab");
   const view = pulseViewFor(wanted);
   const top = useRef<HTMLDivElement>(null);
+  // The visit before this one, for "New since your last visit"; this visit
+  // becomes the next one's start (and clears the dot on Memory).
+  const [lastVisit] = useState<string | null>(() => (typeof window === "undefined" ? null : readLastVisit()));
+  useEffect(() => {
+    writeLastVisit(new Date().toISOString());
+  }, []);
 
   // The People tab moved to Settings → About you; old links follow it there.
   useEffect(() => {
@@ -81,7 +88,7 @@ export default function PulsePage() {
   return (
     <div ref={top} className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
       {view === "overview" || view === "does" ? (
-        <Overview view={view} />
+        <Overview view={view} lastVisit={lastVisit} />
       ) : (
         <FocusedScreen
           {...SCREENS[view]}
@@ -105,7 +112,7 @@ export default function PulsePage() {
 type Tab = "overview" | "does";
 
 /** Loaded each time it's shown, so counts reflect edits made on a list. */
-function Overview({ view }: { view: Tab }) {
+function Overview({ view, lastVisit }: { view: Tab; lastVisit: string | null }) {
   const router = useRouter();
   const pulse = usePulseData();
   const idBase = useId();
@@ -129,7 +136,7 @@ function Overview({ view }: { view: Tab }) {
       />
       <div {...sectionPanelProps(idBase, view)} className="space-y-6">
         {view === "overview" ? (
-          <KnowsOverview pulse={pulse} />
+          <KnowsOverview pulse={pulse} lastVisit={lastVisit} />
         ) : (
           <>
             <HeartbeatCard pulse={pulse} />
