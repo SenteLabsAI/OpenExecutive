@@ -33,7 +33,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     people_registry.invalidate()
 
 
-@pytest.mark.parametrize("reason", sorted(levels.REASONS - {levels.STRANGER}))
+@pytest.mark.parametrize("reason", sorted(levels.REASONS - {levels.STRANGER, levels.NOT_OWNER}))
 def test_hands_off_runs_every_noticed_step(reason: str) -> None:
     assert levels.decide(reason, mode=outside_mode.TRUST) == levels.RUN
 
@@ -47,6 +47,11 @@ def test_below_hands_off_every_noticed_step_is_a_card(mode: str, reason: str) ->
 @pytest.mark.parametrize("mode", sorted(outside_mode.MODES))
 def test_a_strangers_mail_is_a_card_at_every_level(mode: str) -> None:
     assert levels.decide(levels.STRANGER, mode=mode) == levels.CARD
+
+
+@pytest.mark.parametrize("mode", sorted(outside_mode.MODES))
+def test_an_owner_only_tool_on_someone_elses_turn_is_a_card_at_every_level(mode: str) -> None:
+    assert levels.decide(levels.NOT_OWNER, mode=mode) == levels.CARD
 
 
 def test_an_error_deciding_is_a_card(monkeypatch: pytest.MonkeyPatch) -> None:

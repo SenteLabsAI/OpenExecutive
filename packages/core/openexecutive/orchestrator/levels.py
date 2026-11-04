@@ -17,7 +17,8 @@ it says:
   card (``hold``). Careful detects more (any outside read), Balanced less
   (only a read the check flagged): the outside-content check is the
   level's.
-- **Every level**: what mail from someone not in People asks for is never
+- **Every level**: a tool only the owner may use never runs on someone
+  else's turn, and what mail from someone not in People asks for is never
   done on that mail's say-so. The Executive answers them, and anything else
   comes to the owner as an Approve card.
 
@@ -156,7 +157,9 @@ def decide(reason: str, *, mode: str | None = None) -> str:
     from openexecutive.orchestrator import outside_mode
 
     try:
-        if reason == STRANGER:
+        # Hands-off is the owner's trust in their own Executive: it gives no
+        # one else the owner's powers, and no stranger's mail its say-so.
+        if reason in (STRANGER, NOT_OWNER):
             return CARD
         current = mode if mode is not None else turn_level()
         if current == outside_mode.TRUST:

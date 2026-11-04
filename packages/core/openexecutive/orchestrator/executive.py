@@ -47,7 +47,6 @@ from openexecutive.orchestrator import (
     extensions,
     levels,
     outside_content,
-    outside_mode,
     take_the_lead,
     tool_groups,
     turn_progress,
@@ -2487,11 +2486,10 @@ class Executive:
         # A team member's turn (not the principal's): every send or edit goes
         # through their department's authority first (department_gate), as
         # unattended work goes through the scheduler's and Take the lead's.
-        # Under Hands-off a teammate's step runs like anyone's (orchestrator.levels).
-        seat = (
-            None if unattended_withheld or turn_level == outside_mode.TRUST
-            else department_gate.speaker(current_session.get())
-        )
+        # The owner set those ranges for their people, so Hands-off (the
+        # owner's own trust in their Executive) doesn't waive them; a step
+        # outside a range is an Approve card for its approver.
+        seat = None if unattended_withheld else department_gate.speaker(current_session.get())
         seat_session_id = getattr(current_session.get(), "session_id", None)
         if seat is not None:
             turn_handlers = department_gate.gated_handlers(turn_handlers, seat, session_id=seat_session_id)
