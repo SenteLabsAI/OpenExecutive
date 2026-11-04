@@ -5419,6 +5419,9 @@ export interface ProposalItem {
   // /decisions endpoints (which book/cancel server-side) instead of the
   // ack-and-handoff-to-chat flow. Null/absent for ordinary alert proposals.
   decision_instance_id?: number | null;
+  // Approvals one request held together (same chat turn, same kind of step)
+  // share this key; Needs you shows them as one card. Null on a lone card.
+  group_key?: string | null;
   // A scheduled run that failed: the run its Run again queues once more.
   failed_run_id?: string | null;
   // Set when the card is a roster request ("who is this new sender?"): the

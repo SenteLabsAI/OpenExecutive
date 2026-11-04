@@ -290,11 +290,15 @@ async def _process_and_reply(
     message_id: int,
     token: str,
     attachment_file_ids: list[TelegramFile] | None = None,
+    reply_context: str = "",
 ) -> None:
     """Handle one inbound Telegram message.
 
     ``attachment_file_ids`` is a list of ``(file_id, filename, content_type,
     voice_note)`` tuples for any files or photos attached to the message.
+    ``reply_context`` is the message it answers (``_reply_context``): added
+    for the Executive's turn and its history, not for a workflow's waiting
+    question or alert triage, which read the person's own words.
     """
     # Per-conversation session id — stamped on every audit row (inbound,
     # chat_turn, specialist_consult, tool_invocation) so a single request can
@@ -386,6 +390,14 @@ async def _process_and_reply(
         except Exception:
             logger.exception("Telegram: attachment processing setup failed")
 
+    # The person's own words (and any file text) search knowledge and name
+    # the conversation; the quote is for the turn and its history.
+    own_text = message_text
+    if reply_context:
+        from openexecutive.integrations.reply_context import with_context
+
+        message_text = with_context(reply_context, message_text)
+
     from openexecutive.integrations.channel_context import (
         attach_briefing_context,
         build_channel_context_block,
@@ -424,7 +436,7 @@ async def _process_and_reply(
             # Record this channel_ref as user-initiated so the Executive may
             # schedule follow-ups back to this chat.
             session.seen_channel_refs.add(("telegram", str(chat_id)))
-            retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
+            retrieved_context = retrieve(query=own_text, max_chars=get_settings().knowledge_chat_max_chars)
             episodic_context = format_for_prompt(session_id=session_id)
 
             # Look up the OE Person record so Honcho can key per-person
@@ -484,6 +496,8 @@ async def _process_and_reply(
                 channel_context_block=build_channel_context_block("telegram", cards_here=cards_here),
                 person_id=person_id,
                 cards=cards if cards_here else None,
+                # The quote is not the person's words: memory keeps their own.
+                memory_text=own_text if reply_context else None,
             )
             from openexecutive.orchestrator.disclosure import with_chat_line
 
@@ -533,7 +547,7 @@ async def _process_and_reply(
         else:
             from openexecutive.integrations.conversations import title_after_turn
 
-            title_after_turn(session_id, message_text, response)
+            title_after_turn(session_id, own_text, response)
 
 
 async def _start_fresh_and_reply(chat_id: int, token: str) -> None:
@@ -601,6 +615,40 @@ def _message_content(message: dict[str, Any]) -> tuple[str, list[TelegramFile]]:
                 content_type = "audio/mp4"
             attachment_file_ids.append((media["file_id"], filename, content_type, voice_note))
     return text, attachment_file_ids
+
+
+def _reply_context(message: dict[str, Any], token: str = "") -> str:
+    """The message this one answers, when the person used Telegram's Reply
+    (``integrations.reply_context``); "" otherwise. A highlighted part of it
+    (Telegram's quote) is used in place of the whole. ``token`` names this
+    bot (its id is the part before the colon), so another bot's post in a
+    group isn't taken for the Executive's."""
+    from openexecutive.integrations import reply_context
+
+    replied = message.get("reply_to_message")
+    if not isinstance(replied, dict):
+        return ""
+    quote = message.get("quote")
+    quoted = quote.get("text") if isinstance(quote, dict) else None
+    if not isinstance(quoted, str) or not quoted.strip():
+        quoted = replied.get("text") or replied.get("caption") or ""
+    if not isinstance(quoted, str) or not quoted.strip():
+        kinds = (
+            ("photo", "a photo"), ("document", "a file"), ("voice", "a voice note"),
+            ("video_note", "a video note"), ("audio", "an audio file"), ("video", "a video"),
+        )
+        quoted = next((f"[{label}]" for key, label in kinds if replied.get(key)), "")
+    raw_sender = replied.get("from")
+    sender: dict[str, Any] = raw_sender if isinstance(raw_sender, dict) else {}
+    raw_from = message.get("from")
+    from_user: dict[str, Any] = raw_from if isinstance(raw_from, dict) else {}
+    writer = reply_context.whose(
+        by_executive=sender.get("is_bot") is True
+        and str(sender.get("id")) == token.partition(":")[0],
+        by_sender=sender.get("id") is not None and sender.get("id") == from_user.get("id"),
+        name=" ".join(filter(None, [sender.get("first_name"), sender.get("last_name")])),
+    )
+    return reply_context.quote(writer, quoted)
 
 
 async def _hold_unknown_sender(
@@ -807,5 +855,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks) 
         message_id=message_id,
         token=settings.telegram_bot_token,
         attachment_file_ids=attachment_file_ids or None,
+        reply_context=_reply_context(message, settings.telegram_bot_token or ""),
     )
     return {}
