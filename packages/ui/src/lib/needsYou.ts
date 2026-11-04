@@ -87,6 +87,24 @@ export function newestAnchor(items: Aged[]): string {
   return best;
 }
 
+// Clear all on the Older line: closes each card its own way, all at once,
+// and says which closed and which didn't (those stay listed, so the reader
+// can try again).
+export async function clearAll<T extends { clear: () => Promise<void> }>(
+  items: T[],
+): Promise<{ cleared: T[]; failed: T[] }> {
+  const results = await Promise.allSettled(items.map((item) => item.clear()));
+  const cleared: T[] = [];
+  const failed: T[] = [];
+  results.forEach((r, i) => (r.status === "fulfilled" ? cleared : failed).push(items[i]));
+  return { cleared, failed };
+}
+
+// What the Older line says when some cards didn't clear.
+export function clearNotice(failed: number, total: number): string | null {
+  return failed > 0 ? `${failed} of ${total} didn't clear. They're still under Older. Try again.` : null;
+}
+
 // The group card's button: "Approve 3", or "Approve" for one.
 export function approveLabel(n: number): string {
   return n > 1 ? `Approve ${n}` : "Approve";

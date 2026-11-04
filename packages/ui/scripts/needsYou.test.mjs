@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   ageAnchor,
   approveLabel,
+  clearAll,
+  clearNotice,
   groupByRequest,
   isOlder,
   newestAnchor,
@@ -54,4 +56,32 @@ test("a group is as new as its newest card", () => {
   );
   assert.equal(approveLabel(3), "Approve 3");
   assert.equal(approveLabel(1), "Approve");
+});
+
+test("Clear all leaves kept cards in view and only clears the older ones", async () => {
+  const closed = [];
+  const card = (id, at, extra = {}) => ({
+    id, at, ...extra,
+    clear: async () => {
+      if (extra.fails) throw new Error("server said no");
+      closed.push(id);
+    },
+  });
+  const queue = [
+    card("fresh", daysAgo(1)),
+    card("sending-reply", daysAgo(5), { keep: true }),
+    card("roster", daysAgo(9), { keep: true }),
+    card("old-alert", daysAgo(4)),
+    card("old-decision", daysAgo(6), { fails: true }),
+  ];
+  const { current, older } = splitOlder(queue, (c) => c.at, NOW, (c) => Boolean(c.keep));
+  assert.deepEqual(current.map((c) => c.id), ["fresh", "sending-reply", "roster"]);
+
+  const { cleared, failed } = await clearAll(older);
+  assert.deepEqual(closed, ["old-alert"]);
+  assert.deepEqual(cleared.map((c) => c.id), ["old-alert"]);
+  // The one that failed is reported, so it stays listed with a notice.
+  assert.deepEqual(failed.map((c) => c.id), ["old-decision"]);
+  assert.equal(clearNotice(failed.length, older.length), "1 of 2 didn't clear. They're still under Older. Try again.");
+  assert.equal(clearNotice(0, 2), null);
 });

@@ -29,7 +29,15 @@ import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
 import { goalTotals, realDepartments } from "@/lib/glance";
 import { groupHandled } from "@/lib/handled";
-import { NEEDS_YOU_OLDER_AFTER_DAYS, ageAnchor, groupByRequest, newestAnchor, splitOlder } from "@/lib/needsYou";
+import {
+  NEEDS_YOU_OLDER_AFTER_DAYS,
+  ageAnchor,
+  clearAll,
+  clearNotice,
+  groupByRequest,
+  newestAnchor,
+  splitOlder,
+} from "@/lib/needsYou";
 import { BRIEFING_REFRESH_INTERVAL_MS, shouldRefreshOnFocus } from "@/lib/narrativeFreshness";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
@@ -798,14 +806,11 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   const handleClearOlder = async () => {
     setClearingOlder(true);
     setOlderNotice(null);
-    const results = await Promise.allSettled(olderQueue.map((item) => item.clear()));
-    const failed = results.filter((r) => r.status === "rejected").length;
+    const { failed } = await clearAll(olderQueue);
     setClearingOlder(false);
-    if (failed > 0) {
-      setOlderNotice(`${failed} of ${results.length} didn't clear. They're still under Older. Try again.`);
-    } else {
-      setShowOlder(false);
-    }
+    const notice = clearNotice(failed.length, olderQueue.length);
+    setOlderNotice(notice);
+    if (!notice) setShowOlder(false);
     refreshToday();
   };
 
