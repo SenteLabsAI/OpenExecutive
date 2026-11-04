@@ -59,14 +59,18 @@ export default function RequestGroupCard({
       getHeldAction(id, controller.signal)
         .then((payload) => setHeld((prev) => ({ ...prev, [id]: payload })))
         .catch((err) => {
-          if ((err as Error)?.name !== "AbortError") setError("Couldn't load what it would do.");
+          if ((err as Error)?.name !== "AbortError") setError("Couldn't load what one of these would do. Untick it to approve the rest.");
         });
     }
     return () => controller.abort();
   }, [loadKey]);
 
   const chosen = proposals.filter((p) => !unticked.has(p.alert_id));
-  const loaded = needsLoad.every((p) => held[p.decision_instance_id as number] != null);
+  // Only the ticked items must have loaded: one that failed to load can be
+  // unticked and the rest approved.
+  const loaded = chosen.every(
+    (p) => !isHeldAction(p) || p.decision_instance_id == null || held[p.decision_instance_id] != null,
+  );
 
   async function run(items: ProposalItem[], act: (id: number) => Promise<unknown>) {
     setBusy(true);
