@@ -68,6 +68,56 @@ def test_google_chat_quote_is_carried() -> None:
     )
 
 
+def test_google_chat_app_dm_quote_of_the_other_party_is_the_executives() -> None:
+    message = _gchat({"sender": "users/123", "text": "Maya wants to send the lease."})
+    assert "your earlier message" in reply_context.google_chat(message, two_party=True)
+    assert "an earlier message:" in reply_context.google_chat(message)
+
+
+def test_google_chat_app_id_comes_from_a_bot_mention() -> None:
+    message = {"annotations": [
+        {"type": "USER_MENTION", "userMention": {"user": {"name": "users/9", "type": "HUMAN"}}},
+        {"type": "USER_MENTION", "userMention": {"user": {"name": "users/77", "type": "BOT"}}},
+    ]}
+    assert reply_context.google_chat_app_id(message) == "users/77"
+    assert reply_context.google_chat_app_id({}) == ""
+
+
+def test_google_chat_webhook_labels_a_quote_of_the_app_in_a_dm(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openexecutive.integrations import google_chat
+
+    monkeypatch.setattr(google_chat, "verify_google_jwt", lambda token, project: {})
+    settings = SimpleNamespace(
+        google_chat_project_number="123",
+        google_chat_service_account_file="/fake/key.json",
+        google_chat_service_account_email=None,
+    )
+    process = AsyncMock()
+    app = FastAPI()
+    app.include_router(google_chat.router)
+    body = {
+        "type": "MESSAGE",
+        "space": {"name": "spaces/D", "type": "DM"},
+        "user": {"displayName": "Dana", "email": "dana@example.com"},
+        "message": {**_gchat({"sender": "users/app1", "text": "Maya wants to send the lease."}),
+                    "thread": {"name": "spaces/D/threads/T"}},
+    }
+    with (
+        patch.object(google_chat, "_process_and_reply", new=process),
+        patch("openexecutive.integrations.google_chat.get_settings", return_value=settings),
+    ):
+        response = TestClient(app).post("/webhook/google-chat", json=body, headers={"Authorization": "Bearer x"})
+    assert response.status_code == 200
+    assert process.await_args.kwargs["reply_context"] == (
+        "(Replying to your earlier message:)\n> Maya wants to send the lease."
+    )
+
+
 def test_google_chat_no_quote_or_a_forward_is_nothing() -> None:
     assert reply_context.google_chat(_gchat(None)) == ""
     assert reply_context.google_chat(_gchat({"sender": "users/x", "text": "x"}, "FORWARD")) == ""

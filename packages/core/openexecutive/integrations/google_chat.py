@@ -435,7 +435,13 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
         space_name=body.get("space", {}).get("name", ""),
         thread_name=message.get("thread", {}).get("name", ""),
         message_name=message.get("name", ""),
-        reply_context=reply_context.google_chat(message),
+        reply_context=reply_context.google_chat(
+            message,
+            reply_context.google_chat_app_id(message),
+            # A direct message with the app has two people in it: the sender and the app.
+            two_party=body.get("space", {}).get("type") == "DM"
+            or body.get("space", {}).get("spaceType") == "DIRECT_MESSAGE",
+        ),
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
         attachments=attachments,

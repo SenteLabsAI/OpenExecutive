@@ -47,11 +47,13 @@ def with_context(context: str, text: str) -> str:
     return f"{context}\n\n{text}" if text else context
 
 
-def google_chat(message: dict, own: str = "") -> str:
+def google_chat(message: dict, own: str = "", *, two_party: bool = False) -> str:
     """A Google Chat message's quote of an earlier one (its
     ``quotedMessageMetadata``), or "". ``own`` is the Executive's own
-    ``users/{id}`` in the space, when the caller knows it. A forward is not
-    a reply."""
+    ``users/{id}`` in the space, when the caller knows it; ``two_party``
+    says the space is a direct message between the sender and the
+    Executive, so a quote of anyone but the sender is the Executive's. A
+    forward is not a reply."""
     meta = message.get("quotedMessageMetadata")
     if not isinstance(meta, dict) or str(meta.get("quoteType") or "REPLY") != "REPLY":
         return ""
@@ -61,8 +63,20 @@ def google_chat(message: dict, own: str = "") -> str:
     raw_sender = message.get("sender")
     sender = str(raw_sender.get("name") or "") if isinstance(raw_sender, dict) else ""
     quoted_by = str(snapshot.get("sender") or "")
+    by_sender = bool(sender) and quoted_by == sender
     writer = whose(
-        by_executive=bool(own) and quoted_by == own,
-        by_sender=bool(sender) and quoted_by == sender,
+        by_executive=bool(quoted_by) and not by_sender and (quoted_by == own or two_party),
+        by_sender=by_sender,
     )
     return quote(writer, str(snapshot.get("text") or ""))
+
+
+def google_chat_app_id(message: dict) -> str:
+    """The Chat app's own ``users/{id}``, when ``message`` @mentions it: the
+    one bot a message delivered to this app can mention for it. "" else."""
+    for annotation in message.get("annotations") or []:
+        mention = annotation.get("userMention") if isinstance(annotation, dict) else None
+        user = mention.get("user") if isinstance(mention, dict) else None
+        if isinstance(user, dict) and user.get("type") == "BOT" and str(user.get("name") or "").startswith("users/"):
+            return str(user["name"])
+    return ""
