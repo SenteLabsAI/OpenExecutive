@@ -1028,6 +1028,9 @@ async def _handle_message(
                     )
                     return
 
+    # The person's own words search knowledge and name the conversation;
+    # the quote is for the turn and its history.
+    own_text = text
     if reply_context:
         from openexecutive.integrations.reply_context import with_context
 
@@ -1063,7 +1066,7 @@ async def _handle_message(
             if is_dm and discord_user_id:
                 session.seen_channel_refs.add(("discord_dm", discord_user_id))
 
-            retrieved_context = retrieve(query=text, max_chars=get_settings().knowledge_chat_max_chars)
+            retrieved_context = retrieve(query=own_text, max_chars=get_settings().knowledge_chat_max_chars)
             episodic_context = format_for_prompt(session_id=session_id)
 
             # Sender was already resolved at the roster gate above; reuse it
@@ -1210,7 +1213,7 @@ async def _handle_message(
         else:
             from openexecutive.integrations.conversations import title_after_turn
 
-            title_after_turn(session_id, text, response)
+            title_after_turn(session_id, own_text, response)
 
         # Promoted-thread double-write: when the router opened a brand-
         # new bot-owned thread for this reply, also persist the turn

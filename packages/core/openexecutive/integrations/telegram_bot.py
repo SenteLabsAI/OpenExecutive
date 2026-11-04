@@ -390,6 +390,9 @@ async def _process_and_reply(
         except Exception:
             logger.exception("Telegram: attachment processing setup failed")
 
+    # The person's own words (and any file text) search knowledge and name
+    # the conversation; the quote is for the turn and its history.
+    own_text = message_text
     if reply_context:
         from openexecutive.integrations.reply_context import with_context
 
@@ -433,7 +436,7 @@ async def _process_and_reply(
             # Record this channel_ref as user-initiated so the Executive may
             # schedule follow-ups back to this chat.
             session.seen_channel_refs.add(("telegram", str(chat_id)))
-            retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
+            retrieved_context = retrieve(query=own_text, max_chars=get_settings().knowledge_chat_max_chars)
             episodic_context = format_for_prompt(session_id=session_id)
 
             # Look up the OE Person record so Honcho can key per-person
@@ -542,7 +545,7 @@ async def _process_and_reply(
         else:
             from openexecutive.integrations.conversations import title_after_turn
 
-            title_after_turn(session_id, message_text, response)
+            title_after_turn(session_id, own_text, response)
 
 
 async def _start_fresh_and_reply(chat_id: int, token: str) -> None:
