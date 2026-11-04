@@ -8,16 +8,16 @@ import {
   approveAlert,
   approveDecision,
   bulkAckAlerts,
-  dismissTodayPoint,
+  dismissRightNowRow,
   getDelegation,
   getToday,
-  markTodaySeen,
   rejectDecision,
   reopenAlert,
   rerunWorkflowRun,
   reviewAlerts,
   snoozeAlert,
   type ProposalItem,
+  type RightNowRow,
   type Today,
 } from "@/lib/api";
 import type { AlertApproval } from "@/lib/approvals";
@@ -26,13 +26,7 @@ import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
 import { goalTotals, realDepartments } from "@/lib/glance";
 import { groupHandled } from "@/lib/handled";
-import {
-  BRIEFING_REFRESH_INTERVAL_MS,
-  narrativeRepollDelay,
-  narrativeUpdatedLabel,
-  shouldRefreshOnFocus,
-} from "@/lib/narrativeFreshness";
-import { checkedLabel, seenBaseline, type TimedPoint } from "@/lib/rightNow";
+import { BRIEFING_REFRESH_INTERVAL_MS, shouldRefreshOnFocus } from "@/lib/narrativeFreshness";
 import { reviewRanLabel } from "@/lib/rhythmCards";
 import type { SnoozeChoice } from "@/lib/snooze";
 import InfoTip from "./InfoTip";
@@ -51,7 +45,7 @@ import {
 import ApprovedRow from "./briefing/ApprovedRow";
 import FirstWeekCard from "./briefing/FirstWeekCard";
 import { useGlance } from "./briefing/Glance";
-import { RightNowBody, RightNowCard } from "./briefing/RightNow";
+import { RightNowList } from "./briefing/RightNow";
 import { isHeldAction } from "./briefing/HeldActionCard";
 import { isLeadTraining } from "./briefing/LeadTrainingCard";
 import ProposalCard from "./briefing/ProposalCard";
@@ -91,7 +85,6 @@ const NEEDS_YOU_VISIBLE = 3;
 const NEEDS_YOU_ID = "sec-needs-you";
 
 type PanelKey =
-  | "brief"
   | "departments"
   | "people"
   | "inFlight"
@@ -183,31 +176,11 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     getToday().then(setToday).catch(() => { /* keep current view on failure */ });
   }, []);
 
-  // Keep "What's going on" current. /today serves the cached header and
-  // rewrites it in the background when the picture moved (narrative_stale);
-  // re-poll a few times so the new one lands without a reload.
-  // Keyed on the whole response: a poll that comes back still stale is a new
-  // object with the same fields, and must schedule the next attempt.
-  const repollAttemptRef = useRef(0);
-  useEffect(() => {
-    if (!today?.narrative_stale) {
-      repollAttemptRef.current = 0;
-      return;
-    }
-    const delay = narrativeRepollDelay(repollAttemptRef.current);
-    if (delay === null) return;
-    const timer = setTimeout(() => {
-      repollAttemptRef.current += 1;
-      refreshToday();
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [today, refreshToday]);
-
-  // …and when the tab comes back, and every few minutes while it is open.
+  // Keep Home current when the tab comes back, and every few minutes while
+  // it is open.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible" && shouldRefreshOnFocus(lastFetchRef.current, Date.now())) {
-        repollAttemptRef.current = 0;
         refreshToday();
       }
     };
@@ -444,18 +417,18 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
     }, 120);
   };
 
-  // What Right now's points open: the email (and its reply card, shared
-  // with Needs you) or the card in Needs you.
-  // ✕ on a point clears it at once; the server keeps it out for the day.
-  const onDismissPoint = useCallback((point: TimedPoint) => {
-    setToday((t) => t && { ...t, narrative_points: (t.narrative_points ?? []).filter((p) => p.text !== point.text) });
-    dismissTodayPoint(point.text)
+  // What Right now's rows open: the email (and its reply card, shared with
+  // Needs you). ✕ on a row clears it at once; the server keeps it out until
+  // something newer lands on it.
+  const onDismissRow = useCallback((row: RightNowRow) => {
+    setToday((t) => t && { ...t, right_now: (t.right_now ?? []).filter((r) => r.key !== row.key) });
+    dismissRightNowRow(row.key)
       .then((kept) => {
         if (!kept) return getToday().then(setToday);
       })
-      .catch((e) => console.error("Dismissing a Right now point failed", e));
+      .catch((e) => console.error("Dismissing a Right now row failed", e));
   }, []);
-  const rightNowActions = { replies, onShowAlert: jumpToAlert, onContinue, onDismiss: onDismissPoint };
+  const rightNowActions = { replies, onContinue, onDismiss: onDismissRow };
 
   const dateLabel = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
@@ -768,37 +741,18 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
   ];
   const showNeedsYouMenu = staleNeedsYouIds.length > 0 || mineProposals.length > 0;
 
-  const hasBrief = Boolean(today && (today.narrative || today.narrative_stale));
-  // What counts as new on Right now: the reader's last look earlier today,
-  // taken from the first header this visit shows and held for the visit, so
-  // the dots don't vanish when the page records this look.
-  const [rightNowBaseline, setRightNowBaseline] = useState<{ at: Date | null } | null>(null);
-  const seenWrittenRef = useRef<string | null>(null);
-  const shownWrittenAt = today?.narrative ? today.narrative_generated_at ?? null : null;
-  // A header that lands while the tab is in the background isn't a look:
-  // it's recorded once the page is in view again.
-  const [pageVisible, setPageVisible] = useState(true);
-  useEffect(() => {
-    const onChange = () => setPageVisible(document.visibilityState === "visible");
-    onChange();
-    document.addEventListener("visibilitychange", onChange);
-    return () => document.removeEventListener("visibilitychange", onChange);
-  }, []);
-  useEffect(() => {
-    if (!pageVisible || !today || !shownWrittenAt || seenWrittenRef.current === shownWrittenAt) return;
-    setRightNowBaseline((b) => b ?? { at: seenBaseline(today.narrative_seen_at, new Date()) });
-    seenWrittenRef.current = shownWrittenAt;
-    void markTodaySeen().catch(() => { /* best-effort */ });
-  }, [today, shownWrittenAt, pageVisible]);
+  // Right now's rows: what is waiting on the owner that Needs you doesn't show.
+  const rightNowRows = today?.right_now ?? [];
   // The first week: the first-week card takes the page's top slot, so the
   // day isn't called quiet and the summary line points at it.
   const firstWeekCard = today?.first_week_card ?? null;
   const firstWeek = Boolean(today?.first_week);
-  // Right now already says when nothing needs the reader, so an empty Needs
-  // you would only say it again. It stays in the first week, where its empty
-  // line points at the mailbox step.
+  // With Right now listing what is waiting, an empty Needs you would only
+  // add an empty box. It stays when Right now is empty (its line is then
+  // the one saying nothing is waiting), and in the first week, where its
+  // empty line points at the mailbox step.
   const hideEmptyNeedsYou =
-    hasBrief &&
+    rightNowRows.length > 0 &&
     !firstWeek &&
     queue.length === 0 &&
     approvalRows.length === 0 &&
@@ -817,11 +771,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
       .catch(() => undefined);
     return () => ctrl.abort();
   }, [firstWeek]);
-  const briefFreshness = today
-    ? today.narrative_stale
-      ? "Updating…"
-      : checkedLabel(today.narrative_checked_at) ?? narrativeUpdatedLabel(today.narrative_generated_at, new Date())
-    : null;
 
   // In the first week the first-week card says what to start on, so the day
   // isn't "quiet" even with nothing on the board yet.
@@ -929,15 +878,7 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
 
           {today && (
             <>
-              {hasBrief && (
-                <RightNowCard
-                  today={today}
-                  baseline={rightNowBaseline?.at ?? null}
-                  updatedLabel={briefFreshness}
-                  onOpen={() => setOpenPanel("brief")}
-                  actions={rightNowActions}
-                />
-              )}
+              <RightNowList rows={rightNowRows} actions={rightNowActions} />
 
               {/* Needs you — decisions routed to the caller, and replies
                   waiting to be sent. */}
@@ -1082,24 +1023,6 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                 </section>
               )}
 
-              <SidePanel
-                open={openPanel === "brief"}
-                onClose={() => setOpenPanel(null)}
-                title="Right now"
-                subtitle={
-                  <span aria-live="polite">
-                    {briefFreshness ? `${briefFreshness} · rewritten as things change` : dateLabel}
-                  </span>
-                }
-                width="lg"
-              >
-                <RightNowBody
-                  today={today}
-                  baseline={rightNowBaseline?.at ?? null}
-                  onContinue={onContinue}
-                  actions={rightNowActions}
-                />
-              </SidePanel>
               <SidePanel
                 open={openPanel === "departments"}
                 onClose={() => setOpenPanel(null)}

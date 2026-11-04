@@ -538,6 +538,22 @@ def _point_source(raw: dict[str, Any] | None) -> PointSource | None:
         return None
 
 
+class RightNowRow(BaseModel):
+    """One row of Home's Right now list (``briefing.right_now_list``): what
+    it is (``mail``, ``draft``, ``chat``), who it is from or to, its
+    subject, the newest activity on it (ISO-8601 UTC), a short note on why
+    it is listed, and what Home can open from it. ``key`` is what
+    ``POST /today/right-now/dismiss`` takes."""
+
+    key: str
+    kind: Literal["mail", "draft", "chat"]
+    who: str
+    subject: str
+    at: str
+    note: str = ""
+    source: PointSource | None = None
+
+
 class NarrativeProgress(BaseModel):
     """What a Right now being written is doing, for the page to show in its
     place: ``reading`` what moved (mail, calendar, Needs you), ``writing``
@@ -602,6 +618,11 @@ class TodayResponse(BaseModel):
     # never a point. Additive; empty / 0 for anyone else.
     inbox_also: list[str] = Field(default_factory=list)
     inbox_also_total: int = 0
+    # The principal's own: Home's Right now list, one row per thing waiting
+    # on them that Needs you doesn't show (``briefing.right_now_list``).
+    # Built from the records on every load, never written by a model.
+    # Additive; empty for anyone else.
+    right_now: list[RightNowRow] = Field(default_factory=list)
     # The principal's own: today's delivered morning brief and the meetings
     # still ahead today. Additive; None / empty for anyone else.
     morning_brief: MorningBriefItem | None = None
@@ -2439,7 +2460,46 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         response.first_week = response.first_week_card is not None
         response.morning_brief = _morning_brief_today()
         response.calendar_next = _calendar_next(datetime.now(UTC))
+        response.right_now = _right_now_rows()
     return response
+
+
+def _right_now_rows(now: datetime | None = None) -> list[RightNowRow]:
+    """The principal's Right now list as the API shows it. Never raises."""
+    from openexecutive.briefing import right_now_list
+
+    try:
+        found = right_now_list.rows(now)
+    except Exception:
+        logger.exception("today: building the Right now list failed")
+        return []
+    return [
+        RightNowRow(
+            key=r.key, kind=r.kind,  # type: ignore[arg-type]
+            who=r.who, subject=r.subject, at=r.at, note=r.note,
+            source=_point_source(r.source),
+        )
+        for r in found
+    ]
+
+
+class DismissRowRequest(BaseModel):
+    """A Right now row to clear, by the ``key`` ``GET /today`` served it with."""
+
+    key: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/today/right-now/dismiss", tags=["today"])
+async def dismiss_right_now_row(body: DismissRowRequest, request: Request) -> dict[str, bool]:
+    """The principal dismissed a row of their Right now list: ``GET /today``
+    leaves it out until something newer lands on it (a later email in the
+    thread, a later ask). Anyone else has no list, so nothing to dismiss."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+    from openexecutive.briefing import right_now_list
+
+    if not _is_principal(_resolve_caller_person_id(request)):
+        return {"dismissed": False}
+    return {"dismissed": right_now_list.dismiss(body.key)}
 
 
 @router.post("/today/seen", tags=["today"])
