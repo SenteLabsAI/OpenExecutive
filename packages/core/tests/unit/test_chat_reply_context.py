@@ -81,6 +81,11 @@ def test_google_chat_app_id_comes_from_a_bot_mention() -> None:
     ]}
     assert reply_context.google_chat_app_id(message) == "users/77"
     assert reply_context.google_chat_app_id({}) == ""
+    two_bots = {"annotations": [
+        *message["annotations"],
+        {"type": "USER_MENTION", "userMention": {"user": {"name": "users/88", "type": "BOT"}}},
+    ]}
+    assert reply_context.google_chat_app_id(two_bots) == ""
 
 
 def test_google_chat_webhook_labels_a_quote_of_the_app_in_a_dm(monkeypatch: pytest.MonkeyPatch) -> None:

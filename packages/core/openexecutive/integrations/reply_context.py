@@ -72,11 +72,14 @@ def google_chat(message: dict, own: str = "", *, two_party: bool = False) -> str
 
 
 def google_chat_app_id(message: dict) -> str:
-    """The Chat app's own ``users/{id}``, when ``message`` @mentions it: the
-    one bot a message delivered to this app can mention for it. "" else."""
+    """The Chat app's own ``users/{id}``, when ``message`` @mentions exactly
+    one app: a message delivered to this app that mentions one bot mentions
+    this one. "" when it mentions none, or several: then which is this app
+    isn't known."""
+    bots = set()
     for annotation in message.get("annotations") or []:
         mention = annotation.get("userMention") if isinstance(annotation, dict) else None
         user = mention.get("user") if isinstance(mention, dict) else None
         if isinstance(user, dict) and user.get("type") == "BOT" and str(user.get("name") or "").startswith("users/"):
-            return str(user["name"])
-    return ""
+            bots.add(str(user["name"]))
+    return bots.pop() if len(bots) == 1 else ""
