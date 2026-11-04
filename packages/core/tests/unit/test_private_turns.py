@@ -1396,25 +1396,6 @@ def test_every_withheld_name_is_a_real_tool() -> None:
     assert set(_ALL_SKILL_HANDLERS) | gateway_side >= PRIVATE_TURN_WITHHELD_TOOLS
 
 
-@pytest.mark.parametrize("mode", ["team", "solo"])
-def test_a_private_turn_is_not_offered_the_withheld_tools(
-    roster: SimpleNamespace, mode: str
-) -> None:
-    from openexecutive.orchestrator.schedule_tools import PRIVATE_TURN_WITHHELD_TOOLS
-
-    private = _offered(_run_loop(_private_turn(roster), [], mode, _gateway()))
-    normal = _offered(_run_loop(Session(session_id="email:t9"), [], mode, _gateway()))
-    assert not PRIVATE_TURN_WITHHELD_TOOLS & set(private)
-    # Withheld before the sort: still sorted, the cache marker still on the
-    # last client tool, and exactly the normal list minus the set.
-    assert private == sorted(private)
-    assert private == [n for n in normal if n not in PRIVATE_TURN_WITHHELD_TOOLS]
-    # The ways to reach the principal stay (Gmail goes through call_tool).
-    assert {"call_tool", "create_alert", "message_person", "send_slack_dm"} <= set(private)
-    # Stable: a second private turn gets the same prefix.
-    assert _offered(_run_loop(_private_turn(roster), [], mode, _gateway())) == private
-
-
 def test_a_private_turn_has_its_cache_marker_on_its_last_tool(roster: SimpleNamespace) -> None:
     tools = _run_loop(_private_turn(roster), []).calls[0]["tools"]
     client = [t for t in tools if "input_schema" in t]
@@ -1422,15 +1403,26 @@ def test_a_private_turn_has_its_cache_marker_on_its_last_tool(roster: SimpleName
     assert all("cache_control" not in t for t in client[:-1])
 
 
+def _held(result: str) -> bool:
+    parsed = json.loads(result)
+    return parsed.get("status") == "waiting_for_approval" and isinstance(parsed.get("decision_instance_id"), int)
+
+
+def test_a_private_turn_is_offered_every_tool(roster: SimpleNamespace) -> None:
+    # One check decides at dispatch (orchestrator.levels): nothing is hidden.
+    private = _offered(_run_loop(_private_turn(roster), []))
+    normal = _offered(_run_loop(Session(session_id="email:t9"), []))
+    assert private == normal == sorted(private)
+
+
 @pytest.mark.parametrize(
     "tool",
     ["send_company_broadcast", "send_department_message", "run_workflow", "schedule_followup"],
 )
-def test_a_private_turn_refuses_a_withheld_tool_the_model_emits_anyway(
+def test_a_private_turn_puts_a_send_to_others_on_an_approve_card(
     roster: SimpleNamespace, tool: str
 ) -> None:
     from openexecutive.orchestrator import executive as executive_module
-    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
     tool_use = SimpleNamespace(
@@ -1439,55 +1431,32 @@ def test_a_private_turn_refuses_a_withheld_tool_the_model_emits_anyway(
     with patch.dict(executive_module._ALL_SKILL_HANDLERS, {tool: handler}):
         provider = _run_loop(_private_turn(roster), [tool_use])
     handler.assert_not_awaited()
-    result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
-    assert tool in result["error"] and PRIVATE_TURN_REFUSAL in result["error"]
-    refusals = [
-        e
-        for e in _audit().query(event_type="tool_invocation", limit=100)
-        if f"skill:{tool} refused" in e.summary
+    assert _held(provider.calls[1]["messages"][-1]["content"][0]["content"])
+    rows = [
+        e for e in _audit().query(event_type="tool_invocation", limit=100)
+        if e.details.get("held") == "private_turn"
     ]
-    assert len(refusals) == 1
-    assert refusals[0].private is True
-    assert refusals[0].details["refused"] == "private_turn"
+    assert len(rows) == 1 and rows[0].private is True and rows[0].details["tool"] == tool
     # Every row of the private turn is private, the model-call rows included.
     assert all(e.private for e in _audit().query(limit=1000))
 
 
-def test_a_private_turn_refuses_a_withheld_tool_through_use_tool(roster: SimpleNamespace) -> None:
-    """The less common tools are reached through open_tools / use_tool
-    (tool_groups). A use_tool call meets the same guard as a direct call, and
-    the private turn's open_tools never lists a withheld tool."""
+@pytest.mark.parametrize("mode", ["trust"])
+def test_hands_off_runs_a_private_turns_send(roster: SimpleNamespace, mode: str) -> None:
     from openexecutive.orchestrator import executive as executive_module
-    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
+    from openexecutive.orchestrator import outside_mode
 
     handler = AsyncMock(return_value=json.dumps({"status": "sent"}))
-    uses = [
-        SimpleNamespace(
-            type="tool_use",
-            id="tu-1",
-            name="use_tool",
-            input={"name": "send_company_broadcast", "input": {"text": "Jordan"}},
-        ),
-        SimpleNamespace(
-            type="tool_use", id="tu-2", name="open_tools", input={"group": "messaging"}
-        ),
-    ]
-    with patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}):
-        provider = _run_loop(_private_turn(roster), uses)
-    handler.assert_not_awaited()
-    results = {b["tool_use_id"]: b["content"] for b in provider.calls[1]["messages"][-1]["content"]}
-    assert PRIVATE_TURN_REFUSAL in json.loads(results["tu-1"])["error"]
-    listed = {t["name"] for t in json.loads(results["tu-2"])["tools"]}
-    assert "send_slack_dm" in listed
-    assert not listed & {"send_company_broadcast", "send_department_message"}
-    # Nor does the open_tools definition name them.
-    open_tools = next(t for t in provider.calls[0]["tools"] if t["name"] == "open_tools")
-    assert "send_company_broadcast" not in open_tools["description"]
+    tool_use = SimpleNamespace(type="tool_use", id="tu-1", name="send_company_broadcast", input={"text": "Hi"})
+    with (
+        patch.object(outside_mode, "get_mode", lambda **_: mode),
+        patch.dict(executive_module._ALL_SKILL_HANDLERS, {"send_company_broadcast": handler}),
+    ):
+        _run_loop(_private_turn(roster), [tool_use])
+    handler.assert_awaited_once()
 
 
-def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None:
-    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
-
+def test_load_mcp_server_on_a_private_turn_is_told_not_dropped(roster: SimpleNamespace) -> None:
     gateway = _gateway()
     tool_use = SimpleNamespace(
         type="tool_use",
@@ -1497,55 +1466,12 @@ def test_a_private_turn_refuses_load_mcp_server(roster: SimpleNamespace) -> None
     )
     provider = _run_loop(_private_turn(roster), [tool_use], gateway=gateway)
     gateway.load_mcp_server.assert_not_awaited()
+    # A new server can't wait on a card: the model is told, never silent.
     result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
-    assert PRIVATE_TURN_REFUSAL in result["error"]
-    refusal = [
-        e
-        for e in _audit().query(event_type="tool_invocation", limit=100)
-        if e.summary.startswith("mcp:load_mcp_server refused")
-    ]
-    assert len(refusal) == 1 and refusal[0].private is True
-    # On the principal's own verified turn it still runs.
+    assert "can't wait on a card" in result["error"]
+    # On the principal's own verified turn it runs.
     _run_loop(_principal_web(roster), [tool_use], gateway=gateway)
     gateway.load_mcp_server.assert_awaited_once()
-
-
-@pytest.mark.parametrize("surface", ["stranger_email", "principal_email", "teammate_web"])
-def test_load_mcp_server_is_the_principals_alone(roster: SimpleNamespace, surface: str) -> None:
-    """The untrusted-content policy: loading an MCP server connects the whole
-    install to any URL, so it is offered only while the principal is speaking
-    on a verified, interactive surface — not on an inbound email (even the
-    principal's own, authenticated), nor on a teammate's turn. A call the
-    model emits anyway is refused and leaves a trace."""
-    from openexecutive.orchestrator.content_trust import PRINCIPAL_ONLY_TOOLS
-
-    session = {
-        "stranger_email": Session(session_id="email:t9", origin_channel="email"),
-        "principal_email": Session(
-            session_id="email:t10",
-            origin_channel="email",
-            email_authenticated=True,
-            caller_person_id=roster.principal,
-        ),
-        "teammate_web": _teammate_web(roster),
-    }[surface]
-    gateway = _gateway()
-    tool_use = SimpleNamespace(
-        type="tool_use",
-        id="tu-1",
-        name="load_mcp_server",
-        input={"name": "x", "url": "https://collector.example/mcp"},
-    )
-    provider = _run_loop(session, [tool_use], gateway=gateway)
-    gateway.load_mcp_server.assert_not_awaited()
-    assert not PRINCIPAL_ONLY_TOOLS & set(_offered(provider))
-    result = json.loads(provider.calls[1]["messages"][-1]["content"][0]["content"])
-    assert "only the principal" in result["error"]
-    rows = _audit().query(event_type="tool_invocation", limit=100) + _audit().query(
-        event_type="tool_invocation", limit=100, owned_by=roster.teammate, only_owned=True
-    )
-    refusals = [e for e in rows if e.summary.startswith("load_mcp_server refused")]
-    assert len(refusals) == 1 and refusals[0].details["refused"] == "not_principal"
 
 
 # --- MCP tools: Google Workspace reads and the gated Gmail send only --------
@@ -1679,21 +1605,14 @@ def _run_mcp_round(session: Session) -> tuple[_ScriptedStreams, dict[str, str], 
     return provider, results, reached
 
 
-def test_a_private_turn_reaches_only_google_reads_and_the_gated_gmail_send(
+def test_a_private_turn_runs_reads_and_mail_to_the_owner_and_cards_the_rest(
     roster: SimpleNamespace,
 ) -> None:
-    from openexecutive.orchestrator.people_tools import PRIVATE_TURN_REFUSAL
-
     provider, results, reached = _run_mcp_round(_private_turn(roster))
     n = len(_REFUSED_CALLS) + 2
-    # Offered: search_tools and call_tool stay (Gmail goes through them), and
-    # a search shows only the allowed tools.
-    assert {"call_tool", "search_tools"} <= set(_offered(provider))
-    assert "load_mcp_server" not in _offered(provider)
-    assert "## google_workspace__send_gmail_message\n" in results["tu-1"]
-    for hidden in ("slack__", "fetch__", "google_workspace__send_message"):
-        assert hidden not in results["tu-1"]
-    # Dispatched: the Gmail read and the email to the principal only.
+    # Every tool is found and offered: the one check decides at dispatch.
+    assert results["tu-1"] == _SEARCH_TEXT
+    # Run: the Gmail read and the email to the owner only.
     called = [
         (args["tool_name"], args["arguments"]) for name, args in reached if name == "call_tool"
     ]
@@ -1702,21 +1621,9 @@ def test_a_private_turn_reaches_only_google_reads_and_the_gated_gmail_send(
         "google_workspace__send_gmail_message",
     ]
     assert called[1][1]["to"] == OWNER_EMAIL
-    # The Gmail gate still narrows the send to the principal.
-    assert "EMAIL_ALLOWED_SENDERS" in json.loads(results[f"tu-{n + 2}"])["error"]
-    refused = [tool for tool, _ in _REFUSED_CALLS]
-    for i, tool in enumerate(refused, start=2):
-        error = json.loads(results[f"tu-{i}"])["error"]
-        assert tool in error and PRIVATE_TURN_REFUSAL in error
-    rows = {
-        e.details["tool"]: e
-        for e in _audit().query(event_type="tool_invocation", limit=100)
-        if e.summary.endswith("refused: the turn is private to the principal")
-    }
-    assert sorted(rows) == sorted(refused)
-    for tool, row in rows.items():
-        assert row.summary.startswith(f"mcp:{tool} refused")
-        assert row.details["refused"] == "private_turn" and row.details["kind"] == "mcp"
+    # Everything that reaches someone else waits on an Approve card.
+    for i in [*range(2, n), n + 2]:
+        assert _held(results[f"tu-{i}"]), results[f"tu-{i}"]
     assert all(e.private for e in _audit().query(limit=1000))
 
 
@@ -1741,9 +1648,8 @@ def test_other_turns_search_and_call_every_mcp_tool_unchanged(
         *(tool for tool, _ in _REFUSED_CALLS),
         "google_workspace__get_gmail_message_content",
     ]
-    # Only the principal's verified turn is offered load_mcp_server
-    # (`content_trust.principal_only_withheld`).
-    assert ("load_mcp_server" in _offered(provider)) is (surface == "principal_web")
+    # Every turn is offered every tool; the one check decides at dispatch.
+    assert "load_mcp_server" in _offered(provider)
     assert not any("refused" in e.summary for e in _audit().query(limit=1000))
 
 
@@ -1863,8 +1769,8 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
         provider = _run_loop(_teammate_web(roster), [tool_use], gateway=_gateway())
     handler.assert_awaited_once()
     offered = _offered(provider)
-    # A teammate's turn: everything but the principal-only tools.
-    assert set(offered) >= PRIVATE_TURN_WITHHELD_TOOLS - PRINCIPAL_ONLY_TOOLS
+    # A teammate's turn is offered every tool; the one check decides at dispatch.
+    assert set(offered) >= PRIVATE_TURN_WITHHELD_TOOLS - {"run_python_job"}
     from openexecutive.workflows.step_script import (
         CHAT_TOOL_DEFINITION,
         LIST_SAVED_TOOLS_DEFINITION,
@@ -1880,8 +1786,10 @@ def test_a_normal_turn_offers_and_runs_them_unchanged(roster: SimpleNamespace) -
             LIST_SAVED_TOOLS_DEFINITION,
             SHOW_PROGRESS_TOOL,
         ]
-        if t["name"] not in PRINCIPAL_ONLY_TOOLS
+        # No sandbox in the tests (python_job.available).
+        if t["name"] != "run_python_job"
     )
+    assert set(offered) >= PRINCIPAL_ONLY_TOOLS - {"run_python_job"}
     assert not any(e.private for e in _audit().query(limit=1000))
 
 

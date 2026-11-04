@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import NextTimeTick from "@/components/NextTimeTick";
 import ChatAppActionCard from "@/components/ChatAppActionCard";
+import ChatHeldActionCard from "@/components/ChatHeldActionCard";
 import ChatMeetingCard from "@/components/ChatMeetingCard";
 import FeatureName from "@/components/FeatureName";
 import {
@@ -240,6 +241,7 @@ export function ChatActionCards({ ids }: { ids: number[] }) {
         <div key={id}>
           <ChatMeetingCard id={id} />
           <ChatAppActionCard id={id} />
+          <ChatHeldActionCard id={id} />
         </div>
       ))}
     </div>

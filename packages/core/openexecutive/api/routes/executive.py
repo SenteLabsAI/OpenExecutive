@@ -144,12 +144,9 @@ class OutsideContentIn(BaseModel):
 def _outside_out(*, can_change: bool) -> OutsideContentOut:
     from openexecutive.orchestrator import outside_mode
 
-    return OutsideContentOut(
-        mode=outside_mode.get_mode(),
-        channels=outside_mode.stored_channels(),
-        channel_ids=list(outside_mode.CHANNELS),
-        can_change=can_change,
-    )
+    # One level drives every channel (orchestrator.levels): no channel is
+    # set apart any more, so none is offered.
+    return OutsideContentOut(mode=outside_mode.get_mode(), channels={}, channel_ids=[], can_change=can_change)
 
 
 def _is_principal(request: Request) -> bool:
@@ -174,13 +171,15 @@ def set_outside_content(request: Request, body: OutsideContentIn) -> OutsideCont
 
     if not _is_principal(request):
         raise HTTPException(status_code=403, detail="Only the account owner can change this.")
-    unknown = sorted(set(body.channels or {}) - set(outside_mode.CHANNELS))
-    if unknown:
-        raise HTTPException(status_code=422, detail=f"Unknown channel: {', '.join(unknown)}")
+    if any(value is not None for value in (body.channels or {}).values()):
+        raise HTTPException(status_code=422, detail="One level applies to every channel.")
     before = outside_mode.get_mode()
     before_channels = outside_mode.stored_channels()
     actor = api_caller.actor(request)
-    outside_mode.set_mode(body.mode, updated_by=actor, channels=dict(body.channels or {}))
+    # Setting the level clears any channel an older version set apart.
+    outside_mode.set_mode(
+        body.mode, updated_by=actor, channels=dict.fromkeys(before_channels),
+    )
     after_channels = outside_mode.stored_channels()
     if before != body.mode or before_channels != after_channels:
         from openexecutive.audit import log_event as audit_log

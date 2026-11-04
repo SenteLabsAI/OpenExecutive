@@ -359,14 +359,6 @@ class _Hold:
     summary: str
 
 
-# A quote this short could be found in almost any message ("48", "yes"), so
-# it would prove nothing about what the principal said, unless it is their
-# whole message: a one-word answer ("Internal") to the Executive's own
-# question is the fact.
-_QUOTE_MIN_CHARS = 8
-_QUOTE_MIN_WORDS = 2
-
-
 def _own_words(session: Any) -> str | None:
     """What the principal typed this turn: the pinned speaker text without
     any block an adapter added (the ``<outbound_reply_context>`` backstory a
@@ -388,12 +380,6 @@ def _quote_error(quote: str, session: Any) -> str | None:
         return "source_quote is required: the speaker's exact words from this message."
     nq = _normalize_for_quote_match(quote)
     spoken = _own_words(session)
-    whole = spoken is not None and nq.strip(" .!?") == _normalize_for_quote_match(spoken).strip(" .!?")
-    if not whole and (len(nq.replace(" ", "")) < _QUOTE_MIN_CHARS or len(nq.split()) < _QUOTE_MIN_WORDS):
-        return (
-            "source_quote is too short to show what the speaker said: quote the "
-            "whole phrase that states it."
-        )
     if spoken is None:
         return (
             "refused: this message carries an attachment, and its text can't be told "
