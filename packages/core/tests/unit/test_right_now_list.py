@@ -63,7 +63,7 @@ def test_only_mail_that_needs_them_and_no_card_shows(monkeypatch: pytest.MonkeyP
     _note("m4", at, thread="t4", subject="Rent roll")  # the watcher failed
     _note("m5", NOW - timedelta(minutes=5), thread="t5", subject="Quick q")  # failed just now
     _note("m6", at, thread="t6", subject="Not looked at yet")
-    _note("m7", at, thread="t2", subject="Lease terms", card_id=12)  # came after the card
+    _note("m7", at + timedelta(minutes=5), thread="t2", subject="Lease terms", card_id=12)  # came after the card
     _note("m8", at, thread="t8", relation="stranger", subject="Webinar")
     monkeypatch.setattr(inbox, "outcomes", lambda pid, ids: {
         "m1": inbox.NOT_NEEDED, "m2": inbox.DRAFTED, "m3": inbox.SENT,
@@ -72,12 +72,11 @@ def test_only_mail_that_needs_them_and_no_card_shows(monkeypatch: pytest.MonkeyP
 
     rows = right_now_list.rows(NOW)
 
-    assert sorted(r.key for r in rows) == ["mail:t2", "mail:t4"]
-    by_key = {r.key: r for r in rows}
-    assert by_key["mail:t4"].note == "I couldn't draft a reply to this one"
-    assert by_key["mail:t4"].who == "Sam Ortiz"
-    assert by_key["mail:t4"].source == {"kind": "mail", "message_id": "m4", "thread_id": "t4"}
-    assert by_key["mail:t2"].note == "Wrote again after your reply card was drafted"
+    # Mail on a reply card's thread is Needs you's, even a newer email on it.
+    assert [r.key for r in rows] == ["mail:t4"]
+    assert rows[0].note == "I couldn't draft a reply to this one"
+    assert rows[0].who == "Sam Ortiz"
+    assert rows[0].source == {"kind": "mail", "message_id": "m4", "thread_id": "t4"}
 
 
 def test_mail_they_wrote_back_to_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,8 +12,8 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 
 // Right now: a plain list at the top of Home of what is waiting on the
 // owner that Needs you doesn't already show (GET /today `right_now`): mail
-// the Executive couldn't draft a reply to, or that came after a reply card
-// was written; drafts still in their own mailbox; chat messages asking them
+// the Executive couldn't draft a reply to (never a conversation with a reply
+// card in Needs you); drafts still in their own mailbox; chat messages asking them
 // something. Built from the records on every load, never written by a
 // model, so a row reads the same each time. An email row has View email and
 // Reply (GET /delegation/mail, POST /delegation/mail/reply), a chat row

@@ -7,10 +7,10 @@ The rows:
 
 - ``mail``: an email from someone they deal with that the inbox watcher
   could not handle (it failed, or hit its daily limit) and that they have not
-  answered since, or a newer email on a thread whose reply card is still
-  open (the card's draft was written before it). Mail that needs nothing
-  (thanks, FYI), mail the Executive answered, and mail with a reply card
-  (Needs you shows the card) are left out. One row per thread, its newest.
+  answered since. Mail that needs nothing (thanks, FYI), mail the Executive
+  answered, and any thread with a reply card (Needs you shows the card, and
+  its Send warns when the thread moved on) are left out, so nothing is in
+  both. One row per thread, its newest.
 - ``draft``: a draft the Executive saved in their own mailbox from a chat
   that is still unsent (one addressed only to themselves is left out).
 - ``chat``: a team chat message asking them something, unanswered.
@@ -22,6 +22,7 @@ midnight. Private to the principal; every read here never raises.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -80,10 +81,13 @@ def initialize_db() -> None:
 
 def _dismissed() -> dict[str, datetime]:
     """``key`` → the newest activity the reader had seen when they dismissed it."""
+    if not narrative_cache._resolve_db_path(None).exists():
+        return {}  # a read must not create the database
     try:
-        initialize_db()
         with narrative_cache._get_conn() as conn:
             rows = conn.execute(f"SELECT item_key, at FROM {TABLE}").fetchall()  # noqa: S608 — constant table name
+    except sqlite3.OperationalError:
+        return {}  # nothing dismissed yet: the table comes with the first dismissal
     except Exception:
         logger.exception("right_now_list: reading dismissals failed")
         return {}
@@ -201,14 +205,13 @@ def _mail_rows(principal: Any, since: datetime, now: datetime) -> list[Row]:
             continue
         if str(d.get("relation") or "") not in _INBOX_KNOWN or str(d.get("reason") or "") in _INBOX_NOISE:
             continue
-        if d.get("card_id") is not None and outcome != watcher.DRAFTED:
-            note = "Wrote again after your reply card was drafted"
-        elif outcome in (watcher.FAILED, watcher.RETRY) and now - arrived >= _FAILED_SETTLE:
-            note = "I couldn't draft a reply to this one"
-        else:
-            # Needs nothing, answered for them, on a card in Needs you, or
+        if d.get("card_id") is not None or not (
+            outcome in (watcher.FAILED, watcher.RETRY) and now - arrived >= _FAILED_SETTLE
+        ):
+            # On a card in Needs you, needs nothing, answered for them, or
             # not looked at yet.
             continue
+        note = "I couldn't draft a reply to this one"
         name = _one_line(d.get("from_name"), 60)
         out.append(Row(
             key=f"mail:{d['_thread']}",
