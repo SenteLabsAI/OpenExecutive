@@ -396,11 +396,10 @@ def _thread_root_context(
     root = thread_replies[0]
     if not isinstance(root, dict) or str(root.get("ts") or "") == str(event.get("ts") or ""):
         return ""
-    author = str(root.get("user") or root.get("bot_id") or "")
-    by_executive = bool(bot_user_id) and str(root.get("user") or "") == bot_user_id
-    if not by_executive and root.get("bot_id") and not root.get("user"):
-        # A message the app posted through chat.postMessage carries only its bot id.
-        by_executive = True
+    # Only a post by this bot's own user is the Executive's: another app's
+    # post (a bot id with no user) is just "an earlier message".
+    author = str(root.get("user") or "")
+    by_executive = bool(bot_user_id) and author == bot_user_id
     writer = reply_context.whose(
         by_executive=by_executive,
         by_sender=bool(author) and author == str(event.get("user") or ""),

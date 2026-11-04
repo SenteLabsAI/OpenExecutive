@@ -41,9 +41,11 @@ def test_slack_thread_start_itself_or_no_thread_quotes_nothing() -> None:
     assert _thread_root_context([{"ts": "1.0", "user": "U", "text": "hi"}], {"ts": "1.0"}, "UBOT") == ""
 
 
-def test_slack_app_post_without_a_user_is_the_executives() -> None:
-    replies = [{"ts": "1.0", "bot_id": "B1", "text": "Your brief"}, {"ts": "2.0", "user": "U"}]
-    assert "your earlier message" in _thread_root_context(replies, {"ts": "2.0", "user": "U"}, None)
+def test_slack_another_apps_post_is_not_the_executives() -> None:
+    replies = [{"ts": "1.0", "bot_id": "B1", "text": "Build passed"}, {"ts": "2.0", "user": "U"}]
+    assert _thread_root_context(replies, {"ts": "2.0", "user": "U"}, "UBOT") == (
+        "(Replying to an earlier message:)\n> Build passed"
+    )
 
 
 # --------------------------------------------------------------------- Google Chat
