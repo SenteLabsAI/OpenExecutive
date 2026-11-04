@@ -515,7 +515,7 @@ def test_approvals_one_request_held_share_a_group_key(
     db = tmp_path / "groups.db"
     _setup_isolated_db(db, monkeypatch)
 
-    def held(session: str | None, tool: str, n: int) -> int:
+    def held(session: str | None, tool: str, n: int, to: int = 5) -> int:
         decision_id = decision_ledger.create_decision_instance(
             decision_class="department_action", department="ops",
             originating_session_id=session,
@@ -530,7 +530,7 @@ def test_approvals_one_request_held_share_a_group_key(
             headline=f"Waiting for your OK: save file-{n}",
             body="...",
             topic_tags=[f"decision_instance:{decision_id}", "decision_class:department_action"],
-            routed_to_person_id=5,
+            routed_to_person_id=to,
             db_path=db,
         )
         return decision_id
@@ -538,6 +538,7 @@ def test_approvals_one_request_held_share_a_group_key(
     for n in range(3):
         held("chat-1", "drive_save", n)
     held("chat-1", "send_email", 3)
+    held("chat-1", "drive_save", 8, to=6)  # same request, waiting on someone else
     held("chat-2", "drive_save", 4)
     held(None, "drive_save", 5)
     answered = held("chat-3", "drive_save", 6)
@@ -549,7 +550,7 @@ def test_approvals_one_request_held_share_a_group_key(
     group = {by_name["0"], by_name["1"], by_name["2"]}
     assert len(group) == 1 and None not in group
     assert by_name["3"] is None and by_name["4"] is None and by_name["5"] is None
-    assert by_name["7"] is None
+    assert by_name["7"] is None and by_name["8"] is None
     # The key says nothing about the conversation it came from.
     assert "chat-1" not in next(iter(group))
 

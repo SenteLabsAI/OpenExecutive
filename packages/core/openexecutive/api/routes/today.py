@@ -395,7 +395,7 @@ def _watch_trust_by_slug(alerts: list[Any]) -> dict[str, float]:
 def _group_requests(items: list[ProposalItem]) -> None:
     """Give the approvals one request held together the same ``group_key``:
     open decision-backed cards from the same conversation for the same kind
-    of step (the tool, or the decision class). A key only two or more cards
+    of step (the tool, or the decision class), waiting on the same person. A key only two or more cards
     share is set; the rest stay None. Never raises."""
     import hashlib
 
@@ -425,7 +425,9 @@ def _group_requests(items: list[ProposalItem]) -> None:
         except ValueError:
             payload = {}
         step = str(payload.get("tool") or "") if isinstance(payload, dict) else ""
-        raw = "|".join((inst.originating_session_id, inst.decision_class, step))
+        raw = "|".join((
+            inst.originating_session_id, inst.decision_class, step, str(p.routed_to_person_id),
+        ))
         keys[p.alert_id] = hashlib.sha256(raw.encode()).hexdigest()[:16]
     counts: dict[str, int] = {}
     for key in keys.values():
