@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chipSummary, groupActions, opensDetails } from "../src/lib/actionChips.ts";
+import { chipSummary, dropReplaced, groupActions, opensDetails } from "../src/lib/actionChips.ts";
 
 const drive = (target) => ({
   tool: "google_workspace__search_drive_files",
@@ -63,4 +63,17 @@ test("a repeat with nothing to list stays a plain chip with its count", () => {
   const [bare] = groupActions([drive(null), drive(null), drive(null)]);
   assert.equal(bare.runs.length, 3);
   assert.equal(opensDetails(bare), false);
+});
+
+test("a draft written again in the same reply drops the earlier draft's chip", () => {
+  const draft = (row, replaces) => ({
+    tool: "ghostwrite_email",
+    summary: "Drafted an email as you to kyle@example.com — in your Drafts",
+    draft: { row, to: ["kyle@example.com"], cc: [], subject: "Roofs", preview: "Hi", ...(replaces ? { replaces } : {}) },
+  });
+  const kept = dropReplaced([draft(68), drive('"roofs"'), draft(69, [68])]);
+  assert.deepEqual(kept.map((a) => a.draft?.row ?? a.tool), ["google_workspace__search_drive_files", 69]);
+  // Nothing replaced: the same list back.
+  const plain = [draft(70), draft(71)];
+  assert.equal(dropReplaced(plain), plain);
 });

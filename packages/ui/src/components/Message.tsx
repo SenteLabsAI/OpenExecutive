@@ -8,7 +8,7 @@ import AnswerSourcesFooter from "@/components/AnswerSourcesFooter";
 import BrandMark from "@/components/BrandMark";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
-import { groupActions, opensDetails, type ChipGroup } from "@/lib/actionChips";
+import { dropReplaced, groupActions, opensDetails, type ChipGroup } from "@/lib/actionChips";
 import { loadsInline } from "@/lib/markdownImages";
 import { isMailboxLink } from "@/lib/replyCards";
 import { hostOf } from "@/lib/url";
@@ -286,7 +286,7 @@ export default function Message({
   );
   // Emails written as you (Act as me), shown under it with Send.
   const chatDrafts = useMemo(
-    () => (actions ?? []).flatMap((a) => (a.draft && typeof a.draft.row === "number" ? [a.draft] : [])),
+    () => dropReplaced(actions ?? []).flatMap((a) => (a.draft && typeof a.draft.row === "number" ? [a.draft] : [])),
     [actions],
   );
   if (role === "user" && author && !author.mine) {
@@ -368,7 +368,7 @@ export default function Message({
 
         {status && <div className="mt-3">{status}</div>}
 
-        {actions && actions.length > 0 && <ActionChips actions={actions} />}
+        {actions && actions.length > 0 && <ActionChips actions={dropReplaced(actions)} />}
 
         {memory}
 

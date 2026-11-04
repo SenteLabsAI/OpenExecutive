@@ -54,6 +54,20 @@ Routes:
                                     conversation moved on, and
                                     ``draft_changed`` when it was edited in
                                     the mailbox
+  GET    /delegation/drafts/{id}  — that draft as its chat card shows it:
+                                    status open | changed | sent | replaced
+                                    | gone, and while open who it goes to,
+                                    its subject and words, read from their
+                                    mailbox (delegation.chat_draft_card)
+  PUT    /delegation/drafts/{id}/text — {text}: put the caller's own words
+                                    in it, in their Drafts too
+  POST   /delegation/drafts/{id}/change — {text}: what to change (their
+                                    words or a tone pill), rewritten like a
+                                    reply card's change (same limit);
+                                    returns the draft with changed_sentences
+                                    and a note. All three need a caller the
+                                    API knows is that person; the two writes never touch a draft
+                                    changed in the mailbox, and send nothing
   PUT    /delegation/replies/{id}/text — {text}: change a reply's words
   PUT    /delegation/replies/{id}/recipients — {everyone}: the sender only,
          or everyone the email went to
@@ -1207,6 +1221,67 @@ async def update_delegation_reply_text(request: Request, decision_id: int, body:
     if card is None:
         raise _refuse(404, "not_found", "That reply isn't waiting for you any more.")
     return ReplyCardOut(**{k: v for k, v in asdict(card).items() if k in ReplyCardOut.model_fields})
+
+
+class ChatDraftOut(BaseModel):
+    status: str
+    to: list[str] = []
+    cc: list[str] = []
+    subject: str = ""
+    body: str = ""
+    changed_sentences: list[str] = []
+    note: str = ""
+
+
+def _draft_refused(refused: Any) -> HTTPException:
+    return HTTPException(
+        status_code=refused.status, detail={"code": refused.code, "message": refused.message, **refused.extra},
+    )
+
+
+@router.get("/delegation/drafts/{row_id}", response_model=ChatDraftOut)
+async def get_chat_draft(request: Request, row_id: int) -> ChatDraftOut:
+    """A draft chat wrote as the caller, as its card shows it now
+    (``delegation.chat_draft_card.state``). Their own drafts only, for a
+    caller the API can tie to them (it reads their own mail)."""
+    from openexecutive.delegation.chat_draft_card import state
+    from openexecutive.delegation.reply_send import SendRefused
+
+    person = _caller(request)
+    try:
+        return ChatDraftOut(**await state(person, row_id, caller=api_caller.caller(request)))
+    except SendRefused as refused:
+        raise _draft_refused(refused) from None
+
+
+@router.put("/delegation/drafts/{row_id}/text", response_model=ChatDraftOut)
+async def update_chat_draft_text(request: Request, row_id: int, body: ReplyTextUpdate) -> ChatDraftOut:
+    """Put the caller's own words in a draft chat wrote as them, in their
+    Drafts too (``delegation.chat_draft_card.set_text``). Sends nothing."""
+    from openexecutive.delegation.chat_draft_card import set_text
+    from openexecutive.delegation.reply_send import SendRefused
+
+    person = _caller(request)
+    try:
+        return ChatDraftOut(**await set_text(person, row_id, body.text, caller=api_caller.caller(request)))
+    except SendRefused as refused:
+        raise _draft_refused(refused) from None
+
+
+@router.post("/delegation/drafts/{row_id}/change", response_model=ChatDraftOut)
+async def change_chat_draft(request: Request, row_id: int, body: ReplyChangeIn) -> ChatDraftOut:
+    """Rewrite a draft chat wrote as the caller the way they asked
+    (``delegation.chat_draft_card.change``), in their Drafts too. Sends
+    nothing."""
+    from openexecutive.delegation.chat_draft_card import change
+    from openexecutive.delegation.reply_send import SendRefused
+
+    person = _caller(request)
+    try:
+        saved, new, note = await change(person, row_id, body.text, caller=api_caller.caller(request))
+    except SendRefused as refused:
+        raise _draft_refused(refused) from None
+    return ChatDraftOut(**saved, changed_sentences=new, note=note)
 
 
 @router.post("/delegation/drafts/{row_id}/send", response_model=ChatDraftSentOut)

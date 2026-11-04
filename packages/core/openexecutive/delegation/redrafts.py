@@ -120,12 +120,13 @@ async def replace_earlier(
     to: list[str],
     subject: str = "",
     now: datetime | None = None,
+    retired: list[int] | None = None,
 ) -> int:
     """After the chat draft ``row_id`` was saved: retire ``person_id``'s
     earlier open chat drafts it replaces, the ones in the same thread and
     the ones written in the same conversation to any of the same people
     (``to``) about the same thing (``subject``). Returns how many were
-    deleted."""
+    deleted; ``retired`` collects the rows no longer waiting."""
     now = now or datetime.now(UTC)
     try:
         rows = drafts.open_chat_drafts(
@@ -148,9 +149,17 @@ async def replace_earlier(
         ):
             continue  # another email written in the same conversation
         try:
-            outcomes.append(await _retire(client, row, found, now))
+            outcome = await _retire(client, row, found, now)
         except Exception:
             logger.info("redrafts: couldn't retire draft row %s", row.id, exc_info=True)
+            continue
+        outcomes.append(outcome)
+        if outcome == "deleted":
+            # Only a draft this redraft took out reads as replaced: one
+            # already gone was sent or deleted by the person.
+            drafts.mark_replaced(row.id, row_id)
+        if retired is not None and outcome != "kept_edited":
+            retired.append(row.id)
     if outcomes:
         _audit(person_id, f"Replaced earlier drafts for person {person_id}", outcomes)
     return outcomes.count("deleted")
@@ -230,6 +239,7 @@ async def replace_named(
     row_id: int,
     words: str,
     now: datetime | None = None,
+    retired: list[int] | None = None,
 ) -> list[str]:
     """After the chat draft ``row_id`` was saved in place of an earlier one
     the person asked to replace: delete ``person_id``'s open chat drafts from
@@ -260,9 +270,17 @@ async def replace_named(
     outcomes: list[str] = []
     for row, found in named:
         try:
-            outcomes.append(await _retire(client, row, found, now))
+            outcome = await _retire(client, row, found, now)
         except Exception:
             logger.warning("redrafts: couldn't delete draft row %s", row.id, exc_info=True)
+            continue
+        outcomes.append(outcome)
+        if outcome == "deleted":
+            # Only a draft this redraft took out reads as replaced: one
+            # already gone was sent or deleted by the person.
+            drafts.mark_replaced(row.id, row_id)
+        if retired is not None and outcome != "kept_edited":
+            retired.append(row.id)
     if outcomes:
         _audit(person_id, f"Replaced {outcomes.count('deleted')} earlier draft(s) they named", outcomes)
     return outcomes

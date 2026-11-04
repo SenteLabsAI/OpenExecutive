@@ -85,6 +85,7 @@ _DDL: tuple[str, ...] = (
     # times only, never an address, a subject or text. gone_at: a chat draft
     # found missing from their Drafts (sent or deleted there). session_id:
     # the conversation a chat draft was written in (``delegation.redrafts``).
+    # replaced_by: the row of the newer chat draft that retired this one.
     f"CREATE TABLE IF NOT EXISTS {DRAFTS_TABLE} ("
     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  person_id INTEGER NOT NULL,"
@@ -95,7 +96,8 @@ _DDL: tuple[str, ...] = (
     "  sent_message_id TEXT,"
     "  created_at TEXT NOT NULL,"
     "  gone_at TEXT,"
-    "  session_id TEXT"
+    "  session_id TEXT,"
+    "  replaced_by INTEGER"
     ")",
     f"CREATE INDEX IF NOT EXISTS idx_{DRAFTS_TABLE}_person_created "
     f"ON {DRAFTS_TABLE}(person_id, created_at)",
@@ -342,6 +344,14 @@ def _add_draft_session_id(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _add_draft_replaced_by(conn: sqlite3.Connection) -> None:
+    """Give a drafts table made before ``replaced_by`` existed the column."""
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({DRAFTS_TABLE})")}
+    if "replaced_by" not in columns:
+        conn.execute(f"ALTER TABLE {DRAFTS_TABLE} ADD COLUMN replaced_by INTEGER")
+        conn.commit()
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the tables if missing. Idempotent."""
     for statement in _DDL:
@@ -350,4 +360,5 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _add_mailbox_drafts(conn)
     _add_draft_gone_at(conn)
     _add_draft_session_id(conn)
+    _add_draft_replaced_by(conn)
     _move_training_off_the_dial(conn)

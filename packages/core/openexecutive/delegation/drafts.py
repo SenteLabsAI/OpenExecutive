@@ -159,6 +159,7 @@ class DraftRow:
     sent_message_id: str
     created_at: str
     gone_at: str
+    replaced_by: int | None = None
 
 
 def get_row(row_id: int, *, db_path: Path | None = None) -> DraftRow | None:
@@ -167,7 +168,7 @@ def get_row(row_id: int, *, db_path: Path | None = None) -> DraftRow | None:
     try:
         row = conn.execute(
             "SELECT id, person_id, source, thread_id, draft_id, message_id, sent_message_id, "
-            f"created_at, gone_at FROM {DRAFTS_TABLE} WHERE id = ?",  # noqa: S608 — constant table name
+            f"created_at, gone_at, replaced_by FROM {DRAFTS_TABLE} WHERE id = ?",  # noqa: S608 — constant table name
             (row_id,),
         ).fetchone()
     finally:
@@ -178,6 +179,7 @@ def get_row(row_id: int, *, db_path: Path | None = None) -> DraftRow | None:
         id=int(row[0]), person_id=int(row[1]), source=str(row[2] or ""), thread_id=str(row[3] or ""),
         draft_id=str(row[4] or ""), message_id=str(row[5] or ""), sent_message_id=str(row[6] or ""),
         created_at=str(row[7] or ""), gone_at=str(row[8] or ""),
+        replaced_by=int(row[9]) if row[9] is not None else None,
     )
 
 
@@ -420,6 +422,38 @@ def latest_waiting(person_id: int, since: datetime, *, db_path: Path | None = No
     counted as waiting, or None."""
     waiting = _waiting(person_id, since, db_path)
     return waiting[0][0] if waiting else None
+
+
+def set_version(row_id: int, old: str, new: str, *, db_path: Path | None = None) -> bool:
+    """The chat draft ``row_id`` was rewritten from its card on the person's
+    tap: it is now the version ``new`` (Gmail's message id for the edited
+    draft, or Outlook's change key), so Send under the chat sends it. Only
+    while it is still ``old`` and waiting (compare-and-set); False otherwise."""
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET message_id = ? "  # noqa: S608 — constant table name
+            "WHERE id = ? AND message_id = ? AND gone_at IS NULL AND sent_message_id IS NULL",
+            (new, row_id, old),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_replaced(row_id: int, by: int, *, db_path: Path | None = None) -> None:
+    """The chat draft ``row_id`` was retired for the newer one ``by``: its
+    card folds to "replaced". Set once; a later redraft never moves it."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"UPDATE {DRAFTS_TABLE} SET replaced_by = ? WHERE id = ? AND replaced_by IS NULL",  # noqa: S608
+            (by, row_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def mark_gone(row_id: int, now: datetime, *, db_path: Path | None = None) -> None:

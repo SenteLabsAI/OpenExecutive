@@ -683,6 +683,7 @@ async def send_chat_draft(
 
 _DRAFT_GONE = "That draft isn't in your Drafts any more: it was sent or deleted there."
 _CHAT_SENDING: set[int] = set()
+_BEING_CHANGED = "This email is being changed right now. Look at it again, then send it."
 
 
 async def _send_chat_draft(
@@ -690,6 +691,7 @@ async def _send_chat_draft(
 ) -> str:
     from openexecutive.config import get_settings
     from openexecutive.delegation import drafts
+    from openexecutive.delegation.chat_draft_card import _CHANGING
     from openexecutive.delegation.gmail import (
         BLOCKING_CODES,
         STATUS_MESSAGES,
@@ -721,6 +723,8 @@ async def _send_chat_draft(
         raise SendRefused(409, "already_sent", "That email was already sent.")
     if row.gone_at or row_id in _CHAT_SENDING:
         raise SendRefused(409, "draft_gone", _DRAFT_GONE)
+    if row_id in _CHANGING:
+        raise SendRefused(409, "busy", _BEING_CHANGED)
     client = gmail if gmail is not None else gmail_for(email)
     status = await gmail_status(email, gmail=client)
     if status != "connected":
@@ -783,6 +787,9 @@ async def _send_chat_draft(
                 409, "confirm", _CONFIRM_TEXT["thread_moved_on"], reasons=["thread_moved_on"], recipients=recipients,
             )
 
+    if row.id in _CHANGING:
+        # Being rewritten on its card: Gmail would send whatever lands first.
+        raise SendRefused(409, "busy", _BEING_CHANGED)
     if row.id in _CHAT_SENDING or not drafts.claim_send(row.id, now):
         raise SendRefused(409, "already_handled", "This email is being sent already, or was sent.")
     _CHAT_SENDING.add(row.id)

@@ -659,15 +659,18 @@ async def _drafted(
     row_id = _record(writer.person.id, thread, draft, session_id)
     replaced = 0
     kept_edited = 0
+    retired: list[int] = []
     if row_id:
         replaced = await replace_earlier(
             writer.person.id, writer.mailbox, row_id=row_id,
             thread_id=thread.id if thread is not None else None, session_id=session_id, to=plan["to"],
-            subject=composed.subject,
+            subject=composed.subject, retired=retired,
         )
         named = str(plan.get("replaces") or "").strip()[:200]
         if named:
-            outcomes = await replace_named(writer.person.id, writer.mailbox, row_id=row_id, words=named)
+            outcomes = await replace_named(
+                writer.person.id, writer.mailbox, row_id=row_id, words=named, retired=retired,
+            )
             replaced += outcomes.count("deleted")
             kept_edited = outcomes.count("kept_edited")
     _audit(writer.person.id, f"Drafted an email as person {writer.person.id} in their own mailbox", {
@@ -689,6 +692,8 @@ async def _drafted(
         "draft_id": draft.draft_id,
         # The chat's Send button names the draft by this row (never the model).
         **({"draft_row": row_id} if row_id else {}),
+        # The earlier drafts' rows it replaced: the chat folds their cards.
+        **({"replaced_rows": retired} if retired else {}),
         # Earlier drafts of this email, deleted from their Drafts (unedited ones only).
         **({"replaced_earlier_drafts": replaced} if replaced else {}),
         # Named for replacing but edited in their mailbox since: theirs, kept.
