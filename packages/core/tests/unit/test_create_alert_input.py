@@ -74,3 +74,9 @@ def test_mail_from_one_sender_shares_one_card() -> None:
     assert keyed(SimpleNamespace(origin_channel="slack", email_from="")).dedup_hint == ""
     assert keyed(SimpleNamespace(origin_channel="email", email_from="")).dedup_hint == ""
     assert keyed(mail, raised_by="Dana").dedup_hint == ""
+    # Mail routed to one person keeps a card apart from the shared one.
+    routed = AlertEvent.model_validate({
+        "source": "email", "external_id": "m-2", "subject": "s", "body": "b", "user": "person:7",
+    })
+    _one_card_per_sender(routed, mail)
+    assert routed.dedup_hint == "email-from:casey@example.com:person:7"

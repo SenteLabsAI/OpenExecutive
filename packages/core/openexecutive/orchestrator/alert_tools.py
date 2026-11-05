@@ -144,13 +144,17 @@ def _one_card_per_sender(event: Any, session: Any) -> None:
     second card, so one approval answers them once. Keyed by the address
     the mail really came from (``Session.email_from``), never what the mail
     or the model says, and the same for every mail service. A card a team
-    member raised keeps its own key (the pipeline prefixes it)."""
+    member raised keeps its own key (the pipeline prefixes it). A card routed
+    to one person keys apart from the shared one, and a private card is kept
+    apart by the pipeline (``private:`` prefix)."""
     if getattr(session, "origin_channel", "") != "email" or event.raised_by:
         return
     sender = str(getattr(session, "email_from", "") or "").strip().lower()
     if not sender:
         return
-    event.dedup_hint = f"email-from:{sender}"
+    routed = str(getattr(event, "user", "") or "")
+    routed_part = f":{routed}" if routed.startswith("person:") else ""
+    event.dedup_hint = f"email-from:{sender}{routed_part}"
     event.follow_up = True
 
 
