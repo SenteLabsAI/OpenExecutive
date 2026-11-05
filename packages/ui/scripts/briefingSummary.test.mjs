@@ -5,6 +5,7 @@ import {
   briefingSummary,
   daysUntil,
   greeting,
+  homeSummary,
   proposalStatusChip,
 } from "../src/lib/briefingSummary.ts";
 
@@ -88,4 +89,13 @@ test("a collapsed card keeps one status chip: deadline, then stale, then age", (
   );
   assert.deepEqual(proposalStatusChip({ created_at: created }, now), { label: "2d old", tone: "neutral" });
   assert.equal(proposalStatusChip({ created_at: "" }, now), null);
+});
+
+test("Home's line counts only its two lists", () => {
+  assert.deepEqual(homeSummary(0, 0), []);
+  assert.deepEqual(
+    homeSummary(2, 3).map((p) => [p.text, p.target.kind]),
+    [["2 things need you", "needsYou"], ["I did 3 things for you today", "doneForYou"]],
+  );
+  assert.deepEqual(homeSummary(1, 1).map((p) => p.text), ["1 thing needs you", "I did 1 thing for you today"]);
 });

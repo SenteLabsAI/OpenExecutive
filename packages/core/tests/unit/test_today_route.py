@@ -2964,3 +2964,88 @@ def test_a_quiet_header_earlier_today_counts_for_right_now_pings() -> None:
     assert today_route._written_earlier_today(quiet) is True
     assert today_route._written_earlier_today(yesterday) is False
     assert today_route._written_earlier_today(None) is False
+
+
+# --------------------------------------------------------------------------- #
+# Done for you
+# --------------------------------------------------------------------------- #
+
+
+def test_an_approved_card_leaves_needs_you_and_is_one_row_in_done_for_you(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Home keeps every item in one place: a card the owner approved leaves
+    the proposals and shows once in Done for you, its status changing in
+    place, and a retry replaces the failed try instead of adding a row."""
+    from openexecutive.alerts import approvals
+
+    db = tmp_path / "done.db"
+    _setup_isolated_db(db, monkeypatch)
+    pid = people_store.upsert_person(
+        full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db,
+    )
+    alert_store.insert_alert(
+        source="system", external_id="a-1", severity="medium",
+        headline="Answer Casey about the lease", body="...", routed_to_person_id=pid, db_path=db,
+    )
+    alert_id = alert_store.list_alerts(db_path=db)[0].id
+    headers = {"x-caller-email": "jordan@example.com"}
+
+    first = approvals.claim(alert_id, approved_by_person_id=pid, db_path=db)
+    assert first is not None
+    body = _make_client().get("/today", headers=headers).json()
+    assert [p["alert_id"] for p in body["proposals"]] == []
+    rows = [r for r in body["done_for_you"] if r["kind"] == "approval"]
+    assert [(r["title"], r["status"]) for r in rows] == [("Answer Casey about the lease", "working")]
+
+    approvals.finish(first.id, approvals.STATUS_FAILED, "The mailbox was offline.", db_path=db)
+    retry = approvals.claim(alert_id, approved_by_person_id=pid, db_path=db)
+    assert retry is not None
+    approvals.set_session(retry.id, "s-42", db_path=db)
+    approvals.finish(retry.id, approvals.STATUS_DONE, db_path=db)
+
+    rows = [
+        r for r in _make_client().get("/today", headers=headers).json()["done_for_you"]
+        if r["kind"] == "approval"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "done"
+    assert rows[0]["session_id"] == "s-42"
+    assert rows[0]["approval_id"] == retry.id
+
+
+def test_done_for_you_leaves_out_what_is_not_done_for_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cards raised, advice and decisions noted from their own chats stay out
+    of Done for you; what it did on its own is in."""
+    db = tmp_path / "done_kinds.db"
+    _setup_isolated_db(db, monkeypatch)
+    now = datetime.now(UTC).isoformat()
+    monkeypatch.setattr(today_route, "_build_activity", lambda *a, **k: today_route.ActivityResponse(items=[
+        today_route.ActivityItem(kind="alert_raised", summary="Flagged a late invoice", actor="executive",
+                                 target=None, department=None, at=now),
+        today_route.ActivityItem(kind="advice_given", summary="Advised on pricing", actor="executive",
+                                 target=None, department=None, at=now),
+        today_route.ActivityItem(kind="workflow_done", summary="Wrote the weekly sales report",
+                                 actor="executive", target=None, department=None, at=now),
+    ]))
+    rows = _make_client().get("/today").json()["done_for_you"]
+    assert [r["title"] for r in rows] == ["Wrote the weekly sales report"]
+
+
+def test_held_back_page_lines_are_the_principals_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "held.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    people_store.upsert_person(full_name="Sam", email="sam@example.com", db_path=db)
+    item = today_route.HeldBackItem(event_id=1, surface="morning brief", at="2026-11-04T08:00:00+00:00",
+                                    lines=["Call Robin about the 4% raise"])
+    monkeypatch.setattr(today_route, "_held_back", lambda now: [item])
+
+    client = _make_client()
+    assert client.get("/today/held-back", headers={"x-caller-email": "jordan@example.com"}).json()[0][
+        "lines"] == ["Call Robin about the 4% raise"]
+    assert client.get("/today/held-back", headers={"x-caller-email": "sam@example.com"}).json() == []

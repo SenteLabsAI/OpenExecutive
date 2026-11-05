@@ -12,6 +12,8 @@ import MemoryList from "./MemorySection";
 import { HeartbeatCard, usePulseData } from "./PulseHeader";
 import { ComingUp, DoneForYou, FocusedScreen } from "./PulseOverview";
 import { ValueScreen } from "./ValueSection";
+import HeldBack from "@/components/briefing/HeldBack";
+import { getHeldBack, type HeldBackItem } from "@/lib/api";
 
 // The Memory page (it was Pulse): what the Executive knows and what it does.
 // Two tabs. What it knows: About you, About the company, What you taught it,
@@ -140,6 +142,7 @@ function Overview({ view, lastVisit }: { view: Tab; lastVisit: string | null }) 
         ) : (
           <>
             <HeartbeatCard pulse={pulse} />
+            <LeftOutOfBrief />
             <div className="grid gap-6 md:grid-cols-2">
               <ComingUp pulse={pulse} />
               <DoneForYou />
@@ -149,4 +152,19 @@ function Overview({ view, lastVisit }: { view: Tab; lastVisit: string | null }) 
       </div>
     </>
   );
+}
+
+/** "Left out of your brief": the lines grounding held back from the briefs
+ *  in the last day (the brief's note points here). Nothing when none were. */
+function LeftOutOfBrief() {
+  const [items, setItems] = useState<HeldBackItem[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    getHeldBack(controller.signal)
+      .then(setItems)
+      .catch(() => { /* nothing left out is better than a broken block */ });
+    return () => controller.abort();
+  }, []);
+  if (items.length === 0) return null;
+  return <HeldBack items={items} />;
 }

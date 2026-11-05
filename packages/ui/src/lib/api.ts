@@ -5541,6 +5541,22 @@ export interface PointSource {
 // One row of Home's Right now list: what it is, who it is from or to, its
 // subject, the newest activity on it (ISO UTC), why it is listed, and what
 // Home can open from it. `key` is what dismissRightNowRow takes.
+// One row of Home's Done for you (GET /today `done_for_you`): a card the
+// viewer approved (`kind` "approval", one row per card, its status changing
+// in place) or something the Executive did on its own in the last day.
+export interface DoneRow {
+  key: string;
+  kind: string;
+  title: string;
+  detail: string;
+  status: "working" | "done" | "failed";
+  at: string;
+  session_id?: string | null;
+  alert_id?: number | null;
+  approval_id?: number | null;
+  artifact_id?: string | null;
+}
+
 export interface RightNowRow {
   key: string;
   kind: "mail" | "draft" | "chat";
@@ -5599,6 +5615,8 @@ export interface Today {
   inbox_also?: string[];
   // The owner's Right now list (empty for anyone else, and from older API builds).
   right_now?: RightNowRow[];
+  // Done for you: what the Executive did or is doing for the viewer today.
+  done_for_you?: DoneRow[];
   inbox_also_total?: number;
   // The owner's own: today's delivered morning brief and the meetings still
   // ahead today.
@@ -5821,6 +5839,14 @@ export interface ActivityItem {
 
 export interface ActivityResponse {
   items: ActivityItem[];
+}
+
+// The lines grounding left out of the principal's briefs in the last day
+// (Memory, What it does). Anyone else gets an empty list.
+export async function getHeldBack(signal?: AbortSignal): Promise<HeldBackItem[]> {
+  const res = await fetch(`${API_BASE}/today/held-back`, { signal });
+  if (!res.ok) throw new Error(`Failed to load what was left out of your brief: ${res.status}`);
+  return res.json();
 }
 
 export async function getActivity(limit: number = 20): Promise<ActivityResponse> {
