@@ -284,6 +284,20 @@ def test_a_long_run_of_follow_ups_keeps_the_first_ask(db: Path) -> None:
     assert len(row.body) <= _FOLLOW_UP_MAX
 
 
+def test_the_newest_follow_up_shows_even_when_the_first_ask_is_long() -> None:
+    from openexecutive.alerts.store import _FOLLOW_UP_MAX, _with_follow_up
+
+    first = "Casey wants two drafts. " + "x" * 3960
+    out = _with_follow_up(first + "\n\nThen: an older note", "Are they ready?")
+    assert out.startswith("Casey wants two drafts.")
+    assert out.endswith("\n\nThen: Are they ready?")
+    assert "older note" not in out
+    assert len(out) <= _FOLLOW_UP_MAX
+
+    huge = _with_follow_up("y" * 5000, "z" * 5000)
+    assert huge.startswith("y") and huge.endswith("z") and len(huge) <= _FOLLOW_UP_MAX
+
+
 def test_coalesce_alert_ignores_closed_rows_and_requires_key(db: Path) -> None:
     aid = _insert(db, source="email", dedup_key="churn-acme")
     alert_store.set_status(aid, "ack", db_path=db)
