@@ -403,6 +403,35 @@ def test_pipeline_dedup_hint_overrides_model_key(monkeypatch, db: Path) -> None:
     assert row is not None and row.dedup_key == "watch:acme-news" and row.occurrence_count == 2
 
 
+@pytest.mark.parametrize("private", [False, True])
+def test_pipeline_a_follow_up_from_one_sender_joins_the_first_card(
+    monkeypatch, db: Path, private: bool,
+) -> None:
+    from openexecutive.alerts import pipeline
+
+    _count_dispatches(monkeypatch)
+
+    async def run():
+        ids = []
+        for n in ("1", "2"):
+            _stub_triage(monkeypatch, dedup_key=f"model-{n}")
+            _, aid = await pipeline.evaluate_and_dispatch(
+                AlertEvent(
+                    source="email", external_id=n, body="x", private=private,
+                    dedup_hint="email-from:casey@example.com", follow_up=True,
+                ),
+                db_path=db,
+            )
+            ids.append(aid)
+        return ids
+
+    first, second = asyncio.run(run())
+    assert first is not None and second is None
+    row = alert_store.get_alert(first, db_path=db)
+    assert row is not None and row.occurrence_count == 2
+    assert row.body == "body for 1\n\nThen: body for 2"
+
+
 def test_triage_text_naming_people_or_figures_not_in_the_event_is_dropped(
     monkeypatch, db: Path,
 ) -> None:

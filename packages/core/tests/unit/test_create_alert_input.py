@@ -49,3 +49,34 @@ def test_complete_input_still_schedules() -> None:
 
     assert out["status"] == "alert_scheduled"
     assert len(scheduled) == 1
+
+
+def test_mail_from_one_sender_shares_one_card() -> None:
+    """Two emails from the same person, even on different threads or to
+    different addresses, key to one open card; the follow-up adds to it."""
+    from types import SimpleNamespace
+
+    from openexecutive.alerts.models import AlertEvent
+    from openexecutive.orchestrator.alert_tools import _one_card_per_sender
+
+    def keyed(session: Any, raised_by: str = "") -> AlertEvent:
+        event = AlertEvent.model_validate({
+            "source": "email", "external_id": "m-1", "subject": "s", "body": "b", "raised_by": raised_by,
+        })
+        _one_card_per_sender(event, session)
+        return event
+
+    mail = SimpleNamespace(origin_channel="email", email_from="Casey@Example.com")
+    first, second = keyed(mail), keyed(SimpleNamespace(origin_channel="email", email_from="casey@example.com"))
+    assert first.dedup_hint == second.dedup_hint == "email-from:casey@example.com"
+    assert first.follow_up is True
+    # Chat turns, unknown senders and a teammate's own raise keep the model's key.
+    assert keyed(SimpleNamespace(origin_channel="slack", email_from="")).dedup_hint == ""
+    assert keyed(SimpleNamespace(origin_channel="email", email_from="")).dedup_hint == ""
+    assert keyed(mail, raised_by="Dana").dedup_hint == ""
+    # Mail routed to one person keeps a card apart from the shared one.
+    routed = AlertEvent.model_validate({
+        "source": "email", "external_id": "m-2", "subject": "s", "body": "b", "user": "person:7",
+    })
+    _one_card_per_sender(routed, mail)
+    assert routed.dedup_hint == "email-from:casey@example.com:person:7"

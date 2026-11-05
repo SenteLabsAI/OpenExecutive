@@ -270,6 +270,7 @@ async def evaluate_and_dispatch(
         dedup_key=dedup_key,
         severity=decision.severity.value,
         body=decision.body,
+        append=event.follow_up,
         db_path=path,
     )
     if coalesced is not None:

@@ -386,12 +386,35 @@ _BULK_MAX_IDS = 5000
 _REOPENABLE_STATUSES = ("resolved", "expired", "dismissed")
 
 
+_FOLLOW_UP_MAX = 4000
+_THEN = "\n\nThen: "
+_FOLLOW_UP_KEEP = 500
+
+
+def _with_follow_up(existing: str, follow_up: str) -> str:
+    """The card's text with ``follow_up`` added last. Past ``_FOLLOW_UP_MAX``
+    the oldest follow-ups go first; the first ask and the newest always stay."""
+    first, *later = (existing or "").split(_THEN)
+    later.append(follow_up)
+    while len(later) > 1 and len(first) + sum(len(_THEN) + len(t) for t in later) > _FOLLOW_UP_MAX:
+        later.pop(0)
+    # The newest follow-up always shows: past the cap it is cut to the room
+    # left, and the first ask gives up its end only to leave it some room.
+    room = _FOLLOW_UP_MAX - len(first) - len(_THEN)
+    if room < _FOLLOW_UP_KEEP:
+        first = first[: _FOLLOW_UP_MAX - len(_THEN) - _FOLLOW_UP_KEEP]
+        room = _FOLLOW_UP_KEEP
+    later[-1] = later[-1][:room]
+    return "".join([first, *(_THEN + t for t in later)]).strip()
+
+
 def coalesce_alert(
     *,
     source: str,
     dedup_key: str,
     severity: str,
     body: str,
+    append: bool = False,
     db_path: Path | None = None,
 ) -> tuple[int, bool] | None:
     """Fold a repeat of an open alert into the existing row.
@@ -415,7 +438,7 @@ def coalesce_alert(
         # miss the row (read-then-update race) or overwrite each other's body.
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, severity FROM alerts "
+            "SELECT id, severity, body FROM alerts "
             "WHERE source = ? AND dedup_key = ? AND status = 'unread' "
             "ORDER BY created_at DESC LIMIT 1",
             (source, dedup_key),
@@ -426,6 +449,10 @@ def coalesce_alert(
         new_rank = SEVERITY_RANK.get(severity, 0)
         raised = new_rank > current_rank
         effective = severity if raised else str(row["severity"])
+        if append:
+            # A follow-up adds to what was asked first (``AlertEvent.follow_up``),
+            # newest last.
+            body = _with_follow_up(str(row["body"] or ""), body)
         conn.execute(
             "UPDATE alerts SET last_seen_at = ?, "
             "occurrence_count = COALESCE(occurrence_count, 1) + 1, "
