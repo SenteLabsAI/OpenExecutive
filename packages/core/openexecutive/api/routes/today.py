@@ -2604,7 +2604,7 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
             key=key, kind=item.kind, title=item.summary or item.kind,
             detail=item.detail or "", at=item.at, artifact_id=item.artifact_id,
         ))
-    rows.sort(key=lambda r: r.at, reverse=True)
+    rows.sort(key=lambda r: _parse_aware(r.at) or datetime.min.replace(tzinfo=UTC), reverse=True)
     rows.sort(key=lambda r: 0 if r.status == "working" else 1)
     return rows[:_DONE_MAX]
 
