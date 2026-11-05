@@ -633,6 +633,25 @@ class CalendarNextItem(BaseModel):
     all_day: bool = False
 
 
+class DoneRow(BaseModel):
+    """One thing in Home's Done for you. ``key`` names it (``approval:<card
+    id>`` for a card the viewer approved, else the activity row), and its
+    ``status`` changes in place: ``working`` while it runs, then ``done`` or
+    ``failed``. ``session_id`` is the chat that shows the work, when it ran
+    as one; ``alert_id`` lets a failed approval be tried again."""
+
+    key: str
+    kind: str
+    title: str
+    detail: str = ""
+    status: Literal["working", "done", "failed"] = "done"
+    at: str
+    session_id: str | None = None
+    alert_id: int | None = None
+    approval_id: int | None = None
+    artifact_id: str | None = None
+
+
 class TodayResponse(BaseModel):
     departments: list[DepartmentBriefItem]
     people: list[PersonBriefItem]
@@ -674,6 +693,10 @@ class TodayResponse(BaseModel):
     # Built from the records on every load, never written by a model.
     # Additive; empty for anyone else.
     right_now: list[RightNowRow] = Field(default_factory=list)
+    # Done for you: what the Executive did, or is doing, for the viewer in
+    # the last day, one row per thing (``_done_for_you``). Home's only place
+    # for it, so nothing in Needs you repeats it.
+    done_for_you: list[DoneRow] = Field(default_factory=list)
     # The principal's own: today's delivered morning brief and the meetings
     # still ahead today. Additive; None / empty for anyone else.
     morning_brief: MorningBriefItem | None = None
@@ -2513,7 +2536,90 @@ async def get_today(request: Request, background_tasks: BackgroundTasks) -> Toda
         response.morning_brief = _morning_brief_today()
         response.calendar_next = _calendar_next(datetime.now(UTC))
         response.right_now = _right_now_rows()
+    response.done_for_you = _done_for_you(request, caller, datetime.now(UTC))
     return response
+
+
+# How far back Home's Done for you looks, and how many rows it sends.
+_DONE_WINDOW = timedelta(hours=24)
+_DONE_MAX = 8
+# Activity rows that are not something done for the reader: a card raised
+# (that is Needs you's), advice and decisions noted from their own chats,
+# a project started, and the contacts tally.
+_DONE_SKIP_KINDS = frozenset({
+    "alert_raised", "advice_given", "decision_logged", "initiative_started", "contacts_kept",
+})
+
+
+def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[DoneRow]:
+    """What the Executive did or is doing for the viewer in the last day:
+    the cards they approved (one row per card, its newest try) and what it
+    did on its own. Running ones first, then newest. Never raises."""
+    from openexecutive.alerts import approvals as alert_approvals
+    from openexecutive.alerts.store import get_alert
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
+
+    since = now - _DONE_WINDOW
+    rows: list[DoneRow] = []
+    # On an install with no principal yet anyone may approve (unsigned, so
+    # the approval has no person) and is the owner here: they see every
+    # approval and the shared feed, as the approve route lets them act.
+    try:
+        owner = _caller_is_principal_or_unclaimed(request)
+    except Exception:
+        owner = False
+    unclaimed = caller is None and owner
+    if caller is not None or unclaimed:
+        try:
+            for a in alert_approvals.recent(since.isoformat(), approved_by_person_id=caller):
+                alert = get_alert(a.alert_id)
+                status: Literal["working", "done", "failed"] = (
+                    "working" if a.status == alert_approvals.STATUS_RUNNING
+                    else "failed" if a.status == alert_approvals.STATUS_FAILED else "done"
+                )
+                rows.append(DoneRow(
+                    key=f"approval:{a.alert_id}",
+                    kind="approval",
+                    title=alert.headline if alert is not None else "A card you approved",
+                    detail=a.outcome,
+                    status=status,
+                    at=a.finished_at or a.approved_at,
+                    session_id=a.session_id,
+                    alert_id=a.alert_id,
+                    approval_id=a.id,
+                ))
+        except Exception:
+            logger.warning("today: reading approvals for Done for you failed", exc_info=True)
+    try:
+        # The shared feed is what the Executive did for the company, so it
+        # is "done for you" only to the principal; anyone else gets their
+        # own approvals and what was sent as them.
+        shared = (
+            _build_activity(
+                20, since, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
+            ).items
+            if owner else []
+        )
+        activity = [*shared, *_sent_as_caller(request)]
+    except Exception:
+        logger.warning("today: reading activity for Done for you failed", exc_info=True)
+        activity = []
+    seen: set[str] = set()
+    for item in activity:
+        at = _parse_aware(item.at)
+        if item.kind in _DONE_SKIP_KINDS or at is None or at < since:
+            continue
+        key = f"{item.kind}:{item.at}:{item.summary}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(DoneRow(
+            key=key, kind=item.kind, title=item.summary or item.kind,
+            detail=item.detail or "", at=item.at, artifact_id=item.artifact_id,
+        ))
+    rows.sort(key=lambda r: _parse_aware(r.at) or datetime.min.replace(tzinfo=UTC), reverse=True)
+    rows.sort(key=lambda r: 0 if r.status == "working" else 1)
+    return rows[:_DONE_MAX]
 
 
 def _right_now_rows(now: datetime | None = None) -> list[RightNowRow]:
@@ -2686,6 +2792,18 @@ def _held_back(now: datetime) -> list[HeldBackItem]:
         HeldBackItem(event_id=h.event_id, surface=h.surface, at=h.at, lines=h.lines)
         for h in recent_held_back(since=since)
     ]
+
+
+@router.get("/today/held-back", response_model=list[HeldBackItem], tags=["today"])
+def get_held_back(request: Request) -> list[HeldBackItem]:
+    """The lines grounding left out of the principal's briefs in the last
+    day, for Memory's What it does. The principal's alone: anyone else gets
+    an empty list."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    if not _is_principal(_resolve_caller_person_id(request)):
+        return []
+    return _held_back(datetime.now(UTC))
 
 
 @router.get("/today/activity", response_model=ActivityResponse, tags=["today"])

@@ -10,8 +10,8 @@ import { mailboxName, safeGmailLink } from "@/lib/replyCards";
 
 import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 
-// Right now: a plain list at the top of Home of what is waiting on the
-// owner that Needs you doesn't already show (GET /today `right_now`): mail
+// Right now's rows, shown in Home's Needs you list as one card each: what is
+// waiting on the owner that has no card of its own (GET /today `right_now`): mail
 // the Executive couldn't draft a reply to (never a conversation with a reply
 // card in Needs you); drafts still in their own mailbox; chat messages asking them
 // something. Built from the records on every load, never written by a
@@ -19,7 +19,7 @@ import { buildNarrativeSeed, type ContinueHandler } from "./shared";
 // Reply (GET /delegation/mail, POST /delegation/mail/reply), a chat row
 // opens the message in its app, and every row has a ✕ (POST
 // /today/right-now/dismiss) that keeps it gone until something newer lands
-// on it. With nothing waiting, the card isn't shown.
+// on it.
 
 type Replies = ReturnType<typeof useReplyCards>;
 
@@ -101,22 +101,15 @@ function ListRow({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
   );
 }
 
-/** Home's Right now card: the rows, or nothing when none are waiting. */
-export function RightNowList({ rows, actions }: { rows: RightNowRow[]; actions?: RowActions }) {
-  if (rows.length === 0) return null;
+/** One Right now row as its own card in Needs you's list. */
+export function RightNowItem({ row, actions }: { row: RightNowRow; actions?: RowActions }) {
   return (
-    <section aria-labelledby="sec-right-now" className="mb-8 rounded-2xl border border-line bg-surface-elevated p-4 sm:p-5">
-      <h2 id="sec-right-now" className="mb-1 text-lg font-semibold text-fg">
-        Right now
-      </h2>
-      <ul>
-        {rows.map((r) => (
-          <ListRow key={r.key} row={r} actions={actions} />
-        ))}
-      </ul>
-    </section>
+    <ul className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5">
+      <ListRow row={row} actions={actions} />
+    </ul>
   );
 }
+
 
 type MailTarget = Extract<NonNullable<PointTarget>, { kind: "mail" }>;
 

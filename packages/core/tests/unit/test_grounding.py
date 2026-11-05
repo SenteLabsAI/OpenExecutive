@@ -248,7 +248,7 @@ async def test_ground_brief_drops_cites_and_notes(
     assert "**At risk**" not in out
     assert "48 [1] units" in out
     assert "$1.2M [2] approved" in out
-    assert "_I left out 2 lines" in out and "Left out of your brief on Home" in out
+    assert "_I left out 2 lines" in out and "Left out of your brief in Memory, What it does" in out
     body, footer = out.split(SOURCES_HEADER)
     assert "I left out" in body
     assert "- [1] Inbound since the last brief — " in footer

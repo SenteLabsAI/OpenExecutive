@@ -17,6 +17,7 @@ from openexecutive.memory import episodic
 from openexecutive.orchestrator import content_scan, outside_mode
 from openexecutive.orchestrator import outside_content as oc
 from openexecutive.orchestrator.session import Session
+from openexecutive.people import store as people_store
 
 _REAL_TEAM_ADDRESSES = oc._team_addresses
 FLAGGED = content_scan.Verdict(flagged=True, categories=("forward_or_share",))
@@ -27,6 +28,9 @@ TEAM = {"exec@example.com", "dana@example.com", "lee@example.com"}
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db = tmp_path / "episodic.db"
     monkeypatch.setattr(episodic, "DB_PATH", db)
+    # The roster keeps its own path. Left on ./episodic_memory.db, a copy
+    # another test made without a people table makes every turn "Ask".
+    monkeypatch.setattr(people_store, "DB_PATH", db)
     monkeypatch.setattr(oc, "_team_addresses", lambda: set(TEAM))
     monkeypatch.setattr(oc, "_exec_address", lambda: "exec@example.com")
     return db

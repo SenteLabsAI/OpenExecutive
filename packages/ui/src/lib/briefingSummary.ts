@@ -16,6 +16,7 @@ export function greeting(firstName: string | undefined, now: Date = new Date()):
  * panels, or another route. */
 export type SummaryTarget =
   | { kind: "needsYou" }
+  | { kind: "doneForYou" }
   | { kind: "panel"; panel: "handled" | "people" | "departments" | "inFlight" | "monitoring" }
   | { kind: "href"; href: string };
 
@@ -120,4 +121,21 @@ export function proposalStatusChip(
   if ((p.review_verdict ?? "") === "likely_stale") return { label: "Likely stale", tone: "amber" };
   const age = ageLabel(p.created_at, now);
   return age ? { label: `${age} old`, tone: "neutral" } : null;
+}
+
+/** Home's summary: what needs you, then what I did for you today. Each
+ *  phrase opens its section; an empty list means all clear. */
+export function homeSummary(needsYou: number, done: number): SummaryPart[] {
+  const parts: SummaryPart[] = [];
+  if (needsYou > 0)
+    parts.push({
+      text: `${needsYou} ${plural(needsYou, "thing needs", "things need")} you`,
+      target: { kind: "needsYou" },
+    });
+  if (done > 0)
+    parts.push({
+      text: `I did ${done} ${plural(done, "thing", "things")} for you today`,
+      target: { kind: "doneForYou" },
+    });
+  return parts;
 }

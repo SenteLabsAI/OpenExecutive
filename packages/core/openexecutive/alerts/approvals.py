@@ -188,6 +188,31 @@ def get(approval_id: int, *, db_path: Path | None = None) -> AlertApproval | Non
         return _row(row) if row is not None else None
 
 
+def recent(
+    since: str,
+    *,
+    approved_by_person_id: int | None = None,
+    limit: int = 20,
+    db_path: Path | None = None,
+) -> list[AlertApproval]:
+    """Each card's newest approval made at or after ``since`` (ISO), newest
+    first: one row per card, so a retry replaces the failed try. Only the
+    ones ``approved_by_person_id`` made, when given."""
+    sql = (
+        "SELECT a.* FROM alert_approvals a WHERE a.approved_at >= ? AND a.id = ("
+        "SELECT MAX(b.id) FROM alert_approvals b WHERE b.alert_id = a.alert_id)"
+    )
+    params: list[object] = [since]
+    if approved_by_person_id is not None:
+        sql += " AND a.approved_by_person_id = ?"
+        params.append(approved_by_person_id)
+    sql += " ORDER BY a.id DESC LIMIT ?"
+    params.append(limit)
+    with _get_conn(db_path) as conn:
+        ensure_schema(conn)
+        return [_row(r) for r in conn.execute(sql, params).fetchall()]
+
+
 def latest_for(alert_id: int, *, db_path: Path | None = None) -> AlertApproval | None:
     with _get_conn(db_path) as conn:
         ensure_schema(conn)
