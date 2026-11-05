@@ -2582,12 +2582,16 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
         except Exception:
             logger.warning("today: reading approvals for Done for you failed", exc_info=True)
     try:
-        activity = [
-            *_build_activity(
+        # The shared feed is what the Executive did for the company, so it
+        # is "done for you" only to the principal; anyone else gets their
+        # own approvals and what was sent as them.
+        shared = (
+            _build_activity(
                 20, since, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
-            ).items,
-            *_sent_as_caller(request),
-        ]
+            ).items
+            if _is_principal(caller) else []
+        )
+        activity = [*shared, *_sent_as_caller(request)]
     except Exception:
         logger.warning("today: reading activity for Done for you failed", exc_info=True)
         activity = []

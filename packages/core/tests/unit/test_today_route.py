@@ -3030,8 +3030,14 @@ def test_done_for_you_leaves_out_what_is_not_done_for_them(
         today_route.ActivityItem(kind="workflow_done", summary="Wrote the weekly sales report",
                                  actor="executive", target=None, department=None, at=now),
     ]))
-    rows = _make_client().get("/today").json()["done_for_you"]
+    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    people_store.upsert_person(full_name="Sam", email="sam@example.com", db_path=db)
+    client = _make_client()
+    rows = client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
     assert [r["title"] for r in rows] == ["Wrote the weekly sales report"]
+    # What it did for the company isn't done for a teammate.
+    theirs = client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
+    assert theirs == []
 
 
 def test_held_back_page_lines_are_the_principals_alone(
