@@ -3014,6 +3014,29 @@ def test_an_approved_card_leaves_needs_you_and_is_one_row_in_done_for_you(
     assert rows[0]["approval_id"] == retry.id
 
 
+def test_done_for_you_shows_an_approval_on_an_install_with_no_owner_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before anyone claims the install, an unsigned approval has no person;
+    Home still lists it, since whoever is there may approve."""
+    from openexecutive.alerts import approvals
+
+    db = tmp_path / "unclaimed.db"
+    _setup_isolated_db(db, monkeypatch)
+    alert_store.insert_alert(
+        source="system", external_id="a-2", severity="medium",
+        headline="Renew the domain", body="...", db_path=db,
+    )
+    alert_id = alert_store.list_alerts(db_path=db)[0].id
+    claimed = approvals.claim(alert_id, approved_by_person_id=None, db_path=db)
+    assert claimed is not None
+    approvals.finish(claimed.id, approvals.STATUS_FAILED, "Couldn't reach the registrar", db_path=db)
+    rows = [r for r in _make_client().get("/today").json()["done_for_you"] if r["kind"] == "approval"]
+    assert [(r["title"], r["status"], r["approval_id"]) for r in rows] == [
+        ("Renew the domain", "failed", claimed.id),
+    ]
+
+
 def test_done_for_you_leaves_out_what_is_not_done_for_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

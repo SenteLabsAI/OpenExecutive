@@ -2557,10 +2557,19 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
     did on its own. Running ones first, then newest. Never raises."""
     from openexecutive.alerts import approvals as alert_approvals
     from openexecutive.alerts.store import get_alert
+    from openexecutive.api.routes.chat import _caller_is_principal_or_unclaimed
 
     since = now - _DONE_WINDOW
     rows: list[DoneRow] = []
-    if caller is not None:
+    # On an install with no principal yet anyone may approve (unsigned, so
+    # the approval has no person) and is the owner here: they see every
+    # approval and the shared feed, as the approve route lets them act.
+    try:
+        owner = _caller_is_principal_or_unclaimed(request)
+    except Exception:
+        owner = False
+    unclaimed = caller is None and owner
+    if caller is not None or unclaimed:
         try:
             for a in alert_approvals.recent(since.isoformat(), approved_by_person_id=caller):
                 alert = get_alert(a.alert_id)
@@ -2589,7 +2598,7 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
             _build_activity(
                 20, since, include_alert_raised=False, exclude_workflows=RHYTHM_WORKFLOWS,
             ).items
-            if _is_principal(caller) else []
+            if owner else []
         )
         activity = [*shared, *_sent_as_caller(request)]
     except Exception:
