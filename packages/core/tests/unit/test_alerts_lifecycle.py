@@ -255,6 +255,18 @@ def test_coalesce_alert_bumps_count_last_seen_and_severity(db: Path) -> None:
     assert row is not None and row.severity == "medium" and row.occurrence_count == 3
 
 
+def test_a_follow_up_adds_to_the_card_instead_of_replacing_it(db: Path) -> None:
+    aid = _insert(db, source="email", dedup_key="email-from:casey@example.com", body="Casey wants two drafts.")
+    hit = coalesce_alert(
+        source="email", dedup_key="email-from:casey@example.com", severity="medium",
+        body="Casey asks if the drafts are ready.", append=True, db_path=db,
+    )
+    assert hit is not None and hit[0] == aid
+    row = get_alert(aid, db_path=db)
+    assert row is not None
+    assert row.body == "Casey wants two drafts.\n\nThen: Casey asks if the drafts are ready."
+
+
 def test_coalesce_alert_ignores_closed_rows_and_requires_key(db: Path) -> None:
     aid = _insert(db, source="email", dedup_key="churn-acme")
     alert_store.set_status(aid, "ack", db_path=db)

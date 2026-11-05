@@ -3052,12 +3052,17 @@ def test_done_for_you_leaves_out_what_is_not_done_for_them(
                                  target=None, department=None, at=now),
         today_route.ActivityItem(kind="workflow_done", summary="Wrote the weekly sales report",
                                  actor="executive", target=None, department=None, at=now),
+        # A reminder it sent the reader is something they got, not work.
+        today_route.ActivityItem(kind="dm_sent", summary="Right now: pricing is overdue",
+                                 actor="executive", target="Jordan", department=None, at=now),
+        today_route.ActivityItem(kind="dm_sent", summary="Reminded Sam about the invoice",
+                                 actor="executive", target="Sam", department=None, at=now),
     ]))
     people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
     people_store.upsert_person(full_name="Sam", email="sam@example.com", db_path=db)
     client = _make_client()
     rows = client.get("/today", headers={"x-caller-email": "jordan@example.com"}).json()["done_for_you"]
-    assert [r["title"] for r in rows] == ["Wrote the weekly sales report"]
+    assert sorted(r["title"] for r in rows) == ["Reminded Sam about the invoice", "Wrote the weekly sales report"]
     # What it did for the company isn't done for a teammate.
     theirs = client.get("/today", headers={"x-caller-email": "sam@example.com"}).json()["done_for_you"]
     assert theirs == []

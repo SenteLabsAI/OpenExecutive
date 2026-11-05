@@ -386,12 +386,16 @@ _BULK_MAX_IDS = 5000
 _REOPENABLE_STATUSES = ("resolved", "expired", "dismissed")
 
 
+_FOLLOW_UP_MAX = 4000
+
+
 def coalesce_alert(
     *,
     source: str,
     dedup_key: str,
     severity: str,
     body: str,
+    append: bool = False,
     db_path: Path | None = None,
 ) -> tuple[int, bool] | None:
     """Fold a repeat of an open alert into the existing row.
@@ -415,7 +419,7 @@ def coalesce_alert(
         # miss the row (read-then-update race) or overwrite each other's body.
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, severity FROM alerts "
+            "SELECT id, severity, body FROM alerts "
             "WHERE source = ? AND dedup_key = ? AND status = 'unread' "
             "ORDER BY created_at DESC LIMIT 1",
             (source, dedup_key),
@@ -426,6 +430,10 @@ def coalesce_alert(
         new_rank = SEVERITY_RANK.get(severity, 0)
         raised = new_rank > current_rank
         effective = severity if raised else str(row["severity"])
+        if append:
+            # A follow-up adds to what was asked first (``AlertEvent.follow_up``),
+            # newest last, kept to the most recent text when it grows long.
+            body = f"{row['body'] or ''}\n\nThen: {body}".strip()[-_FOLLOW_UP_MAX:]
         conn.execute(
             "UPDATE alerts SET last_seen_at = ?, "
             "occurrence_count = COALESCE(occurrence_count, 1) + 1, "

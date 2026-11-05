@@ -393,6 +393,7 @@ export default function HomePage() {
           {mode === "briefing" ? (
             <Briefing
               onContinue={handleContinueFromBriefing}
+              onOpenChat={(id) => void handleSelectSession(id)}
               showHeader
               firstName={firstName ?? undefined}
               banner={homeBanner}

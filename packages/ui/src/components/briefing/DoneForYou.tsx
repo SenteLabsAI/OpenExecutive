@@ -26,9 +26,13 @@ const CHIP: Record<DoneRow["status"], string> = {
 export default function DoneForYou({
   rows,
   onRetry,
+  onOpenChat,
 }: {
   rows: DoneRow[];
   onRetry?: (row: DoneRow) => void;
+  // Opens a chat in place. Home is already at `/`, so a link to
+  // `/?session=` there changes the address and nothing else.
+  onOpenChat?: (sessionId: string) => void;
 }) {
   if (rows.length === 0) return null;
   return (
@@ -55,11 +59,19 @@ export default function DoneForYou({
                   Try again
                 </button>
               )}
-              {link && (
+              {link && row.session_id && onOpenChat ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenChat(row.session_id as string)}
+                  className={buttonClass("ghost", "sm")}
+                >
+                  {link.label}
+                </button>
+              ) : link ? (
                 <Link href={link.href} className={buttonClass("ghost", "sm")}>
                   {link.label}
                 </Link>
-              )}
+              ) : null}
             </li>
           );
         })}

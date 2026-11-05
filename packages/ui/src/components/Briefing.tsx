@@ -127,6 +127,8 @@ interface BriefingProps {
   // briefing → chat and seeds the input with `prompt`. When omitted, items
   // render as plain navigation links.
   onContinue?: ContinueHandler;
+  // Opens one of the reader's chats in place (Done for you's See / Watch).
+  onOpenChat?: (sessionId: string) => void;
   // Set to true when this Briefing is the root landing surface — adds the
   // greeting header.
   showHeader?: boolean;
@@ -138,7 +140,7 @@ interface BriefingProps {
   banner?: React.ReactNode;
 }
 
-export default function Briefing({ onContinue, showHeader = false, firstName, banner }: BriefingProps) {
+export default function Briefing({ onContinue, onOpenChat, showHeader = false, firstName, banner }: BriefingProps) {
   // Solo (one person, just for themselves): no departments, roster or
   // cross-team lanes — see the `solo` branches below.
   const { mode } = useWorkspace();
@@ -1065,7 +1067,11 @@ export default function Briefing({ onContinue, showHeader = false, firstName, ba
                 </section>
               )}
 
-              <DoneForYou rows={doneRows} onRetry={(row) => void handleRetryApproval(row)} />
+              <DoneForYou
+                rows={doneRows}
+                onRetry={(row) => void handleRetryApproval(row)}
+                onOpenChat={onOpenChat}
+              />
 
               {/* Everything else, one quiet line: each opens its panel or page. */}
               {tiles.length > 0 && (

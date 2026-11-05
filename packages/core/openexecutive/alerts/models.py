@@ -97,6 +97,11 @@ class AlertEvent(BaseModel):
     # Producer-supplied dedup key that overrides the triage model's own
     # (monitoring sets ``watch:<slug>`` so one watch = one open alert).
     dedup_hint: str = ""
+    # With ``dedup_hint``: a later event folds into the open card by adding
+    # its words under the earlier ones ("Then: ..."), not replacing them, so
+    # a follow-up never erases what was first asked (one card per sender's
+    # mail, see ``orchestrator.alert_tools``).
+    follow_up: bool = False
     # Person the alert should be routed to (assigned_to_person_id from the
     # Executive's create_alert tool). Lands on the row so the "principal
     # owns unrouted" rule stops sweeping every triage-born alert to them.

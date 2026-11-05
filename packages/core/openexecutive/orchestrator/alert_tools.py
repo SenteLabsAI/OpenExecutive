@@ -138,6 +138,22 @@ def _origin_for(speaker: Person | None, tool_input: dict[str, Any]) -> tuple[str
     return TEAM_RAISED_SOURCE, uuid.uuid4().hex, speaker.email or name, name
 
 
+def _one_card_per_sender(event: Any, session: Any) -> None:
+    """A turn answering an email: while a card from that sender is still
+    open, what they write next joins it ("Then: ...") instead of making a
+    second card, so one approval answers them once. Keyed by the address
+    the mail really came from (``Session.email_from``), never what the mail
+    or the model says, and the same for every mail service. A card a team
+    member raised keeps its own key (the pipeline prefixes it)."""
+    if getattr(session, "origin_channel", "") != "email" or event.raised_by:
+        return
+    sender = str(getattr(session, "email_from", "") or "").strip().lower()
+    if not sender:
+        return
+    event.dedup_hint = f"email-from:{sender}"
+    event.follow_up = True
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
@@ -204,6 +220,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                     event.user = f"person:{routed_id}"
         if private:
             event.private = True
+        _one_card_per_sender(event, current_session.get())
         schedule_evaluation(event)
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
         audit_log(
