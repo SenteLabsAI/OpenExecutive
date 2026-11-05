@@ -3054,7 +3054,7 @@ def test_done_for_you_leaves_out_what_is_not_done_for_them(
                                  actor="executive", target=None, department=None, at=now),
         # A reminder it sent the reader is something they got, not work.
         today_route.ActivityItem(kind="dm_sent", summary="Right now: pricing is overdue",
-                                 actor="executive", target="Jordan", department=None, at=now),
+                                 actor="executive", target="jordan ", department=None, at=now),
         today_route.ActivityItem(kind="dm_sent", summary="Reminded Sam about the invoice",
                                  actor="executive", target="Sam", department=None, at=now),
     ]))

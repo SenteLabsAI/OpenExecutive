@@ -387,6 +387,17 @@ _REOPENABLE_STATUSES = ("resolved", "expired", "dismissed")
 
 
 _FOLLOW_UP_MAX = 4000
+_THEN = "\n\nThen: "
+
+
+def _with_follow_up(existing: str, follow_up: str) -> str:
+    """The card's text with ``follow_up`` added last. Past ``_FOLLOW_UP_MAX``
+    the oldest follow-ups go first; the first ask always stays."""
+    first, *later = (existing or "").split(_THEN)
+    later.append(follow_up)
+    while later and len(first) + sum(len(_THEN) + len(t) for t in later) > _FOLLOW_UP_MAX:
+        later.pop(0)
+    return "".join([first, *(_THEN + t for t in later)]).strip()[:_FOLLOW_UP_MAX]
 
 
 def coalesce_alert(
@@ -432,8 +443,8 @@ def coalesce_alert(
         effective = severity if raised else str(row["severity"])
         if append:
             # A follow-up adds to what was asked first (``AlertEvent.follow_up``),
-            # newest last, kept to the most recent text when it grows long.
-            body = f"{row['body'] or ''}\n\nThen: {body}".strip()[-_FOLLOW_UP_MAX:]
+            # newest last.
+            body = _with_follow_up(str(row["body"] or ""), body)
         conn.execute(
             "UPDATE alerts SET last_seen_at = ?, "
             "occurrence_count = COALESCE(occurrence_count, 1) + 1, "

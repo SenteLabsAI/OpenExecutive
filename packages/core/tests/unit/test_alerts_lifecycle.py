@@ -267,6 +267,23 @@ def test_a_follow_up_adds_to_the_card_instead_of_replacing_it(db: Path) -> None:
     assert row.body == "Casey wants two drafts.\n\nThen: Casey asks if the drafts are ready."
 
 
+def test_a_long_run_of_follow_ups_keeps_the_first_ask(db: Path) -> None:
+    from openexecutive.alerts.store import _FOLLOW_UP_MAX
+
+    aid = _insert(db, source="email", dedup_key="email-from:casey@example.com", body="Casey wants two drafts.")
+    for i in range(30):
+        coalesce_alert(
+            source="email", dedup_key="email-from:casey@example.com", severity="medium",
+            body=f"Follow-up {i}: " + "more detail " * 20, append=True, db_path=db,
+        )
+    row = get_alert(aid, db_path=db)
+    assert row is not None and row.body is not None
+    assert row.body.startswith("Casey wants two drafts.\n\nThen: ")
+    assert row.body.endswith("Follow-up 29: " + ("more detail " * 20).strip())
+    assert "Follow-up 0:" not in row.body
+    assert len(row.body) <= _FOLLOW_UP_MAX
+
+
 def test_coalesce_alert_ignores_closed_rows_and_requires_key(db: Path) -> None:
     aid = _insert(db, source="email", dedup_key="churn-acme")
     alert_store.set_status(aid, "ack", db_path=db)

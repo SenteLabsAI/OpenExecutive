@@ -2553,7 +2553,8 @@ _DONE_SKIP_KINDS = frozenset({
 
 def _reader_name(caller: int | None) -> str:
     """The reader's name as the activity rows name whom a message went to
-    (``_build_channel_lookup``), or "" when there is no one to match."""
+    (``_build_channel_lookup``), folded for matching, or "" when there is
+    no one to match."""
     if caller is None:
         return ""
     try:
@@ -2562,7 +2563,7 @@ def _reader_name(caller: int | None) -> str:
         person = get_person(caller)
     except Exception:
         return ""
-    return person.full_name if person is not None else ""
+    return " ".join((person.full_name or "").split()).casefold() if person is not None else ""
 
 
 def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[DoneRow]:
@@ -2626,7 +2627,7 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
         at = _parse_aware(item.at)
         if item.kind in _DONE_SKIP_KINDS or at is None or at < since:
             continue
-        if reader and item.target == reader:
+        if reader and " ".join((item.target or "").split()).casefold() == reader:
             continue
         key = f"{item.kind}:{item.at}:{item.summary}"
         if key in seen:
