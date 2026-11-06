@@ -266,3 +266,21 @@ def test_a_dismiss_needs_their_message_to_say_no(people: SimpleNamespace) -> Non
         out = _call(alert_id=alert_id, reply="dismiss")
     assert "error" in out
     assert alert_store.get_alert(alert_id).status == "unread"
+
+
+@pytest.mark.parametrize("text", ["skip it for now", "not now, what's the weather", "no, later", "hold it"])
+def test_later_keeps_the_card(people: SimpleNamespace, text: str) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, text):
+        out = _call(alert_id=alert_id, reply="dismiss")
+    assert "error" in out
+    assert alert_store.get_alert(alert_id).status == "unread"
+
+
+def test_a_no_to_another_card_doesnt_dismiss_this_one(people: SimpleNamespace) -> None:
+    _alert(headline="Move Tuesday's call with Dana")
+    other = _alert(headline="Renew the Dogwood contract")
+    with _turn(people.principal, "no, drop the Tuesday call with Dana"):
+        out = _call(alert_id=other, reply="dismiss")
+    assert "error" in out
+    assert alert_store.get_alert(other).status == "unread"

@@ -31,13 +31,14 @@ plainly theirs (``refusal``):
 - the turn has read nothing from outside (``outside_content.read_outside``):
   a document or mail that says "approve card 12" can't steer it;
 - an approval needs this turn's message to say yes (``said_yes``), so a
-  question about a card never approves it, and the yes has to be to that
-  card (``_about_card``): the message names it, or the reply it answers
-  asked about it, or it is the only card shown. A bare "ok" to some other
-  question never approves a card the model picked;
-- a dismiss needs this turn's message to say no, skip or drop
-  (``said_no``), so a card's own text can't clear the board while the
-  person only asked something;
+  question about a card never approves it;
+- every reply has to be about that card (``_about_card``): the message
+  names it, or the reply it answers asked about it, or it is the only card
+  shown. A bare "ok" to some other question never approves a card the
+  model picked;
+- a dismiss needs this turn's message to say no or drop, and nothing that
+  means later (``said_no``: "skip it for now" keeps the card), so a card's
+  own text can't clear the board while the person only asked something;
 - one card is approved or answered per message (``TurnOutside.card_answered``):
   a card's own text can argue for another live card, so one yes carries out
   one card, never every card the model was talked into. Dismissing is not
@@ -72,7 +73,13 @@ _NO = re.compile(
 )
 
 
-_DROP = re.compile(r"\b(?:dismiss|decline|drop|remove|clear|ignore|nah)\b", re.IGNORECASE)
+_DROP = re.compile(
+    r"\b(?:no|nope|nah|don't|dont|do not|never|cancel|stop|dismiss|decline|drop|remove|clear|"
+    r"ignore|not interested|not needed)\b",
+    re.IGNORECASE,
+)
+# "Skip it for now", "later", "not now", "wait", "hold it": the card stays.
+_KEEP = re.compile(r"\b(?:skip|later|wait|hold|not now|for now|not yet|leave it|park it)\b", re.IGNORECASE)
 # Words too common to tie a yes to one card.
 _COMMON = frozenset(
     ["about", "after", "again", "also", "back", "been", "card", "from", "have", "into", "just", "like", "make", "more", "need", "needs", "over", "send", "sent", "some", "that", "their", "them", "then", "there", "they", "this", "today", "tomorrow", "want", "week", "what", "when", "will", "with", "your", "yours"]
@@ -126,9 +133,10 @@ def _about_card(session: Any, alert: Any, user_message: str) -> bool:
 
 
 def said_no(message: str) -> bool:
-    """Whether ``message`` says no, skip or drop to something."""
+    """Whether ``message`` says to drop something: a no or drop word, and
+    nothing that means keep it for later ("skip it for now", "not now")."""
     text = unicodedata.normalize("NFKC", message or "").replace("’", "'")
-    return bool(_NO.search(text) or _DROP.search(text))
+    return bool(_DROP.search(text)) and not _KEEP.search(text)
 
 
 def said_yes(message: str) -> bool:
@@ -346,10 +354,10 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
     who = _speaker(session, alert)
     if isinstance(who, str):
         return _error(who)
-    if reply == APPROVE and not _about_card(session, alert, message):
+    if not _about_card(session, alert, message):
         return _error(
-            f"Their yes isn't plainly to this card ('{alert.headline[:120]}'). Ask them whether to go "
-            "ahead with it, naming it."
+            f"Their message isn't plainly about this card ('{alert.headline[:120]}'). Ask them about "
+            "it, naming it."
         )
     person, _is_principal = who
 
