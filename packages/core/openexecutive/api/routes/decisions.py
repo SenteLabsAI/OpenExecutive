@@ -114,18 +114,33 @@ def _parse_payload(instance: DecisionInstance) -> dict[str, Any]:
 _HELD_CLASSES = frozenset({"department_action", "take_the_lead_action"})
 
 
-def _served(instance: DecisionInstance) -> DecisionInstance:
-    """A held step as a page reads it: plain details, and no file's bytes
-    (``orchestrator.card_details.served``). Approve reads the stored row."""
-    if instance.decision_class not in _HELD_CLASSES:
-        return instance
+def _served_json(raw: str | None) -> str | None:
+    """A held step's stored payload (proposed or final) as served, or None
+    when it has no tool input to clean."""
     from openexecutive.orchestrator import card_details
 
-    payload = _parse_payload(instance)
+    try:
+        payload = json.loads(raw or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
     if not isinstance(payload, dict) or not isinstance(payload.get("input"), dict):
+        return None
+    return json.dumps(card_details.served(payload), ensure_ascii=False)
+
+
+def _served(instance: DecisionInstance) -> DecisionInstance:
+    """A held step as a page reads it: plain details, and no file's bytes
+    (``orchestrator.card_details.served``), in what was proposed and in what
+    was carried out (``final_payload_json`` copies the input). Approve reads
+    the stored row."""
+    if instance.decision_class not in _HELD_CLASSES:
         return instance
-    shown = json.dumps(card_details.served(payload), ensure_ascii=False)
-    return instance.model_copy(update={"proposed_payload_json": shown})
+    update: dict[str, Any] = {}
+    for field in ("proposed_payload_json", "final_payload_json"):
+        shown = _served_json(getattr(instance, field, None))
+        if shown is not None:
+            update[field] = shown
+    return instance.model_copy(update=update) if update else instance
 
 
 def _payload_diff(original: dict[str, Any], final: dict[str, Any]) -> bool:
@@ -948,7 +963,7 @@ async def approve_decision(
             status_code=409,
             detail=f"Cannot approve a decision with status={instance.status!r}",
         )
-    return await spec.approve(instance, body, request, resolver)
+    return _served(await spec.approve(instance, body, request, resolver))
 
 
 @router.post("/decisions/{instance_id}/reject", response_model=DecisionInstance)
@@ -956,7 +971,7 @@ async def reject_decision(instance_id: int, body: RejectBody, request: Request) 
     instance = _visible_instance(instance_id, request)
     spec = _spec_for(instance)
     resolver = _resolver(instance, request)
-    return await _reject(instance, spec, resolver)
+    return _served(await _reject(instance, spec, resolver))
 
 
 async def _reject(
@@ -1111,7 +1126,7 @@ async def cancel_decision(instance_id: int, request: Request) -> DecisionInstanc
     await spec.cancel(instance)
     mark_reversed(instance_id, reason="cancelled_via_ui", decision_class=spec.name)
     _clear_decision_alert(instance_id, "dismissed", spec.alert_source)
-    return _refresh(instance_id)
+    return _served(_refresh(instance_id))
 
 
 def _class_mode_response(decision_class: str) -> DecisionClassMode:

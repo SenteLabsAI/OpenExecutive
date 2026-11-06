@@ -126,3 +126,22 @@ def test_the_decisions_route_serves_the_plain_copy() -> None:
     assert json.loads(shown.proposed_payload_json)["details"][0] == {"field": "File name", "value": "Harbor Lane Q3 Report.pdf"}
     other = instance.model_copy(update={"decision_class": "meeting_scheduling"})
     assert decisions._served(other) is other
+
+
+def test_a_carried_out_step_serves_no_bytes_either() -> None:
+    # final_payload_json copies the input with the result once Approve ran.
+    from openexecutive.api.routes import decisions
+
+    payload = {"tool": "google_workspace__create_drive_file", "input": dict(_DRIVE_CALL), "summary": "Create it"}
+    instance = DecisionInstance(
+        id=7, decision_class="department_action", created_at="2026-11-04T00:00:00+00:00", department="executive",
+        originating_session_id=None, proposed_payload_json=json.dumps(payload), idempotency_key=None,
+        gate_mode="propose", approver_person_id=1, confidence=None, status="approved",
+        resolved_at="2026-11-04T01:00:00+00:00", resolver_person_id=1,
+        final_payload_json=json.dumps({**payload, "result": "created"}), external_event_id=None,
+        reversal_reason=None, severity="",
+    )
+    shown = decisions._served(instance)
+    assert _PDF[:50] not in shown.proposed_payload_json
+    assert shown.final_payload_json is not None and _PDF[:50] not in shown.final_payload_json
+    assert json.loads(shown.final_payload_json)["result"] == "created"
