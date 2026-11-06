@@ -46,6 +46,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
@@ -357,10 +358,15 @@ _GAP = re.compile(r"\.{3,}")
 
 
 def _plain(text: str) -> str:
-    """``text`` for comparing a quote with: JSON escapes undone, quotes and
-    ellipses made plain, case and spacing ignored."""
+    """``text`` for comparing a quote with: JSON escapes undone, NFKC-folded
+    (fullwidth letters, no-break spaces), invisible and control characters
+    dropped, quotes and ellipses made plain, case and spacing ignored. Both
+    sides go through it, so content hidden behind zero-width characters still
+    matches a quote the check wrote without them."""
     text = _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
     text = text.replace('\\"', '"').replace("\\n", " ").replace("\\t", " ")
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(ch if unicodedata.category(ch) not in ("Cc", "Cf") or ch in "\n\t" else "" for ch in text)
     return " ".join(text.translate(_QUOTES).casefold().split())
 
 
