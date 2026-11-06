@@ -252,6 +252,9 @@ class TurnOutside:
     # The person's own message this turn, as they sent it: what
     # ``card_answers`` reads for their yes.
     user_message: str = ""
+    # Whether this turn approved or answered a Needs you card
+    # (``card_answers``): one per message.
+    card_answered: bool = False
     # Google Drive ids checked this turn (``vet_reads``): the company's own,
     # and the rest, so each is looked up once.
     inside_items: set[str] = field(default_factory=set)

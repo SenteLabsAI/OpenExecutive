@@ -217,3 +217,11 @@ def test_a_board_line_says_what_the_card_asks(people: SimpleNamespace) -> None:
     _alert(headline="Dogwood review", needs="choice", question="Which day?", choices=["Tue", "Wed"])
     s = Session(from_web_chat=True, caller_person_id=people.principal)
     assert "| asks: Which day? | choices: Tue / Wed" in render_and_trust(s)
+
+
+def test_one_yes_carries_out_one_card(people: SimpleNamespace) -> None:
+    first, second = _alert(headline="First"), _alert(headline="Second")
+    with _turn(people.principal, "yes"):
+        assert _call(alert_id=first, reply="approve")["status"] == "approved"
+        assert "error" in _call(alert_id=second, reply="approve")
+    assert alert_store.get_alert(second).status == "unread"

@@ -32,7 +32,11 @@ plainly theirs (``refusal``):
   a document or mail that says "approve card 12" can't steer it;
 - an approval needs this turn's message to say yes (``said_yes``), so a
   question about a card never approves it. An answer and a dismiss only need
-  the rest.
+  the rest;
+- one card is approved or answered per message (``TurnOutside.card_answered``):
+  a card's own text can argue for another live card, so one yes carries out
+  one card, never every card the model was talked into. Dismissing is not
+  limited.
 """
 from __future__ import annotations
 
@@ -172,7 +176,23 @@ def refusal(session: Any, alert_id: int | None, reply: str, user_message: str | 
             "Their message this turn doesn't say yes to it, so it wasn't approved. Ask them plainly "
             "whether to go ahead."
         )
+    if reply in (APPROVE, ANSWER) and _answered_this_turn(session):
+        return (
+            "One card is approved or answered per message, and this one already did one. Say so, "
+            "and ask them about this card next."
+        )
     return None
+
+
+def _answered_this_turn(session: Any) -> bool:
+    state = getattr(session, "turn_outside", None)
+    return state is not None and getattr(state, "card_answered", False) is True
+
+
+def _mark_answered(session: Any) -> None:
+    state = getattr(session, "turn_outside", None)
+    if state is not None:
+        state.card_answered = True
 
 
 def _quoted(alert: Any) -> str:
@@ -268,6 +288,8 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
     if alert.source == DECISION_ALERT_SOURCE:
         if reply == ANSWER:
             return _error("This card is approved or skipped, not answered. Ask whether to go ahead.")
+        if reply == APPROVE:
+            _mark_answered(session)
         return await _decision(alert, person, approve=reply == APPROVE)
 
     if reply == DISMISS:
@@ -290,6 +312,7 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
         approval = approvals.claim(alert_id, approved_by_person_id=person.id, edited_body=answer)
         if approval is None:
             return _error("This card was already answered or closed.")
+        _mark_answered(session)
         lifecycle.record_ack_feedback(alert, "ack")
         _audit("alert_answered", alert, person.id, approval_id=approval.id)
         approvals.finish(approval.id, approvals.STATUS_DONE, "Answered in chat; the Executive carried on there.")
@@ -310,6 +333,7 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
     approval = approvals.claim(alert_id, approved_by_person_id=person.id)
     if approval is None:
         return _error("This card was already approved or closed.")
+    _mark_answered(session)
     lifecycle.record_ack_feedback(alert, "ack")
     _audit("alert_approved", alert, person.id, approval_id=approval.id)
     if alert.needs == NEEDS_FYI:
