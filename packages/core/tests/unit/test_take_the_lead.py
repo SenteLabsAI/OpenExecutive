@@ -430,6 +430,11 @@ def test_mcp_reads_pass_and_sends_are_gated(owner: Any) -> None:
     ("mail__unsubscribe_from_list", True),
     ("drive.searchFiles", False),
     ("ms365__read_mail_message", False),
+    ("google_workspace__get_gmail_messages_content_batch", False),
+    ("google_workspace__get_gmail_threads_content_batch", False),
+    ("crm__getRecordsBatch", False),
+    ("google_workspace__batch_modify_gmail_message_labels", True),
+    ("google_workspace__get_and_modify_batch", True),
 ])
 def test_connected_tools_fail_closed(name: str, acts: bool) -> None:
     assert ttl.mcp_tool_acts(name) is acts
@@ -1208,3 +1213,9 @@ def test_a_calendar_delete_by_action_counts_as_deleting(owner: Any) -> None:
     assert hit is not None and hit.kind == ttl.DELETE_SHARE
     hit = ttl.check("google_workspace__manage_event", {"action": "update", "event_id": "e1"}, lead=_lead(), rules=[], mcp=True)
     assert hit is None or hit.kind != ttl.DELETE_SHARE
+
+
+def test_mail_sends_are_known_without_their_addresses() -> None:
+    assert ttl.is_mail_send("google_workspace__send_gmail_message")
+    assert ttl.is_mail_send("microsoft_365__send-mail")
+    assert not ttl.is_mail_send("google_workspace__create_spreadsheet")

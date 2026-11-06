@@ -1590,13 +1590,18 @@ def _build_activity(
     for row in led:
         if row.status not in ("done", "approved"):
             continue
+        if "__" in row.tool and not take_the_lead.mcp_tool_acts(row.tool):
+            # A connected-app read logged before reads stopped being gated
+            # ("Get gmail messages content batch") did nothing for anyone.
+            continue
         # An email names who it went to ("Emailed Riley Park"),
         # never the raw tool ("Send gmail message").
         # The feed is the whole team's: it names teammates only, and an
         # email to anyone else (a contact, an outside address) is "Sent an
         # email". Done for you, the owner's own, names them all.
         team = _mail_names(row.mail_to, team_only=True)
-        summary = f"Emailed {team}" if team else "Sent an email" if row.mail_to else row.summary
+        mailed = bool(row.mail_to) or take_the_lead.is_mail_send(row.tool)
+        summary = f"Emailed {team}" if team else "Sent an email" if mailed else row.summary
         items.append(ActivityItem(
             kind="took_the_lead",
             summary=summary if row.status == "done" else f"{summary} (after a yes)",

@@ -23,7 +23,9 @@ CREATE_ALERT_TOOL: dict[str, Any] = {
         "need information from them (put the exact question in 'question'), 'choice' when "
         "they pick one of 2 to 4 options (give them in 'choices'), 'ok' only when approving "
         "makes you do one exact thing (spell it out in the body), 'fyi' when nothing is "
-        "needed. One card asks one thing: put related questions in one 'question'."
+        "needed. One card asks one thing: put related questions in one 'question'. "
+        "When the sender already has an open card, you're told which; call again with "
+        "'joins_card' set to say whether this is the same matter or a different decision."
     ),
     "input_schema": {
         "type": "object",
@@ -75,6 +77,15 @@ CREATE_ALERT_TOOL: dict[str, Any] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "With 'choice': 2 to 4 short options, each a few words.",
+            },
+            "joins_card": {
+                "type": "integer",
+                "description": (
+                    "Only when told the sender already has an open card: that card's id when "
+                    "this is the same matter (a reminder, more detail, a change to what they "
+                    "asked), so it joins that card; 0 when it is a different decision, so it "
+                    "gets its own card and its own answer."
+                ),
             },
         },
         "required": ["subject", "body"],
@@ -241,6 +252,55 @@ def _one_card_per_sender(event: Any, session: Any) -> None:
     event.follow_up = True
 
 
+def _sender_card_choice(event: Any, joins: Any) -> str | None:
+    """One card per matter, not per sender: a sender's second, unrelated
+    ask never joins the card of their first, where one answer would settle
+    both. While the sender has open cards, the turn says which one this is
+    (``joins_card``): that card's id joins it, 0 starts a card of its own
+    (keyed ``email-from:<sender>#<n>``, so what they write about it next
+    can join it). Returns what to tell the turn when it hasn't said yet,
+    else None with ``event`` keyed to its card. Never raises."""
+    if not event.follow_up or not event.dedup_hint:
+        return None
+    from openexecutive.alerts import store
+
+    base = event.dedup_hint
+    stored = f"private:{base}" if event.private else base
+    try:
+        cards = store.open_alerts_keyed(event.source, stored)
+    except Exception:
+        logger.warning("create_alert: couldn't read the sender's open cards", exc_info=True)
+        return None
+    if not cards:
+        return None
+    pick: int | None = None
+    if joins is not None and not isinstance(joins, bool):
+        with contextlib.suppress(TypeError, ValueError):
+            pick = int(joins)
+    if pick is None:
+        listed = "; ".join(
+            f'card {c.id}: "{c.headline}"' + (f' (asks: "{c.question}")' if c.question else "")
+            for c in cards
+        )
+        return json.dumps({
+            "status": "sender_has_open_card",
+            "open_cards": [{"id": c.id, "headline": c.headline} for c in cards],
+            "message": (
+                f"Nothing was raised yet. This sender already has open cards: {listed}. "
+                "Call create_alert again with the same fields plus 'joins_card': that card's id "
+                "if this is the same matter, or 0 if it is a different decision, so each "
+                "decision gets its own card and answer."
+            ),
+        })
+    match = next((c for c in cards if c.id == pick), None) if pick else None
+    if match is not None:
+        key = str(match.dedup_key or "")
+        event.dedup_hint = key.removeprefix("private:") if event.private else key
+    else:
+        event.dedup_hint = f"{base}#{uuid.uuid4().hex[:8]}"
+    return None
+
+
 async def handle_create_alert(tool_input: dict[str, Any]) -> str:
     from openexecutive.alerts.models import AlertEvent
     from openexecutive.alerts.pipeline import schedule_evaluation
@@ -309,6 +369,9 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             event.private = True
         event.needs, event.question, event.choices = _card_ask(tool_input)
         _one_card_per_sender(event, current_session.get())
+        ask_first = _sender_card_choice(event, tool_input.get("joins_card"))
+        if ask_first is not None:
+            return ask_first
         event.external_id = _fresh_external_id(event.source, event.external_id, folds=event.follow_up)
         schedule_evaluation(event)
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
