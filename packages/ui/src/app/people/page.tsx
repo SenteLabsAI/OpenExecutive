@@ -731,7 +731,7 @@ export default function PeoplePage() {
         <AddPersonModal
           initialKind={defaultKindForTab(listTab)}
           canAddContacts={viewerIsPrincipal}
-          canBePrincipal={canClaimPrincipal(people, loading)}
+          canBePrincipal={canClaimPrincipal(people, loading || error !== null)}
           onCreated={(p) => {
             setPeople((prev) => [...prev, p]);
             setShowAdd(false);
