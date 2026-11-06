@@ -249,6 +249,9 @@ class TurnOutside:
     go_seen: frozenset[str] = frozenset()
     # The owner's setting as it applies to this turn (``outside_mode.for_turn``).
     mode: str = "ask"
+    # The person's own message this turn, as they sent it: what
+    # ``card_answers`` reads for their yes.
+    user_message: str = ""
     # Google Drive ids checked this turn (``vet_reads``): the company's own,
     # and the rest, so each is looked up once.
     inside_items: set[str] = field(default_factory=set)
@@ -292,6 +295,7 @@ def begin_turn(
         shared=getattr(session, "shared_chat", False) is True,
         web=getattr(session, "from_web_chat", False) is True,
         previous=_TURN.get(),
+        user_message=user_message or "",
     )
     from openexecutive.orchestrator import outside_mode
 

@@ -70,6 +70,7 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # Triage / alerts
     "create_alert",
     "ack_alert",
+    "answer_card",
     # Universal workflow launcher (any built-in / custom workflow from chat)
     "run_workflow",
     # Saves a workflow, or leaves a card for a change to one (workflow_change)
@@ -588,6 +589,14 @@ def summarize_action(
         payload["summary"] = (
             f"{verb} proposal #{alert_id}" if alert_id is not None else f"{verb} proposal"
         )
+        payload["target"] = str(alert_id) if alert_id is not None else None
+    elif tool_name == "answer_card":
+        reply = tool_input.get("reply")
+        verb = {"approve": "Approved", "answer": "Answered", "dismiss": "Skipped"}.get(
+            reply if isinstance(reply, str) else "", "Answered",
+        )
+        alert_id = tool_input.get("alert_id")
+        payload["summary"] = f"{verb} a card"
         payload["target"] = str(alert_id) if alert_id is not None else None
     elif tool_name == "call_tool":
         # MCP — the underlying tool name lives in tool_input["name"]. The chip

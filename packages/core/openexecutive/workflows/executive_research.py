@@ -1233,6 +1233,7 @@ _SYNTHESIS_EXCLUDED_TOOLS = frozenset({
     # the very context this pass reasons over. The alert review closes alerts,
     # with evidence; a research run does not.
     "ack_alert",
+    "answer_card",
 })
 
 

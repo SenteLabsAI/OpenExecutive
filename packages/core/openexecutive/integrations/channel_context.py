@@ -148,11 +148,23 @@ def attach_briefing_context(session: object, *, is_dm: bool, person: object) -> 
 
     Synchronous SQLite — call it via ``asyncio.to_thread``. Never raises.
     """
-    if not is_dm or not getattr(person, "is_principal", False):
+    if not is_dm:
+        return ""
+    # A team member gets their own cards only: the ones assigned to them,
+    # which are all `answer_card` lets them answer.
+    teammate = (
+        not getattr(person, "is_principal", False)
+        and getattr(person, "kind", "") == "team"
+        and not getattr(person, "archived", False)
+        and isinstance(getattr(person, "id", None), int)
+    )
+    if not getattr(person, "is_principal", False) and not teammate:
         return ""
     try:
         from openexecutive.briefing.context import render_and_trust
 
+        if teammate:
+            return render_and_trust(session, routed_to=person.id)  # type: ignore[attr-defined]
         return render_and_trust(session)
     except Exception:
         logger.exception("channel_context: could not build the briefing block")

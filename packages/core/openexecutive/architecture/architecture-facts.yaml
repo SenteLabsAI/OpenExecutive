@@ -920,6 +920,23 @@ routing:
     `send_slack_dm`, and `schedule_followup` are exposed as tools so the
     Executive can resolve a person → preferred channel → message in a
     single turn.
+  card_answers: |
+    `answer_card(alert_id, reply, answer?)` (orchestrator/card_answers.py) does what a Needs you
+    card's own button does when the person says yes, no or an answer in their own conversation
+    (typed, or said in a voice call): approve carries a decision-backed card out as a chat app's
+    tap does (decisions.resolve_in_chat), queues a card's held scheduled action again, or marks a
+    plain proposal approved for the turn to do; answer closes a card that asks something with
+    their words; dismiss declines. "Skip it for now" calls nothing. WHY these gates: approving
+    runs what the Approvals level held, so the model alone must not be able to. It takes only ids
+    the server showed or found this turn (ack_alert's trust rule), only on the person's own
+    verified turn (the principal with their board shown, or a verified team member for a card
+    routed to them; never a shared chat, unattended run, mail or another AI app, where the tool
+    is also withheld), never once the turn read outside content (outside_content.read_outside:
+    a document saying approve card 12 can't steer it), and an approval only when the person's own
+    message this turn says yes (said_yes: a yes word, no no word, not a question). Card headlines
+    are inbound text, so one card's body can still argue for another live card; the yes in their
+    own message is what bounds that. A team member's own DMs show the board's cards routed to
+    them (attach_briefing_context -> render_and_trust(routed_to=...)).
   alert_tools: |
     `ack_alert(alert_id, status)` lets the Executive clear a briefing
     proposal from the user's "Needs you" list directly from a chat turn —

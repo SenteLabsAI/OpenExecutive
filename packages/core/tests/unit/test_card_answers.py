@@ -1,0 +1,219 @@
+"""`answer_card`: a yes, an answer or a no to a Needs you card in your own chat
+does what the card's button does (orchestrator/card_answers.py)."""
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from openexecutive.alerts import approvals
+from openexecutive.alerts import store as alert_store
+from openexecutive.alerts.store import initialize_db, insert_alert
+from openexecutive.briefing.context import render_and_trust
+from openexecutive.orchestrator import card_answers, outside_content
+from openexecutive.orchestrator.card_answers import handle_answer_card, said_yes
+from openexecutive.orchestrator.schedule_tools import current_session
+from openexecutive.orchestrator.session import Session
+from openexecutive.people import store as people_store
+
+
+@pytest.fixture(autouse=True)
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db_path = tmp_path / "alerts.db"
+    initialize_db(db_path)
+    people_store.initialize_db(db_path)
+    monkeypatch.setattr(alert_store, "DB_PATH", db_path)
+    monkeypatch.setattr(people_store, "DB_PATH", db_path)
+    audited: list[str] = []
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda event, *a, **k: audited.append(event))
+    return db_path
+
+
+@pytest.fixture()
+def people(db: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        principal=people_store.upsert_person(
+            full_name="Pat Principal", is_principal=True, email="pat@example.com",
+        ),
+        teammate=people_store.upsert_person(full_name="Sara Teammate", email="sara@example.com"),
+    )
+
+
+def _alert(**kw: Any) -> int:
+    fields: dict[str, Any] = {
+        "source": "alert_review", "external_id": f"x-{len(kw)}-{kw.get('headline', '')}",
+        "severity": "medium", "headline": "Send the Q4 note to Alex", "body": "Draft is ready.",
+        "suggested_action": "Email Alex the Q4 pricing note.",
+    }
+    fields.update(kw)
+    alert_id = insert_alert(**fields)
+    assert alert_id is not None
+    return alert_id
+
+
+@contextmanager
+def _turn(person_id: int, message: str) -> Iterator[Session]:
+    s = Session(from_web_chat=True, caller_person_id=person_id)
+    render_and_trust(s)
+    token = current_session.set(s)
+    state = outside_content.begin_turn(s, user_message=message)
+    try:
+        yield s
+    finally:
+        outside_content.end_turn(state)
+        current_session.reset(token)
+
+
+def _call(**tool_input: Any) -> dict[str, Any]:
+    return json.loads(asyncio.run(handle_answer_card(tool_input)))
+
+
+@pytest.mark.parametrize("text", ["Yes", "yeah, send it", "OK book it.", "Go ahead", "approve it", "sounds good"])
+def test_a_plain_yes_is_a_yes(text: str) -> None:
+    assert said_yes(text)
+
+
+@pytest.mark.parametrize("text", [
+    "", "no", "not yet", "skip it for now", "yes but wait", "ok so what did they want?", "Tuesday",
+])
+def test_anything_else_is_not_a_yes(text: str) -> None:
+    assert not said_yes(text)
+
+
+def test_approving_a_proposal_closes_it_and_hands_the_work_to_this_turn(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "Yes, send it."):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert out["status"] == "approved"
+    assert "Email Alex" in out["card"]
+    assert alert_store.get_alert(alert_id).status == "ack"
+    assert approvals.latest_for(alert_id).status == approvals.STATUS_DONE
+
+
+def test_an_approval_needs_their_message_to_say_yes(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "What's in the note?"):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert "error" in out
+    assert alert_store.get_alert(alert_id).status == "unread"
+
+
+def test_a_card_not_shown_this_turn_is_refused(people: SimpleNamespace) -> None:
+    with _turn(people.principal, "yes"):
+        out = _call(alert_id=9999, reply="approve")
+    assert "error" in out
+
+
+def test_nothing_is_answered_after_an_outside_read(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "yes"):
+        outside_content.mark(outside_content.WEB)
+        out = _call(alert_id=alert_id, reply="approve")
+    assert "error" in out
+    assert alert_store.get_alert(alert_id).status == "unread"
+
+
+def test_an_answer_closes_a_question_card_with_their_words(people: SimpleNamespace) -> None:
+    alert_id = _alert(
+        headline="Dogwood review", needs="choice", question="Which day?", choices=["Tue", "Wed"],
+    )
+    with _turn(people.principal, "Wednesday works"):
+        out = _call(alert_id=alert_id, reply="answer", answer="Wednesday")
+    assert out["status"] == "answered"
+    assert out["their_answer"] == "Wednesday"
+    assert approvals.latest_for(alert_id).edited_body == "Wednesday"
+
+
+def test_a_question_card_isnt_approved_without_an_answer(people: SimpleNamespace) -> None:
+    alert_id = _alert(headline="Dogwood review", needs="answer", question="Who leads it?")
+    with _turn(people.principal, "yes"):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert "error" in out
+
+
+def test_dismiss_declines_the_card(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "no, drop it"):
+        out = _call(alert_id=alert_id, reply="dismiss")
+    assert out["status"] == "dismissed"
+    assert alert_store.get_alert(alert_id).status == "dismissed"
+
+
+def test_a_teammate_answers_their_own_card(people: SimpleNamespace) -> None:
+    alert_id = _alert(routed_to_person_id=people.teammate)
+    with _turn(people.teammate, "yes, send it"):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert out["status"] == "approved"
+
+
+def test_a_teammate_cant_answer_someone_elses_card(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.teammate, "yes, send it"):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert "error" in out
+    assert alert_store.get_alert(alert_id).status == "unread"
+
+
+def test_a_shared_chat_answers_nothing(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "yes") as s:
+        s.shared_chat = True
+        out = _call(alert_id=alert_id, reply="approve")
+    assert "error" in out
+
+
+def test_a_held_action_goes_out_again(people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    alert_id = _alert()
+    approvals.record_held_action(alert_id, 42)
+    queued: list[int] = []
+
+    def requeue(alert: Any, approval: Any, action_id: int) -> Any:
+        queued.append(action_id)
+        return approvals.finish(approval.id, approvals.STATUS_DONE, "queued")
+
+    monkeypatch.setattr("openexecutive.api.routes.alerts._requeue_scheduled_action", requeue)
+    with _turn(people.principal, "yes go ahead"):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert out["status"] == "queued"
+    assert queued == [42]
+
+
+def test_a_decision_card_is_carried_out_as_a_tap(people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.memory.decision_ledger import DECISION_ALERT_SOURCE
+
+    alert_id = _alert(source=DECISION_ALERT_SOURCE, external_id="decision:7", headline="Book the Dogwood call")
+    seen: list[tuple[int, int, bool]] = []
+
+    async def resolve(instance_id: int, person: Any, *, approve: bool) -> Any:
+        seen.append((instance_id, person.id, approve))
+        return SimpleNamespace(status="executed")
+
+    monkeypatch.setattr("openexecutive.api.routes.decisions.resolve_in_chat", resolve)
+    with _turn(people.principal, "yes book it"):
+        out = _call(alert_id=alert_id, reply="approve")
+    assert out["status"] == "executed"
+    assert seen == [(7, people.principal, True)]
+    assert out["reply"] == card_answers.APPROVE
+
+
+def test_a_teammates_direct_messages_show_only_their_own_cards(people: SimpleNamespace) -> None:
+    from openexecutive.integrations.channel_context import attach_briefing_context
+
+    theirs = _alert(headline="Sara's card", routed_to_person_id=people.teammate)
+    _alert(headline="Owner's card")
+    s = Session(caller_person_id=people.teammate, speaker_verified=True)
+    block = attach_briefing_context(s, is_dm=True, person=people_store.get_person(people.teammate))
+    assert "Sara's card" in block and "Owner's card" not in block
+    assert s.trusted_alert_ids == {theirs}
+
+
+def test_a_board_line_says_what_the_card_asks(people: SimpleNamespace) -> None:
+    _alert(headline="Dogwood review", needs="choice", question="Which day?", choices=["Tue", "Wed"])
+    s = Session(from_web_chat=True, caller_person_id=people.principal)
+    assert "| asks: Which day? | choices: Tue / Wed" in render_and_trust(s)

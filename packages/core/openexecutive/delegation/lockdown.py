@@ -162,6 +162,10 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
 })
 
 MAIL_TOUCHED_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    # Answering a Needs you card carries out what its Approvals level held:
+    # never on a turn that read mail (card_answers also refuses after any
+    # outside read).
+    "answer_card",
     # Fetches of an outside address: a URL can carry the mail anywhere.
     "load_mcp_server",
     "add_watchlist_entry",
