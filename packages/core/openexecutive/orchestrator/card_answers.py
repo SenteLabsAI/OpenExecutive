@@ -13,7 +13,8 @@ button. ``answer_card`` does what the card's own button does:
   marked approved, and this turn does the work.
 - **answer**: a card that asks something (``needs`` answer or choice) is
   closed with the person's answer, and this turn carries on with it.
-- **dismiss**: the card is declined, as Skip on the card.
+- **dismiss**: the card is declined, as the card's Skip button does, when the person
+  says no or drop it. A spoken "skip" keeps the card for later.
 
 Saying "skip it for now" is none of these: the card stays where it is.
 
@@ -156,7 +157,7 @@ ANSWER_CARD_TOOL: dict[str, Any] = {
         "carries the card out, including an action the card held back), "
         "'answer' (for a card that asks a question or offers choices: closes it "
         "with their answer, then carry on with the work yourself in this turn), "
-        "or 'dismiss' (Skip / Not now, declined). Use the alert_id of a line in "
+        "or 'dismiss' (they say no or drop it: declined). Use the alert_id of a line in "
         "the open items of the <briefing> block (or a find_alerts match with "
         "can_ack=true). When the person says 'skip it for now', 'later' or "
         "'leave it', call nothing: the card stays for later. Call 'approve' "
@@ -251,7 +252,8 @@ def refusal(session: Any, alert_id: int | None, reply: str, user_message: str | 
         )
     if reply == DISMISS and not said_no(user_message or ""):
         return (
-            "Their message this turn doesn't say no or skip to it, so it wasn't dismissed. Ask them "
+            "Their message this turn doesn't say no or drop it (skip, later or not now keep the card), "
+            "so it wasn't dismissed. Ask them "
             "whether to drop it."
         )
     if reply in (APPROVE, ANSWER) and _answered_this_turn(session):

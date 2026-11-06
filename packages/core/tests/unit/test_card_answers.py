@@ -284,3 +284,10 @@ def test_a_no_to_another_card_doesnt_dismiss_this_one(people: SimpleNamespace) -
         out = _call(alert_id=other, reply="dismiss")
     assert "error" in out
     assert alert_store.get_alert(other).status == "unread"
+
+
+def test_skip_keeps_the_card_even_with_a_no(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "no, skip it"):
+        assert "error" in _call(alert_id=alert_id, reply="dismiss")
+    assert alert_store.get_alert(alert_id).status == "unread"
