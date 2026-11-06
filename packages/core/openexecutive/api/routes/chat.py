@@ -1024,6 +1024,7 @@ async def _run_chat_turn(
     client_turn_id: str | None = None,
     memory_text: str | None = None,
     turn_files: dict[str, bytes] | None = None,
+    background: bool = False,
 ) -> StreamingResponse:
     """Shared streaming-chat handler for both the JSON and multipart routes.
 
@@ -1534,7 +1535,7 @@ async def _run_chat_turn(
         # Broadcast to pages that have the chat open: a shared chat's others,
         # and the owner watching a turn run on the server with no page of its
         # own (``start_background_turn``: an approved card's Watch).
-        live_turn = session.shared_chat or isinstance(request, _StaysConnected)
+        live_turn = session.shared_chat or background
 
         try:
             if live_turn:
@@ -2080,6 +2081,7 @@ async def start_background_turn(
             attachment_blocks=None,
             request=_StaysConnected(request.scope, request.receive),
             memory_text=memory_text,
+            background=True,
         )
     except BaseException:
         _release_background_slot(owner)
