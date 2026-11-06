@@ -51,6 +51,21 @@ test("the rows, their state and the heading count", () => {
   assert.equal(checklistComplete(items), false);
 });
 
+test("a teammate gets only their own rows, and the card leaves once they ask", () => {
+  const items = gettingStartedItems({ ...base, team: true, teamSize: 3, isPrincipal: false });
+  assert.deepEqual(
+    items.map((i) => i.id),
+    ["ask", "own_mailbox"],
+  );
+  assert.ok(items.every((i) => !i.detail.includes("owner")));
+  assert.equal(checklistComplete(gettingStartedItems({ ...base, hasAsked: true, isPrincipal: false })), true);
+  // The owner, said or left out, keeps the full list.
+  assert.deepEqual(
+    gettingStartedItems({ ...base, isPrincipal: true }).map((i) => i.id),
+    gettingStartedItems(base).map((i) => i.id),
+  );
+});
+
 test("the two mailboxes are separate rows read from separate checks", () => {
   const items = gettingStartedItems({
     ...base,

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import { buttonClass } from "@/components/ui/Button";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { getSetupStatus, listPeople } from "@/lib/api";
+import { getPeopleViewer, getSetupStatus, listPeople } from "@/lib/api";
 import {
   checklistVisible,
   checklistProgress,
@@ -38,6 +38,8 @@ export function useGettingStarted(
   const [checks, setChecks] = useState<readonly SetupCheck[] | null>(null);
   const [teamSize, setTeamSize] = useState<number>(1);
   const [peopleLoaded, setPeopleLoaded] = useState(false);
+  // Whether the viewer is the owner: a teammate sees only their own rows.
+  const [isPrincipal, setIsPrincipal] = useState<boolean | undefined>(undefined);
   // Read once, on the client: the card only renders after /health answers.
   const [hidden, setHidden] = useState<boolean>(() => recall(STORAGE_KEYS.checklistHidden) === "1");
 
@@ -51,6 +53,10 @@ export function useGettingStarted(
       .then((ps) => setTeamSize(ps.length))
       .catch(() => undefined)
       .finally(() => setPeopleLoaded(true));
+    // Unknown viewer: their own rows only, as for a teammate.
+    getPeopleViewer()
+      .then((v) => setIsPrincipal(v.is_principal))
+      .catch(() => setIsPrincipal(false));
     return () => ctrl.abort();
   }, [hidden, profileLoaded]);
 
@@ -63,8 +69,9 @@ export function useGettingStarted(
         checks,
         team: mode === "team",
         teamSize,
+        isPrincipal,
       }),
-    [profileLoaded, companyName, sessionsLoaded, sessions.length, checks, mode, teamSize],
+    [profileLoaded, companyName, sessionsLoaded, sessions.length, checks, mode, teamSize, isPrincipal],
   );
   const hide = useCallback(() => {
     remember(STORAGE_KEYS.checklistHidden, "1");
@@ -73,7 +80,12 @@ export function useGettingStarted(
 
   const visible = checklistVisible({
     hidden,
-    loaded: profileLoaded !== undefined && checks !== null && sessionsLoaded && peopleLoaded,
+    loaded:
+      profileLoaded !== undefined &&
+      checks !== null &&
+      sessionsLoaded &&
+      peopleLoaded &&
+      isPrincipal !== undefined,
     items,
   });
   return { items, visible, hide };

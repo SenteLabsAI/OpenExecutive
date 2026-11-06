@@ -160,8 +160,27 @@ function checkState(checks: readonly SetupCheck[] | null, id: string): SetupChec
 
 /** The checklist rows, in the order they are shown. */
 export function gettingStartedItems(input: ChecklistInput): ChecklistItem[] {
-  const execMail = checkState(input.checks, "gmail");
   const ownMail = checkState(input.checks, "your_gmail");
+  const ownMailbox: ChecklistItem = {
+    id: "own_mailbox",
+    title: "Let it read your own mailbox",
+    detail: `Optional. ${OWN_MAILBOX_SENDS}`,
+    done: ownMail === "ok",
+    optional: true,
+    href: FIRST_RUN_LINKS.ownMailbox,
+    action: "Connect",
+  };
+  const ask: ChecklistItem = {
+    id: "ask",
+    title: "Ask your Executive something",
+    detail: input.hasAsked ? "First conversation saved" : `Try “${ASK_SUGGESTION}”`,
+    done: input.hasAsked,
+    optional: false,
+    href: "/?new=1",
+    action: "Ask",
+  };
+  if (input.isPrincipal === false) return [ask, ownMailbox];
+  const execMail = checkState(input.checks, "gmail");
   const items: ChecklistItem[] = [
     {
       id: "profile",
