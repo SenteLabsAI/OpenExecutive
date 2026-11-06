@@ -246,8 +246,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         f"CREATE TABLE IF NOT EXISTS {LOG_TABLE} ("  # noqa: S608
         "id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, scope TEXT NOT NULL, "
         "source TEXT NOT NULL, tool TEXT NOT NULL, summary TEXT NOT NULL, status TEXT NOT NULL, "
-        "why TEXT NOT NULL DEFAULT '', decision_id INTEGER)"
+        "why TEXT NOT NULL DEFAULT '', decision_id INTEGER, "
+        "mail_to TEXT NOT NULL DEFAULT '', mail_subject TEXT NOT NULL DEFAULT '')"
     )
+    # Who an email it sent went to, and its subject, so Home's
+    # Done for you can say "Emailed Riley Park: <subject>" (api.routes.today).
+    log_columns = {r[1] for r in conn.execute(f"PRAGMA table_info({LOG_TABLE})")}  # noqa: S608
+    for column in ("mail_to", "mail_subject"):
+        if column not in log_columns:
+            try:
+                conn.execute(f"ALTER TABLE {LOG_TABLE} ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")  # noqa: S608
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
 
 def _connect(db_path: Path | None = None) -> sqlite3.Connection:
@@ -1175,18 +1186,43 @@ def summarize(tool: str, tool_input: dict[str, Any], *, mcp: bool = False, quote
     return label[:240]
 
 
+def mail_sent(tool: str, tool_input: dict[str, Any]) -> tuple[str, str] | None:
+    """For a Gmail or Outlook send, its to/cc addresses (comma-joined,
+    lowercased) and subject; None for any other tool."""
+    from openexecutive.orchestrator import mcp_gateway
+
+    try:
+        normalized = mcp_gateway._normalize_tool_name(tool)
+        addresses = mcp_gateway._sent_to(tool, normalized, tool_input)
+        if not addresses:
+            return None
+        if tool == "google_workspace__send_gmail_message":
+            subject = tool_input.get("subject")
+        else:
+            message = mcp_gateway._ci_get(mcp_gateway._ci_get(tool_input, "body"), "message")
+            subject = mcp_gateway._ci_get(message, "subject")
+    except Exception:
+        return None
+    subject_text = " ".join(subject.split())[:200] if isinstance(subject, str) else ""
+    return ",".join(sorted(addresses)), subject_text
+
+
 def record(
     *, scope: str, source: str, tool: str, summary: str, status: str, why: str = "",
     decision_id: int | None = None, db_path: Path | None = None,
+    mail: tuple[str, str] | None = None,
 ) -> None:
-    """Add a log row (Recent activity reads the done ones). Best effort."""
+    """Add a log row (Recent activity reads the done ones). Best effort.
+    ``mail`` is an email send's ``(to, subject)`` (``mail_sent``)."""
+    mail_to, mail_subject = mail or ("", "")
     try:
         conn = _connect(db_path)
         try:
             conn.execute(
-                f"INSERT INTO {LOG_TABLE} (at, scope, source, tool, summary, status, why, decision_id) "  # noqa: S608
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (datetime.now(UTC).isoformat(), scope, source, tool, summary, status, why, decision_id),
+                f"INSERT INTO {LOG_TABLE} (at, scope, source, tool, summary, status, why, decision_id, "  # noqa: S608
+                "mail_to, mail_subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (datetime.now(UTC).isoformat(), scope, source, tool, summary, status, why, decision_id,
+                 mail_to, mail_subject),
             )
             conn.commit()
         finally:
@@ -1220,6 +1256,8 @@ class Done:
     status: str
     why: str
     decision_id: int | None
+    mail_to: str = ""
+    mail_subject: str = ""
 
 
 def done(scopes: list[str], *, days: int = 7, limit: int = 100, db_path: Path | None = None) -> list[Done]:
@@ -1422,7 +1460,8 @@ def hold(
         logger.exception("take_the_lead: couldn't put decision %d on Today", decision_id)
     record(scope=SCOPE_EXECUTIVE, source=source, tool=tool, summary=summarize(tool, tool_input, mcp=mcp, quote=False),
            status="waiting",
-           why=f"It waited because {hit.reason}.", decision_id=decision_id, db_path=db_path)
+           why=f"It waited because {hit.reason}.", decision_id=decision_id, db_path=db_path,
+           mail=mail_sent(tool, tool_input) if mcp else None)
     return decision_id
 
 
@@ -1503,7 +1542,7 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
         if not failed:
             _used(allowed.id)
     record(scope=SCOPE_EXECUTIVE, source=source, tool=name, summary=summarize(name, tool_input, mcp=mcp, quote=False),
-           status="failed" if failed else "done", why=why)
+           status="failed" if failed else "done", why=why, mail=mail_sent(name, tool_input) if mcp else None)
     return text
 
 

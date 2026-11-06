@@ -755,6 +755,11 @@ class ActivityItem(BaseModel):
     # and the artifact id of its write-up when it kept one (`run:<id>`).
     detail: str | None = None
     artifact_id: str | None = None
+    # An email it sent on its own, for Home's Done for you only
+    # (owner-only there): its subject and the addresses it went to. Never
+    # served, since this feed is the whole team's ("named, never quoted").
+    mail_subject: str = Field(default="", exclude=True)
+    mail_to: str = Field(default="", exclude=True)
 
 
 class ActivityResponse(BaseModel):
@@ -1585,13 +1590,22 @@ def _build_activity(
     for row in led:
         if row.status not in ("done", "approved"):
             continue
+        # An email names who it went to ("Emailed Riley Park"),
+        # never the raw tool ("Send gmail message").
+        # The feed is the whole team's: it names teammates only, and an
+        # email to anyone else (a contact, an outside address) is "Sent an
+        # email". Done for you, the owner's own, names them all.
+        team = _mail_names(row.mail_to, team_only=True)
+        summary = f"Emailed {team}" if team else "Sent an email" if row.mail_to else row.summary
         items.append(ActivityItem(
             kind="took_the_lead",
-            summary=row.summary if row.status == "done" else f"{row.summary} (after a yes)",
+            summary=summary if row.status == "done" else f"{summary} (after a yes)",
             actor="Executive",
-            target=None,
+            target=team or None,
             department=None,
             at=row.at,
+            mail_subject=row.mail_subject,
+            mail_to=row.mail_to,
         ))
 
     # Operational alerts the Executive raised. For the rail, all statuses are
@@ -2631,6 +2645,7 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
     # A message it sent to the reader (a reminder, a Right now note) is
     # something they already got, not something it did for them.
     reader = _reader_name(caller)
+    reader_emails = _reader_emails(caller)
     seen: set[str] = set()
     for item in activity:
         at = _parse_aware(item.at)
@@ -2638,17 +2653,72 @@ def _done_for_you(request: Request, caller: int | None, now: datetime) -> list[D
             continue
         if reader and " ".join((item.target or "").split()).casefold() == reader:
             continue
+        mailed = {a for a in item.mail_to.split(",") if a}
+        if mailed and reader_emails and mailed <= reader_emails:
+            continue
         key = f"{item.kind}:{item.at}:{item.summary}"
         if key in seen:
             continue
         seen.add(key)
+        title = item.summary or item.kind
+        if item.mail_to:
+            # Done for you is the owner's own, so it says who and what.
+            who = _mail_names(item.mail_to)
+            title = f"Emailed {who}" + (" (after a yes)" if title.endswith("(after a yes)") else "")
+            if item.mail_subject:
+                title = f"{title}: {item.mail_subject}"
         rows.append(DoneRow(
-            key=key, kind=item.kind, title=item.summary or item.kind,
+            key=key, kind=item.kind, title=title[:240],
             detail=item.detail or "", at=item.at, artifact_id=item.artifact_id,
         ))
     rows.sort(key=lambda r: _parse_aware(r.at) or datetime.min.replace(tzinfo=UTC), reverse=True)
     rows.sort(key=lambda r: 0 if r.status == "working" else 1)
     return rows[:_DONE_MAX]
+
+
+def _mail_names(mail_to: str, *, team_only: bool = False) -> str:
+    """"Riley Park", "Riley Park and sam@example.com", "Riley Park and 2
+    others": who an email went to, by their People name where there is
+    one (contacts included), else the address. ``team_only`` (the shared
+    feed): teammates' names, and "" when anyone else got it. "" when there's
+    no address. Never raises."""
+    from openexecutive.people.store import find_person_by_email
+
+    addresses = [a.strip() for a in (mail_to or "").split(",") if a.strip()]
+    if not addresses:
+        return ""
+    names: list[str] = []
+    for index, address in enumerate(addresses):
+        try:
+            person = find_person_by_email(address, include_contacts=not team_only)
+        except Exception:
+            person = None
+        name = " ".join((person.full_name or "").split()) if person is not None and person.full_name else ""
+        if team_only and not name:
+            return ""
+        if index < 2:
+            names.append(name or address)
+    if len(addresses) == 1:
+        return names[0]
+    if len(addresses) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{names[0]} and {len(addresses) - 1} others"
+
+
+def _reader_emails(caller: int | None) -> set[str]:
+    """The viewer's addresses, lowercased: an email it sent them is
+    something they already got. Empty when unknown. Never raises."""
+    if caller is None:
+        return set()
+    from openexecutive.people.store import get_person
+
+    try:
+        person = get_person(caller)
+    except Exception:
+        return set()
+    if person is None:
+        return set()
+    return {e.strip().lower() for e in [person.email or "", *person.email_aliases] if e and e.strip()}
 
 
 def _right_now_rows(now: datetime | None = None) -> list[RightNowRow]:

@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from openexecutive.departments.models import AuthorityLevel
-from openexecutive.orchestrator import take_the_lead
+from openexecutive.orchestrator import card_details, take_the_lead
 from openexecutive.people.models import AuthorityScope, Person
 
 logger = logging.getLogger(__name__)
@@ -294,7 +294,7 @@ def hold(
         "fields": take_the_lead.editable_fields(tool, tool_input, mcp=mcp),
         # Everything the call says, in full: the card shows this before it
         # can be approved, since the summary keeps only the start.
-        "details": _details(tool_input),
+        "details": card_details.plain(tool, tool_input),
         **({"held": True} if held else {}),
     }
     decision_id = create_decision_instance(
@@ -351,15 +351,6 @@ def hold(
 
 
 _HOLD_KEY_TRIES = 50
-
-
-def _details(tool_input: dict[str, Any]) -> list[dict[str, str]]:
-    """Each field of the call and its whole value, as text."""
-    out = []
-    for key, value in tool_input.items():
-        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
-        out.append({"field": str(key), "value": text})
-    return out
 
 
 def _waiting(decision_id: int, verdict: Verdict) -> str:
