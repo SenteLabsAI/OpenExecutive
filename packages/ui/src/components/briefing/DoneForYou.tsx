@@ -32,7 +32,7 @@ export default function DoneForYou({
   onRetry?: (row: DoneRow) => void;
   // Opens a chat in place. Home is already at `/`, so a link to
   // `/?session=` there changes the address and nothing else.
-  onOpenChat?: (sessionId: string) => void;
+  onOpenChat?: (sessionId: string, watch?: boolean) => void;
 }) {
   if (rows.length === 0) return null;
   return (
@@ -62,7 +62,7 @@ export default function DoneForYou({
               {link && row.session_id && onOpenChat ? (
                 <button
                   type="button"
-                  onClick={() => onOpenChat(row.session_id as string)}
+                  onClick={() => onOpenChat(row.session_id as string, row.status === "working")}
                   className={buttonClass("ghost", "sm")}
                 >
                   {link.label}

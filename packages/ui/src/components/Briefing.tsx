@@ -129,7 +129,7 @@ interface BriefingProps {
   // render as plain navigation links.
   onContinue?: ContinueHandler;
   // Opens one of the reader's chats in place (Done for you's See / Watch).
-  onOpenChat?: (sessionId: string) => void;
+  onOpenChat?: (sessionId: string, watch?: boolean) => void;
   // Set to true when this Briefing is the root landing surface — adds the
   // greeting header.
   showHeader?: boolean;
