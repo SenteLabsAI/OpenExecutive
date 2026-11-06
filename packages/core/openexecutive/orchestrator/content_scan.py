@@ -43,6 +43,7 @@ hash). Plain code around one model call; never raises.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import logging
 import re
@@ -355,17 +356,22 @@ def checked_content(content: Any) -> Any:
 _QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'", "\u2026": "..."})
 _ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _GAP = re.compile(r"\.{3,}")
+# Markup a quote is written without: HTML tags and Markdown emphasis marks.
+_TAG = re.compile(r"<[^<>]{0,200}>")
+_EMPHASIS = re.compile(r"[*_~`]+")
 
 
 def _plain(text: str) -> str:
-    """``text`` for comparing a quote with: JSON escapes undone, NFKC-folded
+    """``text`` for comparing a quote with: JSON escapes and HTML entities
+    undone, HTML tags and Markdown emphasis taken out, NFKC-folded
     (fullwidth letters, no-break spaces), invisible and control characters
     dropped, quotes and ellipses made plain, case and spacing ignored. Both
     sides go through it, so content hidden behind zero-width characters still
     matches a quote the check wrote without them."""
     text = _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
     text = text.replace('\\"', '"').replace("\\n", " ").replace("\\t", " ")
-    text = unicodedata.normalize("NFKC", text)
+    text = _TAG.sub("", html.unescape(text))
+    text = _EMPHASIS.sub("", unicodedata.normalize("NFKC", text))
     text = "".join(ch if unicodedata.category(ch) not in ("Cc", "Cf") or ch in "\n\t" else "" for ch in text)
     return " ".join(text.translate(_QUOTES).casefold().split())
 
@@ -426,6 +432,15 @@ async def _scan(content: Any, *, model: str | None, entries: int) -> Verdict:
             again = _verdict(await _call_model(model or scan_model(), content), entries)
             if again is not None and again.flagged and _quoted(again.evidence, content):
                 verdict = again
+            elif again is not None and again.flagged:
+                # Flagged twice, quoted neither time: it may be content the
+                # quote can't be matched through (an encoded payload). It holds
+                # nothing, but the turn is told it couldn't be checked, and it
+                # isn't remembered as clean.
+                logger.info(
+                    "content_scan: a flag twice quoted nothing in the content (%r)", verdict.evidence[:80],
+                )
+                return UNCHECKED
             else:
                 logger.info(
                     "content_scan: dropped a flag that quoted nothing in the content (%r)", verdict.evidence[:80],

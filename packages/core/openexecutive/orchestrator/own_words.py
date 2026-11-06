@@ -37,6 +37,7 @@ import json
 import logging
 import re
 import threading
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,10 @@ def _forms(piece: str) -> set[str]:
 
 _built: dict[str, tuple[str, ...]] | None = None
 _lock = threading.Lock()
+# After a failed build, how long to strip nothing before trying again, so a
+# lasting failure never re-runs the build on every check.
+_RETRY_S = 600.0
+_failed_at: float | None = None
 
 
 def _build() -> dict[str, tuple[str, ...]]:
@@ -151,14 +156,17 @@ def _index() -> dict[str, tuple[str, ...]]:
     """The list, built once: concurrent first calls wait on one build, and a
     failed build is not kept (the next check tries again; this one strips
     nothing)."""
-    global _built
+    global _built, _failed_at
     if _built is not None:
         return _built
+    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_S:
+        return {}
     with _lock:
         if _built is None:
             try:
                 _built = _build()
             except Exception:
+                _failed_at = time.monotonic()
                 logger.warning("own_words: couldn't build the list", exc_info=True)
                 return {}
         return _built
@@ -168,7 +176,7 @@ async def warm() -> None:
     """Build the list off the event loop (it parses the package's source,
     a few seconds once per process), so the first check never stalls the
     server. Concurrent callers share the one build (``_index``)."""
-    if _built is None:
+    if _built is None and (_failed_at is None or time.monotonic() - _failed_at >= _RETRY_S):
         await asyncio.to_thread(_index)
 
 
