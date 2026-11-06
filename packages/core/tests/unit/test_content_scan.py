@@ -456,6 +456,10 @@ def test_the_checks_test_set_loads() -> None:
         if want == "clean" and not case.get("list"):
             checked = content_scan.checked_content(case["content"])
             assert not any(p in checked for p in _OWN_PHRASES), case["id"]
+    # Nothing in a case the check must flag is taken out before it reads it.
+    for want, case in cases:
+        if want == "flag" and not case.get("list"):
+            assert content_scan.checked_content(case["content"]) == case["content"], case["id"]
 
 
 def test_the_checks_own_literals_are_not_on_the_list() -> None:
