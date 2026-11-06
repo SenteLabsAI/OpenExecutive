@@ -53,6 +53,16 @@ export function defaultKindForTab(tab: PeopleTab): PersonKind {
   return tab === "contacts" ? "contact" : "team";
 }
 
+/**
+ * "This is me — Primary" is only for the first setup: once someone on the
+ * list is the principal, nobody else can be, so the add form doesn't offer
+ * it (not even to the principal, who is already on the list). Not offered
+ * while the list is still loading either.
+ */
+export function canClaimPrincipal(people: Pick<Person, "is_principal">[], loading: boolean): boolean {
+  return !loading && !people.some((p) => p.is_principal);
+}
+
 /** The principal is always on the team, whatever the form says. */
 export function effectiveKind(kind: PersonKind, isPrincipal: boolean): PersonKind {
   return isPrincipal ? "team" : kind;
