@@ -63,6 +63,7 @@ GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
         (
             "ack_alert",
             "add_watchlist_entry",
+            "answer_card",
             "create_alert",
             "find_alerts",
             "list_watchlist",

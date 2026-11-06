@@ -61,6 +61,7 @@ _LABELS: dict[str, str] = {
     "lookup_person": "Looking up people…",
     "ack_alert": "Updating a proposal…",
     "find_alerts": "Looking through the briefing board…",
+    "answer_card": "Answering a card…",
 
     # Calendar. These write, so none of them says "checking" — the label is
     # emitted before the call runs and must not promise a read.
@@ -206,6 +207,7 @@ _PRIORITY: tuple[frozenset[str], ...] = (
     frozenset({
         "create_alert",
         "ack_alert",
+        "answer_card",
         "draft_artifact",
         "add_watchlist_entry",
         "remove_watchlist_entry",

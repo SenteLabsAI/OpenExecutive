@@ -27,6 +27,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from openexecutive.orchestrator.card_answers import ANSWER_CARD_TOOL, handle_answer_card
 from openexecutive.orchestrator.disclosure import with_chat_line
 
 logger = logging.getLogger(__name__)
@@ -575,10 +576,9 @@ ACK_ALERT_TOOL: dict[str, Any] = {
         "the call is refused; do not retry the same id — if the principal named the "
         "item, look it up with find_alerts, otherwise say you cannot clear that one.\n"
         "Status 'ack' means the user approved (you are about to execute the suggested "
-        "action); 'dismissed' means declined. Note this clears the card only — a "
-        "proposal that books something (a meeting, a calendar hold) also needs the "
-        "Approve button on the briefing page, which you cannot press; say so rather "
-        "than implying an ack completed it."
+        "action); 'dismissed' means declined. Note this clears the card only: to carry "
+        "out what a card proposes or held back (book the meeting, send what it "
+        "held), or to answer its question, use answer_card instead."
     ),
     "input_schema": {
         "type": "object",
@@ -1779,6 +1779,7 @@ SCHEDULE_TOOLS: list[dict[str, Any]] = [
     LOOKUP_PERSON_TOOL,
     ACK_ALERT_TOOL,
     FIND_ALERTS_TOOL,
+    ANSWER_CARD_TOOL,
 ]
 
 
@@ -1929,6 +1930,8 @@ UNATTENDED_WITHHELD_TOOLS: frozenset[str] = frozenset({
     "remember_fact",
     "resolve_roster_request",
     "update_company_profile",
+    # Answers a Needs you card as the person (orchestrator/card_answers.py).
+    "answer_card",
     # App control (orchestrator/app_control.py) acts as the person asking, and
     # its cards wait for their tap: nobody is there to ask or to tap.
     "do_in_app",
@@ -2163,6 +2166,7 @@ def private_turn_withheld_error(tool_name: str) -> str:
 # the model emits anyway (`mcp_client_withholds`, `mcp_client_withheld_error`).
 MCP_CLIENT_WITHHELD_TOOLS: frozenset[str] = PRIVATE_TURN_WITHHELD_TOOLS | UNATTENDED_WITHHELD_TOOLS | frozenset({
     "ack_alert",
+    "answer_card",
     "archive_person",
     "close_open_loop",
     "create_alert",
@@ -2346,6 +2350,8 @@ def mcp_client_withheld_error(tool_name: str, *, acting: bool = False) -> str:
 # acts later with the full tool set, past this turn's check. A fixed set, so
 # the variant keeps a stable tool prefix of its own.
 SHARED_CHAT_WITHHELD_TOOLS: frozenset[str] = frozenset({
+    # A Needs you card is answered by its person, not by whoever wrote here.
+    "answer_card",
     "archive_person",
     # Changes in the app as the owner: their word, not a guest's.
     "do_in_app",
@@ -3019,4 +3025,5 @@ SCHEDULE_TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = 
     "lookup_person": handle_lookup_person,
     "ack_alert": handle_ack_alert,
     "find_alerts": handle_find_alerts,
+    "answer_card": handle_answer_card,
 }

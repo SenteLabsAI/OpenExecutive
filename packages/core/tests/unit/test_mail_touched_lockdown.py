@@ -170,7 +170,7 @@ def test_call_tool_runs_only_reads_and_recipient_checked_sends() -> None:
     assert not lockdown.mail_touched_withholds("ghostwrite_email", {})
 
 
-def test_only_links_scripts_workflows_posts_and_lasting_text_are_withheld() -> None:
+def test_only_links_scripts_workflows_posts_lasting_text_and_card_answers_are_withheld() -> None:
     assert {
         "load_mcp_server", "add_watchlist_entry", "tune_watchlist_entry",
         "run_executive_research", "run_script",
@@ -178,7 +178,7 @@ def test_only_links_scripts_workflows_posts_and_lasting_text_are_withheld() -> N
         "send_department_message", "send_company_broadcast", "create_alert",
         "archive_person", "set_department_head", "resolve_roster_request",
         "schedule_followup", "create_goal", "update_department_goal",
-        "record_decision_outcome",
+        "record_decision_outcome", "answer_card",
     } == lockdown.MAIL_TOUCHED_WITHHELD_TOOLS
     for tool in ("message_person", "send_slack_dm", "create_calendar_event",
                  "remember_fact", "remind_me", "update_company_profile",

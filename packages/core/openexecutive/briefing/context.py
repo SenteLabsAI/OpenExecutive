@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,12 @@ def format_open_alerts_for_prompt(
     *,
     include_private: bool = False,
     viewer: object | None = None,
+    routed_to: int | None = None,
 ) -> str:
     """Render current open (unread) alerts as a compact digest, or ``""`` when none.
+
+    ``routed_to``: only the cards assigned to that person (a team member's
+    own board, in their own direct messages).
 
     A drafted artifact's card is listed only for its owner, ``viewer``
     (``alerts.models.visible_alert``).
@@ -142,6 +147,8 @@ def format_open_alerts_for_prompt(
         from openexecutive.alerts.models import is_private_alert
 
         live = [a for a in live if not is_private_alert(a)]
+    if routed_to is not None:
+        live = [a for a in live if a.routed_to_person_id == routed_to]
 
     if trusted_ids is not None:
         # Clamped to BOARD_LIMIT, never to `limit`. `limit` only decides how
@@ -184,6 +191,7 @@ def format_open_alerts_for_prompt(
             line += review
         if alert.occurrence_count > 1:
             line += f" | seen x{alert.occurrence_count}"
+        line += _card_ask(alert)
         lines.append(line)
 
     if not lines:
@@ -221,6 +229,22 @@ def format_open_alerts_for_prompt(
         logger.exception("briefing_context.handled_block_failed")
         handled = ""
     return out + "\n\n" + handled if handled else out
+
+
+def _card_ask(alert: Any) -> str:
+    """What the card's buttons ask of the person, so a yes, a pick or an
+    answer in chat goes to ``answer_card`` as the card would take it."""
+    from openexecutive.alerts.models import NEEDS_ANSWER, NEEDS_CHOICE, NEEDS_FYI
+
+    needs = getattr(alert, "needs", "") or ""
+    if needs == NEEDS_CHOICE and alert.choices:
+        picks = " / ".join(_one_line(c) for c in alert.choices)
+        return f" | asks: {_one_line(alert.question) or 'pick one'} | choices: {picks}"
+    if needs == NEEDS_ANSWER:
+        return f" | asks: {_one_line(alert.question) or 'an answer'}"
+    if needs == NEEDS_FYI:
+        return " | for them to know"
+    return ""
 
 
 def _handled_block(db_path: Path | None, now: datetime) -> str:
@@ -281,7 +305,9 @@ def _handled_block(db_path: Path | None, now: datetime) -> str:
     )
 
 
-def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
+def render_and_trust(
+    session: object, *, db_path: Path | None = None, routed_to: int | None = None,
+) -> str:
     """Render the digest and record the live board on ``session``.
 
     What is recorded is the whole live board (up to ``BOARD_LIMIT``), not only
@@ -318,6 +344,7 @@ def render_and_trust(session: object, *, db_path: Path | None = None) -> str:
             include_private=verified,
             # A drafted artifact's card only on its owner's turn.
             viewer=viewer_for_person(getattr(session, "caller_person_id", None)),
+            routed_to=None if verified else routed_to,
         )
     except Exception:
         logger.exception("briefing_context.render_and_trust_failed")

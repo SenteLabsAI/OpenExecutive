@@ -850,6 +850,7 @@ class ExecutiveReflectionWorkflow(Workflow):
             "send_discord_dm",
             "send_telegram_message",
             "ack_alert",
+            "answer_card",
             # Same reasoning as ack_alert: loop descriptions are quoted from
             # what people wrote, and nobody is watching this pass.
             "close_open_loop",
