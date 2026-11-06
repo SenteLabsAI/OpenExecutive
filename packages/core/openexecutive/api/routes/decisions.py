@@ -111,6 +111,23 @@ def _parse_payload(instance: DecisionInstance) -> dict[str, Any]:
         return {}
 
 
+_HELD_CLASSES = frozenset({"department_action", "take_the_lead_action"})
+
+
+def _served(instance: DecisionInstance) -> DecisionInstance:
+    """A held step as a page reads it: plain details, and no file's bytes
+    (``orchestrator.card_details.served``). Approve reads the stored row."""
+    if instance.decision_class not in _HELD_CLASSES:
+        return instance
+    from openexecutive.orchestrator import card_details
+
+    payload = _parse_payload(instance)
+    if not isinstance(payload, dict) or not isinstance(payload.get("input"), dict):
+        return instance
+    shown = json.dumps(card_details.served(payload), ensure_ascii=False)
+    return instance.model_copy(update={"proposed_payload_json": shown})
+
+
 def _payload_diff(original: dict[str, Any], final: dict[str, Any]) -> bool:
     """Return True if the payloads differ in any semantically meaningful field."""
     for key in ("title", "start", "end", "description"):
@@ -343,19 +360,19 @@ def get_decisions(
         if caller is None:
             return []
         instances = list_instances(decision_class, status=status, limit=500)
-        return [i for i in instances if i.approver_person_id == caller][:limit]
+        return [_served(i) for i in instances if i.approver_person_id == caller][:limit]
     if _approver_is_principal(request):
-        return list_instances(decision_class, status=status, limit=limit)
+        return [_served(i) for i in list_instances(decision_class, status=status, limit=limit)]
     spec = DECISION_CLASSES.get(decision_class)
     if spec is not None and spec.principal_only:
         return []
     instances = list_instances(decision_class, status=status, limit=limit)
-    return [i for i in instances if not _is_private(i)]
+    return [_served(i) for i in instances if not _is_private(i)]
 
 
 @router.get("/decisions/{instance_id}", response_model=DecisionInstance)
 def get_decision(instance_id: int, request: Request) -> DecisionInstance:
-    return _visible_instance(instance_id, request)
+    return _served(_visible_instance(instance_id, request))
 
 
 def _check_booking_edits(payload: dict[str, Any], edits: dict[str, Any]) -> None:
