@@ -3111,6 +3111,34 @@ def test_an_email_it_sent_on_its_own_names_who_and_what_in_done_for_you(
     assert all(i["target"] is None for i in feed if i["summary"] == "Sent an email")
 
 
+def test_reads_and_unaddressed_sends_never_show_as_raw_tool_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connected-app read logged as done ("Get gmail messages content
+    batch") did nothing for anyone and is left out; a send logged without
+    its addresses reads "Sent an email", never "Send gmail message"."""
+    from openexecutive.orchestrator import take_the_lead
+
+    db = tmp_path / "done_raw.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    people_registry.invalidate()
+    for tool, summary in (
+        ("google_workspace__get_gmail_messages_content_batch", "Get gmail messages content batch"),
+        ("google_workspace__send_gmail_message", "Send gmail message"),
+    ):
+        take_the_lead.record(
+            scope=take_the_lead.SCOPE_EXECUTIVE, source="scheduled", tool=tool, summary=summary, status="done",
+        )
+
+    client = _make_client()
+    owner = {"x-caller-email": "jordan@example.com"}
+    rows = [r for r in client.get("/today", headers=owner).json()["done_for_you"] if r["kind"] == "took_the_lead"]
+    assert [r["title"] for r in rows] == ["Sent an email"]
+    feed = client.get("/today/activity", headers=owner).json()["items"]
+    assert [i["summary"] for i in feed if i["kind"] == "took_the_lead"] == ["Sent an email"]
+
+
 def test_held_back_page_lines_are_the_principals_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

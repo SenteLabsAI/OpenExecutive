@@ -158,6 +158,8 @@ _MCP_ACTING_RE = re.compile(
 # The verb a tool's own name starts with (after any server prefix).
 _MCP_READ_VERBS = frozenset({"get", "list", "search", "read", "fetch", "query", "find", "view", "describe", "download"})
 _MCP_FIRST_WORD_RE = re.compile(r"[a-z]+|[A-Z][a-z]*")
+# "…_batch" at the end of a read tool's name: it fetches several at once.
+_MCP_BATCH_READ_RE = re.compile(r"[_-]?batch$", re.IGNORECASE)
 _MCP_DELETE_RE = re.compile(r"(delete|remove|trash|cancel|share|permission|clear|archive)", re.IGNORECASE)
 
 _MONEY_RE = re.compile(
@@ -1207,6 +1209,16 @@ def mail_sent(tool: str, tool_input: dict[str, Any]) -> tuple[str, str] | None:
     return ",".join(sorted(addresses)), subject_text
 
 
+def is_mail_send(tool: str) -> bool:
+    """Whether ``tool`` is a Gmail or Outlook send, so a row logged without
+    its addresses still reads "Sent an email", never the raw tool name."""
+    from openexecutive.orchestrator import mcp_gateway
+
+    return tool == "google_workspace__send_gmail_message" or (
+        mcp_gateway._normalize_tool_name(tool) == mcp_gateway._M365_RECORD_SEND_TOOL
+    )
+
+
 def record(
     *, scope: str, source: str, tool: str, summary: str, status: str, why: str = "",
     decision_id: int | None = None, db_path: Path | None = None,
@@ -1579,12 +1591,13 @@ def gated_handlers(handlers: dict[str, Any], *, source: str) -> dict[str, Any]:
 def mcp_tool_acts(name: str) -> bool:
     """Whether a connected tool may change something. Fails closed: only a
     name that starts with a read verb (after its server prefix) and says
-    nothing anywhere about acting passes."""
-    if _MCP_ACTING_RE.search(name):
-        return True
+    nothing anywhere about acting passes. A trailing "batch" on a read
+    ("get_gmail_messages_content_batch") reads several at once: still a read."""
     own = re.split(r"__|\.", name)[-1]
     first = _MCP_FIRST_WORD_RE.match(own)
-    return first is None or first.group(0).lower() not in _MCP_READ_VERBS
+    if first is None or first.group(0).lower() not in _MCP_READ_VERBS:
+        return True
+    return bool(_MCP_ACTING_RE.search(_MCP_BATCH_READ_RE.sub("", name)))
 
 
 def gated_call_tool(call_tool: _Handler, *, source: str) -> _Handler:

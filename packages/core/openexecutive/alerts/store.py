@@ -752,6 +752,21 @@ def get_alert_by_external(
     return _row_to_alert(row) if row else None
 
 
+def open_alerts_keyed(source: str, base_key: str, db_path: Path | None = None) -> list[Alert]:
+    """The ``unread`` alerts whose dedup key is ``base_key`` or
+    ``base_key#<n>``, oldest first: one sender's open cards, one per
+    matter (``orchestrator.alert_tools._one_card_per_sender``)."""
+    if not base_key or not _resolve_db_path(db_path).exists():
+        return []
+    with _get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM alerts WHERE source = ? AND status = 'unread' "
+            "AND (dedup_key = ? OR substr(dedup_key, 1, ?) = ?) ORDER BY created_at, id",
+            (source, base_key, len(base_key) + 1, base_key + "#"),
+        ).fetchall()
+    return [_row_to_alert(r) for r in rows]
+
+
 def has_open_alert(source: str, dedup_key: str, db_path: Path | None = None) -> bool:
     """True when an ``unread`` alert with this ``(source, dedup_key)`` exists —
     the row ``coalesce_alert`` would fold a repeat into. Read-only: lets a

@@ -363,6 +363,7 @@ def get_person(person_id: int, request: Request) -> Person:
 # --------------------------------------------------------------------------- #
 
 _PRINCIPAL_CONTACT_DETAIL = "The principal is always on the team and cannot be a contact."
+_PRINCIPAL_TAKEN = "Someone on the list is already the principal."
 _CONTACTS_ARE_PRIVATE = "Only the principal can add contacts or make someone a contact."
 
 
@@ -397,6 +398,10 @@ def create_person(body: PersonCreate, request: Request) -> Person:
     details = _checked_details(body.details)
     if body.is_principal and body.kind != "team":
         raise HTTPException(status_code=422, detail=_PRINCIPAL_CONTACT_DETAIL)
+    if body.is_principal and people_store.find_principal_person() is not None:
+        # One principal: the form stops offering the box once there is one,
+        # and the roster refuses a second all the same.
+        raise HTTPException(status_code=409, detail=_PRINCIPAL_TAKEN)
     if body.kind != "team" and not caller_is_principal(request):
         # Before a principal exists anyone may add people, but not contacts:
         # a contact is private to a principal there is not yet.
