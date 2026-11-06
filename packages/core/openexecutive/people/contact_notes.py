@@ -355,7 +355,8 @@ NOTE_PROMPT = (
     "emails the executive wrote to that contact and the titles of meetings the executive set up "
     "with them. Say what they work on together, what the contact handles or knows about, and what "
     "is still open, so the executive could later think of asking this contact. Use only what the "
-    "mail says; never guess. No links, no email addresses, no phone numbers."
+    "mail says; never guess. No links, no email addresses, no phone numbers. At most three short "
+    "sentences, under 400 characters in all."
 )
 
 
@@ -363,7 +364,20 @@ def clean_note(raw: str) -> str:
     text = " ".join((raw or "").split()).strip()
     if not text or _BANNED.search(text) or "@" in text or "<" in text:
         return ""
-    return text[:NOTE_MAX].rstrip()
+    return _fit(text)
+
+
+def _fit(text: str) -> str:
+    """At most ``NOTE_MAX`` characters, ending on a whole sentence (or a
+    whole word and "…" when no sentence ends in time), never mid-word."""
+    if len(text) <= NOTE_MAX:
+        return text
+    head = text[:NOTE_MAX]
+    end = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if end >= NOTE_MAX // 2:
+        return head[: end + 1]
+    cut = head[: NOTE_MAX - 1].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return cut + "…"
 
 
 def clean_topics(raw: Any) -> list[str]:

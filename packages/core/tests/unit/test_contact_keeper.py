@@ -936,6 +936,12 @@ def test_a_note_keeps_no_links_or_addresses() -> None:
     assert contact_notes.clean_note("See www.x.example") == ""
     assert contact_notes.clean_note("Write to priya@x.example") == ""
     assert contact_notes.clean_note("  She  prices roof repairs. ") == "She prices roof repairs."
+    # A long note ends on a whole sentence, or a whole word and "…", never mid-word.
+    long = "You and Sam run the roof program. " * 12 + "Still open: the March bid."
+    fitted = contact_notes.clean_note(long)
+    assert len(fitted) <= contact_notes.NOTE_MAX and fitted.endswith("program.")
+    one = contact_notes.clean_note("word " * 200)
+    assert len(one) <= contact_notes.NOTE_MAX and one.endswith("word…")
     assert contact_notes.clean_topics(["Roofs", "roofs", "see https://x", "a b c d e", 3, "Payment system"]) == [
         "Roofs", "3", "Payment system",
     ]
