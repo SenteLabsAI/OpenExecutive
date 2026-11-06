@@ -271,6 +271,9 @@ async def evaluate_and_dispatch(
         severity=decision.severity.value,
         body=decision.body,
         append=event.follow_up,
+        needs=event.needs,
+        question=event.question,
+        choices=event.choices,
         db_path=path,
     )
     if coalesced is not None:
@@ -305,6 +308,9 @@ async def evaluate_and_dispatch(
         topic_tags=[t for t in topic_tags if not t.startswith("collection:")],
         dedup_key=dedup_key,
         routed_to_person_id=routed_to,
+        needs=event.needs,
+        question=event.question,
+        choices=event.choices,
         db_path=path,
     )
     if alert_id is None:

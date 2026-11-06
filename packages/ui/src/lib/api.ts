@@ -5447,6 +5447,12 @@ export interface ProposalItem {
   superseded_count?: number;
   // Registry workflow the review suggested as the next step ('' = none).
   suggested_workflow?: string;
+  // What the card needs from its reader: "answer" (a box on the card),
+  // "choice" (a button per choice), "ok" (Approve), "fyi" (Got it). '' or
+  // absent keeps the card's own buttons.
+  needs?: CardNeeds;
+  question?: string;
+  choices?: string[];
   // Drafted artifacts only: the format (body is already Markdown for every
   // format) and, for "link" artifacts, the URL in the connected app.
   artifact_format?: ArtifactFormat | null;
@@ -6265,6 +6271,34 @@ export async function approveAlert(alertId: number, editedBody?: string): Promis
     throw new Error(`Failed to approve: ${res.statusText}${text ? ` — ${text}` : ""}`);
   }
   return res.json();
+}
+
+// What a Needs you card asks of its reader (ProposalItem.needs).
+export type CardNeeds = "" | "answer" | "choice" | "ok" | "fyi";
+
+// Answer a card that asks something; the Executive carries on
+// with the work it was for in a new chat (like an approval).
+export async function answerAlert(alertId: number, answer: string): Promise<AlertApproval> {
+  const res = await fetch(`${API_BASE}/alerts/${alertId}/answer`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answer }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text ? detailOf(text) : `Couldn't send your answer: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+function detailOf(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return parsed.detail;
+  } catch {
+    // not JSON: the text itself
+  }
+  return text;
 }
 
 export async function getAlertApproval(approvalId: number): Promise<AlertApproval> {

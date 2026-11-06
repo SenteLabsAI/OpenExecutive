@@ -231,6 +231,12 @@ class ProposalItem(BaseModel):
     superseded_count: int = 0
     # Registry workflow the review suggested as the next step ('' = none).
     suggested_workflow: str = ""
+    # What the card needs from its reader (Alert.needs): an answer or a pick
+    # (answered at POST /alerts/{id}/answer), an OK, or nothing. '' keeps the
+    # card's own buttons.
+    needs: str = ""
+    question: str = ""
+    choices: list[str] = Field(default_factory=list)
     # Drafted artifacts only (source='artifact'): the format, so the card can
     # badge it and link to /artifacts, and the link target for 'link' ones.
     # `body` already carries a Markdown rendering for every format.
@@ -1116,6 +1122,9 @@ def _build_today(
             due_at=alert.due_at,
             superseded_count=superseded_counts.get(alert.id or -1, 0),
             suggested_workflow=alert.suggested_workflow,
+            needs=alert.needs,
+            question=alert.question,
+            choices=alert.choices,
             artifact_format=alert.artifact_format if alert.source == "artifact" else None,
             artifact_url=alert.artifact_url if alert.source == "artifact" else None,
         ))

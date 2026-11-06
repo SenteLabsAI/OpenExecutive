@@ -125,6 +125,8 @@ def file_card(
             topic_tags=["email", PRIVATE_ALERT_TAG],
             dedup_key=dedup_key,
             routed_to_person_id=_principal_id(),
+            # Nothing to approve, it's for them to know (Got it).
+            needs="fyi",
         )
     except Exception:
         logger.exception("unanswered_mail: could not file the card for thread %s", thread_key)
