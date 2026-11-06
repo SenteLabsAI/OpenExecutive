@@ -159,3 +159,32 @@ def test_an_app_call_naming_no_tool_never_becomes_a_card(monkeypatch: pytest.Mon
     monkeypatch.setattr(department_gate, "hold", lambda *a, **k: held.append(a) or 1)
     out = json.loads(levels.hold("", {}, mcp=True, reason="rule"))
     assert "needs the tool's name" in out["error"] and held == []
+
+
+def test_an_answer_whose_turn_cant_start_fails_the_approval(client: TestClient, db: Path, turns: _Turns) -> None:  # noqa: F811
+    aid = _insert(db, "Pick a name", needs="answer", question="Which name?")
+    turns.refuse = RuntimeError("no turn today")
+    res = client.post(f"/alerts/{aid}/answer", json={"answer": "Harbor"})
+    assert res.status_code == 500
+    approval = approvals.latest_for(aid)
+    assert approval is not None and approval.status == approvals.STATUS_FAILED
+
+
+def test_the_lead_gate_makes_no_card_for_an_app_call_naming_no_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import take_the_lead
+
+    held: list[Any] = []
+    ran: list[Any] = []
+    monkeypatch.setattr(take_the_lead, "check", lambda *a, **k: take_the_lead.Hit("rule", "a rule"))
+    monkeypatch.setattr(take_the_lead, "hold", lambda *a, **k: held.append(a) or 1)
+
+    async def inner(tool_input: dict[str, Any]) -> str:
+        ran.append(tool_input)
+        return "{}"
+
+    gated = take_the_lead.gated_call_tool(inner, source="scheduled")
+    out = json.loads(asyncio.run(gated({"name": "", "arguments": {}})))
+    assert "needs the tool's name" in out["error"] and held == [] and ran == []
+    # A named tool with a hit still waits on a card.
+    named = json.loads(asyncio.run(gated({"name": "some_server__do_the_thing", "arguments": {}})))
+    assert named["status"] == "waiting_for_approval" and len(held) == 1 and ran == []
