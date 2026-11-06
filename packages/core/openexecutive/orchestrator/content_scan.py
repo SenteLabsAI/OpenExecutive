@@ -438,13 +438,14 @@ async def _scan(content: Any, *, model: str | None, entries: int) -> Verdict:
             again = _verdict(await _call_model(model or scan_model(), content), entries)
             if again is not None and again.flagged and _quoted(again.evidence, content):
                 verdict = again
-            elif again is not None and again.flagged:
-                # Flagged twice, quoted neither time: it may be content the
-                # quote can't be matched through (an encoded payload). It holds
+            elif again is None or again.flagged:
+                # Flagged twice, quoted neither time (or a second answer that
+                # can't be read): it may be content the quote can't be matched
+                # through (an encoded payload). It holds
                 # nothing, but the turn is told it couldn't be checked, and it
                 # isn't remembered as clean.
                 logger.info(
-                    "content_scan: a flag twice quoted nothing in the content (%r)", verdict.evidence[:80],
+                    "content_scan: a flag quoted nothing and the second answer didn't drop it (%r)", verdict.evidence[:80],
                 )
                 return UNCHECKED
             else:
