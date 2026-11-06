@@ -361,16 +361,19 @@ _TAG = re.compile(r"<[^<>]{0,200}>")
 _EMPHASIS = re.compile(r"[*_~`]+")
 
 
-def _plain(text: str) -> str:
+def _plain(text: str, *, tags: bool = True) -> str:
     """``text`` for comparing a quote with: JSON escapes and HTML entities
-    undone, HTML tags and Markdown emphasis taken out, NFKC-folded
+    undone, HTML tags (unless ``tags`` is False) and Markdown emphasis taken
+    out, NFKC-folded
     (fullwidth letters, no-break spaces), invisible and control characters
     dropped, quotes and ellipses made plain, case and spacing ignored. Both
     sides go through it, so content hidden behind zero-width characters still
     matches a quote the check wrote without them."""
     text = _ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
     text = text.replace('\\"', '"').replace("\\n", " ").replace("\\t", " ")
-    text = _TAG.sub("", html.unescape(text))
+    text = html.unescape(text)
+    if tags:
+        text = _TAG.sub("", text)
     text = _EMPHASIS.sub("", unicodedata.normalize("NFKC", text))
     text = "".join(ch if unicodedata.category(ch) not in ("Cc", "Cf") or ch in "\n\t" else "" for ch in text)
     return " ".join(text.translate(_QUOTES).casefold().split())
@@ -386,8 +389,11 @@ def _quoted(evidence: str, content: Any) -> bool:
     parts = [p for p in parts if len(p) >= 4]
     if not parts:
         return False
-    text = _plain(_text(content))
-    return all(p in text for p in parts)
+    raw = _text(content)
+    # With the tags out, a quote of what a page shows matches; with them in,
+    # so does one of words hidden in a comment or an attribute.
+    texts = (_plain(raw), _plain(raw, tags=False))
+    return all(any(p in t for t in texts) for p in parts)
 
 
 def _verdict(payload: dict[str, Any], entries: int) -> Verdict | None:
