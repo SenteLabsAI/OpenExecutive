@@ -384,7 +384,11 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     if (step.people) setPeopleVersion((v) => v + 1);
     if (step.closed) setClosed(step.closed);
   };
-  useLiveChat(sessionId, shared && !closed, onLiveEvent);
+  // A chat with nothing saved yet may have a turn running on the server with
+  // no page of its own (an approved card's Watch, POST /chat/background):
+  // follow it live too, until the saved chat has the reply.
+  const waitingOnServer = messages.length === 0 && !isLoading && !streamingContent;
+  useLiveChat(sessionId, (shared || waitingOnServer || live.turn !== null) && !closed, onLiveEvent);
 
   // "Is typing" fades on its own: tick while anyone is.
   useEffect(() => {
