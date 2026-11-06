@@ -14,6 +14,7 @@ import {
   recall,
   remember,
   STORAGE_KEYS,
+  viewerIsOwner,
   type ChecklistItem,
 } from "@/lib/firstRun";
 import type { SetupCheck } from "@/lib/setupStatus";
@@ -39,7 +40,8 @@ export function useGettingStarted(
   const [teamSize, setTeamSize] = useState<number>(1);
   const [peopleLoaded, setPeopleLoaded] = useState(false);
   // Whether the viewer is the owner: a teammate sees only their own rows.
-  const [isPrincipal, setIsPrincipal] = useState<boolean | undefined>(undefined);
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState<boolean | undefined>(undefined);
+  const [rosterHasPrincipal, setRosterHasPrincipal] = useState<boolean | undefined>(undefined);
   // Read once, on the client: the card only renders after /health answers.
   const [hidden, setHidden] = useState<boolean>(() => recall(STORAGE_KEYS.checklistHidden) === "1");
 
@@ -50,19 +52,23 @@ export function useGettingStarted(
       .then((s) => setChecks(s.checks))
       .catch(() => setChecks([]));
     listPeople()
-      .then((ps) => setTeamSize(ps.length))
+      .then((ps) => {
+        setTeamSize(ps.length);
+        setRosterHasPrincipal(ps.some((p) => p.is_principal));
+      })
       .catch(() => undefined)
       .finally(() => setPeopleLoaded(true));
     // Unknown viewer (the lookup failed): the card stays unshown rather
     // than guess whose rows to show.
     getPeopleViewer()
       .then((v) => {
-        if (!ctrl.signal.aborted) setIsPrincipal(v.is_principal);
+        if (!ctrl.signal.aborted) setViewerIsPrincipal(v.is_principal);
       })
       .catch(() => undefined);
     return () => ctrl.abort();
   }, [hidden, profileLoaded]);
 
+  const isPrincipal = viewerIsOwner(viewerIsPrincipal, rosterHasPrincipal);
   const items = useMemo(
     () =>
       gettingStartedItems({

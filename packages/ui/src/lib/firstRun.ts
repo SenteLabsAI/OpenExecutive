@@ -162,6 +162,21 @@ function checkState(checks: readonly SetupCheck[] | null, id: string): SetupChec
   return c ? c.state : null;
 }
 
+/**
+ * Whether the viewer gets the owner's checklist. /people/me says false for
+ * everyone while the roster has no principal (a fresh install, before setup
+ * names one), so only a roster that has a principal who isn't the viewer
+ * makes them a teammate. Undefined while either answer is out.
+ */
+export function viewerIsOwner(
+  viewerIsPrincipal: boolean | undefined,
+  rosterHasPrincipal: boolean | undefined,
+): boolean | undefined {
+  if (viewerIsPrincipal === true || rosterHasPrincipal === false) return true;
+  if (viewerIsPrincipal === undefined || rosterHasPrincipal === undefined) return undefined;
+  return false;
+}
+
 /** The checklist rows, in the order they are shown. */
 export function gettingStartedItems(input: ChecklistInput): ChecklistItem[] {
   const ownMail = checkState(input.checks, "your_gmail");
