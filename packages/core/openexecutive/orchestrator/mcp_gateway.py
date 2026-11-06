@@ -4217,9 +4217,10 @@ MCP_TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_tools",
         "description": (
-            "Search the MCP tool catalog by natural language query. "
-            "Returns ranked tool names and descriptions. "
-            "Call this first to discover what external tools are available before calling them."
+            "Search the connected tool servers' catalog (mail, calendar, documents and the like) "
+            "by natural language query. Returns ranked tool names and descriptions. Call this "
+            "to find a server's tool before calling it. It does not cover the tool groups "
+            "open_tools opens: look there too before saying a tool isn't available."
         ),
         "input_schema": {
             "type": "object",

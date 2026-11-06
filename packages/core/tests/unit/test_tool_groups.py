@@ -164,7 +164,7 @@ def _use(id_: str, name: str, input_: Any) -> Any:
     return SimpleNamespace(type="tool_use", id=id_, name=name, input=input_)
 
 
-def _run(rounds: list[list[Any]]) -> tuple[_Provider, list[Any], list[list[str]]]:
+def _run(rounds: list[list[Any]], gateway: Any = None) -> tuple[_Provider, list[Any], list[list[str]]]:
     from openexecutive.orchestrator.executive import Executive
     from openexecutive.orchestrator.schedule_tools import set_session
     from openexecutive.orchestrator.session import Session
@@ -175,13 +175,17 @@ def _run(rounds: list[list[Any]]) -> tuple[_Provider, list[Any], list[list[str]]
     provider = _Provider(finals)
     items: list[Any] = []
 
+    executive = Executive()
+    if gateway is not None:
+        executive._mcp_gateway = gateway
+
     async def _go() -> list[list[str]]:
         with (
             capture_offered() as offered,
             patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
             set_session(Session(session_id="web:groups")),
         ):
-            async for item in Executive()._stream_agent_loop(
+            async for item in executive._stream_agent_loop(
                 system_blocks=[], messages=[{"role": "user", "content": "x"}],
                 model="claude-test", workspace_mode="team", principal_role_tag="",
                 turn_id="t-groups",
@@ -311,3 +315,31 @@ def test_no_synced_count_skips_the_synced_sources(monkeypatch: pytest.MonkeyPatc
     assert collections() >= synced
     assert all(c.kwargs["n_results"] == 2 for c in store.query.call_args_list
                if c.kwargs["collection"] in synced)
+
+
+def test_an_empty_tool_search_points_to_the_groups() -> None:
+    deferred = {"list_watchlist": {"name": "list_watchlist"}, "draft_artifact": {"name": "draft_artifact"}}
+
+    async def search(tool_input: dict[str, Any]) -> str:
+        return "No matching tools found. Try a different search query." if tool_input["query"] == "billing" else '{"tools": [{"name": "x"}]}'
+
+    run = tool_groups.searching(search, deferred)
+    empty = asyncio.run(run({"query": "billing"}))
+    assert "open_tools" in empty and "watch_and_alerts" in empty and "documents" in empty
+    assert "workflows" not in empty  # not offered this turn
+    found = asyncio.run(run({"query": "mail"}))
+    assert found == '{"tools": [{"name": "x"}]}'
+    assert tool_groups.after_search('{"tools": []}', deferred) != '{"tools": []}'
+    assert tool_groups.after_search("No matching tools found.", {}) == "No matching tools found."
+
+
+def test_the_loop_adds_the_groups_to_an_empty_tool_search() -> None:
+    gateway = MagicMock()
+    gateway.search_tools = AsyncMock(return_value="No matching tools found.")
+    gateway.call_tool = AsyncMock(return_value="{}")
+    gateway.load_mcp_server = AsyncMock(return_value="{}")
+    provider, _, _ = _run([[_use("tu-1", "search_tools", {"query": "watchlist"})]], gateway)
+    gateway.search_tools.assert_awaited_once()
+    out = _results(provider, 1)["tu-1"]
+    assert out.startswith("No matching tools found.")
+    assert "open_tools" in out and "watch_and_alerts" in out

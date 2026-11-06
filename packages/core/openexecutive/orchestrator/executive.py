@@ -3310,7 +3310,8 @@ class Executive:
                     else self._mcp_gateway.call_tool
                 ))
                 _mcp_dispatch = {
-                    "search_tools": self._mcp_gateway.search_tools,
+                    # An empty search names the groups open_tools opens.
+                    "search_tools": tool_groups.searching(self._mcp_gateway.search_tools, deferred_tools),
                     # A replay (memory.replay) makes the reads and records the rest.
                     "call_tool": (
                         chat_replay.faked_call_tool(guarded_call_tool, current_session.get())
