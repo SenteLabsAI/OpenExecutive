@@ -49,7 +49,8 @@ from ._agent_loop_fakes import FinalMsg, ScriptedProvider, TextBlock, ToolUseBlo
 # And again: Domain Expertise says when to consult a specialist. And again:
 # the wording was tightened (same rules, ~27% shorter) to cut the cached prefix.
 # And again: People is checked first when asked how to reach someone.
-TEAM_PERSONA_SHA256 = "e391cbc648ed2089e43d8fc0c0aecd0c50d74081cd99f4091c5fc4adbf971ba6"
+# And again: a name that fits more than one person is never picked silently.
+TEAM_PERSONA_SHA256 = "86ed4f8ebf8a1040978dd63d30a507a71cc4abe4e498c709fd56f0c5a43c1b73"
 
 SOLO_HEADINGS = (
     "## You Work for One Person",

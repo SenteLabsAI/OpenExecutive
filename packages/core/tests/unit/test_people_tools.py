@@ -179,6 +179,27 @@ def test_list_people_include_archived() -> None:
     assert pid in ids
 
 
+def test_list_people_names_first_names_more_than_one_person_has() -> None:
+    _call(handle_upsert_person, {"full_name": "Alex Rivera"})
+    _call(handle_upsert_person, {"full_name": "alex  Moreno"})
+    _call(handle_upsert_person, {"full_name": "Bob Lane"})
+
+    result = _call(handle_list_people, {})
+
+    assert result["shared_first_names"] == ["Alex"]
+    assert "email address" in result["note"]
+
+
+def test_list_people_no_note_when_every_first_name_differs() -> None:
+    _call(handle_upsert_person, {"full_name": "Alex Rivera"})
+    _call(handle_upsert_person, {"full_name": "Bob Lane"})
+
+    result = _call(handle_list_people, {})
+
+    assert "shared_first_names" not in result
+    assert "note" not in result
+
+
 # --------------------------------------------------------------------------- #
 # archive_person
 # --------------------------------------------------------------------------- #

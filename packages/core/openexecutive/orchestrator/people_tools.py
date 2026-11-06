@@ -16,7 +16,7 @@ import inspect
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from datetime import date
 from types import SimpleNamespace
 from typing import Any, ParamSpec
@@ -913,7 +913,37 @@ async def handle_list_people(tool_input: dict[str, Any]) -> str:
         f"list_people returned {team_count}",
         {"count": team_count, "include_archived": include_archived},
     )
+    shared = _shared_first_names(p for p in people if not p.archived)
+    if shared:
+        return json.dumps({
+            "people": out, "count": len(out),
+            "shared_first_names": shared, "note": SHARED_NAME_NOTE,
+        })
     return json.dumps({"people": out, "count": len(out)})
+
+
+SHARED_NAME_NOTE = (
+    "Some people share a first name (shared_first_names). When the principal "
+    "names one of them, ask which one unless the conversation makes it clear, "
+    "and whatever you send or say was sent, name the person by full name and "
+    "email address."
+)
+
+
+def _shared_first_names(people: Iterable[Any]) -> list[str]:
+    """First names that more than one listed person has, as written."""
+    seen: dict[str, str] = {}
+    shared: dict[str, str] = {}
+    for p in people:
+        first = ((p.full_name or "").split() or [""])[0]
+        key = first.casefold()
+        if not key:
+            continue
+        if key in seen:
+            shared[key] = seen[key]
+        else:
+            seen[key] = first
+    return sorted(shared.values())
 
 
 def _hold_until_next_turn(person_id: int) -> None:

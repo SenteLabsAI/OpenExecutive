@@ -644,6 +644,16 @@ FIND_ALERTS_TOOL: dict[str, Any] = {
 }
 
 
+# Said with every lookup that finds more than one person: the model must not
+# pick one of two Alexes silently, nor tell the principal something "wasn't
+# sent" after checking only one of them.
+SEVERAL_MATCH_NOTE = (
+    "More than one person matches. Unless the conversation makes clear which "
+    "one is meant, ask. Whatever you send or say was sent, name the person by "
+    "full name and email address."
+)
+
+
 LOOKUP_PERSON_TOOL: dict[str, Any] = {
     "name": "lookup_person",
     "description": (
@@ -1402,6 +1412,8 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
     # The audit log is readable by every signed-in user: count the team
     # matches only, so the principal's turn logs what anyone else's would.
     _audit(ok=True, matches_count=min(team_matches, _LOOKUP_PERSON_MAX_MATCHES))
+    if len(matches) > 1:
+        return json.dumps({"matches": matches, "note": SEVERAL_MATCH_NOTE})
     return json.dumps({"matches": matches})
 
 
