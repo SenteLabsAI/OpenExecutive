@@ -197,8 +197,18 @@ async def unbacked_claim(message: str, reply: str, calls: list[tuple[str, str]])
     return accept_claim(payload, reply)
 
 
-def nudge(claim: str) -> str:
-    """The user-turn note for the extra round (never a cached block)."""
+def nudge(claim: str, *, rewrite: bool = False) -> str:
+    """The user-turn note for the extra round (never a cached block).
+    ``rewrite``: the reply is read whole, so the round writes it
+    again in full, correct, in place of the first."""
+    if rewrite:
+        return (
+            "[Check before you finish] Your reply says “" + claim + "”, but no "
+            "tool call in this reply made that change. Make it now with the right "
+            "tool if you can. Then write your whole reply again, start to finish, "
+            "saying only what is true: it replaces the one above, which the person "
+            "will never see. No note about a correction."
+        )
     return (
         "[Check before you finish] Your reply says “" + claim + "”, but no "
         "tool call in this reply made that change. Make it now with the right "

@@ -107,3 +107,47 @@ def test_a_claim_check_retry_starts_one_new_paragraph(monkeypatch: pytest.Monkey
         FinalMsg([TextBlock("Actually I haven't removed it yet.")], "end_turn"),
     ])
     assert reply == "Done.\n\nActually I haven't removed it yet."
+
+
+def test_a_collected_reply_is_rewritten_not_corrected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An email reply is read whole, so a claim-check retry while
+    # Executive.chat collects replaces the first reply instead of trailing a
+    # "Correction:" after its sign-off.
+    from openexecutive.orchestrator import claim_check
+    from openexecutive.orchestrator import executive as executive_mod
+
+    async def unbacked(model: str, turn: str) -> dict[str, Any]:
+        return {"unbacked": True, "claim": "Added Avery"}
+
+    monkeypatch.setenv("CLAIM_CHECK_ENABLED", "true")
+    monkeypatch.setattr(claim_check, "_call_model", unbacked)
+    provider = StreamingProvider([
+        FinalMsg([TextBlock("I've added Avery. — OE")], "end_turn"),
+        FinalMsg([TextBlock("\n\nAvery is on this week's plan as a reviewer. — OE")], "end_turn"),
+    ])
+    out: list[Any] = []
+
+    async def go() -> None:
+        token = executive_mod._COLLECTING.set(True)
+        try:
+            with (
+                patch("openexecutive.orchestrator.executive.get_provider", return_value=provider),
+                patch("openexecutive.orchestrator.executive.audit_log", lambda *_a, **_k: None),
+                set_session(Session()),
+            ):
+                async for item in Executive()._stream_agent_loop(
+                    system_blocks=[], messages=[{"role": "user", "content": "x"}],
+                    model="claude-test", workspace_mode="team", principal_role_tag="", turn_id="t-1",
+                ):
+                    out.append(item)
+        finally:
+            executive_mod._COLLECTING.reset(token)
+
+    asyncio.run(go())
+    marker = out.index({"type": "rewrite"})
+    after = "".join(i for i in out[marker:] if isinstance(i, str) and i != Executive._THINKING)
+    assert "I've added Avery" not in after and "on this week's plan" in after
+    nudge = provider.calls[1]["messages"][-1]["content"][0]["text"]
+    assert "write your whole reply again" in nudge
+    assert claim_check.nudge("x") != claim_check.nudge("x", rewrite=True)
+

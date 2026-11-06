@@ -38,7 +38,7 @@ export default function DoneForYou({
   return (
     <section id={DONE_FOR_YOU_ID} aria-labelledby="sec-done-for-you" className="mb-8 scroll-mt-4">
       <h2 id="sec-done-for-you" className="mb-3 text-lg font-semibold text-fg">
-        Done for you <span className="font-normal text-fg-muted">(today)</span>
+        Done for you <span className="font-normal text-fg-muted">(last day)</span>
       </h2>
       <ul className="rounded-2xl border border-line bg-surface-elevated px-4 sm:px-5">
         {rows.slice(0, SHOWN).map((row) => {

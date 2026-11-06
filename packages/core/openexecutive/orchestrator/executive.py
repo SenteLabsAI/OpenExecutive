@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -216,6 +217,11 @@ from openexecutive.workflows.action_step import looks_like_error
 from openexecutive.workflows.python_job import PYTHON_JOB_TOOL_HANDLERS, PYTHON_JOB_TOOLS
 
 logger = logging.getLogger(__name__)
+
+# Set while ``Executive.chat`` collects a reply whole (an email or a chat
+# app's answer), so a claim-check retry rewrites it instead of adding a
+# correction after it.
+_COLLECTING: ContextVar[bool] = ContextVar("executive_collecting", default=False)
 
 # The tools that read the speaker's own notes or earlier chats: private rows,
 # withheld from the process log, and checked like a mail read.
@@ -2734,7 +2740,15 @@ class Executive:
                     private=private_turn,
                 )
                 current_messages.append({"role": "assistant", "content": response_content})
-                nudge: list[dict[str, Any]] = [{"type": "text", "text": claim_check.nudge(claim)}]
+                # A collected reply (an email, a chat app) is read whole, so
+                # the retry writes the whole reply again and it replaces the
+                # first instead of trailing it as a correction.
+                rewrite = _COLLECTING.get()
+                if rewrite:
+                    yield {"type": "rewrite"}
+                nudge: list[dict[str, Any]] = [
+                    {"type": "text", "text": claim_check.nudge(claim, rewrite=rewrite)}
+                ]
                 # The retry is the last round, which runs no tool: say so,
                 # so it says it can't rather than try a call it won't get.
                 if iteration == max_iterations - 1:
@@ -3932,12 +3946,23 @@ class Executive:
             else self.stream_chat(**common_kwargs)
         )
         result = ""
-        with turn_files.bind(offered or None) if offered else contextlib.nullcontext():
-            async for chunk in stream:
-                if isinstance(chunk, str) and chunk != self._THINKING:
-                    result += chunk
-                elif cards is not None and isinstance(chunk, dict) and chunk.get("type") == "action_taken":
-                    decision_id = chunk.get("decision_id")
-                    if isinstance(decision_id, int) and not isinstance(decision_id, bool) and decision_id not in cards:
-                        cards.append(decision_id)
+        rewritten, before = False, ""
+        collecting = _COLLECTING.set(True)
+        try:
+            with turn_files.bind(offered or None) if offered else contextlib.nullcontext():
+                async for chunk in stream:
+                    if isinstance(chunk, str) and chunk != self._THINKING:
+                        result += chunk
+                    elif isinstance(chunk, dict) and chunk.get("type") == "rewrite":
+                        # The next round writes the reply again.
+                        before, result, rewritten = result, "", True
+                    elif cards is not None and isinstance(chunk, dict) and chunk.get("type") == "action_taken":
+                        decision_id = chunk.get("decision_id")
+                        if isinstance(decision_id, int) and not isinstance(decision_id, bool) and decision_id not in cards:
+                            cards.append(decision_id)
+        finally:
+            _COLLECTING.reset(collecting)
+        if rewritten:
+            # A retry that wrote nothing keeps the first reply.
+            return result.lstrip() or before
         return result

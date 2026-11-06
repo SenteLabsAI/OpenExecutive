@@ -209,10 +209,11 @@ def card_text(decision_id: int) -> str | None:
         tool_input = payload.get("input")
         if not isinstance(tool_input, dict):
             return None
+        from openexecutive.orchestrator import card_details
+
         lines.append("")
-        for key, value in tool_input.items():
-            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
-            lines.append(f"{key}: {text}")
+        for detail in card_details.plain(str(payload.get("tool") or ""), tool_input):
+            lines.append(f"{detail['field']}: {detail['value']}")
     elif instance.decision_class == "app_action":
         # Written by the server from the change itself (workflow_change.card_text).
         # Never cut: workflow_change stages only a card that fits.
