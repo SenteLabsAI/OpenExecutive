@@ -10,6 +10,7 @@ import {
   OWN_MAILBOX_SENDS,
   opensInPlace,
   shouldRedirectToOnboard,
+  viewerIsOwner,
 } from "../src/lib/firstRun.ts";
 
 const check = (id, state) => ({ id, label: id, state, summary: "", fix: null, link: null });
@@ -49,6 +50,30 @@ test("the rows, their state and the heading count", () => {
   assert.equal(items[0].detail, "Northwind Supply · you are the owner");
   assert.deepEqual(checklistProgress(items), { done: 1, total: 3 });
   assert.equal(checklistComplete(items), false);
+});
+
+test("a teammate gets only their own rows, and the card leaves once they ask", () => {
+  const items = gettingStartedItems({ ...base, team: true, teamSize: 3, isPrincipal: false });
+  assert.deepEqual(
+    items.map((i) => i.id),
+    ["ask", "own_mailbox"],
+  );
+  assert.ok(items.every((i) => !i.detail.includes("owner")));
+  assert.equal(checklistComplete(gettingStartedItems({ ...base, hasAsked: true, isPrincipal: false })), true);
+  // The owner, said or left out, keeps the full list.
+  assert.deepEqual(
+    gettingStartedItems({ ...base, isPrincipal: true }).map((i) => i.id),
+    gettingStartedItems(base).map((i) => i.id),
+  );
+});
+
+test("only a roster with someone else as principal makes the viewer a teammate", () => {
+  assert.equal(viewerIsOwner(true, true), true);
+  assert.equal(viewerIsOwner(false, true), false);
+  // No principal yet (a fresh install): /people/me says false for everyone.
+  assert.equal(viewerIsOwner(false, false), true);
+  assert.equal(viewerIsOwner(undefined, true), undefined);
+  assert.equal(viewerIsOwner(false, undefined), undefined);
 });
 
 test("the two mailboxes are separate rows read from separate checks", () => {

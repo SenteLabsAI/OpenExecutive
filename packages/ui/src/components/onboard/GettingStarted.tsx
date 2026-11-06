@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSessions } from "@/components/sessions/SessionsContext";
 import { buttonClass } from "@/components/ui/Button";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { getSetupStatus, listPeople } from "@/lib/api";
+import { getPeopleViewer, getSetupStatus, listPeople } from "@/lib/api";
 import {
   checklistVisible,
   checklistProgress,
@@ -14,6 +14,7 @@ import {
   recall,
   remember,
   STORAGE_KEYS,
+  viewerIsOwner,
   type ChecklistItem,
 } from "@/lib/firstRun";
 import type { SetupCheck } from "@/lib/setupStatus";
@@ -38,6 +39,9 @@ export function useGettingStarted(
   const [checks, setChecks] = useState<readonly SetupCheck[] | null>(null);
   const [teamSize, setTeamSize] = useState<number>(1);
   const [peopleLoaded, setPeopleLoaded] = useState(false);
+  // Whether the viewer is the owner: a teammate sees only their own rows.
+  const [viewerIsPrincipal, setViewerIsPrincipal] = useState<boolean | undefined>(undefined);
+  const [rosterHasPrincipal, setRosterHasPrincipal] = useState<boolean | undefined>(undefined);
   // Read once, on the client: the card only renders after /health answers.
   const [hidden, setHidden] = useState<boolean>(() => recall(STORAGE_KEYS.checklistHidden) === "1");
 
@@ -48,12 +52,23 @@ export function useGettingStarted(
       .then((s) => setChecks(s.checks))
       .catch(() => setChecks([]));
     listPeople()
-      .then((ps) => setTeamSize(ps.length))
+      .then((ps) => {
+        setTeamSize(ps.length);
+        setRosterHasPrincipal(ps.some((p) => p.is_principal));
+      })
       .catch(() => undefined)
       .finally(() => setPeopleLoaded(true));
+    // Unknown viewer (the lookup failed): the card stays unshown rather
+    // than guess whose rows to show.
+    getPeopleViewer()
+      .then((v) => {
+        if (!ctrl.signal.aborted) setViewerIsPrincipal(v.is_principal);
+      })
+      .catch(() => undefined);
     return () => ctrl.abort();
   }, [hidden, profileLoaded]);
 
+  const isPrincipal = viewerIsOwner(viewerIsPrincipal, rosterHasPrincipal);
   const items = useMemo(
     () =>
       gettingStartedItems({
@@ -63,8 +78,9 @@ export function useGettingStarted(
         checks,
         team: mode === "team",
         teamSize,
+        isPrincipal,
       }),
-    [profileLoaded, companyName, sessionsLoaded, sessions.length, checks, mode, teamSize],
+    [profileLoaded, companyName, sessionsLoaded, sessions.length, checks, mode, teamSize, isPrincipal],
   );
   const hide = useCallback(() => {
     remember(STORAGE_KEYS.checklistHidden, "1");
@@ -73,7 +89,12 @@ export function useGettingStarted(
 
   const visible = checklistVisible({
     hidden,
-    loaded: profileLoaded !== undefined && checks !== null && sessionsLoaded && peopleLoaded,
+    loaded:
+      profileLoaded !== undefined &&
+      checks !== null &&
+      sessionsLoaded &&
+      peopleLoaded &&
+      isPrincipal !== undefined,
     items,
   });
   return { items, visible, hide };
