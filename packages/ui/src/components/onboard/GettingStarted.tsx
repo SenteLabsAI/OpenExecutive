@@ -53,10 +53,13 @@ export function useGettingStarted(
       .then((ps) => setTeamSize(ps.length))
       .catch(() => undefined)
       .finally(() => setPeopleLoaded(true));
-    // Unknown viewer: their own rows only, as for a teammate.
+    // Unknown viewer (the lookup failed): the card stays unshown rather
+    // than guess whose rows to show.
     getPeopleViewer()
-      .then((v) => setIsPrincipal(v.is_principal))
-      .catch(() => setIsPrincipal(false));
+      .then((v) => {
+        if (!ctrl.signal.aborted) setIsPrincipal(v.is_principal);
+      })
+      .catch(() => undefined);
     return () => ctrl.abort();
   }, [hidden, profileLoaded]);
 

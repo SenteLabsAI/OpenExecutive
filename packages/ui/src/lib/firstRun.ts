@@ -151,6 +151,10 @@ export interface ChecklistInput {
   /** Team mode: the roster has more than the owner. */
   team: boolean;
   teamSize: number;
+  /** The viewer is the owner. A teammate gets only their own rows: setup,
+   * the Executive's mailbox and the team are the owner's to do. Omitted
+   * means the owner. */
+  isPrincipal?: boolean;
 }
 
 function checkState(checks: readonly SetupCheck[] | null, id: string): SetupCheck["state"] | null {
