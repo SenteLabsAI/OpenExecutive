@@ -66,6 +66,14 @@ _STEERING = re.compile(
     r"|\byou are now\b|\bsystem prompt\b|\bnew instructions\b|\bjailbreak\b",
     re.IGNORECASE,
 )
+# So does one that names what the check watches for (sending, forwarding,
+# sharing, paying, a password): content that copied it would get the very
+# request the check looks for past it.
+_ACTION = re.compile(
+    r"\b(forward(s|ed|ing)?|shar(e|es|ed|ing)|wire|pay(s|ing|ment)?|passwords?|passcodes?|credentials?"
+    r"|click|transfer(s|red)?|bank|gift cards?|send(s|ing)?)\b",
+    re.IGNORECASE,
+)
 MIN_CHARS = 24
 MIN_WORDS = 4
 # Matches are found from their first characters (``_index``).
@@ -104,6 +112,11 @@ def _literals(source: str) -> set[str]:
     return out
 
 
+def _kept_in(sentence: str) -> bool:
+    """Whether ``sentence`` stays in what is checked though it is ours."""
+    return bool(_STEERING.search(sentence) or _ACTION.search(sentence))
+
+
 def _sentences(literal: str) -> set[str]:
     """Each line of ``literal``, and each sentence of it, long enough to be
     one: a sentence alone still matches where a result carries only part of
@@ -114,7 +127,7 @@ def _sentences(literal: str) -> set[str]:
         line = line.strip()
         for part in (line, *_SENTENCE_END.split(line)):
             part = part.strip()
-            if len(part) >= MIN_CHARS and len(_WORD.findall(part)) >= MIN_WORDS and not _STEERING.search(part):
+            if len(part) >= MIN_CHARS and len(_WORD.findall(part)) >= MIN_WORDS and not _kept_in(part):
                 out.add(part)
     return out
 
