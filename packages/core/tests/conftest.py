@@ -217,3 +217,15 @@ def _chat_topics_title_only(monkeypatch: pytest.MonkeyPatch):
         return await session_title.generate_session_title(user_msg, assistant_msg), None
 
     monkeypatch.setattr(chat_topics, "_title_and_topic", _title_only)
+
+
+@pytest.fixture(autouse=True)
+def _email_replies_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """The replies the email poller mails are kept per thread
+    (integrations.email_replies). Keep them in this test's own file, so one
+    test's thread never shows up in another's turn, and nothing is written
+    to ./episodic_memory.db."""
+    monkeypatch.setattr(
+        "openexecutive.integrations.email_replies.DB_PATH_OVERRIDE", tmp_path / "email_replies.db"
+    )
+    yield

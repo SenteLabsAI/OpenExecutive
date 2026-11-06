@@ -299,6 +299,19 @@ def _attribution_end(body: list[str], i: int) -> tuple[int, bool] | None:
     return None
 
 
+def _retrieval_query(raw_email: str) -> str:
+    """What to search Knowledge for on an email turn: its subject and what
+    the sender wrote, not the raw mail (whose first lines are headers), cut
+    to 500 characters. The raw start when the mail has no text of its own."""
+    header, body_lines, _attachments = _split_gmail_content(raw_email)
+    subject = next(
+        (line.split(":", 1)[1] for line in header if line.strip().lower().startswith("subject:")), "",
+    )
+    new_lines, _forwarded = _new_text_lines(body_lines)
+    words = "\n".join(line for line in (subject.strip(), *new_lines) if line.strip()).strip()
+    return (words or raw_email)[:500]
+
+
 def _new_text_lines(body: list[str]) -> tuple[list[str], bool]:
     """The sender's own lines, without quoted replies, stopping where an
     older message is appended below. Returns (lines, whether a forwarded
@@ -1357,6 +1370,14 @@ async def _run_executive(
         )
     if attachment_text:
         base_message += f"\n\n--- ATTACHMENT TEXT ---\n{attachment_text}"
+    # What this turn's answers already mailed the sender on this thread
+    # (integrations.email_replies), since the quoted chain may be trimmed.
+    if source is not None and answer_to == from_addr.strip().lower():
+        from openexecutive.integrations import email_replies
+
+        earlier = email_replies.block(session_id or session.session_id, answer_to)
+        if earlier:
+            base_message += f"\n\n{earlier}"
     if reply_block:
         base_message += f"\n\n{reply_block}"
     if source is not None:
@@ -1396,7 +1417,7 @@ async def _run_executive(
             response = await executive.chat(
                 user_message=base_message,
                 session=session,
-                retrieved_context=retrieve(query=raw_email[:500]),
+                retrieved_context=retrieve(query=_retrieval_query(raw_email)),
                 episodic_context=format_for_prompt(),
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,
@@ -1488,6 +1509,12 @@ async def _send_answer(source: InboundMail, response: Any, to: str, session_id: 
         session_id=session_id,
         details={"channel": "email", "provider": source.source, "to": to, "error": error},
     )
+    # Only an answer in the thread to the sender is the thread's; one
+    # redirected to the principal belongs to their own conversation.
+    if error is None and session_id and in_thread:
+        from openexecutive.integrations import email_replies
+
+        email_replies.record(session_id, to, answer)
     return "answered" if error is None else f"answer not sent: {error}"
 
 

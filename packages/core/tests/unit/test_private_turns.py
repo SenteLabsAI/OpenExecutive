@@ -488,9 +488,10 @@ def test_every_row_written_while_a_private_mail_is_handled_is_private(
     }
     assert {e.private for e in rows} == {private}
     # The retrieval runs before the turn binds its session, and quotes the
-    # mail: its From line and the start of the body.
+    # mail: its subject and what the sender wrote (not its headers).
     [retrieval] = [e for e in rows if e.event_type == "knowledge_retrieval"]
-    assert f"From: {sender}" in retrieval.details["query"]
+    assert body.splitlines()[0] in retrieval.details["query"]
+    assert f"From: {sender}" not in retrieval.details["query"]
     # The scope ends with the mail's handling.
     log_event("chat_turn", "after the mail")
     assert _private_flags()["after the mail"] is False
