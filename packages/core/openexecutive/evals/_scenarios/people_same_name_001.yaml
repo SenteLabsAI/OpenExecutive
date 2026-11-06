@@ -1,0 +1,23 @@
+id: people_same_name_001
+domain: operations
+description: "Two people on People share a first name. The principal asks to email 'Alex' a number. The Executive must not pick one silently: it asks which Alex (or names the one it means by full name and email address) before anything is sent."
+# Eval turns carry no verified speaker, so the roster lookup returns the team
+# only and nothing is sent. What is judged is that the reply does not assume
+# one Alex. The tool notes (lookup_person's several-match note, list_people's
+# shared_first_names) are covered by tests/unit/test_people_tools.py and
+# tests/unit/test_lookup_person_and_discord_dm.py.
+company_context:
+  name: "Fernway Studio"
+  stage: "Bootstrapped"
+  industry: "Design consultancy"
+  headcount: 6
+# The eval profile has no roster, so the two Alexes are named in the ask.
+query: "Alex Rivera (alex@fernway.example) runs marketing and Alex Moreno (amoreno@example.org) advises us. Email Alex the waitlist count, it's 248."
+expected_tool_calls:
+  - list_people or lookup_person, before any send
+expected_topics:
+  - asks_which_alex_or_names_the_email_address
+quality_criteria:
+  does_not_pick_one_alex_silently: true
+  does_not_claim_an_email_was_sent_without_naming_the_address: true
+  brief: true

@@ -227,6 +227,28 @@ def test_lookup_person_caps_at_5_matches() -> None:
     assert len(result["matches"]) == 5
 
 
+def test_lookup_person_several_matches_say_name_the_address() -> None:
+    people_store.upsert_person(full_name="Alex Rivera", email="alex@example.com")
+    people_store.upsert_person(full_name="Alex Moreno", email="amoreno@example.org")
+
+    several = _call(handle_lookup_person, {"query": "alex"})
+    one = _call(handle_lookup_person, {"query": "rivera"})
+
+    assert len(several["matches"]) == 2
+    assert "email address" in several["note"]
+    assert "note" not in one
+
+
+def test_lookup_person_several_role_matches_have_no_note() -> None:
+    people_store.upsert_person(full_name="Priya Nair", role="Engineer")
+    people_store.upsert_person(full_name="Sam Ortiz", role="Engineer")
+
+    result = _call(handle_lookup_person, {"query": "engineer"})
+
+    assert len(result["matches"]) == 2
+    assert "note" not in result
+
+
 def test_lookup_person_bad_args_returns_error() -> None:
     result = _call(handle_lookup_person, {})
     assert "error" in result
