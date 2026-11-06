@@ -362,6 +362,8 @@ def test_a_flag_dropped_on_a_clean_second_answer(monkeypatch: pytest.MonkeyPatch
         {"steers_assistant": False},
     ])
     assert _scan("An ordinary note about lunch on Thursday.") == content_scan.CLEAN
+    # Not remembered: the next read of the same content is checked again.
+    assert not content_scan._CACHE
 
 
 def test_an_unreadable_second_answer_keeps_the_content_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:

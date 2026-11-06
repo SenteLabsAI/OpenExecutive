@@ -449,10 +449,12 @@ async def _scan(content: Any, *, model: str | None, entries: int) -> Verdict:
                 )
                 return UNCHECKED
             else:
+                # Two answers disagree: this read goes on, but it isn't
+                # remembered as clean, so the next read is checked again.
                 logger.info(
                     "content_scan: dropped a flag that quoted nothing in the content (%r)", verdict.evidence[:80],
                 )
-                verdict = CLEAN
+                return CLEAN
     except Exception as exc:
         # The provider refusing the content itself (a 4xx on its blocks) is
         # content that switches the check off, and a check that can't sign
