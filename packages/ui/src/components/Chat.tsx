@@ -104,6 +104,10 @@ interface ChatProps {
   member?: { sharedBy: string; onLeft?: () => void };
   // Bumped by the parent to open the Share panel (its ⋯ menu's Share).
   shareRequest?: number;
+  // Opened from a working row's Watch on Home: the chat may have a turn
+  // running on the server with no page of its own (an approved card's turn),
+  // which saves nothing until it ends, so follow it live meanwhile.
+  watch?: boolean;
 }
 
 // The browser's own highlight for found words, where it has one
@@ -133,7 +137,7 @@ function endsOnReply(messages: ChatMessage[] | undefined): boolean {
 const FALLBACK_SUBTITLE =
   "Pick up where we left off — decisions to revisit, drafts to push forward, people to pull in.";
 
-export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart, initialFind, member, shareRequest }: ChatProps) {
+export default function Chat({ onDebugEvent, initialMessages, initialSessionId, initialInput, autoSubmitInitialInput, initialMemoryText, onTurnComplete, onTurnStart, initialFind, member, shareRequest, watch }: ChatProps) {
   const { data: session } = useSession();
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
   const executiveName = useExecutiveName();
@@ -369,6 +373,12 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     setSettling(null);
   }, []);
 
+  // Watch (see the prop): follow the server's turn live while the chat it
+  // opened has nothing saved, until that turn ends.
+  const [watchDone, setWatchDone] = useState<string | null>(null);
+  const watching = Boolean(watch) && Boolean(sessionId) && sessionId === initialSessionId
+    && watchDone !== sessionId && messages.length === 0 && !isLoading && !streamingContent;
+
   const onLiveEvent = (event: LiveChatEvent) => {
     const before = liveRef.current;
     const step = applyLiveEvent(before, event, {
@@ -382,9 +392,13 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     if (step.state.typing.length) setClock(Date.now());
     if (step.reload) void reloadMessages();
     if (step.people) setPeopleVersion((v) => v + 1);
-    if (step.closed) setClosed(step.closed);
+    // A watched chat that isn't shared has no one to close it: a "removed"
+    // there means the turn hasn't started or left nothing saved, so stop
+    // following instead of showing the chat as closed.
+    if (watching && (event.type === "turn_ended" || step.closed)) setWatchDone(sessionId ?? null);
+    else if (step.closed) setClosed(step.closed);
   };
-  useLiveChat(sessionId, shared && !closed, onLiveEvent);
+  useLiveChat(sessionId, (shared || watching || live.turn !== null) && !closed, onLiveEvent);
 
   // "Is typing" fades on its own: tick while anyone is.
   useEffect(() => {

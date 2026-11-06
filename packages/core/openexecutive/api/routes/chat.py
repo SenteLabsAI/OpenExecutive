@@ -1024,6 +1024,7 @@ async def _run_chat_turn(
     client_turn_id: str | None = None,
     memory_text: str | None = None,
     turn_files: dict[str, bytes] | None = None,
+    background: bool = False,
 ) -> StreamingResponse:
     """Shared streaming-chat handler for both the JSON and multipart routes.
 
@@ -1531,9 +1532,13 @@ async def _run_chat_turn(
         timed_out = False
         client_disconnected = False
         stopped = False
+        # Broadcast to pages that have the chat open: a shared chat's others,
+        # and the owner watching a turn run on the server with no page of its
+        # own (``start_background_turn``: an approved card's Watch).
+        live_turn = session.shared_chat or background
 
         try:
-            if session.shared_chat:
+            if live_turn:
                 chat_live.turn_started(
                     session.session_id,
                     turn_key=live_key,
@@ -1768,7 +1773,7 @@ async def _run_chat_turn(
                                     "content": item,
                                     "session_id": session.session_id,
                                 }
-                            if session.shared_chat:
+                            if live_turn:
                                 chat_live.turn_event(session.session_id, live_key, live_evt)
                             yield f"data: {json.dumps(live_evt)}\n\n"
                         else:
@@ -1777,7 +1782,7 @@ async def _run_chat_turn(
                                 # the earlier one's chip and card.
                                 action_chips[:] = drop_replaced([*action_chips, item])
                             if (
-                                session.shared_chat
+                                live_turn
                                 and isinstance(item, dict)
                                 and item.get("type") in _LIVE_STEPS
                             ):
@@ -1951,7 +1956,7 @@ async def _run_chat_turn(
             _release_stop(client_turn_id, turn_id)
             if lock_key is not None:
                 _release_session_turn(lock_key, turn_lock)
-            if session.shared_chat:
+            if live_turn:
                 # Saved by now (every path persists before it ends): the
                 # other pages read the chat again.
                 chat_live.turn_ended(session.session_id, live_key)
@@ -2076,6 +2081,7 @@ async def start_background_turn(
             attachment_blocks=None,
             request=_StaysConnected(request.scope, request.receive),
             memory_text=memory_text,
+            background=True,
         )
     except BaseException:
         _release_background_slot(owner)

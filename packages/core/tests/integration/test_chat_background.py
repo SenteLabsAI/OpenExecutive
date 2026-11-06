@@ -204,3 +204,78 @@ def test_a_refused_turn_gives_its_slot_back(
         for _ in range(chat_route._BACKGROUND_TURNS_PER_CALLER + 1):
             assert client.post("/chat/background", json={"message": "Go."}).status_code == 403
     assert chat_route._background_counts == {}
+
+
+def test_background_turn_is_shown_live_to_a_page_that_has_its_chat_open(
+    temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An approved card's Watch opens a chat with nothing saved yet: the turn
+    running on the server is broadcast (``chat_live``) so that page shows it
+    as it is written, then ends once the reply is saved."""
+    from openexecutive.api import chat_live
+
+    chat_live.reset()
+    events: list[tuple[str, str]] = []
+    started = chat_live.turn_started
+    monkeypatch.setattr(chat_live, "turn_started", lambda sid, **kw: (events.append(("started", sid)), started(sid, **kw))[1])
+    ended = chat_live.turn_ended
+    monkeypatch.setattr(chat_live, "turn_ended", lambda sid, key: (events.append(("ended", sid)), ended(sid, key))[1])
+    chunks: list[str] = []
+    step = chat_live.turn_event
+    monkeypatch.setattr(
+        chat_live,
+        "turn_event",
+        lambda sid, key, evt: (chunks.append(evt.get("content", "")) if evt.get("type") == "chunk" else None, step(sid, key, evt))[1],
+    )
+    _executive(monkeypatch)
+    app = FastAPI()
+    app.include_router(chat_route.router)
+    with TestClient(app) as client:
+        session_id = client.post("/chat/background", json={"message": "Do the approved work."}).json()["session_id"]
+        _wait_for_answer(session_id, temp_db)
+        deadline = time.monotonic() + 5
+        while ("ended", session_id) not in events and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    assert events == [("started", session_id), ("ended", session_id)]
+    assert chat_live.snapshot(session_id) is None
+    assert "".join(chunks) == "Done: sent the plan to Finance."
+
+
+def test_a_background_turn_that_fails_still_ends_its_live_stream(
+    temp_db: Path, patched_deps: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page following a failed server-run turn is told it ended, so it
+    stops waiting on a reply that will never come."""
+    from openexecutive.api import chat_live
+    from openexecutive.orchestrator import executive as exec_mod
+
+    chat_live.reset()
+    ended: list[str] = []
+    real_ended = chat_live.turn_ended
+    monkeypatch.setattr(chat_live, "turn_ended", lambda sid, key: (ended.append(sid), real_ended(sid, key))[1])
+
+    class _Broken:
+        _THINKING = exec_mod.Executive._THINKING
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def stream_chat(self, **_kwargs: Any) -> AsyncIterator[str]:
+            raise RuntimeError("model unavailable")
+            yield ""  # pragma: no cover
+
+        async def stream_chat_with_committee(self, **_kwargs: Any) -> AsyncIterator[str]:
+            yield "unused"
+
+    monkeypatch.setattr(exec_mod, "Executive", _Broken)
+    app = FastAPI()
+    app.include_router(chat_route.router)
+    with TestClient(app) as client:
+        session_id = client.post("/chat/background", json={"message": "Do the approved work."}).json()["session_id"]
+        deadline = time.monotonic() + 5
+        while session_id not in ended and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    assert ended == [session_id]
+    assert chat_live.snapshot(session_id) is None
