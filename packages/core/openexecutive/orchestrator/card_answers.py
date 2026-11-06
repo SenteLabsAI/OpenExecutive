@@ -31,6 +31,9 @@ plainly theirs (``refusal``):
   (the tool is withheld there too);
 - the turn has read nothing from outside (``outside_content.read_outside``):
   a document or mail that says "approve card 12" can't steer it;
+- only the person's own words count (``_own_words``): an attached
+  document's inlined text is cut off, so a file that says "yes, approve
+  card 12" says nothing here;
 - an approval needs this turn's message to say yes (``said_yes``), so a
   question about a card never approves it;
 - every reply has to be about that card (``_about_card``): the message
@@ -125,7 +128,16 @@ def _last_reply(session: Any, user_message: str) -> str:
     return ""
 
 
-def _about_card(session: Any, alert: Any, user_message: str) -> bool:
+def _own_words(message: str) -> str:
+    """The person's own words: an attached document's inlined text runs from
+    its label to the end of the message, and is never theirs."""
+    from openexecutive.orchestrator.outside_content import _ATTACHMENT_MARK
+
+    marked = _ATTACHMENT_MARK.search(message or "")
+    return (message or "")[: marked.start()] if marked else (message or "")
+
+
+def _about_card(session: Any, alert: Any, user_message: str, full_message: str = "") -> bool:
     """Whether a yes in ``user_message`` is to this card: the message names
     it, the reply it answers asked about it, or it is the only card shown
     and the message is a short reply."""
@@ -133,7 +145,7 @@ def _about_card(session: Any, alert: Any, user_message: str) -> bool:
     # it"), never a message about something else that happens to say ok.
     if len(getattr(session, "trusted_alert_ids", None) or ()) == 1 and len((user_message or "").split()) <= 5:
         return True
-    return _names(user_message, alert) or _names(_last_reply(session, user_message), alert)
+    return _names(user_message, alert) or _names(_last_reply(session, full_message or user_message), alert)
 
 
 def said_no(message: str) -> bool:
@@ -347,7 +359,8 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
         alert_id = None
     reply = str(tool_input.get("reply") or "").strip().lower()
     state = getattr(session, "turn_outside", None)
-    message = getattr(state, "user_message", "") if state is not None else ""
+    full_message = getattr(state, "user_message", "") if state is not None else ""
+    message = _own_words(full_message)
     why = refusal(session, alert_id, reply, message)
     if why is not None:
         logger.warning("answer_card: refused alert_id=%s reply=%s: %s", alert_id, reply, why[:80])
@@ -359,7 +372,7 @@ async def handle_answer_card(tool_input: dict[str, Any]) -> str:
     who = _speaker(session, alert)
     if isinstance(who, str):
         return _error(who)
-    if not _about_card(session, alert, message):
+    if not _about_card(session, alert, message, full_message):
         return _error(
             f"Their message isn't plainly about this card ('{alert.headline[:120]}'). Ask them about "
             "it, naming it."
