@@ -25,6 +25,7 @@ import {
 } from "@/lib/api";
 import { cardChanges, newlyAdded } from "@/lib/contactChanges";
 import {
+  canClaimPrincipal,
   defaultKindForTab,
   defaultPeopleTab,
   effectiveKind,
@@ -151,6 +152,8 @@ interface AddPersonModalProps {
   initialKind: PersonKind;
   /** Contacts are the principal's alone: nobody else is offered the choice. */
   canAddContacts: boolean;
+  /** Only while nobody is the principal yet (canClaimPrincipal). */
+  canBePrincipal: boolean;
   onCreated: (p: Person) => void;
   onClose: () => void;
 }
@@ -230,7 +233,7 @@ function ScopePicker({ selected, onToggle }: { selected: string[]; onToggle: (va
 
 const SCOPE_VALUES = ALL_SCOPES.map((s) => s.value);
 
-function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: AddPersonModalProps) {
+function AddPersonModal({ initialKind, canAddContacts, canBePrincipal, onCreated, onClose }: AddPersonModalProps) {
   const [form, setForm] = useState({ ...BLANK_FORM, kind: canAddContacts ? initialKind : "team" });
   const kind = effectiveKind(form.kind, form.is_principal);
   const contact = kind === "contact";
@@ -279,13 +282,15 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
           }]
         : []),
       { name: "role", label: contact ? "Role and company" : "Role", type: "text", value: form.role },
-      {
-        name: "is_principal",
-        label: "This is me — Primary",
-        type: "boolean",
-        value: form.is_principal,
-        description: "Marks the person as the primary decision-maker. Only for the user themselves.",
-      },
+      ...(canBePrincipal
+        ? [{
+            name: "is_principal",
+            label: "This is me — Primary",
+            type: "boolean" as const,
+            value: form.is_principal,
+            description: "Marks the person as the primary decision-maker. Only for the user themselves.",
+          }]
+        : []),
       { name: "preferred_channel", label: "Preferred channel", type: "select", options: CHANNELS, value: form.preferred_channel },
       { name: "response_sla_hours", label: "Expected reply within (hours)", type: "number", value: Number(form.response_sla_hours) || 24 },
       { name: "email", label: "Email", type: "text", value: form.email },
@@ -317,7 +322,7 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
             else { next[key] = raw; applied.push(key); }
             break;
           case "is_principal":
-            if (typeof raw !== "boolean") skipped.push(key);
+            if (!canBePrincipal || typeof raw !== "boolean") skipped.push(key);
             else { next.is_principal = raw; applied.push(key); }
             break;
           case "kind":
@@ -487,7 +492,7 @@ function AddPersonModal({ initialKind, canAddContacts, onCreated, onClose }: Add
             />
           </label>
 
-          {!contact && (
+          {!contact && canBePrincipal && (
           <label className="flex items-start gap-3 cursor-pointer select-none rounded-xl border border-line px-4 py-3">
             <input
               type="checkbox"
@@ -726,6 +731,7 @@ export default function PeoplePage() {
         <AddPersonModal
           initialKind={defaultKindForTab(listTab)}
           canAddContacts={viewerIsPrincipal}
+          canBePrincipal={canClaimPrincipal(people, loading || error !== null)}
           onCreated={(p) => {
             setPeople((prev) => [...prev, p]);
             setShowAdd(false);

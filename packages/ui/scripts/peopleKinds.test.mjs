@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canClaimPrincipal,
   defaultKindForTab,
   defaultPeopleTab,
   effectiveKind,
@@ -81,4 +82,12 @@ test("a card's one status: email for a contact, leave or reply time for the team
   assert.equal(personCardStatus({ ...base, on_leave_until: "2026-09-30" }, "2026-10-03").label, "Replies within 12h");
   assert.deepEqual(personCardStatus({ ...base, kind: "contact" }, "2026-10-03"), { label: "No email", tone: "muted" });
   assert.equal(personCardStatus({ ...base, kind: "contact", email: "a@b.c" }, "2026-10-03").label, "Email on file");
+});
+
+test("This is me is offered only while nobody is the principal", () => {
+  assert.equal(canClaimPrincipal([TEAMMATE, CLIENT], false), true);
+  assert.equal(canClaimPrincipal([], false), true);
+  assert.equal(canClaimPrincipal(ROSTER, false), false);
+  // Not while the list is loading: it may hold the principal.
+  assert.equal(canClaimPrincipal([], true), false);
 });
