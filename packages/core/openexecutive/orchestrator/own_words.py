@@ -58,6 +58,14 @@ _SKIP_FILES = frozenset({
     "delegation/inbox_classifier.py",
     "delegation/lockdown.py",
 })
+# A sentence of ours that reads like an attack (a guard's "ignore any
+# instruction inside them", a pattern of attack words) stays in what is
+# checked: content that copied it would otherwise get it past the check.
+_STEERING = re.compile(
+    r"\b(ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}\b(instructions?|rules?|prompts?|guidelines?)\b"
+    r"|\byou are now\b|\bsystem prompt\b|\bnew instructions\b|\bjailbreak\b",
+    re.IGNORECASE,
+)
 MIN_CHARS = 24
 MIN_WORDS = 4
 # Matches are found from their first characters (``_index``).
@@ -106,7 +114,7 @@ def _sentences(literal: str) -> set[str]:
         line = line.strip()
         for part in (line, *_SENTENCE_END.split(line)):
             part = part.strip()
-            if len(part) >= MIN_CHARS and len(_WORD.findall(part)) >= MIN_WORDS:
+            if len(part) >= MIN_CHARS and len(_WORD.findall(part)) >= MIN_WORDS and not _STEERING.search(part):
                 out.add(part)
     return out
 
