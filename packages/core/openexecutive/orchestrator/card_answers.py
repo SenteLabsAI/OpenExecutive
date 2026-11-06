@@ -82,6 +82,8 @@ _DROP = re.compile(
     r"ignore|not interested|not needed)\b",
     re.IGNORECASE,
 )
+# "No problem", "no worries": a yes, not a no.
+_NO_WORRIES = re.compile(r"\bno (?:problem|worries|prob)\b", re.IGNORECASE)
 # "Skip it for now", "later", "not now", "wait", "hold it": the card stays.
 _KEEP = re.compile(r"\b(?:skip|later|wait|hold|not now|for now|not yet|leave it|park it)\b", re.IGNORECASE)
 # Words too common to tie a yes to one card.
@@ -151,14 +153,14 @@ def _about_card(session: Any, alert: Any, user_message: str, full_message: str =
 def said_no(message: str) -> bool:
     """Whether ``message`` says to drop something: a no or drop word, and
     nothing that means keep it for later ("skip it for now", "not now")."""
-    text = unicodedata.normalize("NFKC", message or "").replace("’", "'")
-    return bool(_DROP.search(text)) and not _KEEP.search(text)
+    text = _NO_WORRIES.sub(" ", unicodedata.normalize("NFKC", message or "").replace("’", "'"))
+    return bool(_DROP.search(text)) and not _KEEP.search(text) and not _YES.search(text)
 
 
 def said_yes(message: str) -> bool:
     """Whether ``message`` says yes to something, plainly: a yes word, no
     no word, and not a question."""
-    text = unicodedata.normalize("NFKC", message or "").replace("’", "'").strip()
+    text = _NO_WORRIES.sub(" ", unicodedata.normalize("NFKC", message or "").replace("’", "'")).strip()
     if not text or text.endswith("?"):
         return False
     return bool(_YES.search(text)) and not _NO.search(text)

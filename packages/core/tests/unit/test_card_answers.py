@@ -310,3 +310,9 @@ def test_an_attached_documents_words_arent_theirs(people: SimpleNamespace, monke
     with _turn(people.principal, message):
         assert "error" in _call(alert_id=alert_id, reply="approve")
     assert alert_store.get_alert(alert_id).status == "unread"
+
+
+def test_no_problem_is_a_yes_not_a_no(people: SimpleNamespace) -> None:
+    assert said_yes("Yes, no problem, go ahead")
+    assert not card_answers.said_no("Yes, no problem, go ahead")
+    assert not card_answers.said_no("ok, no, drop it")
