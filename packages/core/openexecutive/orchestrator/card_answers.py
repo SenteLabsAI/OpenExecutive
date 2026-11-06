@@ -127,8 +127,11 @@ def _last_reply(session: Any, user_message: str) -> str:
 
 def _about_card(session: Any, alert: Any, user_message: str) -> bool:
     """Whether a yes in ``user_message`` is to this card: the message names
-    it, the reply it answers asked about it, or it is the only card shown."""
-    if len(getattr(session, "trusted_alert_ids", None) or ()) == 1:
+    it, the reply it answers asked about it, or it is the only card shown
+    and the message is a short reply."""
+    # The only card shown counts only for a short reply ("yes", "no, drop
+    # it"), never a message about something else that happens to say ok.
+    if len(getattr(session, "trusted_alert_ids", None) or ()) == 1 and len((user_message or "").split()) <= 5:
         return True
     return _names(user_message, alert) or _names(_last_reply(session, user_message), alert)
 

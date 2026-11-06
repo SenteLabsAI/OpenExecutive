@@ -291,3 +291,10 @@ def test_skip_keeps_the_card_even_with_a_no(people: SimpleNamespace) -> None:
     with _turn(people.principal, "no, skip it"):
         assert "error" in _call(alert_id=alert_id, reply="dismiss")
     assert alert_store.get_alert(alert_id).status == "unread"
+
+
+def test_the_only_card_needs_a_short_reply(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "can we reorder the roadmap first. ok, go ahead and do it"):
+        assert "error" in _call(alert_id=alert_id, reply="approve")
+    assert alert_store.get_alert(alert_id).status == "unread"
