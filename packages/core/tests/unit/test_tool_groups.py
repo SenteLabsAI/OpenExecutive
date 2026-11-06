@@ -311,3 +311,20 @@ def test_no_synced_count_skips_the_synced_sources(monkeypatch: pytest.MonkeyPatc
     assert collections() >= synced
     assert all(c.kwargs["n_results"] == 2 for c in store.query.call_args_list
                if c.kwargs["collection"] in synced)
+
+
+def test_an_empty_tool_search_points_to_the_groups() -> None:
+    deferred = {"list_watchlist": {"name": "list_watchlist"}, "draft_artifact": {"name": "draft_artifact"}}
+
+    async def search(tool_input: dict[str, Any]) -> str:
+        return "No matching tools found. Try a different search query." if tool_input["query"] == "billing" else '{"tools": [{"name": "x"}]}'
+
+    run = tool_groups.searching(search, deferred)
+    empty = asyncio.run(run({"query": "billing"}))
+    assert "open_tools" in empty and "watch_and_alerts" in empty and "documents" in empty
+    assert "workflows" not in empty  # not offered this turn
+    found = asyncio.run(run({"query": "mail"}))
+    assert found == '{"tools": [{"name": "x"}]}'
+    assert tool_groups.after_search('{"tools": []}', deferred) != '{"tools": []}'
+    assert tool_groups.after_search("No matching tools found.", {}) == "No matching tools found."
+

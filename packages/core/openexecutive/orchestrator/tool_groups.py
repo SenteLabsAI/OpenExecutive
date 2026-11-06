@@ -20,7 +20,7 @@ handlers, chips and audit rows a direct call would.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 OPEN_TOOLS = "open_tools"
@@ -240,3 +240,42 @@ def unwrap(tool_use: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
     if not isinstance(args, dict):
         return None, json.dumps({"error": f"use_tool needs {name}'s input as an object."})
     return {**tool_use, "name": name, "input": args}, None
+
+
+_NO_MATCH = "No matching tools found"
+
+
+def _found_nothing(result: str) -> bool:
+    if _NO_MATCH in result:
+        return True
+    try:
+        parsed = json.loads(result)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("tools") == []
+
+
+def after_search(result: str, deferred: dict[str, dict[str, Any]]) -> str:
+    """``search_tools``' answer, and when it found nothing, where else to
+    look: it searches only the connected tool servers, never the groups
+    open_tools opens, so a model that took "no matching tools" as "no such
+    tool" told the person it couldn't do what a group would have done."""
+    if not deferred or not isinstance(result, str) or not _found_nothing(result):
+        return result
+    names = set(deferred)
+    groups = [group for group, (_, tools) in GROUPS.items() if any(t in names for t in tools)]
+    if not groups:
+        return result
+    return (
+        f"{result}\n\nThat searched only the connected tool servers. More tools are in groups you open "
+        f"with open_tools: {', '.join(groups)}. Open the one that fits before saying you can't do it."
+    )
+
+
+def searching(search: Callable[[dict[str, Any]], Any], deferred: dict[str, dict[str, Any]]) -> Callable[..., Any]:
+    """``search`` (the gateway's search_tools) answering with ``after_search``."""
+
+    async def run(tool_input: dict[str, Any]) -> str:
+        return after_search(await search(tool_input), deferred)
+
+    return run
