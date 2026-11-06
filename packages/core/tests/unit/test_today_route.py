@@ -3068,6 +3068,49 @@ def test_done_for_you_leaves_out_what_is_not_done_for_them(
     assert theirs == []
 
 
+def test_an_email_it_sent_on_its_own_names_who_and_what_in_done_for_you(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An email it sent on its own reads "Emailed Riley Park: <subject>" on
+    the owner's Done for you, never the raw tool name; the team's activity
+    feed names teammates only, never a contact, an address or the subject;
+    one it sent the owner themselves is something they already got."""
+    from openexecutive.orchestrator import take_the_lead
+
+    db = tmp_path / "done_mail.db"
+    _setup_isolated_db(db, monkeypatch)
+    people_store.upsert_person(full_name="Jordan", is_principal=True, email="jordan@example.com", db_path=db)
+    people_store.upsert_person(full_name="Riley Park", email="riley@example.com", kind="contact", db_path=db)
+    people_registry.invalidate()
+    send = "google_workspace__send_gmail_message"
+    for to, subject in (("Riley@Example.com", "Re: Status - forum drafts"), ("jordan@example.com", "Forum post: yes")):
+        tool_input = {"to": to, "subject": subject, "body": "Hi"}
+        take_the_lead.record(
+            scope=take_the_lead.SCOPE_EXECUTIVE, source="scheduled", tool=send,
+            summary=take_the_lead.summarize(send, tool_input, mcp=True, quote=False), status="done",
+            mail=take_the_lead.mail_sent(send, tool_input),
+        )
+    take_the_lead.record(
+        scope=take_the_lead.SCOPE_EXECUTIVE, source="scheduled", tool=send, summary="Send gmail message",
+        status="done", mail=take_the_lead.mail_sent(send, {"to": ["sam@example.com", "lee@example.com"]}),
+    )
+
+    client = _make_client()
+    owner = {"x-caller-email": "jordan@example.com"}
+    rows = [r for r in client.get("/today", headers=owner).json()["done_for_you"] if r["kind"] == "took_the_lead"]
+    assert sorted(r["title"] for r in rows) == [
+        "Emailed Riley Park: Re: Status - forum drafts",
+        "Emailed lee@example.com and sam@example.com",
+    ]
+    feed = client.get("/today/activity", headers=owner).json()["items"]
+    led = sorted(i["summary"] for i in feed if i["kind"] == "took_the_lead")
+    # The team's feed names teammates only: a contact or an outside address
+    # is "Sent an email", and the subject is never in it.
+    assert led == ["Emailed Jordan", "Sent an email", "Sent an email"]
+    assert all("mail_subject" not in i and "mail_to" not in i for i in feed)
+    assert all(i["target"] is None for i in feed if i["summary"] == "Sent an email")
+
+
 def test_held_back_page_lines_are_the_principals_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
