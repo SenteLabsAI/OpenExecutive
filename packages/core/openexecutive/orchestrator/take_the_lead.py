@@ -1476,6 +1476,10 @@ async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, sour
     except Exception:
         logger.warning("take_the_lead: the gate failed — holding the action", exc_info=True)
         hit = Hit("rule", "its rules couldn't be read")
+    if hit is not None and mcp and not str(name or "").strip():
+        # A connected-app call naming no tool is nothing anyone
+        # could approve; an empty "The Executive wants to:" card helps no one.
+        return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
     if hit is not None:
         try:
             decision_id = hold(name, tool_input, hit, source=source, mcp=mcp)

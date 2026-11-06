@@ -265,6 +265,9 @@ def hold(
     waiting is that card, not a new one."""
     from openexecutive.orchestrator import department_gate, take_the_lead
 
+    if mcp and not str(tool or "").strip():
+        # Nothing anyone could approve (no tool named).
+        return json.dumps({"error": "call_tool needs the tool's name: find it with search_tools first."})
     if session is None:
         from openexecutive.orchestrator.schedule_tools import current_session
 

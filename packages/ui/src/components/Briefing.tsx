@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ackAlert,
+  answerAlert,
   approveAlert,
   approveDecision,
   bulkAckAlerts,
@@ -222,6 +223,15 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       console.error("Approve failed", e);
     }
   }, [actedAlertIds, refreshToday]);
+
+  // A card that asks something is answered on the card; the
+  // server closes it and the Executive carries on in a new chat (its
+  // progress shows in Done for you). Throws so the card can say why.
+  const handleAnswer = useCallback(async (proposal: ProposalItem, answer: string) => {
+    await answerAlert(proposal.alert_id, answer);
+    setActedAlertIds((prev) => new Set(prev).add(proposal.alert_id));
+    refreshToday();
+  }, [refreshToday]);
 
   // Dismiss is a record-and-forget decision: the card disappears
   // immediately, the backend marks the alert ``dismissed`` (so the
@@ -788,6 +798,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
             onSnooze={handleSnooze}
             onRerun={handleRerun}
             onApproveWithEdits={handleApproveWithEdits}
+            onAnswer={handleAnswer}
             defaultBodyExpanded={emphasized}
             emphasized={emphasized}
           />
@@ -1132,6 +1143,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
                       onSnooze={handleSnooze}
                       onRerun={handleRerun}
                       onApproveWithEdits={isPrincipalCaller ? handleApproveWithEdits : undefined}
+                      onAnswer={isPrincipalCaller ? handleAnswer : undefined}
                     />
                   ))}
                   {otherProposals.length === 0 && (

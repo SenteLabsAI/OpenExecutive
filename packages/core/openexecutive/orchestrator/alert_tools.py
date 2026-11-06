@@ -17,7 +17,13 @@ CREATE_ALERT_TOOL: dict[str, Any] = {
     "description": (
         "Create an operational alert for something in an inbound message that requires "
         "attention or follow-up. Use for urgent issues, important decisions, or anything "
-        "the executive should be explicitly notified about. Do NOT use for routine emails."
+        "the executive should be explicitly notified about. Do NOT use for routine emails. "
+        "Say what the card needs from its reader in 'needs', so the card gets the right "
+        "controls and their reply comes straight back to you to carry on: 'answer' when you "
+        "need information from them (put the exact question in 'question'), 'choice' when "
+        "they pick one of 2 to 4 options (give them in 'choices'), 'ok' only when approving "
+        "makes you do one exact thing (spell it out in the body), 'fyi' when nothing is "
+        "needed. One card asks one thing: put related questions in one 'question'."
     ),
     "input_schema": {
         "type": "object",
@@ -52,6 +58,23 @@ CREATE_ALERT_TOOL: dict[str, Any] = {
             "assigned_to_person_id": {
                 "type": "integer",
                 "description": "Optional person id to route this alert to.",
+            },
+            "needs": {
+                "type": "string",
+                "enum": ["answer", "choice", "ok", "fyi"],
+                "description": "What the card needs from its reader.",
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "With 'answer' or 'choice': the question, in plain words, as you'd ask it "
+                    "(e.g. 'Which 3 to 5 new features go in the post?')."
+                ),
+            },
+            "choices": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "With 'choice': 2 to 4 short options, each a few words.",
             },
         },
         "required": ["subject", "body"],
@@ -136,6 +159,66 @@ def _origin_for(speaker: Person | None, tool_input: dict[str, Any]) -> tuple[str
 
     name = (speaker.full_name or "").strip() or "a team member"
     return TEAM_RAISED_SOURCE, uuid.uuid4().hex, speaker.email or name, name
+
+
+def _card_ask(tool_input: dict[str, Any]) -> tuple[str, str, list[str]]:
+    """(needs, question, choices) the card says it needs. A pick
+    with fewer than two usable choices is asked as an answer; an answer or
+    pick without a question asks the card's subject."""
+    from openexecutive.alerts.models import (
+        CARD_NEEDS,
+        MAX_CHOICE_CHARS,
+        MAX_CHOICES,
+        MIN_CHOICES,
+        NEEDS_ANSWER,
+        NEEDS_CHOICE,
+    )
+
+    needs = str(tool_input.get("needs") or "").strip().lower()
+    if needs not in CARD_NEEDS:
+        return "", "", []
+    raw = tool_input.get("choices")
+    choices: list[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        text = " ".join(str(item or "").split())[:MAX_CHOICE_CHARS]
+        if text and text.lower() not in {c.lower() for c in choices}:
+            choices.append(text)
+    choices = choices[:MAX_CHOICES]
+    if needs == NEEDS_CHOICE and len(choices) < MIN_CHOICES:
+        needs = NEEDS_ANSWER
+    if needs != NEEDS_CHOICE:
+        choices = []
+    question = " ".join(str(tool_input.get("question") or "").split())[:500]
+    if needs in (NEEDS_ANSWER, NEEDS_CHOICE) and not question:
+        question = " ".join(str(tool_input.get("subject") or "").split())[:500]
+    if needs not in (NEEDS_ANSWER, NEEDS_CHOICE):
+        question = ""
+    return needs, question, choices
+
+
+# A card in one of these is done with; any other status (unread, read,
+# snoozed) is still open, and keeps its message id.
+_CLOSED_CARD_STATUSES = frozenset({"ack", "dismissed", "expired", "resolved"})
+
+
+def _fresh_external_id(source: str, external_id: str, *, folds: bool = False) -> str:
+    """The card's message id, unless a card already holds it: then a fresh
+    one, so the new ask isn't taken for a replay of that card and dropped.
+    A closed card always gives way (the same mail handled again); an open
+    one only when the new ask folds into it by sender (``folds``), since
+    the pipeline drops a second card for one id before it can fold."""
+    if not external_id:
+        return external_id
+    try:
+        from openexecutive.alerts import store
+
+        held = store.get_alert_by_external(source, external_id)
+    except Exception:
+        logger.warning("create_alert: couldn't check the message id", exc_info=True)
+        return external_id
+    if held is None or (held.status not in _CLOSED_CARD_STATUSES and not folds):
+        return external_id
+    return f"{external_id}:{uuid.uuid4().hex[:8]}"
 
 
 def _one_card_per_sender(event: Any, session: Any) -> None:
@@ -224,7 +307,9 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
                     event.user = f"person:{routed_id}"
         if private:
             event.private = True
+        event.needs, event.question, event.choices = _card_ask(tool_input)
         _one_card_per_sender(event, current_session.get())
+        event.external_id = _fresh_external_id(event.source, event.external_id, folds=event.follow_up)
         schedule_evaluation(event)
         logger.info("create_alert: scheduled subject=%r", tool_input["subject"])
         audit_log(
@@ -233,7 +318,7 @@ async def handle_create_alert(tool_input: dict[str, Any]) -> str:
             actor="executive",
             details={
                 "source": source,
-                "external_id": external_id,
+                "external_id": event.external_id,
                 "from": from_address,
                 "raised_by": raised_by,
                 "body_preview": str(tool_input.get("body", ""))[:300],

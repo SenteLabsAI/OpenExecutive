@@ -14,6 +14,7 @@ import { ageLabel, daysUntil, proposalStatusChip } from "@/lib/briefingSummary";
 import { type SnoozeChoice, snoozeChoices } from "@/lib/snooze";
 import { hostOf } from "@/lib/url";
 
+import CardAsk from "./CardAsk";
 import HeldActionCard, { isHeldAction } from "./HeldActionCard";
 import LeadTrainingCard, { isLeadTraining } from "./LeadTrainingCard";
 import { Chip, TONE_TEXT, buildMonitoringSeed, type ContinueHandler } from "./shared";
@@ -174,6 +175,15 @@ interface CardAction {
   danger?: boolean;
 }
 
+// What the card needs from its reader (ProposalItem.needs), as the chip at
+// its top says it.
+const NEEDS_CHIP: Record<string, { label: string; tone: "sky" | "amber" | "emerald" | "neutral" }> = {
+  answer: { label: "Needs your answer", tone: "sky" },
+  choice: { label: "Pick one", tone: "amber" },
+  ok: { label: "Needs your OK", tone: "emerald" },
+  fyi: { label: "For you to know", tone: "neutral" },
+};
+
 // A card in "Needs you" (and in the Across-the-team panel). Closed, it shows
 // the proposal, one status chip and who it is routed to, with one primary
 // button (the recommended move, or Approve) beside Discuss; the rest sit in
@@ -188,6 +198,7 @@ export default function ProposalCard({
   onSnooze,
   onRerun,
   onApproveWithEdits,
+  onAnswer,
   busy = false,
   defaultBodyExpanded = false,
   emphasized = false,
@@ -202,6 +213,9 @@ export default function ProposalCard({
   // Queue a failed scheduled run again (cards with `failed_run_id`).
   onRerun?: (p: ProposalItem) => void;
   onApproveWithEdits?: (p: ProposalItem, editedBody: string) => void;
+  // Answer a card that asks something (needs "answer" or
+  // "choice"); rejects with the reason when it couldn't be sent.
+  onAnswer?: (p: ProposalItem, answer: string) => Promise<void>;
   busy?: boolean;
   // Show the whole body while closed (no clamp) — the first card in the
   // queue, so its full text reads without a click.
@@ -380,18 +394,26 @@ export default function ProposalCard({
   const openRun: CardAction | null = failedRun
     ? { label: "Open the run", href: `/jobs/runs/${encodeURIComponent(failedRun)}` }
     : null;
+  // A card that asks something is answered on the card, and one that's for
+  // them to know has nothing to approve.
+  const needs = proposal.needs ?? "";
+  const asks = (needs === "answer" || needs === "choice") && Boolean(onAnswer);
+  const noApprove = needs === "answer" || needs === "choice" || needs === "fyi";
   const approve: CardAction | null =
-    !isMonitoring && !isArtifact && !failedRun && onApprove
+    !noApprove && !isMonitoring && !isArtifact && !failedRun && onApprove
       ? { label: "Approve", onSelect: () => onApprove(proposal) }
       : null;
   const editApprove: CardAction | null =
-    !isMonitoring && !isArtifact && !isDecision && !failedRun && onApproveWithEdits
+    !noApprove && !isMonitoring && !isArtifact && !isDecision && !failedRun && onApproveWithEdits
       ? { label: "Edit & approve", onSelect: startEditing }
       : null;
   const dismiss: CardAction | null = onDismiss
     ? isArtifact
       ? { label: "Mark reviewed", onSelect: () => onDismiss(proposal) }
-      : { label: isMonitoring ? "Dismiss signal" : "Dismiss", onSelect: () => onDismiss(proposal) }
+      : {
+          label: needs === "fyi" ? "Got it" : isMonitoring ? "Dismiss signal" : "Dismiss",
+          onSelect: () => onDismiss(proposal),
+        }
     : null;
   const openDoc: CardAction | null = isArtifact
     ? { label: "Open document", href: `/artifacts/${encodeURIComponent(`alert:${proposal.alert_id}`)}` }
@@ -409,6 +431,8 @@ export default function ProposalCard({
   // card is stale; Open for a document; otherwise Approve.
   let primary: CardAction | null;
   if (isArtifact) primary = openDoc;
+  else if (asks) primary = null; // answered on the card
+  else if (needs === "fyi") primary = dismiss; // Got it
   else if (isMonitoring) primary = null; // Discuss leads
   else if (isLikelyStale && dismiss) primary = dismiss;
   else primary = rerun ?? nudge ?? workflow ?? approve;
@@ -447,8 +471,14 @@ export default function ProposalCard({
       isLongBody,
   );
 
+  const needsChip = NEEDS_CHIP[needs];
   const header = (
     <>
+      {needsChip && !isArtifact && (
+        <div className="mb-1.5">
+          <Chip tone={needsChip.tone}>{needsChip.label}</Chip>
+        </div>
+      )}
       {isArtifact && (
         <div className="mb-1.5">
           <Chip tone="amber">{artifactBadge(proposal.artifact_format)}</Chip>
@@ -542,6 +572,15 @@ export default function ProposalCard({
           )}
           {reviewedFooter}
         </div>
+      )}
+
+      {asks && onAnswer && (
+        <CardAsk
+          alertId={proposal.alert_id}
+          question={proposal.question ?? ""}
+          choices={needs === "choice" ? (proposal.choices ?? []) : []}
+          onAnswer={(answer) => onAnswer(proposal, answer)}
+        />
       )}
 
       {showActions && (

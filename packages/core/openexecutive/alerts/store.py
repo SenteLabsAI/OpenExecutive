@@ -98,6 +98,10 @@ def initialize_db(db_path: Path | None = None) -> None:
             # conversation published it (orchestrator/artifact_records.py).
             # NULL on a draft = the principal's.
             ("owner_person_id", "INTEGER"),
+            # What the card needs from its reader (Alert.needs).
+            ("needs", "TEXT NOT NULL DEFAULT ''"),
+            ("question", "TEXT NOT NULL DEFAULT ''"),
+            ("choices", "TEXT NOT NULL DEFAULT '[]'"),
         ):
             if col not in existing:
                 try:
@@ -146,6 +150,7 @@ def _row_to_alert(row: sqlite3.Row) -> Alert:
     d["topic_tags"] = json.loads(d.get("topic_tags") or "[]")
     d["channels_attempted"] = json.loads(d.get("channels_attempted") or "[]")
     d["channels_delivered"] = json.loads(d.get("channels_delivered") or "[]")
+    d["choices"] = json.loads(d.get("choices") or "[]")
     return Alert(**d)
 
 
@@ -165,6 +170,9 @@ def insert_alert(
     artifact_link_label: str | None = None,
     supersedes_id: str | None = None,
     owner_person_id: int | None = None,
+    needs: str = "",
+    question: str = "",
+    choices: list[str] | None = None,
     db_path: Path | None = None,
 ) -> int | None:
     """Insert a new alert. Returns alert id, or None if a duplicate was skipped."""
@@ -176,8 +184,8 @@ def insert_alert(
                 (external_id, source, severity, headline, body, suggested_action,
                  topic_tags, dedup_key, status, created_at, routed_to_person_id,
                  artifact_format, artifact_url, artifact_link_label, supersedes_id,
-                 owner_person_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?, ?)
+                 owner_person_id, needs, question, choices)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 external_id,
@@ -195,6 +203,9 @@ def insert_alert(
                 artifact_link_label,
                 supersedes_id,
                 owner_person_id,
+                needs,
+                question,
+                json.dumps(choices or []),
             ),
         )
         if cursor.rowcount == 0:
@@ -415,9 +426,15 @@ def coalesce_alert(
     severity: str,
     body: str,
     append: bool = False,
+    needs: str = "",
+    question: str = "",
+    choices: list[str] | None = None,
     db_path: Path | None = None,
 ) -> tuple[int, bool] | None:
     """Fold a repeat of an open alert into the existing row.
+
+    A repeat that says what it needs (``needs``) replaces the
+    card's ask with its own, so the card asks the newest question.
 
     When an ``unread`` alert with the same ``(source, dedup_key)`` exists,
     bump ``occurrence_count`` and ``last_seen_at``, refresh ``body`` (the
@@ -438,7 +455,7 @@ def coalesce_alert(
         # miss the row (read-then-update race) or overwrite each other's body.
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, severity, body FROM alerts "
+            "SELECT id, severity, body, needs FROM alerts "
             "WHERE source = ? AND dedup_key = ? AND status = 'unread' "
             "ORDER BY created_at DESC LIMIT 1",
             (source, dedup_key),
@@ -459,6 +476,14 @@ def coalesce_alert(
             "body = ?, severity = ? WHERE id = ?",
             (_now(), body, effective, int(row["id"])),
         )
+        if needs in ("answer", "choice") and str(row["needs"] or "") in ("answer", "choice"):
+            # Only a card that already asks takes a newer question: a repeat
+            # never turns a held action, an OK, an FYI or a plain card into
+            # a question box, nor drops a question that is still open.
+            conn.execute(
+                "UPDATE alerts SET needs = ?, question = ?, choices = ? WHERE id = ?",
+                (needs, question, json.dumps(choices or []), int(row["id"])),
+            )
     return int(row["id"]), raised
 
 
