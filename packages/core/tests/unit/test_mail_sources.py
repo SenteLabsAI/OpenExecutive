@@ -383,3 +383,54 @@ def test_a_crashed_source_is_logged(
         mail_sources.logger.removeHandler(caplog.handler)
     assert "mail-source-relay stopped" in caplog.text
 
+
+
+def test_the_next_turn_on_a_thread_sees_what_was_mailed_on_it(turn: dict[str, Any]) -> None:
+    # With only the quoted chain to go on, a later turn could say there was
+    # no draft right after the first answer sent it.
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent()))
+    assert "EARLIER REPLIES" not in turn["turns"][0]["user_message"]
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent()))
+    message = turn["turns"][1]["user_message"]
+    assert "--- YOUR EARLIER REPLIES ON THIS THREAD ---" in message
+    assert "Here are the Q3 numbers." in message.split("EARLIER REPLIES ON THIS THREAD")[1]
+    assert 'source="earlier_reply"' in message
+
+
+def test_an_answer_redirected_to_the_principal_is_not_the_threads(turn: dict[str, Any]) -> None:
+    # An unproven sender's answer goes to the principal, out of the thread.
+    _handle(_mail(TEAMMATE, proven=False, send=_Sent()))
+    _handle(_mail(TEAMMATE, proven=False, send=_Sent()))
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent()))
+    assert all("EARLIER REPLIES" not in kw["user_message"] for kw in turn["turns"])
+
+
+def test_only_what_went_to_that_sender_on_that_thread_is_shown(tmp_path: Any) -> None:
+    from openexecutive.integrations import email_replies
+
+    db = tmp_path / "r.db"
+    email_replies.record("email:t1", "ann@example.com", "To Ann", db_path=db)
+    email_replies.record("email:t1", "boss@example.com", "To the boss", db_path=db)
+    email_replies.record("email:t2", "ann@example.com", "Another thread", db_path=db)
+    for i in range(email_replies.KEEP + 2):
+        email_replies.record("email:t3", "ann@example.com", f"reply {i}", db_path=db)
+    shown = email_replies.block("email:t1", "Ann@Example.com", db_path=db)
+    assert "To Ann" in shown
+    assert "To the boss" not in shown and "Another thread" not in shown
+    assert [b for _w, b in email_replies.recent("email:t3", "ann@example.com", db_path=db)] == [
+        f"reply {i}" for i in range(email_replies.KEEP - 1, email_replies.KEEP + 2)
+    ]
+    assert email_replies.block("email:none", "ann@example.com", db_path=db) == ""
+
+
+def test_knowledge_is_searched_for_what_the_sender_wrote() -> None:
+    raw = (
+        "Subject: Re: launch email\nFrom: Sam <sam@example.com>\nTo: exec@example.com\n"
+        "Date: Thu, 5 Nov 2026 22:47:00 -0500\nMessage-ID: <x@example.com>\n\n--- BODY ---\n"
+        "Send me the current email we are going to use?\n\n"
+        "On Thu, Nov 5, 2026 at 10:29 PM Exec <exec@example.com> wrote:\n> Understood.\n"
+    )
+    query = poller._retrieval_query(raw)
+    assert query.startswith("Re: launch email\nSend me the current email we are going to use?")
+    assert "Message-ID" not in query and "Understood" not in query
+    assert poller._retrieval_query("") == ""
