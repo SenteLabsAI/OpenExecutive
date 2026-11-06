@@ -330,3 +330,13 @@ def test_an_unreadable_roster_refuses(
 
     monkeypatch.setattr(people_store, "find_principal_person", locked)
     assert client.post("/people", json={"full_name": "Ann"}, headers=OWNER).status_code == 403
+
+
+def test_the_owner_cannot_add_a_second_principal(client: TestClient, team: dict[str, int]) -> None:
+    r = client.post(
+        "/people",
+        json={"full_name": "Pat", "is_principal": True, "email": "pat@acme.io"},
+        headers=OWNER,
+    )
+    assert r.status_code == 409
+    assert [p["full_name"] for p in client.get("/people").json() if p["is_principal"]] == ["Olive"]
