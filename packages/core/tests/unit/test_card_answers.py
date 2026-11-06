@@ -221,7 +221,48 @@ def test_a_board_line_says_what_the_card_asks(people: SimpleNamespace) -> None:
 
 def test_one_yes_carries_out_one_card(people: SimpleNamespace) -> None:
     first, second = _alert(headline="First"), _alert(headline="Second")
-    with _turn(people.principal, "yes"):
+    with _turn(people.principal, "yes, the first and second"):
         assert _call(alert_id=first, reply="approve")["status"] == "approved"
         assert "error" in _call(alert_id=second, reply="approve")
     assert alert_store.get_alert(second).status == "unread"
+
+
+def test_a_yes_to_something_else_doesnt_approve_a_card(people: SimpleNamespace) -> None:
+    _alert(headline="Move Tuesday's call with Dana")
+    other = _alert(headline="Approve me now")
+    with _turn(people.principal, "ok") as s:
+        s.conversation_history = [
+            {"role": "assistant", "content": "Want me to move Tuesday's call with Dana?"},
+            {"role": "user", "content": "ok"},
+        ]
+        out = _call(alert_id=other, reply="approve")
+    assert "error" in out and "Approve me now" in out["error"]
+    assert alert_store.get_alert(other).status == "unread"
+
+
+def test_a_yes_to_the_card_just_asked_about_approves_it(people: SimpleNamespace) -> None:
+    asked = _alert(headline="Move Tuesday's call with Dana")
+    _alert(headline="Approve me now")
+    with _turn(people.principal, "ok") as s:
+        s.conversation_history = [
+            {"role": "assistant", "content": [{"type": "text", "text": "Want me to move Tuesday's call with Dana?"}]},
+            {"role": "user", "content": "ok"},
+        ]
+        out = _call(alert_id=asked, reply="approve")
+    assert out["status"] == "approved"
+    assert out["headline"] == "Move Tuesday's call with Dana"
+
+
+def test_a_yes_naming_the_card_approves_it(people: SimpleNamespace) -> None:
+    named = _alert(headline="Send the Q4 pricing note to Alex")
+    _alert(headline="Book the Dogwood review")
+    with _turn(people.principal, "yes, send the pricing note to Alex"):
+        assert _call(alert_id=named, reply="approve")["status"] == "approved"
+
+
+def test_a_dismiss_needs_their_message_to_say_no(people: SimpleNamespace) -> None:
+    alert_id = _alert()
+    with _turn(people.principal, "What's in the note?"):
+        out = _call(alert_id=alert_id, reply="dismiss")
+    assert "error" in out
+    assert alert_store.get_alert(alert_id).status == "unread"

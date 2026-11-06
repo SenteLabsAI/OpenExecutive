@@ -935,7 +935,9 @@ routing:
     a document saying approve card 12 can't steer it), and an approval only when the person's own
     message this turn says yes (said_yes: a yes word, no no word, not a question). Card headlines
     are inbound text, so one card's body can still argue for another live card; the yes in their
-    own message, and one approved or answered card per message (TurnOutside.card_answered),
+    own message, the yes tied to that card (_about_card: the message names it, the reply it
+    answers asked about it, or it is the only card shown), a dismiss only on a no or skip in the
+    message (said_no), and one approved or answered card per message (TurnOutside.card_answered),
     bound that. A team member's own DMs show the board's cards routed to
     them (attach_briefing_context -> render_and_trust(routed_to=...)).
   alert_tools: |
