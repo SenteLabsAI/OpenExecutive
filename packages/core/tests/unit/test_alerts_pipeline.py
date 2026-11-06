@@ -501,3 +501,21 @@ def test_grounded_triage_text_is_stored_unchanged(monkeypatch, db: Path) -> None
     assert (stored.headline, stored.body, stored.suggested_action) == (
         "Dana Whitfield: renew 48 units", "Renewal of 48 units due Friday.", "Reply to Dana",
     )
+
+
+def test_open_alerts_keyed_lists_one_senders_open_cards(db: Path) -> None:
+    for n, key in enumerate([
+        "email-from:casey@example.com",
+        "email-from:casey@example.com#ab12cd34",
+        "email-from:casey@example.com:person:7",
+        "email-from:casey@example.comx",
+        "private:email-from:casey@example.com",
+    ]):
+        alert_store.insert_alert(
+            source="email", external_id=str(n), severity="medium", headline=f"h{n}", body="b",
+            dedup_key=key, db_path=db,
+        )
+    cards = alert_store.open_alerts_keyed("email", "email-from:casey@example.com", db_path=db)
+    assert [c.dedup_key for c in cards] == [
+        "email-from:casey@example.com", "email-from:casey@example.com#ab12cd34",
+    ]
