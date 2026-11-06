@@ -239,6 +239,16 @@ def test_lookup_person_several_matches_say_name_the_address() -> None:
     assert "note" not in one
 
 
+def test_lookup_person_several_role_matches_have_no_note() -> None:
+    people_store.upsert_person(full_name="Priya Nair", role="Engineer")
+    people_store.upsert_person(full_name="Sam Ortiz", role="Engineer")
+
+    result = _call(handle_lookup_person, {"query": "engineer"})
+
+    assert len(result["matches"]) == 2
+    assert "note" not in result
+
+
 def test_lookup_person_bad_args_returns_error() -> None:
     result = _call(handle_lookup_person, {})
     assert "error" in result

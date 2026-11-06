@@ -1412,7 +1412,9 @@ async def handle_lookup_person(tool_input: dict[str, Any]) -> str:
     # The audit log is readable by every signed-in user: count the team
     # matches only, so the principal's turn logs what anyone else's would.
     _audit(ok=True, matches_count=min(team_matches, _LOOKUP_PERSON_MAX_MATCHES))
-    if len(matches) > 1:
+    # Only names make it ambiguous: two engineers matched by role are not.
+    name_hits = sum(1 for m in matches if query in (m["full_name"] or "").lower())
+    if name_hits > 1:
         return json.dumps({"matches": matches, "note": SEVERAL_MATCH_NOTE})
     return json.dumps({"matches": matches})
 
