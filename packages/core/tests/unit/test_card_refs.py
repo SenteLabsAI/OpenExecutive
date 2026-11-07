@@ -112,3 +112,19 @@ def test_slack_links() -> None:
 def test_grounding_never_checks_or_cites_a_card_number() -> None:
     assert extract_figures("Review card 220 and alert #31, then alert_id=44.") == []
     assert [f.raw for f in extract_figures("Raised 220 leads.")] == ["220"]
+
+
+def test_a_brief_names_cards_for_whoever_reads_it() -> None:
+    from openexecutive.orchestrator.schedule_tools import current_session
+    from openexecutive.workflows.morning_brief import PRINCIPAL_DELIVERY, _card_reader
+
+    token = PRINCIPAL_DELIVERY.set(True)
+    try:
+        assert _card_reader() == (None, True)
+    finally:
+        PRINCIPAL_DELIVERY.reset(token)
+    session = current_session.set(SimpleNamespace(caller_person_id=5))  # type: ignore[arg-type]
+    try:
+        assert _card_reader() == (5, False)
+    finally:
+        current_session.reset(session)

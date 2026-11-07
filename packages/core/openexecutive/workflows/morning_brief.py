@@ -132,6 +132,25 @@ def _now_and_reader(now: datetime) -> tuple[str, Reader | None]:
     return label, principal_reader()
 
 
+def _card_reader() -> tuple[int | None, bool]:
+    """Who the cards a brief names are named for, as ``name_cards_for``'s
+    ``(person_id, principal)``: the principal on the scheduler's delivery,
+    else whoever started the run. A teammate's run names no card that only
+    the principal may see (the principal's own drafted documents)."""
+    if PRINCIPAL_DELIVERY.get():
+        return None, True
+    try:
+        from openexecutive.orchestrator.schedule_tools import current_session
+
+        session = current_session.get()
+    except Exception:
+        logger.exception("morning_brief: session lookup failed — cards named for no one")
+        return None, False
+    if session is None:
+        return None, True  # a scheduler or manual run outside any chat: the principal's
+    return getattr(session, "caller_person_id", None), False
+
+
 class MorningBriefWorkflow(Workflow):
     name = "morning_brief"
     title = "Morning Brief"
@@ -443,7 +462,10 @@ class MorningBriefWorkflow(Workflow):
         # to it on Home (delivery rewrites the link for Slack).
         from openexecutive.alerts.card_refs import name_cards_for
 
-        artifact_text = name_cards_for(artifact_text, None, principal=True, include_private=private_used)
+        card_reader, for_principal = _card_reader()
+        artifact_text = name_cards_for(
+            artifact_text, card_reader, principal=for_principal, include_private=private_used,
+        )
 
         yield WorkflowEvent(
             type="step_done",
