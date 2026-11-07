@@ -103,8 +103,9 @@ _EOD_DIGEST_SYSTEM = (
     "  3. **Next** — what comes next and when: dated next steps from "
     "today's chats and COMING UP, then ONLY the NEW items under NEW SINCE "
     "LAST BRIEF (name the person and what's blocking). If the context has "
-    "a CARRIED OVER line, add exactly one sentence ('N older items still "
-    "open — see /today'); never re-list carried items.\n"
+    "a CARRIED OVER line, add exactly one sentence ('N older items are "
+    "still open on Home', with Home linked to the address on that line when "
+    "it gives one); never re-list carried items.\n"
     "  4. **Sleep on this** — ONE real open question the reader faces, "
     "only when today's work raised one.\n\n"
     + _DAY_RULES + _NOTES_SECTION + GROUNDING_RULE + " " + READER_NAME_RULE + " "
@@ -135,7 +136,8 @@ _EOD_DIGEST_SOLO_SYSTEM = (
     "LAST BRIEF (say what each needs from the reader), then a goal, named "
     "with its area, that trips if nothing happens first thing. If the "
     "context has a CARRIED OVER line, add exactly one sentence ('N older "
-    "items still open — see /today'); never re-list carried items.\n"
+    "items are still open on Home', with Home linked to the address on that "
+    "line when it gives one); never re-list carried items.\n"
     "  4. **Sleep on this** — ONE real open question the reader faces, "
     "only when today's work raised one.\n\n"
     + _DAY_RULES + _NOTES_SECTION + GROUNDING_RULE + " " + READER_NAME_RULE + " "
@@ -247,7 +249,9 @@ def _render_eod_context(
             line = f"CARRIED OVER: {len(carried)} older item(s) still open (oldest {max(ages) if ages else 0}d"
             if stale:
                 line += f", {stale} flagged likely stale"
-            parts.append(line + ") — see /today")
+            from openexecutive.alerts.card_refs import on_home_note
+
+            parts.append(line + ") — " + on_home_note())
             parts.append("")
         rewritten = rewritten_lines(carried, since)
         if rewritten:
@@ -507,6 +511,7 @@ class EndOfDayDigestWorkflow(Workflow):
                 f"depts={len(today_data['departments'])} handled={len(handled)}"
             ),
         )
+        private_used = bool(owner_notes.text or conversation or live_lines)
         yield WorkflowEvent(
             type="result",
             data={
@@ -515,9 +520,7 @@ class EndOfDayDigestWorkflow(Workflow):
                 "since": since.isoformat(),
                 # Its text stays out of the shared run history when it used
                 # the principal's own notes.
-                "private_to_principal": bool(
-                    owner_notes.text or conversation or live_lines
-                ),
+                "private_to_principal": private_used,
             },
         )
 
@@ -580,6 +583,16 @@ class EndOfDayDigestWorkflow(Workflow):
             system=system, surface="end-of-day digest",
         )
         held = len(grounding.held) if grounding and grounding.mode == "enforce" else 0
+        # Any card still named by its number is named by its headline, linked
+        # to it on Home (delivery rewrites the link for Slack).
+        from openexecutive.alerts.card_refs import name_cards_for
+        from openexecutive.workflows.morning_brief import _card_reader
+
+        card_reader, for_principal = _card_reader()
+        artifact_text = await asyncio.to_thread(
+            name_cards_for, artifact_text, card_reader,
+            principal=for_principal, include_private=private_used,
+        )
 
         yield WorkflowEvent(
             type="step_done",

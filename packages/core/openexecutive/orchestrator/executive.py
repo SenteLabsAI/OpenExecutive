@@ -3965,5 +3965,12 @@ class Executive:
             _COLLECTING.reset(collecting)
         if rewritten:
             # A retry that wrote nothing keeps the first reply.
-            return result.lstrip() or before
-        return result
+            result = result.lstrip() or before
+        # A card named by its number ("card 220") tells the reader nothing:
+        # name it by its headline, linked to it on Home (alerts.card_refs).
+        # Private cards only when the principal reads it alone.
+        from openexecutive.alerts.card_refs import name_cards_in_reply
+
+        return await asyncio.to_thread(
+            name_cards_in_reply, result, session, person_id, co_present_person_ids,
+        )

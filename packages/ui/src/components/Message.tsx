@@ -9,6 +9,7 @@ import BrandMark from "@/components/BrandMark";
 import type { AnswerSources } from "@/lib/answerSources";
 import type { ActionTaken } from "@/lib/api";
 import { dropReplaced, groupActions, opensDetails, type ChipGroup } from "@/lib/actionChips";
+import { linkCardMentions } from "@/lib/cardMentions";
 import { loadsInline } from "@/lib/markdownImages";
 import { isMailboxLink } from "@/lib/replyCards";
 import { hostOf } from "@/lib/url";
@@ -359,7 +360,7 @@ export default function Message({
                 ) : null,
             }}
           >
-            {content}
+            {linkCardMentions(content)}
           </ReactMarkdown>
           {isStreaming && (
             <span className="inline-block w-0.5 h-4 bg-accent cursor-blink ml-0.5 align-text-bottom rounded-full" />

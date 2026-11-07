@@ -2402,9 +2402,12 @@ async def _send_on_plan(
     for channel in plan:
         try:
             if channel == "slack_dm" and principal.slack_user_id:
+                from openexecutive.alerts.card_refs import slack_links
                 from openexecutive.orchestrator.schedule_tools import handle_send_slack_dm
+                # Slack shows a Markdown link as typed: a card's link
+                # (alerts.card_refs) goes in Slack's own form.
                 result = await handle_send_slack_dm({
-                    "user_id": principal.slack_user_id, "text": text,
+                    "user_id": principal.slack_user_id, "text": slack_links(text),
                 })
                 if _delivered_ok(result):
                     await _remember_in_chat(result, f"slack:dm:{principal.slack_user_id}", principal, text, label)

@@ -47,7 +47,7 @@ def test_render_context_splits_new_vs_carried_and_lists_handled() -> None:
     assert "NEEDS YOU — NEW SINCE LAST BRIEF:" in text
     assert "- item 1 (why now: SLA ends today) [next move: nudge]" in text
     assert "- item 2" not in text and "- item 3" not in text
-    assert "CARRIED OVER: 2 older item(s) still open (oldest 3d, 1 flagged likely stale) — see /today" in text
+    assert "CARRIED OVER: 2 older item(s) still open (oldest 3d, 1 flagged likely stale) — on Home" in text
     assert "HANDLED OVERNIGHT BY THE EXECUTIVE" in text
     assert "routed: Routed 'Acme renewal' to Dana" in text
     assert "PROPOSALS AWAITING DECISION:" not in text
@@ -61,7 +61,7 @@ def test_render_context_with_since_and_nothing_new_still_reports_carried() -> No
     today = {"departments": [], "proposals": [_proposal(7, hours_ago=50)], "people": []}
     text = render_briefing_context(period_label="p", today_data=today, activity=[], since=since)
     assert "NEW SINCE LAST BRIEF" not in text
-    assert "CARRIED OVER: 1 older item(s) still open (oldest 2d) — see /today" in text
+    assert "CARRIED OVER: 1 older item(s) still open (oldest 2d) — on Home" in text
 
 
 def test_eod_context_splits_and_lists_handled() -> None:

@@ -187,9 +187,12 @@ _ALWAYS_MASK = re.compile(
     r"|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b",
     re.IGNORECASE,
 )
-# Masked in prose only: things that look like figures but never are.
+# Masked in prose only: things that look like figures but never are. A card
+# number ("card 220") is an id, not a figure: checked, it held the line back
+# when the context didn't print it, and cited, it got a "[1]" of its own.
 _PROSE_MASK = re.compile(
     r"\[\d{1,2}\]"
+    r"|\b(?:cards?|alerts?)(?:\s*_?id)?(?:\s*[=:#]\s*|\s+)#?\d+\b"
     r"|^\s*\d+[.)]\s"
     r"|\b\d{1,2}\s?[ap]\.?m\b\.?"
     rf"|\b{_MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?\b"

@@ -27,6 +27,7 @@ import {
   type Today,
 } from "@/lib/api";
 import { greeting, homeSummary, type SummaryPart } from "@/lib/briefingSummary";
+import { cardFromSearch } from "@/lib/cardMentions";
 import { FIRST_RUN_LINKS } from "@/lib/firstRun";
 import { principalIdOf } from "@/lib/dueSoon";
 import { goalTotals, realDepartments } from "@/lib/glance";
@@ -432,6 +433,22 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       target?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 120);
   };
+
+  // A link in a message (`/?card=220`, lib/cardMentions.ts and the server's
+  // alerts/card_refs.py) opens Home on that card, once the board has loaded.
+  const cardLinkDone = useRef(false);
+  useEffect(() => {
+    if (cardLinkDone.current || loading || !today || typeof window === "undefined") return;
+    cardLinkDone.current = true;
+    const cardId = cardFromSearch(window.location.search);
+    if (cardId === null) return;
+    // After this render: the card may sit behind "Older" or "Show more".
+    // No cleanup: a refresh of the board in the same tick must not cancel it.
+    setTimeout(() => {
+      setShowOlder(true);
+      jumpToAlert(cardId);
+    }, 0);
+  }, [loading, today]);
 
   // What Right now's rows open: the email (and its reply card, shared with
   // Needs you). ✕ on a row clears it at once; the server keeps it out until
