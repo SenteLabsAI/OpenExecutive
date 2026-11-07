@@ -462,18 +462,23 @@ async def _handle_email(
         )
 
 
+# A raw read that is a message: it carries mail headers. An error the tool
+# printed instead ("Error: ...") does not.
+_MIME_HEADER_RE = re.compile(r"(?mi)^(?:received|authentication-results|message-id|from|date):")
+
+
 async def _prove_sender(gateway: Any, message_id: str, from_addr: str) -> bool:
     """Whether the mail provider authenticated the sender of ``message_id``.
     A raw read that failed reads as "not authenticated", and a
     contact's real mail was then treated as possibly forged. When the read
-    gives nothing back, the check is tried once more after a short wait. A
-    message that was read and didn't pass is final, so forged mail costs no
-    wait."""
+    gives nothing back, or gives back an error instead of a message, the
+    check is tried once more after a short wait. A message that was read and
+    didn't pass is final, so forged mail costs no wait."""
     from openexecutive.integrations import fact_confirmation
 
     if await fact_confirmation.sender_authenticated(gateway, message_id, from_addr):
         return True
-    if (await fact_confirmation.read_raw(gateway, message_id)).strip():
+    if _MIME_HEADER_RE.search(await fact_confirmation.read_raw(gateway, message_id)):
         return False
     await asyncio.sleep(_PROVE_RETRY_S)
     return await fact_confirmation.sender_authenticated(gateway, message_id, from_addr)

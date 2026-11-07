@@ -87,7 +87,11 @@ def test_the_sender_check_retries_only_an_empty_read(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(fact_confirmation, "sender_authenticated", fake_auth)
     monkeypatch.setattr(poller.asyncio, "sleep", fake_sleep)
-    for raw, tries in (("", 2), ("Authentication-Results: mx.google.com; dmarc=none", 1)):
+    for raw, tries in (
+        ("", 2),
+        ("Error: the mailbox is busy, try again", 2),
+        ("Authentication-Results: mx.google.com; dmarc=none", 1),
+    ):
         checks.clear()
 
         async def fake_raw(_gw: Any, _mid: str, raw: str = raw) -> str:
@@ -96,4 +100,4 @@ def test_the_sender_check_retries_only_an_empty_read(monkeypatch: Any) -> None:
         monkeypatch.setattr(fact_confirmation, "read_raw", fake_raw)
         assert aio.run(poller._prove_sender(None, "m1", "a@x.example")) is False
         assert len(checks) == tries
-    assert len(waits) == 1
+    assert len(waits) == 2

@@ -398,6 +398,20 @@ def test_only_a_direct_message_to_the_principal_skips_the_gate(owner: Any, monke
     assert not ttl._only_to_principal("message_person", {"person_id": owner.id, "text": "Sign the NDA"})
 
 
+def test_mail_with_no_principal_or_unreadable_roster_waits(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.people import store
+
+    send = "google_workspace__send_gmail_message"
+    monkeypatch.setattr(store, "find_principal_person", lambda: None)
+    assert not ttl._mail_only_to_principal(send, {"to": OWNER, "body": "Hi"})
+
+    def broken() -> None:
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(store, "find_principal_person", broken)
+    assert not ttl._mail_only_to_principal(send, {"to": OWNER, "body": "Hi"})
+
+
 def test_mail_only_to_the_principal_skips_the_gate(owner: Any) -> None:
     # A correction to the owner once waited as "someone new"
     # because its body named an outside contact.
@@ -438,6 +452,8 @@ def test_mail_only_to_the_principal_skips_the_gate(owner: Any) -> None:
         assert ttl._mail_only_to_principal(send, {"to": OWNER, key: "x@far.example"}), key
     assert not ttl._mail_only_to_principal(send, {"body": body})
     assert not ttl._mail_only_to_principal("google_workspace__create_doc", {"to": OWNER})
+    # A display name that looks like the owner's address hides no one.
+    assert not ttl._mail_only_to_principal(send, {"to": f'"{OWNER}" <x@far.example>', "body": body})
     # Outlook nests the message, recipients included, under "body".
     outlook = "microsoft_365__send_mail"
 
