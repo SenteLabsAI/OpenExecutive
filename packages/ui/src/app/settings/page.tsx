@@ -6,6 +6,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import Icon from "@/components/Icon";
+import { useSettingsShell } from "@/components/settings/SettingsShell";
 import { MODE_LABEL } from "@/components/settings/WorkspaceCard";
 import {
   ADVANCED_ITEMS,
@@ -27,6 +28,7 @@ import {
 } from "@/lib/api";
 import { retentionLabel } from "@/lib/history";
 import { tileStatus as notificationsTileStatus } from "@/lib/notifications";
+import { firstNavHref } from "@/lib/settingsNav";
 import { versionNotice } from "@/lib/versionNotice";
 
 // Settings — a hub with a row per page (SETTINGS_PAGES), in headed groups
@@ -45,6 +47,20 @@ function subscribeHash(onChange: () => void): () => void {
 
 function readHash(): string {
   return window.location.hash;
+}
+
+// From `lg` up the Settings menu sits beside every page (SettingsShell), so
+// Settings opens straight on its first page there.
+const WIDE = "(min-width: 1024px)";
+
+function subscribeWide(onChange: () => void): () => void {
+  const query = window.matchMedia(WIDE);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+function readWide(): boolean {
+  return window.matchMedia(WIDE).matches;
 }
 
 type Tone = "ok" | "warn" | "none";
@@ -76,7 +92,15 @@ export default function SettingsPage() {
       (p.id !== "notifications" || statuses.notificationsOffered),
   );
 
-  if (hash === null || target) return <main className="flex-1" />;
+  const shell = useSettingsShell();
+  const wide = useSyncExternalStore(subscribeWide, readWide, () => null);
+  const first = shell ? firstNavHref(shell.groups) : null;
+  const skipHub = wide === true && first !== null && !target;
+  useEffect(() => {
+    if (skipHub && first) router.replace(first);
+  }, [router, skipHub, first]);
+
+  if (hash === null || target || skipHub) return <main className="flex-1" />;
 
   return (
     <main className="flex-1 min-h-0 overflow-y-auto">
