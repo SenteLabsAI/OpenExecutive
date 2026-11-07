@@ -39,6 +39,7 @@ import NewFileForm from "./NewFileForm";
 import QueryPanel from "./QueryPanel";
 import ReferencePanel from "./ReferencePanel";
 import SourceTree, { type FileKind, type Selection } from "./SourceTree";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // What the phone bar above the playbooks tree names as open.
 function fileLabel(selection: Selection): string | undefined {
@@ -348,7 +349,7 @@ export default function KnowledgeWorkspace() {
                   />
                 )}
                 {selection?.kind === "file" && !selectedContent && !error && (
-                  <p className="text-[15px] text-fg-muted">Loading…</p>
+                  <PageSpinner />
                 )}
                 {selection?.kind === "new" && (
                   <NewFileForm

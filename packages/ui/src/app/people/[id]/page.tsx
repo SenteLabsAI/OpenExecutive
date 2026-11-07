@@ -40,6 +40,7 @@ import { assignNoticeLine } from "@/lib/assignNotice";
 import { DETAIL_LABELS, detailHref, detailsToText, detailText, textToDetails } from "@/lib/contactChanges";
 import { isContact, shouldSwitchToTeam } from "@/lib/peopleKinds";
 import { onLeaveLine, reachLine } from "@/lib/personReach";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,7 +88,7 @@ function OutreachSection({ personId }: { personId: number }) {
       .catch(() => setRows([]));
   }, [personId]);
 
-  if (!rows) return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (!rows) return <PageSpinner />;
   return (
     <section>
       <h2 className={SECTION_TITLE_CLS}>How they respond</h2>
@@ -153,7 +154,7 @@ function WorkingStyleSection({ personId }: { personId: number }) {
     }
   }
 
-  if (!style) return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (!style) return <PageSpinner />;
   const rules = draft
     .split("\n")
     .map((line) => line.replace(/^[-•]\s*/, "").trim())
@@ -334,7 +335,7 @@ function OpenLoopsSection({
         <>
           {error && <p className="text-sm text-rose-500 mb-3">{error}</p>}
           {loops === null ? (
-            !error && <p className="text-[15px] text-fg-muted">Loading…</p>
+            !error && <PageSpinner />
           ) : loops.length === 0 ? (
             <p className="text-[15px] text-fg-muted">Nothing open.</p>
           ) : (
@@ -767,7 +768,7 @@ export default function PersonDetailPage() {
       {switchedFor && <TeamModeSwitch name={switchedFor} onDone={() => setSwitchedFor(null)} />}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
-          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
+          {loading && <PageSpinner />}
           {error && (
             <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
               {error}

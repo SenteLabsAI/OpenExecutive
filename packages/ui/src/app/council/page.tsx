@@ -44,6 +44,7 @@ import {
   panelOpensAdvanced,
   shortModelName,
 } from "@/lib/councilCards";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 interface DraftState {
   role: string;
@@ -752,7 +753,7 @@ export default function CouncilPage() {
           </div>
         )}
         {!detail || !draft || detail.name !== selected ? (
-          <p className="text-[15px] text-fg-muted">Loading…</p>
+          <PageSpinner />
         ) : !advanced ? (
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-surface-elevated px-4 py-3">

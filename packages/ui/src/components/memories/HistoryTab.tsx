@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import { kindLabel, noteExpiry, noteText, noteWhere } from "@/lib/history";
 import { EmptyState, formatDate } from "./shared";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // History — Always in the loop. The signed-in person's own private notes of
 // what they said: in chat with the Executive, and in replies they approved and
@@ -88,7 +89,7 @@ export default function HistoryTab({
     [reload],
   );
 
-  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
+  if (loading) return <PageSpinner />;
   const failure = (
     <div className="text-fg-muted text-sm py-3">
       Couldn&apos;t load your notes.{" "}

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import { editWorkedOut, forgetWorkedOut, listWorkedOut, type WorkedOutFigure } from "@/lib/api";
 import { EmptyState, formatDate } from "./shared";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Memory → What it worked out: the figures the Executive worked out for the
 // signed-in person (memory.worked_out), each with where it came from and
@@ -41,7 +42,7 @@ export default function WorkedOutTab() {
     };
   }, []);
 
-  if (figures === undefined) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
+  if (figures === undefined) return <PageSpinner />;
   if (failed && (figures === null || figures.length === 0)) {
     return <EmptyState message="Couldn't load what it worked out. Try again in a moment." />;
   }

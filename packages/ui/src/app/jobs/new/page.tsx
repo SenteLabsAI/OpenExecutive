@@ -24,6 +24,7 @@ import {
   type SkillMeta,
   updateCustomWorkflow,
 } from "@/lib/api";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const SECTIONS: WorkflowSection[] = [
   "Board",
@@ -437,7 +438,7 @@ function BuilderInner() {
   }
 
   if (loading) {
-    return <div className="text-[15px] text-fg-muted">Loading…</div>;
+    return <PageSpinner />;
   }
 
   // Editing or refining a draft: every section is already filled in.

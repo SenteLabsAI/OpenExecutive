@@ -8,6 +8,7 @@ import { ChatActionCards } from "@/components/ActionCards";
 import { ReplyCardItem, useReplyCards } from "@/components/RepliesWaiting";
 import { usePageCrumb } from "@/components/shell/PageCrumb";
 import { getDecision, type DecisionInstance } from "@/lib/api";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // One card on a page of its own, by its decision id: what a host's frame
 // opens to show a card (in a frame it can't be approved, lib/cardActions.ts:
@@ -38,7 +39,7 @@ export default function CardPage() {
       {id === null || instance === null ? (
         <p className="text-sm text-fg-muted">This card isn&rsquo;t here: it may be someone else&rsquo;s, or gone.</p>
       ) : instance === undefined ? (
-        <p className="text-sm text-fg-muted">Loading the card…</p>
+        <PageSpinner label="Loading the card" />
       ) : !waiting ? (
         <p className="text-sm text-fg-muted">
           This card is no longer waiting ({instance.status.replace(/_/g, " ")}).

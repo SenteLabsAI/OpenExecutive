@@ -16,6 +16,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { formatRelativeTime } from "@/lib/relativeTime";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // "c:<name>" is an installed extension's collection (e.g. its own kind of
 // document); drafts in a collection show under it, not under Drafts.
@@ -406,7 +407,7 @@ export default function ArtifactsPage() {
           )}
 
           {loading && (
-            <div className="text-[15px] text-fg-muted">Loading documents…</div>
+            <PageSpinner label="Loading documents" />
           )}
           {error && <div className="text-[15px] text-red-400 mb-4">Error: {error}</div>}
 

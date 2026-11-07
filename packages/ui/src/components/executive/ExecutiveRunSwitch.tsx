@@ -5,6 +5,7 @@ import { useState } from "react";
 import Icon from "@/components/Icon";
 import { formatPausedAt, useExecutiveStatus } from "@/components/executive/ExecutiveStatusContext";
 import Button from "@/components/ui/Button";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // What a pause does and does not stop — shown before pausing so the
 // principal knows chat stays live.
@@ -27,7 +28,7 @@ export default function ExecutiveRunSwitch() {
   const [expanded, setExpanded] = useState(false);
   const [reason, setReason] = useState("");
 
-  if (!status) return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (!status) return <PageSpinner />;
   if (unknown) {
     // The last status read failed: say so rather than show a stale state,
     // and offer no action whose effect we can't confirm.

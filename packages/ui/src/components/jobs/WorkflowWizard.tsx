@@ -17,6 +17,7 @@ import { takeWorkflowDescription, workflowStartersFor } from "@/lib/workflowStar
 import Button from "@/components/ui/Button";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import WorkflowDraftReview from "./WorkflowDraftReview";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Same cap chat applies to its `?draft=` prefill.
 const MAX_DESCRIBE_PARAM_CHARS = 2000;
@@ -199,7 +200,7 @@ export default function WorkflowWizard({
   // Opening an edit: wait for the saved workflow rather than flash the
   // new-workflow intro.
   if (resuming || (editName && !turn && !error)) {
-    return <div className="p-6 text-sm text-fg-muted">Loading…</div>;
+    return <PageSpinner />;
   }
 
   const started = turn !== null;

@@ -13,6 +13,7 @@ import {
   type PersonMemory,
 } from "@/lib/api";
 import { cardEntry, noteAboutYou } from "@/lib/aboutYou";
+import { PageSpinner, Spinner } from "@/components/ui/Spinner";
 
 // Memory → About you: what peer memory has learned about the signed-in
 // person, derived server-side from their conversations. GET /memories/people
@@ -67,7 +68,7 @@ export default function AboutYouCard({
       description={[description, learned].filter(Boolean).join(" ")}
     >
       {loading ? (
-        <p className="text-[15px] text-fg-muted">Loading…</p>
+        <PageSpinner />
       ) : failed || !data || data.status === "error" || me?.error ? (
         <p className="text-[15px] text-fg-muted">Couldn&apos;t load what it knows about you right now.</p>
       ) : !me || (me.card.length === 0 && me.conclusion_count === 0) ? (
@@ -219,7 +220,7 @@ function Notes({ item }: { item: PersonMemory }) {
         {(loading || failed || (hasMore && nextPage === null)) && (
           <div className="px-3 py-2 text-sm text-fg-muted border-t border-line/60">
             {loading ? (
-              "Loading…"
+              <Spinner />
             ) : failed ? (
               <button onClick={() => void load(nextPage ?? 1)} className="min-h-touch hover:text-fg">
                 Couldn&apos;t load more — retry

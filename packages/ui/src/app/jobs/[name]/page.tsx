@@ -17,6 +17,7 @@ import {
   getWorkflowSample,
 } from "@/lib/api";
 import { describeCadence } from "@/lib/workflowChanges";
+import { Spinner } from "@/components/ui/Spinner";
 
 type FormState = Record<string, string>;
 
@@ -253,8 +254,8 @@ export default function JobDetailPage() {
 
   if (!workflow) {
     return (
-      <div className="flex flex-col h-full bg-surface text-fg-muted items-center justify-center text-sm">
-        Loading…
+      <div className="flex flex-col h-full bg-surface items-center justify-center">
+        <Spinner size="md" />
       </div>
     );
   }

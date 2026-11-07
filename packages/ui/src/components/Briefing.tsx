@@ -79,6 +79,7 @@ import { buttonClass } from "./ui/Button";
 import OverflowMenu from "./ui/OverflowMenu";
 import SidePanel from "./ui/SidePanel";
 import { useWorkspace } from "./workspace/WorkspaceContext";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // The card pieces stay importable from here for pages that show them alone.
 export { ProposalCard };
@@ -972,7 +973,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
             </form>
           )}
 
-          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
+          {loading && <PageSpinner />}
           {error && (
             <div className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-[15px] text-rose-700 dark:text-rose-300">
               {error}

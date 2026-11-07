@@ -8,6 +8,7 @@ import {
   type ExternalSourceInfo,
 } from "@/lib/api";
 import { buttonClass } from "@/components/ui/Button";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 export default function ReferencePanel() {
   const [sources, setSources] = useState<ExternalSourceInfo[] | null>(null);
@@ -51,7 +52,7 @@ export default function ReferencePanel() {
     );
   }
   if (sources === null) {
-    return <p className="text-sm text-fg-muted">Loading…</p>;
+    return <PageSpinner />;
   }
 
   const ingested = sources.filter((s) => s.is_ingested);

@@ -22,6 +22,7 @@ import { dueSoon, loopText } from "@/lib/dueSoon";
 import { reviewExcerpt, reviewRanLabel, topThreeSlot, topThreeWhy } from "@/lib/rhythmCards";
 
 import { PanelIntro, RankBadge, TONE_TEXT } from "./shared";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Solo's parts of Home (Due soon is on every Home). Each loads its own data
 // through a hook here, so the tile row can count it before its side panel is
@@ -84,7 +85,7 @@ export function ProjectsPanelBody({ state }: { state: ReturnType<typeof useActiv
       </PanelIntro>
       {error && <p className={`mb-2 text-sm ${TONE_TEXT.rose}`}>{error}</p>}
       {projects === null ? (
-        !error && <p className="py-2 text-[15px] text-fg-muted">Loading…</p>
+        !error && <PageSpinner />
       ) : projects.length === 0 ? (
         <p className="py-2 text-[15px] text-fg-muted">
           No active projects. Tell the Executive about one you&apos;re running and it will keep track of it here.
@@ -189,7 +190,7 @@ export function DueSoonPanelBody({ state }: { state: ReturnType<typeof useOpenLo
       </PanelIntro>
       {error && <p className={`mb-2 text-sm ${TONE_TEXT.rose}`}>{error}</p>}
       {view === null ? (
-        !error && <p className="py-2 text-[15px] text-fg-muted">Loading…</p>
+        !error && <PageSpinner />
       ) : view.items.length === 0 ? (
         <p className="py-2 text-[15px] text-fg-muted">
           Nothing due this week.

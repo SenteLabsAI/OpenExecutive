@@ -35,7 +35,6 @@ export default function UserBadge({ variant = "compact" }: UserBadgeProps) {
     return (
       <div className="flex items-center gap-2 text-xs text-fg-subtle">
         <div className="w-6 h-6 rounded-full bg-surface-overlay animate-pulse" />
-        <span className="hidden sm:inline">Loading…</span>
       </div>
     );
   }

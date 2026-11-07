@@ -11,6 +11,7 @@ import {
   type UsageSummary,
   type UsageTotals,
 } from "@/lib/api";
+import { Spinner } from "@/components/ui/Spinner";
 
 function fmtInt(n: number): string {
   return (n ?? 0).toLocaleString();
@@ -167,7 +168,7 @@ export default function TokenUsagePage() {
               </button>
             </div>
             <div className="text-xs text-fg-muted flex items-end pb-1.5">
-              {loading ? "Loading…" : `${fmtInt(totals?.calls ?? 0)} calls`}
+              {loading ? <Spinner /> : `${fmtInt(totals?.calls ?? 0)} calls`}
             </div>
           </div>
 

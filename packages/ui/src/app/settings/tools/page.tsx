@@ -15,6 +15,7 @@ import {
   type SavedTool,
   type SavedToolDetail,
 } from "@/lib/api";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Where a tool was saved or run: "chat", or "workflow:<name>/<step>".
 function originLabel(origin: string): string {
@@ -246,7 +247,7 @@ export default function SavedToolsSettingsPage() {
       title="Custom tools"
       description="When the Executive needs a tool it doesn't have, it builds one, and keeps the ones it will need again: ones that combine its other tools, and ones that work on files. A custom tool can only do what the conversation or workflow using it is already allowed to do. Turn one off to stop it running, or switch it back to an earlier version."
     >
-      {state.kind === "loading" && <p className="text-sm text-fg-muted">Loading…</p>}
+      {state.kind === "loading" && <PageSpinner />}
       {state.kind === "forbidden" && (
         <SettingsCard>
           <p className="text-sm text-fg-muted">Only the account owner can see custom tools.</p>

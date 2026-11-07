@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import Icon from "@/components/Icon";
 import { buttonClass } from "@/components/ui/Button";
+import { Spinner } from "@/components/ui/Spinner";
 
 const PAGE_SIZE = 100;
 
@@ -420,7 +421,7 @@ function AuditPageInner() {
 {JSON.stringify(evt.details, null, 2)}
               </pre>
               {detailLoadingId === evt.id && !details[evt.id] && (
-                <div className="mt-3 text-xs text-fg-muted">Loading full payload…</div>
+                <div className="mt-3 text-xs text-fg-muted"><Spinner label="Loading full payload" /></div>
               )}
               {detailError && expandedId === evt.id && !details[evt.id] && (
                 <div className="mt-3 text-xs text-rose-300">
@@ -527,7 +528,7 @@ function AuditPageInner() {
               />
             </label>
             <div className="text-xs text-fg-muted self-end pb-1">
-              {loading ? "Loading…" : `${total.toLocaleString()} events`}
+              {loading ? <Spinner /> : `${total.toLocaleString()} events`}
             </div>
             {/* Segmented view switcher — communicates "these are distinct
                 surfaces" rather than the checkbox's "annotation on top".
@@ -708,7 +709,7 @@ function AuditPageInner() {
 {JSON.stringify(evt.details, null, 2)}
                                 </pre>
                                 {detailLoadingId === evt.id && !details[evt.id] && (
-                                  <div className="mt-3 text-xs text-fg-muted">Loading full payload…</div>
+                                  <div className="mt-3 text-xs text-fg-muted"><Spinner label="Loading full payload" /></div>
                                 )}
                                 {detailError && expandedId === evt.id && !details[evt.id] && (
                                   <div className="mt-3 text-xs text-rose-300">

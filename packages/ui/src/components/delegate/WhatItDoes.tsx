@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { SENDS_HREF, WRITES_HREF } from "@/lib/reach";
 import { GROUP_OF, GROUP_ORDER, changedRows, groupTitle, rowId, snapshot, type Group } from "@/lib/whatItDoes";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // What it does for you: read-only, beside the Delegate tabs
 // (WhatItDoesPanel). With the viewer's settings right now, what goes out on
@@ -170,7 +171,7 @@ export default function WhatItDoes() {
     };
   }, [load]);
 
-  if (state === "loading") return <p className="text-sm text-fg-muted">Loading…</p>;
+  if (state === "loading") return <PageSpinner />;
   if (state === "error") return <p className="text-sm text-fg-muted">Couldn&apos;t load this. Reload the page to try again.</p>;
   if (state === "hidden" || !data) return <p className="text-sm text-fg-muted">Only people on the team can see this.</p>;
 

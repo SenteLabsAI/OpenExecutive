@@ -17,6 +17,7 @@ import {
   createFixture,
   deleteFixture,
 } from "@/lib/api";
+import { PageSpinner, Spinner } from "@/components/ui/Spinner";
 
 const RESET_CONFIRM_TOKEN = "RESET";
 
@@ -438,7 +439,7 @@ export default function DemoPage() {
       {/* Body */}
       <div className="px-6 py-6 max-w-4xl mx-auto">
         {loading && (
-          <p className="text-sm text-fg-muted">Loading fixtures…</p>
+          <PageSpinner label="Loading fixtures" />
         )}
         {error && (
           <p className="text-sm text-red-400">
@@ -667,9 +668,8 @@ export default function DemoPage() {
                       } disabled:opacity-50 disabled:cursor-not-allowed`}
                     >
                       {isLoading ? (
-                        <span className="flex items-center justify-center gap-1.5">
-                          <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
-                          Loading…
+                        <span className="flex items-center justify-center">
+                          <Spinner />
                         </span>
                       ) : isActive ? (
                         "Reload"

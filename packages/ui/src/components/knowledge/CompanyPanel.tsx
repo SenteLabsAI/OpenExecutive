@@ -32,6 +32,7 @@ import Icon from "@/components/Icon";
 import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu, { type OverflowItem } from "@/components/ui/OverflowMenu";
 import SidePanel from "@/components/ui/SidePanel";
+import { Spinner } from "@/components/ui/Spinner";
 
 interface CompanyPanelProps {
   /** Reports how many documents are listed, for the tab's count. */
@@ -470,7 +471,10 @@ function DocListRow({
       <div className="flex items-center gap-1 flex-shrink-0">
         {row.indexed && (
           <Button size="sm" className="!h-10" onClick={onView} disabled={loading}>
-            {loading ? "Loading…" : "View"}
+            <span className="inline-flex items-center gap-2">
+              {loading && <Spinner />}
+              View
+            </span>
           </Button>
         )}
         <OverflowMenu items={menu} label={`More actions for ${row.name}`} />

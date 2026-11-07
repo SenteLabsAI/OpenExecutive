@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import { Spinner } from "@/components/ui/Spinner";
 
 // Sanitizer for the section Markdown. Even though the content is
 // authored and version-controlled, we keep defence-in-depth: tighten the
@@ -91,9 +92,7 @@ export default function DynamicSection({ id, title, sub, basePath = 'architectur
       </div>
 
       {status === 'loading' && !content && (
-        <div className="rounded-lg bg-surface border border-line px-4 py-8 text-center text-xs text-fg-muted animate-pulse">
-          Loading…
-        </div>
+        <div className="rounded-lg bg-surface border border-line px-4 py-8 text-center text-xs text-fg-muted animate-pulse"><Spinner /></div>
       )}
 
       {status === 'error' && (

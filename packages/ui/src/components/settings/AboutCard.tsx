@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { getVersion } from "@/lib/api";
 import { versionNotice, type VersionNotice } from "@/lib/versionNotice";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Settings → About: the running version, and a link to the newer release
 // and the upgrade steps when one is out (GET /version). The page supplies
@@ -29,7 +30,7 @@ export default function AboutCard() {
     return <p className="text-[15px] text-fg-muted">Couldn&apos;t load the version.</p>;
   }
   if (!notice) {
-    return <p className="text-[15px] text-fg-muted">Loading…</p>;
+    return <PageSpinner />;
   }
   return (
     <div className="space-y-1.5">
