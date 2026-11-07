@@ -443,11 +443,11 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
     const cardId = cardFromSearch(window.location.search);
     if (cardId === null) return;
     // After this render: the card may sit behind "Older" or "Show more".
-    const timer = setTimeout(() => {
+    // No cleanup: a refresh of the board in the same tick must not cancel it.
+    setTimeout(() => {
       setShowOlder(true);
       jumpToAlert(cardId);
     }, 0);
-    return () => clearTimeout(timer);
   }, [loading, today]);
 
   // What Right now's rows open: the email (and its reply card, shared with
