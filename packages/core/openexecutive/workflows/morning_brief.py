@@ -256,6 +256,13 @@ class MorningBriefWorkflow(Workflow):
         # The reflection's notes are written from what everyone may see (it
         # reads the board without private rows), so any run may carry them.
         reflection_flags = brief_state.reflection_flags_since(since)
+        # A card number in the notes ("card 220") became one in the brief,
+        # which tells the reader nothing: the brief model reads the card's
+        # headline instead (alerts.card_refs).
+        if reflection_flags:
+            from openexecutive.alerts.card_refs import name_cards_for
+
+            reflection_flags = name_cards_for(reflection_flags, None, principal=True, fmt="plain")
         # Corrections teammates made since the last brief: the principal's
         # FYI (memory.facts). What waits for their approval is theirs alone
         # (GET /memories/facts hides it from other teammates), so a brief any
@@ -432,6 +439,11 @@ class MorningBriefWorkflow(Workflow):
             surface="morning brief",
         )
         held = len(grounding.held) if grounding and grounding.mode == "enforce" else 0
+        # Any card still named by its number is named by its headline, linked
+        # to it on Home (delivery rewrites the link for Slack).
+        from openexecutive.alerts.card_refs import name_cards_for
+
+        artifact_text = name_cards_for(artifact_text, None, principal=True, include_private=private_used)
 
         yield WorkflowEvent(
             type="step_done",

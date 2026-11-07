@@ -174,7 +174,8 @@ STANDALONE_BRIEF_SYSTEM = (
     "  5. **Needs you** — ONLY the items under NEW SINCE LAST BRIEF, most "
     "time-sensitive first, each with its why-now when given. If the context "
     "has a CARRIED OVER line, add exactly one sentence after the list "
-    "('N older items still open — see /today'); never re-list carried items.\n"
+    "('N older items are still open on Home', with Home linked to the "
+    "address on that line when it gives one); never re-list carried items.\n"
     "  6. **Waiting on** — ONLY the people under PEOPLE YOU ARE WAITING ON, "
     "with how long. One line each.\n"
     "  7. **At risk** — departments / goals trending off-track the reader "
@@ -231,7 +232,8 @@ STANDALONE_BRIEF_SOLO_SYSTEM = (
     "  5. **Needs you** — the open decisions: ONLY the items under NEW SINCE "
     "LAST BRIEF, most time-sensitive first, each with its why-now when given. "
     "If the context has a CARRIED OVER line, add exactly one sentence after "
-    "the list ('N older items still open — see /today'); never re-list "
+    "the list ('N older items are still open on Home', with Home linked to "
+    "the address on that line when it gives one); never re-list "
     "carried items.\n"
     "  6. **Due this week** — ONLY the items under DUE THIS WEEK: what they "
     "promised by a date, and what others asked of them, overdue first, one "
@@ -619,7 +621,9 @@ def render_briefing_context(
             line = f"CARRIED OVER: {len(carried)} older item(s) still open (oldest {oldest}d"
             if stale:
                 line += f", {stale} flagged likely stale"
-            parts.append(line + ") — see /today")
+            from openexecutive.alerts.card_refs import on_home_note
+
+            parts.append(line + ") — " + on_home_note())
             parts.append("")
         rewritten = rewritten_lines(carried, since)
         if rewritten:
