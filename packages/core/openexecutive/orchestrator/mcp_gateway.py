@@ -3345,6 +3345,30 @@ def _sent_to(tool_name: str, normalized: str, arguments: dict[str, Any]) -> set[
     return out
 
 
+def _keep_sent_mail(tool_name: str, normalized: str, arguments: dict[str, Any]) -> None:
+    """Keep a Gmail or Outlook send the mailbox accepted in
+    ``integrations.email_replies``, so the next email from the same person is
+    shown what was sent. Never raises: the send already happened."""
+    from openexecutive.integrations import email_replies
+
+    try:
+        if tool_name == "google_workspace__send_gmail_message":
+            email_replies.record_sent(arguments)
+        elif normalized == _M365_RECORD_SEND_TOOL:
+            message = _ci_get(_ci_get(arguments, "body"), "message")
+            content = _ci_get(_ci_get(message, "body"), "content")
+            if not isinstance(content, str):
+                return
+            if str(_ci_get(_ci_get(message, "body"), "contentType") or "").lower() == "html":
+                content = re.sub(r"<[^>]+>", " ", content)
+            email_replies.record_sent({
+                key: _m365_recipient_addresses(_ci_get(message, f"{key}Recipients"))
+                for key in ("to", "cc", "bcc")
+            } | {"body": content})
+    except Exception:
+        logger.exception("keep_sent_mail: could not keep the send (non-fatal)")
+
+
 async def _clear_replaced_drafts(tool_name: str, normalized: str, arguments: dict[str, Any]) -> None:
     """The Executive just sent an email itself: take this conversation's
     unsent chat drafts of it (same people, same subject) out of the writer's Drafts
@@ -4090,6 +4114,9 @@ class MCPGateway:
         # either: marking it would hide the unanswered-email card.
         if not _is_error_payload(result_text) and not result_text.lstrip().lower().startswith("error"):
             _note_mail_sent(tool_name, normalized, arguments)
+            # Kept per person, so the next email from them knows what was
+            # sent (integrations.email_replies).
+            _keep_sent_mail(tool_name, normalized, arguments)
             await _clear_replaced_drafts(tool_name, normalized, arguments)
         if attached_artifacts and not _is_error_payload(result_text):
             from openexecutive.audit import log_event as audit_log

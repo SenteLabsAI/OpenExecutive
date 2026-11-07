@@ -240,3 +240,44 @@ def test_recording_failure_does_not_break_send(isolated_episodic_db: Path) -> No
     assert session_call.await_count == 1
     assert result == '{"ok": true}'
     assert _find("alice@example.com", isolated_episodic_db) is None
+
+
+def _kept(addr: str) -> list[str]:
+    from openexecutive.integrations import email_replies
+
+    return [b for _w, b in email_replies.recent_elsewhere("none", [addr])]
+
+
+def test_a_gmail_send_is_kept_for_the_persons_next_email() -> None:
+    gateway, _ = _make_gateway()
+    current_session.set(MagicMock(session_id="webchat:principal-1"))
+    _call(
+        gateway,
+        {"to": "alice@example.com", "thread_id": "t9", "body": "The Q3 budget is final."},
+        ["alice@example.com"],
+    )
+    from openexecutive.integrations import email_replies
+
+    # Kept under its thread.
+    assert [b for _w, b in email_replies.recent("email:t9", "alice@example.com")] == ["The Q3 budget is final."]
+
+
+def test_a_failed_send_is_not_kept() -> None:
+    gateway, _ = _make_gateway("Error: the mailbox refused the message")
+    current_session.set(MagicMock(session_id="webchat:principal-1"))
+    _call(gateway, {"to": "alice@example.com", "body": "Not sent."}, ["alice@example.com"])
+    assert _kept("alice@example.com") == []
+
+
+def test_an_outlook_send_is_kept_too() -> None:
+    gw_module._keep_sent_mail(
+        "microsoft_365__send-mail",
+        "microsoft_365__send_mail",
+        {"body": {"Message": {
+            "toRecipients": [{"emailAddress": {"address": "Bob@Example.com"}}],
+            "bccRecipients": [{"emailAddress": {"address": "cy@example.com"}}],
+            "body": {"contentType": "HTML", "content": "<p>The plan is attached.</p>"},
+        }}},
+    )
+    assert [b.strip() for b in _kept("bob@example.com")] == ["The plan is attached."]
+    assert [b.strip() for b in _kept("cy@example.com")] == ["The plan is attached."]

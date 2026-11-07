@@ -46,13 +46,13 @@ class _Sent:
 
 
 def _mail(sender: str, *, proven: bool, send: _Sent, body: str = "Can you check the Q3 numbers?",
-          attachments: Any = None) -> InboundMail:
+          attachments: Any = None, thread: str = "t1") -> InboundMail:
     async def _prove() -> bool:
         return proven
 
     return InboundMail(
         message=InboundMessage(
-            message_id="m1", thread_id="t1", from_addr=sender, from_name="", subject="Q3",
+            message_id="m1", thread_id=thread, from_addr=sender, from_name="", subject="Q3",
             to=[OWN], body_text=body,
         ),
         source="relay",
@@ -61,7 +61,7 @@ def _mail(sender: str, *, proven: bool, send: _Sent, body: str = "Can you check 
         prove_sender=_prove,
         read_attachments=attachments,
         hold_payload={"id": "m1"},
-        session_id="email:relay:t1",
+        session_id=f"email:relay:{thread}",
     )
 
 
@@ -397,6 +397,17 @@ def test_the_next_turn_on_a_thread_sees_what_was_mailed_on_it(turn: dict[str, An
     assert 'source="earlier_reply"' in message
 
 
+def test_only_a_proven_sender_sees_what_went_to_them_on_other_threads(turn: dict[str, Any]) -> None:
+    # A forged From must not read back what was mailed to the real person.
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent()))
+    _handle(_mail(TEAMMATE, proven=False, send=_Sent(), thread="t2"))
+    assert "OTHER THREADS" not in turn["turns"][1]["user_message"]
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent(), thread="t3"))
+    message = turn["turns"][2]["user_message"]
+    assert "--- WHAT YOU SENT THIS PERSON ON OTHER THREADS ---" in message
+    assert "Here are the Q3 numbers." in message.split("ON OTHER THREADS")[1]
+
+
 def test_an_answer_redirected_to_the_principal_is_not_the_threads(turn: dict[str, Any]) -> None:
     # An unproven sender's answer goes to the principal, out of the thread.
     _handle(_mail(TEAMMATE, proven=False, send=_Sent()))
@@ -420,7 +431,9 @@ def test_only_what_went_to_that_sender_on_that_thread_is_shown(tmp_path: Any) ->
     assert [b for _w, b in email_replies.recent("email:t3", "ann@example.com", db_path=db)] == [
         f"reply {i}" for i in range(email_replies.KEEP - 1, email_replies.KEEP + 2)
     ]
-    assert email_replies.block("email:none", "ann@example.com", db_path=db) == ""
+    # A thread with nothing on it shows only what went to Ann elsewhere.
+    assert "ON THIS THREAD" not in email_replies.block("email:none", "ann@example.com", db_path=db)
+    assert email_replies.block("email:none", "nobody@example.com", db_path=db) == ""
 
 
 def test_knowledge_is_searched_for_what_the_sender_wrote() -> None:
@@ -431,6 +444,12 @@ def test_knowledge_is_searched_for_what_the_sender_wrote() -> None:
         "On Thu, Nov 5, 2026 at 10:29 PM Exec <exec@example.com> wrote:\n> Understood.\n"
     )
     query = poller._retrieval_query(raw)
-    assert query.startswith("Re: launch email\nSend me the current email we are going to use?")
+    # A reply searches what was asked, not the old subject.
+    assert query == "Send me the current email we are going to use?"
     assert "Message-ID" not in query and "Understood" not in query
     assert poller._retrieval_query("") == ""
+    # A new email keeps its subject, without "Fwd:".
+    fresh = raw.replace("Subject: Re: launch email", "Subject: Fwd: Re: Proposal")
+    assert poller._retrieval_query(fresh).startswith("Proposal\nSend me")
+    fresh = raw.replace("Subject: Re: launch email", "Subject: Pricing")
+    assert poller._retrieval_query(fresh).startswith("Pricing\nSend me")
