@@ -6,8 +6,8 @@ their message, and people trim that. So the answers the poller mails itself
 is shown the last few (``block``). Without it, a reply could say "there was
 no draft" right after the previous one sent the draft.
 
-Mail the Executive sends with its own mail tool (``record_sent``, from the
-MCP gateway) is kept the same way, so a reply in one chat is known to the
+Mail the Executive sends with its own Gmail or Outlook tool (``record_sent``,
+from the MCP gateway) is kept the same way, so a reply in one chat is known to the
 next email from that person.
 
 A turn is also shown the last few replies to the same person on their other
@@ -128,17 +128,24 @@ def _addresses(values: Any) -> list[str]:
     return [a.strip().lower() for _n, a in getaddresses([v for v in items if isinstance(v, str)]) if a.strip()]
 
 
+def _norm(key: object) -> str:
+    return str(key).replace("_", "").replace("-", "").lower()
+
+
 def record_sent(arguments: dict[str, Any], *, db_path: Path | None = None) -> None:
-    """Keep a Gmail send the Executive made with its mail tool, for each
-    address it went to (to and cc). A send in a thread is kept under that
-    thread, like the poller's answers; a new one under its address. Never
-    raises: the send already happened."""
+    """Keep an email the Executive sent with its mail tool, for each address
+    it went to (to, cc and bcc). Keys are read whatever their spelling
+    (``thread_id`` / ``threadId``, ``To``, ``Body``). A send in a thread is
+    kept under that thread, like the poller's answers; a new one under its
+    address. Never raises: the send already happened."""
     try:
-        body = arguments.get("body")
+        args = {_norm(k): v for k, v in arguments.items()}
+        body = args.get("body")
         if not isinstance(body, str) or not body.strip():
             return
-        thread_id = str(arguments.get("thread_id") or "").strip()
-        for addr in dict.fromkeys([*_addresses(arguments.get("to")), *_addresses(arguments.get("cc"))]):
+        thread_id = str(args.get("threadid") or "").strip()
+        recipients = [a for key in ("to", "cc", "bcc") for a in _addresses(args.get(key))]
+        for addr in dict.fromkeys(recipients):
             record(f"email:{thread_id}" if thread_id else f"sent:{addr}", addr, body, db_path=db_path)
     except Exception:
         logger.exception("email: could not keep a sent email")
