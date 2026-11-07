@@ -151,3 +151,20 @@ async def test_a_slack_dm_delivery_gets_slack_links(monkeypatch: pytest.MonkeyPa
     person = SimpleNamespace(id=1, slack_user_id="U1")
     await runner._send_on_plan(person, ["slack_dm"], "Open [Home](https://app.example.com/)", label="Brief")  # type: ignore[arg-type]
     assert sent == ["Open <https://app.example.com/|Home>"]
+
+
+def test_a_hidden_card_in_a_list_still_counts(cards: dict[str, int]) -> None:
+    a, p = cards["lease"], cards["private"]
+    assert _for(f"cards {a} and {p}", fmt="plain") == "the “Harbor Street lease renewal” card and 1 other"
+
+
+def test_the_default_local_address_is_no_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive import config
+
+    for url, expected in (
+        ("http://localhost:3000", ""),
+        ("http://127.0.0.1:8000/", ""),
+        ("https://app.example.com/", "https://app.example.com/?card=3"),
+    ):
+        monkeypatch.setattr(config, "get_settings", lambda u=url: SimpleNamespace(ui_base_url=u))
+        assert card_refs.card_url(3) == expected

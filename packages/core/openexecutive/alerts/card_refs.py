@@ -26,6 +26,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ _ID = re.compile(r"\d{1,9}")
 # which comes from inbound mail and chat and so is not ours to trust.
 _LABEL_STRIP = re.compile(r"[\[\]()<>|*_`\\]")
 _LABEL_MAX = 80
+_LOOPBACK = frozenset({"localhost", "::1", "0.0.0.0"})
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,13 @@ def _base() -> str:
     except Exception:
         logger.warning("card_refs: no ui_base_url", exc_info=True)
         return ""
-    return base if base.startswith(("https://", "http://")) else ""
+    if not base.startswith(("https://", "http://")):
+        return ""
+    # The default (http://localhost:3000) is no address a reader can open.
+    host = (urlsplit(base).hostname or "").lower()
+    if host in _LOOPBACK or host.startswith("127."):
+        return ""
+    return base
 
 
 def card_url(alert_id: int) -> str:
@@ -172,7 +180,10 @@ def name_cards(
             the = (m.group("the") or "the ").strip()
             if the.lower() == "that" and len(shown) > 1:
                 the = "those"
-            return f"{_cap(the, lead)} {_join(shown)} {noun}"
+            # Cards the reader may not see still count, unnamed.
+            hidden = len(found) - len(shown)
+            more = f" and {hidden} other{'s' if hidden > 1 else ''}" if hidden else ""
+            return f"{_cap(the, lead)} {_join(shown)} {noun}{more}"
 
         return _MENTION.sub(replace, text)
     except Exception:
