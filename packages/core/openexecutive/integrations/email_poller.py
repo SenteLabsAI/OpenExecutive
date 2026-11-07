@@ -565,7 +565,18 @@ async def _handle_mail(
     if any(p in sender_blob for p in _SKIP_SENDERS):
         logger.debug("skipping automated sender for message=%s", message_id)
         return _SKIPPED
-    if mailbox is None and not from_addr:
+    if not message_id.strip("0"):
+        # No real message behind it: a fetch of id "0" returns an error text,
+        # not mail. Nothing to mark read, and never a turn.
+        logger.warning("skipping message=%r: not a real message id", message_id)
+        return _SKIPPED
+    if not from_addr:
+        # No sender to answer. Mailbox mail is marked read so it can't fill
+        # the capped unread listing and starve newer mail; the principal still
+        # finds it in the inbox. A source's mail is left to the source.
+        logger.warning("skipping message=%s with no sender", message_id)
+        if mailbox is not None and done is not None:
+            await done()
         return _SKIPPED
 
     if mailbox is not None and gateway is not None:

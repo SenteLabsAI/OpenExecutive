@@ -19,6 +19,13 @@ from openexecutive.orchestrator.content_trust import wrap_untrusted
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_history_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turns keep no history in the shared default DB."""
+    monkeypatch.setattr(gc_module, "_load_history", lambda _sid: [])
+    monkeypatch.setattr(gc_module, "_save_turn", lambda *a, **k: None)
+
+
 def _make_settings(configured: bool = True) -> Any:
     return SimpleNamespace(
         google_chat_project_number="123456789012" if configured else None,
@@ -615,3 +622,72 @@ def test_the_inbound_row_carries_the_senders_people_id(
     assert looked_up == ["pat@x.com"]
     [inbound] = [d for kind, d in rows if kind == "integration_inbound"]
     assert inbound["sender_person_id"] == expected
+
+
+def _run_turn(monkeypatch: pytest.MonkeyPatch, store: dict, seen: list, text: str, thread: str, *, direct: bool) -> None:
+    monkeypatch.setattr("openexecutive.alerts.pipeline.schedule_evaluation", lambda _e: None)
+    monkeypatch.setattr("openexecutive.audit.log_event", lambda *a, **k: None)
+    monkeypatch.setattr("openexecutive.knowledge.retriever.retrieve", lambda **_: "")
+    monkeypatch.setattr("openexecutive.memory.episodic.format_for_prompt", lambda: "")
+    monkeypatch.setattr(
+        "openexecutive.onboarding.profile_builder.load_or_create_profile",
+        lambda: SimpleNamespace(is_empty=lambda: True),
+    )
+    monkeypatch.setattr(gc_module, "_load_history", lambda sid: list(store.get(sid, [])))
+
+    def save(sid: str, _name: str, _person: Any, _session: Any, said: str, reply: str) -> None:
+        store.setdefault(sid, []).extend(
+            [{"role": "user", "content": said}, {"role": "assistant", "content": reply}]
+        )
+
+    monkeypatch.setattr(gc_module, "_save_turn", save)
+
+    async def fake_chat(**kw: Any) -> str:
+        seen.append((kw["session"].session_id, list(kw["session"].conversation_history)))
+        return f"reply to {text}"
+
+    mock_exec = MagicMock()
+    mock_exec.chat = fake_chat
+    with (
+        patch("openexecutive.orchestrator.executive.Executive", return_value=mock_exec),
+        patch("openexecutive.integrations.google_chat.send_reply", new=lambda *a, **k: None),
+    ):
+        asyncio.run(
+            _process_and_reply(
+                message_text=text, sender_name="Bob", space_name="spaces/DM1",
+                thread_name=thread, message_name=f"{thread}/messages/M",
+                service_account_file=None, service_account_email=None, direct=direct,
+            )
+        )
+
+
+def test_a_dm_is_one_conversation_across_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+    store: dict = {}
+    seen: list = []
+    _run_turn(monkeypatch, store, seen, "draft a welcome note", "spaces/DM1/threads/A", direct=True)
+    _run_turn(monkeypatch, store, seen, "add a few more bullets", "spaces/DM1/threads/B", direct=True)
+    assert seen[0] == ("google_chat:spaces/DM1", [])
+    sid, history = seen[1]
+    assert sid == "google_chat:spaces/DM1"
+    assert [m["content"] for m in history] == ["draft a welcome note", "reply to draft a welcome note"]
+
+
+def test_in_a_space_each_thread_is_its_own_conversation(monkeypatch: pytest.MonkeyPatch) -> None:
+    store: dict = {}
+    seen: list = []
+    _run_turn(monkeypatch, store, seen, "first", "spaces/DM1/threads/A", direct=False)
+    _run_turn(monkeypatch, store, seen, "second", "spaces/DM1/threads/B", direct=False)
+    _run_turn(monkeypatch, store, seen, "third", "spaces/DM1/threads/A", direct=False)
+    assert seen[1] == ("google_chat:spaces/DM1:spaces/DM1/threads/B", [])
+    assert [m["content"] for m in seen[2][1]] == ["first", "reply to first"]
+
+
+def test_the_webhook_marks_a_dm_as_direct(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    calls: list = []
+    monkeypatch.setattr(gc_module, "_process_and_reply", lambda **kw: calls.append(kw))
+    event = _message_event()
+    event["space"] = {"name": "spaces/AAA", "spaceType": "DIRECT_MESSAGE"}
+    assert client.post("/webhook/google-chat", json=event, headers={"Authorization": "Bearer t"}).status_code == 200
+    room = _message_event()
+    assert client.post("/webhook/google-chat", json=room, headers={"Authorization": "Bearer t"}).status_code == 200
+    assert [c["direct"] for c in calls] == [True, False]

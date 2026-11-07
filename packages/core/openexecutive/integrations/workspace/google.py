@@ -137,15 +137,38 @@ def _parse_search_results(raw: str) -> list[dict[str, str]]:
     Confirmed response format (MCP server v3.3.1):
       Message ID: 19e3280dac59147f
       Thread ID:  19e3280c8d101120
+
+    Only a line that is the ID field itself counts (``Message ID: x`` or the
+    numbered ``3. Message ID: x``). The listing also prints each message's
+    Subject and From, which the sender wrote: a subject holding "Message ID:
+    0" must not become a message to fetch, or shift which thread each message
+    is paired with. A Thread ID belongs to the message listed above it.
     """
-    messages = []
-    msg_ids = re.findall(r"Message ID:\s*(\S+)", raw)
-    thread_ids = re.findall(r"Thread ID:\s*(\S+)", raw)
-    for mid, tid in zip(msg_ids, thread_ids, strict=False):
-        messages.append({"message_id": mid, "thread_id": tid})
-    for mid in msg_ids[len(messages):]:
-        messages.append({"message_id": mid, "thread_id": ""})
+    messages: list[dict[str, str]] = []
+    for line in raw.splitlines():
+        found = _SEARCH_MESSAGE_ID.match(line)
+        if found:
+            mid = found.group(1)
+            if mid.lower() != "unknown":
+                messages.append({"message_id": mid, "thread_id": ""})
+            continue
+        found = _SEARCH_THREAD_ID.match(line)
+        if found and messages and not messages[-1]["thread_id"]:
+            tid = found.group(1)
+            messages[-1]["thread_id"] = "" if tid.lower() == "unknown" else tid
     return messages
+
+
+_SEARCH_MESSAGE_ID = re.compile(r"^\s*(?:\d+\.\s+)?Message ID:\s*(\S+)\s*$")
+_SEARCH_THREAD_ID = re.compile(r"^\s*Thread ID:\s*(\S+)\s*$")
+
+
+_placeholder_listing_logged = False
+
+
+def _is_placeholder_id(message_id: str) -> bool:
+    """True for an id no Gmail message has: empty, or only zeros ("0")."""
+    return not message_id.strip("0")
 
 
 def _header_value(raw: str, header: str) -> str:
@@ -181,10 +204,25 @@ class GoogleMail:
             return []
         if not isinstance(raw, str) or not raw.strip():
             return []
-        return [
-            MessageRef(message_id=m["message_id"], thread_id=m.get("thread_id", ""))
-            for m in _parse_search_results(raw)
-        ]
+        refs: list[MessageRef] = []
+        for m in _parse_search_results(raw):
+            if _is_placeholder_id(m["message_id"]):
+                # Not a real Gmail id: fetching it 404s and the error text
+                # became a sender-less turn. The first listing that shows one
+                # is kept (once per process) to find out why; later ones log
+                # only the id, since the listing repeats every poll.
+                global _placeholder_listing_logged
+                if _placeholder_listing_logged:
+                    logger.warning("search_gmail_messages listed placeholder id %r", m["message_id"])
+                else:
+                    _placeholder_listing_logged = True
+                    logger.warning(
+                        "search_gmail_messages listed placeholder id %r; raw listing: %r",
+                        m["message_id"], raw[:2000],
+                    )
+                continue
+            refs.append(MessageRef(message_id=m["message_id"], thread_id=m.get("thread_id", "")))
+        return refs
 
     async def fetch(self, gateway: Any, ref: MessageRef, mailbox: str) -> InboundMessage | None:
         raw = await gateway.call_tool({
