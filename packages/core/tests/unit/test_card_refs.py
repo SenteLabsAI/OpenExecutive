@@ -62,6 +62,8 @@ def test_several_cards_and_slack_links(cards: dict[str, int]) -> None:
 
 
 def test_numbers_that_are_no_card_stay_as_written(cards: dict[str, int]) -> None:
+    a = cards["lease"]
+    assert _for(f"cards {a} and 4242") == f"cards {a} and 4242"
     for text in ("Paid with card 4242.", "See /cards/1 for it.", "Your scorecard 5 is fine.", "no cards here"):
         assert _for(text) == text
 

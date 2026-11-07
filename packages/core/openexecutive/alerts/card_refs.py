@@ -152,7 +152,9 @@ def name_cards(
         def replace(m: re.Match[str]) -> str:
             ids = [int(n) for n in _ID.findall(m.group("ids"))]
             found = [(i, a) for i in ids if (a := lookup(i)) is not None]
-            if not found:
+            if len(found) < len(ids):
+                # A number that is no card is left as written, and so is the
+                # list it sits in, so no number goes missing.
                 return m.group(0)
             shown = [
                 _linked(f"“{label}”", card_url(i), fmt)
