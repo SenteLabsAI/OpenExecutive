@@ -49,6 +49,7 @@ _ID = re.compile(r"\d{1,9}")
 # which comes from inbound mail and chat and so is not ours to trust.
 _LABEL_STRIP = re.compile(r"[\[\]()<>|*_`\\]")
 _LABEL_MAX = 80
+_LABEL_LINK = re.compile(r"(?:[a-z][a-z0-9+.-]*://|www\.)\S*", re.IGNORECASE)
 _LOOPBACK = frozenset({"localhost", "::1", "0.0.0.0"})
 
 
@@ -98,7 +99,10 @@ def home_url() -> str:
 
 
 def _label(headline: str) -> str:
-    text = " ".join(_LABEL_STRIP.sub(" ", headline or "").split())
+    # A headline comes from inbound mail and chat and is added after the
+    # outbound checks ran: no link or @-mention of its own rides along.
+    text = _LABEL_LINK.sub(" ", headline or "").replace("@", " ")
+    text = " ".join(_LABEL_STRIP.sub(" ", text).split())
     if len(text) > _LABEL_MAX:
         text = text[: _LABEL_MAX - 1].rstrip() + "…"
     return text

@@ -135,7 +135,7 @@ def _now_and_reader(now: datetime) -> tuple[str, Reader | None]:
 def _card_reader() -> tuple[int | None, bool]:
     """Who the cards a brief names are named for, as ``name_cards_for``'s
     ``(person_id, principal)``: the principal on the scheduler's delivery,
-    else whoever started the run. A teammate's run names no card that only
+    else whoever started the run (no one, outside a chat). A teammate's run names no card that only
     the principal may see (the principal's own drafted documents)."""
     if PRINCIPAL_DELIVERY.get():
         return None, True
@@ -147,7 +147,7 @@ def _card_reader() -> tuple[int | None, bool]:
         logger.exception("morning_brief: session lookup failed — cards named for no one")
         return None, False
     if session is None:
-        return None, True  # a scheduler or manual run outside any chat: the principal's
+        return None, False  # not known to be the principal's: name no card's headline
     return getattr(session, "caller_person_id", None), False
 
 

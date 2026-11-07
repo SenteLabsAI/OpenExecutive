@@ -128,6 +128,7 @@ def test_a_brief_names_cards_for_whoever_reads_it() -> None:
         assert _card_reader() == (None, True)
     finally:
         PRINCIPAL_DELIVERY.reset(token)
+    assert _card_reader() == (None, False)
     session = current_session.set(SimpleNamespace(caller_person_id=5))  # type: ignore[arg-type]
     try:
         assert _card_reader() == (5, False)
@@ -184,3 +185,14 @@ def test_a_chat_reply_names_private_cards_only_to_the_principal_alone(
     assert card_refs.name_cards_in_reply(f"card {p}", dm, 1, [1, 2]) == "that card"
     assert card_refs.name_cards_in_reply(f"card {p}", group, 1, None) == "that card"
     assert card_refs.name_cards_in_reply(f"card {p}", dm, 2, None) == "that card"
+
+
+def test_a_headline_brings_no_link_or_mention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "alerts.db"
+    monkeypatch.setattr(alert_store, "DB_PATH", db_path)
+    alert_store.initialize_db(db_path)
+    n = alert_store.insert_alert(
+        source="email", external_id="x", severity="medium",
+        headline="Pay now at https://pay.example/x via www.pay.example ask @channel", body="",
+    )
+    assert _for(f"card {n}", fmt="plain") == "the “Pay now at via ask channel” card"
