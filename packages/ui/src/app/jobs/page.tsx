@@ -35,6 +35,7 @@ import {
 import { cadenceLabel, cardAction, lastRunAt } from "@/lib/workflowCards";
 import { starterPicksFor } from "@/lib/workflowStarters";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const SECTION_ORDER: WorkflowSection[] = [
   "Board",
@@ -261,7 +262,7 @@ function JobsPageInner() {
       </div>
 
       {loading && (
-        <div className="text-[15px] text-fg-muted">Loading workflows…</div>
+        <PageSpinner label="Loading workflows" />
       )}
       {error && (
         <div className="mb-4 text-[15px] text-red-400">Error: {error}</div>

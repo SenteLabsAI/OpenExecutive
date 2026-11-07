@@ -15,6 +15,7 @@ import {
 import ArtifactViewer from "@/components/ArtifactViewer";
 import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
+import { Spinner } from "@/components/ui/Spinner";
 
 // Seed for "Revise in chat": opens a fresh chat with the id pre-filled so the
 // Executive can get_artifact → draft_artifact(supersedes=…).
@@ -112,8 +113,8 @@ export default function ArtifactDetailPage() {
 
   if (!art) {
     return (
-      <div className="flex flex-col h-full bg-surface text-fg-muted items-center justify-center text-sm">
-        Loading…
+      <div className="flex flex-col h-full bg-surface items-center justify-center">
+        <Spinner size="md" />
       </div>
     );
   }

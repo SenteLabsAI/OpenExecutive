@@ -21,6 +21,7 @@ import {
   type GoalView,
 } from "@/lib/api";
 import { goalCounts, groupGoals, type GoalGrouping } from "@/lib/goalGroups";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Every goal in one place (GET /goals). A goal has an owner and, optionally,
 // a department ("area" in solo), so the page groups by owner, department or
@@ -131,7 +132,7 @@ export default function GoalsPage() {
             )}
           </div>
 
-          {!goals && !error && <p className="text-fg-muted text-[15px]">Loading…</p>}
+          {!goals && !error && <PageSpinner />}
           {error && (
             <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}

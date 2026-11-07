@@ -17,6 +17,7 @@ import {
   type WatchlistSignal,
 } from "@/lib/api";
 import { raiseTheBar, triggerInWords } from "@/lib/watchWords";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 /** Relative time for display, e.g. "3h ago", "just now", "never". */
 function formatRelTime(iso: string | null): string {
@@ -259,7 +260,7 @@ export default function WatchDetailPage() {
   if (loading) {
     return (
       <div className="flex flex-col h-full bg-surface p-6">
-        <p className="text-fg-muted text-sm">Loading…</p>
+        <PageSpinner />
       </div>
     );
   }

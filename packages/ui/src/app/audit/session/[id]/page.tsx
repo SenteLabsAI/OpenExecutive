@@ -29,6 +29,7 @@ import {
   type AuditGraphNode,
   type AuditSessionResponse,
 } from "@/lib/api";
+import { Spinner } from "@/components/ui/Spinner";
 
 // ---------------------------------------------------------------------------
 // Visual tokens — color per node kind. Matches and extends the palette
@@ -857,8 +858,8 @@ export default function AuditSessionPage() {
       </div>
       <main className="flex-1 min-h-0 flex">
         {loading && (
-          <div className="flex-1 flex items-center justify-center text-fg-muted">
-            Loading session…
+          <div className="flex-1 flex items-center justify-center">
+            <Spinner label="Loading session" size="md" />
           </div>
         )}
         {error && !loading && (

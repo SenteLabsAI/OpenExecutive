@@ -29,6 +29,7 @@ import {
 } from "@/lib/api";
 import { formatAgo } from "@/lib/setupStatus";
 import { addPhrase, markNew, STYLE_PHRASES, styleSentences } from "@/lib/voiceStyle";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Delegate → Act as me: let the Executive draft email AS you, in your own
 // Gmail Drafts, when you ask it to — and, with What it writes as you at
@@ -151,7 +152,7 @@ export default function ActAsMeCard({
     return () => clearTimeout(timer);
   }, [checking, pollTick]);
 
-  if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (state === "loading") return <PageSpinner />;
   if (state === "hidden") {
     return (
       <SettingsCard>

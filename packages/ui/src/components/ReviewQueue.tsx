@@ -30,6 +30,7 @@ import SidePanel from "@/components/ui/SidePanel";
 import SectionTabs from "@/components/ui/SectionTabs";
 import Icon from "@/components/Icon";
 import { domainBulkActions, type BulkAction } from "@/lib/reviewBulk";
+import { PageSpinner, Spinner } from "@/components/ui/Spinner";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -237,7 +238,7 @@ function ItemSlideOver({
       open
       onClose={onClose}
       width="lg"
-      title={<span className="block break-words">{item ? item.filename : "Loading…"}</span>}
+      title={<span className="block break-words">{item ? item.filename : <Spinner />}</span>}
       subtitle={
         item && (
           <span className="flex items-center gap-2 flex-wrap">
@@ -291,7 +292,7 @@ function ItemSlideOver({
       }
     >
       {!item ? (
-        <p className="text-[15px] text-fg-muted">Loading…</p>
+        <PageSpinner />
       ) : (
         <div className="space-y-7">
           {/* Builtin file content */}
@@ -325,7 +326,7 @@ function ItemSlideOver({
                   </div>
                 </div>
               ) : contentLoading ? (
-                <p className="text-sm text-fg-subtle">Loading…</p>
+                <PageSpinner />
               ) : contentError ? (
                 <p className="text-sm text-red-500">Could not load file content.</p>
               ) : content != null ? (
@@ -341,7 +342,7 @@ function ItemSlideOver({
                 <p className="text-base font-semibold text-fg">
                   Source content
                 </p>
-                {loadingChunks && <span className="text-sm text-fg-subtle">Loading…</span>}
+                {loadingChunks && <Spinner />}
               </div>
               <p className="text-sm text-fg-subtle mb-3">
                 Indexed chunks from <span className="text-fg-muted">{item.filename}</span> — this is the text the AI retrieves from this source.
@@ -652,7 +653,7 @@ export default function ReviewQueue() {
         <div>
           <div className="flex items-center justify-between gap-3 mb-4">
             <p className="text-[15px] text-fg-muted">
-              {loading ? "Loading…" : `${items.length} item${items.length !== 1 ? "s" : ""} need review`}
+              {loading ? <Spinner /> : `${items.length} item${items.length !== 1 ? "s" : ""} need review`}
             </p>
             {items.length > 0 && (
               <Button onClick={() => handleBulkApprove()}>Approve all pending</Button>
@@ -774,7 +775,7 @@ export default function ReviewQueue() {
             </div>
           )}
 
-          {loading && <p className="text-[15px] text-fg-subtle">Loading…</p>}
+          {loading && <PageSpinner />}
           <div className="space-y-2">
             {allItems.map((item) => (
               <ItemRow key={item.item_id} {...rowProps(item)} />
@@ -790,7 +791,7 @@ export default function ReviewQueue() {
       {tab === "annotations" && (
         <div>
           <p className="text-[15px] text-fg-muted mb-4">
-            {loading ? "Loading…" : `${annotations.length} active SME correction${annotations.length !== 1 ? "s" : ""}`}
+            {loading ? <Spinner /> : `${annotations.length} active SME correction${annotations.length !== 1 ? "s" : ""}`}
           </p>
           <div className="space-y-2">
             {annotations.map((ann) => (

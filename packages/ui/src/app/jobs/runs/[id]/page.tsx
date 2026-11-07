@@ -17,6 +17,7 @@ import {
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { runStatusLabel, runStatusTextColor } from "@/lib/runStatus";
+import { Spinner } from "@/components/ui/Spinner";
 
 // A paused run is resumed by a background worker, so this page has to notice
 // a change it did not cause. Poll quickly at first — an approval that just
@@ -160,8 +161,8 @@ export default function RunDetailPage() {
 
   if (!run) {
     return (
-      <div className="flex flex-col h-full bg-surface text-fg-muted items-center justify-center text-sm">
-        Loading…
+      <div className="flex flex-col h-full bg-surface items-center justify-center">
+        <Spinner size="md" />
       </div>
     );
   }

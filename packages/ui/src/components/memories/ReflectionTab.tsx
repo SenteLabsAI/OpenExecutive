@@ -27,6 +27,7 @@ import {
 } from "@/lib/learning";
 
 import { EmptyState, STAT_VALUE_TONE, formatDate, formatRunAt, type StatTone } from "./shared";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Learning (the Reflection screen). At the top, this week's numbers, with how
 // it learns one tap away. After a chat goes quiet, the conversation review
@@ -163,7 +164,7 @@ export default function ReflectionTab() {
   }, [queue]);
 
   if (failed) return <Card><EmptyState message="This is unavailable right now." /></Card>;
-  if (state === undefined) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
+  if (state === undefined) return <PageSpinner />;
   if (state === null) {
     return (
       <Card>

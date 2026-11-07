@@ -22,6 +22,7 @@ import {
   filterSessions,
   type SessionChannel,
 } from "@/lib/sessionChannel";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 type ChannelFilter = SessionChannel | "all";
 
@@ -307,7 +308,7 @@ export default function ChatsPage() {
           </div>
 
           {!loaded ? (
-            <p className="px-1 py-6 text-[15px] text-fg-muted">Loading conversations…</p>
+            <PageSpinner label="Loading conversations" />
           ) : error && sessions.length === 0 ? (
             <p className="px-1 py-6 text-[15px] text-fg-muted">
               Couldn&apos;t load your conversations.{" "}

@@ -15,6 +15,7 @@ import {
 import Button from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { EmptyState, formatDate } from "./shared";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // The "what stuck" view: facts and corrections the principal or a teammate
 // told the Executive to keep (the `remember_fact` chat tool) and company-profile
@@ -130,7 +131,7 @@ export default function CorrectionsTab({ onCount }: { onCount: (n: number) => vo
     }
   }, []);
 
-  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
+  if (loading) return <PageSpinner />;
   if (failed) return <EmptyState message="Corrections are unavailable right now." />;
 
   const proposed = facts.filter((f) => f.status === "proposed");

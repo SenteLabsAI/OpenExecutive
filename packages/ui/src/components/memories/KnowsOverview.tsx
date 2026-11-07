@@ -17,6 +17,7 @@ import type { PulseData } from "./PulseHeader";
 import { NewSinceCard } from "./MemoryChanges";
 import { figureSourceLine } from "./WorkedOutTab";
 import { Skeleton, formatDate } from "./shared";
+import { Spinner } from "@/components/ui/Spinner";
 
 // Memory → What it knows: four groups, each a few rows and a link to its full
 // list. About you (what it learned from talking with you, and your notes);
@@ -222,7 +223,7 @@ export default function KnowsOverview({ pulse, lastVisit }: { pulse: PulseData; 
             count={misses === undefined ? null : Math.max(misses, 1)}
           >
             <p className="text-[15px] text-fg-muted">
-              {misses === undefined ? "Loading…" : misses === 0 ? "Nothing fell short lately." : `${misses} answers fell short and were looked at again.`}
+              {misses === undefined ? <Spinner /> : misses === 0 ? "Nothing fell short lately." : `${misses} answers fell short and were looked at again.`}
             </p>
           </Group>
         )}

@@ -9,6 +9,7 @@ import {
   type OutsideContentMode,
   type OutsideContentSetting,
 } from "@/lib/api";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const OPTIONS: {
   value: OutsideContentMode;
@@ -78,7 +79,7 @@ export default function OutsideContentCard() {
       title="Approvals"
       description="Pick how much I do on my own. It works the same in the app, email and every chat app."
     >
-      {!setting && !error && <p className="text-[15px] text-fg-muted">Loading…</p>}
+      {!setting && !error && <PageSpinner />}
       {setting && (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-fg-muted">

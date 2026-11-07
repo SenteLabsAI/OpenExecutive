@@ -26,6 +26,7 @@ import {
 } from "@/lib/api";
 import { suggestWatchSlug } from "@/lib/watchSlug";
 import { triggerInWords } from "@/lib/watchWords";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const fieldCls =
   "w-full px-3.5 py-2.5 text-[15px] rounded-xl bg-surface border border-line text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40";
@@ -839,7 +840,7 @@ export default function WatchlistPage() {
 
           <SetUpWatch onCreated={(w) => setItems((prev) => [...prev, w])} />
 
-          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
+          {loading && <PageSpinner />}
           {error && (
             <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}

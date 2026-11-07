@@ -16,6 +16,7 @@ import {
   filterOptions,
   findOption,
 } from "@/lib/chatDirectory";
+import { Spinner } from "@/components/ui/Spinner";
 
 const INPUT_CLS =
   "w-full h-11 px-3 rounded-xl bg-surface-input/60 border border-line text-[15px] text-fg placeholder-fg-subtle focus:outline-none focus:border-accent";
@@ -177,7 +178,7 @@ export default function ChatPicker({
       </span>
 
       {list === undefined ? (
-        <p className={HINT_CLS}>Loading…</p>
+        <p className={HINT_CLS}><Spinner /></p>
       ) : (
         <>
           {value.trim() && !showSearch && (

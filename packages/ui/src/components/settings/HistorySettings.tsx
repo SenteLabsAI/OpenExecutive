@@ -7,6 +7,7 @@ import SettingsCard from "@/components/settings/SettingsCard";
 import Switch from "@/components/Switch";
 import { getHistory, updateHistorySettings, type HistoryState } from "@/lib/api";
 import { personRetentionChoices, retentionLabel } from "@/lib/history";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Always in the loop's settings (PUT /memories/history/settings), on
 // Settings → Memory: each person's own "Keep track of what happens" switch and
@@ -149,7 +150,7 @@ export function ShareWorkStyleCard() {
  * reads it. */
 export function CompanyRetentionCard() {
   const { state, save, busy, error } = useHistoryState();
-  if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (state === "loading") return <PageSpinner />;
   if (state === "error" || state === null) {
     return (
       <SettingsCard>

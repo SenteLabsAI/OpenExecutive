@@ -13,6 +13,7 @@ import {
   type DepartmentCreate,
   type DepartmentState,
 } from "@/lib/api";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const AUTHORITY_LABELS: Record<string, string> = {
   auto_execute: "Auto",
@@ -133,7 +134,7 @@ export default function DepartmentsPage() {
             </Button>
           </div>
 
-          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
+          {loading && <PageSpinner />}
           {error && (
             <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px] mb-4">
               {error}

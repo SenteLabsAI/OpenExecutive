@@ -19,6 +19,7 @@ import ReflectionTab from "./ReflectionTab";
 import WorkedOutTab from "./WorkedOutTab";
 import type { MemoryView } from "@/lib/pulseView";
 import { DOMAINS, STATUSES, EmptyState, formatDate } from "./shared";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const MEMORY_EMPTY = "No memories yet — they're extracted automatically after chats.";
 
@@ -89,7 +90,7 @@ function InitiativesTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
+  if (loading) return <PageSpinner />;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (
@@ -238,7 +239,7 @@ function AdviceTab({ onCount }: { onCount: (n: number) => void }) {
     void refresh();
   }, [refresh]);
 
-  if (loading) return <div className="text-fg-muted text-[15px] py-4">Loading…</div>;
+  if (loading) return <PageSpinner />;
   if (items.length === 0) return <EmptyState message={MEMORY_EMPTY} />;
 
   return (

@@ -33,6 +33,7 @@ import {
   type TopicEntry,
   type TopicGroup,
 } from "@/lib/sessionGroups";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 const GROUP_CAP = 20;
 // Chats an open topic shows before "Show N more".
@@ -1046,7 +1047,7 @@ export function SharePanel({
           </button>
         </p>
       ) : !loaded ? (
-        <p className="text-sm text-fg-muted">Loading your team…</p>
+        <PageSpinner label="Loading your team" />
       ) : loaded.people.length === 0 ? (
         <p className="text-sm text-fg-muted">There&apos;s no one else on your team to share with yet.</p>
       ) : (

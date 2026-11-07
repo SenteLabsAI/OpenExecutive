@@ -14,6 +14,7 @@ import {
 import { handledLine } from "@/lib/inviteCards";
 import { sentTodayLine } from "@/lib/reach";
 import { formatAgo } from "@/lib/setupStatus";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Handle it for me, its own tab under Delegate: replies the inbox watcher
 // sends from your mailbox on its own. Plain code decides each one
@@ -57,7 +58,7 @@ export function useDelegation(): DelegationLoad {
 // as me; otherwise What it sends on its own and what it sent.
 export default function HandleItCard({ load }: { load: DelegationLoad }) {
   const { settings, state, setSettings } = load;
-  if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (state === "loading") return <PageSpinner />;
   if (state === "error") {
     return (
       <SettingsCard>

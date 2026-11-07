@@ -31,6 +31,7 @@ import {
   type CheckInChoice,
   type Weekday,
 } from "@/lib/checkInCadence";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 // Auto-refresh cadence for the detail page. The `dept_cadence` scheduler
 // fires at most once per department per cadence (default weekly), so any
@@ -421,7 +422,7 @@ export default function DepartmentDetailPage() {
     <div className="flex flex-col h-full bg-surface">
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
-          {loading && <p className="text-fg-muted text-[15px]">Loading…</p>}
+          {loading && <PageSpinner />}
           {error && (
             <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-[15px]">
               {error}

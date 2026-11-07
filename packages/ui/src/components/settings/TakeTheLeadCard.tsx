@@ -15,6 +15,7 @@ import {
   setTakeTheLead,
   type TakeTheLead,
 } from "@/lib/api";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 type Mode = "off" | "training" | "on";
 
@@ -56,7 +57,7 @@ export default function TakeTheLeadCard() {
     return () => controller.abort();
   }, []);
 
-  if (state === "loading") return <p className="text-[15px] text-fg-muted">Loading…</p>;
+  if (state === "loading") return <PageSpinner />;
   if (state === "hidden") {
     return (
       <SettingsCard title="Take the lead">

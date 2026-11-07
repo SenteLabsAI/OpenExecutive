@@ -6,6 +6,7 @@ import Link from "next/link";
 import Chat from "@/components/Chat";
 import { getSession, getSessionMessages, type ChatMessage, type SessionSummary } from "@/lib/api";
 import { sessionTitle } from "@/lib/sessionChannel";
+import { PageSpinner } from "@/components/ui/Spinner";
 
 type Loaded =
   | { id: string; state: "ok"; session: SessionSummary; messages: ChatMessage[] }
@@ -54,7 +55,7 @@ export default function SharedChatPage() {
         </div>
       </div>
       {!current ? (
-        <p className="max-w-3xl mx-auto w-full px-4 sm:px-6 py-8 text-[15px] text-fg-muted">Loading chat…</p>
+        <PageSpinner label="Loading chat" />
       ) : current.state === "gone" ? (
         <p className="max-w-3xl mx-auto w-full px-4 sm:px-6 py-8 text-[15px] text-fg-muted">
           This chat isn&apos;t shared with you any more.
