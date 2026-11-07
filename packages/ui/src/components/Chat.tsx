@@ -33,7 +33,6 @@ import {
   sendTyping,
   setMessageFeedback,
   streamChat,
-  handOverChat,
   type ChatPeople,
   type LiveChatEvent,
 } from "@/lib/api";
@@ -969,16 +968,16 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
     fallbackLabel: FALLBACK_ACTIVITY_LABEL,
   });
 
-  // I'll finish it: the turn stops working and writes up what it has. The
-  // button stays off once pressed; if the turn won't take it (it already
-  // finished or was stopped) the reply that arrives is its own.
-  async function handleHandOver() {
-    const id = turnIdRef.current;
-    if (!id || handingOver) return;
-    setHandingOver(true);
-    if (!(await handOverChat(id))) setHandingOver(false);
-  }
   const stepsShown = isLoading && (turnProgress !== null || showSteps(turnSteps)) && !committeePhase;
+  const turnStepsLine = (
+    <TurnSteps
+      progress={turnProgress}
+      reads={turnReads}
+      liveLine={writingReply ? "Writing the answer" : liveLine}
+      elapsed={status.elapsed}
+      handingOver={handingOver}
+    />
+  );
 
   // Fill the composer with the suggestion without sending it, so the user
   // can edit first. The suggestion is kept: clearing the box shows it again.
@@ -1322,20 +1321,20 @@ export default function Chat({ onDebugEvent, initialMessages, initialSessionId, 
                 </div>
               ))}
 
-              {stepsShown && (
-                <div className="pl-12">
-                  <TurnSteps
-                    progress={turnProgress}
-                    reads={turnReads}
-                    liveLine={writingReply ? "Writing the answer" : liveLine}
-                    elapsed={status.elapsed}
-                    handingOver={handingOver}
-                    stopping={isStopping}
-                    onStop={() => void handleStop()}
-                    onHandOver={() => void handleHandOver()}
-                  />
-                </div>
-              )}
+              {stepsShown &&
+                (streamingContent ? (
+                  <div className="pl-12">{turnStepsLine}</div>
+                ) : (
+                  <div className="flex gap-4">
+                    <div className="flex-shrink-0 mt-1">
+                      <BrandMark size="md" consulting />
+                    </div>
+                    <div className="flex-1 pt-1.5">
+                      <div className="text-xs text-fg-muted mb-3 font-medium tracking-wide uppercase">{executiveName}</div>
+                      {turnStepsLine}
+                    </div>
+                  </div>
+                ))}
 
               {streamingContent && (
                 <Message

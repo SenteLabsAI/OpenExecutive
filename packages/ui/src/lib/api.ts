@@ -400,22 +400,6 @@ export async function stopChat(clientTurnId: string): Promise<boolean> {
   }
 }
 
-// I'll finish it: stop the running turn's work and have it write up what it
-// has for the person to finish. False when the turn won't take it (finished
-// or stopped); the reply that arrives is then the turn's own.
-export async function handOverChat(clientTurnId: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${API_BASE}/chat/hand-over`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_turn_id: clientTurnId }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 // Hand a message to the turn that is still running, so its answer takes it
 // into account. False when the turn won't take it (finished, stopped, full):
 // the caller then sends it as the next turn.
