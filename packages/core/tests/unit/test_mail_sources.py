@@ -46,13 +46,13 @@ class _Sent:
 
 
 def _mail(sender: str, *, proven: bool, send: _Sent, body: str = "Can you check the Q3 numbers?",
-          attachments: Any = None) -> InboundMail:
+          attachments: Any = None, thread: str = "t1") -> InboundMail:
     async def _prove() -> bool:
         return proven
 
     return InboundMail(
         message=InboundMessage(
-            message_id="m1", thread_id="t1", from_addr=sender, from_name="", subject="Q3",
+            message_id="m1", thread_id=thread, from_addr=sender, from_name="", subject="Q3",
             to=[OWN], body_text=body,
         ),
         source="relay",
@@ -61,7 +61,7 @@ def _mail(sender: str, *, proven: bool, send: _Sent, body: str = "Can you check 
         prove_sender=_prove,
         read_attachments=attachments,
         hold_payload={"id": "m1"},
-        session_id="email:relay:t1",
+        session_id=f"email:relay:{thread}",
     )
 
 
@@ -395,6 +395,17 @@ def test_the_next_turn_on_a_thread_sees_what_was_mailed_on_it(turn: dict[str, An
     assert "--- YOUR EARLIER REPLIES ON THIS THREAD ---" in message
     assert "Here are the Q3 numbers." in message.split("EARLIER REPLIES ON THIS THREAD")[1]
     assert 'source="earlier_reply"' in message
+
+
+def test_only_a_proven_sender_sees_what_went_to_them_on_other_threads(turn: dict[str, Any]) -> None:
+    # A forged From must not read back what was mailed to the real person.
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent()))
+    _handle(_mail(TEAMMATE, proven=False, send=_Sent(), thread="t2"))
+    assert "OTHER THREADS" not in turn["turns"][1]["user_message"]
+    _handle(_mail(TEAMMATE, proven=True, send=_Sent(), thread="t3"))
+    message = turn["turns"][2]["user_message"]
+    assert "--- WHAT YOU SENT THIS PERSON ON OTHER THREADS ---" in message
+    assert "Here are the Q3 numbers." in message.split("ON OTHER THREADS")[1]
 
 
 def test_an_answer_redirected_to_the_principal_is_not_the_threads(turn: dict[str, Any]) -> None:

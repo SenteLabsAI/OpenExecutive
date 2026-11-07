@@ -207,15 +207,18 @@ def _shown(sent: list[tuple[str, str]]) -> str:
     return "\n\n".join(parts)
 
 
-def block(thread_key: str, to: str, *, also: Iterable[str] = (), db_path: Path | None = None) -> str:
+def block(
+    thread_key: str, to: str, *, also: Iterable[str] = (), elsewhere: bool = True, db_path: Path | None = None,
+) -> str:
     """The turn's note of what it already wrote to ``to`` on this thread,
-    and to the same person (``to`` and ``also``, their addresses) on other
-    threads, or "" when nothing was. Goes in the user turn, never a cached
-    block."""
+    and, with ``elsewhere``, to the same person (``to`` and ``also``, their
+    addresses) on other threads, or "" when nothing was. Pass ``elsewhere``
+    only for a sender the mail proved: a forged From must not read back what
+    went to the real person. Goes in the user turn, never a cached block."""
     from openexecutive.orchestrator.content_trust import wrap_untrusted
 
     here = recent(thread_key, to, db_path=db_path)
-    elsewhere = recent_elsewhere(thread_key, [to, *also], db_path=db_path)
+    others = recent_elsewhere(thread_key, [to, *also], db_path=db_path) if elsewhere else []
     out: list[str] = []
     # What was sent can quote the sender's own mail, so it is content, not
     # instructions, like the email itself.
@@ -227,12 +230,12 @@ def block(thread_key: str, to: str, *, also: Iterable[str] = (), db_path: Path |
             + wrap_untrusted(_shown(here), source="earlier_reply", author="you")
             + "\n--- END OF EARLIER REPLIES ---"
         )
-    if elsewhere:
+    if others:
         out.append(
             "--- WHAT YOU SENT THIS PERSON ON OTHER THREADS ---\n"
             "Your latest emails to this same person in other conversations, oldest first. "
             "Stay consistent with them: don't say you don't know something you already told them.\n"
-            + wrap_untrusted(_shown(elsewhere), source="earlier_reply", author="you")
+            + wrap_untrusted(_shown(others), source="earlier_reply", author="you")
             + "\n--- END ---"
         )
     return "\n\n".join(out)

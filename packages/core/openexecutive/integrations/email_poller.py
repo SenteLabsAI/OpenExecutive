@@ -1405,10 +1405,13 @@ async def _run_executive(
         from openexecutive.integrations import email_replies
 
         # Their other addresses too (People entry), so a reply on one thread
-        # is known on the next.
+        # is known on the next. Other threads only when the mail proved its
+        # sender: a forged From must not read back what went to the real one.
+        proven = session.email_authenticated is True or session.email_sender_authenticated is True
         their = [getattr(person, "email", "") or "", *(getattr(person, "email_aliases", None) or [])]
         earlier = email_replies.block(
-            session_id or session.session_id, answer_to, also=[a for a in their if isinstance(a, str)],
+            session_id or session.session_id, answer_to,
+            also=[a for a in their if isinstance(a, str)], elsewhere=proven,
         )
         if earlier:
             base_message += f"\n\n{earlier}"

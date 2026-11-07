@@ -627,7 +627,10 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     approval because the body named that contact. Every address in any
     argument but the text, the acting account and message ids counts as a
     recipient, whatever its key is spelled ("Cc", "bcc", a field added later)
-    or however deep it sits (Outlook's body.message.toRecipients). Fails closed: no
+    or however deep it sits (Outlook's body.message.toRecipients). Both tools
+    send only to literal addresses (Gmail's To/Cc headers, Graph's
+    emailAddress.address) and resolve no names, so a recipient always has an
+    "@" the pattern sees. Fails closed: no
     recipient, or a roster that can't be read, is not this."""
     from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
 
