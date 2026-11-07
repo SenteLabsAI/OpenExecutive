@@ -281,7 +281,10 @@ class MorningBriefWorkflow(Workflow):
         if reflection_flags:
             from openexecutive.alerts.card_refs import name_cards_for
 
-            reflection_flags = name_cards_for(reflection_flags, None, principal=True, fmt="plain")
+            flag_reader, for_principal = _card_reader()
+            reflection_flags = name_cards_for(
+                reflection_flags, flag_reader, principal=for_principal, fmt="plain",
+            )
         # Corrections teammates made since the last brief: the principal's
         # FYI (memory.facts). What waits for their approval is theirs alone
         # (GET /memories/facts hides it from other teammates), so a brief any
