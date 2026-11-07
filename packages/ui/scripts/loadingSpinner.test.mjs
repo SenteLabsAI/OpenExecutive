@@ -6,7 +6,8 @@ import test from "node:test";
 // Loading shows the spinning ring (components/ui/Spinner.tsx), not the word.
 // The one exception is a native dropdown option, which can't show a spinner.
 const SRC = new URL("../src/", import.meta.url).pathname;
-const LOADING_TEXT = /Loading[^"'<>{}\n]{0,40}(…|\.\.\.)/;
+// "Loading…" in any spelling, or "Loading" alone as an element's text.
+const LOADING_TEXT = /Loading[^"'<>{}\n]{0,40}(…|\.\.\.)|>\s*Loading\s*</;
 
 function tsxFiles(dir) {
   return readdirSync(dir).flatMap((name) => {
