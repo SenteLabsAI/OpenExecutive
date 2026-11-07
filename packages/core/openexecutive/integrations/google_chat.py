@@ -234,6 +234,51 @@ async def _read_attachments(
     return "\n\n".join(parts), blocks
 
 
+def _is_direct(space: object) -> bool:
+    """The event's space is a DM with the app (old ``type`` or new ``spaceType``)."""
+    if not isinstance(space, dict):
+        return False
+    return (
+        space.get("type") == "DM"
+        or space.get("spaceType") == "DIRECT_MESSAGE"
+        or space.get("singleUserBotDm") is True
+    )
+
+
+def _load_history(session_id: str) -> list[dict[str, Any]]:
+    from openexecutive.memory.session_store import load_messages
+
+    try:
+        return load_messages(session_id)
+    except Exception:
+        logger.exception("Google Chat: couldn't load the conversation %s", session_id)
+        return []
+
+
+def _save_turn(
+    session_id: str, sender_name: str, sender_person: Any, session: Any, text: str, response: str
+) -> None:
+    """Keep the exchange in the conversation's history. A failure here must
+    not cost the person their answer, so it is only logged."""
+    from openexecutive.memory.session_store import (
+        create_session,
+        save_message,
+        update_session_timestamp,
+    )
+
+    person_id = sender_person.id if sender_person is not None else None
+    try:
+        create_session(
+            session_id, f"Google Chat {sender_name}", session.created_at.isoformat(),
+            caller_person_id=person_id,
+        )
+        save_message(session_id, "user", text, sender_person_id=person_id)
+        save_message(session_id, "assistant", response)
+        update_session_timestamp(session_id)
+    except Exception:
+        logger.exception("Google Chat: failed to keep the turn for %s", session_id)
+
+
 async def _process_and_reply(
     message_text: str,
     sender_name: str,
@@ -245,9 +290,12 @@ async def _process_and_reply(
     attachments: list[dict] | None = None,
     sender_email: str = "",
     reply_context: str = "",
+    direct: bool = False,
 ) -> None:
     """One Chat message's turn. ``reply_context`` is the message it quotes
-    (``integrations.reply_context``), put in front of the words."""
+    (``integrations.reply_context``), put in front of the words. ``direct``:
+    a DM with the app, which is one conversation, whatever thread each
+    message lands in."""
     if not space_name:
         logger.error("Google Chat: missing space_name for message %s, cannot reply", message_name)
         return
@@ -255,7 +303,9 @@ async def _process_and_reply(
     # Deterministic per-thread session id so every audit row from this inbound
     # (chat_turn, specialist_consult, tool_invocation) shares a grouping key
     # with the integration_inbound row.
-    session_id = f"google_chat:{space_name}:{thread_name}"
+    # A DM is one conversation (each message there can start its own thread);
+    # in a space, each thread is one.
+    session_id = f"google_chat:{space_name}" if direct else f"google_chat:{space_name}:{thread_name}"
     # The sender's People row, by the Google account email on the event (the
     # JWT proves the event is Google's, so the email is Google's word). None
     # for someone who isn't on People; the department gate then holds their
@@ -328,6 +378,11 @@ async def _process_and_reply(
             # `caller_person_id` and grants nothing else.
             gate_sender_person_id=sender_person.id if sender_person else None,
         )
+        # The conversation so far, so a follow-up ("add a few more bullets")
+        # has what it follows.
+        history = await asyncio.to_thread(_load_history, session_id)
+        if history:
+            session.conversation_history = history
         retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
         episodic_context = format_for_prompt()
 
@@ -364,6 +419,9 @@ async def _process_and_reply(
             attachment_blocks=image_blocks or None,
             # The quote is not the person's words: memory keeps their own.
             memory_text=own_text if reply_context else None,
+        )
+        await asyncio.to_thread(
+            _save_turn, session_id, sender_name, sender_person, session, own_text, response
         )
         from openexecutive.orchestrator.disclosure import with_chat_line
 
@@ -445,9 +503,9 @@ async def google_chat_webhook(request: Request, background_tasks: BackgroundTask
             message,
             reply_context.google_chat_app_id(message),
             # A direct message with the app has two people in it: the sender and the app.
-            two_party=body.get("space", {}).get("type") == "DM"
-            or body.get("space", {}).get("spaceType") == "DIRECT_MESSAGE",
+            two_party=_is_direct(body.get("space", {})),
         ),
+        direct=_is_direct(body.get("space", {})),
         service_account_file=settings.google_chat_service_account_file,
         service_account_email=settings.google_chat_service_account_email,
         attachments=attachments,

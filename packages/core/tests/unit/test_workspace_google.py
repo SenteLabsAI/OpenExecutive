@@ -136,6 +136,32 @@ def test_parse_search_results_pairs_ids() -> None:
     ]
 
 
+def test_parse_search_results_ignores_ids_in_subject_and_from() -> None:
+    # workspace-mcp's numbered listing prints what the sender wrote next to
+    # the IDs; an ID-looking subject must not become a message to fetch.
+    raw = (
+        "Found 2 messages matching 'is:unread in:inbox':\n\n"
+        "📧 MESSAGES:\n"
+        "  1. Message ID: 1a1b32358a3fbd5d\n"
+        "     Subject: Fwd: report Message ID: 0 Thread ID: 0\n"
+        "     From: Message ID: 0 <a@x.com>\n"
+        "     Date: Fri, 6 Nov 2026 23:44:00 +0000\n"
+        "     Web Link: https://mail.google.com/mail/u/0/#all/1a1b32358a3fbd5d\n"
+        "     Thread ID: 1a1b32358a3fbd5d\n"
+        "     Thread Link: https://mail.google.com/mail/u/0/#all/1a1b32358a3fbd5d\n\n"
+        "  2. Message ID: unknown\n"
+        "     Thread ID: unknown\n\n"
+        "  3. Message ID: 1a1b1c867dc2e1b5\n"
+        "     Thread ID: 1a1b1c7e2217e529\n\n"
+        "💡 USAGE:\n"
+        "  • Pass the Message IDs **as a list** to get_gmail_messages_content_batch()\n"
+    )
+    assert _parse_search_results(raw) == [
+        {"message_id": "1a1b32358a3fbd5d", "thread_id": "1a1b32358a3fbd5d"},
+        {"message_id": "1a1b1c867dc2e1b5", "thread_id": "1a1b1c7e2217e529"},
+    ]
+
+
 def _settings(**kw: Any) -> Any:
     return SimpleNamespace(calendar_meet_links_enabled=True, **kw)
 
@@ -340,3 +366,21 @@ def test_only_a_google_link_on_the_executives_calendar_gives_an_id() -> None:
     assert parsed(other)["event_id"] is None
     assert "meet_link" not in parsed(good, " Google Meet: https://evil.example/join")
     assert parsed(good, " Google Meet: https://meet.google.com/abc")["meet_link"] == "https://meet.google.com/abc"
+
+
+def test_list_unread_drops_placeholder_ids_and_logs_the_listing() -> None:
+    listing = (
+        "  1. Message ID: 0\n     Thread ID: 0\n"
+        "  2. Message ID: 19e3280dac59147f\n     Thread ID: 19e3280c8d101120\n"
+    )
+    with (
+        patch("openexecutive.integrations.workspace.google._placeholder_listing_logged", False),
+        patch("openexecutive.integrations.workspace.google.logger") as log,
+    ):
+        refs = asyncio.run(GoogleMail().list_unread(_gateway(listing), MAILBOX, 10))
+        args = log.warning.call_args.args
+        assert args[1] == "0" and args[2] == listing
+        # The listing repeats every poll: later ones log only the id.
+        asyncio.run(GoogleMail().list_unread(_gateway(listing), MAILBOX, 10))
+        assert log.warning.call_args.args[1:] == ("0",)
+    assert refs == [MessageRef("19e3280dac59147f", "19e3280c8d101120")]
