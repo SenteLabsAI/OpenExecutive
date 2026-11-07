@@ -9,6 +9,54 @@ From 0.3.0 on, entries are written by release-please from the titles of the
 merged pull requests (`feat` → Added, `fix` → Fixed). The open release PR holds
 the next entry; edit it there before merging if a line needs rewording.
 
+## [0.7.0](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.9...v0.7.0) (2026-11-07)
+
+
+### Added
+
+* **alerts:** let a card ask for an answer, a pick, an OK, or nothing ([#718](https://github.com/SenteLabsAI/OpenExecutive/issues/718)) ([12bc909](https://github.com/SenteLabsAI/OpenExecutive/commit/12bc90952c9baacd44bef483cd6c8fe7a138f9fe))
+* **briefing:** fold old Needs you cards and group a request's approvals ([#709](https://github.com/SenteLabsAI/OpenExecutive/issues/709)) ([5f87e70](https://github.com/SenteLabsAI/OpenExecutive/commit/5f87e70f6a3363cbcd0b59dc826b99c23cbc889a))
+* **briefing:** show Home as Needs you and Done for you, each item once ([#710](https://github.com/SenteLabsAI/OpenExecutive/issues/710)) ([8194ba5](https://github.com/SenteLabsAI/OpenExecutive/commit/8194ba5a2f3230c99e8ae114e67a1fedb419b985))
+* **briefing:** show Right now as a plain list of what's waiting ([#708](https://github.com/SenteLabsAI/OpenExecutive/issues/708)) ([a0824c3](https://github.com/SenteLabsAI/OpenExecutive/commit/a0824c3163caf2f77b2995805bed162a3e1153f4))
+* **chat:** answer Needs you cards by saying yes, no or an answer ([#722](https://github.com/SenteLabsAI/OpenExecutive/issues/722)) ([9ed0447](https://github.com/SenteLabsAI/OpenExecutive/commit/9ed0447febd7b5ad389e19473ee7be156e7e5d76))
+* **chat:** change an email draft on its chat card in place ([#704](https://github.com/SenteLabsAI/OpenExecutive/issues/704)) ([16910ca](https://github.com/SenteLabsAI/OpenExecutive/commit/16910cad9f67688c38e041bb4098453515429a56))
+* **memory:** keep decisions as standing facts and stop extracting advice ([5ea6ad5](https://github.com/SenteLabsAI/OpenExecutive/commit/5ea6ad59ab63e8d5125fb288e236a5abc4fc5c6a))
+* **memory:** keep the figures it works out, with source and date ([#697](https://github.com/SenteLabsAI/OpenExecutive/issues/697)) ([49e75c8](https://github.com/SenteLabsAI/OpenExecutive/commit/49e75c80af4e5a0b6fb5efc91335f4046c537d99))
+* **memory:** let lessons learn from what people actually say ([#693](https://github.com/SenteLabsAI/OpenExecutive/issues/693)) ([9a32ae5](https://github.com/SenteLabsAI/OpenExecutive/commit/9a32ae52f53233dc56e98ec122842d9871607d2d))
+* **memory:** let mail chats teach the owner's own memory ([#695](https://github.com/SenteLabsAI/OpenExecutive/issues/695)) ([71f2d6f](https://github.com/SenteLabsAI/OpenExecutive/commit/71f2d6fe304f3e3d246a94e92a3edae25e03deed))
+* **memory:** let people edit or remove what it keeps about them ([#700](https://github.com/SenteLabsAI/OpenExecutive/issues/700)) ([40c918c](https://github.com/SenteLabsAI/OpenExecutive/commit/40c918c4336770564d8c7d1f88b7cbc8231b7f7f))
+* **memory:** show when memory changes, with Undo ([#705](https://github.com/SenteLabsAI/OpenExecutive/issues/705)) ([3c07b75](https://github.com/SenteLabsAI/OpenExecutive/commit/3c07b75b4fcee2992c6e6348a6d8b102261bfcc3))
+* **memory:** sort standing facts by the question and date the old ones ([#698](https://github.com/SenteLabsAI/OpenExecutive/issues/698)) ([5892d79](https://github.com/SenteLabsAI/OpenExecutive/commit/5892d798e6d6fcbc895ce6603420adadda08a49b))
+* **monitoring:** make watches report real changes and watch for awaited email ([#703](https://github.com/SenteLabsAI/OpenExecutive/issues/703)) ([05b8e3e](https://github.com/SenteLabsAI/OpenExecutive/commit/05b8e3e1db517c280b82cafa62da31426d2d883b))
+* **orchestrator:** make Approvals the one gate on every channel ([#706](https://github.com/SenteLabsAI/OpenExecutive/issues/706)) ([e8919b3](https://github.com/SenteLabsAI/OpenExecutive/commit/e8919b3127289d04cae6ed4407e3a028c497db2f))
+* **ui:** put a Settings menu beside every Settings page ([#732](https://github.com/SenteLabsAI/OpenExecutive/issues/732)) ([e7feb67](https://github.com/SenteLabsAI/OpenExecutive/commit/e7feb67fd1a220c579cb04426dbb3022316fd48f))
+* **ui:** replace Pulse with one Memory page ([#702](https://github.com/SenteLabsAI/OpenExecutive/issues/702)) ([2310dd1](https://github.com/SenteLabsAI/OpenExecutive/commit/2310dd1714711b8c58b6ecf2ad470c47a605f6f9))
+* **ui:** show a long chat turn as one live line ([#727](https://github.com/SenteLabsAI/OpenExecutive/issues/727)) ([bd1c5db](https://github.com/SenteLabsAI/OpenExecutive/commit/bd1c5dbd4097d55c9b7a27eefcd2c85b3a8e9f72))
+* **ui:** show a spinning ring instead of Loading text ([#730](https://github.com/SenteLabsAI/OpenExecutive/issues/730)) ([e4b7936](https://github.com/SenteLabsAI/OpenExecutive/commit/e4b7936637c4f7562e8c0a09d64b0bef0f7877de))
+
+
+### Fixed
+
+* **alerts:** give each of a sender's asks its own card and drop reads from Done for you ([#721](https://github.com/SenteLabsAI/OpenExecutive/issues/721)) ([3b6073d](https://github.com/SenteLabsAI/OpenExecutive/commit/3b6073d9c2cbaf8a8c0a563d6e3a208a02c1c1b5))
+* **approvals:** show held steps in plain words, never a file's bytes ([#714](https://github.com/SenteLabsAI/OpenExecutive/issues/714)) ([7480efc](https://github.com/SenteLabsAI/OpenExecutive/commit/7480efcb24cbf110f95bf31b6d02a74db5545395))
+* **briefing:** name cards by what they are, never by their number ([#726](https://github.com/SenteLabsAI/OpenExecutive/issues/726)) ([faaeb5f](https://github.com/SenteLabsAI/OpenExecutive/commit/faaeb5f2cc92a1d1247553a46acaf5f677a851d7))
+* **briefing:** open See in place, drop your own reminders, one card per email sender ([#711](https://github.com/SenteLabsAI/OpenExecutive/issues/711)) ([aa71d2d](https://github.com/SenteLabsAI/OpenExecutive/commit/aa71d2d23adfa96f4db36d6c8408cecb6e1c7e9a))
+* **chat:** give long filing turns room to finish ([#696](https://github.com/SenteLabsAI/OpenExecutive/issues/696)) ([11ccd76](https://github.com/SenteLabsAI/OpenExecutive/commit/11ccd7686cbf2968cccec0ce70ecd2fad0ab3c85))
+* **chat:** show an approved card's running turn when Watch opens its chat ([#725](https://github.com/SenteLabsAI/OpenExecutive/issues/725)) ([8dd818a](https://github.com/SenteLabsAI/OpenExecutive/commit/8dd818a7f62485a8b0a33a460872c4cda06ac60e))
+* **chat:** stop stalls after a go, on a redraft and on a broken mailbox sign-in ([#699](https://github.com/SenteLabsAI/OpenExecutive/issues/699)) ([3a5d9e2](https://github.com/SenteLabsAI/OpenExecutive/commit/3a5d9e2df72552f4d352072b2d5f524ab2d50d94))
+* **email:** remember sends to a person across threads and retry an empty sender check ([#729](https://github.com/SenteLabsAI/OpenExecutive/issues/729)) ([cb54e87](https://github.com/SenteLabsAI/OpenExecutive/commit/cb54e870931d9b1817d85494909eef429ccf6295))
+* **email:** search on what the sender wrote and show a source's earlier answers on the thread ([#715](https://github.com/SenteLabsAI/OpenExecutive/issues/715)) ([ce8399d](https://github.com/SenteLabsAI/OpenExecutive/commit/ce8399dfb92224313e90bdc8bce7d8c7fa3c30ec))
+* **integrations:** carry the message a chat reply answers into the turn ([#707](https://github.com/SenteLabsAI/OpenExecutive/issues/707)) ([cf26fd0](https://github.com/SenteLabsAI/OpenExecutive/commit/cf26fd0fbaef7599e2b51cb468e732cc7d93332e))
+* **integrations:** skip placeholder inbox mail and keep Google Chat history ([#728](https://github.com/SenteLabsAI/OpenExecutive/issues/728)) ([28f0eea](https://github.com/SenteLabsAI/OpenExecutive/commit/28f0eea23e3abc8466eadc13f4d9a7dacb668c8c))
+* **orchestrator:** check only outside words and point an empty tool search to the groups ([#713](https://github.com/SenteLabsAI/OpenExecutive/issues/713)) ([57da585](https://github.com/SenteLabsAI/OpenExecutive/commit/57da5853bce7aa9fa0fe8630c978a6979e2dd5ee))
+* **orchestrator:** rewrite a collected reply after the claim check instead of adding a correction ([#717](https://github.com/SenteLabsAI/OpenExecutive/issues/717)) ([6586684](https://github.com/SenteLabsAI/OpenExecutive/commit/658668473c7a34a4d56ee66378456b40303bae45))
+* **people:** ask which person is meant when two share a name ([#724](https://github.com/SenteLabsAI/OpenExecutive/issues/724)) ([7fbeff9](https://github.com/SenteLabsAI/OpenExecutive/commit/7fbeff93dbe6d17501f76b8743dd845b528bce8b))
+* **people:** end a contact's note on a whole sentence ([#723](https://github.com/SenteLabsAI/OpenExecutive/issues/723)) ([0b30608](https://github.com/SenteLabsAI/OpenExecutive/commit/0b30608a2f37f3c17e612424ebfd72def8904df4))
+* **today:** name who and what an email it sent on its own went to ([#716](https://github.com/SenteLabsAI/OpenExecutive/issues/716)) ([7452180](https://github.com/SenteLabsAI/OpenExecutive/commit/74521801d5174514c075b1bf6b4b4fa382553f98))
+* **ui:** offer This is me only while nobody is the principal ([#720](https://github.com/SenteLabsAI/OpenExecutive/issues/720)) ([98bc38e](https://github.com/SenteLabsAI/OpenExecutive/commit/98bc38e86d34c0f1ce90ad7632fbc0ab6a664136))
+* **ui:** show a teammate only their own getting-started rows ([#719](https://github.com/SenteLabsAI/OpenExecutive/issues/719)) ([d5fd8ed](https://github.com/SenteLabsAI/OpenExecutive/commit/d5fd8edc683dc7f0ac8dfbf8e70063e346bd5645))
+* **ui:** show Google's account picker and survive a repeated sign-in parameter ([#731](https://github.com/SenteLabsAI/OpenExecutive/issues/731)) ([a47d5b9](https://github.com/SenteLabsAI/OpenExecutive/commit/a47d5b968de33a7a275d9f930f71ad3d761da2bc))
+
 ## [0.6.9](https://github.com/SenteLabsAI/OpenExecutive/compare/v0.6.8...v0.6.9) (2026-11-03)
 
 
