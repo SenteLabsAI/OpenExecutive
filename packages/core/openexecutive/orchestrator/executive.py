@@ -3969,11 +3969,8 @@ class Executive:
         # A card named by its number ("card 220") tells the reader nothing:
         # name it by its headline, linked to it on Home (alerts.card_refs).
         # Private cards only when the principal reads it alone.
-        from openexecutive.alerts.card_refs import link_format, name_cards_for
-        from openexecutive.delegation.settings import private_conversation
+        from openexecutive.alerts.card_refs import name_cards_in_reply
 
         return await asyncio.to_thread(
-            name_cards_for, result, person_id,
-            include_private=not co_present_person_ids and private_conversation(session),
-            fmt=link_format(session.origin_channel),
+            name_cards_in_reply, result, session, person_id, co_present_person_ids,
         )

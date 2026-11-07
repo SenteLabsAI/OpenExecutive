@@ -240,3 +240,24 @@ def on_home_note() -> str:
     than name a path ("see /today") the reader can't tap."""
     url = home_url()
     return f"on Home ({url})" if url else "on Home"
+
+
+def name_cards_in_reply(
+    text: str, session: object, person_id: int | None, co_present_person_ids: list[int] | None,
+) -> str:
+    """``name_cards_for`` for a chat-app or email reply (``Executive.chat``):
+    links in the form ``session``'s channel shows, and the principal's
+    private cards named only in a conversation nobody else reads."""
+    if not text or not _MENTION.search(text):
+        return text
+    try:
+        from openexecutive.delegation.settings import private_conversation
+
+        alone = not co_present_person_ids and private_conversation(session)
+    except Exception:
+        logger.warning("card_refs: privacy check failed; private cards stay unnamed", exc_info=True)
+        alone = False
+    return name_cards_for(
+        text, person_id, include_private=alone,
+        fmt=link_format(str(getattr(session, "origin_channel", "") or "")),
+    )

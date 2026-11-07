@@ -168,3 +168,19 @@ def test_the_default_local_address_is_no_link(monkeypatch: pytest.MonkeyPatch) -
     ):
         monkeypatch.setattr(config, "get_settings", lambda u=url: SimpleNamespace(ui_base_url=u))
         assert card_refs.card_url(3) == expected
+
+
+def test_a_chat_reply_names_private_cards_only_to_the_principal_alone(
+    cards: dict[str, int], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.people import store as people_store
+
+    monkeypatch.setattr(people_store, "find_principal_person", lambda: SimpleNamespace(id=1))
+    p = cards["private"]
+    dm = SimpleNamespace(origin_channel="slack", private_chat=True, speaker_verified=True)
+    group = SimpleNamespace(origin_channel="slack", private_chat=False)
+    named = card_refs.name_cards_in_reply(f"card {p}", dm, 1, None)
+    assert named == f"the <{BASE}/?card={p}|“Note from a contact”> card"
+    assert card_refs.name_cards_in_reply(f"card {p}", dm, 1, [1, 2]) == "that card"
+    assert card_refs.name_cards_in_reply(f"card {p}", group, 1, None) == "that card"
+    assert card_refs.name_cards_in_reply(f"card {p}", dm, 2, None) == "that card"
