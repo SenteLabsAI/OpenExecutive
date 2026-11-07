@@ -5,6 +5,7 @@ import {
   addReads,
   addStep,
   applyProgress,
+  detailsSummary,
   firstFew,
   newestFew,
   readChips,
@@ -65,4 +66,14 @@ test("reads add up by kind and read as chips", () => {
   assert.deepEqual(readChips(reads), ["3 emails", "1 file", "2 people", "Your calendar"]);
   const same = {};
   assert.equal(addReads(same, {}), same);
+});
+
+test("the details link counts sources and findings", () => {
+  assert.equal(detailsSummary(null, {}), null);
+  assert.equal(
+    detailsSummary({ task: "", now: "", used: ["a", "b"], found: ["x"] }, { file: 9 }),
+    "2 sources · 1 found",
+  );
+  assert.equal(detailsSummary(null, { email: 3, file: 1 }), "4 sources");
+  assert.equal(detailsSummary({ task: "", now: "", used: [], found: ["x", "y"] }, { file: 1 }), "1 source · 2 found");
 });

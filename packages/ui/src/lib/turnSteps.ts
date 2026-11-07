@@ -4,7 +4,7 @@
 
 export const MAX_STEPS = 12;
 
-// Shown as a step list, with Stop and I'll finish it, once the turn has done
+// Shown as the long-turn line (components/TurnSteps.tsx) once the turn has done
 // this many different things. A quick answer keeps the one-line status.
 export const STEPS_SHOWN_FROM = 2;
 
@@ -110,4 +110,21 @@ export function readChips(reads: ReadCounts): string[] {
       if (UNCOUNTED[kind]) return UNCOUNTED[kind];
       return n === 1 ? `1 ${kind}` : `${n} ${PLURALS[kind] ?? `${kind}s`}`;
     });
+}
+
+// The tap target under a long turn's live line: how many sources it has used
+// and how many things it has found ("7 sources · 3 found"), or null while it
+// has neither. Named sources count one each; unnamed reads count by number.
+export function detailsSummary(
+  progress: TurnProgress | null,
+  reads: ReadCounts,
+): string | null {
+  const sources = progress && progress.used.length > 0
+    ? progress.used.length
+    : Object.values(reads).reduce((sum, n) => sum + (n > 0 ? n : 0), 0);
+  const found = progress?.found.length ?? 0;
+  const parts: string[] = [];
+  if (sources > 0) parts.push(sources === 1 ? "1 source" : `${sources} sources`);
+  if (found > 0) parts.push(`${found} found`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
