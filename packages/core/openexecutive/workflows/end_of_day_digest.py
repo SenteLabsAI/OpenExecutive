@@ -586,9 +586,12 @@ class EndOfDayDigestWorkflow(Workflow):
         # Any card still named by its number is named by its headline, linked
         # to it on Home (delivery rewrites the link for Slack).
         from openexecutive.alerts.card_refs import name_cards_for
+        from openexecutive.workflows.morning_brief import _card_reader
 
+        card_reader, for_principal = _card_reader()
         artifact_text = await asyncio.to_thread(
-            name_cards_for, artifact_text, None, principal=True, include_private=private_used,
+            name_cards_for, artifact_text, card_reader,
+            principal=for_principal, include_private=private_used,
         )
 
         yield WorkflowEvent(
