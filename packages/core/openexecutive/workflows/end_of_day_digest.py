@@ -587,7 +587,9 @@ class EndOfDayDigestWorkflow(Workflow):
         # to it on Home (delivery rewrites the link for Slack).
         from openexecutive.alerts.card_refs import name_cards_for
 
-        artifact_text = name_cards_for(artifact_text, None, principal=True, include_private=private_used)
+        artifact_text = await asyncio.to_thread(
+            name_cards_for, artifact_text, None, principal=True, include_private=private_used,
+        )
 
         yield WorkflowEvent(
             type="step_done",

@@ -282,8 +282,8 @@ class MorningBriefWorkflow(Workflow):
             from openexecutive.alerts.card_refs import name_cards_for
 
             flag_reader, for_principal = _card_reader()
-            reflection_flags = name_cards_for(
-                reflection_flags, flag_reader, principal=for_principal, fmt="plain",
+            reflection_flags = await asyncio.to_thread(
+                name_cards_for, reflection_flags, flag_reader, principal=for_principal, fmt="plain",
             )
         # Corrections teammates made since the last brief: the principal's
         # FYI (memory.facts). What waits for their approval is theirs alone
@@ -466,8 +466,9 @@ class MorningBriefWorkflow(Workflow):
         from openexecutive.alerts.card_refs import name_cards_for
 
         card_reader, for_principal = _card_reader()
-        artifact_text = name_cards_for(
-            artifact_text, card_reader, principal=for_principal, include_private=private_used,
+        artifact_text = await asyncio.to_thread(
+            name_cards_for, artifact_text, card_reader,
+            principal=for_principal, include_private=private_used,
         )
 
         yield WorkflowEvent(
