@@ -598,9 +598,26 @@ _MAIL_SEND_TOOLS = frozenset({"google_workspace__send_gmail_message", "microsoft
 # acting account (the gateway checks it is the Executive's own), and message
 # ids, which look like addresses.
 _NOT_RECIPIENT_KEYS = frozenset({
-    "subject", "body", "bodyformat", "contenttype", "usergoogleemail", "threadid", "inreplyto", "references",
-    "fromname",
+    "subject", "body", "bodyformat", "content", "contenttype", "usergoogleemail", "threadid", "inreplyto",
+    "references", "fromname",
 })
+
+
+def _mail_recipient_strings(value: Any, norm: Any) -> Iterator[str]:
+    """Every string in a mail send's arguments that could name a recipient.
+    A key from _NOT_RECIPIENT_KEYS is passed over only when it holds plain
+    text: Outlook's send nests the whole message, recipients included, under
+    "body", so a nested value is always walked."""
+    if isinstance(value, dict):
+        for key, v in value.items():
+            if isinstance(v, str) and norm(str(key)) in _NOT_RECIPIENT_KEYS:
+                continue
+            yield from _mail_recipient_strings(v, norm)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from _mail_recipient_strings(v, norm)
+    elif isinstance(value, str):
+        yield value
 
 
 def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
@@ -609,7 +626,8 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     its text mentions: a correction about an outside contact once waited for
     approval because the body named that contact. Every address in any
     argument but the text, the acting account and message ids counts as a
-    recipient, whatever its key is spelled ("Cc", "bcc", a field added later). Fails closed: no
+    recipient, whatever its key is spelled ("Cc", "bcc", a field added later)
+    or however deep it sits (Outlook's body.message.toRecipients). Fails closed: no
     recipient, or a roster that can't be read, is not this."""
     from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
 
@@ -618,9 +636,7 @@ def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     try:
         recipients = {
             a.lower()
-            for key, value in tool_input.items()
-            if _norm_key(str(key)) not in _NOT_RECIPIENT_KEYS
-            for text in _strings(value)
+            for text in _mail_recipient_strings(tool_input, _norm_key)
             for a in _EMAIL_RE.findall(text)
         }
         if not recipients:

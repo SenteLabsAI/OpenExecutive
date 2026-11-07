@@ -438,6 +438,22 @@ def test_mail_only_to_the_principal_skips_the_gate(owner: Any) -> None:
         assert ttl._mail_only_to_principal(send, {"to": OWNER, key: "x@far.example"}), key
     assert not ttl._mail_only_to_principal(send, {"body": body})
     assert not ttl._mail_only_to_principal("google_workspace__create_doc", {"to": OWNER})
+    # Outlook nests the message, recipients included, under "body".
+    outlook = "microsoft_365__send_mail"
+
+    def graph(*addresses: str) -> dict[str, Any]:
+        return {"message": {
+            "subject": "Check",
+            "toRecipients": [{"emailAddress": {"address": a}} for a in addresses],
+            "body": {"contentType": "Text", "content": body},
+        }}
+
+    assert ttl._mail_only_to_principal(outlook, {"body": graph(OWNER)})
+    assert not ttl._mail_only_to_principal(outlook, {"body": graph("x@far.example")})
+    assert not ttl._mail_only_to_principal(outlook, {"to": OWNER, "body": graph("x@far.example")})
+    cc = graph(OWNER)
+    cc["message"]["bccRecipients"] = [{"emailAddress": {"address": "x@far.example"}}]
+    assert not ttl._mail_only_to_principal(outlook, {"body": cc})
 
 
 def test_mcp_reads_pass_and_sends_are_gated(owner: Any) -> None:
