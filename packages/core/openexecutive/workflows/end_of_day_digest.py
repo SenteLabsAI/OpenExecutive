@@ -511,6 +511,7 @@ class EndOfDayDigestWorkflow(Workflow):
                 f"depts={len(today_data['departments'])} handled={len(handled)}"
             ),
         )
+        private_used = bool(owner_notes.text or conversation or live_lines)
         yield WorkflowEvent(
             type="result",
             data={
@@ -519,9 +520,7 @@ class EndOfDayDigestWorkflow(Workflow):
                 "since": since.isoformat(),
                 # Its text stays out of the shared run history when it used
                 # the principal's own notes.
-                "private_to_principal": bool(
-                    owner_notes.text or conversation or live_lines
-                ),
+                "private_to_principal": private_used,
             },
         )
 
@@ -588,7 +587,7 @@ class EndOfDayDigestWorkflow(Workflow):
         # to it on Home (delivery rewrites the link for Slack).
         from openexecutive.alerts.card_refs import name_cards_for
 
-        artifact_text = name_cards_for(artifact_text, None, principal=True, include_private=True)
+        artifact_text = name_cards_for(artifact_text, None, principal=True, include_private=private_used)
 
         yield WorkflowEvent(
             type="step_done",
