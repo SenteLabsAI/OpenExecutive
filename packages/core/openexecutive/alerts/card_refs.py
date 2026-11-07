@@ -38,7 +38,9 @@ _MENTION = re.compile(
     r"(?P<the>\b(?:the|that)\s+)?"
     r"(?P<word>\b(?:card|alert)(?P<plural>s)?(?:\s*_?id)?)"
     r"(?:\s*[=:]\s*|\s*#\s*|\s+no\.\s*|\s+number\s+|\s+)"
-    r"(?P<ids>#?\d{1,9}(?:(?:\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*)#?\d{1,9})*)\b",
+    r"(?P<ids>#?\d{1,9}(?:(?:\s*,\s*|\s+and\s+|\s+or\s+|\s*&\s*)#?\d{1,9})*)\b"
+    # "an alert 30 minutes before", "card 2 of 5": a count, not a card.
+    r"(?!\s*(?:%|percent\b|of\b|(?:sec(?:ond)?|min(?:ute)?|h(?:ou)?r|day|week|month|year)s?\b))",
     re.IGNORECASE,
 )
 _ID = re.compile(r"\d{1,9}")

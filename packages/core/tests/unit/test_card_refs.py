@@ -64,6 +64,9 @@ def test_several_cards_and_slack_links(cards: dict[str, int]) -> None:
 def test_numbers_that_are_no_card_stay_as_written(cards: dict[str, int]) -> None:
     a = cards["lease"]
     assert _for(f"cards {a} and 4242") == f"cards {a} and 4242"
+    one = cards["lease"]
+    for text in (f"Set an alert {one} minutes before.", f"card {one} of 5", f"alert {one}% done"):
+        assert _for(text) == text
     for text in ("Paid with card 4242.", "See /cards/1 for it.", "Your scorecard 5 is fine.", "no cards here"):
         assert _for(text) == text
 
@@ -130,3 +133,21 @@ def test_a_brief_names_cards_for_whoever_reads_it() -> None:
         assert _card_reader() == (5, False)
     finally:
         current_session.reset(session)
+
+
+async def test_a_slack_dm_delivery_gets_slack_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from openexecutive.orchestrator import schedule_tools
+    from openexecutive.scheduler import runner
+
+    sent: list[str] = []
+
+    async def _slack(args: dict[str, object]) -> str:
+        sent.append(str(args["text"]))
+        return json.dumps({"status": "failed", "error": "test"})
+
+    monkeypatch.setattr(schedule_tools, "handle_send_slack_dm", _slack)
+    person = SimpleNamespace(id=1, slack_user_id="U1")
+    await runner._send_on_plan(person, ["slack_dm"], "Open [Home](https://app.example.com/)", label="Brief")  # type: ignore[arg-type]
+    assert sent == ["Open <https://app.example.com/|Home>"]

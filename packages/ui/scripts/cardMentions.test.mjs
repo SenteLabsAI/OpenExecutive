@@ -17,6 +17,10 @@ test("links, paths and other words are left as written", () => {
     "[card 5](/?card=5)",
     "Your scorecard 5 looks fine.",
     "Paid with the card ending 4242.",
+    "Set an alert 30 minutes before.",
+    "That is card 2 of 5.",
+    "Run `alert 500` here.",
+    "```\ncard 220\n```",
     "",
   ]) {
     assert.equal(linkCardMentions(text), text);
