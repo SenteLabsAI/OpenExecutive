@@ -592,6 +592,50 @@ def _only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
     return person is not None and bool(person.is_principal) and person.kind == "team"
 
 
+# The mail tools whose recipients are named in their arguments.
+_MAIL_SEND_TOOLS = frozenset({"google_workspace__send_gmail_message", "microsoft_365__send_mail"})
+# Their arguments that hold no recipient (normalized spelling): the text, the
+# acting account (the gateway checks it is the Executive's own), and message
+# ids, which look like addresses.
+_NOT_RECIPIENT_KEYS = frozenset({
+    "subject", "body", "bodyformat", "contenttype", "usergoogleemail", "threadid", "inreplyto", "references",
+    "fromname",
+})
+
+
+def _mail_only_to_principal(tool: str, tool_input: dict[str, Any]) -> bool:
+    """Whether a mail send goes only to the principal's own
+    addresses. Mail to them reaches no one new, however many other addresses
+    its text mentions: a correction about an outside contact once waited for
+    approval because the body named that contact. Every address in any
+    argument but the text, the acting account and message ids counts as a
+    recipient, whatever its key is spelled ("Cc", "bcc", a field added later). Fails closed: no
+    recipient, or a roster that can't be read, is not this."""
+    from openexecutive.orchestrator.mcp_gateway import _norm_key, _normalize_tool_name
+
+    if _normalize_tool_name(str(tool or "")) not in _MAIL_SEND_TOOLS:
+        return False
+    try:
+        recipients = {
+            a.lower()
+            for key, value in tool_input.items()
+            if _norm_key(str(key)) not in _NOT_RECIPIENT_KEYS
+            for text in _strings(value)
+            for a in _EMAIL_RE.findall(text)
+        }
+        if not recipients:
+            return False
+        from openexecutive.people.store import find_principal_person
+
+        principal = find_principal_person()
+    except Exception:
+        return False
+    if principal is None:
+        return False
+    own = {a.strip().lower() for a in [principal.email, *principal.email_aliases] if a and a.strip()}
+    return recipients <= own
+
+
 def _rule_hit(rules: list[Rule], text: str, recipients: list[str]) -> Hit | None:
     lowered = text.lower()
     for rule in rules:
@@ -1513,7 +1557,9 @@ _Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
     allowed: Allowed | None = None
     try:
-        if not mcp and _only_to_principal(name, tool_input):
+        if (not mcp and _only_to_principal(name, tool_input)) or (
+            mcp and _mail_only_to_principal(name, tool_input)
+        ):
             hit = None
         else:
             lead = get(SCOPE_EXECUTIVE)

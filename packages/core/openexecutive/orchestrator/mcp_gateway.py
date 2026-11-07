@@ -4090,6 +4090,12 @@ class MCPGateway:
         # either: marking it would hide the unanswered-email card.
         if not _is_error_payload(result_text) and not result_text.lstrip().lower().startswith("error"):
             _note_mail_sent(tool_name, normalized, arguments)
+            if tool_name == "google_workspace__send_gmail_message":
+                # Kept per person, so the next email from them
+                # knows what was sent (integrations.email_replies).
+                from openexecutive.integrations import email_replies
+
+                email_replies.record_sent(arguments)
             await _clear_replaced_drafts(tool_name, normalized, arguments)
         if attached_artifacts and not _is_error_payload(result_text):
             from openexecutive.audit import log_event as audit_log

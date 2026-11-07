@@ -220,6 +220,15 @@ def _chat_topics_title_only(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_sender_check_wait(monkeypatch: pytest.MonkeyPatch):
+    """The email poller tries a failed sender check again after a short wait
+    (``email_poller._PROVE_RETRY_S``); tests don't wait for it."""
+    from openexecutive.integrations import email_poller
+
+    monkeypatch.setattr(email_poller, "_PROVE_RETRY_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _email_replies_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """The replies the email poller mails are kept per thread
     (integrations.email_replies). Keep them in this test's own file, so one

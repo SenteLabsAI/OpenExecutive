@@ -420,7 +420,9 @@ def test_only_what_went_to_that_sender_on_that_thread_is_shown(tmp_path: Any) ->
     assert [b for _w, b in email_replies.recent("email:t3", "ann@example.com", db_path=db)] == [
         f"reply {i}" for i in range(email_replies.KEEP - 1, email_replies.KEEP + 2)
     ]
-    assert email_replies.block("email:none", "ann@example.com", db_path=db) == ""
+    # A thread with nothing on it shows only what went to Ann elsewhere.
+    assert "ON THIS THREAD" not in email_replies.block("email:none", "ann@example.com", db_path=db)
+    assert email_replies.block("email:none", "nobody@example.com", db_path=db) == ""
 
 
 def test_knowledge_is_searched_for_what_the_sender_wrote() -> None:
@@ -431,6 +433,12 @@ def test_knowledge_is_searched_for_what_the_sender_wrote() -> None:
         "On Thu, Nov 5, 2026 at 10:29 PM Exec <exec@example.com> wrote:\n> Understood.\n"
     )
     query = poller._retrieval_query(raw)
-    assert query.startswith("Re: launch email\nSend me the current email we are going to use?")
+    # A reply searches what was asked, not the old subject.
+    assert query == "Send me the current email we are going to use?"
     assert "Message-ID" not in query and "Understood" not in query
     assert poller._retrieval_query("") == ""
+    # A new email keeps its subject, without "Fwd:".
+    fresh = raw.replace("Subject: Re: launch email", "Subject: Fwd: Re: Proposal")
+    assert poller._retrieval_query(fresh).startswith("Proposal\nSend me")
+    fresh = raw.replace("Subject: Re: launch email", "Subject: Pricing")
+    assert poller._retrieval_query(fresh).startswith("Pricing\nSend me")

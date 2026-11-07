@@ -398,6 +398,48 @@ def test_only_a_direct_message_to_the_principal_skips_the_gate(owner: Any, monke
     assert not ttl._only_to_principal("message_person", {"person_id": owner.id, "text": "Sign the NDA"})
 
 
+def test_mail_only_to_the_principal_skips_the_gate(owner: Any) -> None:
+    # A correction to the owner once waited as "someone new"
+    # because its body named an outside contact.
+    seen: list[str] = []
+
+    async def call_tool(tool_input: dict[str, Any]) -> str:
+        seen.append(tool_input["arguments"]["to"])
+        return "Email sent!"
+
+    gated = ttl.gated_call_tool(call_tool, source="scheduled")
+    body = "A check on the figure I sent x@far.example earlier: it was off."
+    sent = asyncio.run(gated({"name": "google_workspace__send_gmail_message",
+                              "arguments": {"to": OWNER.upper(), "subject": "Check", "body": body}}))
+    assert sent == "Email sent!" and seen == [OWNER.upper()]
+    # Anyone else on it, even in bcc, and it waits as before.
+    acting = asyncio.run(gated({"name": "google_workspace__send_gmail_message", "arguments": {
+        "to": OWNER, "body": body, "user_google_email": "exec@co.example", "in_reply_to": "<a1@mail.example>",
+    }}))
+    assert acting == "Email sent!"
+    for extra in ({"cc": "x@far.example"}, {"bcc": "x@far.example"}, {"Cc": "x@far.example"},
+                  {"extra_recipients": ["x@far.example"]}):
+        held = asyncio.run(gated({"name": "google_workspace__send_gmail_message",
+                                  "arguments": {"to": OWNER, "body": body, **extra}}))
+        assert json.loads(held)["status"] == "waiting_for_approval"
+    send = "google_workspace__send_gmail_message"
+    assert ttl._mail_only_to_principal(send, {"to": f"Olivia <{OWNER}>", "body": body})
+    assert ttl._mail_only_to_principal("microsoft_365__send-mail", {"to": [OWNER], "body": body})
+    # An alias on their People entry counts as theirs.
+    people_store.add_person_email(owner.id, "olivia@home.example")
+    people_registry.invalidate()
+    assert ttl._mail_only_to_principal(send, {"to": [OWNER, "olivia@home.example"], "body": body})
+    # An outsider anywhere outside the text: nested, or under any key.
+    assert not ttl._mail_only_to_principal(send, {"to": OWNER, "headers": {"x": ["x@far.example"]}})
+    for key in ("bcc", "BCC", "reply_to"):
+        assert not ttl._mail_only_to_principal(send, {"to": OWNER, key: "x@far.example"})
+    # Only the excluded keys may name someone else.
+    for key in sorted(ttl._NOT_RECIPIENT_KEYS):
+        assert ttl._mail_only_to_principal(send, {"to": OWNER, key: "x@far.example"}), key
+    assert not ttl._mail_only_to_principal(send, {"body": body})
+    assert not ttl._mail_only_to_principal("google_workspace__create_doc", {"to": OWNER})
+
+
 def test_mcp_reads_pass_and_sends_are_gated(owner: Any) -> None:
     seen: list[str] = []
 

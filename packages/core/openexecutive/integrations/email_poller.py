@@ -66,6 +66,8 @@ _failed_attempts: dict[str, int] = {}
 _MAX_ATTEMPTS = 3
 # What a settings stub without `email_turn_timeout_s` gets (config's default).
 _DEFAULT_TURN_TIMEOUT_S = 300.0
+# The wait before the sender check is tried a second time (_prove).
+_PROVE_RETRY_S = 2.0
 
 _SKIP_SENDERS = ("noreply", "no-reply", "mailer-daemon", "postmaster", "do-not-reply")
 
@@ -147,6 +149,8 @@ _REPLY_SUBJECT_RE = re.compile(
     r"^(\[[^\]]{0,40}\]\s*)*(re|fwd?|fw|aw|wg|sv|antw|r)(\[\d{1,3}\])?\s*:",
     re.IGNORECASE,
 )
+# A reply's subject (not a forward's), for _retrieval_query.
+_ANSWER_SUBJECT_RE = re.compile(r"^\s*(\[[^\]]{0,40}\]\s*)*(re|aw|sv|antw|r)(\[\d{1,3}\])?\s*:", re.IGNORECASE)
 # An attachment line is `N. <filename> (<mime>, <size> KB)`, optionally
 # followed by ` [in attached message]`. Parsed by splitting from the right
 # rather than one regex: the filename is free text an email sender controls,
@@ -308,8 +312,18 @@ def _retrieval_query(raw_email: str) -> str:
         (line.split(":", 1)[1] for line in header if line.strip().lower().startswith("subject:")), "",
     )
     new_lines, _forwarded = _new_text_lines(body_lines)
-    words = "\n".join(line for line in (subject.strip(), *new_lines) if line.strip()).strip()
-    return (words or raw_email)[:500]
+    # A reply's subject is the old topic ("Re: last week's question"), and it
+    # drowned out what was asked, so a reply searches only the new lines;
+    # "Re:"/"Fwd:" never reach the search.
+    topic = subject.strip()
+    for _ in range(5):
+        stripped = _REPLY_SUBJECT_RE.sub("", topic, count=1).strip()
+        if stripped == topic:
+            break
+        topic = stripped
+    is_reply = _ANSWER_SUBJECT_RE.match(subject) is not None and any(line.strip() for line in new_lines)
+    words = "\n".join(line for line in ("" if is_reply else topic, *new_lines) if line.strip()).strip()
+    return (words or topic or raw_email)[:500]
 
 
 def _new_text_lines(body: list[str]) -> tuple[list[str], bool]:
@@ -448,6 +462,23 @@ async def _handle_email(
         )
 
 
+async def _prove_sender(gateway: Any, message_id: str, from_addr: str) -> bool:
+    """Whether the mail provider authenticated the sender of ``message_id``.
+    A raw read that failed reads as "not authenticated", and a
+    contact's real mail was then treated as possibly forged. When the read
+    gives nothing back, the check is tried once more after a short wait. A
+    message that was read and didn't pass is final, so forged mail costs no
+    wait."""
+    from openexecutive.integrations import fact_confirmation
+
+    if await fact_confirmation.sender_authenticated(gateway, message_id, from_addr):
+        return True
+    if (await fact_confirmation.read_raw(gateway, message_id)).strip():
+        return False
+    await asyncio.sleep(_PROVE_RETRY_S)
+    return await fact_confirmation.sender_authenticated(gateway, message_id, from_addr)
+
+
 async def _handle_one_email(
     gateway: MCPGateway,
     message_id: str,
@@ -469,9 +500,7 @@ async def _handle_one_email(
     from_addr = msg.from_addr
 
     async def _prove() -> bool:
-        from openexecutive.integrations.fact_confirmation import sender_authenticated
-
-        return await sender_authenticated(gateway, message_id, from_addr)
+        return await _prove_sender(gateway, message_id, from_addr)
 
     async def _no_send(_to: str, _body: str, _in_thread: bool) -> str | None:
         return "the mailbox's answer is sent with its reply tool"
@@ -1375,7 +1404,12 @@ async def _run_executive(
     if source is not None and answer_to == from_addr.strip().lower():
         from openexecutive.integrations import email_replies
 
-        earlier = email_replies.block(session_id or session.session_id, answer_to)
+        # Their other addresses too (People entry), so a reply on one thread
+        # is known on the next.
+        their = [getattr(person, "email", "") or "", *(getattr(person, "email_aliases", None) or [])]
+        earlier = email_replies.block(
+            session_id or session.session_id, answer_to, also=[a for a in their if isinstance(a, str)],
+        )
         if earlier:
             base_message += f"\n\n{earlier}"
     if reply_block:
