@@ -223,9 +223,14 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const dropHandlers = {
         onDragOver: (e: React.DragEvent) => {
           if (!dropLandsOnPanel(e.currentTarget, e.target)) return;
-          // Only file drags, and not while a batch is still being added.
-          if (uploadProgress !== null || !e.dataTransfer.types.includes("Files")) return;
+          if (!e.dataTransfer.types.includes("Files")) return;
+          // Always claim a file drag, so the browser never opens the file in
+          // place of the page; while a batch is still being added, refuse it.
           e.preventDefault();
+          if (uploadingRef.current) {
+            e.dataTransfer.dropEffect = "none";
+            return;
+          }
           setDragOver(true);
         },
         onDragLeave: (e: React.DragEvent) => {
