@@ -1151,7 +1151,7 @@ async def _run_executive(
     with its send tool (``reply_block``); mail from a mail source
     (``source``) is answered by mailing the turn's answer through the source,
     which this returns the outcome of."""
-    from openexecutive.knowledge.retriever import retrieve
+    from openexecutive.knowledge.retriever import chat_builtin_results, retrieve
     from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.onboarding.profile_builder import load_or_create_profile
     from openexecutive.orchestrator.executive import Executive
@@ -1470,7 +1470,9 @@ async def _run_executive(
             response = await executive.chat(
                 user_message=base_message,
                 session=session,
-                retrieved_context=retrieve(query=_retrieval_query(raw_email)),
+                retrieved_context=await asyncio.to_thread(
+                    retrieve, query=_retrieval_query(raw_email), n_builtin=chat_builtin_results()
+                ),
                 episodic_context=format_for_prompt(),
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,

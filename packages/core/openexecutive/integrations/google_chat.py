@@ -356,7 +356,7 @@ async def _process_and_reply(
         from openexecutive.integrations.channel_context import (
             build_channel_context_block,
         )
-        from openexecutive.knowledge.retriever import retrieve
+        from openexecutive.knowledge.retriever import chat_builtin_results, retrieve
         from openexecutive.memory.episodic import format_for_prompt
         from openexecutive.onboarding.profile_builder import load_or_create_profile
         from openexecutive.orchestrator.executive import Executive
@@ -383,7 +383,9 @@ async def _process_and_reply(
         history = await asyncio.to_thread(_load_history, session_id)
         if history:
             session.conversation_history = history
-        retrieved_context = retrieve(query=message_text, max_chars=get_settings().knowledge_chat_max_chars)
+        retrieved_context = retrieve(
+            query=message_text, max_chars=get_settings().knowledge_chat_max_chars, n_builtin=chat_builtin_results()
+        )
         episodic_context = format_for_prompt()
 
         own_text = message_text

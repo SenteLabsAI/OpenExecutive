@@ -1135,7 +1135,7 @@ async def create_slack_app():
                 attach_briefing_context,
                 build_channel_context_block,
             )
-            from openexecutive.knowledge.retriever import retrieve
+            from openexecutive.knowledge.retriever import chat_builtin_results, retrieve
             from openexecutive.memory.episodic import format_for_prompt
             from openexecutive.memory.session_store import load_messages
             from openexecutive.onboarding.profile_builder import load_or_create_profile
@@ -1200,7 +1200,7 @@ async def create_slack_app():
                 from openexecutive.mcp_server.server import get_store
 
                 retrieved_context, episodic_context = await asyncio.gather(
-                    asyncio.to_thread(retrieve, query=cleaned, store=get_store()),
+                    asyncio.to_thread(retrieve, query=cleaned, store=get_store(), n_builtin=chat_builtin_results()),
                     # session_id-scoped, matching discord_bot: an unscoped
                     # call mixes every other conversation's episodes into
                     # this turn.

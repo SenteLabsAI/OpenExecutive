@@ -1037,7 +1037,7 @@ async def _run_chat_turn(
     Python job may take by name for this turn (workflows/turn_files.py).
     """
     from openexecutive.config import get_settings
-    from openexecutive.knowledge.retriever import retrieve
+    from openexecutive.knowledge.retriever import chat_builtin_results, retrieve
     from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import create_session
     from openexecutive.orchestrator.executive import Executive
@@ -1447,6 +1447,7 @@ async def _run_chat_turn(
                     store=request.app.state.store if hasattr(request.app.state, "store") else None,
                     record_source=turn_sources.add,
                     max_chars=get_settings().knowledge_chat_max_chars,
+                    n_builtin=chat_builtin_results(),
                 ),
                 _do_episodic(),
                 _do_prefetch(),
