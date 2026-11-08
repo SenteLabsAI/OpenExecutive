@@ -3796,8 +3796,29 @@ attunement:
       closes the owner's loops (live store only); TTL expiry
       (ATTUNEMENT_LOOP_TTL_DAYS=21) at the start of every nudge scan.
       Every open/close audited as event_type `attunement`.
+    tasks: |
+      Users see open loops as "tasks". The Tasks page (/tasks, first Work tab)
+      reads GET /tasks (state open|done, owner_person_id, status_filter,
+      limit<=200, offset -> {tasks, total}); the principal sees everyone's,
+      anyone else only their own. GET|PATCH /tasks/{id}, POST /tasks/{id}/done
+      and /reopen are the principal's or the owner's (404 otherwise); POST
+      /tasks (owner defaults to the caller) is open to the team like assign.
+      Nullable columns on scheduled_actions: task_status (open | in_progress |
+      waiting), task_notes (<=1000), task_updated_at, task_completed_at,
+      task_closed_reason, task_closed_due_at (the due time at close, so
+      reopen restores it when still ahead, else now + default due days).
+      open_loops.update_task takes base (what the editor saw): a field
+      someone else changed meanwhile to a different value refuses with
+      conflict (409 + latest copy). An owner change rebuilds the description
+      prefix, channel_ref and scope_key under assign's refusals. Chat:
+      update_open_loop and reopen_open_loop follow close_open_loop's rule,
+      new words must be in the speaker's text, withheld from unattended runs
+      and the MCP client like the other loop writers. assign_open_loop also
+      adds the speaker's own task; create_alert says never to use an alert
+      for a task.
     tools: |
-      list_open_loops, close_open_loop, assign_open_loop (see assign)
+      list_open_loops (state open|done), close_open_loop, assign_open_loop
+      (see assign), update_open_loop, reopen_open_loop (see tasks)
       (orchestrator/open_loop_tools.py).
       Visibility: the principal sees everyone's loops only on a private surface
       (web chat, slack:dm:, discord:dm:, telegram:<positive id>); shared

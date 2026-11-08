@@ -136,6 +136,8 @@ ACCESS: dict[str, tuple[str, str]] = {
     "record_decision_outcome": (CHAT_ONLY, "only the principal records an outcome"),
     "assign_open_loop": (CHAT_ONLY, "takes the task in the speaker's own words"),
     "close_open_loop": (CHAT_ONLY, "only the principal or the loop's owner closes it"),
+    "update_open_loop": (CHAT_ONLY, "only the principal or the task's owner changes it"),
+    "reopen_open_loop": (CHAT_ONLY, "only the principal or the task's owner reopens it"),
     "ack_alert": (CHAT_ONLY, "clears an alert on quoted text"),
     "answer_card": (CHAT_ONLY, "answers a card as the person"),
     "leave_out_of_brief": (CHAT_ONLY, "a correction the person asks for"),
