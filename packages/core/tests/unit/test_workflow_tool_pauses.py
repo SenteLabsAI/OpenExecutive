@@ -332,6 +332,16 @@ def test_no_sign_of_it_in_time_stops_the_run(
     assert "your browser wasn't available within 24 hours" in (resumed[-1].message or "")
 
 
+def test_a_no_while_it_waits_stops_the_run(
+    monkeypatch: pytest.MonkeyPatch, browser: _Browser, audit: list[dict[str, Any]]
+) -> None:
+    events = _waited(monkeypatch, browser, [_resp(_use(BROWSE, {"do": "look"}, "tu_1"))])
+    _install(monkeypatch, _ScriptedProvider([]))  # the step does not run again
+    resumed = _resume(events[-1].resume_state, "reject")
+    errors = [e.message for e in resumed if getattr(e, "type", "") == "error"]
+    assert errors == ["Stopped at 'Place the order': you stopped it while it waited for your browser."]
+
+
 def test_no_one_to_tell_stops_the_run_and_says_why(
     monkeypatch: pytest.MonkeyPatch, browser: _Browser, audit: list[dict[str, Any]]
 ) -> None:

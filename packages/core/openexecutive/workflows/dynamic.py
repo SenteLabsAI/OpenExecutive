@@ -495,8 +495,9 @@ class DynamicWorkflow(Workflow):
     ) -> AsyncIterator[WorkflowEvent]:
         """Continue a run whose action step waited for something a tool needs.
 
-        Ready (or any answer from the owner): the step runs again, told what
-        it already did. No sign of it in time: the run stops and says so.
+        Ready (or the owner saying go on): the step runs again, told what it
+        already did. A no from the owner, or no sign of it in time: the run
+        stops and says so.
         """
         step = self._step_for_resume(state, ActionStepSpec)
         if step is None:
@@ -517,6 +518,12 @@ class DynamicWorkflow(Workflow):
                     f"Stopped at {step.title!r}: {what} wasn't available within "
                     f"{WAITING_TIMEOUT_HOURS} hours. Run it again when it is."
                 ),
+            )
+            return
+        if str(resolution.parsed_decision.get("decision") or "") == "reject":
+            yield WorkflowEvent(
+                type="error",
+                message=f"Stopped at {step.title!r}: you stopped it while it waited for {what}.",
             )
             return
 
