@@ -168,6 +168,15 @@ class Settings(BaseSettings):
         None, ge=0.0, le=2.0, alias="KNOWLEDGE_BUILTIN_DISTANCE_THRESHOLD"
     )
     knowledge_builtin_n_results: int = Field(5, alias="KNOWLEDGE_BUILTIN_N_RESULTS")
+    # Whether the Executive's own chat turns (web chat, chat apps, email) get
+    # built-in playbook excerpts matched to the message. Off by
+    # default: on real turns most matches were unrelated (a procurement
+    # playbook for a pricing question, a board-meeting one for "when is the
+    # next daily meeting?"), and the good and bad matches score alike, so a
+    # stricter gate can't separate them. Company documents still come with
+    # every turn, and a specialist the Executive consults still reads its own
+    # domain's playbooks.
+    knowledge_chat_builtin: bool = Field(False, alias="KNOWLEDGE_CHAT_BUILTIN")
     knowledge_company_n_results: int = Field(3, alias="KNOWLEDGE_COMPANY_N_RESULTS")
     # Total characters of knowledge excerpts a chat turn carries (web chat,
     # Telegram, Discord, Google Chat). The closest matches are kept first.
