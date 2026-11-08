@@ -1,7 +1,6 @@
 """Unit tests for the voice persona loader and override round-trip."""
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,6 @@ from openexecutive.personas.loader import (
     upsert_persona,
 )
 from openexecutive.prompts.cache_manager import build_system_blocks
-
 
 # ---------------------------------------------------------------------------
 # Helpers
