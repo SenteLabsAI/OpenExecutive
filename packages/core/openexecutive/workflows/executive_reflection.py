@@ -855,6 +855,8 @@ class ExecutiveReflectionWorkflow(Workflow):
             # Same reasoning as ack_alert: loop descriptions are quoted from
             # what people wrote, and nobody is watching this pass.
             "close_open_loop",
+            "reopen_open_loop",
+            "update_open_loop",
         }
         # search_knowledge is this pass's own: chat looks knowledge up
         # before the turn, so it isn't in the shared skill tools.

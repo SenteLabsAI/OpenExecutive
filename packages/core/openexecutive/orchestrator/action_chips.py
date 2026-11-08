@@ -50,6 +50,8 @@ SIDE_EFFECTING_TOOLS: frozenset[str] = frozenset({
     # Attunement: closing an open loop stops the nudge engine chasing it;
     # assigning one starts it
     "close_open_loop",
+    "reopen_open_loop",
+    "update_open_loop",
     "assign_open_loop",
     # Corrections (orchestrator/correction_tools.py): a brief item left out,
     # a follow-up cancelled or moved, a chat draft marked sent
@@ -269,6 +271,10 @@ def summarize_action(
     if tool_name == "close_open_loop" and (parsed or {}).get("status") != "closed":
         # Refused, or the loop was no longer open — nothing changed.
         return None
+    if tool_name == "update_open_loop" and (parsed or {}).get("status") != "changed":
+        return None
+    if tool_name == "reopen_open_loop" and (parsed or {}).get("status") != "reopened":
+        return None
     if tool_name == "assign_open_loop" and (parsed or {}).get("status") != "assigned":
         # Refused, or not assigned (duplicate, at cap, …) — nothing changed.
         return None
@@ -452,6 +458,10 @@ def summarize_action(
         payload["summary"] = "Marked your draft sent"
     elif tool_name == "close_open_loop":
         payload["summary"] = "Closed a task"
+    elif tool_name == "update_open_loop":
+        payload["summary"] = "Updated a task"
+    elif tool_name == "reopen_open_loop":
+        payload["summary"] = "Reopened a task"
     elif tool_name == "assign_open_loop":
         owner = str((parsed or {}).get("owner") or "")
         task = " ".join(str(tool_input.get("task", "") or "").split())[:80]

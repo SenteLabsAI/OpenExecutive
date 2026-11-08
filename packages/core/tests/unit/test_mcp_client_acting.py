@@ -100,8 +100,9 @@ def test_the_acting_set_is_the_read_only_set_minus_the_changes_it_may_make() -> 
         "ack_alert", "add_watchlist_entry", "assign_open_loop",
         "cancel_followup", "close_open_loop", "create_alert", "create_goal", "forget_fact",
         "leave_out_of_brief", "move_followup", "record_decision_outcome", "remember_fact",
-        "remove_watchlist_entry", "schedule_followup",
+        "remove_watchlist_entry", "reopen_open_loop", "schedule_followup",
         "tune_watchlist_entry", "update_company_profile", "update_department_goal",
+        "update_open_loop",
     }
     assert runs == MCP_CLIENT_RUNS_WHEN_ACTING
     # The roster stays out of reach: someone added on one call would be

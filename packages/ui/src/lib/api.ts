@@ -5218,6 +5218,128 @@ export async function closeOpenLoop(
   if (!res.ok) throw new Error(`Failed to close task: ${res.statusText}`);
 }
 
+// ---- Tasks (the Tasks page) ----
+// What people owe: the same records as a person's tasks above, every state.
+// The principal sees everyone's; anyone else on the team only their own.
+
+export type TaskStatus = "open" | "in_progress" | "waiting" | "done";
+
+export interface Task {
+  task_id: number;
+  title: string;
+  description: string;
+  notes: string;
+  status: TaskStatus;
+  owner_person_id: number;
+  owner_name: string;
+  // When it is due (open), or was due when it closed.
+  due_at: string | null;
+  created_at: string;
+  updated_at: string | null;
+  completed_at: string | null;
+  closed_reason: string | null;
+  // The chat it came from, only when that chat is the viewer's own.
+  session_id: string | null;
+}
+
+export interface TaskList {
+  tasks: Task[];
+  total: number;
+}
+
+export interface TaskChanges {
+  title?: string;
+  notes?: string;
+  status?: Exclude<TaskStatus, "done">;
+  due_date?: string;
+  owner_person_id?: number;
+}
+
+// The values the editor saw for the fields they change. A 409 means someone
+// else changed one of them meanwhile: it carries the latest copy.
+export interface TaskBase {
+  title?: string;
+  notes?: string;
+  status?: string;
+  due_date?: string | null;
+  owner_person_id?: number;
+}
+
+export class TaskConflict extends Error {
+  constructor(
+    message: string,
+    readonly fields: string[],
+    readonly latest: Task,
+  ) {
+    super(message);
+  }
+}
+
+export async function listTasks(
+  opts: { state?: "open" | "done"; ownerPersonId?: number; limit?: number; offset?: number } = {},
+): Promise<TaskList> {
+  const q = new URLSearchParams();
+  if (opts.state) q.set("state", opts.state);
+  if (opts.ownerPersonId != null) q.set("owner_person_id", String(opts.ownerPersonId));
+  if (opts.limit != null) q.set("limit", String(opts.limit));
+  if (opts.offset != null) q.set("offset", String(opts.offset));
+  const res = await fetch(`${API_BASE}/tasks?${q.toString()}`);
+  if (!res.ok) throw new Error(await errorDetail(res, "Couldn't load tasks"));
+  return res.json();
+}
+
+export async function createTask(body: {
+  task: string;
+  owner_person_id?: number;
+  due_date?: string;
+  notes?: string;
+}): Promise<Task> {
+  const res = await fetch(`${API_BASE}/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Couldn't add the task"));
+  return res.json();
+}
+
+export async function updateTask(taskId: number, changes: TaskChanges, base: TaskBase): Promise<Task> {
+  const res = await fetch(`${API_BASE}/tasks/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...changes, base }),
+  });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => null);
+    const detail = body?.detail;
+    if (detail && typeof detail === "object" && detail.task) {
+      throw new TaskConflict(String(detail.message ?? "Changed meanwhile"), detail.fields ?? [], detail.task);
+    }
+    throw new Error(typeof detail === "string" ? detail : "Couldn't save the task");
+  }
+  if (!res.ok) throw new Error(await errorDetail(res, "Couldn't save the task"));
+  return res.json();
+}
+
+export async function completeTask(
+  taskId: number,
+  reason: "done" | "not_needed" | "cancelled" = "done",
+): Promise<Task> {
+  const res = await fetch(`${API_BASE}/tasks/${taskId}/done`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "Couldn't close the task"));
+  return res.json();
+}
+
+export async function reopenTask(taskId: number): Promise<Task> {
+  const res = await fetch(`${API_BASE}/tasks/${taskId}/reopen`, { method: "POST" });
+  if (!res.ok) throw new Error(await errorDetail(res, "Couldn't reopen the task"));
+  return res.json();
+}
+
 // Attunement outcome ledger: how a person responded to proactive outreach
 // over the last 30 days, per kind of outreach.
 export interface OutreachStat {

@@ -90,6 +90,7 @@ export const APP_ROUTES = [
   "settings",
   "signin",
   "skills",
+  "tasks",
   "today",
   "watchlist",
 ] as const;

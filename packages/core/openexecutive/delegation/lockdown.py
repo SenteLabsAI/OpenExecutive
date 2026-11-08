@@ -147,6 +147,8 @@ MAIL_TOUCHED_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "ack_alert",
     "assign_open_loop",
     "close_open_loop",
+    "reopen_open_loop",
+    "update_open_loop",
     "remove_watchlist_entry",
     # Only a contact the speaker named this turn (speaker_named_contact).
     "upsert_person",

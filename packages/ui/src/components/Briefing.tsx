@@ -74,7 +74,6 @@ import ProposalCard from "./briefing/ProposalCard";
 import RequestGroupCard from "./briefing/RequestGroupCard";
 import { TONE_TEXT, type ContinueHandler } from "./briefing/shared";
 import {
-  DueSoonPanelBody,
   ProjectsPanelBody,
   WeeklyReviewPanelBody,
   useActiveProjects,
@@ -115,7 +114,6 @@ type PanelKey =
   | "team"
   | "clients"
   | "projects"
-  | "dueSoon"
   | "weeklyReview";
 
 interface Tile {
@@ -566,7 +564,7 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
       const overdue = view?.items.filter((i) => i.overdue).length ?? 0;
       tiles.push({
         key: "dueSoon",
-        panel: "dueSoon",
+        href: "/tasks",
         text: view ? tasksText(view.items.length, overdue, view.later) : "Tasks",
       });
     }
@@ -1127,14 +1125,6 @@ export default function Briefing({ onContinue, onOpenChat, showHeader = false, f
                 footer={panelFooterLink("/clients", "Manage clients")}
               >
                 <PracticeClientsPanelBody clients={practiceClients} />
-              </SidePanel>
-              <SidePanel
-                open={openPanel === "dueSoon"}
-                onClose={() => setOpenPanel(null)}
-                title="Due soon"
-                footer={loopOwnerId != null ? panelFooterLink(`/people/${loopOwnerId}`, "All open items") : undefined}
-              >
-                <DueSoonPanelBody state={openLoops} />
               </SidePanel>
               {solo && (
                 <>

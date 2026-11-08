@@ -25,7 +25,7 @@ test("the main menu is seven places, team is the default", () => {
   assert.deepEqual(links(buildDestinations()), [
     "Home → /",
     "Chats → /chats",
-    "Work → /jobs",
+    "Work → /tasks",
     "Company → /people",
     "Delegate → /delegate/act-as-me",
     "Knowledge → /knowledge",
@@ -43,7 +43,7 @@ test("solo swaps Company for You, which opens on Goals", () => {
 
 test("team hubs: Work and Company tabs", () => {
   const [work, company] = buildHubs();
-  assert.deepEqual(links(work.tabs), ["Workflows → /jobs", "Documents → /artifacts", "Watch list → /watchlist"]);
+  assert.deepEqual(links(work.tabs), ["Tasks → /tasks", "Workflows → /jobs", "Documents → /artifacts", "Watch list → /watchlist"]);
   assert.deepEqual(links(company.tabs), [
     "People → /people",
     "Goals → /goals",
@@ -163,8 +163,8 @@ test("the review badge rides on Knowledge in both modes", () => {
 });
 
 test("phone bar: five, with New chat in the middle", () => {
-  assert.deepEqual(buildMobilePrimary().map((i) => i.href), ["/", "/chats", "/?new=1", "/jobs", "/people"]);
-  assert.deepEqual(buildMobilePrimary({ mode: "solo" }).map((i) => i.href), ["/", "/chats", "/?new=1", "/jobs", "/goals"]);
+  assert.deepEqual(buildMobilePrimary().map((i) => i.href), ["/", "/chats", "/?new=1", "/tasks", "/people"]);
+  assert.deepEqual(buildMobilePrimary({ mode: "solo" }).map((i) => i.href), ["/", "/chats", "/?new=1", "/tasks", "/goals"]);
 });
 
 test("every destination and tab explains itself", () => {

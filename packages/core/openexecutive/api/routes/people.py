@@ -39,6 +39,7 @@ from openexecutive.people.models import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from openexecutive.attunement.open_loops import OpenLoop as OpenLoopRecord
     from openexecutive.attunement.style import StyleProfile
 
 router = APIRouter()
@@ -824,3 +825,253 @@ def delete_person_working_style(person_id: int, request: Request) -> Response:
     caller = _style_person(person_id, request)
     reset_profile(person_id, updated_by=f"person:{caller}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------------- #
+# Tasks: every task you may see in one list (the Tasks page), with edits,
+# done and reopen. A task is an open loop (attunement/open_loops.py); the
+# principal sees everyone's, anyone else on the team only their own.
+# --------------------------------------------------------------------------- #
+
+
+class TaskOut(BaseModel):
+    task_id: int
+    title: str
+    description: str
+    notes: str
+    # open / in_progress / waiting, or done once closed.
+    status: str
+    owner_person_id: int
+    owner_name: str
+    # When it is due (open), or was due when it closed.
+    due_at: str | None
+    created_at: str
+    updated_at: str | None
+    completed_at: str | None
+    closed_reason: str | None
+    # The chat it came from, only when that chat is the viewer's own.
+    session_id: str | None
+
+
+class TaskList(BaseModel):
+    tasks: list[TaskOut]
+    total: int
+
+
+class TaskCreate(BaseModel):
+    task: str = Field(min_length=1, max_length=200)
+    # Who owes it; omit for yourself.
+    owner_person_id: int | None = None
+    due_date: date | None = None
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class TaskBase(BaseModel):
+    """The values the editor last saw for the fields they change."""
+
+    title: str | None = None
+    notes: str | None = None
+    status: str | None = None
+    due_date: str | None = None
+    owner_person_id: int | None = None
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=1000)
+    status: str | None = Field(default=None, pattern="^(open|in_progress|waiting)$")
+    due_date: date | None = None
+    owner_person_id: int | None = None
+    base: TaskBase | None = None
+
+
+class TaskClose(BaseModel):
+    reason: str = Field(default="done", pattern="^(done|not_needed|cancelled)$")
+
+
+_TASK_REFUSED: dict[str, tuple[int, str]] = {
+    "not_found": (404, "Task not found"),
+    "closed": (409, "That task is already done — reopen it first"),
+    "open": (409, "That task is already open"),
+    "missing_text": (422, "Describe the task"),
+    "bad_status": (422, "Unknown status"),
+    "unknown_owner": (404, "Person not found"),
+    "owner_is_contact": (409, "Tasks are assigned to team members, not contacts"),
+    "owner_archived": (409, "This person is archived"),
+    "owner_at_cap": (409, "They already have as many tasks as they can carry — close some first"),
+    "duplicate": (409, "That task is already open for them"),
+}
+
+
+def _task_viewer(request: Request) -> tuple[int, bool]:
+    """The caller's person id and whether they are the principal; 403 for a
+    caller who is not an active team member."""
+    from openexecutive.api.routes.chat import _resolve_caller_person_id
+
+    caller = _resolve_caller_person_id(request)
+    person = people_store.get_person(caller) if caller is not None else None
+    if person is None or person.id is None or person.archived or person.kind != "team":
+        raise HTTPException(status_code=403, detail="Only someone on the team can see tasks")
+    return int(person.id), bool(person.is_principal)
+
+
+def _task_out(loop: OpenLoopRecord, viewer_id: int) -> TaskOut:
+    from openexecutive.attunement.open_loops import task_title
+    from openexecutive.memory.episodic import _resolve_db_path
+    from openexecutive.memory.session_store import get_session_owner
+
+    session_id = None
+    if loop.originating_session_id:
+        exists, owner = get_session_owner(loop.originating_session_id, db_path=_resolve_db_path(None))
+        if exists and owner == viewer_id:
+            session_id = loop.originating_session_id
+    return TaskOut(
+        task_id=loop.id,
+        title=task_title(loop.description),
+        description=loop.description,
+        notes=loop.notes,
+        status=loop.status,
+        owner_person_id=loop.owner_person_id,
+        owner_name=loop.owner_name,
+        due_at=loop.due_at or None,
+        created_at=loop.created_at,
+        updated_at=loop.updated_at,
+        completed_at=loop.completed_at,
+        closed_reason=loop.closed_reason,
+        session_id=session_id,
+    )
+
+
+def _own_task(task_id: int, request: Request) -> tuple[OpenLoopRecord, int]:
+    """The task and the caller, when the caller is its owner or the principal;
+    404 otherwise (someone else's task is not theirs to know about)."""
+    from openexecutive.attunement.open_loops import get_task
+
+    viewer, is_principal = _task_viewer(request)
+    loop = get_task(task_id)
+    if loop is None or not (is_principal or loop.owner_person_id == viewer):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return loop, viewer
+
+
+@router.get("/tasks", response_model=TaskList)
+def list_tasks_route(
+    request: Request,
+    state: str = "open",
+    owner_person_id: int | None = None,
+    status_filter: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> TaskList:
+    """Tasks, a page at a time. ``state`` is ``open`` (soonest due first;
+    ``status_filter`` narrows to open / in_progress / waiting) or ``done``
+    (most recently closed first). The principal sees everyone's and may pass
+    ``owner_person_id``; anyone else sees only their own."""
+    from openexecutive.attunement.open_loops import list_tasks
+
+    if state not in ("open", "done"):
+        raise HTTPException(status_code=422, detail="state is open or done")
+    viewer, is_principal = _task_viewer(request)
+    owner = owner_person_id if is_principal else viewer
+    loops, total = list_tasks(
+        owner_person_id=owner, state=state, status=status_filter,
+        limit=max(1, min(limit, 200)), offset=max(0, offset),
+    )
+    return TaskList(tasks=[_task_out(loop, viewer) for loop in loops], total=total)
+
+
+@router.get("/tasks/{task_id}", response_model=TaskOut)
+def get_task_route(task_id: int, request: Request) -> TaskOut:
+    loop, viewer = _own_task(task_id, request)
+    return _task_out(loop, viewer)
+
+
+@router.post("/tasks", response_model=TaskOut, status_code=status.HTTP_201_CREATED)
+async def create_task_route(body: TaskCreate, request: Request) -> TaskOut:
+    """Add a task for yourself or someone on the team. It is saved before this
+    answers; the same task already open for them is refused, not doubled."""
+    from openexecutive.attunement.assignment_notice import notify_assignee
+    from openexecutive.attunement.open_loops import assign_open_loop, get_task
+
+    viewer, is_principal = _task_viewer(request)
+    owner_id = body.owner_person_id if body.owner_person_id is not None else viewer
+    owner = people_store.get_person(owner_id)
+    if owner is None or (owner.kind != "team" and not is_principal):
+        raise HTTPException(status_code=404, detail="Person not found")
+    result = assign_open_loop(
+        owner_person_id=owner_id, text=body.task, assigned_by_person_id=viewer,
+        due_date=body.due_date, notes=body.notes,
+    )
+    loop = get_task(result.loop_id) if result.loop_id is not None else None
+    if loop is None:
+        code, detail = _ASSIGN_REFUSED.get(result.reason or "", (409, "Could not add the task"))
+        raise HTTPException(status_code=code, detail=detail)
+    if owner_id != viewer:
+        await notify_assignee(
+            loop_id=loop.id, owner_person_id=owner_id, assigned_by_person_id=viewer,
+            task=body.task, due_at=loop.due_at,
+        )
+    return _task_out(loop, viewer)
+
+
+@router.patch("/tasks/{task_id}", response_model=TaskOut)
+async def update_task_route(task_id: int, body: TaskUpdate, request: Request) -> TaskOut:
+    """Change a task's words, notes, status, due date or owner. Send ``base``
+    with the values you saw for the fields you change: when someone changed
+    one of them since, nothing is saved and the 409 carries the latest copy
+    (``detail.task``) and which fields moved (``detail.fields``)."""
+    from openexecutive.attunement.assignment_notice import notify_assignee
+    from openexecutive.attunement.open_loops import task_title, update_task
+
+    loop, viewer = _own_task(task_id, request)
+    change = update_task(
+        task_id, edited_by_person_id=viewer, title=body.title, notes=body.notes,
+        status=body.status, due_date=body.due_date, owner_person_id=body.owner_person_id,
+        base=body.base.model_dump(exclude_unset=True) if body.base is not None else None,
+    )
+    if change.reason == "conflict" and change.task is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Someone changed this task while you were editing it",
+                "fields": list(change.fields),
+                "task": _task_out(change.task, viewer).model_dump(),
+            },
+        )
+    if change.reason is not None or change.task is None:
+        code, detail = _TASK_REFUSED.get(change.reason or "", (409, "Could not change the task"))
+        raise HTTPException(status_code=code, detail=detail)
+    new = change.task
+    if new.owner_person_id != loop.owner_person_id and new.owner_person_id != viewer:
+        await notify_assignee(
+            loop_id=new.id, owner_person_id=new.owner_person_id, assigned_by_person_id=viewer,
+            task=task_title(new.description), due_at=new.due_at,
+        )
+    return _task_out(new, viewer)
+
+
+@router.post("/tasks/{task_id}/done", response_model=TaskOut)
+def complete_task_route(task_id: int, body: TaskClose, request: Request) -> TaskOut:
+    """Close a task: done, not needed, or cancelled. It stops being followed
+    up and moves to Done, where it can be reopened."""
+    from openexecutive.attunement.open_loops import close_open_loop, get_task
+
+    loop, viewer = _own_task(task_id, request)
+    if loop.status != "done":
+        close_open_loop(task_id, reason=body.reason, closed_by_person_id=viewer)
+    closed = get_task(task_id)
+    if closed is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return _task_out(closed, viewer)
+
+
+@router.post("/tasks/{task_id}/reopen", response_model=TaskOut)
+def reopen_task_route(task_id: int, request: Request) -> TaskOut:
+    from openexecutive.attunement.open_loops import reopen_task
+
+    _loop, viewer = _own_task(task_id, request)
+    change = reopen_task(task_id, reopened_by_person_id=viewer)
+    if change.reason is not None or change.task is None:
+        code, detail = _TASK_REFUSED.get(change.reason or "", (409, "Could not reopen the task"))
+        raise HTTPException(status_code=code, detail=detail)
+    return _task_out(change.task, viewer)

@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import InfoTip from "@/components/InfoTip";
 import {
-  closeOpenLoop,
   deleteInitiative,
   getPersonOpenLoops,
   getTopThree,
@@ -162,67 +161,6 @@ export function useOpenLoops(principalId: number | null) {
   }, [principalId]);
 
   return { loops, setLoops, error, setError, view: loops === null ? null : dueSoon(loops) };
-}
-
-export function DueSoonPanelBody({ state }: { state: ReturnType<typeof useOpenLoops> }) {
-  const { setLoops, error, setError, view } = state;
-  const [busyId, setBusyId] = useState<number | null>(null);
-
-  const markDone = async (loopId: number) => {
-    setBusyId(loopId);
-    setError(null);
-    try {
-      await closeOpenLoop(loopId, "done");
-      setLoops((prev) => (prev ?? []).filter((l) => l.loop_id !== loopId));
-    } catch {
-      setError("Couldn't mark it done — try again.");
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  return (
-    <>
-      <PanelIntro>
-        What you&apos;ve promised by a date, and what others have asked of you, due in the next week. Tell the
-        Executive &ldquo;I&apos;ll send it by Friday&rdquo; and it shows up here; the Executive reminds you when
-        it&apos;s due.
-      </PanelIntro>
-      {error && <p className={`mb-2 text-sm ${TONE_TEXT.rose}`}>{error}</p>}
-      {view === null ? (
-        !error && <PageSpinner />
-      ) : view.items.length === 0 ? (
-        <p className="py-2 text-[15px] text-fg-muted">
-          Nothing due this week.
-          {view.later > 0 && ` ${view.later} due later.`}
-        </p>
-      ) : (
-        <>
-          <div className="divide-y divide-line">
-            {view.items.map((item) => (
-              <div key={item.loop.loop_id} className="flex items-start gap-3 py-3.5">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[15px] text-fg break-words">{item.text}</div>
-                  <div className={`mt-0.5 text-sm ${item.overdue ? TONE_TEXT.amber : "text-fg-muted"}`}>
-                    {item.dueLabel}
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => void markDone(item.loop.loop_id)}
-                  disabled={busyId !== null}
-                >
-                  {busyId === item.loop.loop_id ? "Closing…" : "Done"}
-                </Button>
-              </div>
-            ))}
-          </div>
-          {view.later > 0 && <p className="pt-2 text-sm text-fg-muted">{view.later} more due later.</p>}
-        </>
-      )}
-    </>
-  );
 }
 
 // ── This week's review ────────────────────────────────────────────────────
