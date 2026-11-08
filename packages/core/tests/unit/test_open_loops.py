@@ -337,7 +337,7 @@ def test_reflection_context_lists_open_loops(team: SimpleNamespace) -> None:
         period_label="p", today_data={}, activity=[], recent_alerts=[],
         external_signals=[], open_loops=lines,
     )
-    assert "OPEN LOOPS" in text and "OVERDUE" in text and "owner=Sara Kim" in text
+    assert "TASKS (what people owe" in text and "OVERDUE" in text and "owner=Sara Kim" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -489,7 +489,7 @@ def test_close_open_loop_chip_only_when_closed() -> None:
 
     closed = summarize_action(tool_name="close_open_loop", tool_input={"loop_id": 4},
                               tool_result=json.dumps({"status": "closed", "loop_id": 4}))
-    assert closed is not None and closed["summary"] == "Closed open loop #4"
+    assert closed is not None and closed["summary"] == "Closed a task"
     for status in ("refused", "not_open", "not_found"):
         assert summarize_action(tool_name="close_open_loop", tool_input={"loop_id": 4},
                                 tool_result=json.dumps({"status": status})) is None

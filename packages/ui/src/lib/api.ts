@@ -5221,7 +5221,7 @@ export interface AssignNotice {
 
 export async function getPersonOpenLoops(id: number): Promise<OpenLoop[]> {
   const res = await fetch(`${API_BASE}/people/${id}/open-loops`);
-  if (!res.ok) throw new Error(`Failed to load open loops: ${res.statusText}`);
+  if (!res.ok) throw new Error(`Failed to load tasks: ${res.statusText}`);
   return res.json();
 }
 
@@ -5252,7 +5252,7 @@ export async function closeOpenLoop(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ reason }),
   });
-  if (!res.ok) throw new Error(`Failed to close open loop: ${res.statusText}`);
+  if (!res.ok) throw new Error(`Failed to close task: ${res.statusText}`);
 }
 
 // Attunement outcome ledger: how a person responded to proactive outreach

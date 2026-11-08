@@ -55,3 +55,48 @@ export function watching(items: WatchlistItem[], now: Date): { watched: number; 
   const on = items.filter((i) => i.enabled);
   return { watched: on.length, firedThisWeek: on.filter((i) => withinWeek(i.last_fired_at, now)).length };
 }
+
+// The words on Home's bottom line. Each item reads on its own ("5 goals,
+// 1 at risk"), since the line has no headings.
+export function counted(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+// Your tasks: those due this week, or else how many are due later.
+export function tasksText(dueThisWeek: number, overdue: number, later: number): string {
+  if (dueThisWeek > 0) {
+    const due = `${counted(dueThisWeek, "task", "tasks")} due this week`;
+    return overdue > 0 ? `${due}, ${overdue} overdue` : due;
+  }
+  return `${counted(later, "task", "tasks")} due later`;
+}
+
+export function goalsText(goals: number, atRisk: number): string {
+  const g = counted(goals, "goal", "goals");
+  return atRisk > 0 ? `${g}, ${atRisk} at risk` : `${g} on track`;
+}
+
+// Departments: the ones that need you, or else all of them on track.
+export function departmentsText(active: number, needAttention: number, atRisk: boolean): string {
+  if (needAttention > 0)
+    return `${counted(needAttention, "department", "departments")} ${
+      atRisk ? "at risk" : needAttention === 1 ? "needs attention" : "need attention"
+    }`;
+  return `${counted(active, "department", "departments")} on track`;
+}
+
+// People: those to follow up with, or else everyone, all clear.
+export function peopleText(total: number, toFollowUp: number): string {
+  if (toFollowUp > 0) return `${counted(toFollowUp, "person", "people")} to follow up`;
+  return `${counted(total, "person", "people")}, all clear`;
+}
+
+// The watchlist, with the new signals when there are any.
+export function watchingText(watched: number, signals: number): string {
+  const sig = counted(signals, "new signal", "new signals");
+  if (watched > 0) {
+    const w = `Watching ${counted(watched, "thing", "things")}`;
+    return signals > 0 ? `${w}, ${sig}` : w;
+  }
+  return sig;
+}

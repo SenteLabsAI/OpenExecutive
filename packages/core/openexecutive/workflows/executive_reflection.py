@@ -205,9 +205,9 @@ def _build_reflection_system(configured: set[str], has_roster: bool = True) -> s
         "on the previous run. Do NOT re-act on or re-notify anyone about a "
         "signal listed there unless the input shows it changed since — "
         "repeating a DM or a proposal a day later is noise, not diligence. "
-        "OPEN LOOPS are commitments and asks people made in conversation; "
-        "the nudge engine already chases overdue ones, so don't DM about a "
-        "loop just because it's overdue — use them to connect signals or to "
+        "TASKS are commitments and asks people made in conversation (call "
+        "them tasks, never open loops); the nudge engine already chases "
+        "overdue ones, so don't DM about a task just because it's overdue — use them to connect signals or to "
         "flag a slipped promise that matters for the brief. "
         "WHAT LANDS shows, per person, how often each kind of proactive DM "
         "got an answer: prefer the kind of outreach that lands with that "
@@ -282,8 +282,9 @@ def _build_reflection_system_solo() -> str:
         + "Memory: the block YESTERDAY'S STANDUP lists what you already did "
         "on the previous run. Do NOT re-act on or re-raise a signal listed "
         "there unless the input shows it changed since — repeating an alert "
-        "or a follow-up a day later is noise, not diligence. OPEN LOOPS are "
-        "commitments made in conversation; the nudge engine already chases "
+        "or a follow-up a day later is noise, not diligence. TASKS are "
+        "commitments made in conversation (call them tasks, never open "
+        "loops); the nudge engine already chases "
         "overdue ones, so use them to connect signals or to flag a slipped "
         "promise that matters for the brief. Open alerts carry the review "
         "verdict of your alert-review job (relevant / changed / likely_stale) "
@@ -462,7 +463,7 @@ def _render_reflection_context(
         # Pre-rendered, soonest-due first (attunement.open_loops). Overdue
         # ones are already chased by the nudge engine; listing them lets the
         # standup connect a slipped promise to the rest of the org state.
-        parts.append("OPEN LOOPS (what people owe, soonest due first):")
+        parts.append("TASKS (what people owe, soonest due first):")
         parts.extend(open_loops)
         parts.append("")
 
