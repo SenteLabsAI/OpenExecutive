@@ -242,7 +242,9 @@ def test_delete_never_reports_a_draft_it_left_alone_as_deleted(
     mailbox, row = _chat_draft(owner)
 
     async def left_alone(draft_id: str) -> bool:
-        mailbox.edit(draft_id)  # changed in the mailbox between the read and the delete
+        # What Outlook's delete_draft does when the draft changed between the
+        # read and the delete: leaves it and returns False.
+        mailbox.edit(draft_id)
         return False
 
     monkeypatch.setattr(mailbox, "delete_draft", left_alone)

@@ -242,9 +242,12 @@ async def discard(
     person: Any, row_id: int, *, caller: Any, gmail: Any = None, now: datetime | None = None,
 ) -> dict[str, Any]:
     """Delete the draft ``row_id`` from the person's Drafts, on their tap.
-    Only the version the card last saw: one changed in their mailbox since
-    is theirs to delete there. Returns its state (``GONE`` once deleted, or
-    the state it already had); raises ``SendRefused``. Sends nothing."""
+    It is read first, and one changed in their mailbox since the row's
+    version is theirs to delete there. Outlook also checks the version as
+    it deletes; Gmail has no such check, so an edit made in the instant
+    between that read and the delete is not caught there. Returns its state
+    (``GONE`` once deleted, or the state it already had); raises
+    ``SendRefused``. Sends nothing."""
     from openexecutive.audit import rows_for_person
     from openexecutive.delegation import drafts
     from openexecutive.delegation.gmail import GmailError, normalize_email
@@ -280,8 +283,9 @@ async def discard(
                     502, "gmail_error", "Couldn't delete it in your mailbox. Try again in a moment.",
                 ) from exc
             if not deleted:
-                # Left alone (it changed or stopped being a draft meanwhile)
-                # or already gone: say what it is now, and never call it deleted.
+                # Already gone, or (Outlook) left alone because it changed or
+                # stopped being a draft meanwhile: say what it is now, and
+                # never call it deleted.
                 after = await _read(row, client, now)
                 if after["status"] == CHANGED:
                     raise SendRefused(
