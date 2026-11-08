@@ -394,6 +394,13 @@ def _is_verified_speaker_surface(session: Any) -> bool:
     channel = str(getattr(session, "origin_channel", "") or "")
     if channel in _VERIFIED_SPEAKER_CHANNELS:
         return True
+    # The principal's own mail, which their mail service authenticated as
+    # coming from their address (``Session.email_authenticated``, set by the
+    # email poller): they are signed in there as on any other channel, so
+    # their Approvals level decides what runs. Anyone else's mail, or a From
+    # header nothing proved, still isn't.
+    if channel == "email":
+        return getattr(session, "email_authenticated", False) is True
     if channel != "telegram":
         return False
     # Telegram identifies the chat, not the sender, and its webhook is exempt
