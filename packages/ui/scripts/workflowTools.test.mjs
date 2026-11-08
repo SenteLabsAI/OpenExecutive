@@ -83,6 +83,12 @@ test("a quarterly run names the local day", () => {
     describeCadenceLocal("quarterly@15-14:00", "America/New_York", now),
     "Quarterly on day 15 at 9:00 AM EST",
   );
+  // Oct 20: Oct 15 has passed, so the next run is Jan 15, in winter time.
+  const oct = new Date(Date.UTC(2026, 9, 20, 12));
+  assert.equal(
+    describeCadenceLocal("quarterly@15-14:00", "America/New_York", oct),
+    "Quarterly on day 15 at 9:00 AM EST",
+  );
 });
 
 test("a schedule change can be said in local time", async () => {

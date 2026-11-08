@@ -92,12 +92,12 @@ export function describeCadenceLocal(
     const day = m ? Number(m[1]) : 0;
     if (m && t && day >= 1 && day <= 31) {
       // The next quarter month (Jan, Apr, Jul, Oct) that has that day, so
-      // the 31st never rolls into the month after.
-      for (let k = 0; k < 12; k++) {
+      // the 31st never rolls into the month after, and not one already past.
+      for (let k = 0; k < 15; k++) {
         const month = mo + k;
         if (month % 3 !== 0) continue;
         const d = new Date(Date.UTC(y, month, day, t[0], t[1]));
-        if (d.getUTCDate() !== day) continue;
+        if (d.getUTCDate() !== day || d < now) continue;
         // The local day can differ from the UTC one (the 1st at 02:00 UTC is
         // the evening before in New York), so read it from the converted date.
         const localDay = d.toLocaleDateString("en-US", { day: "numeric", timeZone });
