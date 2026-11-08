@@ -67,6 +67,9 @@ class _Browser:
     async def __call__(self, tool_input: dict[str, Any]) -> str:
         with extensions.workflow_step("browse"):
             self.approved.append(levels.is_approved())
+            if tool_input.get("do") == "broken":
+                extensions.workflow_wait("device:7", "your browser")
+                return json.dumps({"error": "the page crashed"})
             if not self.connected:
                 return extensions.workflow_wait("device:7", "your browser")
             if tool_input.get("do") == "click" and not levels.is_approved():
@@ -209,6 +212,34 @@ def test_no_skips_the_held_call_and_the_run_goes_on(
     assert browser.done == [{"do": "look"}]
     artifact = next(e for e in resumed if getattr(e, "type", "") == "artifact").content or ""
     assert 'Click "Buy now" on shop.example — skipped (declined)' in artifact
+
+
+def test_a_yes_to_a_new_target_is_not_the_tools_ok(browser: _Browser, audit: list[dict[str, Any]]) -> None:
+    """Only a hold the tool asked for runs as approved; a new-target hold
+    allowed the target, nothing more."""
+    from openexecutive.workflows.action_step import run_held_calls
+    from openexecutive.workflows.wait_for_human import HeldCall
+
+    step = _defn().steps[0]
+    report = asyncio.run(run_held_calls(
+        step, [HeldCall(tool=BROWSE, arguments={"do": "look"}, targets=[("url", "https://shop.example/")])],
+        workflow_name="buy_wf", run_id="run-1", approved=True, skip_reason="declined", policy=None,
+    ))
+    assert browser.approved == [False] and "done" in report
+
+
+def test_a_call_that_failed_does_not_pause_the_step(
+    monkeypatch: pytest.MonkeyPatch, browser: _Browser, audit: list[dict[str, Any]]
+) -> None:
+    provider = _ScriptedProvider([
+        _resp(_use(BROWSE, {"do": "broken"}, "tu_1")),
+        _resp(_text("The page crashed.")),
+    ])
+    _install(monkeypatch, provider)
+    events = asyncio.run(_collect(DynamicWorkflow(_defn())))
+    assert not any(isinstance(e, WaitForHumanEvent) for e in events)
+    results = provider.calls[1]["messages"][-1]["content"]
+    assert results[0]["is_error"] and "the page crashed" in results[0]["content"]
 
 
 # --- wait: the run pauses until it is ready ---------------------------------------

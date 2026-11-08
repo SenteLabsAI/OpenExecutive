@@ -614,7 +614,8 @@ class _StepCalls:
                     self._actions.append((name, "cancelled (may have run)"))
                     raise
                 outcome = "error" if is_error else "ok"
-                signal = signals[0] if signals else None
+                # A call that failed did nothing to pause for: its error stands.
+                signal = signals[0] if signals and not is_error else None
                 if signal is not None and signal.kind == "hold":
                     # Not done: it runs, exactly so, only on the owner's yes.
                     budget.used -= 1
@@ -990,8 +991,9 @@ async def run_held_calls(
             outcome = "skipped (the tool is no longer available to this step)"
         else:
             remember(workflow_name, call.targets, run_id=run_id)
-            # Their yes is the OK the tool waited for (``extensions.workflow_hold``).
-            with levels.approved():
+            # Their yes is the OK the tool waited for (``extensions.workflow_hold``);
+            # a new-target hold only allowed the target, so it stays as it was.
+            with levels.approved() if call.carry_on else contextlib.nullcontext():
                 content, is_error = await _call_tool(
                     call.tool, call.arguments, resolved[call.tool], workflow_name,
                 )

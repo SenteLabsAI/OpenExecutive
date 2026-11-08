@@ -164,7 +164,12 @@ def waiting_runs(key: str, db_path: Path | None = None) -> list[dict]:
 async def resume_waiting(key: str, db_path: Path | None = None) -> int:
     """Pick up every run paused until ``key`` is ready, now that it is: each
     one's waiting step runs again. Returns how many were picked up. Never
-    raises."""
+    raises.
+
+    A run is saved as waiting only after its step writes its report, so a
+    call made in that gap finds nothing. Call it again now and then while
+    ``key`` stays ready (it is one query when nothing waits), not only when
+    it becomes ready."""
     picked = 0
     try:
         for run in waiting_runs(key, db_path=db_path):
