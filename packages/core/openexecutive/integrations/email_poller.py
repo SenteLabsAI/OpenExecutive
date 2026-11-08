@@ -1470,7 +1470,9 @@ async def _run_executive(
             response = await executive.chat(
                 user_message=base_message,
                 session=session,
-                retrieved_context=retrieve(query=_retrieval_query(raw_email), n_builtin=chat_builtin_results()),
+                retrieved_context=await asyncio.to_thread(
+                    retrieve, query=_retrieval_query(raw_email), n_builtin=chat_builtin_results()
+                ),
                 episodic_context=format_for_prompt(),
                 person_id=person_id,
                 co_present_person_ids=co_present_person_ids or None,

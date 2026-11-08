@@ -242,7 +242,6 @@ def _with_general(domains: list[str] | None) -> list[str] | None:
     return domains if GENERAL_DOMAIN in domains else [*domains, GENERAL_DOMAIN]
 
 
-@traced("knowledge retrieve")
 def chat_builtin_results() -> int | None:
     """``n_builtin`` for the Executive's own chat turns: 0 (no built-in
     playbooks) unless ``KNOWLEDGE_CHAT_BUILTIN`` is on, else the default."""
@@ -251,6 +250,7 @@ def chat_builtin_results() -> int | None:
     return None if getattr(get_settings(), "knowledge_chat_builtin", False) else 0
 
 
+@traced("knowledge retrieve")
 def retrieve(
     query: str,
     domain_filter: list[str] | None = None,
