@@ -34,13 +34,16 @@ export function toolApp(name: string): ToolApp {
   if (server === "oe" && tool.startsWith("browser_")) return { label: "Browser", kind: "browser" };
   if (/slack/.test(server) || /slack/.test(tool)) return { label: "Slack", kind: "messages" };
   if (/teams/.test(server) || /teams/.test(tool)) return { label: "Teams", kind: "messages" };
-  if (/gmail|mail/.test(tool)) {
+  // Mail and calendar words only name the app on servers that have them:
+  // `hubspot__create_email_campaign` is HubSpot, not Email.
+  const ownsMail = google || microsoft || server === "oe";
+  if (ownsMail && /gmail|mail/.test(tool)) {
     return {
       label: google ? "Gmail" : microsoft ? "Outlook" : "Email",
       kind: "email",
     };
   }
-  if (/calendar|event|freebusy/.test(tool)) {
+  if (ownsMail && /calendar|event|freebusy/.test(tool)) {
     return {
       label: google ? "Google Calendar" : microsoft ? "Outlook calendar" : "Calendar",
       kind: "calendar",

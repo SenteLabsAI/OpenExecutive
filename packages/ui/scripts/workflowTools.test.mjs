@@ -14,6 +14,8 @@ test("tools are named by the app they work in", () => {
   assert.equal(toolApp("oe__message_person").label, "Messages");
   assert.equal(toolApp("oe__create_alert").label, "Open Executive");
   assert.equal(toolApp("hubspot__create_contact").label, "Hubspot");
+  assert.equal(toolApp("hubspot__create_email_campaign").label, "Hubspot");
+  assert.equal(toolApp("datadog__list_events").label, "Datadog");
 });
 
 test("browser tools say what they do to a page", () => {
