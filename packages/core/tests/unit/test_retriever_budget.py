@@ -108,3 +108,19 @@ def test_chat_cap_setting_defaults_to_six_thousand() -> None:
     from openexecutive.config import get_settings
 
     assert get_settings().knowledge_chat_max_chars == 6000
+
+
+def test_chat_turns_skip_builtin_playbooks_unless_turned_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On real turns most built-in matches were unrelated to the question, and
+    # good and bad matches scored alike: the Executive's own chat turns get
+    # company documents only, unless KNOWLEDGE_CHAT_BUILTIN is on.
+    from openexecutive.knowledge.retriever import chat_builtin_results
+
+    monkeypatch.delenv("KNOWLEDGE_CHAT_BUILTIN", raising=False)
+    assert chat_builtin_results() == 0
+    store = _store(builtin=[_hit("near", 0.10, 300)], company=[_hit("doc", 0.20, 300)])
+    out = retrieve(query="How should we price the renewal?", store=store, review_store=_review_store(),
+                   n_builtin=chat_builtin_results())
+    assert "[doc.md]" in out and "[near.md]" not in out
+    monkeypatch.setenv("KNOWLEDGE_CHAT_BUILTIN", "true")
+    assert chat_builtin_results() is None

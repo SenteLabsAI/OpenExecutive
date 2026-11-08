@@ -402,7 +402,7 @@ async def _process_and_reply(
         attach_briefing_context,
         build_channel_context_block,
     )
-    from openexecutive.knowledge.retriever import retrieve
+    from openexecutive.knowledge.retriever import chat_builtin_results, retrieve
     from openexecutive.memory.episodic import format_for_prompt
     from openexecutive.memory.session_store import (
         create_session,
@@ -436,7 +436,9 @@ async def _process_and_reply(
             # Record this channel_ref as user-initiated so the Executive may
             # schedule follow-ups back to this chat.
             session.seen_channel_refs.add(("telegram", str(chat_id)))
-            retrieved_context = retrieve(query=own_text, max_chars=get_settings().knowledge_chat_max_chars)
+            retrieved_context = retrieve(
+                query=own_text, max_chars=get_settings().knowledge_chat_max_chars, n_builtin=chat_builtin_results()
+            )
             episodic_context = format_for_prompt(session_id=session_id)
 
             # Look up the OE Person record so Honcho can key per-person
