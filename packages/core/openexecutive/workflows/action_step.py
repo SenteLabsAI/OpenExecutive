@@ -607,7 +607,7 @@ class _StepCalls:
                 content, is_error, outcome = HELD_TOOL_RESULT, False, "held for approval"
             else:
                 budget.used += 1
-                self._events.append(("progress", f"Using {name}…"))
+                self._events.append(("progress", progress_line(name, arguments)))
                 from openexecutive.orchestrator import extensions
 
                 try:
@@ -872,7 +872,7 @@ async def run_action_step(
 
     # Out of turns without a final report: the goal may be half done, so this
     # is a failure — but say exactly what was already done.
-    done = ", ".join(f"{name} ({outcome})" for name, outcome in actions) or "nothing"
+    done = ", ".join(f"{plain_tool_name(name)} ({outcome})" for name, outcome in actions) or "nothing"
     yield (
         "error",
         f"step {step.id!r} did not finish within its turn limit; tools already "
@@ -1093,6 +1093,58 @@ def plain_tool_name(name: str) -> str:
         w.upper() if w.lower() in _ACRONYMS else w.capitalize() for w in _words(server).split()
     )
     return f"{app}: {_words(tool)}"
+
+
+_PROGRESS_MAX = 80
+
+
+def progress_line(name: str, arguments: Any) -> str:
+    """What a running step is doing, in plain words, for the run's progress
+    card: "Opening example.com…", 'Searching my inbox for "invoice"…'. Reads
+    the same wording as the chat's activity line, never the raw tool name.
+    The arguments are the model's, and a label must never fail a run, so any
+    error falls back to the tool's plain name."""
+    try:
+        return _progress_line(name, arguments)
+    except Exception:
+        return f"Using {plain_tool_name(name)}…"
+
+
+def _progress_line(name: str, arguments: Any) -> str:
+    from urllib.parse import urlparse
+
+    from openexecutive.orchestrator import activity_labels, extensions, tool_labels
+    from openexecutive.workflows.tool_catalog import BUILTIN_PREFIX
+
+    if name == step_script.RUN_SCRIPT_TOOL:
+        return "Running a script…"
+    doing = ""
+    if name.startswith(BUILTIN_PREFIX):
+        bare = name[len(BUILTIN_PREFIX):]
+        label = activity_labels._LABELS.get(bare) or extensions.activity_label(bare)
+        if label:
+            doing = label.rstrip("…").rstrip(".").strip()
+    if not doing:
+        doing = tool_labels.labels_for(name, arguments)[1].removesuffix(" · Open Executive")
+    args = arguments if isinstance(arguments, dict) else {}
+    url = args.get("url")
+    if doing == "Opening the page" and isinstance(url, str):
+        host = (urlparse(url).hostname or "").removeprefix("www.")
+        if host:
+            doing = f"Opening {host}"
+    else:
+        detail = tool_labels.detail_for(name, args, "")
+        if detail:
+            # The app's name stays last: "Creating contact: Ada · Hubspot".
+            # Only the detail is shortened, so the action and the app stay whole.
+            base, sep, app = doing.partition(" · ")
+            joiner = " for " if detail.startswith('"') else ": "
+            room = _PROGRESS_MAX - len(base) - len(joiner) - len(sep) - len(app)
+            if len(detail) > room >= 8:
+                detail = detail[: room - 1].rstrip() + "…"
+            if len(detail) <= room:
+                doing = f"{base}{joiner}{detail}{sep}{app}"
+    return f"{doing}…"
 
 
 def _format_output(report: str, actions: list[tuple[str, str]]) -> str:

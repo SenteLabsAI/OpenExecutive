@@ -336,7 +336,7 @@ async def test_running_out_of_turns_is_a_failure_that_lists_what_was_done(
     _install(monkeypatch, provider)
     out = await _run(step)
     assert out[-1][0] == "error"
-    assert "turn limit" in out[-1][1] and f"{READ} (ok)" in out[-1][1]
+    assert "turn limit" in out[-1][1] and "Sheets: read values (ok)" in out[-1][1]
 
 
 # --- engine wiring -----------------------------------------------------------
@@ -370,7 +370,7 @@ async def test_workflow_with_action_step_produces_an_artifact(
     types = [e.type for e in events]
     assert "progress" in types and "error" not in types
     progress = next(e for e in events if e.type == "progress")
-    assert progress.step_id == "file_bills" and APPEND in (progress.summary or "")
+    assert progress.step_id == "file_bills" and "Sheets" in (progress.summary or "") and APPEND not in (progress.summary or "")
     artifact = next(e for e in events if e.type == "artifact").content or ""
     assert "Filed 1 bill." in artifact and "Sheets: append rows — ok" in artifact
 
@@ -585,3 +585,20 @@ def test_openrouter_reasoning_survives_the_assistant_turn() -> None:
     blocks = [act._block_to_dict(b) for b in reply.content]
     assert blocks[0] is not None and blocks[0]["type"] == "tool_use"
     assert blocks[-1] == {"type": "openrouter_reasoning", "reasoning_details": details}
+
+
+def test_progress_says_what_a_tool_is_doing_in_plain_words() -> None:
+    from openexecutive.workflows.action_step import progress_line
+
+    assert progress_line("google_workspace__search_gmail_messages", {"query": "invoice"}) == (
+        'Searching my inbox for "invoice"…'
+    )
+    assert progress_line("oe__send_telegram_message", {"text": "hi"}) == "Sending a Telegram message…"
+    assert progress_line("hubspot__create_contact", {"name": "Ada"}) == "Creating contact: Ada · Hubspot…"
+    assert progress_line("run_script", {}) == "Running a script…"
+    # A bad URL from the model still gives a line, never an error.
+    assert progress_line("oe__browser_navigate", {"url": "http://[bad"}).endswith("…")
+    long = progress_line("hubspot__create_contact", {"name": "Ada Lovelace " * 8})
+    assert long.startswith("Creating contact: Ada") and long.endswith("… · Hubspot…") and len(long) <= 81
+    for line in (progress_line("acme__get_x", None), progress_line("oe__whatever_tool", {})):
+        assert "__" not in line and line.endswith("…")
