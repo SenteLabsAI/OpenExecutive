@@ -225,10 +225,11 @@ def _guard_outbound(*, tool: str, channel: str, channel_ref: str, text: str) -> 
     if outside_content.added_ref(channel_ref):
         # On the roster only since this turn (outside_content).
         return outside_content.added_person_error(f"{channel_ref!r}")
-    # What someone asked for in the turn goes as asked: the anti-spam
-    # limits are for the Executive's own outreach (a tagged proactive send,
-    # or a run nobody is in). Approvals is the one gate on what a person asks.
-    reason = check_outbound_allowed(channel, channel_ref, text) if _own_outreach() else None
+    # The duplicate and rate checks stop a runaway loop whoever started the
+    # turn (a stranger's mail could steer a burst of sends). Quiet hours are
+    # for the Executive's own outreach (a tagged proactive send, or a run
+    # nobody is in): what a person asks for in the turn isn't refused for them.
+    reason = check_outbound_allowed(channel, channel_ref, text, availability=_own_outreach())
     if reason is None:
         return _hold_outbound(tool=tool, channel=channel, channel_ref=channel_ref, text=text)
     from openexecutive.audit import log_event as audit_log

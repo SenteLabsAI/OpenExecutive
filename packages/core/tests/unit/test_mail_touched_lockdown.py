@@ -698,12 +698,13 @@ def test_the_lockdown_follows_the_safety_level(
         assert (lockdown.outside_reach_refusal("run_executive_research") is not None) is holds
         assert (lockdown.outside_reach_refusal("schedule_followup") is not None) is holds
         # Posts to everyone, roster changes and a contact the speaker didn't
-        # name follow the level too: held only while the lockdown holds.
+        # name wait below Hands-off, even once the check cleared the read.
+        private = mode != "trust"
         for tool in lockdown.MAIL_PRIVATE_WITHHELD_TOOLS:
-            assert lockdown.mail_turn_withholds(tool, {}) is holds, tool
+            assert lockdown.mail_turn_withholds(tool, {}) is private, tool
         assert lockdown.mail_turn_withholds(
             "upsert_person", {"full_name": "Eve", "email": "eve@x.example"}
-        ) is holds
+        ) is private
         assert not lockdown.mail_turn_withholds("message_person", {})
         # This round reads mail: its reads aren't checked yet.
         if mode != "trust":

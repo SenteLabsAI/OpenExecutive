@@ -37,10 +37,10 @@ read is checked for attempts to steer the Executive
 Careful holds all of it after any mail read; Balanced holds all of it only
 once a mail read was flagged or too big to check, or while a read waits for
 its check (``mail_lock_holds``); Hands-off holds none of it on the
-principal's own turn. While it holds, the posts to everyone and the roster
-and authority changes (``MAIL_PRIVATE_WITHHELD_TOOLS``) wait too, whatever
-``MAIL_TOUCHED_ALLOWED_TOOLS`` says; when it doesn't, they run like anything
-else.
+principal's own turn. Below Hands-off, a mail read keeps the posts to
+everyone and the roster and authority changes (``MAIL_PRIVATE_WITHHELD_TOOLS``)
+waiting even once the check cleared it: they would spread the owner's private
+mail. On Hands-off they run like anything else.
 
 The dispatch guard in ``orchestrator.executive`` refuses a withheld call
 without changing the offered tool list (the cached prefix stays the same all
@@ -403,8 +403,8 @@ def mail_turn_withholds(
     """Whether a call to ``tool_name`` is refused on the turn in progress for
     the owner's mail it read (or reads this round, ``reading_now``): what
     ``mail_touched_withholds`` refuses while the lockdown holds
-    (``mail_lock_holds``), with the posts to everyone and the roster changes
-    (``MAIL_PRIVATE_WITHHELD_TOOLS``). ``pinned`` is the
+    (``mail_lock_holds``), and below Hands-off the posts to everyone and the
+    roster changes (``MAIL_PRIVATE_WITHHELD_TOOLS``). ``pinned`` is the
     turn's ``TurnDelegation`` when the caller has it (the chat loop), else the
     bound session's. Never raises; fails closed."""
     from openexecutive.delegation.settings import turn_delegation
@@ -415,12 +415,18 @@ def mail_turn_withholds(
             pinned = turn_delegation(current_session.get())
         if pinned is None or not (getattr(pinned, "read_mail", False) is True or reading_now):
             return False
-        # Only while the lockdown holds, by the owner's level: Hands-off (or a
-        # read the check cleared, at Balanced) holds nothing, not even posts
-        # to everyone or roster changes. Approvals is the one gate.
         if mail_lock_holds(pinned, reading_now=reading_now):
             return mail_touched_withholds(tool_name, tool_input) or tool_name in MAIL_PRIVATE_WITHHELD_TOOLS
-        return False
+        # By the owner's level: Hands-off holds nothing. Below it, a read the
+        # check cleared still keeps the posts to everyone and the roster
+        # changes waiting: they would spread the owner's private mail.
+        from openexecutive.orchestrator import outside_content
+
+        if outside_content.trusted_turn():
+            return False
+        if tool_name == "upsert_person":
+            return not speaker_named_contact(tool_input)
+        return tool_name in MAIL_PRIVATE_WITHHELD_TOOLS
     except Exception:
         return True
 

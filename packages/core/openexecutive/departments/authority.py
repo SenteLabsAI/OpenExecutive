@@ -126,14 +126,14 @@ _BY_LEVEL: dict[str, AuthorityLevel] = {
 def department_level(department_slug: str) -> AuthorityLevel:
     """How a department's work goes, from the company's Approvals level:
     Hands-off runs it, Balanced proposes it, Careful escalates it. Never
-    raises: an error is Balanced's."""
+    raises: an unknown level or an error is Careful's."""
     try:
         from openexecutive.orchestrator import outside_mode
 
-        return _BY_LEVEL.get(outside_mode.get_mode(), AuthorityLevel.PROPOSE_ONLY)
+        return _BY_LEVEL.get(outside_mode.get_mode(), AuthorityLevel.ESCALATE)
     except Exception:
-        logger.warning("authority_gate: couldn't read the Approvals level — proposing", exc_info=True)
-        return AuthorityLevel.PROPOSE_ONLY
+        logger.warning("authority_gate: couldn't read the Approvals level — escalating", exc_info=True)
+        return AuthorityLevel.ESCALATE
 
 
 def _route_proposal(

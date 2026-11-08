@@ -200,6 +200,20 @@ def test_the_company_level_decides_without_a_stored_one(monkeypatch: pytest.Monk
         assert _company_level("marketing") is level
 
 
+def test_an_unreadable_level_escalates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the Approvals level can't be read, or isn't one it knows, a
+    department's work waits for an approver, as on Careful."""
+    from openexecutive.orchestrator import outside_mode
+
+    def broken(**_: object) -> str:
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr(outside_mode, "get_mode", broken)
+    assert _company_level("marketing") is AuthorityLevel.ESCALATE
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: "unknown")
+    assert _company_level("marketing") is AuthorityLevel.ESCALATE
+
+
 def test_escalate_always_waits_for_someone_else(team: dict[str, Person]) -> None:
     _level("marketing", AuthorityLevel.ESCALATE)
     people_store.set_authority_scope(team["sam"].id, [AuthorityScope.WILDCARD])  # type: ignore[arg-type]
