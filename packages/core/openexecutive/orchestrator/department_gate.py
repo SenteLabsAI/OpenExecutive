@@ -1,28 +1,23 @@
-"""Department authority on a teammate's chat turn.
-
-A department's authority level (``departments.authority``) used to govern
-only unattended work: the scheduler's department-scoped rows, check-ins, the
-alert review. A team member asking the Executive in chat to send or change
-something went straight through, so a ``propose_only`` or ``escalate``
-department held nothing its own people asked for.
+"""Approvals on a teammate's chat turn.
 
 On a turn a team member (not the principal) is in, every tool that sends or
-edits goes through ``gate_action`` for their department first:
+edits goes through ``gate_action`` for their department first. The level is
+the Approvals level their department's work runs at
+(``departments.authority.department_level``: the company's):
 
-- ``auto_execute``: it runs.
-- ``propose_only``: it runs when the speaker could approve it themselves
-  (they hold the approval range it needs); otherwise it is held.
-- ``escalate``: it is held, for someone other than the speaker.
+- Hands-off: it runs.
+- Balanced: it runs when the speaker approves everything themselves;
+  otherwise it is held.
+- Careful: it is held, for someone other than the speaker.
 
 A held action becomes a decision (class ``department_action``) with a card
 on its approver's Today; approving it carries out that exact call on the
 server (``api.routes.decisions``). The model is told it is waiting and not
 to retry or work around it. The gate fails closed: an error holds the action.
 
-With several departments the strictest level applies; with none, the action
-is held as ``propose_only`` would hold it, and so is a web caller signed in
-but on no People entry, or a chat-channel sender matched to no one. "Could approve it themselves" means holding a range
-for every kind of approval the action touches, not just the first. The principal's own turns,
+With several departments the strictest level applies; with none, the
+company's. A web caller signed in but on no People entry, or a chat-channel
+sender matched to no one, is a teammate here. The principal's own turns,
 unattended runs (Take the lead's gate and the scheduler's) and Act as me are
 not this module's.
 """
@@ -123,48 +118,23 @@ def speaker(session: Any) -> Person | None:
 
 
 def _department(person: Person) -> tuple[str, AuthorityLevel]:
-    """The speaker's department whose level is strictest, and that level. An
-    unknown department reads as ``propose_only``; no department at all as
-    ``("", propose_only)``."""
-    from openexecutive.departments import registry as dept_registry
+    """The speaker's department whose level is strictest, and that level:
+    the Approvals level its work runs at (``authority.department_level``).
+    No department at all is ``("", <the company's>)``."""
+    from openexecutive.departments.authority import department_level
 
     best: tuple[str, AuthorityLevel] | None = None
     for slug in person.department_slugs:
-        state = dept_registry.get_state(slug)
-        level = state.config.authority_level if state is not None else AuthorityLevel.PROPOSE_ONLY
+        level = department_level(slug)
         if best is None or _LEVEL_RANK[level] > _LEVEL_RANK[best[1]]:
             best = (slug, level)
-    return best if best is not None else ("", AuthorityLevel.PROPOSE_ONLY)
+    return best if best is not None else ("", department_level(""))
 
 
-def approval_ranges(tool: str, tool_input: dict[str, Any]) -> list[list[AuthorityScope]]:
-    """The People approval ranges this action needs, one group per kind it
-    touches (money, a contract, a people decision, the board), each closest
-    fit first, as Take the lead reads them. Every group must be held: a $12
-    lunch in a termination letter still needs Hiring. Empty when it needs
-    no particular range."""
-    text = "\n".join(take_the_lead._strings(tool_input))
-    kinds = []
-    if take_the_lead._MONEY_RE.search(text) or take_the_lead.amounts(text):
-        kinds.append(take_the_lead.MONEY)
-    if take_the_lead._CONTRACTS_RE.search(text):
-        kinds.append(take_the_lead.CONTRACTS)
-    if take_the_lead._PEOPLE_RE.search(text):
-        kinds.append(take_the_lead.PEOPLE_DECISIONS)
-    groups = [take_the_lead.approval_ranges(kind, text) for kind in kinds]
-    board = take_the_lead.approval_ranges("", text)
-    if board:
-        groups.append(board)
-    return [group for group in groups if group]
-
-
-def _holds(person: Person, groups: list[list[AuthorityScope]]) -> bool:
-    """Whether ``person`` could approve it: they hold a range from every
-    group it needs, or approve everything."""
-    scopes = set(person.authority_scope)
-    if AuthorityScope.WILDCARD in scopes:
-        return True
-    return bool(groups) and all(any(r in scopes for r in group) for group in groups)
+def _holds(person: Person) -> bool:
+    """Whether ``person`` could approve it themselves: they approve
+    everything."""
+    return AuthorityScope.WILDCARD in set(person.authority_scope)
 
 
 def _other_approver(scope: AuthorityScope | None, speaker_id: int | None) -> int | None:
@@ -185,27 +155,38 @@ def decide(
 ) -> Verdict:
     """Whether ``person``'s department lets this action run now, and if not
     who approves it."""
-    from openexecutive.departments.authority import _route_proposal, gate_action
+    from openexecutive.departments.authority import (
+        GateDecision,
+        _route_proposal,
+        cast_action,
+        gate_action,
+    )
 
     now = now or datetime.now(UTC)
     if not mcp and take_the_lead._only_to_principal(tool, tool_input):
         # The principal is who it would wait for: there's nothing to approve.
         return Verdict(run=True, reason="it only messages the owner")
     slug, level = _department(person)
-    ranges = approval_ranges(tool, tool_input)
-    # One range routes to who holds it; several to someone who approves
-    # everything, since no one range covers them all.
-    scope = ranges[0][0] if len(ranges) == 1 else None
+    if person.id is None and level == AuthorityLevel.AUTO_EXECUTE:
+        # Someone on no People entry (an unmatched chat sender, a signed-in
+        # web caller on nobody's entry): Hands-off is the owner's trust in
+        # their own team, so their step still waits, as on Balanced.
+        level = AuthorityLevel.PROPOSE_ONLY
+    scope: AuthorityScope | None = None
     if slug:
         gate = gate_action(slug, tool, required_scope=scope, now=now)
+    elif level == AuthorityLevel.AUTO_EXECUTE:
+        gate = GateDecision(allowed=True, action="execute", reason="Hands-off")
     else:
         gate = _route_proposal(
-            department_slug="", action="propose", required_scope=scope, now=now,
-            reason="they aren't in a department, so it waits like propose_only",
+            department_slug="", action=cast_action(
+                "escalate" if level == AuthorityLevel.ESCALATE else "propose"
+            ), required_scope=scope, now=now,
+            reason="it waits for approval at this Approvals level",
         )
     if gate.action == "execute":
         return Verdict(run=True, department=slug, level=level.value, reason=gate.reason)
-    if gate.action == "propose" and _holds(person, ranges):
+    if gate.action == "propose" and _holds(person):
         return Verdict(
             run=True, department=slug, level=level.value,
             reason="they can approve this themselves",
@@ -224,15 +205,10 @@ def decide(
 
 
 def _why(slug: str, level: AuthorityLevel) -> str:
-    if not slug:
-        return "they aren't in a department, so it waits for approval"
-    from openexecutive.departments import registry as dept_registry
-
-    state = dept_registry.get_state(slug)
-    name = (state.config.title if state is not None else "") or slug
+    """Why it waits, in the owner's words: the Approvals level."""
     if level == AuthorityLevel.ESCALATE:
-        return f"{name} escalates everything it does to a person"
-    return f"{name} proposes before it acts"
+        return "Approvals is on Careful, so a teammate's step waits for a person"
+    return "Approvals is on Balanced, so a teammate's step waits for approval"
 
 
 def hold(

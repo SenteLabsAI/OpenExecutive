@@ -192,6 +192,35 @@ def test_delete_leaves_a_card_and_the_tap_deletes(roster: dict[str, Any], client
     assert client.post(f"/decisions/{card.id}/approve", json={}, headers=OWNER).status_code == 409
 
 
+def test_under_hands_off_a_delete_is_done_in_the_turn(
+    roster: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    sid = _chat(roster["owner"].id, "s-ho", "Old pricing")
+    out = _run(app_control.handle_do_in_app, {"action": "delete_chat", "id": "this"}, _web(roster["owner"], sid))
+    assert out["status"] == "done", out
+    assert _meta(sid) is None
+
+
+def test_under_hands_off_after_an_outside_read_it_still_runs(
+    roster: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    sid = _chat(roster["owner"].id, "s-ho2", "Board prep")
+    session = _web(roster["owner"], sid)
+    state = outside_content.begin_turn(session)
+    try:
+        outside_content.mark("read_document")
+        out = _run(app_control.handle_do_in_app, {"action": "pin_chat", "id": sid}, session)
+    finally:
+        outside_content.end_turn(state)
+    assert out["status"] == "done", out
+
+
 def test_dismissing_the_card_does_nothing(roster: dict[str, Any], client: TestClient) -> None:
     sid = _chat(roster["owner"].id, "s-keep", "Keep me")
     out = _run(app_control.handle_do_in_app, {"action": "delete_chat", "id": sid}, _web(roster["owner"], sid))
@@ -237,7 +266,6 @@ def test_turning_on_act_as_me_waits_but_off_does_not() -> None:
     action = app_control.CATALOG.actions["change_setting"]
     assert action.needs_tap("act_as_me", "on")
     assert action.needs_tap("handle_it", "on")
-    assert action.needs_tap("take_the_lead", "yes")
     assert not action.needs_tap("handle_it", "off")
     assert not action.needs_tap("quiet_hours", "22:00-07:00")
 
@@ -396,20 +424,13 @@ def test_topic_pin_merge_and_remove(roster: dict[str, Any]) -> None:
     assert _meta("s-a") is not None and _meta("s-b") is not None
 
 
-def test_settings_and_lead_rules(roster: dict[str, Any], client: TestClient) -> None:
+def test_settings(roster: dict[str, Any], client: TestClient) -> None:
     session = _web(roster["owner"], "s-s")
     out = _run(app_control.handle_do_in_app, {"action": "change_setting", "id": "delivery", "value": "digest"}, session)
     assert out == {"status": "done", "did": "Set How messages arrive (instant or digest) to digest"}, out
     out = _run(app_control.handle_do_in_app, {"action": "change_setting", "id": "act_as_me", "value": "off"}, session)
     assert out["status"] == "done", out
     out = _run(app_control.handle_do_in_app, {"action": "change_setting", "id": "act_as_me", "value": "on"}, session)
-    assert out["status"] == "waiting_for_approval"
-    out = _run(app_control.handle_do_in_app,
-               {"action": "add_lead_rule", "id": "new", "value": "domain: acme.com"}, session)
-    assert out["status"] == "done", out
-    rules = _run(app_control.handle_find_in_app, {"kind": "lead_rule"}, session)["items"]
-    assert [r["title"] for r in rules] == ["domain: acme.com"]
-    out = _run(app_control.handle_do_in_app, {"action": "remove_lead_rule", "id": rules[0]["id"]}, session)
     assert out["status"] == "waiting_for_approval"
 
 

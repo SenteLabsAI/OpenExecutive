@@ -4,7 +4,6 @@ calendar, Handle it for me accepts one on its own when nothing clashes, and
 everything else is skipped as before."""
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -17,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from openexecutive.api.routes import decisions as decisions_route
 from openexecutive.api.routes import delegation as route
-from openexecutive.delegation import calendar, handle_it, inbox, invites, training
+from openexecutive.delegation import calendar, handle_it, inbox, invites
 from openexecutive.delegation.gmail import CalendarEvent, CalendarWriteNotGranted, MailMessage
 from openexecutive.memory import decision_ledger as ledger
 
@@ -187,8 +186,26 @@ def test_a_card_closes_once_the_meeting_starts(db: Path, person: Any, models: di
 # ── on its own ────────────────────────────────────────────────────────────────
 
 
-def _on(person: Any) -> None:
+def _on(person: Any, monkeypatch: pytest.MonkeyPatch | None = None, *, level: str = "outsiders") -> None:
+    """Handle it for me on, with Approvals at ``level`` (Balanced unless
+    said): Careful, pinned by conftest, holds everything."""
+    from openexecutive.orchestrator import outside_mode
+
     handle_it.set_(person.id, enabled=True, updated_by="test")
+    patch = monkeypatch or pytest.MonkeyPatch()
+    patch.setattr(outside_mode, "get_mode", lambda **_: level)
+    if monkeypatch is None:
+        _UNDO.append(patch)
+
+
+_UNDO: list[pytest.MonkeyPatch] = []
+
+
+@pytest.fixture(autouse=True)
+def _undo_levels() -> Any:
+    yield
+    while _UNDO:
+        _UNDO.pop().undo()
 
 
 def test_handle_it_accepts_with_no_clash_and_says_so(db: Path, person: Any, models: dict[str, Any]) -> None:
@@ -208,8 +225,8 @@ def test_handle_it_accepts_with_no_clash_and_says_so(db: Path, person: Any, mode
 def test_handle_it_leaves_a_card_for_someone_they_have_only_written_to(
     person: Any, models: dict[str, Any],
 ) -> None:
-    """A sender known only from their Sent mail is no contact: an invite from
-    them waits on a tap, whatever the level."""
+    """A sender known only from their Sent mail is no contact: below
+    Hands-off an invite from them waits on a tap."""
     _on(person)
     pat = "pat@elsewhere.example"
     mailbox = _mailbox(_invite(sender=pat, name="Pat"), event=_event(organizer=pat))
@@ -218,12 +235,28 @@ def test_handle_it_leaves_a_card_for_someone_they_have_only_written_to(
     assert result.handled == 0 and mailbox.answers == []
     (card,) = invites.cards(person)
     assert card.relation == "correspondent" and card.status == "proposed"
+    assert card.waited_because == handle_it.REASONS["stranger"]
+
+
+def test_on_hands_off_it_accepts_from_anyone(person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    _on(person, monkeypatch, level="trust")
+    pat = "pat@elsewhere.example"
+    mailbox = _mailbox(_invite(sender=pat, name="Pat"), event=_event(organizer=pat))
+    mailbox.written_to.add(pat)
+    assert _scan(person, mailbox).handled == 1 and mailbox.answers == [("ev1", True)]
+
+
+def test_on_careful_it_waits(person: Any, models: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    _on(person, monkeypatch, level="ask")
+    mailbox = _mailbox()
+    assert _scan(person, mailbox).handled == 0 and mailbox.answers == []
+    (card,) = invites.cards(person)
+    assert card.waited_because == handle_it.REASONS["level"]
 
 
 @pytest.mark.parametrize(("arrange", "reason"), [
     (lambda m: setattr(m, "busy", [_event("x", title="Standup")]), "clash"),
     (lambda m: setattr(m, "write_granted", False), "calendar_write"),
-    (lambda m: m.events.__setitem__("i1", _event(title="Board pay review")), "sensitive"),
 ])
 def test_handle_it_leaves_a_card_when_something_is_against_it(
     person: Any, models: dict[str, Any], arrange: Any, reason: str,
@@ -259,29 +292,6 @@ def test_an_accept_that_fails_hands_the_card_back(person: Any, models: dict[str,
     assert result.handled == 0
     (card,) = invites.cards(person)
     assert card.status == "proposed" and card.can_answer is False
-
-
-def test_in_training_it_waits_until_they_tick_accept_next_time(person: Any, models: dict[str, Any]) -> None:
-    _on(person)
-    training.set_(person.id, {training.REPLIES: True}, updated_by="test")
-    mailbox = _mailbox()
-    _scan(person, mailbox)
-    (card,) = invites.cards(person)
-    assert card.can_allow is True and card.waited_because == handle_it.REASONS["invite_training"]
-    instance = ledger.get_decision_instance(card.decision_id)
-    from openexecutive.delegation.verified import ChatTap
-
-    assert asyncio.run(invites.answer(
-        instance, caller=ChatTap(OWNER), resolver=person.id, answer="accept", allow=True, mailbox=mailbox,
-    )) == "accepted"
-    allowed = training.allowed_inviter(person.id, DANA)
-    assert allowed is not None and allowed.label.startswith("Accept invites from Dana Park")
-    assert training.setting_of(allowed.key) == training.REPLIES
-    # The next invite from them goes on its own.
-    mailbox.add(_invite("i2", "ti2", minutes_ago=20))
-    mailbox.events["i2"] = _event("ev2", title="Pilot follow-up")
-    assert _scan(person, mailbox, now=NOW + timedelta(minutes=10)).handled == 1
-    assert mailbox.answers == [("ev1", True), ("ev2", True)]
 
 
 # ── answering on a tap (the routes) ───────────────────────────────────────────

@@ -33,39 +33,20 @@ exactly as stored, with no model call: claimed first, so it runs once.
 **Limits.** ``CARDS_PER_TURN`` a turn and ``OPEN_CARDS_MAX`` waiting a
 person; a card is dropped after ``CARD_TTL``.
 
-**In training.** With Act as me's Suggested actions in training
-(``delegation.training``), a card adds **Approve + allow**: it does the
-actions on the person's tap, as Approve does, and from then on a message to
-that person, or a meeting with exactly those people, is allowed. A card whose
-every action is allowed is carried out as soon as it is proposed
-(``run_on_its_own``), with no tap, but only when plain code finds nothing
-against it (``on_its_own_refusal``): still in training, Act as me on, a server
-that can tie the switch to the person, nothing sensitive, no link or amount,
-a short message, and fewer than ``ON_ITS_OWN_PER_DAY`` actions today. A new
-contact always waits. Anything refused waits on its card as before. An
-invite carried out on its own is never booked as already approved: the
-meeting gate decides as for any meeting nobody tapped (a time chosen from
-someone's mail must not land on a calendar unasked), so it may go to the
-approver as a proposal.
-
-**On.** With Suggested actions set to On (``training.ACTIONS_ON``, out of
-training), a card is carried out as soon as it is proposed with no allow
-needed, under the same plain-code checks, and only when it reaches nobody new:
+**On their own.** With Handle it for me on and Approvals above Careful, a
+card is carried out as soon as it is proposed (``run_on_its_own``), with no
+tap, when plain code finds nothing against it (``on_its_own_refusal``): Act
+as me on, a server that can tie the switch to the person, and fewer than
+``ON_ITS_OWN_PER_DAY`` actions today. On Balanced it also reaches nobody new:
 a new contact, or anyone whose roster entry is under ``SETTLED_AFTER`` old,
-waits on its card (``_known_people_refusal``).
-
-**From another AI app.** A card proposed on a turn another AI app asked to
-act (``Session.mcp_client_may_act``) follows the person's mode instead
-(``follow_handle_it``, kept on the card so the check at run time is the
-same), On or not: with Suggested actions not in training, it is carried out on its own
-when their Handle it for me is on at a setting that covers people they know
-(every setting does; everyone on a card is on their roster), and the same
-plain-code checks find nothing against it, with a message no longer than
-that setting's replies. A new contact always waits, and so does a card to
-anyone whose roster entry is under ``SETTLED_AFTER`` old (``_settled``), so
-someone added or planted lately is never reached without a tap. An invite is
-never booked as approved by them: the meeting gate decides. In training, the
-rule above applies. The card, and every row about it, names the app (``via``).
+waits on its card (``_known_people_refusal``), so someone added or planted
+lately is never reached without a tap. On Hands-off that check lifts. A
+Drive change or a save into a shared folder always waits: the tap is what
+makes it. Anything refused waits on its card as before. An invite carried
+out on its own is never booked as already approved: the meeting gate
+decides as for any meeting nobody tapped, so it may go to the approver as a
+proposal. A card another AI app asked for names the app (``via``) on every
+row about it.
 """
 from __future__ import annotations
 
@@ -103,11 +84,9 @@ NAME_MAX = 120
 WHY_MAX = 300
 MAX_ATTENDEES = 20
 HORIZON = timedelta(days=366)
-# Carried out on their own, in training: at most this many actions a day, and
-# a message no longer than this.
+# Carried out on their own: at most this many actions a day.
 ON_ITS_OWN_PER_DAY = 10
-ON_ITS_OWN_MESSAGE_MAX = 1200
-# A card from another AI app reaches no one on its own whose roster entry is
+# Below Hands-off, a card reaches no one on its own whose roster entry is
 # newer than this: it waits for a tap.
 SETTLED_AFTER = timedelta(days=7)
 
@@ -140,9 +119,6 @@ class ActionCard:
     created_at: str
     why: str
     actions: list[CardAction] = field(default_factory=list)
-    # Approve + allow: Suggested actions is in training and something on the
-    # card can be allowed that isn't yet (delegation.training).
-    can_allow: bool = False
 
 
 def _one_line(value: Any, limit: int) -> str:
@@ -537,8 +513,7 @@ def propose(
     """Store a card for ``speaker`` (``actions`` already ``check``ed); returns
     its decision id. The same actions still waiting are that card.
     ``on_its_own`` marks it for ``run_on_its_own`` (``on_its_own_refusal``
-    found nothing against it); ``follow_handle_it`` keeps the rule it was
-    checked by, and ``via`` the AI app that asked for it."""
+    found nothing against it); ``via`` names the AI app that asked for it."""
     from openexecutive.memory.decision_ledger import create_decision_instance
 
     digest = hashlib.sha256(
@@ -553,8 +528,6 @@ def propose(
         "private": True,
         "person_id": speaker.id, "why": _one_line(why, WHY_MAX), "digest": digest, "actions": actions,
     }
-    if follow_handle_it:
-        payload["follow_handle_it"] = True
     if via:
         payload["via"] = _one_line(via, NAME_MAX)
     return create_decision_instance(
@@ -569,22 +542,8 @@ def propose(
     )
 
 
-def can_allow(person_id: int, actions: list[Any], *, in_training: bool) -> bool:
-    """Whether Approve + allow has something to allow on a card."""
-    from openexecutive.delegation import training
-
-    return in_training and any(
-        isinstance(a, dict) and training.action_key(person_id, a) is not None
-        and training.allowed_action(person_id, a) is None
-        for a in actions
-    )
-
-
 def cards(person: Any) -> list[ActionCard]:
     """``person``'s waiting cards, for ``GET /delegation/actions``."""
-    from openexecutive.delegation import training
-
-    in_training = training.get(person.id).actions
     out: list[ActionCard] = []
     for card in open_cards(person.id):
         payload = _payload(card)
@@ -598,51 +557,35 @@ def cards(person: Any) -> list[ActionCard]:
                            text=str(a.get("text") or ""))
                 for i, a in enumerate(actions) if isinstance(a, dict)
             ],
-            can_allow=can_allow(person.id, actions, in_training=in_training),
         ))
     return out
 
 
-def on_its_own_refusal(
-    person: Any, actions: list[dict[str, Any]], *, now: datetime, follow_handle_it: bool = False,
-) -> str | None:
+def on_its_own_refusal(person: Any, actions: list[dict[str, Any]], *, now: datetime) -> str | None:
     """Why a card of ``actions`` may not be carried out on its own (a short
-    code), or None when it may. ``follow_handle_it``: a card from another AI
-    app, which follows the person's Handle it for me unless Suggested actions
-    is in training (On doesn't change it). Plain code only; never raises (an error refuses)."""
+    code), or None when it may: Handle it for me and Approvals decide. Plain
+    code only; never raises (an error refuses)."""
     try:
-        return _on_its_own_refusal(person, actions, now, follow_handle_it=follow_handle_it)
+        return _on_its_own_refusal(person, actions, now)
     except Exception:
         logger.warning("action_cards: the on-its-own rules failed — asking instead", exc_info=True)
         return "uncountable"
 
 
-def _handle_it_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> tuple[str | None, int]:
-    """For a card from another AI app outside training: why the person's
-    Handle it for me doesn't cover it, or None, with the longest message its
-    setting sends on its own."""
-    from openexecutive.delegation import handle_it
+def hands_off() -> bool:
+    """Whether Approvals is on Hands-off. Unreadable is not."""
+    try:
+        from openexecutive.orchestrator import outside_mode
 
-    settings = handle_it.get(person.id)
-    if not settings.enabled:
-        return "handle_it_off", 0
-    # Everyone on a card is on their roster (``check``): people they know.
-    # A new contact is not, and always waits, as does a Drive change.
-    if any(a.get("kind") == "add_contact" for a in actions):
-        return "new_contact", 0
-    if any(a.get("kind") in TAP_ONLY_KINDS for a in actions):
-        return "tap_only", 0
-    if settings.level(handle_it.KIND_REPLY_KNOWN) != handle_it.LEVEL_HANDLE:
-        return "level", 0
-    refused = _known_people_refusal(person, actions, now)
-    if refused is not None:
-        return refused, 0
-    return None, min(ON_ITS_OWN_MESSAGE_MAX, settings.rules.max_body_chars)
+        return outside_mode.get_mode() == outside_mode.TRUST
+    except Exception:
+        return False
 
 
 def _known_people_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> str | None:
-    """A card carried out with no allow reaches only people settled on the
-    roster: a new contact, or anyone added lately, waits for a tap."""
+    """Below Hands-off, a card carried out on its own reaches only people
+    settled on the roster: a new contact, or anyone added lately, waits for
+    a tap."""
     if any(a.get("kind") == "add_contact" for a in actions):
         return "new_contact"
     if any(a.get("kind") in TAP_ONLY_KINDS for a in actions):
@@ -667,8 +610,7 @@ def _recipients(actions: list[dict[str, Any]]) -> list[Any]:
 
 
 def _settled(person_id: Any, speaker_id: int, now: datetime) -> bool:
-    """Whether a card from another AI app may reach ``person_id`` with no
-    tap: the speaker, or someone on the roster they know (team or contact)
+    """Whether a card may reach ``person_id`` with no tap below Hands-off: the speaker, or someone on the roster they know (team or contact)
     whose entry is older than ``SETTLED_AFTER``, so nobody added or planted
     lately is reached on its own. Fails closed."""
     from openexecutive.people.store import get_person
@@ -690,53 +632,29 @@ def _settled(person_id: Any, speaker_id: int, now: datetime) -> bool:
     return now - created >= SETTLED_AFTER
 
 
-def _on_its_own_refusal(
-    person: Any, actions: list[dict[str, Any]], now: datetime, *, follow_handle_it: bool = False,
-) -> str | None:
-    from openexecutive.delegation import handle_it, training
+def _on_its_own_refusal(person: Any, actions: list[dict[str, Any]], now: datetime) -> str | None:
+    from openexecutive.delegation import handle_it
     from openexecutive.delegation.settings import can_delegate, is_enabled
     from openexecutive.memory.decision_ledger import STATUS_EXECUTED, list_instances
 
     if person is None or person.id is None:
-        return "training_off"
-    switches = training.get(person.id)
-    in_training = switches.actions
-    # A card from another AI app follows Handle it for me, On or not.
-    by_mode = follow_handle_it and not in_training
-    on = switches.actions_without_asking and not follow_handle_it
-    if not by_mode and not in_training and not on:
-        return "training_off"
+        return "handle_it_off"
     if not can_delegate(person) or not is_enabled(person.id):
         return "act_as_me_off"
+    if not handle_it.get(person.id).enabled:
+        return "handle_it_off"
+    if handle_it.approvals_hold():
+        return "level"
     if not handle_it.signing_ok():
         return "signing_off"
     if not actions:
         return "not_allowed"
     if any(a.get("kind") in ("drive_files", "save_files") for a in actions):
         return "tap_only"
-    message_max = ON_ITS_OWN_MESSAGE_MAX
-    if by_mode:
-        refused, message_max = _handle_it_refusal(person, actions, now)
-        if refused is not None:
-            return refused
-    elif on:
+    if not hands_off():
         refused = _known_people_refusal(person, actions, now)
         if refused is not None:
             return refused
-    elif any(training.allowed_action(person.id, a) is None for a in actions):
-        return "not_allowed"
-    for action in actions:
-        given = action.get("input")
-        stored: dict[str, Any] = given if isinstance(given, dict) else {}
-        texts = [str(stored.get(k) or "") for k in ("text", "title", "description")]
-        if handle_it.sensitive(*texts):
-            return "sensitive"
-        if any(handle_it._LINK_RE.search(t) for t in texts):
-            return "link"
-        if any(handle_it._AMOUNT_RE.search(t) for t in texts):
-            return "amount"
-        if len(str(stored.get("text") or "")) > message_max:
-            return "long"
     day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     done_today = list_instances(
         DECISION_CLASS, status=STATUS_EXECUTED, approver_person_id=person.id,
@@ -899,11 +817,10 @@ async def _do_save_files(stored: dict[str, Any], *, tapped: bool) -> dict[str, s
 
 
 async def approve(
-    instance: Any, *, caller: Any, resolver: int | None, only: Any = None, allow: bool = False,
+    instance: Any, *, caller: Any, resolver: int | None, only: Any = None,
 ) -> list[dict[str, Any]]:
     """Carry out ``instance``'s actions (those in ``only`` when given) for
-    its person, once. ``allow`` is Approve + allow (in training): allow each
-    one that happened from now on. Raises ``ApproveRefused``."""
+    its person, once. Raises ``ApproveRefused``."""
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.settings import can_delegate, is_enabled
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
@@ -940,16 +857,6 @@ async def approve(
         chosen &= set(only)
         if not chosen:
             raise ApproveRefused(422, "bad_selection", "Pick at least one action.")
-    if allow:
-        from openexecutive.delegation import training
-
-        if not training.get(person.id).actions:
-            raise ApproveRefused(422, "cant_allow", "Doing this on its own next time is for cards while Suggested actions is in training.")
-        keys = [found[0] for i in chosen if (found := training.action_key(person.id, actions[i])) is not None]
-        if not keys:
-            raise ApproveRefused(422, "cant_allow", "Nothing on this card can be allowed.")
-        if not all(training.room_for(person.id, k) for k in keys):
-            raise ApproveRefused(409, "learned_full", "It has learned as much as it can hold. Remove something first.")
     if not claim_for_execution(instance.id, resolver_person_id=resolver):
         raise ApproveRefused(409, "already_handled", "This card was already handled.")
     results = await _carry_out(person, actions, chosen, tapped=True)
@@ -961,8 +868,6 @@ async def approve(
         "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],
         **_via(payload),
     })
-    if allow:
-        _allow_done(person.id, actions, results, decision_id=instance.id)
     return results
 
 
@@ -994,28 +899,6 @@ async def _carry_out(
     return results
 
 
-def _allow_done(person_id: int, actions: list[dict[str, Any]], results: list[dict[str, Any]], *, decision_id: int) -> None:
-    """Approve + allow, once the actions ran: allow each one that happened
-    (or went to whoever approves meetings). A failure never undoes them."""
-    from openexecutive.delegation import training
-
-    allowed: list[int] = []
-    for result in results:
-        if result["status"] not in ("done", "waiting"):
-            continue
-        try:
-            found = training.allow_action(person_id, actions[result["index"]], decision_id=decision_id)
-        except Exception:
-            logger.warning("action_cards: the actions ran, but allowing one failed", exc_info=True)
-            continue
-        if found is not None:
-            allowed.append(found.id)
-    if allowed:
-        audit("delegation_actions_allowed", f"Person {person_id} allowed suggested actions in training", {
-            "person_id": person_id, "decision_id": decision_id, "allowed_ids": allowed,
-        })
-
-
 async def run_on_its_own(decision_id: int, person: Any, *, now: datetime | None = None) -> list[dict[str, Any]] | None:
     """Carry out a card ``propose`` marked ``on_its_own``, checking every
     rule again first. None when it was left waiting for the person."""
@@ -1037,9 +920,7 @@ async def run_on_its_own(decision_id: int, person: Any, *, now: datetime | None 
     actions = [a for a in payload.get("actions") or [] if isinstance(a, dict)]
     async with _ON_ITS_OWN_LOCK:
         with rows_for_person(person.id):
-            refused = on_its_own_refusal(
-                person, actions, now=at, follow_handle_it=payload.get("follow_handle_it") is True,
-            )
+            refused = on_its_own_refusal(person, actions, now=at)
             if refused is not None:
                 # An ordinary card again, waiting on their tap.
                 hand_back(decision_id, {**payload, "held_because": refused})
@@ -1058,7 +939,6 @@ def _finish_on_its_own(
     person: Any, decision_id: int, payload: dict[str, Any], actions: list[dict[str, Any]],
     results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    from openexecutive.delegation import training
     from openexecutive.memory.decision_ledger import (
         STATUS_EXECUTED,
         STATUS_FAILED,
@@ -1070,10 +950,6 @@ def _finish_on_its_own(
         decision_id, STATUS_EXECUTED if any_ok else STATUS_FAILED,
         final_payload={**payload, "results": results, "on_its_own": True},
     )
-    for action in actions:
-        allowance = training.allowed_action(person.id, action)
-        if allowance is not None:
-            training.used(allowance)
     audit("delegation_actions_handled", f"Carried out person {person.id}'s action card on its own", {
         "person_id": person.id, "decision_id": decision_id,
         "outcomes": [f"{actions[r['index']].get('kind')}:{r['status']}" for r in results],

@@ -11,11 +11,9 @@ for that sent message (``inbox._claim``) records it.
 
 The ghostwriter writes a short nudge in their voice, from the thread; as for
 replies it has no tools, so the thread's text can at most change the words.
-Whether it goes on its own is ``handle_it.follow_up_refusal``, plain code, by
-the setting: never on Careful, to their team and contacts on Balanced, to
-anyone they wrote to on Bold (with Follow-ups in training, only to people
-they allowed with Send + allow); only to exactly the people their email went to,
-and never on a sensitive topic or with a link or an amount. It goes through
+Whether it goes on its own is ``handle_it.follow_up_refusal``, plain code:
+Handle it for me on and Approvals above Careful, and only to exactly the
+people their email went to. It goes through
 the one send path (``reply_send.send_on_its_own``) on an ordinary
 ``delegation_reply`` card marked ``source: follow_up``; anything refused
 waits on Today, where they send, edit or dismiss it. When anyone answers in

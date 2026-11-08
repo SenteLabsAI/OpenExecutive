@@ -8,24 +8,17 @@ turn read mail, when ``message_person``, the calendar tools and roster writes
 are withheld: that is what it is for. Nothing on the card happens until the
 person approves it, signed in on the web: in the chat it was left in (its chip
 carries the card's id) or on Today; or with its Approve button in a chat app
-that shows cards (``integrations.channel_cards``). The one exception is a card of actions
-they allowed with Approve + allow, with Suggested actions in training
-(``action_cards.run_on_its_own``). That card is usually proposed on a turn
-that read untrusted mail, so a message it sends has model-written text
-nobody reads first: the allowance covers who and what kind, not the words,
-and the sensitive, link, amount and length checks and the daily cap are
-what bound it.
+that shows cards (``integrations.channel_cards``). The exception is a card
+their Handle it for me and Approvals let go (``action_cards.run_on_its_own``):
+carried out at once, with the daily cap bounding it, and below Hands-off
+reaching only people settled on their roster.
 
 A turn another AI app asked to act (``Session.mcp_client_may_act``) is
 offered this tool alone of Act as me's, with no mailbox: what reaches another
 person (a message, an invite) is proposed here instead of sent. Its speaker
 is the caller the API verified (``Session.caller_person_id``), with Act as me
-on. Such a card follows their Handle it for me: it is carried out at once
-when that is on (and Suggested actions not in training) and plain code finds
-nothing against it (``action_cards.on_its_own_refusal`` with
-``follow_handle_it``), and the turn read no outside text
-(``outside_content.read_outside``) or mail; otherwise it waits for their
-tap, as any card does.
+on. Such a card follows the same rule, and below Hands-off it also waits
+when the turn read outside text (``outside_content.read_outside``) or mail.
 """
 from __future__ import annotations
 
@@ -178,21 +171,19 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
         if len(action_cards.open_cards(person.id)) >= action_cards.OPEN_CARDS_MAX:
             return _error(f"They already have {action_cards.OPEN_CARDS_MAX} cards waiting. Ask them to clear some first.")
         pinned.action_cards = getattr(pinned, "action_cards", 0) + 1
-        # In training, a card of actions they all allowed is carried out now;
-        # from an AI app, one their Handle it for me covers.
-        on_its_own = action_cards.on_its_own_refusal(
-            person, checked, now=datetime.now(UTC), follow_handle_it=ai_app,
-        ) is None
-        # From an AI app, a turn that read outside text (a document, a web
-        # page, mail) never sends on its own: its words may be that text's.
-        if ai_app and on_its_own and (
+        # Handle it for me on and Approvals above Careful: carried out now.
+        on_its_own = action_cards.on_its_own_refusal(person, checked, now=datetime.now(UTC)) is None
+        # From an AI app, below Hands-off, a turn that read outside text (a
+        # document, a web page, mail) never sends on its own: its words may
+        # be that text's.
+        if ai_app and on_its_own and not action_cards.hands_off() and (
             outside_content.read_outside() or getattr(pinned, "touched_mail", False) is True
         ):
             on_its_own = False
         decision_id = action_cards.propose(
             person, checked, str(tool_input.get("why") or ""),
             session_id=getattr(session, "session_id", None), on_its_own=on_its_own,
-            follow_handle_it=ai_app, via=via,
+            via=via,
         )
     except Exception:
         logger.warning("propose_actions: couldn't store the card", exc_info=True)
@@ -206,7 +197,7 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
         try:
             results = await action_cards.run_on_its_own(decision_id, person)
         except Exception:
-            logger.warning("propose_actions: carrying out an allowed card failed", exc_info=True)
+            logger.warning("propose_actions: carrying out the card on its own failed", exc_info=True)
             results = None
         if results is not None:
             return json.dumps({
@@ -217,9 +208,8 @@ async def handle_propose_actions(tool_input: dict[str, Any]) -> str:
                     for r in results
                 ],
                 "note": (
-                    "Their settings (Handle it for me) let these go without a tap, so they were carried out now. Tell them what happened."
-                    if ai_app else
-                    "They allowed these in training, so they were carried out now. Tell them what happened."
+                    "Their settings (Handle it for me) let these go without a tap, so they were carried out now. "
+                    "Tell them what happened."
                 ),
             })
     return json.dumps({

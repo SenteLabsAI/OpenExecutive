@@ -89,7 +89,7 @@ class Session:
     # person checks), counts as a verified surface for `caller_person_id`,
     # and offers anything that reaches another person only as an approval
     # card (`propose_actions`), which goes on its own only by the speaker's
-    # Handle it for me (`action_cards.on_its_own_refusal`). It is still
+    # Handle it for me and Approvals (`action_cards.on_its_own_refusal`). It is still
     # never offered `schedule_tools.MCP_CLIENT_ACTING_WITHHELD_TOOLS`, Act as
     # me's mailbox tools, recall_history or extension tools.
     mcp_client_may_act: bool = False

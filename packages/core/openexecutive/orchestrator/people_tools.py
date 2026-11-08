@@ -394,6 +394,13 @@ def _is_verified_speaker_surface(session: Any) -> bool:
     channel = str(getattr(session, "origin_channel", "") or "")
     if channel in _VERIFIED_SPEAKER_CHANNELS:
         return True
+    # The principal's own mail, which their mail service authenticated as
+    # coming from their address (``Session.email_authenticated``, set by the
+    # email poller): they are signed in there as on any other channel, so
+    # their Approvals level decides what runs. Anyone else's mail, or a From
+    # header nothing proved, still isn't.
+    if channel == "email":
+        return getattr(session, "email_authenticated", False) is True
     if channel != "telegram":
         return False
     # Telegram identifies the chat, not the sender, and its webhook is exempt
@@ -457,6 +464,18 @@ def turn_is_private_to_principal() -> bool:
     from openexecutive.orchestrator.schedule_tools import current_session
 
     return getattr(current_session.get(), "private_to_principal", False) is True
+
+
+def private_turn_holds() -> bool:
+    """Whether a private turn (``turn_is_private_to_principal``) keeps a send
+    to the principal alone right now: not under Hands-off, nor for a step the
+    owner approved on a card (``orchestrator.levels.relaxed``). Below
+    Hands-off the dispatch guard already put such a step on a card."""
+    if not turn_is_private_to_principal():
+        return False
+    from openexecutive.orchestrator import levels
+
+    return not levels.relaxed()
 
 
 PRIVATE_TURN_REFUSAL = (

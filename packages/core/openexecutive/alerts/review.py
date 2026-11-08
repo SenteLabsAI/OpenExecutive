@@ -264,7 +264,9 @@ def _authority_level(slug: str | None) -> str:
         from openexecutive.departments import registry as dept_registry
 
         state = dept_registry.get_state(slug)
-        return str(state.config.authority_level.value) if state else "unknown"
+        from openexecutive.departments.authority import department_level
+
+        return str(department_level(slug).value) if state else "unknown"
     except Exception:
         return "unknown"
 

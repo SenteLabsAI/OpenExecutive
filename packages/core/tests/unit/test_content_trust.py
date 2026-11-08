@@ -172,11 +172,11 @@ def test_only_the_principals_interactive_turn_may_load_a_server() -> None:
         "openexecutive.people.store.get_person", return_value=_person(is_principal=True)
     ):
         assert principal_only_withheld(Session(from_web_chat=True, caller_person_id=1)) == frozenset()
-        # Authenticated mail from the principal still may not configure the
-        # install: that is done from the app or chat.
+        # The principal's own authenticated mail is them signed in: their
+        # Approvals level decides, as in the app.
         assert principal_only_withheld(
             Session(origin_channel="email", caller_person_id=1, email_authenticated=True)
-        ) == PRINCIPAL_ONLY_TOOLS
+        ) == frozenset()
     assert principal_only_withheld(Session(origin_channel="email")) == PRINCIPAL_ONLY_TOOLS
     assert "load_mcp_server" in PRINCIPAL_ONLY_TOOLS
 
@@ -390,3 +390,17 @@ def test_a_signal_cannot_close_the_triage_event_block() -> None:
     block = _format_event_block(event)
     assert re.search(r"<\s*/\s*event", block, re.IGNORECASE) is None
     assert "<\\/event" in block
+
+
+def test_the_principals_own_authenticated_mail_is_a_verified_surface() -> None:
+    """Mail the mail service proved came from the principal's address is them
+    signed in; any other mail, or an unproven From, is not."""
+    from openexecutive.orchestrator.people_tools import _is_verified_speaker_surface
+
+    assert _is_verified_speaker_surface(
+        Session(origin_channel="email", caller_person_id=1, email_authenticated=True)
+    )
+    assert not _is_verified_speaker_surface(Session(origin_channel="email", caller_person_id=1))
+    assert not _is_verified_speaker_surface(
+        Session(origin_channel="email", caller_person_id=2, email_sender_authenticated=True)
+    )

@@ -33,10 +33,3 @@ export function onApprovalsChanged<T>(fn: (saved: T) => void): () => void {
 export function approvalsTitle(level: string): string {
   return APPROVALS_LEVELS.find((l) => l.value === level)?.title ?? "Careful";
 }
-
-// Take the lead in training holds at every level: what it starts on its own
-// waits for a yes unless it was allowed. Said under the levels while it's on.
-export function trainingNote(lead: { enabled: boolean; training: boolean } | null): string | null {
-  if (!lead || !lead.enabled || !lead.training) return null;
-  return "What I start on my own still waits for you.";
-}

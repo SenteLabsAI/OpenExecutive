@@ -37,11 +37,10 @@ read is checked for attempts to steer the Executive
 Careful holds all of it after any mail read; Balanced holds all of it only
 once a mail read was flagged or too big to check, or while a read waits for
 its check (``mail_lock_holds``); Hands-off holds none of it on the
-principal's own turn. Whatever the level, a mail read still keeps the posts
-to everyone and the roster and authority changes shut
-(``MAIL_PRIVATE_WITHHELD_TOOLS``): they would spread the owner's private mail
-or change what every send check trusts, whether or not a mail tried to steer
-anything.
+principal's own turn. Below Hands-off, a mail read keeps the posts to
+everyone and the roster and authority changes (``MAIL_PRIVATE_WITHHELD_TOOLS``)
+waiting even once the check cleared it: they would spread the owner's private
+mail. On Hands-off they run like anything else.
 
 The dispatch guard in ``orchestrator.executive`` refuses a withheld call
 without changing the offered tool list (the cached prefix stays the same all
@@ -406,7 +405,7 @@ def mail_turn_withholds(
     """Whether a call to ``tool_name`` is refused on the turn in progress for
     the owner's mail it read (or reads this round, ``reading_now``): what
     ``mail_touched_withholds`` refuses while the lockdown holds
-    (``mail_lock_holds``), and at every level the posts to everyone and the
+    (``mail_lock_holds``), and below Hands-off the posts to everyone and the
     roster changes (``MAIL_PRIVATE_WITHHELD_TOOLS``). ``pinned`` is the
     turn's ``TurnDelegation`` when the caller has it (the chat loop), else the
     bound session's. Never raises; fails closed."""
@@ -420,6 +419,13 @@ def mail_turn_withholds(
             return False
         if mail_lock_holds(pinned, reading_now=reading_now):
             return mail_touched_withholds(tool_name, tool_input) or tool_name in MAIL_PRIVATE_WITHHELD_TOOLS
+        # By the owner's level: Hands-off holds nothing. Below it, a read the
+        # check cleared still keeps the posts to everyone and the roster
+        # changes waiting: they would spread the owner's private mail.
+        from openexecutive.orchestrator import outside_content
+
+        if outside_content.trusted_turn():
+            return False
         if tool_name == "upsert_person":
             return not speaker_named_contact(tool_input)
         return tool_name in MAIL_PRIVATE_WITHHELD_TOOLS

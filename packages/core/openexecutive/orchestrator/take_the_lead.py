@@ -1,40 +1,21 @@
-"""Take the lead: the Executive acts on its own, behind one gate.
+"""Take the lead: the Executive acts on its own, and Approvals decides each step.
 
-Two switches, each off until someone turns it on:
+The unattended passes (reflection, research, the scheduler's proactive
+trigger) keep the acting tools they otherwise lose in solo mode (booking,
+starting a workflow, messaging teammates and not just the principal), and
+every acting call they make goes through ``_gated``: on Hands-off it runs,
+on any other level it waits as a ``take_the_lead_action`` decision with an
+Approve card on Today (``hold``). A message only to the principal skips it:
+they are who it would wait for (``_only_to_principal``). Approving carries
+the exact call out (``carry_out``); declining drops it. What goes out as a
+person (their replies and follow-ups) is Handle it for me's, decided by the
+same level (``delegation.handle_it``).
 
-- **As the Executive** (scope ``executive``, the principal's alone). The
-  unattended passes (reflection, research, the scheduler's proactive trigger)
-  keep the acting tools they otherwise lose in solo mode (booking, starting a
-  workflow, messaging teammates and not just the principal), and every acting
-  call they make goes through ``gate``.
-- **As you** (scope ``person:<id>``). Handle it for me stops applying its
-  Careful / Balanced / Bold limits to that person's replies and follow-ups;
-  the gate's added rules apply instead (``reply_hit``), next to everything
-  Handle it always keeps (signed sign-ins, exactly the thread's people,
-  sensitive topics, one a thread, the daily limit).
-
-**The gate** is plain code. Six kinds of action wait for someone first, each
-with its own Ask first switch (all on to start): money, contracts, people
-decisions, deleting or sharing, someone new, and big sends. On top of them
-the company (set by the principal) and each person (for their own As you)
-add rules: a person or address, a domain, words, or an amount. Added rules
-always hold. A message only to the principal skips the gate: they are who
-it would wait for (``_only_to_principal``). A held action becomes a ``take_the_lead_action`` decision for
-the person whose authority covers it (``people.store.find_approvers``, the
-same scopes the department approval levels use), else the principal, with a
-companion card on Today; approving it carries the exact call out
-(``carry_out``) and declining drops it.
-
-**In training** (the Executive's switch has three positions: Off, In
-training, On). In training, everything the gate would let through still
-waits, as a ``training`` card for the principal, unless the principal has
-allowed that action with that person or thing (``allowance``: "Message
-Priya Nair", "Book meetings with Priya Nair and Sam Lee"). Approving a card
-can allow it from then on, and editing one first can also keep the edit as
-an example of how they want it done (``learned_note``, read by the passes
-that act). Allowing only ever comes from the principal; the six kinds and
-the added rules hold whatever is allowed. After ``SUGGEST_AFTER`` approvals
-of the same action unchanged, Settings suggests allowing it (``suggestions``).
+There is no switch, training or Ask first list of its own any more. The
+rule, Ask first and training code below (``check``, ``list_rules``,
+``get`` / ``set_``, ``suggestions``) is no longer consulted by ``_gated``;
+``take_the_lead_allowed`` still holds Learn from my edits' examples
+(feature ``act_as_me``, ``delegation.training``).
 
 Pausing the Executive stops all of it: every pass above runs behind the
 scheduler's pause gate. A person approving a held action is their own act,
@@ -355,11 +336,9 @@ def set_(
 
 
 def executive_on(*, db_path: Path | None = None) -> bool:
-    return get(SCOPE_EXECUTIVE, db_path=db_path).enabled
-
-
-def as_you_on(person_id: int, *, db_path: Path | None = None) -> bool:
-    return get(person_scope(person_id), db_path=db_path).enabled
+    """The Executive's own background work always keeps its acting tools:
+    Approvals decides each step (``_gated``), not a switch of its own."""
+    return True
 
 
 @dataclass(frozen=True)
@@ -722,16 +701,6 @@ def check(
         if matched and lead.asks_first(kind):
             return Hit(kind, reason)
     return None
-
-
-def reply_hit(person_id: int, texts: list[str], recipients: list[str], *, db_path: Path | None = None) -> Hit | None:
-    """For Take the lead as you: the company's and the person's own added
-    rules against a reply or follow-up. Fails closed."""
-    try:
-        rules = list_rules([SCOPE_COMPANY, person_scope(person_id)], db_path=db_path)
-    except Exception:
-        return Hit("rule", "its rules couldn't be read")
-    return _rule_hit(rules, "\n".join(texts), sorted({r.lower() for r in recipients}))
 
 
 # --------------------------------------------------------------------------- #
@@ -1573,25 +1542,27 @@ def _idem_used(key: str, *, db_path: Path | None = None) -> bool:
 _Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
+def _level_runs() -> bool:
+    """Whether the company's Approvals level lets unattended work act on
+    its own: Hands-off only (``orchestrator.levels``). Never raises: an
+    error holds."""
+    try:
+        from openexecutive.orchestrator import levels, outside_mode
+
+        return levels.decide(levels.UNATTENDED, mode=outside_mode.get_mode()) == levels.RUN
+    except Exception:
+        logger.warning("take_the_lead: couldn't read the level — holding the action", exc_info=True)
+        return False
+
+
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
     allowed: Allowed | None = None
-    try:
-        if (not mcp and _only_to_principal(name, tool_input)) or (
-            mcp and _mail_only_to_principal(name, tool_input)
-        ):
-            hit = None
-        else:
-            lead = get(SCOPE_EXECUTIVE)
-            rules = list_rules([SCOPE_COMPANY])
-            hit = check(name, tool_input, lead=lead, rules=rules, mcp=mcp)
-            if hit is None and lead.training:
-                grant = allowance(name, tool_input, mcp=mcp)
-                allowed = find_allowed(grant[0]) if grant is not None else None
-                if allowed is None:
-                    hit = Hit(TRAINING, "it's in training and you haven't allowed this yet")
-    except Exception:
-        logger.warning("take_the_lead: the gate failed — holding the action", exc_info=True)
-        hit = Hit("rule", "its rules couldn't be read")
+    if (not mcp and _only_to_principal(name, tool_input)) or (
+        mcp and _mail_only_to_principal(name, tool_input)
+    ) or _level_runs():
+        hit = None
+    else:
+        hit = Hit("level", "it came up while nobody was chatting, and Approvals is below Hands-off")
     if hit is not None and mcp and not str(name or "").strip():
         # A connected-app call naming no tool is nothing anyone
         # could approve; an empty "The Executive wants to:" card helps no one.
@@ -1747,13 +1718,14 @@ _LAST_WAKE: dict[str, datetime] = {}
 
 
 def wake(reason: str, *, now: datetime | None = None) -> int | None:
-    """With Take the lead as the Executive on, run the reflection soon
-    (``scheduler.runner``'s ``take_the_lead_wake`` kind) instead of waiting
-    for its daily time: at most one waiting, and one every ``WAKE_GAP``.
-    Returns the scheduled action's id, or None. Never raises; the pause
-    holds it like any scheduled work."""
+    """Under Hands-off, run the reflection soon (``scheduler.runner``'s
+    ``take_the_lead_wake`` kind) instead of waiting for its daily time: at
+    most one waiting, and one every ``WAKE_GAP``. Below Hands-off each step
+    would only wait on a card, so the daily look is enough. Returns the
+    scheduled action's id, or None. Never raises; the pause holds it like
+    any scheduled work."""
     try:
-        if not executive_on():
+        if not _level_runs():
             return None
         from openexecutive.memory.episodic import insert_scheduled_action
         from openexecutive.scheduler.runner import TAKE_THE_LEAD_WAKE_KIND, _has_pending_brief

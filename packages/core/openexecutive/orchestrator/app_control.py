@@ -17,16 +17,17 @@ none (an email, an unattended run) gets a refusal. Some routes check nothing
 about the caller because their page is the principal's; those actions are
 ``principal_only``.
 
-**What waits for a tap.** An action marked ``confirm`` (a delete, a share,
-turning on something that sends as the person, anything that lets more go
-on its own) is never done in the turn. It becomes a card in the chat
+**What waits for a tap.** Approvals decides (``orchestrator.levels``). On
+Hands-off the action is done in the turn. Below it, an action marked
+``confirm`` (a delete, a share, turning on something that sends as the
+person, anything that lets more go on its own) becomes a card in the chat
 (decision class ``app_action``, ``api.routes.decisions``) that only the
 speaker can see and answer, with the action spelled out. Their tap runs it
 with their own request to ``/decisions/{id}/approve``, so a route that needs
 a signed sign-in gets one, and the route checks them again then. After a turn
 has read text from outside the team (``outside_content``) or the speaker's
-own mail, every action waits for a tap: planted text ("delete the Q3 chat")
-can't act on its own. A card left a day goes stale.
+own mail, every action waits for a tap below Hands-off: planted text
+("delete the Q3 chat") can't act on its own. A card left a day goes stale.
 
 **Adding to it.** ``register_kind`` / ``register_action`` / ``register_screen``
 add to the catalog (``app_control_catalog`` holds this repo's), at startup
@@ -170,9 +171,10 @@ def _rebuild() -> None:
             "Do something in Open Executive that the person asked for, as its own "
             "button would: pin, rename, delete, share, turn a setting on or off. "
             f"id comes from find_in_app; for the chat you are in, use id \"{THIS}\". "
-            "Some actions (deletes, shares, anything that sends as them or lets more "
-            "happen on its own) leave a card for them to confirm instead: say it is "
-            "waiting for their OK, never that it is done. If it is refused, say why "
+            "Below Hands-off, some actions (deletes, shares, anything that sends as them "
+            "or lets more happen on its own) leave a card for them to confirm instead: "
+            "if the result says waiting_for_approval, say it is waiting for their OK, "
+            "never that it is done. If it is refused, say why "
             "in their words; don't retry.\n" + "\n".join(lines)
         ),
         "input_schema": {
@@ -485,23 +487,9 @@ async def handle_do_in_app(tool_input: dict[str, Any]) -> str:
         return _error("Couldn't check that just now. Try again in a moment.")
 
     details = {"action": action.name, "kind": kind.name, "id": item_id, "person_id": person.id}
-    if action.needs_tap(item_id, value) or _turn_read_outside(session):
-        card = card_text(action, title or "", value)
-        try:
-            decision_id = _leave_card(person.id, session, action, item_id, value, title or "", card)
-        except Exception:
-            logger.exception("do_in_app: couldn't leave the card for %s", action.name)
-            return _error("Couldn't leave the card just now. Try again in a moment.")
-        _audit("app_action_proposed", f"Left a card: {card[:120]}", {**details, "decision_id": decision_id})
-        return json.dumps({
-            "status": "waiting_for_approval",
-            "decision_id": decision_id,
-            "card": card,
-            "note": (
-                "Nothing has happened yet. A card is under this reply in the web app for "
-                "them to confirm. Tell them it is waiting for their OK."
-            ),
-        })
+    held = action.needs_tap(item_id, value) or _turn_read_outside(session)
+    if held and not _hands_off():
+        return _card_result(person.id, session, action, item_id, value, title or "", details)
 
     try:
         with from_chat():
@@ -509,6 +497,11 @@ async def handle_do_in_app(tool_input: dict[str, Any]) -> str:
     except Refused as exc:
         return _error(str(exc))
     except HTTPException as exc:
+        if held and exc.status_code == 409 and "caller_signing_required" in str(exc.detail):
+            # Hands-off ran it, but the route wants the person's own signed
+            # request (turning on something that sends as them): their tap
+            # on a card is that request.
+            return _card_result(person.id, session, action, item_id, value, title or "", details)
         _audit("app_action_refused", f"{action.name} refused", {**details, "status": exc.status_code})
         return _error(refusal_text(exc))
     except Exception:
@@ -516,6 +509,41 @@ async def handle_do_in_app(tool_input: dict[str, Any]) -> str:
         return _error("That didn't go through. Try again in a moment, or do it on the screen.")
     _audit("app_action_done", did[:200], details)
     return json.dumps({"status": "done", "did": did})
+
+
+def _card_result(
+    person_id: int, session: Any, action: Action, item_id: str, value: str, title: str, details: dict[str, Any],
+) -> str:
+    """Leave the action on a card for the speaker's tap, and say so."""
+    card = card_text(action, title, value)
+    try:
+        decision_id = _leave_card(person_id, session, action, item_id, value, title, card)
+    except Exception:
+        logger.exception("do_in_app: couldn't leave the card for %s", action.name)
+        return _error("Couldn't leave the card just now. Try again in a moment.")
+    _audit("app_action_proposed", f"Left a card: {card[:120]}", {**details, "decision_id": decision_id})
+    return json.dumps({
+        "status": "waiting_for_approval",
+        "decision_id": decision_id,
+        "card": card,
+        "note": (
+            "Nothing has happened yet. A card is under this reply in the web app for "
+            "them to confirm. Tell them it is waiting for their OK."
+        ),
+    })
+
+
+def _hands_off() -> bool:
+    """Whether Approvals lets a confirm action run in the turn: Hands-off
+    (``levels.relaxed``; never on a turn answering mail from someone not in
+    People). Never raises: an error leaves the card."""
+    try:
+        from openexecutive.orchestrator import levels
+
+        return levels.relaxed()
+    except Exception:
+        logger.warning("app_control: couldn't read the level — leaving a card", exc_info=True)
+        return False
 
 
 async def handle_open_in_app(tool_input: dict[str, Any]) -> str:

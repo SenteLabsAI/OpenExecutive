@@ -15,10 +15,13 @@ stays stable. No new outbound capability is granted: approval-gate and cadence
 recipients must be rostered people (enforced by ``validate_definition``), and
 cadence delivery reuses the scheduler's existing guarded send.
 
-A workflow with action (tool-using) steps is saved **inactive**. The chat
-confirmation is a token this model holds itself, so it cannot stand in for a
-person seeing the tools; the workflow runs (or schedules) only after someone
-turns it on from its review card at ``/jobs/{name}``.
+Approvals decides the rest (``workflow_change.hands_off``). On Hands-off a
+workflow is saved switched on, straight after drafting. Below it, the
+person confirms the summary first, and a workflow with action (tool-using)
+steps is saved **inactive**: the chat confirmation is a token this model
+holds itself, so it cannot stand in for a person seeing the tools; the
+workflow runs (or schedules) only after someone turns it on from its review
+card at ``/jobs/{name}``.
 """
 from __future__ import annotations
 
@@ -122,9 +125,9 @@ DRAFT_WORKFLOW_TOOL: dict[str, Any] = {
         "Draft a new reusable executive workflow (a structured, multi-step job "
         "the user can re-run from /jobs) WITHOUT saving it. Use when the user "
         "asks you to create, build, or set up a custom workflow. Returns a "
-        "confirm_token and a summary of the plan. You MUST show the summary to "
-        "the user and get explicit confirmation, then call save_workflow with "
-        "the SAME definition and the confirm_token. Do NOT invent specialists, "
+        "confirm_token, a summary of the plan and a note. Follow the note: "
+        "usually show the summary to the user and get their confirmation, then "
+        "call save_workflow with the SAME definition and the confirm_token. Do NOT invent specialists, "
         "people, or metrics — only use the specialist roles and people the "
         "user has identified. If validation fails, the response lists exactly "
         "what to fix; re-draft and try again. A workflow with action (tool) "
@@ -206,7 +209,8 @@ def _reads_refusal(defn: Any) -> str | None:
 
 
 def _needs_review(defn: Any) -> bool:
-    """True when the workflow has tool-using steps, which a person must approve.
+    """True when the workflow has tool-using steps, which a person must
+    approve below Hands-off.
 
     Their approval is turning the workflow on from its review card on the Workflows
     page — a chat confirmation (a token this model holds itself) is not a
@@ -214,6 +218,8 @@ def _needs_review(defn: Any) -> bool:
     """
     from openexecutive.workflows.dynamic_models import ActionStepSpec
 
+    if workflow_change.hands_off():
+        return False
     return any(isinstance(step, ActionStepSpec) for step in defn.steps)
 
 
@@ -271,7 +277,10 @@ async def handle_draft_workflow(tool_input: dict[str, Any]) -> str:
         return json.dumps({"error": error})
     token = _canonical_token(tool_input["definition"])
     note = (
-        "Show this summary to the user. After they confirm, call "
+        "Approvals is on Hands-off: save it now with save_workflow, the same "
+        "definition and this confirm_token, then tell the user what you saved."
+        if not on_card and workflow_change.hands_off()
+        else "Show this summary to the user. After they confirm, call "
         "save_workflow with the same definition and this confirm_token."
     )
     if on_card:
