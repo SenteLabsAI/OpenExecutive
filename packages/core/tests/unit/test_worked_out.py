@@ -310,7 +310,7 @@ def test_a_figure_heard_on_a_call_says_so() -> None:
 def test_one_row_per_thing_however_it_was_worded() -> None:
     _keep(1, "Waitlist count (admin overview)", "310", "Admin overview")
     _keep(1, "Waitlist count (brief)", "312", "Admin overview")
-    _keep(1, "Beta waitlist count", "315", "Admin overview")
+    _keep(1, "Waitlist count (launch email)", "315", "Admin overview")
     assert [f["figure"] for f in wo.list_figures(1)] == ["315"]
 
 
@@ -318,6 +318,28 @@ def test_different_things_with_similar_names_stay_apart() -> None:
     for plan, price in (("Starter", "$100"), ("Growth", "$200"), ("Scale", "$300")):
         _keep(1, f"{plan} plan monthly price", price, "Pricing doc")
     assert len(wo.list_figures(1)) == 3
+
+
+def test_another_word_makes_another_figure() -> None:
+    _keep(1, "Q3 revenue", "$4.2M", "Ledger")
+    _keep(1, "Q3 revenue growth", "12%", "Ledger")
+    _keep(1, "Pine View net to owner per month", "$9,000", "Ledger")
+    _keep(1, "Pine View net to owner", "$108,000", "Ledger")
+    assert sorted(f["figure"] for f in wo.list_figures(1)) == ["$108,000", "$4.2M", "$9,000", "12%"]
+
+
+def test_figures_from_one_turn_never_replace_each_other() -> None:
+    ids = wo.add_figures(1, [wo.Figure("Reserves held", "$1", "Ledger"), wo.Figure("reserves held", "$2", "Ledger")],
+                         session_id="s1", private=False)
+    assert len(ids) == 2 and len(wo.list_figures(1)) == 2
+
+
+@pytest.mark.parametrize("figure", ["Invoice #4471 total: $1,200", "Ranked #1 of 40", "Pins sold: 140",
+                                    "Ratio 3:15 to 1"])
+def test_a_figure_that_only_looks_like_ids_or_a_time_is_kept(figure: str) -> None:
+    fig = wo.check_figure(_raw(subject="Order figures", figure=figure), reply=f"Per the DCA statement: {figure}",
+                          read=READ, today=TODAY)
+    assert fig is not None, figure
 
 
 def test_a_target_or_forecast_is_its_own_figure() -> None:

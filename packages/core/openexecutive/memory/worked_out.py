@@ -52,16 +52,18 @@ _RESULTS_MAX = 12000
 _MAX_TOKENS = 800
 _DIGIT = re.compile(r"\d")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
-# Three or more bare whole numbers in a list ("112, 118, 119", "#12 #14 #15"):
-# record ids, not a figure. A thousands separator has no space after it.
-_ID_LIST = re.compile(r"#?\b\d+\b(?:\s*(?:,|and|&)?\s+#?\b\d+\b){2,}|#\d+")
+# Three or more bare whole numbers in a separated list ("112, 118, 119",
+# "#12, #14 and #15"), or two "#" ids: record ids, not a figure. A thousands
+# separator has no space after it; one "#" (an invoice, a unit, a rank) is a
+# figure's own name.
+_ID_LIST = re.compile(r"#?\b\d+\b(?:(?:,\s+|\s+(?:and|&)\s+|\s*&\s*)#?\b\d+\b){2,}|#\d+\b(?:,?\s+(?:and\s+)?)#\d+")
 # The app's own name for what people owe: status, and a word nobody uses.
 _INTERNAL = re.compile(r"\bloops?\b", re.IGNORECASE)
 # What is read live or is no figure at all: a way into a meeting, a clock
 # time, a count of watch suggestions or of an error's occurrences.
 _NOT_A_FIGURE = re.compile(
-    r"\b(?:pass ?codes?|passwords?|pins?|meeting ids?|dial-?in|access codes?|watch(?:list)? suggestions?"
-    r"|occurrences?)\b|\b\d{1,2}(?::\d{2})?\s?(?:am|pm)\b|\b\d{1,2}:\d{2}\b",
+    r"\b(?:pass ?codes?|passwords?|meeting ids?|dial-?in|access codes?|watch(?:list)? suggestions?"
+    r"|occurrences?)\b|\b\d{1,2}(?::\d{2})?\s?(?:am|pm)\b",
     re.IGNORECASE,
 )
 # Read back from what the turn was shown (today's brief, a digest, memory
@@ -78,13 +80,7 @@ _HEARD_SOURCE = re.compile(r"\b(?:transcripts?|meeting notes|call notes|on the c
 HEARD = "heard on a call"
 # A subject's own parenthetical ("Waitlist count (brief)") says where, not what.
 _ASIDE = re.compile(r"\([^)]*\)")
-# Two subjects name the same thing when the longer one only adds this many
-# words to the shorter one's.
-_SAME_EXTRA = 2
-# Words that make a different figure of the same thing: "Q3 revenue" and "Q3
-# revenue target" are two figures, never one replacing the other.
-_OTHER_KIND = ("target", "goal", "plan", "budget", "forecast", "project", "estimat", "quota", "actual", "limit",
-               "cap", "max", "min", "averag", "previous", "prior", "last", "next")
+
 # Tools that read the Executive's own tracking, which is always read live:
 # their numbers are status, not figures to keep.
 _STATUS_TOOLS = frozenset({
@@ -162,18 +158,11 @@ def _key(subject: str) -> str:
 
 
 def same_subject(a: str, b: str) -> bool:
-    """Whether two subject keys name the same thing: equal, or the shorter
-    one's words (two or more) all in the longer one, which adds at most
-    ``_SAME_EXTRA``, none of them one that makes it another figure
-    (``_OTHER_KIND``: a target, a forecast). "Starter plan price" and "Growth
-    plan price" differ, so they stay two."""
-    if a == b:
-        return True
-    short, long = sorted((set(a.split()), set(b.split())), key=len)
-    extra = long - short
-    if any(word.startswith(_OTHER_KIND) for word in extra):
-        return False
-    return len(short) >= 2 and short <= long and len(extra) <= _SAME_EXTRA
+    """Whether two subject keys name the same thing: the same words, once
+    each subject's own parenthetical ("(brief)", "(launch email)") is dropped
+    (``_key``). Any other word makes another figure: "Q3 revenue growth" or
+    "Q3 revenue target" never replaces "Q3 revenue"."""
+    return set(a.split()) == set(b.split())
 
 
 def _numbers(text: str) -> set[str]:
@@ -256,7 +245,7 @@ def add_figures(
             # same subject, however the subject was worded then.
             stale = [int(r["id"]) for r in conn.execute(
                 f"SELECT id, subject_key FROM {TABLE} WHERE person_id = ?", (person_id,))  # noqa: S608
-                if same_subject(key, str(r["subject_key"]))]
+                if same_subject(key, str(r["subject_key"])) and int(r["id"]) not in ids]
             conn.executemany(f"DELETE FROM {TABLE} WHERE id = ?", [(i,) for i in stale])  # noqa: S608
             cur = conn.execute(
                 f"INSERT INTO {TABLE} (person_id, subject, subject_key, figure, source, as_of, "  # noqa: S608

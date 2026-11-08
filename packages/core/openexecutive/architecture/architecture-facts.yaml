@@ -5406,9 +5406,9 @@ chat:
     with items named, not numbered, and _status_like refuses a figure that
     lists record ids or says "loops" when kept, listed, read back or shown
     under Memory changes (so an older one like that stays hidden).
-    One row per thing: same_subject treats a subject whose words (its own
-    parenthetical dropped) all appear in another's, plus at most two, as the
-    same, so a new figure replaces it. Never a meeting's time, id or passcode,
+    One row per thing: same_subject treats subjects with the same words, once
+    each one's own parenthetical is dropped, as the same, so a new figure
+    replaces the old (never one kept in the same pass). Never a meeting's time, id or passcode,
     a count of watch suggestions or error occurrences, or a number whose
     source is the brief, a digest or memory itself. A transcript's number is
     kept as "heard on a call". No pass on a turn the person wrote nothing in
