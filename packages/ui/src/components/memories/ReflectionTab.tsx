@@ -14,57 +14,33 @@ import {
   type ReflectionMiss,
   type ReflectionReplay,
   type ReflectionState,
-  type ReflectionWeek,
 } from "@/lib/api";
-import {
-  DeferredForget,
-  fixedMissIds,
-  groupByTopic,
-  learningStats,
-  toggleAll,
-  unhelpfulLessonIds,
-  type MissTopic,
-} from "@/lib/learning";
+import { DeferredForget, learningStats, nowRight, toggleAll, unhelpfulLessonIds } from "@/lib/learning";
 
 import { EmptyState, STAT_VALUE_TONE, formatDate, formatRunAt, type StatTone } from "./shared";
 import { PageSpinner } from "@/components/ui/Spinner";
 
-// Learning (the Reflection screen). At the top, this week's numbers, with how
-// it learns one tap away. After a chat goes quiet, the conversation review
-// grades each turn from the person's own words, the reply and the signals the
-// product recorded (a 👎, a stopped reply, a turn taken back, a claim no tool
-// backed, a failed tool). The misses land here with what the person wanted
-// instead, so the owner can see where the Executive falls short in this
-// workspace. Each person sees their own; the owner also the ones from
-// channels and group chats (never a teammate's own chat).
-// Beside the misses, what it learned from them: one-line lessons in the
-// person's own words that reach later turns, with how those turns went.
-// A lesson that doesn't help retires on its own; Forget retires it by hand.
-// At night the Executive replays the misses with today's lessons, in a dry
-// run nobody receives, and a judge says whether each would now go right:
-// that is the "would go right today" number, and the note on each miss.
-// The list is long, so it is split by category, a row opens for its detail,
-// and several can be forgotten at once. Forgetting waits a few seconds for
-// Undo before it is sent, since a forgotten miss is deleted.
+// Learning (the Reflection screen). After a chat goes quiet, the conversation
+// review grades each turn from the person's own words, the reply and the
+// signals the product recorded (a 👎, a stopped reply, a turn taken back, a
+// claim no tool backed, a failed tool). From what fell short it keeps
+// one-line lessons in the person's own words that reach later turns, and at
+// night it replays the misses with today's lessons, in a dry run nobody
+// receives, where a judge says whether each would now go right.
+// This screen shows only what came of that: the lessons in use, with how many
+// chats they reached, and the misses the nightly recheck now gets right. What
+// fell short is never listed or counted here; it feeds the lessons and the
+// recheck. Each person sees their own; the owner also the ones from channels
+// and group chats (never a teammate's own chat).
+// A lesson that doesn't help retires on its own; Stop saying retires it by
+// hand. Several rows can be cleared at once, and clearing waits a few
+// seconds for Undo before it is sent, since a forgotten row is deleted.
 // Nothing here notifies anyone: it is a record, opened on purpose.
 
-type View = "misses" | "lessons";
-type Category = "all" | MissTopic;
+type View = "lessons" | "misses";
 
-const EMPTY =
-  "Nothing yet. After a chat goes quiet, the Executive grades its own answers; the ones that fell short show up here.";
-
-const TOPIC_LABEL: Record<MissTopic, string> = {
-  term: "Words you use",
-  fact: "Facts",
-  preference: "How you like it",
-  specialist: "Who to ask",
-  do_it: "Do it, don't promise it",
-  company: "Something to learn",
-  tool: "A tool failed",
-  cant: "Can't do it yet",
-  product: "Couldn't do it",
-};
+const EMPTY_LESSONS = "No lessons yet. After a chat goes quiet, I look back at it and keep what I learn here.";
+const EMPTY_FIXED = "Nothing here yet. When a nightly recheck shows I now get something right, it shows here.";
 
 const RETIRED_LABEL: Record<NonNullable<ReflectionLesson["retired_reason"]>, string> = {
   unhelpful: "stopped: the chats it reached went worse",
@@ -91,8 +67,7 @@ function sendForget(f: Forget, keepalive: boolean): Promise<void> {
 export default function ReflectionTab() {
   const [state, setState] = useState<ReflectionState | null | undefined>(undefined);
   const [failed, setFailed] = useState(false);
-  const [view, setView] = useState<View>("misses");
-  const [category, setCategory] = useState<Category>("all");
+  const [view, setView] = useState<View>("lessons");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [open, setOpen] = useState<Set<number>>(new Set());
   const [showRetired, setShowRetired] = useState(false);
@@ -131,9 +106,8 @@ export default function ReflectionTab() {
     };
   }, [queue]);
 
-  const pick = useCallback((next: { view?: View; category?: Category }) => {
-    if (next.view !== undefined) setView(next.view);
-    if (next.category !== undefined) setCategory(next.category);
+  const pick = useCallback((next: View) => {
+    setView(next);
     setSelected(new Set());
     setOpen(new Set());
   }, []);
@@ -173,18 +147,13 @@ export default function ReflectionTab() {
     );
   }
 
-  const { weeks, replay, sees_everyone: seesEveryone } = state;
-  const misses = state.misses.filter((m) => !hidden.has(`m:${m.id}`));
+  const { replay, sees_everyone: seesEveryone } = state;
+  const misses = nowRight(state.misses.filter((m) => !hidden.has(`m:${m.id}`)));
   const lessons = state.lessons.filter((l) => !hidden.has(`l:${l.id}`));
   const live = lessons.filter((l) => l.retired_at === null);
   const retired = lessons.filter((l) => l.retired_at !== null);
-  const topics = groupByTopic(misses);
-  // A chip whose misses are all gone (forgotten, or a refresh) falls back to
-  // All, so the other topics stay in reach.
-  const cat: Category = category !== "all" && !topics.some((g) => g.topic === category) ? "all" : category;
-  const shownMisses = cat === "all" ? misses : (topics.find((g) => g.topic === cat)?.items ?? []);
-  const shownIds = view === "misses" ? shownMisses.map((m) => m.id) : live.map((l) => l.id);
-  const quick = view === "misses" ? fixedMissIds(shownMisses) : unhelpfulLessonIds(live);
+  const shownIds = view === "misses" ? misses.map((m) => m.id) : live.map((l) => l.id);
+  const quick = view === "misses" ? [] : unhelpfulLessonIds(live);
   const allSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
   const toggle = (id: number) =>
     setSelected((s) => {
@@ -203,43 +172,22 @@ export default function ReflectionTab() {
 
   return (
     <div className="space-y-5">
-      <ThisWeek weeks={weeks} liveLessons={live.length} replay={replay} />
+      <GettingBetter lessons={lessons} misses={misses} replay={replay} />
 
-      <div className="space-y-3">
-        <SectionTabs<View>
-          label="Show"
-          idBase={tabsId}
-          active={view}
-          onChange={(v) => pick({ view: v, category: "all" })}
-          tabs={[
-            { id: "misses", label: "What fell short", count: misses.length },
-            { id: "lessons", label: "What it learned", count: live.length },
-          ]}
-        />
-        {view === "misses" && topics.length > 1 && (
-          <div role="group" aria-label="Category" className="flex flex-wrap gap-2">
-            {(["all", ...topics.map((g) => g.topic)] as Category[]).map((c) => (
-              <button
-                key={c}
-                type="button"
-                onClick={() => pick({ category: c })}
-                aria-pressed={cat === c}
-                className={`h-10 text-sm px-3.5 rounded-xl border transition-colors ${
-                  cat === c
-                    ? "bg-accent/10 text-accent border-accent/30"
-                    : "bg-surface-overlay/40 text-fg-muted border-line hover:text-fg"
-                }`}
-              >
-                {c === "all" ? "All" : TOPIC_LABEL[c]}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <SectionTabs<View>
+        label="Show"
+        idBase={tabsId}
+        active={view}
+        onChange={pick}
+        tabs={[
+          { id: "lessons", label: "What I learned", count: live.length },
+          { id: "misses", label: "Now gets right", count: misses.length },
+        ]}
+      />
 
       <Card {...sectionPanelProps(tabsId, view)}>
         {shownIds.length === 0 && (view === "misses" || retired.length === 0) ? (
-          <EmptyState message={view === "misses" ? EMPTY : "No lessons yet. They come from the misses."} />
+          <EmptyState message={view === "misses" ? EMPTY_FIXED : EMPTY_LESSONS} />
         ) : (
           <>
             {shownIds.length > 0 && (
@@ -259,31 +207,27 @@ export default function ReflectionTab() {
                     onClick={() => setSelected(new Set(quick))}
                     className="min-h-[40px] text-sm font-semibold text-accent hover:underline"
                   >
-                    {view === "misses"
-                      ? `Select the ${quick.length} that ${quick.length === 1 ? "is" : "are"} fixed`
-                      : `Select the ${quick.length} not helping`}
+                    {`Select the ${quick.length} not helping`}
                   </button>
                 )}
               </div>
             )}
-            {view === "misses" &&
-              (cat === "all" ? topics : [{ topic: cat, items: shownMisses }]).map((g) => (
-                <div key={g.topic} className="pb-2">
-                  {cat === "all" && <GroupHeading title={TOPIC_LABEL[g.topic]} count={g.items.length} />}
-                  {g.items.map((m, i) => (
-                    <MissRow
-                      key={m.id}
-                      miss={m}
-                      first={i === 0}
-                      seesEveryone={seesEveryone}
-                      selected={selected.has(m.id)}
-                      onToggle={() => toggle(m.id)}
-                      expanded={open.has(m.id)}
-                      onExpand={() => toggleOpen(m.id)}
-                    />
-                  ))}
-                </div>
-              ))}
+            {view === "misses" && (
+              <div className="pb-2">
+                {misses.map((m, i) => (
+                  <FixedRow
+                    key={m.id}
+                    miss={m}
+                    first={i === 0}
+                    seesEveryone={seesEveryone}
+                    selected={selected.has(m.id)}
+                    onToggle={() => toggle(m.id)}
+                    expanded={open.has(m.id)}
+                    onExpand={() => toggleOpen(m.id)}
+                  />
+                ))}
+              </div>
+            )}
             {view === "lessons" && (
               <div className="pb-2">
                 {live.length > 0 && seesEveryone && (
@@ -394,7 +338,7 @@ const STEPS: { title: string; body: string; when?: string }[] = [
   },
   {
     title: "It looks back",
-    body: "Once the chat goes quiet, it checks each answer. It finishes anything left undone and notes what fell short.",
+    body: "Once the chat goes quiet, it checks each answer. It finishes anything left undone and notes what it could do better.",
     when: "30 min after",
   },
   {
@@ -404,39 +348,38 @@ const STEPS: { title: string; body: string; when?: string }[] = [
   },
   {
     title: "It checks itself",
-    body: "Each night it reruns what went wrong, in a dry run nobody receives. A lesson that doesn't help is dropped.",
+    body: "Each night it reruns those answers with what it has learned, in a dry run nobody receives. A lesson that doesn't help is dropped.",
     when: "Every night",
   },
 ];
 
-/** This week's numbers, with the four steps of how it learns behind a link. */
-function ThisWeek({
-  weeks,
-  liveLessons,
+/** What came of the learning so far, with the four steps of how it learns behind a link. */
+function GettingBetter({
+  lessons,
+  misses,
   replay,
 }: {
-  weeks: ReflectionWeek[];
-  liveLessons: number;
+  lessons: ReflectionLesson[];
+  misses: ReflectionMiss[];
   replay: ReflectionReplay;
 }) {
   const [how, setHow] = useState(false);
-  const stats = learningStats(weeks, liveLessons, replay);
+  const stats = learningStats(lessons, misses);
   const lastRun = replay.last_run_at ? formatRunAt(replay.last_run_at).absolute : null;
   const numbers: { value: string; label: string; tone: StatTone }[] = [
-    { value: String(stats.checked), label: "answers checked", tone: "default" },
-    { value: String(stats.fellShort), label: "fell short", tone: stats.fellShort > 0 ? "amber" : "default" },
-    { value: String(stats.lessons), label: stats.lessons === 1 ? "lesson kept" : "lessons kept", tone: "accent" },
+    { value: String(stats.lessons), label: stats.lessons === 1 ? "lesson in use" : "lessons in use", tone: "accent" },
+    { value: String(stats.uses), label: stats.uses === 1 ? "time used in a chat" : "times used in chats", tone: "default" },
     {
-      value: stats.wouldGoRight ? `${stats.wouldGoRight.pass} of ${stats.wouldGoRight.of}` : "–",
-      label: stats.wouldGoRight ? "would go right today" : "nothing to recheck yet",
-      tone: stats.wouldGoRight && stats.wouldGoRight.pass > 0 ? "emerald" : "default",
+      value: String(stats.nowRight),
+      label: stats.nowRight === 1 ? "thing I now get right" : "things I now get right",
+      tone: stats.nowRight > 0 ? "emerald" : "default",
     },
   ];
   return (
-    <section aria-labelledby="learning-this-week" className="rounded-2xl border border-line bg-surface-elevated p-4 sm:p-6">
+    <section aria-labelledby="learning-getting-better" className="rounded-2xl border border-line bg-surface-elevated p-4 sm:p-6">
       <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 id="learning-this-week" className="text-lg font-semibold text-fg">
-          This week
+        <h2 id="learning-getting-better" className="text-lg font-semibold text-fg">
+          Getting better
         </h2>
         <button
           type="button"
@@ -444,11 +387,11 @@ function ThisWeek({
           aria-expanded={how}
           className="inline-flex h-10 items-center gap-1 rounded-xl px-2 -mr-2 text-sm font-semibold text-accent hover:bg-surface-overlay transition-colors"
         >
-          How it learns
+          How I learn
           <Icon name="chevron-right" size="w-4 h-4" className={how ? "rotate-90" : ""} />
         </button>
       </div>
-      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-4 sm:gap-6">
+      <dl className="grid grid-cols-3 gap-4 sm:gap-6">
         {numbers.map((n) => (
           <div key={n.label} className="min-w-0 flex flex-col-reverse">
             <dt className="text-sm text-fg-muted mt-1">{n.label}</dt>
@@ -483,22 +426,12 @@ function ThisWeek({
           </ol>
           <p className="text-sm text-fg-muted mt-3">
             Chats that read your mail are looked at for you alone.
-            {lastRun ? ` Last checked ${lastRun}.` : " The first nightly check runs once something has gone wrong."}
-            {replay.evidence > 0 &&
-              ` ${replay.evidence} ${replay.evidence === 1 ? "depends" : "depend"} on what that day's calendar or inbox held, so ${replay.evidence === 1 ? "it is" : "they are"} kept as evidence only.`}
+            {lastRun ? ` Last checked ${lastRun}.` : " The first nightly check hasn't run yet."}
           </p>
         </div>
       )}
     </section>
   );
-}
-
-/** The miss's last replay: still wrong, would go right now, or evidence only. */
-function replayLabel(miss: ReflectionMiss): string | null {
-  if (miss.replay_state === "closed" && miss.closed_at) return `Would go right today (since ${formatDate(miss.closed_at)})`;
-  if (miss.replay_state === "evidence") return "Can't be replayed: depends on that day";
-  if (miss.replayed_at) return `Still goes wrong (replayed ${formatDate(miss.replayed_at)})`;
-  return null;
 }
 
 /** One selectable row: a checkbox, then the line and its meta, which open the detail. */
@@ -552,7 +485,8 @@ function Row({
   );
 }
 
-function MissRow({
+/** A miss the nightly recheck now gets right: what was asked, and since when. */
+function FixedRow({
   miss,
   first,
   seesEveryone,
@@ -569,7 +503,6 @@ function MissRow({
   expanded: boolean;
   onExpand: () => void;
 }) {
-  const replay = replayLabel(miss);
   return (
     <Row
       first={first}
@@ -580,24 +513,18 @@ function MissRow({
       onExpand={onExpand}
       meta={
         <>
-          {formatDate(miss.created_at)}
+          <span className="text-emerald-500">
+            Gets it right{miss.closed_at ? ` since ${formatDate(miss.closed_at)}` : " now"}
+          </span>
           {seesEveryone && miss.person_name && ` · ${miss.person_name}`}
-          {miss.replay_state === "closed" && <span className="text-emerald-500"> · would go right today</span>}
         </>
       }
     >
-      <p>
-        <span className="font-medium">It said: </span>
-        {miss.reply}
-      </p>
       {miss.wanted && (
         <p className="text-fg">
-          <span className="font-medium text-fg-muted">They wanted: </span>
+          <span className="font-medium text-fg-muted">Wanted: </span>
           {miss.wanted}
         </p>
-      )}
-      {(miss.signals.length > 0 || replay) && (
-        <p title={miss.replay_notes || undefined}>{[...miss.signals, ...(replay ? [replay] : [])].join(" · ")}</p>
       )}
       <Link
         href={`/?session=${encodeURIComponent(miss.session_id)}`}
@@ -627,10 +554,11 @@ function LessonRow({
   onExpand: () => void;
 }) {
   const reached = lesson.shown;
+  // "not helping yet" is what "Select the N not helping" picks by.
   const went =
     reached === 0
-      ? "not reached a chat yet"
-      : `reached ${reached} ${reached === 1 ? "chat" : "chats"}: ${lesson.fine_after} went fine, ${lesson.miss_after} fell short`;
+      ? "not used yet"
+      : `used in ${reached} ${reached === 1 ? "chat" : "chats"}${lesson.miss_after > lesson.fine_after ? " · not helping yet" : ""}`;
   return (
     <Row
       first={first}

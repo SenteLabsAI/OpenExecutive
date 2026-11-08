@@ -1,68 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeferredForget, fixedMissIds, groupByTopic, isoWeek, learningStats, missTopic, toggleAll, unhelpfulLessonIds } from "../src/lib/learning.ts";
+import { DeferredForget, learningStats, nowRight, toggleAll, unhelpfulLessonIds } from "../src/lib/learning.ts";
 
-test("isoWeek matches Python's isocalendar, across a year end", () => {
-  assert.equal(isoWeek(new Date("2026-10-19T09:00:00Z")), "2026-W43");
-  assert.equal(isoWeek(new Date("2026-10-18T23:00:00Z")), "2026-W42");
-  assert.equal(isoWeek(new Date("2027-01-01T12:00:00Z")), "2026-W53");
-  assert.equal(isoWeek(new Date("2024-12-30T12:00:00Z")), "2025-W01");
-});
-
-test("the card counts this week only, and lessons and replays as given", () => {
-  const weeks = [
-    { week: "2026-W43", graded: 14, misses: 2 },
-    { week: "2026-W42", graded: 30, misses: 5 },
+test("the card counts only what went right: live lessons, times used, misses now right", () => {
+  const lessons = [
+    { retired_at: null, shown: 3 },
+    { retired_at: null, shown: 2 },
+    { retired_at: "2026-10-20T00:00:00Z", shown: 9 },
   ];
-  const now = new Date("2026-10-19T09:00:00Z");
-  assert.deepEqual(learningStats(weeks, 1, { misses: 2, would_pass: 1 }, now), {
-    checked: 14,
-    fellShort: 2,
-    lessons: 1,
-    wouldGoRight: { pass: 1, of: 2 },
-  });
+  const misses = [{ replay_state: "closed" }, { replay_state: "open" }, { replay_state: "evidence" }];
+  assert.deepEqual(learningStats(lessons, misses), { lessons: 2, uses: 5, nowRight: 1 });
+  assert.deepEqual(learningStats([], []), { lessons: 0, uses: 0, nowRight: 0 });
 });
 
-test("a quiet week and no misses read as zero and nothing to check", () => {
-  const now = new Date("2026-11-02T09:00:00Z");
-  const stats = learningStats([{ week: "2026-W43", graded: 14, misses: 2 }], 0, { misses: 0, would_pass: 0 }, now);
-  assert.equal(stats.checked, 0);
-  assert.equal(stats.fellShort, 0);
-  assert.equal(stats.wouldGoRight, null);
-});
-
-test("misses group by cause in a fixed order, falling back to their kind", () => {
+test("Now gets right lists only the misses the nightly recheck passed", () => {
   const misses = [
-    { id: 1, kind: "product", cause: "tool" },
-    { id: 2, kind: "company", cause: "term" },
-    { id: 3, kind: "product", cause: null },
-    { id: 4, kind: "company" },
-    { id: 5, kind: "company", cause: "fact" },
-    { id: 6, kind: "company", cause: "term" },
+    { id: 1, replay_state: "closed" },
+    { id: 2, replay_state: "open" },
+    { id: 3, replay_state: "evidence" },
+    { id: 4, replay_state: "closed" },
   ];
-  assert.deepEqual(
-    groupByTopic(misses).map((g) => [g.topic, g.items.map((m) => m.id)]),
-    [["term", [2, 6]], ["fact", [5]], ["company", [4]], ["tool", [1]], ["product", [3]]],
-  );
-  assert.deepEqual(groupByTopic([]), []);
+  assert.deepEqual(nowRight(misses).map((m) => m.id), [1, 4]);
 });
 
-test("a cause that doesn't belong to the miss's kind files it under the kind", () => {
-  assert.equal(missTopic({ kind: "company", cause: "tool" }), "company");
-  assert.equal(missTopic({ kind: "product", cause: "cant" }), "cant");
-  assert.equal(missTopic({ kind: "product", cause: "" }), "product");
-});
-
-test("the quick picks: misses that would go right today, lessons that aren't helping", () => {
-  assert.deepEqual(
-    fixedMissIds([
-      { id: 1, replay_state: "closed" },
-      { id: 2, replay_state: "open" },
-      { id: 3, replay_state: "evidence" },
-      { id: 4, replay_state: "closed" },
-    ]),
-    [1, 4],
-  );
+test("the quick pick: lessons that aren't helping", () => {
   const lesson = (id, fine_after, miss_after, retired_at = null) => ({ id, fine_after, miss_after, retired_at });
   assert.deepEqual(
     unhelpfulLessonIds([lesson(1, 1, 2), lesson(2, 2, 2), lesson(3, 0, 0), lesson(4, 0, 3, "2026-10-01T00:00:00Z")]),
