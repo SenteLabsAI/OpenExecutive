@@ -451,8 +451,7 @@ def summarize_action(
     elif tool_name == "mark_draft_sent":
         payload["summary"] = "Marked your draft sent"
     elif tool_name == "close_open_loop":
-        loop_id = tool_input.get("loop_id")
-        payload["summary"] = f"Closed open loop #{loop_id}" if loop_id else "Closed an open loop"
+        payload["summary"] = "Closed a task"
     elif tool_name == "assign_open_loop":
         owner = str((parsed or {}).get("owner") or "")
         task = " ".join(str(tool_input.get("task", "") or "").split())[:80]

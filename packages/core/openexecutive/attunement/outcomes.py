@@ -58,7 +58,7 @@ SOURCE_LABELS: dict[str, str] = {
     SOURCE_NUDGE_STALLED: "approval nudges",
     SOURCE_NUDGE_COMMITMENT: "commitment chases",
     SOURCE_NUDGE_INITIATIVE: "initiative check-ins",
-    SOURCE_OPEN_LOOP: "open-loop chases",
+    SOURCE_OPEN_LOOP: "task chases",
     SOURCE_FOLLOWUP: "scheduled follow-ups",
     SOURCE_REFLECTION: "standup DMs",
     SOURCE_RESEARCH: "research DMs",

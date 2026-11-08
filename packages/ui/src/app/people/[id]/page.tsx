@@ -326,7 +326,7 @@ function OpenLoopsSection({
   const now = mountedAt;
   return (
     <section className="mt-8">
-      <h2 className={SECTION_TITLE_CLS}>Open loops</h2>
+      <h2 className={SECTION_TITLE_CLS}>Tasks</h2>
       <p className={INTRO_CLS}>
         Things they committed to, were asked for in conversation, or were assigned here.
         Overdue ones are followed up automatically; close one once it&apos;s done.

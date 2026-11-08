@@ -97,7 +97,7 @@ ACCESS: dict[str, tuple[str, str]] = {
     "list_people": (USE, "read the roster"),
     "lookup_person": (USE, "find someone on the roster"),
     "ask_about_person": (USE, "ask what is known about someone"),
-    "list_open_loops": (USE, "list open loops"),
+    "list_open_loops": (USE, "list tasks"),
     "list_department_goals": (USE, "list goals"),
     "list_watchlist": (USE, "list the watchlist"),
     "add_watchlist_entry": (USE, "watch something new"),
