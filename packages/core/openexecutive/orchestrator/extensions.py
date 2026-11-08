@@ -40,6 +40,18 @@ must not call another extension's handler or leave a task running past its
 own return (a task copies the flag). ``read_only`` says whether the tool only
 reads (the workflow review card's "may change things" badge).
 
+Two answers let such a handler pause the run instead of guessing, and both
+stop the step where it is (``workflows/action_step.py``):
+
+- ``workflow_hold(arguments, why)``: this exact call waits for the workflow
+  creator's OK. The run pauses after the step; a yes carries the call out (the
+  handler runs again inside ``levels.approved()``) and the step carries on
+  from there, a no skips it.
+- ``workflow_wait(key, what)``: something the tool needs isn't there yet (a
+  device that isn't connected). The run pauses, and ``resumer.resume_waiting(key)``
+  runs the step again once it is; with no sign of it in time, the run stops
+  and says so.
+
 A tool may sit in a ``tool_groups`` group (opened with open_tools) instead of
 on the direct list, may describe its chip, may name the activity line the chat
 shows while it runs, and may keep its dispatch audit row private (``private_row``:
@@ -52,6 +64,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
 import logging
 import re
 import threading
@@ -319,6 +332,74 @@ def in_workflow_step(tool_name: str) -> bool:
     return _in_workflow_step.get() == tool_name
 
 
+@dataclass(frozen=True)
+class WorkflowSignal:
+    """What a workflow step's extension call asked of the run: ``hold`` this
+    exact call (``arguments``) for the creator's OK, or ``wait`` until
+    ``key`` is ready. ``why`` says it in the creator's words."""
+
+    kind: Literal["hold", "wait"]
+    why: str
+    arguments: dict[str, Any] | None = None
+    key: str = ""
+
+
+# The signals of the step call running now (``collect_workflow_signals``).
+# A list, so what a handler adds inside the call's own task reaches the step.
+_signals: ContextVar[list[WorkflowSignal] | None] = ContextVar("extension_workflow_signals", default=None)
+# What the model is told after either signal: the run pauses, so it stops.
+_STOP = "Stop using tools now and write your report: say what you did and what is left."
+_MAX_WHY = 300
+
+
+@contextlib.contextmanager
+def collect_workflow_signals() -> Iterator[list[WorkflowSignal]]:
+    """Collect what the workflow step call inside asks of the run."""
+    found: list[WorkflowSignal] = []
+    token = _signals.set(found)
+    try:
+        yield found
+    finally:
+        _signals.reset(token)
+
+
+def _signal(signal: WorkflowSignal) -> bool:
+    found = _signals.get()
+    if found is None or _in_workflow_step.get() is None:
+        return False
+    found.append(signal)
+    return True
+
+
+def workflow_hold(arguments: dict[str, Any], why: str) -> str:
+    """Hold this workflow step call for the creator's OK (see module doc):
+    ``arguments`` are what runs on a yes, ``why`` what they are asked. Returns
+    the tool result for the model. Outside a workflow step, an error."""
+    why = " ".join(str(why or "").split())[:_MAX_WHY] or "a step needs their OK"
+    if not _signal(WorkflowSignal("hold", why, arguments=dict(arguments or {}))):
+        return json.dumps({"error": "Only a workflow step can wait for an OK this way."})
+    return json.dumps({
+        "status": "waiting_for_approval",
+        "message": f"Not done yet: it waits for the workflow creator's OK ({why}). The run carries on from "
+        f"here once they say yes. {_STOP}",
+    })
+
+
+def workflow_wait(key: str, what: str) -> str:
+    """Pause the run until ``key`` is ready (see module doc): ``what`` names
+    it for the creator ("your browser"). Returns the tool result for the
+    model. Outside a workflow step, an error."""
+    key = str(key or "").strip()[:200]
+    what = " ".join(str(what or "").split())[:_MAX_WHY] or "something it needs"
+    if not key or not _signal(WorkflowSignal("wait", what, key=key)):
+        return json.dumps({"error": f"{what} isn't available right now."})
+    return json.dumps({
+        "status": "waiting",
+        "message": f"{what} isn't available right now. The run pauses and does this step again once it is. "
+        f"{_STOP}",
+    })
+
+
 def has_chip(tool_name: str) -> bool:
     tool = _tools.get(tool_name)
     return tool is not None and tool.chip is not None
@@ -410,8 +491,10 @@ __all__ = [
     "Collection",
     "ExtensionError",
     "ExtraTool",
+    "WorkflowSignal",
     "activity_label",
     "chip_fields",
+    "collect_workflow_signals",
     "collection_for_tags",
     "collection_tag",
     "get_collection",
@@ -423,6 +506,8 @@ __all__ = [
     "private_row",
     "register_collection",
     "register_tool",
+    "workflow_hold",
     "workflow_step",
     "workflow_tools",
+    "workflow_wait",
 ]

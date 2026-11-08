@@ -95,6 +95,12 @@ def approved() -> Iterator[None]:
         _APPROVED.reset(token)
 
 
+def is_approved() -> bool:
+    """Whether a step the owner (or the person) approved on a card is being
+    carried out right now."""
+    return _APPROVED.get()
+
+
 def relaxed() -> bool:
     """Whether the checks that only protect the owner from their own
     Executive are off right now: Hands-off, or a step they approved. A turn

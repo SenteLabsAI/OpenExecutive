@@ -843,15 +843,22 @@ def update_task(
 def reopen_task(loop_id: int, *, reopened_by_person_id: int, db_path: Path | None = None) -> TaskChange:
     """Open a closed task again, due when it was if that is still ahead, else
     after the default window. ``reason`` ``not_found``, ``open`` (it already
-    is) or ``duplicate`` (the same task is open again already)."""
+    is), ``owner_archived`` (its owner left: their tasks closed with them),
+    ``owner_at_cap`` or ``duplicate`` (the same task is open again already)."""
     from openexecutive.config import get_settings
     from openexecutive.memory.episodic import _get_conn
+    from openexecutive.people.store import get_person
 
     loop = get_task(loop_id, db_path=db_path)
     if loop is None:
         return TaskChange(None, "not_found")
     if loop.status != "done":
         return TaskChange(loop, "open")
+    owner = get_person(loop.owner_person_id)
+    if owner is None or owner.archived:
+        return TaskChange(loop, "owner_archived")
+    if count_open_loops(loop.owner_person_id, db_path=db_path) >= get_settings().attunement_max_open_loops_per_person:
+        return TaskChange(loop, "owner_at_cap")
     now = datetime.now(UTC)
     try:
         was_due = datetime.fromisoformat(loop.due_at) if loop.due_at else None

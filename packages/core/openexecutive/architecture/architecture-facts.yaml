@@ -7677,6 +7677,23 @@ workflows:
     - Known limit: a daily cadence can raise a second question about the
       same target while the first is unanswered; answering either remembers
       the target for later runs.
+    - A tool that stops its step (extension tools with workflow=True,
+      orchestrator/extensions.py): workflow_hold(arguments, why) holds that
+      exact call as HeldCall(why, carry_on=True) through the held_writes
+      pause ("waits for your OK to"); workflow_wait(key, what) pauses the run
+      as kind="waiting" (WaitForHumanEvent.waiting_for=key, 24 h,
+      auto_proceed). After either, every later call in the step is refused
+      ("refused: step paused") and tools go off so the model reports. A yes
+      runs the held call inside levels.approved() and runs the SAME step
+      again with carry_on (what it already did, as data in the user turn);
+      a no skips it and goes on at idx+1. resumer.resume_waiting(key)
+      records decision "ready" on every run waiting for key: the step runs
+      again, from the start when it changed nothing, else carrying on; a
+      timeout stops the run with a plain error. inbound_resolver never
+      matches a reply to a waiting run. The scheduler checkpoints a
+      waiting pause like held_writes. list_runs adds waiting_for. Signals
+      outside a workflow step's call (collect_workflow_signals, set per call
+      in action_step._StepCalls) are errors.
     Egress labelling walks the whole schema (nested/items/anyOf/$defs) and an
     unparsed schema is never "reads only". requeue_run_for_resume takes
     stale_before so a heartbeat between the sweep's SELECT and UPDATE wins.

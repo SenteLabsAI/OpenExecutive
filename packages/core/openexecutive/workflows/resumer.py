@@ -145,6 +145,48 @@ async def apply_resolution(
     return True
 
 
+def waiting_runs(key: str, db_path: Path | None = None) -> list[dict]:
+    """The runs paused until ``key`` is ready (``extensions.workflow_wait``)."""
+    key = str(key or "").strip()
+    if not key:
+        return []
+    found = []
+    for run in _wf_persistence.list_awaiting_runs(db_path=db_path):
+        try:
+            state = json.loads(run.get("state_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(state, dict) and state.get("waiting_for") == key:
+            found.append(run)
+    return found
+
+
+async def resume_waiting(key: str, db_path: Path | None = None) -> int:
+    """Pick up every run paused until ``key`` is ready, now that it is: each
+    one's waiting step runs again. Returns how many were picked up. Never
+    raises.
+
+    A run is saved as waiting only after its step writes its report, so a
+    call made in that gap finds nothing. Call it again now and then while
+    ``key`` stays ready (it is one query when nothing waits), not only when
+    it becomes ready."""
+    picked = 0
+    try:
+        for run in waiting_runs(key, db_path=db_path):
+            ready = WaitForHumanResolution(
+                run_id=run["run_id"],
+                reply_text="[ready]",
+                source_channel="system",
+                parsed_decision={"decision": "ready", "note": "what it waited for is ready"},
+                person_id=run.get("awaiting_person_id") or 0,
+            )
+            if await apply_resolution(run["run_id"], ready, db_path=db_path):
+                picked += 1
+    except Exception:
+        logger.exception("resumer: couldn't pick up runs waiting for %s", key)
+    return picked
+
+
 # How a recorded decision reads back to the person. What follows the verb
 # depends on whether the run can actually continue, because saying the wrong
 # one is the same class of lie #136 was reported for — in either direction.

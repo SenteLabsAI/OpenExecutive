@@ -2531,14 +2531,16 @@ async def _run_dynamic_workflow(action: ScheduledAction, now: datetime) -> None:
             as_owner = pinned_viewer(viewer_for_person(owner)) if owner is not None else contextlib.nullcontext()
             with as_owner:
                 async for event in workflow.run(inputs=wf_inputs, store=store):
-                    # The one pause a scheduled run CAN take: an action step held
-                    # writes to new targets. Nothing waits in-process — the run is
-                    # checkpointed, its owner is asked, and the resumer finishes it
-                    # (and DMs the artifact to this cadence's recipient) later.
+                    # The pauses a scheduled run CAN take: an action step held
+                    # writes (or a call its tool held for an OK), or its tool waits
+                    # for something it needs. Nothing waits in-process — the run is
+                    # checkpointed, its owner is asked or told, and the resumer
+                    # finishes it (and DMs the artifact to this cadence's recipient)
+                    # later.
                     if (
                         isinstance(event, WaitForHumanEvent)
                         and event.resume_state is not None
-                        and event.resume_state.kind == "held_writes"
+                        and event.resume_state.kind in ("held_writes", "waiting")
                     ):
                         event.resume_state.deliver_to_person_id = deliver_to
                         await checkpoint_gate(run_id=run_id, event=event, workflow_title=workflow.title)
