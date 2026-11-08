@@ -87,33 +87,22 @@ Routes:
                                     an answer (same checks and limit); the
                                     request and the Executive's line on what
                                     it changed join the card's conversation
-  PUT    /delegation/handle-it    — {enabled?, mode?}: Handle it for me,
-                                    the inbox watcher sending some replies on
-                                    its own, mode careful | balanced | bold
-                                    (delegation.handle_it). Needs a
+  PUT    /delegation/handle-it    — {enabled}: Handle it for me, the inbox
+                                    watcher sending replies, follow-ups and
+                                    invite answers on its own where Approvals
+                                    lets it (delegation.handle_it). Needs a
                                     caller the API knows is that person
                                     (signed sign-ins, or local login: 403 /
                                     409 ``caller_signing_required``), and
                                     turning it on needs Draft replies to my
                                     inbox on (409). Turning the inbox watcher
                                     off turns it off too
-  PUT    /delegation/training     — {replies?, follow_ups?, actions?, drafts?,
-                                    actions_on?}: put Act as me's settings in
-                                    or out of training, or Suggested actions
-                                    On (delegation.training). Needs a
+  PUT    /delegation/training     — {drafts}: keep edited drafts as how
+                                    they write (delegation.training). Needs a
                                     caller the API knows is that person, but
-                                    for a change that only holds more back
-  DELETE /delegation/learned/{id} — forget one thing it learned in training
-                                    (the "on its own next time" tick on a
-                                    card, or an example). The caller's own only
-  PUT    /delegation/take-the-lead — {enabled}: Take the lead as you, the
-                                    owner's alone for now: Handle it for
-                                    me's setting gives way to the added rules
-                                    (orchestrator.take_the_lead); turning it
-                                    on turns Handle it for me on
-  GET|POST /delegation/take-the-lead/rules, DELETE …/rules/{id}
-                                  — the caller's own rules for it (removing
-                                    one needs the same provable caller)
+                                    for turning it off
+  DELETE /delegation/learned/{id} — forget one kept example. The caller's
+                                    own only
   GET    /delegation/invites      — the meeting invite cards waiting for the
                                     caller (delegation.invites; from the
                                     database, no calendar call). Accept and
@@ -244,7 +233,7 @@ class TeamOut(BaseModel):
 class LearnedOut(BaseModel):
     id: int
     label: str
-    # The setting it was learned under: replies, follow_ups, actions or drafts.
+    # The setting it was kept under: drafts.
     setting: str
     # What they sent after changing a draft, kept as an example ("").
     example: str
@@ -253,14 +242,9 @@ class LearnedOut(BaseModel):
 
 
 class TrainingOut(BaseModel):
-    """Act as me in training, per setting, and what it learned there."""
+    """Drafts in training, and the examples it kept."""
 
-    replies: bool
-    follow_ups: bool
-    actions: bool
     drafts: bool
-    # Suggested actions On: carried out with no allow (false while in training).
-    actions_on: bool = False
     # The caller's own, newest first.
     learned: list[LearnedOut] = []
 
@@ -268,56 +252,23 @@ class TrainingOut(BaseModel):
 class TrainingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    replies: bool | None = None
-    follow_ups: bool | None = None
-    actions: bool | None = None
     drafts: bool | None = None
-    actions_on: bool | None = None
 
 
 class HandleItOut(BaseModel):
-    """Handle it for me: the switch and its setting (careful, balanced, bold)."""
+    """Handle it for me: the switch. Approvals decides what goes."""
 
     enabled: bool
-    mode: str
     # Whether this server can tie the switch to the person (signed sign-ins
     # or local login); without it nothing is sent on its own.
     available: bool
     sent_today: int = 0
-    # Take the lead as you: the setting's limits give way to the added rules
-    # (orchestrator.take_the_lead). Only the owner can have it in this build.
-    lead: bool = False
-    lead_available: bool = False
-
-
-class LeadUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool
-
-
-class LeadRuleIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    kind: str
-    value: str
-
-
-class LeadRuleOut(BaseModel):
-    id: int
-    kind: str
-    value: str
-
-
-class LeadRulesOut(BaseModel):
-    rules: list[LeadRuleOut]
 
 
 class HandleItUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool | None = None
-    mode: str | None = None
+    enabled: bool
 
 
 class DisclosureOut(BaseModel):
@@ -453,8 +404,6 @@ class ReplyCardOut(BaseModel):
     waited_because: str = ""
     # "follow_up": the draft chases the caller's own unanswered email.
     source: str = ""
-    # In training: Send + allow is offered (delegation.training).
-    can_allow: bool = False
     # Drafts in training: "Do it like this next time" is offered.
     learns_style: bool = False
     # Also in the caller's mailbox's Drafts; False: on this card alone.
@@ -558,8 +507,6 @@ class InviteCardOut(BaseModel):
     # False: their sign-in reads the calendar but can't answer invites, so the
     # card says to connect again (connect_command) instead of offering Accept.
     can_answer: bool
-    # In training: the "Accept from them on its own next time" tick.
-    can_allow: bool
     # Why Handle it for me left it for them, in words ("" when it was off).
     waited_because: str
     connect_command: str
@@ -575,8 +522,6 @@ class ActionCardOut(BaseModel):
     created_at: str
     why: str
     actions: list[CardActionOut]
-    # In training: Approve + allow is offered (delegation.training).
-    can_allow: bool = False
 
 
 class ActionCardsOut(BaseModel):
@@ -822,25 +767,14 @@ def _disclosure_out(person_id: int) -> DisclosureOut:
 def _handle_it_out(person_id: int) -> HandleItOut:
     from datetime import UTC, datetime
 
-    from openexecutive.delegation import handle_it, training
-    from openexecutive.people.store import get_person
+    from openexecutive.delegation import handle_it
 
     stored = handle_it.get(person_id)
-    trained = training.get(person_id).replies
     try:
         today = handle_it.sent_today(person_id, datetime.now(UTC))
     except Exception:
         today = 0
-    try:
-        found = get_person(person_id)
-        principal = bool(found is not None and found.is_principal)
-    except Exception:
-        principal = False
-    return HandleItOut(
-        enabled=stored.enabled, mode=stored.mode, available=handle_it.signing_ok(), sent_today=today,
-        lead=principal and stored.enabled and not trained and handle_it.leading(person_id),
-        lead_available=principal,
-    )
+    return HandleItOut(enabled=stored.enabled, available=handle_it.signing_ok(), sent_today=today)
 
 
 def _training_out(person_id: int) -> TrainingOut:
@@ -858,10 +792,7 @@ def _training_out(person_id: int) -> TrainingOut:
     except Exception:
         logger.warning("delegation: couldn't read what Act as me learned", exc_info=True)
         learned = []
-    return TrainingOut(
-        replies=switches.replies, follow_ups=switches.follow_ups, actions=switches.actions,
-        drafts=switches.drafts, actions_on=switches.actions_without_asking, learned=learned,
-    )
+    return TrainingOut(drafts=switches.drafts, learned=learned)
 
 
 def _example_text(stored: str) -> str:
@@ -974,7 +905,7 @@ def _set_inbox(person_id: int, enabled: bool) -> None:
 
     if not enabled:
         # Handle it for me sends what the watcher drafts: it goes with it.
-        _set_handle_it(person_id, enabled=False, mode=None)
+        _set_handle_it(person_id, enabled=False)
     before = inbox.get_watch(person_id).enabled
     if before == enabled:
         return
@@ -1425,7 +1356,7 @@ def get_delegation_actions(request: Request) -> ActionCardsOut:
     return ActionCardsOut(cards=[
         ActionCardOut(
             decision_id=card.decision_id, status=card.status, created_at=card.created_at, why=card.why,
-            actions=[CardActionOut(**asdict(a)) for a in card.actions], can_allow=card.can_allow,
+            actions=[CardActionOut(**asdict(a)) for a in card.actions],
         )
         for card in found
     ])
@@ -1447,37 +1378,23 @@ def get_delegation_invites(request: Request) -> InviteCardsOut:
     return InviteCardsOut(cards=[InviteCardOut(**asdict(card)) for card in found])
 
 
-def _set_handle_it(person_id: int, *, enabled: bool | None, mode: str | None) -> None:
+def _set_handle_it(person_id: int, *, enabled: bool) -> None:
     from openexecutive.delegation import handle_it
 
-    if enabled is False:
-        # Take the lead as you rides on Handle it; turning it back on later
-        # starts from the dial, not from the lead.
-        _lead_off(person_id)
     before = handle_it.get(person_id)
-    if (enabled is None or enabled == before.enabled) and (mode is None or mode == before.mode):
+    if enabled == before.enabled:
         return
-    after = handle_it.set_(person_id, enabled=enabled, mode=mode, updated_by=f"person:{person_id}")
-    if after.enabled == before.enabled and after.mode == before.mode:
-        return
+    after = handle_it.set_(person_id, enabled=enabled, updated_by=f"person:{person_id}")
     _audit(
         "delegation_handle_it_changed",
         f"Handle it for me {'on' if after.enabled else 'off'} for person {person_id}",
-        {"person_id": person_id, "enabled": after.enabled, "mode": after.mode},
+        {"person_id": person_id, "enabled": after.enabled},
     )
-
-
-def _lead_off(person_id: int) -> None:
-    from openexecutive.orchestrator import take_the_lead
-
-    scope = take_the_lead.person_scope(person_id)
-    if take_the_lead.get(scope).enabled:
-        take_the_lead.set_(scope, enabled=False, updated_by=f"person:{person_id}")
 
 
 @router.put("/delegation/handle-it", response_model=DelegationOut)
 async def update_delegation_handle_it(request: Request, body: HandleItUpdate) -> DelegationOut:
-    from openexecutive.delegation import handle_it, inbox
+    from openexecutive.delegation import inbox
     from openexecutive.delegation.gmail import normalize_email
     from openexecutive.delegation.verified import NOT_YOURS, caller_refusal
 
@@ -1488,20 +1405,18 @@ async def update_delegation_handle_it(request: Request, body: HandleItUpdate) ->
         raise _refuse(403, "not_yours", "Only you can change Handle it for me.")
     # Turning it off only narrows what the watcher does, so it stays
     # possible after the server loses signed sign-ins.
-    turning_off = body.enabled is False and body.mode is None
+    turning_off = body.enabled is False
     if refused is not None and not turning_off:
         raise _refuse(
             409, "caller_signing_required",
             "Handle it for me needs signed sign-ins on this server, so that nobody else can turn it on for you.",
         )
-    if body.mode is not None and body.mode not in handle_it.MODES:
-        raise _refuse(422, "bad_mode", f"Unknown setting: {body.mode}.")
     if body.enabled:
         if not is_enabled(person_id):
             raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
         if not inbox.get_watch(person_id).enabled:
             raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
-    _set_handle_it(person_id, enabled=body.enabled, mode=body.mode)
+    _set_handle_it(person_id, enabled=body.enabled)
     return await _state(person)
 
 
@@ -1573,34 +1488,16 @@ async def update_delegation_disclosure(request: Request, body: DisclosureUpdate)
 
 @router.put("/delegation/training", response_model=DelegationOut)
 async def update_delegation_training(request: Request, body: TrainingUpdate) -> DelegationOut:
-    """Put Act as me's settings in or out of training, or Suggested actions
-    On (``actions_on``: carried out with no allow). Putting Replies or
-    Follow-ups in only holds more back, and taking Suggested actions out of
-    training or On stops cards being carried out on their own, so those need
-    no signed sign-in; anything else does. Putting Replies or Follow-ups in turns Take
-    the lead as you off: in training only what the person allowed goes."""
+    """Drafts in training: keep edited drafts as how they write. Turning it
+    off only keeps less, so it needs no signed sign-in."""
     from openexecutive.delegation import training
 
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
-    # Suggested actions is one of Always ask, In training or On: picking one
-    # leaves the other.
-    if changes.get(training.ACTIONS_ON) is True:
-        changes[training.ACTIONS] = False
-    elif training.ACTIONS in changes:
-        # Out of training without asking for On is Always ask, never On.
-        changes[training.ACTIONS_ON] = False
-    narrowing = all(
-        (v is True and k in (training.REPLIES, training.FOLLOW_UPS))
-        or (v is False and k in (training.ACTIONS, training.ACTIONS_ON))
-        for k, v in changes.items()
-    )
-    person = _signed_caller(request, narrowing=narrowing)
+    person = _signed_caller(request, narrowing=all(v is False for v in changes.values()))
     person_id = _person_id(person)
     before = training.get(person_id)
     changed = {k: v for k, v in changes.items() if before.on(k) != v}
     if changed:
-        if changed.get(training.REPLIES) or changed.get(training.FOLLOW_UPS):
-            _lead_off(person_id)
         training.set_(person_id, changed, updated_by=f"person:{person_id}")
         _audit(
             "delegation_training_changed", f"Act as me training changed for person {person_id}",
@@ -1611,8 +1508,8 @@ async def update_delegation_training(request: Request, body: TrainingUpdate) -> 
 
 @router.delete("/delegation/learned/{allowed_id}", response_model=DelegationOut)
 async def delete_delegation_learned(request: Request, allowed_id: int) -> DelegationOut:
-    """Forget one thing Act as me learned in training. Only the caller's
-    own; holding more back, so no signed sign-in needed."""
+    """Forget one example Act as me kept. Only the caller's own; keeping
+    less, so no signed sign-in needed."""
     from openexecutive.delegation import training
 
     person = _signed_caller(request, narrowing=True)
@@ -1644,67 +1541,28 @@ def _signed_caller(request: Request, *, narrowing: bool) -> Person:
     return person
 
 
-@router.put("/delegation/take-the-lead", response_model=DelegationOut)
-async def update_take_the_lead_as_you(request: Request, body: LeadUpdate) -> DelegationOut:
-    """Take the lead as you: the owner's own switch. Turning it on turns on
-    Handle it for me too; turning it off leaves Handle it as it was."""
-    from openexecutive.delegation import inbox, training
-    from openexecutive.orchestrator import take_the_lead
-
-    person = _signed_caller(request, narrowing=not body.enabled)
-    person_id = _person_id(person)
-    if not person.is_principal:
-        raise _refuse(403, "owner_only", "Only the account owner can use Take the lead for now.")
-    if body.enabled:
-        if not is_enabled(person_id):
-            raise _refuse(409, "act_as_me_off", "Turn Act as me on first.")
-        if not inbox.get_watch(person_id).enabled:
-            raise _refuse(409, "inbox_off", "Turn on Draft replies to my inbox first.")
-        switches = training.get(person_id)
-        if switches.replies or switches.follow_ups:
-            raise _refuse(
-                409, "in_training", "Replies or Follow-ups are in training. Take them out of training first.",
-            )
-        _set_handle_it(person_id, enabled=True, mode=None)
-    scope = take_the_lead.person_scope(person_id)
-    before = take_the_lead.get(scope).enabled
-    take_the_lead.set_(scope, enabled=body.enabled, updated_by=f"person:{person_id}")
-    if before != body.enabled:
-        _audit(
-            "take_the_lead_changed",
-            f"Take the lead as you {'on' if body.enabled else 'off'} for person {person_id}",
-            {"person_id": person_id, "scope": "as_you", "enabled": body.enabled},
-        )
-    return await _state(person)
-
-
 # How far it goes as you: one dial over Write drafts as me, Draft replies to
-# my inbox, Handle it for me and its level, and Everything (Take the lead as
-# you). Each step adds to the one before it.
-REACH_STEPS: tuple[str, ...] = ("off", "when_asked", "inbox", "careful", "balanced", "bold", "everything")
-_SENDING_FROM = REACH_STEPS.index("careful")
+# my inbox and Handle it for me. Each step adds to the one before it.
+REACH_STEPS: tuple[str, ...] = ("off", "when_asked", "inbox", "handle_it")
 
 
 class ReachUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    step: Literal["off", "when_asked", "inbox", "careful", "balanced", "bold", "everything"]
+    step: Literal["off", "when_asked", "inbox", "handle_it"]
 
 
 def reach_of(person_id: int) -> str:
     """Where ``person_id`` is on the dial, from the switches it sets."""
-    from openexecutive.delegation import handle_it, inbox, training
+    from openexecutive.delegation import handle_it, inbox
 
     if not is_enabled(person_id):
         return "off"
     if not inbox.get_watch(person_id).enabled:
         return "when_asked"
-    stored = handle_it.get(person_id)
-    if not stored.enabled:
+    if not handle_it.get(person_id).enabled:
         return "inbox"
-    if not training.get(person_id).replies and handle_it.leading(person_id):
-        return "everything"
-    return stored.mode
+    return "handle_it"
 
 
 @router.put("/delegation/reach", response_model=DelegationOut)
@@ -1713,11 +1571,8 @@ async def update_delegation_reach(request: Request, body: ReachUpdate) -> Delega
     """Move the dial. Going down turns the higher switches off first, top
     down, and needs no signed sign-in. Going up turns each one on in order
     through its own route, so every check that switch makes still applies
-    (the mailbox connected, signed sign-ins, the owner alone for Everything,
-    not in training); the first one that refuses stops the move there, at a
-    step that is itself whole. Training is left as it is."""
-    from openexecutive.delegation import handle_it
-
+    (the mailbox connected, signed sign-ins); the first one that refuses
+    stops the move there, at a step that is itself whole."""
     person = _caller(request)
     person_id = _person_id(person)
     target = REACH_STEPS.index(body.step)
@@ -1726,16 +1581,14 @@ async def update_delegation_reach(request: Request, body: ReachUpdate) -> Delega
         return await _state(person)
 
     # Down: highest first, so nothing is ever on above a switch that's off.
-    if target < REACH_STEPS.index("everything"):
-        _lead_off(person_id)
-    if target < _SENDING_FROM:
-        _set_handle_it(person_id, enabled=False, mode=None)
+    if target < REACH_STEPS.index("handle_it"):
+        _set_handle_it(person_id, enabled=False)
     if target < REACH_STEPS.index("inbox"):
         _set_inbox(person_id, False)
     if target < REACH_STEPS.index("when_asked"):
         return await update_delegation(request, DelegationUpdate(enabled=False))
 
-    # Up, or across the sending steps: each switch through its own route.
+    # Up: each switch through its own route.
     if not is_enabled(person_id):
         await update_delegation(request, DelegationUpdate(enabled=True))
     if target >= REACH_STEPS.index("inbox"):
@@ -1743,60 +1596,9 @@ async def update_delegation_reach(request: Request, body: ReachUpdate) -> Delega
 
         if not inbox.get_watch(person_id).enabled:
             await update_delegation_inbox(request, InboxUpdate(enabled=True))
-    if target >= _SENDING_FROM:
-        mode = body.step if body.step in handle_it.MODES else None
-        stored = handle_it.get(person_id)
-        if stored.enabled and mode is not None and handle_it.MODES.index(mode) < handle_it.MODES.index(stored.mode):
-            # A lower level only holds more back: no signed sign-in needed.
-            _set_handle_it(person_id, enabled=None, mode=mode)
-        elif not stored.enabled or (mode is not None and mode != stored.mode):
-            await update_delegation_handle_it(request, HandleItUpdate(enabled=True, mode=mode))
-    if body.step == "everything":
-        await update_take_the_lead_as_you(request, LeadUpdate(enabled=True))
+    if target >= REACH_STEPS.index("handle_it"):
+        await update_delegation_handle_it(request, HandleItUpdate(enabled=True))
     return await _state(person)
-
-def _rules_out(person_id: int) -> LeadRulesOut:
-    from openexecutive.orchestrator import take_the_lead
-
-    try:
-        rules = take_the_lead.list_rules([take_the_lead.person_scope(person_id)])
-    except Exception as exc:
-        raise _refuse(503, "unavailable", "Couldn't read your rules.") from exc
-    return LeadRulesOut(rules=[LeadRuleOut(id=r.id, kind=r.kind, value=r.value) for r in rules])
-
-
-@router.get("/delegation/take-the-lead/rules", response_model=LeadRulesOut)
-def get_my_lead_rules(request: Request) -> LeadRulesOut:
-    """The caller's own rules for Take the lead as you."""
-    return _rules_out(_person_id(_caller(request)))
-
-
-@router.post("/delegation/take-the-lead/rules", response_model=LeadRulesOut)
-def add_my_lead_rule(request: Request, body: LeadRuleIn) -> LeadRulesOut:
-    from openexecutive.orchestrator import take_the_lead
-
-    # Adding a rule only holds more back, but it is still theirs alone.
-    person = _signed_caller(request, narrowing=True)
-    person_id = _person_id(person)
-    try:
-        take_the_lead.add_rule(
-            take_the_lead.person_scope(person_id), body.kind, body.value, created_by=f"person:{person_id}",
-        )
-    except take_the_lead.RuleError as exc:
-        raise _refuse(422, "bad_rule", str(exc)) from None
-    return _rules_out(person_id)
-
-
-@router.delete("/delegation/take-the-lead/rules/{rule_id}", response_model=LeadRulesOut)
-def delete_my_lead_rule(request: Request, rule_id: int) -> LeadRulesOut:
-    from openexecutive.orchestrator import take_the_lead
-
-    # Removing a rule lets more go, so it needs the request to be provably theirs.
-    person = _signed_caller(request, narrowing=False)
-    person_id = _person_id(person)
-    if not take_the_lead.delete_rule(rule_id, take_the_lead.person_scope(person_id)):
-        raise _refuse(404, "not_found", "That rule isn't there.")
-    return _rules_out(person_id)
 
 
 @router.get("/delegation/handled", response_model=HandledOut)

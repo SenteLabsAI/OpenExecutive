@@ -356,8 +356,8 @@ def test_a_save_files_card_refuses_what_it_shouldnt_hold(
     twice = action_cards.check([{"kind": "save_files", "folder": FOLDER, "files": one + one}], owner, now=now)
     assert isinstance(twice, list) and len(twice[0]["input"]["files"]) == 1
     # Never carried out on its own, whatever the settings.
-    assert action_cards._on_its_own_refusal(owner, twice, now) in ("tap_only", "training_off", "act_as_me_off", "signing_off")
-    monkeypatch.setattr("openexecutive.delegation.training.get", lambda _pid: SimpleNamespace(actions=True, actions_without_asking=True))
+    monkeypatch.setattr("openexecutive.delegation.handle_it.get", lambda _pid: SimpleNamespace(enabled=True))
+    monkeypatch.setattr("openexecutive.delegation.handle_it.approvals_hold", lambda: False)
     monkeypatch.setattr("openexecutive.delegation.settings.can_delegate", lambda _p: True)
     monkeypatch.setattr("openexecutive.delegation.settings.is_enabled", lambda _pid: True)
     monkeypatch.setattr("openexecutive.delegation.handle_it.signing_ok", lambda: True)

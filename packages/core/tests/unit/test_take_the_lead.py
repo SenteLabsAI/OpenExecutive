@@ -24,7 +24,7 @@ from openexecutive.people import store as people_store
 from openexecutive.people.models import AuthorityScope
 
 from . import test_delegation_inbox as _inbox_tests
-from .test_delegation_inbox import DANA, NOW, OWNER, _msg
+from .test_delegation_inbox import DANA, NOW, OWNER
 
 db = _inbox_tests.db
 owner = _inbox_tests.owner
@@ -63,7 +63,7 @@ def _hands_off(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_executive_always_leads_and_approvals_decides() -> None:
     lead = ttl.get(ttl.SCOPE_EXECUTIVE)
     assert all(lead.asks_first(k) for k in ttl.KINDS)
-    assert ttl.executive_on() is True and ttl.as_you_on(1) is False
+    assert ttl.executive_on() is True
 
 
 def test_every_kind_has_a_label_and_a_hint() -> None:
@@ -738,53 +738,6 @@ def test_sent_as_you_rows_are_the_callers_own(owner: Any, monkeypatch: pytest.Mo
     assert today._sent_as_caller(object()) == []  # type: ignore[arg-type]
 
 
-# ── as you ────────────────────────────────────────────────────────────────────
-
-
-def _check(owner: Any, *, relation: str = "stranger", body: str | None = None) -> str | None:
-    from openexecutive.delegation.gmail import MailThread
-
-    from .test_delegation_handle_it import _reply, _verdict
-
-    message = _msg("m1", "t1")
-    reply = _reply(body=body) if body is not None else _reply()
-    return handle_it.refusal(
-        owner.id, message, MailThread(id="t1", messages=[message]), reply, _verdict(confidence=0.6),
-        relation=relation, own={OWNER}, exec_address="exec@co.example", now=NOW,
-    )
-
-
-def test_as_you_lifts_the_setting(owner: Any) -> None:
-    handle_it.set_(owner.id, enabled=True, mode="careful", updated_by="t")
-    assert _check(owner) == "level"
-    ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
-    assert _check(owner) is None
-    # Confidence (0.6 here) and amounts give way; a link still waits on a tap.
-    assert _check(owner, body="Hi Dana, the total is $300.") is None
-    assert _check(owner, body="Hi Dana, the deck is at https://x.example/d") == "link"
-
-
-def test_as_you_keeps_what_always_waits_and_adds_the_rules(owner: Any) -> None:
-    handle_it.set_(owner.id, enabled=True, updated_by="t")
-    ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
-    assert _check(owner, body="Hi Dana, I'll send the contract over.") == "sensitive"
-    ttl.add_rule(ttl.person_scope(owner.id), "words", "Thursday", created_by="t")
-    assert _check(owner, body="Hi Dana, Thursday works.") == "lead_rule"
-
-
-def test_as_you_does_nothing_while_handle_it_is_off(owner: Any) -> None:
-    ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
-    assert _check(owner) == "level"
-
-
-def test_turning_handle_it_off_turns_the_lead_as_you_off(owner: Any) -> None:
-    from openexecutive.api.routes import delegation as delegation_route
-
-    ttl.set_(ttl.person_scope(owner.id), enabled=True, updated_by="t")
-    delegation_route._set_handle_it(owner.id, enabled=False, mode=None)
-    assert not ttl.as_you_on(owner.id)
-
-
 # ── waking on what comes in ───────────────────────────────────────────────────
 
 
@@ -1221,16 +1174,17 @@ def test_a_removed_one_isnt_suggested_straight_back(
 def test_the_owners_act_as_me_ones_share_the_list_and_nobody_elses(client: TestClient, owner: Any) -> None:
     from openexecutive.delegation import training
 
-    mine = training.allow_sender(owner.id, "dana@northpeak.example", "Dana Park", decision_id=None)
-    training.allow_sender(owner.id + 50, "sam@northpeak.example", "Sam Lee", decision_id=None)
+    mine = training.keep_style(owner.id, "dana@northpeak.example", "Dana Park", "Hi Dana", decision_id=None)
+    training.keep_style(owner.id + 50, "sam@northpeak.example", "Sam Lee", "Hi Sam", decision_id=None)
+    assert mine is not None
     learned = client.get("/take-the-lead").json()["learned"]
     assert [(x["label"], x["feature"]) for x in learned] == [
-        ("Reply to Dana Park (dana@northpeak.example)", "act_as_me"),
+        ("Writing to Dana Park (dana@northpeak.example)", "act_as_me"),
     ]
     others = training.learned(owner.id + 50)[0]
     assert client.delete(f"/take-the-lead/learned/{others.id}").status_code == 404
     assert client.delete(f"/take-the-lead/learned/{mine.id}").status_code == 200
-    assert training.allowed_sender(owner.id, "dana@northpeak.example") is None
+    assert training.example_for(owner.id, "dana@northpeak.example") is None
 
 
 def test_a_calendar_delete_by_action_counts_as_deleting(owner: Any) -> None:

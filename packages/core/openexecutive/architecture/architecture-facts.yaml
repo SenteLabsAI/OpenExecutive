@@ -5891,14 +5891,12 @@ audit:
     - delegation_reply_drafted — the inbox watcher saved a reply in someone's own Gmail and made its card. details carry person_id, thread_id, draft_id, decision_id, relation, kind and flags — never the email or the draft. Always private.
     - delegation_reply_dismissed — a reply card was dismissed. details carry person_id, decision_id and what happened to the draft (deleted, kept_edited, already_gone, not_connected, gmail_error). Always private.
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
-    - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and mode. Always private.
+    - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id and enabled. Always private.
     - delegation_reply_handled — Handle it for me sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
-    - delegation_reply_allowed — Send with the on-its-own-next-time tick, in training: the person allowed replies to a sender (or follow-ups to those people) after sending one. details carry person_id, decision_id, allowed_id and setting. Always private.
     - delegation_example_kept — Drafts in training: a reply the person changed in their mailbox and sent was kept as how they write to that person. details carry person_id, decision_id and allowed_id. Always private.
-    - delegation_actions_allowed / delegation_actions_handled / delegation_actions_held — Suggested actions in training: Approve with the tick allowed those actions; a card of allowed actions (or any card it may carry out with Suggested actions On) was carried out on its own (details.outcomes); or it waited after all (details.reason). Always private.
-    - delegation_training_changed — a person put Act as me settings in or out of training, or Suggested actions On or off (PUT /delegation/training). details carry person_id and each setting changed. Always private.
+    - delegation_actions_handled / delegation_actions_held — a suggested-actions card Handle it for me carried out on its own (details.outcomes), or one that waited after all (details.reason). Always private.
+    - delegation_training_changed — a person turned Learn from my edits on or off (PUT /delegation/training). details carry person_id and drafts. Always private.
     - delegation_learned_removed — a person removed something Act as me had learned (DELETE /delegation/learned/{id}). details carry person_id and allowed_id. Always private.
-    - take_the_lead_changed — a Take the lead switch, Ask first switch or company rule changed (PUT /take-the-lead, its rules, PUT /delegation/take-the-lead). actor "user"; details carry the scope and what changed.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
@@ -9937,21 +9935,17 @@ integrations:
         (briefing.context.render_and_trust) so ack_alert has its trusted set.
       - Outward actions go on an approval card: propose_actions
         (action_card_tools) is offered alone of Act as me's tools, its
-        speaker the verified caller with Act as me on. The card follows the
-        person's mode (action_cards.on_its_own_refusal follow_handle_it,
-        kept on the card's payload so run_on_its_own re-checks the same
-        rule): with Suggested actions not in training, it is carried out at
-        once when Handle it for me is on at a setting covering people they
-        know (every card recipient is on the roster as team or contact, and
-        each roster entry is at least action_cards.SETTLED_AFTER, 7 days,
-        old, so nobody added or planted lately is reached), no add_contact,
-        an invite never booked as approved (the meeting gate decides), and
-        the plain-code checks pass (Act as me on, signed callers or local
-        login, nothing sensitive, no link or amount, a message no longer
-        than the setting's replies and ON_ITS_OWN_MESSAGE_MAX, the daily
-        cap), and the turn read no outside text (outside_content.read_outside)
-        or mail. In training the training rule applies. Otherwise the card
-        waits for the person's tap on the web, as any card.
+        speaker the verified caller with Act as me on. The card is carried
+        out at once when action_cards.on_its_own_refusal passes (run_on_its_own
+        re-checks it): Act as me and Handle it for me on, Approvals above
+        Careful, signed callers or local login, no drive_files / save_files,
+        and below Hands-off every recipient settled on the roster (team or
+        contact, at least action_cards.SETTLED_AFTER, 7 days, old) with no
+        add_contact; at most ON_ITS_OWN_PER_DAY a day. An invite is never
+        booked as approved (the meeting gate decides). Below Hands-off a
+        turn that read outside text (outside_content.read_outside) or mail
+        also waits. Otherwise the card waits for the person's tap on the
+        web, as any card.
       - Every audit row the turn writes carries details.via = the MCP
         client's clientInfo.name, or "an AI app" (audit.via_app; FastMCP runs
         stateless, so a tool call usually has no initialize of its own); the
@@ -11058,13 +11052,10 @@ delegation:
     False on the card, 409 calendar_write_needed; GmailNotFound -> failed,
     409 gone; other GmailError -> release, 502 calendar_error (answering is
     idempotent). Reject answers nothing. On its own (invites.refusal, plain
-    code): Handle it for me on; relation in KNOWN_RELATIONS; Replies in
-    training -> training.allowed_inviter (key
-    act_as_me|person:<id>|invite_from|<address>, setting replies), else
-    Take the lead as you or the dial's level; signing_ok; clash None ->
-    calendar_unread, any clash -> clash; can_answer; not sensitive(title);
-    lead rules; handle_it.count_refusal (daily limit, once a day per
-    thread). Then gate auto_execute, claim, answer_invite(accept=True),
+    code): Handle it for me on; Approvals above Careful (level); below
+    Hands-off the sender is team or a contact (stranger); signing_ok; clash
+    None -> calendar_unread, any clash -> clash; can_answer;
+    handle_it.count_refusal (daily limit, once a day per thread). Then gate auto_execute, claim, answer_invite(accept=True),
     finish executed, record_handled; any failure releases and hands the
     card back. Never declines on its own. handle_it.handled includes them
     (source invite, summary "Accepted <first>'s <title>, <when>"), so GET
@@ -11731,30 +11722,31 @@ delegation:
   handle_it: |
     Handle it for me (delegation.handle_it): a third switch under Act as me,
     one row per person in delegation_handle_it (person_id PK, enabled,
-    mode, levels (legacy), updated_at, updated_by; absent = off). One
-    setting, mode careful | balanced (default) | bold (handle_it.RULES):
-    careful = known senders only, <= 400 chars, confidence >= 0.9;
-    balanced = known senders, <= 1200, >= 0.8; bold = strangers too,
-    <= 2000, >= 0.8, links/amounts allowed at >= 0.9. Known = team, contact
-    or correspondent. schema._add_handle_it_mode adds the column to an older
-    table (reply_known not handle -> turned off, since it sent nothing on its own before; else reply_stranger handle -> bold, else balanced). Set only by PUT /delegation/handle-it from a
-    caller delegation.verified.caller_refusal accepts (the rule Send uses:
-    403 not_yours, 409 caller_signing_required on shared secret alone);
+    mode and levels (no longer read), updated_at, updated_by; absent = off).
+    A switch, not a dial (owner's ask, 2026-11-08: Approvals is the one
+    gate): the company's Approvals level (outside_mode: ask Careful,
+    outsiders Balanced, trust Hands-off) decides what goes.
+    handle_it.approvals_hold() is True on Careful (and when unreadable);
+    HandleIt.sends() = enabled and not approvals_hold(). Set only by PUT
+    /delegation/handle-it {enabled} from a caller
+    delegation.verified.caller_refusal accepts (the rule Send uses: 403
+    not_yours, 409 caller_signing_required on shared secret alone);
     enabling needs Act as me and the inbox watcher on (409 act_as_me_off /
     inbox_off); the inbox watcher going off turns it off.
     After compose, inbox._consider asks handle_it.refusal (plain code, any
     exception = refusal "uncountable"); None makes the card gate_mode
     auto_execute, else propose with handle_it_reason. Refusal codes, in
-    order: level (off, or a stranger below bold), signing_off (signing_on or local login needed),
-    sender_unverified, kind (question/request/scheduling/introduction/
-    follow_up), unsure (below the mode's min_confidence), recipients (subset of the
-    email's From/To/Cc less own and Executive addresses, sender included,
-    at most MAX_RECIPIENTS), sensitive (SENSITIVE words in subject, the
-    sender's new words, reply subject or body), amount, link (both allowed
-    on bold at details_confidence 0.9), long (over the mode's max_body_chars), flagged (any flag but others_on_thread / executive_on_thread),
-    thread_recent (one auto-send per thread per day, delegation_handled),
-    in_a_row (last own message in the thread was an auto-send),
-    daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY, default 20).
+    order: off, level (Approvals on Careful), signing_off (signing_on or
+    local login needed), sender_unverified, kind (question/request/
+    scheduling/introduction/follow_up), unsure (below MIN_CONFIDENCE 0.8),
+    recipients (subset of the email's From/To/Cc less own and Executive
+    addresses, sender included, at most MAX_RECIPIENTS), long (over
+    MAX_BODY_CHARS 4000), flagged (any flag but others_on_thread /
+    executive_on_thread), thread_recent (one auto-send per thread per day,
+    delegation_handled), in_a_row (last own message in the thread was an
+    auto-send), daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY,
+    default 20). The sensitive-topic list, link and amount checks, the
+    stranger rule and the per-mode limits are gone.
     Only when it passes, a last look (delegation.injection_check.held_back:
     one tool-less classifier-model call reading the sender's new words as
     plain text in an <email> block, up to 20,000 chars) asks whether they
@@ -11773,8 +11765,8 @@ delegation:
     into _send, pinned by an AST test to delegation/inbox.py (the third,
     send_for_workflow, is pinned to delegation/workflow_email.py) — which runs
     every send-time check with no caller and adds: gate_mode auto_execute,
-    the switch on and the mode still allowing that sender (follows_up for
-    a follow-up card), signing_ok, and the draft
+    the switch on (handle_it_off), Approvals above Careful (level),
+    signing_ok, the counted rules again, and the draft
     unedited since saved (draft_changed otherwise: the person took it
     over). A refusal hands the card back (decision_ledger.hand_back:
     auto_execute -> propose, compare-and-set, with handle_it_reason), and
@@ -11786,8 +11778,8 @@ delegation:
     refusal or error leaves the card; the reconciler settles an
     unconfirmed auto-send as executed too. Runs inside the scan, so the
     pause gate stops it. GET /delegation/handled lists the caller's last 7
-    days (theirs alone); Settings → Act as me shows the switch, the
-    Careful / Balanced / Bold choice, sent_today and that list.
+    days (theirs alone); the Handle it for me tab shows Off / On,
+    sent_today and that list.
     Follow-ups as you (delegation.follow_ups): while on, inbox._scan calls
     follow_ups.look at most hourly (LOOK_EVERY): own sent mail 3-10 days
     old (AFTER / WITHIN) asking something ("?" in their new words), to
@@ -11795,70 +11787,38 @@ delegation:
     thread, never followed up before (its delegation_inbox_messages row);
     at most PER_LOOK 2 a look, within the drafts cap. Ghostwriter
     FOLLOW_UP_INTENT, draft to exactly the original To/Cc.
-    handle_it.follow_up_refusal: follow_up_level (Rules.follow_up_to:
-    careful none, balanced team+contact, bold + correspondent),
-    signing_off, recipients (must equal the original), sensitive, amount,
-    link, long (> FOLLOW_UP_MAX_CHARS 600), flagged, then count_refusal.
-    Card payload source follow_up (from_email = first recipient); the
-    reconciler closes it "answered" and deletes its unedited draft when
-    anyone else writes in the thread.
-    In training is per Act as me setting, not a dial step (owner's ask,
-    2026-10-09): delegation.training, one delegation_training row per
-    (person_id, setting), settings replies | follow_ups | actions | drafts,
-    PUT /delegation/training (putting replies/follow_ups in or actions out
-    is narrowing and needs no signed caller; anything else does). Every
-    allowance is a take_the_lead_allowed row, feature act_as_me, person_id
-    set, key act_as_me|person:<id>|<action>|<who>: reply|<address>,
-    follow_up|<sorted addresses>, message|person:<id>,
-    invite|people:<sorted ids, self left out>, style|<address> (a kept
-    example); training.setting_of(key) labels the one learned list. Theirs
-    alone, capped per person (ALLOWED_MAX), never in learned_note.
-    Replies in training: every reply waits (handle_it_reason training)
-    unless its sender was allowed with Send and the "on its own next time"
-    tick (POST /decisions/{id}/approve edits.allow; the tick replaced the
-    separate Send + allow / Approve + allow buttons, 2026-10); an allowed sender's reply goes on
-    its own only while Handle it is enabled, under the dial's Rules with
-    the stranger check skipped, every other refusal check, and again at
-    send time (removed since: handle_it_off). Follow-ups in training: the
-    same with follow_up_training and follow_up_refusal skipping the
-    relation check for exactly the allowed recipients. Take the lead as
-    you lifts nothing while either is in training (turned off when they go
-    in; PUT /delegation/take-the-lead answers 409 in_training). Suggested
-    actions in training: Approve with the tick (edits.allow) on a
-    delegation_actions card allows each message/invite that ran (never
-    add_contact); propose_actions then carries out a card whose every
-    action is allowed at once (action_cards.on_its_own_refusal: training
-    on, Act as me on, signing_ok, not sensitive, no link or amount, message
-    <= 1200 chars, at most ON_ITS_OWN_PER_DAY 10 actions a day, under one
-    lock; run_on_its_own claims it, gate_mode auto_execute, status
-    executed; a refusal there hand_back()s it to an ordinary card). An
-    invite run on its own skips calendar_tools.approved_by, so the meeting
-    gate decides (security review: a mail-chosen time must not be booked
-    unasked).
-    Guardrail (accepted tradeoff, review of PR 408): propose_actions runs
-    on turns that read untrusted mail, so a message carried out on its own
-    has model-written text nobody reads first. The allowance covers who
-    and what kind, never the words; the sensitive/link/amount/length
-    checks and the daily cap are what bound it, and only allowed roster
-    people can receive it.
-    Suggested actions On (training.ACTIONS_ON, row actions_on in
-    delegation_training, PUT /delegation/training {actions_on}; In training
-    wins when both are set and the route clears one when the other is set
-    true): a card is carried out with no allow under the same checks plus
+    handle_it.follow_up_refusal: off, level, signing_off, recipients (must
+    equal the original), long (MAX_BODY_CHARS), flagged, then
+    count_refusal. Card payload source follow_up (from_email = first
+    recipient); the reconciler closes it "answered" and deletes its
+    unedited draft when anyone else writes in the thread.
+    Invites (delegation.invites.refusal): off, level, stranger (relation
+    not team/contact, below Hands-off), signing_off, calendar_unread,
+    clash, calendar_write, then count_refusal. Never declines on its own.
+    Suggested actions (action_cards.on_its_own_refusal): Act as me on,
+    Handle it for me on, Approvals above Careful (level), signing_ok, no
+    drive_files / save_files (tap_only), below Hands-off
     _known_people_refusal (no add_contact, every recipient settled on the
-    roster for SETTLED_AFTER 7 days, as for cards from another AI app).
-    Nothing is learned under On. Handle it for me's web picker is Off / In
-    training / On: In training sets replies and follow_ups together, and the
-    dial's steps show under On only, because handle_it.refusal skips the
-    level check while Replies is in training (only enabled matters).
-    Drafts in training: on Send (ticked or not) with edits.example and a
-    draft edited in the mailbox, the sent text is kept as style|<address>;
-    training.example_for (style key first, then an older reply-key example)
-    feeds the ghostwriter's <writer_example> (style only, untrusted block)
-    for inbox replies, follow-ups and chat drafts to that one person. An
-    old dial row on mode training moves to balanced + replies and
-    follow_ups in training
-    (schema._move_training_off_the_dial).
+    roster for SETTLED_AFTER 7 days), at most ON_ITS_OWN_PER_DAY 10 actions
+    a day under one lock; run_on_its_own claims it, gate_mode auto_execute,
+    status executed; a refusal there hand_back()s it to an ordinary card.
+    From another AI app, below Hands-off, a turn that read outside text or
+    mail also waits. An invite run on its own skips
+    calendar_tools.approved_by, so the meeting gate decides (a mail-chosen
+    time must not be booked unasked).
+    Learn from my edits (delegation.training, setting drafts only; rows for
+    the old replies / follow_ups / actions / actions_on settings are
+    ignored): on Send with edits.example and a draft edited in the
+    mailbox, the sent text is kept as a take_the_lead_allowed row (feature
+    act_as_me, person_id set, key act_as_me|person:<id>|style|<address>);
+    training.example_for feeds the ghostwriter's <writer_example> (style
+    only, untrusted block) for inbox replies, follow-ups and chat drafts to
+    that one person. Theirs alone, never in learned_note. PUT
+    /delegation/training {drafts}: off needs no signed caller.
+    Removed (2026-11-08): the Easy ones / People I know / Most mail dial,
+    Take the lead as you (PUT /delegation/take-the-lead and its rules
+    routes), Replies / Follow-ups / Suggested actions training and their
+    "on its own next time" ticks (edits.allow), and Suggested actions On.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -11918,10 +11878,9 @@ delegation:
     second yes; 409 confirm / caller_signing_required / draft_gone /
     you_replied / inbox_off / client_slot / the Gmail codes, 429
     rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST
-    /decisions/{id}/reject. PUT /delegation/handle-it {enabled?, mode?}
-    (422 bad_mode) and GET /delegation/handled ({replies: [...]}, each with
-    source), see handle_it; DelegationOut.handle_it is {enabled, mode,
-    available, sent_today}; reply cards carry source ("follow_up" or "").
+    /decisions/{id}/reject. PUT /delegation/handle-it {enabled} and GET
+    /delegation/handled ({replies: [...]}, each with source), see
+    handle_it; DelegationOut.handle_it is {enabled, available, sent_today}; reply cards carry source ("follow_up" or "").
   may_do: |
     What it does for you (delegation.may_do, GET /what-it-may-do) is
     read-only: with the viewer's settings right now, one row per thing that
@@ -11934,35 +11893,28 @@ delegation:
     changed rows for ten seconds. /delegate and /delegate/what-it-may-do
     open Act as me. It reads the same settings the gates read, so it cannot say
     something they don't do: As you from settings.is_enabled,
-    inbox.get_watch, handle_it.get / RULES / leading, training.get /
-    learned and the person's rules; As the Executive (principal only) from
-    take_the_lead.get, Lead.asks_first, the company's rules and the
-    meeting_scheduling class mode; Departments from the registry. Invariant:
-    a meeting Take the lead thinks of always waits, because both meeting
-    gates need someone on a verified surface in the turn; Always asks first
-    -> Meetings asked for in chat (meeting_scheduling's class mode: on is
-    propose, off is auto_execute) covers only meetings someone asks for in
-    chat (and in a team workspace also needs Operations on auto_execute). Department levels
-    never hold Take the lead's own actions; Always asks first and the
-    company's rules do. It writes nothing and reads no mail. 403 for a
+    inbox.get_watch, handle_it.get / approvals_hold and
+    action_cards.on_its_own_refusal; As the Executive (principal only) from
+    the Approvals level (take_the_lead._gated: Hands-off goes, otherwise an
+    Approve card) and Meetings asked for in chat (the owner asking books
+    it; a teammate's goes by Approvals); Departments from
+    departments.authority.department_level. It writes nothing and reads no mail. 403 for a
     contact, anyone not on People, or no caller outside local login.
   reach: |
     How far it goes as you (ReachCard, PUT /delegation/reach {step}) is one
     dial over the Act as me switches: off, when_asked (Write drafts as me),
-    inbox (Draft replies to my inbox), careful / balanced / bold (Handle it
-    for me and its mode) and everything (Take the lead as you, owner only).
+    inbox (Draft replies to my inbox) and handle_it (Handle it for me on;
+    Approvals decides what it sends).
     reach_of derives the step from the stored switches; nothing new is
     stored, so every gate reads exactly what it read before. Down turns the
     switches above the step off, highest first, so no switch is ever on
-    above one that's off; a lower sending mode is set directly and needs no
-    signed sign-in. Up calls each switch's own route in order, so the
-    mailbox, signed sign-ins, owner-only and not-in-training checks all
-    still apply, and the first refusal stops at a whole step. Training is
-    never changed by the dial. The UI shows it as two pickers
+    above one that's off. Up calls each switch's own route in order, so the
+    mailbox and signed sign-in checks still apply, and the first refusal
+    stops at a whole step. Learn from my edits is never changed by the dial. The UI shows it as two pickers
     (ReachCard.tsx): What it writes as you (WritesCard: off / when_asked /
     inbox, any sending step reads as inbox) on Delegate -> Act as me, and
     What it sends on its own (SendsCard: off saved as inbox, then the
-    sending steps, with In training and Your rules at everything) on
+    handle_it step) on
     Delegate -> Handle it for me, which opens only at inbox and says so
     otherwise. Moving Act as me below inbox says Handle it for me stops
     too. What it does for you links act_as_me rows to the first and handle_it
@@ -12014,96 +11966,40 @@ delegation:
     limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL),
     DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY (1-500, default 20).
   take_the_lead: |
-    Take the lead (orchestrator.take_the_lead): the Executive acts on its
-    own behind one gate. Two switches, off by default, rows in
-    take_the_lead keyed by scope. "executive" (principal only, PUT
-    /take-the-lead): unattended_toolkit and the chat loop's unattended path
-    keep solo's booking / run_workflow / unrestricted message_person and
-    wrap every acting tool (ACTING_TOOLS, and every MCP tool except a name
-    that plainly reads and says nothing about acting: mcp_tool_acts fails
-    closed) in the gate; UNATTENDED_WITHHELD_TOOLS stay
-    withheld and every guard inside a handler still applies, so department
-    approval levels hold. The reflection pass also gets the MCP gateway's
+    Take the lead (orchestrator.take_the_lead): the Executive's own
+    background work acts, and Approvals decides each step. There is no
+    switch, training or Ask first of its own (removed 2026-11-08;
+    executive_on() is always True). unattended_toolkit and the chat
+    loop's unattended path keep solo's booking / run_workflow /
+    unrestricted message_person and wrap every acting tool (ACTING_TOOLS,
+    and every MCP tool except a name that plainly reads and says nothing
+    about acting: mcp_tool_acts fails closed) in _gated;
+    UNATTENDED_WITHHELD_TOOLS stay withheld and every guard inside a
+    handler still applies. The reflection pass also gets the MCP gateway's
     search_tools and call_tool (executive_reflection._with_lead_tools;
-    call_tool behind the gate, load_mcp_server left out) so it can find
-    and use whatever the deployment has connected, with a user-turn note
-    telling it to act (_LEAD_NOTE, never the cached system prompt) and
+    call_tool behind _gated, load_mcp_server left out) with a user-turn
+    note telling it to act (_LEAD_NOTE, never the cached system prompt) and
     room for it: 10 iterations, 4000 tokens, tool results up to 4000
-    characters (execute_tool_calls result_chars). New mail or chat
-    (a turn with origin_channel) wakes the reflection early: one
-    take_the_lead_wake action 5 minutes out, none while one waits, at most
-    every 30 minutes; the pause holds it. "person:<id>" (owner only for
-    now, PUT /delegation/take-the-lead): the Handle it for me dial's top
-    step; handle_it.refusal drops the mode limits (strangers, confidence,
-    amounts, length up to 4000) for the added rules (lead_rule) and
-    keeps everything else Handle it always keeps; a reply with a link
-    still waits on a card (refusal link), since a link sent as the owner
-    is the shape a phish takes (owner's choice).
-    The gate (take_the_lead.check, plain code): six kinds, each with an Ask
-    first switch (the decision ledger's mode for take_the_lead_action:<kind>,
-    propose by default), all on to start: money, contracts, people_decisions,
-    delete_share, someone_new (not on the roster or contacts), big_send
-    (broadcast, department message, more than 5 people). Added rules
-    (take_the_lead_rules, scope company or person:<id>; kinds person,
-    domain, words, amount) always hold; unreadable rules hold the action.
-    Recipients are the addresses in the input plus, for tools that name a
-    person by id (message_person, assign_open_loop, the Slack / Telegram /
-    Discord DMs), that person's addresses and name (_targets); an id the
-    People list doesn't have counts as someone new. A name rule matches
-    whole words. A direct message (message_person or a Slack / Telegram /
-    Discord DM) whose only recipient is the principal skips the gate and is
-    sent (_only_to_principal): the principal is who it would wait for, so a
-    card would only ask them to approve a message to themselves. Anything
-    that reaches or acts on anyone else is checked; an unreadable roster is
-    not the principal.
-    Structured only: no model reads a rule. A held action is a
-    take_the_lead_action decision (principal_and_approver: only the
-    principal and its approver see or resolve it) with a Today card,
-    routed to the first non-principal teammate holding one of its People
-    approval ranges (take_the_lead.approval_ranges, plain code, closest
-    first: money spend_lt_2k / spend_lt_10k / spend_gt_10k by its largest
-    amount, a higher range approving a lower one, no amount = gt_10k, or
-    customer_credit for credit and terms; contracts vendor_onboarding then
-    legal_sign for vendors, else legal_sign; hiring hiring_signoff; anything
-    else about the board or investors board_comms; deletes and shares none;
-    Personal mode too), else the authority gate's _route_proposal fallback to
-    the principal. An action that reaches anyone off the team (a contact,
-    someone unknown) always goes to the principal (_team_only): only their
-    approval opens contact egress, and contacts are theirs alone. Approve
-    claims the row and runs the exact call once (carry_out); reject drops it.
-    take_the_lead_log feeds Recent activity (kind took_the_lead, named not
-    quoted); /today/activity adds the caller's own Handle it sends
-    (sent_as_you). No separate What I did list.
-    In training (the executive row's training column; Settings shows Off /
-    In training / On): an action check() lets through still waits as a
-    training hold (Hit kind "training", always the principal's, alert tag
-    take_the_lead:training) unless take_the_lead_allowed has its allowance
-    key: action + who, <feature>|message|person:<id> for any direct message
-    channel, |book|people:<ids> for exactly those attendees, |assign|,
-    |workflow|<id>, |department|<slug>, |mcp|<tool>|<file name>|<argument names> (none
-    for a connected tool with no file name or that reaches people: to/cc,
-    recipient keys, an argument named for sharing, links or access, any
-    address in it; a new argument is a different action); someone off the People list gives
-    no key (keeps asking). edits.input is the principal's alone (403). The card's payload carries
-    allow {key, label} and fields (editable_fields: message text; a
-    meeting's title, start, end, description; a task and due date).
-    /decisions/{id}/approve edits.input applies only those fields
-    (apply_edits, EditError → 422) and finishes approved_with_edit;
-    edits.allow on a training card (only) needs the principal on a provable
-    request (403) and stores the allowance with the changed fields as its
-    example (the wording fields only: text, title, description, task).
-    Owner's choice: an edit with "Do it like this next time" both
-    keeps the example and allows at once. learned_note() (training flag +
-    the examples, the principal's own edited text only) is appended to the
-    reflection and research user turns. suggestions(): training cards
-    approved unchanged SUGGEST_AFTER (3) times in 30 days and not allowed;
-    POST /take-the-lead/learned allows only a current suggestion, DELETE
-    removes one (tightening, no proof needed; the row keeps removed_at so
-    only approvals after it count toward suggesting it again). Leaving training while on is
-    loosening (provable owner). The allowed list is shared across features
-    (feature column, owner's choice: one list, a switch per feature); Act as
-    me is the second (feature act_as_me, per person, a training switch per
-    setting: see delegation).
+    characters. Under Hands-off, new mail or chat (a turn with
+    origin_channel) wakes the reflection early: one take_the_lead_wake
+    action 5 minutes out, none while one waits, at most every 30 minutes;
+    the pause holds it.
+    _gated (plain code): levels.decide(levels.UNATTENDED) — Hands-off runs
+    the call, any other level holds it as a take_the_lead_action decision
+    (Hit kind "level") with an Approve card on Today. A direct message
+    whose only recipient is the principal skips it and is sent
+    (_only_to_principal / _mail_only_to_principal): the principal is who
+    it would wait for. A held action goes to the first non-principal
+    teammate holding one of its People approval ranges
+    (take_the_lead.approval_ranges, closest first), else the principal;
+    one that reaches anyone off the team always goes to the principal
+    (_team_only). Approve claims the row and runs the exact call once
+    (carry_out); reject drops it. take_the_lead_log feeds Recent activity
+    (kind took_the_lead, named not quoted); /today/activity adds the
+    caller's own Handle it sends (sent_as_you).
+    The take_the_lead_allowed table keeps Learn from my edits' examples
+    (feature act_as_me, per person: see delegation). The older rule,
+    Ask first and training rows are no longer read.
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,

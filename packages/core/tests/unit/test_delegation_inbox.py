@@ -1320,7 +1320,7 @@ def test_reply_from_home_drafts_what_the_watcher_passed_over(
     from openexecutive.delegation import handle_it
 
     # Handle it for me is on, yet a reply they asked for waits for them.
-    handle_it.set_(owner.id, enabled=True, mode="bold", updated_by="test")
+    handle_it.set_(owner.id, enabled=True, updated_by="test")
     models["verdicts"]["LOIs"] = {"needs_reply": False, "kind": "fyi", "asked_of_them": True, "confidence": 0.9}
     mailbox = FakeInbox()
     mailbox.add(_msg("m1", "t1", text="Attached are the two LOIs. Let me know if you have any questions."))

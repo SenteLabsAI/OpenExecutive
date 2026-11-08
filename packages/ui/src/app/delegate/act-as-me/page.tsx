@@ -4,13 +4,12 @@ import ActAsMeCard, { ACT_AS_ME_INTRO } from "@/components/settings/ActAsMeCard"
 import { useDelegation } from "@/components/settings/HandleItCard";
 import DelegatePage from "@/components/delegate/DelegatePage";
 import ReplyDisclosureCard from "@/components/settings/ReplyDisclosureCard";
-import { LearnedCard, SuggestedActionsCard } from "@/components/settings/TrainingCard";
+import { LearnedCard } from "@/components/settings/TrainingCard";
 
 // Delegate → Act as me: drafts written as you, in your own mailbox, that you
 // send, and how you write. What it writes as you (WritesCard, inside
 // ActAsMeCard) is its picker; what it sends on its own is on the Handle it
-// for me tab. Suggested actions can be in training, and what it learned
-// from your edits and approvals here is listed after them.
+// for me tab. What it learned from your edits is listed after them.
 export default function ActAsMePage() {
   const load = useDelegation();
   const training = load.state === "ready" ? load.settings?.training : null;
@@ -31,16 +30,7 @@ export default function ActAsMePage() {
         }
         advancedLabel="AI line on drafts you send"
       >
-        {training && <SuggestedActionsCard training={training} onSettings={load.setSettings} />}
-        {training && (
-          <LearnedCard
-            training={training}
-            onSettings={load.setSettings}
-            jobs={["drafts", "actions"]}
-            title="What it's learned"
-            description="From your edits and your approvals here. Yours alone. Remove one and it asks you again."
-          />
-        )}
+        {training && <LearnedCard training={training} onSettings={load.setSettings} />}
       </ActAsMeCard>
     </DelegatePage>
   );

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
-import NextTimeTick from "@/components/NextTimeTick";
 import ChatAppActionCard from "@/components/ChatAppActionCard";
 import ChatHeldActionCard from "@/components/ChatHeldActionCard";
 import ChatMeetingCard from "@/components/ChatMeetingCard";
@@ -92,16 +91,11 @@ export function ActionCardItem({
       return next;
     });
 
-  // `nextTime`: the "on its own next time" tick, with Suggested actions in
-  // training: Approve then also allows the same kind with the same people.
-  const [nextTime, setNextTime] = useState(false);
-  const [allowed, setAllowed] = useState(false);
-  const approve = async (allow = false) => {
+  const approve = async () => {
     setBusy("Doing it…");
     setError(null);
     try {
-      setResults(await approveActionCard(card.decision_id, [...ticked].sort((a, b) => a - b), allow));
-      setAllowed(allow);
+      setResults(await approveActionCard(card.decision_id, [...ticked].sort((a, b) => a - b)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't do that.");
     } finally {
@@ -179,11 +173,6 @@ export function ActionCardItem({
         })}
       </ul>
 
-      {results && allowed && (
-        <p className="mt-3 text-sm text-fg-muted">
-          From now on, the same kind with the same people happens on its own, without asking.
-        </p>
-      )}
       {results ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={() => onGone(card.decision_id)}>
@@ -192,20 +181,10 @@ export function ActionCardItem({
         </div>
       ) : (
         <>
-        {card.can_allow && (
-          <NextTimeTick
-            className="mt-4"
-            checked={nextTime}
-            disabled={busy !== null}
-            onChange={setNextTime}
-            label={ticked.size > 1 ? "Do these on their own next time" : "Do this on its own next time"}
-            help="Same kind, same people. You can undo this in Act as me."
-          />
-        )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
             variant="primary"
-            onClick={() => void approve(Boolean(card.can_allow) && nextTime)}
+            onClick={() => void approve()}
             disabled={busy !== null || ticked.size === 0}
           >
             {busy ?? (ticked.size === card.actions.length ? "Approve" : `Approve ${ticked.size}`)}

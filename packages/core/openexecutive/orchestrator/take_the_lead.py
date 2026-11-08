@@ -7,11 +7,8 @@ Two switches, each off until someone turns it on:
   keep the acting tools they otherwise lose in solo mode (booking, starting a
   workflow, messaging teammates and not just the principal), and every acting
   call they make goes through ``gate``.
-- **As you** (scope ``person:<id>``). Handle it for me stops applying its
-  Careful / Balanced / Bold limits to that person's replies and follow-ups;
-  the gate's added rules apply instead (``reply_hit``), next to everything
-  Handle it always keeps (signed sign-ins, exactly the thread's people,
-  sensitive topics, one a thread, the daily limit).
+- What goes out as a person (their replies and follow-ups) is Handle it for
+  me's, decided by the same Approvals level (``delegation.handle_it``).
 
 **The gate** is plain code. Six kinds of action wait for someone first, each
 with its own Ask first switch (all on to start): money, contracts, people
@@ -358,10 +355,6 @@ def executive_on(*, db_path: Path | None = None) -> bool:
     """The Executive's own background work always keeps its acting tools:
     Approvals decides each step (``_gated``), not a switch of its own."""
     return True
-
-
-def as_you_on(person_id: int, *, db_path: Path | None = None) -> bool:
-    return get(person_scope(person_id), db_path=db_path).enabled
 
 
 @dataclass(frozen=True)
@@ -724,16 +717,6 @@ def check(
         if matched and lead.asks_first(kind):
             return Hit(kind, reason)
     return None
-
-
-def reply_hit(person_id: int, texts: list[str], recipients: list[str], *, db_path: Path | None = None) -> Hit | None:
-    """For Take the lead as you: the company's and the person's own added
-    rules against a reply or follow-up. Fails closed."""
-    try:
-        rules = list_rules([SCOPE_COMPANY, person_scope(person_id)], db_path=db_path)
-    except Exception:
-        return Hit("rule", "its rules couldn't be read")
-    return _rule_hit(rules, "\n".join(texts), sorted({r.lower() for r in recipients}))
 
 
 # --------------------------------------------------------------------------- #
