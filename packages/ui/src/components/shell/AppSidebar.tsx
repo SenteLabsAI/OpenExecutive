@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import BrandMark from "@/components/BrandMark";
+import ApprovalsChip from "@/components/shell/ApprovalsChip";
 import Icon, { IconName } from "@/components/Icon";
 import UserBadge from "@/components/UserBadge";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
@@ -157,6 +158,7 @@ export default function AppSidebar({
       </nav>
 
       <div className="px-3 pb-2 pt-2 border-t border-line flex-shrink-0">
+        <ApprovalsChip onNavigate={onClose} />
         <NavRow
           href={SETTINGS_NAV_ITEM.href}
           onClick={onClose}

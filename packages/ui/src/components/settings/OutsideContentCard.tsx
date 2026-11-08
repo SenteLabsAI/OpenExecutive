@@ -10,6 +10,7 @@ import {
   type OutsideContentSetting,
 } from "@/lib/api";
 import { PageSpinner } from "@/components/ui/Spinner";
+import { announceApprovals, onApprovalsChanged } from "@/lib/approvalsLevel";
 
 const OPTIONS: {
   value: OutsideContentMode;
@@ -56,7 +57,12 @@ export default function OutsideContentCard() {
       .catch(() => {
         if (!ctrl.signal.aborted) setError("Couldn't load this setting.");
       });
-    return () => ctrl.abort();
+    // The sidebar's quick picker saves the same setting.
+    const stop = onApprovalsChanged<OutsideContentSetting>(setSetting);
+    return () => {
+      ctrl.abort();
+      stop();
+    };
   }, []);
 
   if (setting && !setting.can_change) return null;
@@ -66,7 +72,9 @@ export default function OutsideContentCard() {
     setBusy(true);
     setError(null);
     try {
-      setSetting(await setOutsideContent(mode));
+      const saved = await setOutsideContent(mode);
+      setSetting(saved);
+      announceApprovals(saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save that. Try again.");
     } finally {
