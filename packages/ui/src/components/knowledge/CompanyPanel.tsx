@@ -145,7 +145,8 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   }, [syncingKey, loadSynced]);
 
   async function handleFiles(files: File[]) {
-    if (!files.length) return;
+    // One batch at a time, from a drop or from Add documents.
+    if (!acceptsDrop(uploadProgress !== null, files.length)) return;
     setError(null);
     const failed: string[] = [];
     for (const [i, file] of files.entries()) {
@@ -218,6 +219,8 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const dropHandlers = {
         onDragOver: (e: React.DragEvent) => {
           if (!dropLandsOnPanel(e.currentTarget, e.target)) return;
+          // Only file drags, and not while a batch is still being added.
+          if (uploadProgress !== null || !e.dataTransfer.types.includes("Files")) return;
           e.preventDefault();
           setDragOver(true);
         },
@@ -229,8 +232,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
           if (!dropLandsOnPanel(e.currentTarget, e.target)) return;
           e.preventDefault();
           setDragOver(false);
-          const files = Array.from(e.dataTransfer.files);
-          if (acceptsDrop(uploadProgress !== null, files.length)) handleFiles(files);
+          handleFiles(Array.from(e.dataTransfer.files));
         },
       };
 
