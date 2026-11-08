@@ -2,11 +2,14 @@
 
 import { useEffect, useRef } from "react";
 
+import { useScrollFade } from "@/components/ui/useScrollFade";
+
 // A row of tabs inside one page or panel (a person's page, a settings form
 // split into short sections, the Pulse and Knowledge views), as opposed to
 // HubTabs, which links pages. Pill style, 40px tall, with an optional count
 // or badge per tab; too many tabs for a phone scroll sideways inside the row,
-// never the page. The caller renders the active tab's content; when it also
+// never the page, and fade at an edge with more tabs past it. The caller
+// renders the active tab's content; when it also
 // spreads `sectionPanelProps(idBase, active)` on it, it passes the same
 // `idBase` (from useId) here so tab and panel point at each other. Arrow
 // keys, Home and End move between tabs.
@@ -45,6 +48,7 @@ export default function SectionTabs<T extends string>({
   const base = idBase;
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const rowRef = useRef<HTMLDivElement>(null);
+  const fade = useScrollFade(rowRef);
 
   // A row that scrolls sideways (a phone) keeps the active tab in view, so a
   // deep link to a later tab (`/memories?tab=corrections`) shows it selected.
@@ -75,6 +79,8 @@ export default function SectionTabs<T extends string>({
   return (
     <div
       ref={rowRef}
+      onScroll={fade.onScroll}
+      style={fade.style}
       role="tablist"
       aria-label={label}
       className={`relative inline-flex max-w-full gap-1 overflow-x-auto rounded-2xl bg-surface-overlay p-1 ${className}`}
