@@ -32,9 +32,17 @@ the gate step's own output, and runs the loop from the next index.
 
 A second gate needs no special handling — it is simply another pause raised
 from the same loop, with a fresh payload.
+
+An action step can pause the run too. New write targets wait for the
+owner's OK after the step (``held_writes``). A tool can stop its step
+part way (``extensions.workflow_hold`` / ``workflow_wait``): then the step
+itself runs again on resume, told what it already did (``carry_on``), once
+the owner says yes or once what it waited for is ready (``waiting``,
+``resumer.resume_waiting``).
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import string
 from collections.abc import AsyncIterator
@@ -73,11 +81,14 @@ from openexecutive.workflows.wait_for_human import (
 )
 
 if TYPE_CHECKING:  # imported lazily at runtime (workflows -> orchestrator cycle)
-    from openexecutive.workflows.action_step import TargetPolicy
+    from openexecutive.workflows.action_step import TargetPolicy, Waiting
 
 # How long the owner has to answer about new write targets. No answer means
 # the held writes are skipped and the run finishes without them.
 HELD_WRITES_TIMEOUT_HOURS = 48
+# How long a run waits for something a step's tool needs (its creator's
+# browser, say: ``extensions.workflow_wait``). Past it, the run stops.
+WAITING_TIMEOUT_HOURS = 24
 
 # Synthetic first step every dynamic workflow runs — loads the company profile
 # and surfaces a "Load context" row in the UI, mirroring the built-ins.
@@ -291,6 +302,12 @@ class DynamicWorkflow(Workflow):
             ):
                 yield event
             return
+        if state.kind == "waiting":
+            async for event in self._resume_waiting(
+                values=values, state=state, resolution=resolution, store=store
+            ):
+                yield event
+            return
 
         gate = self._gate_for_resume(state)
         if gate is None:
@@ -438,7 +455,22 @@ class DynamicWorkflow(Workflow):
         )
         outputs: dict[str, tuple[str, str]] = dict(state.outputs)
         title, text = outputs.get(step.id, (step.title, ""))
-        outputs[step.id] = (title, f"{text}\n\n{section}".strip())
+        done = f"{text}\n\n{section}".strip()
+        if approved and any(call.carry_on for call in state.held):
+            # The step stopped at the call they approved: it carries on now.
+            outputs.pop(step.id, None)
+            async for event in self._run_steps(
+                start_index=state.gate_step_index,
+                values=values,
+                company_block=company_block,
+                outputs=outputs,
+                store=store,
+                policy=policy,
+                carry_on=done,
+            ):
+                yield event
+            return
+        outputs[step.id] = (title, done)
         yield WorkflowEvent(
             type="step_done", step_id=step.id, summary=_first_line(section)
         )
@@ -452,6 +484,112 @@ class DynamicWorkflow(Workflow):
             policy=policy,
         ):
             yield event
+
+    async def _resume_waiting(
+        self,
+        *,
+        values: dict[str, Any],
+        state: WorkflowResumeState,
+        resolution: WaitForHumanResolution,
+        store: ChromaDBStore,
+    ) -> AsyncIterator[WorkflowEvent]:
+        """Continue a run whose action step waited for something a tool needs.
+
+        Ready (or the owner saying go on): the step runs again, told what it
+        already did. A no from the owner, or no sign of it in time: the run
+        stops and says so.
+        """
+        step = self._step_for_resume(state, ActionStepSpec)
+        if step is None:
+            yield WorkflowEvent(
+                type="error",
+                message=(
+                    "the workflow definition changed while this run was waiting, so it "
+                    f"can no longer be resumed safely (expected action step {state.gate_step_id!r}) "
+                    "— re-run the workflow"
+                ),
+            )
+            return
+        what = state.waiting_what or "what it needed"
+        if str(resolution.parsed_decision.get("decision") or "") == "auto_proceed":
+            yield WorkflowEvent(
+                type="error",
+                message=(
+                    f"Stopped at {step.title!r}: {what} wasn't available within "
+                    f"{WAITING_TIMEOUT_HOURS} hours. Run it again when it is."
+                ),
+            )
+            return
+        if str(resolution.parsed_decision.get("decision") or "") == "reject":
+            yield WorkflowEvent(
+                type="error",
+                message=f"Stopped at {step.title!r}: you stopped it while it waited for {what}.",
+            )
+            return
+
+        yield _context_start()
+        company_block, loaded = _load_context("Reloaded")
+        yield loaded
+        missing_tools = await unavailable_step_tools(self._defn, start_index=state.gate_step_index)
+        if missing_tools:
+            yield _missing_tools_error(missing_tools, resuming=True)
+            return
+        outputs: dict[str, tuple[str, str]] = dict(state.outputs)
+        _title, text = outputs.pop(step.id, (step.title, ""))
+        async for event in self._run_steps(
+            start_index=state.gate_step_index,
+            values=values,
+            company_block=company_block,
+            outputs=outputs,
+            store=store,
+            policy=self._target_policy(state.run_created),
+            carry_on=text,
+        ):
+            yield event
+
+    def _waiting_pause(
+        self,
+        step: ActionStepSpec,
+        index: int,
+        waiting: Waiting,
+        outputs: dict[str, tuple[str, str]],
+        policy: TargetPolicy | None,
+    ) -> WaitForHumanEvent | None:
+        """The pause while ``step`` waits for what its tool needs. Its creator
+        (else the principal) is told; None when there is no one to tell."""
+        from openexecutive.workflows.approved_targets import approver_for
+
+        approver = approver_for(self.name)
+        if approver is None:
+            return None
+        # Run again from the start when the step changed nothing yet; else
+        # it carries on from its own record of what it did.
+        kept = dict(outputs)
+        if not waiting.wrote:
+            kept.pop(step.id, None)
+        return WaitForHumanEvent(
+            person_id=approver,
+            question=(
+                f"The workflow \u201c{self.title}\u201d is waiting for {waiting.what} to do "
+                f"\u201c{step.title}\u201d. It carries on by itself once it can."
+            ),
+            timeout_hours=WAITING_TIMEOUT_HOURS,
+            on_timeout="auto_proceed",
+            expected_reply_shape="free_text",
+            context_summary=f"Waiting for {waiting.what} in workflow {self.title!r}",
+            waiting_for=waiting.key,
+            resume_state=WorkflowResumeState(
+                workflow_name=self.name,
+                gate_step_id=step.id,
+                gate_step_index=index,
+                steps_fingerprint=_steps_fingerprint(self._defn),
+                outputs=kept,
+                kind="waiting",
+                waiting_for=waiting.key,
+                waiting_what=waiting.what,
+                run_created=policy.created() if policy is not None else [],
+            ),
+        )
 
     async def _held_writes_pause(
         self,
@@ -558,8 +696,10 @@ class DynamicWorkflow(Workflow):
         outputs: dict[str, tuple[str, str]],
         store: ChromaDBStore,
         policy: TargetPolicy | None,
+        carry_on: str = "",
     ) -> AsyncIterator[WorkflowEvent]:
-        """Interpret steps from ``start_index`` on.
+        """Interpret steps from ``start_index`` on. ``carry_on`` is what the
+        first step (an action step that stopped part way) already did.
 
         The single place step semantics live, so ``run()`` and ``resume()``
         cannot drift apart — and so a gate reached on a resumed run raises the
@@ -671,6 +811,8 @@ class DynamicWorkflow(Workflow):
                     )
                     return
                 held: list[HeldCall] = []
+                waiting: Waiting | None = None
+                carried = carry_on if index == start_index else ""
                 try:
                     async for kind, payload in run_action_step(
                         step,
@@ -681,6 +823,7 @@ class DynamicWorkflow(Workflow):
                         company_block=company_block,
                         prior_outputs=dict(outputs),
                         policy=policy,
+                        carry_on=carried,
                     ):
                         if kind == "progress":
                             yield WorkflowEvent(
@@ -688,6 +831,8 @@ class DynamicWorkflow(Workflow):
                             )
                         elif kind == "held":
                             held.append(payload)
+                        elif kind == "waiting":
+                            waiting = payload
                         elif kind == "error":
                             if held:
                                 note = drop_held_calls(self.name, step.id, held, "the step failed")
@@ -695,6 +840,8 @@ class DynamicWorkflow(Workflow):
                             yield WorkflowEvent(type="error", message=payload)
                             return
                         else:
+                            if carried.strip():
+                                payload = f"{carried}\n\n{payload}"
                             outputs[step.id] = (step.title, payload)
                             yield WorkflowEvent(
                                 type="step_done", step_id=step.id, summary=_first_line(payload)
@@ -703,6 +850,21 @@ class DynamicWorkflow(Workflow):
                     if held:
                         drop_held_calls(self.name, step.id, held, "the step stopped")
                     raise
+                if waiting is not None:
+                    if carried.strip() and not waiting.wrote:
+                        # It already did things before this rerun: keep that record.
+                        waiting = dataclasses.replace(waiting, wrote=True)
+                    if held:
+                        drop_held_calls(self.name, step.id, held, "the step is waiting")
+                    wait = self._waiting_pause(step, index, waiting, outputs, policy)
+                    if wait is None:
+                        yield WorkflowEvent(
+                            type="error",
+                            message=f"Stopped at {step.title!r}: {waiting.what} isn't available right now.",
+                        )
+                        return
+                    yield wait  # type: ignore[misc]
+                    return
                 if held:
                     pause = await self._held_writes_pause(step, index, held, outputs, policy)
                     if pause is not None:

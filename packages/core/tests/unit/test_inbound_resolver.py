@@ -660,3 +660,20 @@ def test_a_dm_scoped_gate_is_not_answerable_from_a_public_channel() -> None:
             session_ids=["slack:dm:U123"],
         )
     assert in_dm is not None
+
+
+def test_a_run_waiting_for_something_is_never_an_answer(tmp_path: Path) -> None:
+    db = episodic.DB_PATH
+    wf_persistence.create_run("run-w", "test_wf", "Test", {}, db_path=db)
+    state = json.dumps({
+        "on_timeout": "auto_proceed", "channel": "slack", "channel_ref": "U123",
+        "outbound_message_id": "m-1", "expected_reply_shape": "free_text", "delivery": "sent",
+        "question": "It is waiting for your browser.", "waiting_for": "browser:7",
+    })
+    wf_persistence.save_checkpoint("run-w", state, 7, datetime.now(UTC) + timedelta(hours=24), db_path=db)
+    for in_reply_to in ("m-1", ""):
+        result = _run_resolver(
+            channel="slack", channel_ref="U123", from_person_id=7, text="what's on today?",
+            in_reply_to=in_reply_to,
+        )
+        assert result is None
