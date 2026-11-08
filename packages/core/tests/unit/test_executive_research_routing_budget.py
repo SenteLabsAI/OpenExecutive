@@ -252,7 +252,10 @@ async def test_synthesis_stops_when_iteration_makes_no_progress(
     provider_calls = {"n": 0}
 
     class _CountingProvider:
-        async def messages_create(self, **_kwargs: Any) -> Any:
+        async def messages_create(self, **kwargs: Any) -> Any:
+            if kwargs.get("tool_choice") == {"type": "none"}:
+                # The closing-summary ask after the loop stops.
+                return _Resp([_Text("Nothing could be flagged.")], "end_turn")
             provider_calls["n"] += 1
             # Always asks for one (failing) outbound call and never wraps
             # up — left to itself this would run the full iteration ceiling.
@@ -265,11 +268,12 @@ async def test_synthesis_stops_when_iteration_makes_no_progress(
 
     monkeypatch.setattr(providers, "get_provider", lambda _model: _CountingProvider())
 
-    _narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
+    narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
 
-    # Loop stopped after the first no-progress iteration: one provider
+    # Loop stopped after the first no-progress iteration: one routing
     # call, one (failed) outbound attempt — not the full 3-iteration ceiling.
     assert provider_calls["n"] == 1
+    assert narrative == "Nothing could be flagged."
     assert call_count["n"] == 1
     assert all(not t["ok"] for t in tool_calls)
 
@@ -334,13 +338,14 @@ def _finding(title: str = "Competitor cut prices") -> er.ResearchFinding:
 
 
 @pytest.mark.asyncio
-async def test_text_beside_tool_calls_never_becomes_the_write_up(
+async def test_a_run_cut_off_mid_routing_still_gets_its_closing_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """What the model writes next to its tool calls is its working notes
-    (its plan, budget, tool list). When the run ends without a closing
-    summary, the write-up has no narrative rather than those notes, and the
-    routed call carries a plain label for the document."""
+    """When the routing budget runs out, the loop stops with the model
+    mid-routing. Its working notes (written beside the tool calls) never
+    become the write-up; one closing call with no tools on offer writes the
+    summary instead. Each routed call carries a plain label for the
+    document."""
 
     async def _route(_inp: dict[str, Any]) -> str:
         return json.dumps({"status": "created"})
@@ -351,18 +356,31 @@ async def test_text_beside_tool_calls_never_becomes_the_write_up(
     monkeypatch.setattr("openexecutive.people.store.list_people", lambda: [])
 
     plan = _Text("Routing plan: I have a 5-call budget and only message_person tools.")
-    iter1 = _Resp([plan, _ToolUse("create_alert", {"subject": "Stripe fees change"}, "a")], "tool_use")
-    iter2 = _Resp([_Text("Still planning."), _ToolUse("create_alert", {"subject": "x"}, "b")], "tool_use")
-    iter3 = _Resp([_Text("More notes."), _ToolUse("create_alert", {"subject": "y"}, "c")], "tool_use")
+    spend = _Resp(
+        [plan, *(_ToolUse("create_alert", {"subject": f"Stripe fees change {i}"}, f"a{i}")
+                 for i in range(er._MAX_ROUTING_TOOLS_PER_RUN))],
+        "tool_use",
+    )
+    seen: list[dict[str, Any]] = []
+
+    class _Provider:
+        async def messages_create(self, **kwargs: Any) -> Any:
+            seen.append(kwargs)
+            if kwargs.get("tool_choice") == {"type": "none"}:
+                return _Resp([_Text("Stripe is changing its fees; it's on your brief.")], "end_turn")
+            return spend
+
     from openexecutive import providers
 
-    seq = _SequenceProvider([iter1, iter2, iter3, iter3, iter3, iter3])
-    monkeypatch.setattr(providers, "get_provider", lambda _model: seq)
+    monkeypatch.setattr(providers, "get_provider", lambda _model: _Provider())
 
     narrative, tool_calls = await er._executive_synthesis_loop([_finding()])
 
-    assert narrative == ""
-    assert tool_calls[0]["done_label"] == "Flagged for you: Stripe fees change"
+    assert narrative == "Stripe is changing its fees; it's on your brief."
+    assert len(seen) == 2  # one routing turn, then the closing summary
+    closing_turn = seen[1]["messages"][-1]["content"]
+    assert closing_turn[-1] == {"type": "text", "text": er._CLOSING_SUMMARY_ASK}
+    assert tool_calls[0]["done_label"] == "Flagged for you: Stripe fees change 0"
     art = er._render_artifact(
         deduped=[], per_specialist=[], tool_calls=tool_calls, narrative=narrative, note="",
     )

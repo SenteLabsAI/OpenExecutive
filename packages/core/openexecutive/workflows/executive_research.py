@@ -912,6 +912,7 @@ async def _executive_synthesis_loop(
     tool_calls: list[dict[str, Any]] = []
     final_text = ""
     iteration = 0
+    needs_summary = False
 
     try:
         for iteration in range(1, _MAX_SYNTHESIS_ITERATIONS + 1):
@@ -966,37 +967,6 @@ async def _executive_synthesis_loop(
                 # Model emitted text-only summary — done.
                 break
 
-            # If we exhausted the routing budget and the model still
-            # wants more tools, terminate the loop — further iterations
-            # would just collect more "over budget" stubs. The remaining
-            # tool_use blocks are already echoed back as
-            # "over budget — skipped" via execute_tool_calls. Counts only
-            # OUTBOUND routing calls — a lookups-only iteration must NOT
-            # terminate the loop before the model gets to route.
-            new_ok = _routing_ok(iter_calls)
-            if (ok_so_far + new_ok) >= _MAX_ROUTING_TOOLS_PER_RUN:
-                logger.info(
-                    "research.synthesis: routing budget exhausted "
-                    "(%d/%d); terminating loop",
-                    ok_so_far + new_ok, _MAX_ROUTING_TOOLS_PER_RUN,
-                )
-                break
-
-            # No forward progress this iteration — every tool call failed
-            # or was skipped. Stop rather than spend another turn on the
-            # same stuck state (e.g. a lookup that keeps raising, or
-            # outbound calls that keep failing). A successful free lookup
-            # counts as progress, so the normal lookup→route flow is
-            # unaffected; only a fully-failed iteration terminates here.
-            # This also stops a fully-failed outbound iteration from
-            # resetting its budget on the next round.
-            if not any(t.get("ok") for t in iter_calls):
-                logger.info(
-                    "research.synthesis: no successful tool call in "
-                    "iteration %d; terminating loop", iteration,
-                )
-                break
-
             # Build the next user turn carrying tool_result blocks so
             # the model sees what fired and can summarize.
             assistant_blocks: list[dict[str, Any]] = []
@@ -1034,10 +1004,93 @@ async def _executive_synthesis_loop(
                     ),
                 })
             messages.append({"role": "user", "content": tool_results})
+
+            # If we exhausted the routing budget and the model still
+            # wants more tools, terminate the loop — further iterations
+            # would just collect more "over budget" stubs. The remaining
+            # tool_use blocks are already echoed back as
+            # "over budget — skipped" via execute_tool_calls. Counts only
+            # OUTBOUND routing calls — a lookups-only iteration must NOT
+            # terminate the loop before the model gets to route.
+            new_ok = _routing_ok(iter_calls)
+            if (ok_so_far + new_ok) >= _MAX_ROUTING_TOOLS_PER_RUN:
+                logger.info(
+                    "research.synthesis: routing budget exhausted "
+                    "(%d/%d); terminating loop",
+                    ok_so_far + new_ok, _MAX_ROUTING_TOOLS_PER_RUN,
+                )
+                needs_summary = True
+                break
+
+            # No forward progress this iteration — every tool call failed
+            # or was skipped. Stop rather than spend another turn on the
+            # same stuck state (e.g. a lookup that keeps raising, or
+            # outbound calls that keep failing). A successful free lookup
+            # counts as progress, so the normal lookup→route flow is
+            # unaffected; only a fully-failed iteration terminates here.
+            # This also stops a fully-failed outbound iteration from
+            # resetting its budget on the next round.
+            if not any(t.get("ok") for t in iter_calls):
+                logger.info(
+                    "research.synthesis: no successful tool call in "
+                    "iteration %d; terminating loop", iteration,
+                )
+                needs_summary = True
+                break
+
+        else:
+            # Out of iterations with the model still mid-routing.
+            needs_summary = True
+
+        # The loop stopped the model mid-routing, so it never wrote its
+        # closing summary: ask for it once, with no tools on offer.
+        if needs_summary and not final_text:
+            final_text = await _closing_summary(
+                model, synthesis_system, tools, messages,
+            )
     finally:
         current_session.reset(ctx_token)
 
     return final_text, tool_calls
+
+
+_CLOSING_SUMMARY_ASK = (
+    "That is all the routing for this run. Write your closing summary now, "
+    "as the SUMMARY section says."
+)
+
+
+async def _closing_summary(
+    model: str, system: str, tools: list[dict[str, Any]], messages: list[dict[str, Any]],
+) -> str:
+    """The closing summary of a routing pass the loop cut off mid-routing.
+    ``messages`` ends with the tool results of the last turn; the ask rides
+    in that same user turn, and ``tool_choice`` none keeps the model from
+    calling anything more. Empty when the call fails."""
+    from openexecutive.providers import get_provider
+    from openexecutive.workflows._synthesis import extract_artifact_from_response
+
+    last = messages[-1] if messages else None
+    if not last or last.get("role") != "user" or not isinstance(last.get("content"), list):
+        return ""
+    closing = [*messages[:-1], {
+        "role": "user",
+        "content": [*last["content"], {"type": "text", "text": _CLOSING_SUMMARY_ASK}],
+    }]
+    try:
+        response = await get_provider(model).messages_create(
+            model=model,
+            max_tokens=_MAX_SYNTHESIS_TOKENS,
+            system=system,
+            tools=tools,  # type: ignore[arg-type]
+            tool_choice={"type": "none"},
+            messages=closing,  # type: ignore[arg-type]
+        )
+    except Exception:
+        logger.exception("research.synthesis: closing summary call failed")
+        return ""
+    log_model_usage(response, model=model, actor="research_synthesis", iteration=0)
+    return extract_artifact_from_response(response)
 
 
 async def _watchlist_analysis_loop(
