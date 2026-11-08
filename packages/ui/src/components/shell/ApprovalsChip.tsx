@@ -6,17 +6,14 @@ import { useEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import {
   getOutsideContent,
-  getTakeTheLead,
   setOutsideContent,
   type OutsideContentSetting,
-  type TakeTheLead,
 } from "@/lib/api";
 import {
   announceApprovals,
   APPROVALS_LEVELS,
   onApprovalsChanged,
   approvalsTitle,
-  trainingNote,
   type ApprovalsLevel,
 } from "@/lib/approvalsLevel";
 
@@ -30,7 +27,6 @@ const DOT: Record<ApprovalsLevel, string> = {
 // can_change the Settings card reads); hidden when it can't load.
 export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }) {
   const [setting, setSetting] = useState<OutsideContentSetting | null>(null);
-  const [lead, setLead] = useState<TakeTheLead | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,9 +53,6 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
         if (first && !signal?.aborted) setSetting(null);
       },
     );
-    getTakeTheLead(signal).then(setLead, () => {
-      if (first && !signal?.aborted) setLead(null);
-    });
   };
 
   useEffect(() => {
@@ -91,7 +84,6 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
   if (!setting || !setting.can_change) return null;
 
   const level = setting.mode as ApprovalsLevel;
-  const note = trainingNote(lead);
 
   const pick = async (value: ApprovalsLevel) => {
     if (busy || value === level) return;
@@ -167,15 +159,6 @@ export default function ApprovalsChip({ onNavigate }: { onNavigate: () => void }
             })}
           </div>
 
-          {note && (
-            <p className="mx-1 mt-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] text-fg">
-              <span className="font-semibold text-amber-700 dark:text-amber-300">Take the lead is in training.</span>{" "}
-              {note}{" "}
-              <Link href="/delegate/take-the-lead" onClick={go} className="font-medium text-accent hover:underline">
-                Change
-              </Link>
-            </p>
-          )}
 
           {error && (
             <p role="alert" className="px-3 pt-2 text-[13px] text-red-600 dark:text-red-400">
