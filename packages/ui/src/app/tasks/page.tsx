@@ -82,7 +82,7 @@ function ownerLabel(t: Task, viewer: PeopleViewer | null): string {
   return viewer?.person_id === t.owner_person_id ? "You" : t.owner_name;
 }
 
-function SourceLine({ task, viewer }: { task: Task; viewer: PeopleViewer | null }) {
+function SourceLine({ task, viewer, viewerName }: { task: Task; viewer: PeopleViewer | null; viewerName: string | null }) {
   const asker = askedBy(task);
   const parts: ReactNode[] = [];
   if (task.session_id) {
@@ -98,7 +98,8 @@ function SourceLine({ task, viewer }: { task: Task; viewer: PeopleViewer | null 
   }
   if (asker) {
     const mine = viewer?.person_id === task.owner_person_id;
-    parts.push(<span key="ask">{mine ? `Asked of you by ${asker}` : `${asker} asked`}</span>);
+    const text = asker === viewerName ? "You assigned" : mine ? `Asked of you by ${asker}` : `${asker} asked`;
+    parts.push(<span key="ask">{text}</span>);
   }
   const created = shortDue(task.created_at, new Date());
   if (created) parts.push(<span key="when">Added {created === "Today" ? "today" : created}</span>);
@@ -229,6 +230,7 @@ export default function TasksPage() {
   const [addError, setAddError] = useState<string | null>(null);
 
   const isPrincipal = viewer?.is_principal ?? false;
+  const viewerName = people.find((p) => p.id === viewer?.person_id)?.full_name ?? null;
   // Only the principal sees everyone's; anyone else sees their own.
   const owner = !isPrincipal || scope === "mine" ? viewer?.person_id ?? undefined : personId ?? undefined;
 
@@ -377,8 +379,8 @@ export default function TasksPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-      <div className="flex items-start justify-between gap-4">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-2xl sm:text-3xl font-semibold text-fg">Tasks</h1>
           <p className="mt-1 text-fg-muted">
             What you and your team owe, from chats, meetings and what you assigned. Overdue ones get a follow-up.
@@ -491,6 +493,7 @@ export default function TasksPage() {
                     key={t.task_id}
                     task={t}
                     viewer={viewer}
+                    viewerName={viewerName}
                     overdue={g.key === "overdue"}
                     busy={busy.has(t.task_id)}
                     onDone={() => close(t, "done")}
@@ -522,6 +525,7 @@ export default function TasksPage() {
 function TaskRow({
   task,
   viewer,
+  viewerName,
   overdue,
   busy,
   onDone,
@@ -531,6 +535,7 @@ function TaskRow({
 }: {
   task: Task;
   viewer: PeopleViewer | null;
+  viewerName: string | null;
   overdue: boolean;
   busy: boolean;
   onDone: () => void;
@@ -545,8 +550,8 @@ function TaskRow({
   const when = done ? shortDue(task.completed_at, new Date()) : shortDue(task.due_at, new Date());
   const badge = STATUS_BADGE[task.status];
   return (
-    <li className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3">
-      <div className="flex items-start gap-3 min-w-0 flex-1">
+    <li className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-4 py-3">
+      <div className="flex items-start gap-3 min-w-0 flex-1 break-words">
         {!done && (
           <input
             type="checkbox"
@@ -566,14 +571,15 @@ function TaskRow({
               </span>
             )}
           </p>
-          <SourceLine task={task} viewer={viewer} />
+          <SourceLine task={task} viewer={viewer} viewerName={viewerName} />
         </div>
       </div>
-      <div className="flex items-center gap-3 sm:gap-4 pl-8 sm:pl-0 shrink-0">
-        <span className="w-28 truncate text-sm text-fg">{ownerLabel(task, viewer)}</span>
-        <span className={`w-24 text-sm ${overdue ? "text-rose-500" : "text-fg-muted"}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-4 pl-8 sm:pl-0 sm:shrink-0">
+        <span className="sm:w-28 truncate text-sm text-fg">{ownerLabel(task, viewer)}</span>
+        <span className={`sm:w-24 text-sm ${overdue ? "text-rose-500" : "text-fg-muted"}`}>
           {done && when ? `Done ${when === "Today" || when === "Tomorrow" ? when.toLowerCase() : when}` : when}
         </span>
+        <span className="ml-auto sm:hidden" />
         {done ? (
           <Button size="sm" onClick={onReopen} disabled={busy}>
             Reopen

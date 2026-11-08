@@ -58,6 +58,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   demo: "Company Simulator",
   onboard: "Setup",
   watchlist: "Watch list",
+  tasks: "Tasks",
   settings: "Settings",
   status: "Setup status",
   executive: "Your Executive",
