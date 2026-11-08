@@ -10,9 +10,8 @@ import { getAgentDetail, listPersonas, patchAgent, type PersonaMeta } from "@/li
 // chosen after setup; both save through PATCH
 // /agents/executive, the same field the Agent Council edits.
 //
-// Named built-in voices are legacy: hidden here, but an install that already
-// uses one (or a custom voice made in the Council) sees it listed as its
-// current voice, so picking never hides what is active.
+// An install that uses a custom voice made in the Council sees it listed as
+// its current voice, so picking never hides what is active.
 
 // `default` is the Direct voice; it is stored as no override.
 const DIRECT = "default";
@@ -20,7 +19,7 @@ const GENERAL_ORDER = [DIRECT, "supportive", "analytical"];
 
 export function generalVoices(all: PersonaMeta[]): PersonaMeta[] {
   return GENERAL_ORDER.map((slug) => all.find((p) => p.slug === slug)).filter(
-    (p): p is PersonaMeta => p !== undefined && !p.is_legacy,
+    (p): p is PersonaMeta => p !== undefined,
   );
 }
 
@@ -43,9 +42,11 @@ export default function VoicePicker({ variant, onDone }: Props) {
     Promise.all([listPersonas(), getAgentDetail("executive")])
       .then(([all, exec]) => {
         if (cancelled) return;
-        const slug = exec.voice_persona_slug ?? DIRECT;
+        // A stored voice that no longer exists speaks as Direct, so show Direct.
+        const stored = exec.voice_persona_slug ?? DIRECT;
+        const active = all.find((p) => p.slug === stored);
+        const slug = active ? stored : DIRECT;
         const shown = generalVoices(all);
-        const active = all.find((p) => p.slug === slug);
         if (active && !shown.some((p) => p.slug === slug)) shown.push(active);
         setVoices(shown);
         setCurrent(slug);
