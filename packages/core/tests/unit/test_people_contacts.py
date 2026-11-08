@@ -1616,9 +1616,14 @@ def test_solo_block_adds_contacts_only_on_the_principals_turn(roster: SimpleName
 
 
 @pytest.mark.parametrize("mode", ["solo", "team"])
-def test_unattended_passes_never_reach_a_contact(roster: SimpleNamespace, mode: str) -> None:
+def test_unattended_passes_never_reach_a_contact(
+    roster: SimpleNamespace, mode: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import outside_mode
     from openexecutive.orchestrator.schedule_tools import SCHEDULE_TOOL_HANDLERS, unattended_toolkit
 
+    # Even under Hands-off, where Approvals lets the step through.
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
     tools = [{"name": "message_person"}, {"name": "lookup_person"}]
     _, handlers = unattended_toolkit(tools, dict(SCHEDULE_TOOL_HANDLERS), mode)
     # Reflection and research run on their own synthetic session: never the

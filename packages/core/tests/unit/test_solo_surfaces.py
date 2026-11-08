@@ -358,7 +358,7 @@ def test_principal_only_handlers_refuse_anyone_but_the_principal() -> None:
     assert sent == [pid]
 
 
-def test_solo_reflection_cannot_message_a_contact(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_solo_reflection_holds_a_message_to_a_contact(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.orchestrator import executive
 
     _solo()
@@ -371,8 +371,8 @@ def test_solo_reflection_cannot_message_a_contact(monkeypatch: pytest.MonkeyPatc
         return json.dumps({"status": "sent"})
 
     monkeypatch.setitem(executive._ALL_SKILL_HANDLERS, "message_person", _send)
-    # A DM channel is configured, so message_person is offered — and still
-    # reaches nobody but the principal.
+    # A DM channel is configured, so message_person is offered — and below
+    # Hands-off it waits on an Approve card.
     _configure(monkeypatch, "telegram")
     provider = _CapturingProvider([
         _Resp([_ToolUse("message_person", {"person_id": contact, "text": "hi"})], "tool_use"),
@@ -381,7 +381,7 @@ def test_solo_reflection_cannot_message_a_contact(monkeypatch: pytest.MonkeyPatc
     events = _run_reflection(provider, monkeypatch)
     assert "message_person" in _names(provider.calls[0]["tools"])
     assert sent == []
-    assert "only your principal" in next(e for e in events if e.type == "artifact").content
+    assert "waiting_for_approval" in next(e for e in events if e.type == "artifact").content
 
 
 def _configure(monkeypatch: pytest.MonkeyPatch, *integrations: str) -> None:
@@ -437,7 +437,7 @@ def test_reflection_runs_only_tools_it_offered(
     assert artifact.count("unknown tool — skipped") == len(withheld)
 
 
-def test_solo_reflection_withholds_booking_and_workflows(
+def test_solo_reflection_holds_booking_and_workflows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _principal()
@@ -461,13 +461,14 @@ def test_solo_reflection_withholds_booking_and_workflows(
         _Resp([_Text("done")], "end_turn"),
     ])
     events = _run_reflection(provider, monkeypatch)
-    assert not set(_UNATTENDED_SOLO_ONLY) & _names(provider.calls[0]["tools"])
+    # Offered, and below Hands-off each one waits on an Approve card.
+    assert set(_UNATTENDED_SOLO_ONLY) <= _names(provider.calls[0]["tools"])
     assert ran == []
     artifact = next(e for e in events if e.type == "artifact").content
-    assert artifact.count("unknown tool — skipped") == len(_UNATTENDED_SOLO_ONLY)
+    assert artifact.count("waiting_for_approval") == len(_UNATTENDED_SOLO_ONLY)
 
 
-def test_solo_research_withholds_booking_and_workflows(
+def test_solo_research_holds_booking_and_workflows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from openexecutive import providers
@@ -495,9 +496,12 @@ def test_solo_research_withholds_booking_and_workflows(
         severity_hint="high", suggested_audience="principal", confidence="high",
     )
     _narrative, calls = asyncio.run(executive_research._executive_synthesis_loop([finding]))
-    assert not set(_UNATTENDED_SOLO_ONLY) & _names(provider.calls[0]["tools"])
+    assert {"create_calendar_event", "create_instant_meeting"} <= _names(provider.calls[0]["tools"])
     assert ran == []
-    assert {c["result_preview"] for c in calls} == {"unknown tool — skipped"}
+    assert all(
+        "waiting_for_approval" in c["result_preview"] or c["result_preview"] == "unknown tool — skipped"
+        for c in calls
+    )
 
 
 def test_unattended_toolkit_builds_handlers_from_the_offered_list() -> None:
@@ -514,15 +518,14 @@ def test_unattended_toolkit_builds_handlers_from_the_offered_list() -> None:
     offered = [{"name": n} for n in ("create_alert", "create_calendar_event",
                                       "message_person", "run_workflow",
                                       "send_company_broadcast")]
-    team_tools, team_handlers = unattended_toolkit(offered, handlers, "team")
-    assert [t["name"] for t in team_tools] == [t["name"] for t in offered]
-    assert set(team_handlers) == {t["name"] for t in offered}  # never send_slack_dm
-    assert team_handlers["message_person"] is _h
-
-    solo_tools, solo_handlers = unattended_toolkit(offered, handlers, "solo")
-    assert [t["name"] for t in solo_tools] == ["create_alert", "message_person"]
-    assert set(solo_handlers) == {"create_alert", "message_person"}
-    assert solo_handlers["message_person"] is not _h  # principal-only wrapper
+    for mode in ("team", "solo"):
+        tools, built = unattended_toolkit(offered, handlers, mode)
+        # Solo has no company broadcast; neither ever gets send_slack_dm.
+        want = [t["name"] for t in offered if mode == "team" or t["name"] != "send_company_broadcast"]
+        assert [t["name"] for t in tools] == want
+        assert set(built) == set(want)
+        # Every acting tool goes through Approvals.
+        assert built["message_person"] is not _h
 
 
 # --------------------------------------------------------------------------- #

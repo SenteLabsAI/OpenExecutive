@@ -43,27 +43,21 @@ const POLL_INTERVAL_MS = 30_000;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const AUTHORITY_OPTS: DepartmentConfig["authority_level"][] = [
-  "auto_execute",
-  "propose_only",
-  "escalate",
-];
-
 const AUTHORITY_META: Record<
   DepartmentConfig["authority_level"],
   { label: string; hint: string }
 > = {
   auto_execute: {
-    label: "Acts on its own",
-    hint: "The specialist runs actions in its scope without asking. You'll see them in the audit log.",
+    label: "Hands-off",
+    hint: "Its work goes ahead without asking. Approvals is set in Settings → Your Executive.",
   },
   propose_only: {
-    label: "Proposes, you approve",
-    hint: "The specialist drafts actions and routes them to a person for approval before anything happens.",
+    label: "Balanced",
+    hint: "Its work comes to its approver as an Approve card first. Approvals is set in Settings → Your Executive.",
   },
   escalate: {
-    label: "Escalates to a person",
-    hint: "The specialist will not act — it forwards everything to a human.",
+    label: "Careful",
+    hint: "Everything it would do comes to a person first, marked urgent. Approvals is set in Settings → Your Executive.",
   },
 };
 
@@ -75,7 +69,7 @@ function cls(...parts: (string | false | undefined)[]) {
 type SettingsTab = "charter" | "acts" | "numbers" | "channels" | "watched";
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "charter", label: "Charter" },
-  { id: "acts", label: "How it acts" },
+  { id: "acts", label: "Head and check-in" },
   { id: "numbers", label: "Numbers" },
   { id: "channels", label: "Channels" },
   { id: "watched", label: "Watched" },
@@ -193,7 +187,6 @@ export default function DepartmentDetailPage() {
   // Settings edit state
   const [editingSettings, setEditingSettings] = useState(false);
   const [settingsForm, setSettingsForm] = useState({
-    authority_level: "propose_only" as DepartmentConfig["authority_level"],
     mission: "",
     checkIn: { kind: "off" } as CheckInChoice,
     headcount: "",
@@ -280,7 +273,6 @@ export default function DepartmentDetailPage() {
       // Same guard for the big settings form.
       if (isInitial || !editingSettingsRef.current) {
         setSettingsForm({
-          authority_level: d.config.authority_level,
           mission: d.config.charter.mission,
           checkIn: parseCheckIn(d.config.cadences.check_in),
           headcount: d.headcount != null ? String(d.headcount) : "",
@@ -346,7 +338,6 @@ export default function DepartmentDetailPage() {
   function cancelSettings() {
     if (!dept || savingSettings) return;
     setSettingsForm({
-      authority_level: dept.config.authority_level,
       mission: dept.config.charter.mission,
       checkIn: parseCheckIn(dept.config.cadences.check_in),
       headcount: dept.headcount != null ? String(dept.headcount) : "",
@@ -388,7 +379,6 @@ export default function DepartmentDetailPage() {
       const headcountNum = settingsForm.headcount.trim() !== "" ? Number(settingsForm.headcount) : undefined;
       const budgetNum = settingsForm.budget_usd.trim() !== "" ? Number(settingsForm.budget_usd) : undefined;
       const updated = await updateDepartment(slug, {
-        authority_level: settingsForm.authority_level,
         charter: {
           mission: settingsForm.mission,
           scope: dept.config.charter.scope,
@@ -467,7 +457,7 @@ export default function DepartmentDetailPage() {
               <section className="rounded-2xl border border-line bg-surface-elevated px-5 py-2 mb-8">
                 <dl className="divide-y divide-line">
                   <div className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-4 py-3">
-                    <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">How it acts</dt>
+                    <dt className="sm:w-40 flex-shrink-0 text-sm text-fg-muted">Approvals</dt>
                     <dd className="min-w-0">
                       <div className="text-[15px] text-fg">
                         {AUTHORITY_META[dept.config.authority_level].label}
@@ -660,45 +650,6 @@ export default function DepartmentDetailPage() {
                           The Executive surfaces this person as the department owner in routing decisions.
                         </span>
                       </label>
-                      <fieldset className="space-y-2">
-                        <legend className="text-sm text-fg-muted mb-1.5">How it acts</legend>
-                        {AUTHORITY_OPTS.map((a) => {
-                          const meta = AUTHORITY_META[a];
-                          const checked = settingsForm.authority_level === a;
-                          return (
-                            <label
-                              key={a}
-                              className={cls(
-                                "flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors",
-                                checked
-                                  ? "border-accent/60 bg-accent/10"
-                                  : "border-line hover:border-line-strong bg-surface-elevated"
-                              )}
-                            >
-                              <input
-                                type="radio"
-                                name="authority_level"
-                                value={a}
-                                checked={checked}
-                                onChange={() =>
-                                  setSettingsForm((f) => ({ ...f, authority_level: a }))
-                                }
-                                className="mt-1 w-4 h-4 accent-indigo-500 flex-shrink-0"
-                              />
-                              <div className="min-w-0">
-                                <div className="text-[15px] font-medium text-fg">{meta.label}</div>
-                                <div className="text-sm text-fg-muted mt-0.5">{meta.hint}</div>
-                              </div>
-                            </label>
-                          );
-                        })}
-                        <p className={HINT_CLS}>
-                          This covers the department&apos;s check-ins, scheduled messages and alerts, and what its team
-                          members ask for in chat; Operations also covers meetings people ask for. It doesn&apos;t cover
-                          what the Executive does on its own under Take the lead: Always asks first holds that.
-                        </p>
-                      </fieldset>
-
                       <CheckInPicker
                         value={settingsForm.checkIn}
                         onChange={(checkIn) => setSettingsForm((f) => ({ ...f, checkIn }))}

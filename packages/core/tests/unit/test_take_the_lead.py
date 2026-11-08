@@ -54,10 +54,16 @@ def _lead(**ask_first: bool) -> ttl.Lead:
 # ── the switches and rules ────────────────────────────────────────────────────
 
 
-def test_off_until_turned_on_and_everything_asks_first() -> None:
+def _hands_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+
+
+def test_the_executive_always_leads_and_approvals_decides() -> None:
     lead = ttl.get(ttl.SCOPE_EXECUTIVE)
-    assert lead.enabled is False and all(lead.asks_first(k) for k in ttl.KINDS)
-    assert ttl.executive_on() is False and ttl.as_you_on(1) is False
+    assert all(lead.asks_first(k) for k in ttl.KINDS)
+    assert ttl.executive_on() is True and ttl.as_you_on(1) is False
 
 
 def test_every_kind_has_a_label_and_a_hint() -> None:
@@ -227,7 +233,7 @@ def test_a_held_action_waits_on_today_for_the_principal(owner: Any) -> None:
     [decision] = ledger.list_instances(ttl.DECISION_CLASS)
     assert decision.approver_person_id == owner.id and decision.status == ledger.STATUS_PROPOSED
     payload = json.loads(decision.proposed_payload_json)
-    assert payload["tool"] == "message_person" and payload["kind"] == "money"
+    assert payload["tool"] == "message_person" and payload["kind"] == "level"
     [alert] = alerts_store.list_alerts(limit=10)
     assert alert.routed_to_person_id == owner.id and "private:principal" in alert.topic_tags
     assert ttl.done([ttl.SCOPE_EXECUTIVE])[0].status == "waiting"
@@ -585,15 +591,6 @@ def _tools(*names: str) -> list[dict[str, Any]]:
     return [{"name": n} for n in names]
 
 
-def test_off_solo_passes_keep_their_limits(owner: Any) -> None:
-    calls: list[Any] = []
-    tools, handlers = schedule_tools.unattended_toolkit(
-        _tools("create_calendar_event", "message_person", "list_people"),
-        {**_handlers(calls), "create_calendar_event": _handlers(calls)["message_person"]}, "solo",
-    )
-    assert [t["name"] for t in tools] == ["message_person", "list_people"]
-
-
 def test_on_solo_passes_can_book_and_everything_is_gated(owner: Any) -> None:
     ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="t")
     calls: list[Any] = []
@@ -807,15 +804,17 @@ def _wakes() -> list[Any]:
         ).fetchall()
 
 
-def test_off_nothing_wakes(no_last_wake: None) -> None:
+def test_below_hands_off_nothing_wakes(no_last_wake: None) -> None:
     assert ttl.wake("a message on slack", now=NOW) is None
     assert _wakes() == []
 
 
-def test_on_new_messages_wake_the_reflection_once_in_a_while(no_last_wake: None) -> None:
+def test_hands_off_new_messages_wake_the_reflection_once_in_a_while(
+    monkeypatch: pytest.MonkeyPatch, no_last_wake: None,
+) -> None:
     from datetime import timedelta
 
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="t")
+    _hands_off(monkeypatch)
     first = ttl.wake("a message on email", now=NOW)
     assert first is not None
     assert ttl.wake("a message on slack", now=NOW + timedelta(minutes=1)) is None  # batched
@@ -828,7 +827,7 @@ def test_on_new_messages_wake_the_reflection_once_in_a_while(no_last_wake: None)
 def test_a_failed_wake_doesnt_hold_off_the_next(monkeypatch: pytest.MonkeyPatch, no_last_wake: None) -> None:
     from openexecutive.memory import episodic
 
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="t")
+    _hands_off(monkeypatch)
     real = episodic.insert_scheduled_action
     locked = [True]
 
@@ -854,15 +853,13 @@ def test_only_a_json_error_counts_as_failed(text: str, failed: bool) -> None:
     assert ttl.result_failed(text) is failed
 
 
-@pytest.mark.parametrize("on", [True, False])
-def test_a_wake_runs_the_reflection_only_while_on(monkeypatch: pytest.MonkeyPatch, no_last_wake: None, on: bool) -> None:
+def test_a_wake_runs_the_reflection(monkeypatch: pytest.MonkeyPatch, no_last_wake: None) -> None:
     from openexecutive.memory.episodic import get_scheduled_action
     from openexecutive.scheduler import runner
 
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="t")
+    _hands_off(monkeypatch)
     action_id = ttl.wake("a message on email", now=NOW)
     assert action_id is not None
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=on, updated_by="t")
     ran: list[str] = []
 
     async def reflect(now: Any, *, kind: str) -> None:
@@ -872,7 +869,7 @@ def test_a_wake_runs_the_reflection_only_while_on(monkeypatch: pytest.MonkeyPatc
     action = get_scheduled_action(action_id)
     assert action is not None
     asyncio.run(runner._run_take_the_lead_wake(action, NOW))
-    assert ran == (["take_the_lead_wake"] if on else [])
+    assert ran == ["take_the_lead_wake"]
     done = get_scheduled_action(action_id)
     assert done is not None and done.status == "done"
 
@@ -901,27 +898,25 @@ def _lead_tools(monkeypatch: pytest.MonkeyPatch, gateway: Any) -> tuple[list[str
     return [t["name"] for t in tools], handlers, leading
 
 
-def test_the_pass_gets_no_gateway_tools_while_off(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    names, handlers, leading = _lead_tools(monkeypatch, _Gateway())
-    assert names == ["message_person"] and handlers == {} and not leading
-
-
 def test_the_leading_pass_can_discover_and_use_connected_tools(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, updated_by="test")
     gateway = _Gateway()
     names, handlers, leading = _lead_tools(monkeypatch, gateway)
     assert leading and names == ["call_tool", "message_person", "search_tools"]
     assert "load_mcp_server" not in handlers  # no new connections unattended
     found = asyncio.run(handlers["search_tools"]({"query": "spreadsheet"}))
     assert "create_spreadsheet" in found
+    # Below Hands-off an acting call is held for a yes.
+    held = asyncio.run(handlers["call_tool"]({"name": "google_workspace__create_spreadsheet",
+                                              "arguments": {"title": "Project tracker"}}))
+    assert json.loads(held)["status"] == "waiting_for_approval"
+    assert gateway.called == []
+    # Under Hands-off it runs, sharing included.
+    _hands_off(monkeypatch)
     asyncio.run(handlers["call_tool"]({"name": "google_workspace__create_spreadsheet",
                                        "arguments": {"title": "Project tracker"}}))
-    assert gateway.called == ["google_workspace__create_spreadsheet"]
-    # Sharing it is held for a yes, like any delete or share.
-    held = asyncio.run(handlers["call_tool"]({"name": "google_workspace__share_drive_file",
-                                              "arguments": {"file_id": "f1"}}))
-    assert json.loads(held)["status"] == "waiting_for_approval"
-    assert gateway.called == ["google_workspace__create_spreadsheet"]
+    asyncio.run(handlers["call_tool"]({"name": "google_workspace__share_drive_file",
+                                       "arguments": {"file_id": "f1"}}))
+    assert gateway.called == ["google_workspace__create_spreadsheet", "google_workspace__share_drive_file"]
 
 
 def test_the_leading_pass_without_a_gateway_still_leads(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -956,65 +951,21 @@ def test_connected_tools_are_named_by_file_not_content(
     assert ttl.summarize(tool, arguments, mcp=True, quote=quote) == expected
 
 
-# ── in training ───────────────────────────────────────────────────────────────
+# ── Approvals decides ─────────────────────────────────────────────────────────
 
 
 def _training() -> None:
     ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, updated_by="t")
 
 
-def test_in_training_a_clean_action_waits_for_the_principal(owner: Any) -> None:
-    _training()
-    sam = _teammate()
+def test_under_hands_off_it_goes(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _hands_off(monkeypatch)
     calls: list[Any] = []
     gated = ttl.gated_handlers(_handlers(calls), source="reflection")
-    result = json.loads(asyncio.run(gated["message_person"]({"person_id": sam, "text": "Are we on for Thursday?"})))
-    assert result["status"] == "waiting_for_approval" and calls == []
-    [decision] = ledger.list_instances(ttl.DECISION_CLASS)
-    payload = json.loads(decision.proposed_payload_json)
-    assert payload["kind"] == ttl.TRAINING and decision.approver_person_id == owner.id
-    assert payload["allow"] == {"key": f"take_the_lead|message|person:{sam}", "label": "Message Sam Teammate"}
-    assert payload["fields"] == [
-        {"field": "text", "label": "Message", "long": True, "value": "Are we on for Thursday?"},
-    ]
-    [alert] = alerts_store.list_alerts(limit=10)
-    assert ttl.TRAINING_TAG in alert.topic_tags and "private:principal" in alert.topic_tags
-
-
-def test_in_training_an_allowed_action_goes_and_is_counted(owner: Any) -> None:
-    _training()
-    sam = _teammate()
-    key, label = ttl.allowance("message_person", {"person_id": sam, "text": "x"})  # type: ignore[misc]
-    ttl.allow(key, label, created_by="t")
-    calls: list[Any] = []
-    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
-    asyncio.run(gated["message_person"]({"person_id": sam, "text": "Are we on for Thursday?"}))
+    asyncio.run(gated["message_person"]({"person_id": _teammate(), "text": "Pay the invoice"}))
     assert len(calls) == 1
     [line] = ttl.done([ttl.SCOPE_EXECUTIVE])
-    assert line.status == "done" and "You allowed this: Message Sam Teammate." in line.why
-    [learned] = ttl.list_allowed()
-    assert learned.uses == 1 and learned.feature == "take_the_lead"
-
-
-def test_allowing_never_lets_the_six_kinds_or_rules_through(owner: Any) -> None:
-    _training()
-    sam = _teammate()
-    key, label = ttl.allowance("message_person", {"person_id": sam, "text": "x"})  # type: ignore[misc]
-    ttl.allow(key, label, created_by="t")
-    calls: list[Any] = []
-    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
-    result = json.loads(asyncio.run(gated["message_person"]({"person_id": sam, "text": "Pay the invoice"})))
-    assert result["status"] == "waiting_for_approval" and calls == []
-    payload = json.loads(ledger.list_instances(ttl.DECISION_CLASS)[0].proposed_payload_json)
-    assert payload["kind"] == "money" and "allow" not in payload
-
-
-def test_on_without_training_nothing_extra_waits(owner: Any) -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=False, updated_by="t")
-    calls: list[Any] = []
-    gated = ttl.gated_handlers(_handlers(calls), source="reflection")
-    asyncio.run(gated["message_person"]({"person_id": _teammate(), "text": "Are we on for Thursday?"}))
-    assert len(calls) == 1
+    assert line.status == "done"
 
 
 def test_what_one_allow_covers(owner: Any) -> None:

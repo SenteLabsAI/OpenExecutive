@@ -70,6 +70,24 @@ def _outside_content_asks(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.ASK)
 
 
+@pytest.fixture
+def stored_department_levels(monkeypatch: pytest.MonkeyPatch):
+    """Run each department at the level its test stored on it
+    (``authority_level``), instead of the company's Approvals level
+    (``departments.authority.department_level``), so routing tests can set
+    one department per level. No department, or an unknown one, is
+    Balanced's."""
+    from openexecutive.departments import authority
+    from openexecutive.departments import registry as dept_registry
+    from openexecutive.departments.models import AuthorityLevel
+
+    def stored(slug: str) -> AuthorityLevel:
+        state = dept_registry.get_state(slug) if slug else None
+        return state.config.authority_level if state is not None else AuthorityLevel.PROPOSE_ONLY
+
+    monkeypatch.setattr(authority, "department_level", stored)
+
+
 @pytest.fixture(autouse=True)
 def _content_scan_unchecked(monkeypatch: pytest.MonkeyPatch):
     """Keep the content check (orchestrator.content_scan) from calling a

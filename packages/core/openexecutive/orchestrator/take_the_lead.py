@@ -355,7 +355,9 @@ def set_(
 
 
 def executive_on(*, db_path: Path | None = None) -> bool:
-    return get(SCOPE_EXECUTIVE, db_path=db_path).enabled
+    """The Executive's own background work always keeps its acting tools:
+    Approvals decides each step (``_gated``), not a switch of its own."""
+    return True
 
 
 def as_you_on(person_id: int, *, db_path: Path | None = None) -> bool:
@@ -1573,25 +1575,27 @@ def _idem_used(key: str, *, db_path: Path | None = None) -> bool:
 _Handler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
+def _level_runs() -> bool:
+    """Whether the company's Approvals level lets unattended work act on
+    its own: Hands-off only (``orchestrator.levels``). Never raises: an
+    error holds."""
+    try:
+        from openexecutive.orchestrator import levels, outside_mode
+
+        return levels.decide(levels.UNATTENDED, mode=outside_mode.get_mode()) == levels.RUN
+    except Exception:
+        logger.warning("take_the_lead: couldn't read the level — holding the action", exc_info=True)
+        return False
+
+
 async def _gated(name: str, inner: _Handler, tool_input: dict[str, Any], *, source: str, mcp: bool) -> str:
     allowed: Allowed | None = None
-    try:
-        if (not mcp and _only_to_principal(name, tool_input)) or (
-            mcp and _mail_only_to_principal(name, tool_input)
-        ):
-            hit = None
-        else:
-            lead = get(SCOPE_EXECUTIVE)
-            rules = list_rules([SCOPE_COMPANY])
-            hit = check(name, tool_input, lead=lead, rules=rules, mcp=mcp)
-            if hit is None and lead.training:
-                grant = allowance(name, tool_input, mcp=mcp)
-                allowed = find_allowed(grant[0]) if grant is not None else None
-                if allowed is None:
-                    hit = Hit(TRAINING, "it's in training and you haven't allowed this yet")
-    except Exception:
-        logger.warning("take_the_lead: the gate failed — holding the action", exc_info=True)
-        hit = Hit("rule", "its rules couldn't be read")
+    if (not mcp and _only_to_principal(name, tool_input)) or (
+        mcp and _mail_only_to_principal(name, tool_input)
+    ) or _level_runs():
+        hit = None
+    else:
+        hit = Hit("level", "it came up while nobody was chatting, and Approvals is below Hands-off")
     if hit is not None and mcp and not str(name or "").strip():
         # A connected-app call naming no tool is nothing anyone
         # could approve; an empty "The Executive wants to:" card helps no one.
@@ -1747,13 +1751,14 @@ _LAST_WAKE: dict[str, datetime] = {}
 
 
 def wake(reason: str, *, now: datetime | None = None) -> int | None:
-    """With Take the lead as the Executive on, run the reflection soon
-    (``scheduler.runner``'s ``take_the_lead_wake`` kind) instead of waiting
-    for its daily time: at most one waiting, and one every ``WAKE_GAP``.
-    Returns the scheduled action's id, or None. Never raises; the pause
-    holds it like any scheduled work."""
+    """Under Hands-off, run the reflection soon (``scheduler.runner``'s
+    ``take_the_lead_wake`` kind) instead of waiting for its daily time: at
+    most one waiting, and one every ``WAKE_GAP``. Below Hands-off each step
+    would only wait on a card, so the daily look is enough. Returns the
+    scheduled action's id, or None. Never raises; the pause holds it like
+    any scheduled work."""
     try:
-        if not executive_on():
+        if not _level_runs():
             return None
         from openexecutive.memory.episodic import insert_scheduled_action
         from openexecutive.scheduler.runner import TAKE_THE_LEAD_WAKE_KIND, _has_pending_brief

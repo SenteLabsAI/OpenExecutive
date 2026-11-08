@@ -4683,7 +4683,6 @@ export async function getDepartment(slug: string): Promise<DepartmentDetail> {
 export interface DepartmentPatch {
   title?: string;
   charter?: DepartmentCharter;
-  authority_level?: DepartmentConfig["authority_level"];
   cadences?: Record<string, string>;
   head_person_id?: number | null;
   headcount?: number | null;

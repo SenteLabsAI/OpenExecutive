@@ -17,6 +17,7 @@ from openexecutive.alerts import store as alerts_store
 from openexecutive.api.routes import decisions as decisions_route
 from openexecutive.departments import registry as dept_registry
 from openexecutive.departments import store as dept_store
+from openexecutive.departments.authority import department_level as _company_level  # noqa: E402
 from openexecutive.departments.models import AuthorityLevel
 from openexecutive.memory import decision_ledger as ledger
 from openexecutive.memory import episodic
@@ -26,6 +27,8 @@ from openexecutive.orchestrator.session import Session
 from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.people.models import AuthorityScope, Person
+
+pytestmark = pytest.mark.usefixtures("stored_department_levels")
 
 SAM = "sam@co.example"
 RIA = "ria@co.example"
@@ -163,29 +166,38 @@ def test_propose_only_holds_it_for_an_approver(team: dict[str, Person]) -> None:
     assert verdict.level == "propose_only"
 
 
-def test_propose_only_lets_someone_who_could_approve_it_send(team: dict[str, Person]) -> None:
+def test_balanced_lets_someone_who_approves_everything_send(team: dict[str, Person]) -> None:
     _level("marketing", AuthorityLevel.PROPOSE_ONLY)
-    people_store.set_authority_scope(team["sam"].id, [AuthorityScope.SPEND_LT_10K])  # type: ignore[arg-type]
+    people_store.set_authority_scope(team["sam"].id, [AuthorityScope.WILDCARD])  # type: ignore[arg-type]
     sam = _reload(team["sam"])
-    # A spend within Sam's range: theirs to approve, so it goes.
     assert gate.decide(sam, "send_slack_dm", _send("The invoice is $1,500"), mcp=False).run is True
-    # Anything else still needs someone holding its range (here, the owner).
-    assert gate.decide(sam, "send_slack_dm", _send(), mcp=False).run is False
 
 
-def test_a_small_amount_doesnt_cover_the_rest_of_it(team: dict[str, Person]) -> None:
-    """Every kind of approval the action touches must be held: a petty-cash
-    range doesn't approve a termination letter that mentions $12."""
+def test_words_in_a_message_need_no_approval_range(team: dict[str, Person]) -> None:
+    """Money, contract or hiring words no longer pick an approval range:
+    the level alone decides."""
+    _level("marketing", AuthorityLevel.AUTO_EXECUTE)
+    sam = _reload(team["sam"])
+    letter = _send("Send Bob the termination letter, effective today. Also expense the $12 lunch.")
+    assert gate.decide(sam, "send_slack_dm", letter, mcp=False).run is True
     _level("marketing", AuthorityLevel.PROPOSE_ONLY)
     people_store.set_authority_scope(team["sam"].id, [AuthorityScope.SPEND_LT_2K])  # type: ignore[arg-type]
     sam = _reload(team["sam"])
-    letter = _send("Send Bob the termination letter, effective today. Also expense the $12 lunch.")
-    assert gate.approval_ranges("send_slack_dm", letter) == [
-        [AuthorityScope.SPEND_LT_2K, AuthorityScope.SPEND_LT_10K, AuthorityScope.SPEND_GT_10K],
-        [AuthorityScope.HIRING_SIGNOFF],
-    ]
-    assert gate.decide(sam, "send_slack_dm", letter, mcp=False).run is False
-    assert gate.decide(sam, "send_slack_dm", _send("Expense the $12 lunch"), mcp=False).run is True
+    assert gate.decide(sam, "send_slack_dm", _send("Expense the $12 lunch"), mcp=False).run is False
+
+
+def test_the_company_level_decides_without_a_stored_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside the routing tests, a department runs at the company's
+    Approvals level, whatever "How it acts" once stored."""
+    from openexecutive.orchestrator import outside_mode
+
+    for mode, level in (
+        (outside_mode.TRUST, AuthorityLevel.AUTO_EXECUTE),
+        (outside_mode.OUTSIDERS, AuthorityLevel.PROPOSE_ONLY),
+        (outside_mode.ASK, AuthorityLevel.ESCALATE),
+    ):
+        monkeypatch.setattr(outside_mode, "get_mode", lambda m=mode, **_: m)
+        assert _company_level("marketing") is level
 
 
 def test_escalate_always_waits_for_someone_else(team: dict[str, Person]) -> None:

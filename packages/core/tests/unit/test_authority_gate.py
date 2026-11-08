@@ -14,6 +14,8 @@ from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.people.models import AuthorityScope, AvailabilityWindow
 
+pytestmark = pytest.mark.usefixtures("stored_department_levels")
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

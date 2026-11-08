@@ -43,6 +43,7 @@ function settingHref(setting: string): { href: string; label: string } | null {
   if (setting === "handle_it") return { href: SENDS_HREF, label: "Handle it for me" };
   if (setting === "take_the_lead") return { href: "/delegate/take-the-lead", label: "Take the lead" };
   if (setting === "pause") return { href: "/settings/executive", label: "Your Executive" };
+  if (setting === "approvals") return { href: "/settings/executive", label: "Approvals" };
   if (setting.startsWith("department:")) {
     const slug = setting.slice("department:".length);
     return { href: `/departments/${encodeURIComponent(slug)}`, label: "Department settings" };

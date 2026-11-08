@@ -15,18 +15,15 @@ gates don't do:
   setting has in training and what it has learned (``training``), and the
   person's own rules (``take_the_lead.list_rules``). The checks in
   ``handle_it.refusal`` and ``follow_up_refusal`` are the source of each row.
-- **As the Executive** (the principal's alone, as ``GET /take-the-lead``
-  is): the switch and its training (``take_the_lead.get``), each Ask first
-  kind (``Lead.asks_first``), the company's rules, and meetings. A meeting the
-  Executive books on its own always waits: both meeting gates need someone on
-  a verified surface in the turn (``calendar_tools._asked_on_a_verified_surface``,
-  ``_solo_meeting_gate``), and an unattended run never is.
-- **Departments**: each department's authority level (``departments.registry``),
-  and what that level covers (``departments.authority.gate_action``'s
-  callers: department-scoped scheduled work, check-ins, alert review, team
-  members' chat sends in ``orchestrator.department_gate`` and, in a team
-  workspace, a meeting someone asks for in chat). Not what the Executive does
-  under Take the lead: its gate reads no department.
+- **As the Executive** (the principal's alone): what it does on its own,
+  which Approvals decides (``take_the_lead._gated``): Hands-off goes,
+  otherwise an Approve card. Meetings asked for in chat
+  (``calendar_tools.handle_create_calendar_event``) book when the owner
+  asks.
+- **Departments**: the Approvals level each department's work runs at
+  (``departments.authority.department_level``), covering department-scoped
+  scheduled work, check-ins, alert review and team members' chat sends
+  (``orchestrator.department_gate``).
 
 The page also says when one setting rides on another (``notes``), when the
 Executive is paused (``scheduler.pause``), and when nothing can be sent as
@@ -50,6 +47,8 @@ SETTING_ACT_AS_ME = "act_as_me"
 SETTING_HANDLE_IT = "handle_it"
 SETTING_TAKE_THE_LEAD = "take_the_lead"
 SETTING_PAUSE = "pause"
+# Approvals (Careful / Balanced / Hands-off), on Settings → Your Executive.
+SETTING_APPROVALS = "approvals"
 SETTING_NONE = ""
 _DEPARTMENT_PREFIX = "department:"
 
@@ -65,11 +64,11 @@ LEVEL_NAMES: dict[str, str] = {
     "lead": "Everything",
 }
 
-# The words for each department level, as the department page shows them.
+# The Approvals level each department authority level stands for.
 DEPARTMENT_LEVEL_NAMES: dict[str, str] = {
-    "auto_execute": "Acts on its own",
-    "propose_only": "Proposes, you approve",
-    "escalate": "Escalates to a person",
+    "auto_execute": "Hands-off",
+    "propose_only": "Balanced",
+    "escalate": "Careful",
 }
 
 
@@ -397,130 +396,66 @@ def _rule_label(kind: str, value: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def as_the_executive(*, is_principal: bool) -> Section:
-    """What the Executive does in its own name, under Take the lead."""
-    from openexecutive.orchestrator import take_the_lead
+_LEVEL_WORDS: dict[str, str] = {"ask": "Careful", "outsiders": "Balanced", "trust": "Hands-off"}
 
+
+def _level() -> str:
+    """The company's Approvals level: ``outside_mode``'s token. Unreadable
+    is Careful's."""
+    from openexecutive.orchestrator import outside_mode
+
+    try:
+        return outside_mode.get_mode()
+    except Exception:
+        logger.warning("may_do: couldn't read the Approvals level", exc_info=True)
+        return outside_mode.ASK
+
+
+def as_the_executive(*, is_principal: bool) -> Section:
+    """What the Executive does in its own name, on its own: Approvals
+    decides each step (``take_the_lead._gated``)."""
     title = "As the Executive, on its own"
     if not is_principal:
         return Section(
             SECTION_EXECUTIVE, title, available=False,
             unavailable="Only the account owner sees what the Executive does on its own.",
         )
-    lead = take_the_lead.get(take_the_lead.SCOPE_EXECUTIVE)
-    try:
-        rules = take_the_lead.list_rules([take_the_lead.SCOPE_COMPANY])
-        learned = take_the_lead.list_allowed(feature=take_the_lead.FEATURE)
-    except Exception:
-        logger.warning("may_do: couldn't read Take the lead's rules", exc_info=True)
-        rules, learned = [], []
-
-    rows: list[Row] = []
-    if not lead.enabled:
-        rows.append(Row(
-            "lead", "Messages, bookings and workflows it thinks of.", "off", "Off",
-            "Take the lead is off. It tells you what it would do, and you do it.",
-            SETTING_TAKE_THE_LEAD,
-        ))
-        return Section(SECTION_EXECUTIVE, title, rows=rows)
-
-    if lead.training:
-        n = len(learned)
-        rows.append(Row(
-            "lead", "Messages, bookings and workflows it thinks of.",
-            "goes" if n else "waits", "Goes out when allowed" if n else "Waits for you",
-            "Take the lead is in training, so each one comes to you first. "
-            + (f"The {_plural(n, 'thing')} you ticked go on their own." if n
-               else "Tick “on its own next time” on a card and that goes on its own."),
-            SETTING_TAKE_THE_LEAD,
-        ))
-    else:
-        rows.append(Row(
-            "lead", "Messages to your team, and workflows it starts.", "goes", "Goes out",
-            "Take the lead is on. It checks each step a workflow sends.", SETTING_TAKE_THE_LEAD,
-        ))
-
-    rows.append(Row(
-        "to_you", "Messages to you.", "goes", "Goes out",
-        "You're who it would ask.", SETTING_NONE,
-    ))
-
-    for kind in take_the_lead.KINDS:
-        label = take_the_lead.KIND_LABELS[kind]
-        hint = take_the_lead.KIND_HINTS[kind]
-        if lead.asks_first(kind):
-            rows.append(Row(
-                f"kind:{kind}", hint, "waits", "Waits for its approver",
-                f"{label} is on in Always asks first. It goes to whoever approves that area on People, or to you.",
-                SETTING_TAKE_THE_LEAD,
-            ))
-        elif lead.training:
-            rows.append(Row(
-                f"kind:{kind}", hint, "waits", "Waits unless allowed",
-                f"{label} is off in Always asks first, and Take the lead is in training.", SETTING_TAKE_THE_LEAD,
-            ))
-        else:
-            rows.append(Row(
-                f"kind:{kind}", hint, "goes", "Goes out",
-                f"{label} is off in Always asks first.", SETTING_TAKE_THE_LEAD,
-            ))
-
-    rows.append(Row(
-        "meetings", "Meetings it thinks of booking.", "always_waits", "Waits for its approver",
-        "These always wait. Meetings asked for in chat covers the ones someone asks for in chat. "
-        "Cancelling a meeting waits too.",
-        SETTING_TAKE_THE_LEAD,
-    ))
-
-    if rules:
-        rows.append(Row(
-            "rules", "Anything that matches your company's rules.", "always_waits", "Waits for you",
-            "Company rules always hold.", SETTING_TAKE_THE_LEAD,
-            items=tuple(_rule_label(r.kind, r.value) for r in rules),
-        ))
-
-    rows.append(_meetings_in_chat())
-    return Section(
-        SECTION_EXECUTIVE, title, rows=rows,
-        footer="Department levels don't apply here. Always asks first and the company's rules do.",
-    )
+    level = _level()
+    words = _LEVEL_WORDS.get(level, "Careful")
+    hands_off = level == "trust"
+    rows: list[Row] = [
+        Row(
+            "lead", "Messages, bookings, workflows and changes in connected apps it thinks of.",
+            "goes" if hands_off else "waits", "Goes out" if hands_off else "Waits for you",
+            f"Approvals is on {words}."
+            + ("" if hands_off else " Each one comes to you as an Approve card."),
+            SETTING_APPROVALS,
+        ),
+        Row("to_you", "Messages to you.", "goes", "Goes out", "You're who it would ask.", SETTING_NONE),
+        _meetings_in_chat(),
+    ]
+    return Section(SECTION_EXECUTIVE, title, rows=rows)
 
 
 def _meetings_in_chat() -> Row:
-    """A meeting someone on the team asks for in chat: the class mode, and in
-    a team workspace the Operations department's level as well
-    (``calendar_tools.handle_create_calendar_event``)."""
-    from openexecutive.memory.decision_ledger import get_class_mode
+    """A meeting someone asks for in chat
+    (``calendar_tools.handle_create_calendar_event``): the owner asking books
+    it; a teammate's goes by Approvals, like their other sends."""
     from openexecutive.memory.workspace_settings import get_workspace
 
     what = "Meetings you or a teammate ask it to book in chat."
-    try:
-        class_mode = get_class_mode("meeting_scheduling")
-    except Exception:
-        class_mode = "propose"
-    if class_mode != "auto_execute":
-        return Row(
-            "meetings_chat", what, "waits", "Waits for its approver",
-            "Meetings asked for in chat is on in Always asks first.", SETTING_TAKE_THE_LEAD,
-        )
-    if get_workspace().mode == "solo":
+    level = _level()
+    words = _LEVEL_WORDS.get(level, "Careful")
+    if get_workspace().mode == "solo" or level == "trust":
         return Row(
             "meetings_chat", what, "goes", "Books it",
-            "Meetings asked for in chat is off in Always asks first, so it books when you ask.", SETTING_TAKE_THE_LEAD,
-        )
-    from openexecutive.departments import registry as dept_registry
-
-    ops = dept_registry.get_state("operations")
-    level = str(ops.config.authority_level) if ops is not None else "propose_only"
-    if level == "auto_execute":
-        return Row(
-            "meetings_chat", what, "goes", "Books it",
-            "Meetings asked for in chat is off in Always asks first, and Operations acts on its own.", department_setting("operations"),
+            "It books what you ask for." if level != "trust" else "Approvals is on Hands-off.",
+            SETTING_APPROVALS,
         )
     return Row(
-        "meetings_chat", what, "waits", "Waits for its approver",
-        "Operations is set to wait for its approver.",
-        department_setting("operations"),
+        "meetings_chat", what, "waits", "Books yours, a teammate's waits",
+        f"It books what you ask for. Approvals is on {words}, so a teammate's waits for approval.",
+        SETTING_APPROVALS,
     )
 
 
@@ -531,6 +466,7 @@ def _meetings_in_chat() -> Row:
 
 def departments() -> Section:
     from openexecutive.departments import registry as dept_registry
+    from openexecutive.departments.authority import department_level
     from openexecutive.memory.workspace_settings import get_workspace
 
     title = "For each department"
@@ -541,7 +477,7 @@ def departments() -> Section:
         states = []
     rows: list[Row] = []
     for state in states:
-        level = str(state.config.authority_level)
+        level = str(department_level(state.config.slug))
         outcome: Outcome = "goes" if level == "auto_execute" else "waits"
         then = {
             "auto_execute": "Acts on its own",
@@ -550,13 +486,13 @@ def departments() -> Section:
         }.get(level, "Waits for its approver")
         rows.append(Row(
             f"department:{state.config.slug}", state.config.title, outcome, then,
-            f"Set to {DEPARTMENT_LEVEL_NAMES.get(level, level)}.", department_setting(state.config.slug),
+            f"Approvals is on {DEPARTMENT_LEVEL_NAMES.get(level, level)}.", SETTING_APPROVALS,
         ))
     solo = get_workspace().mode == "solo"
     footer = (
-        "A level covers that department's scheduled messages and alerts"
+        "Approvals covers each department's scheduled messages and alerts"
         + (". Check-ins don't run in a personal workspace" if solo else ", its check-ins, and what its team members ask for in chat")
-        + ". It doesn't cover what the Executive does on its own under Take the lead."
+        + "."
     )
     return Section(SECTION_DEPARTMENTS, title, rows=rows, footer=footer)
 

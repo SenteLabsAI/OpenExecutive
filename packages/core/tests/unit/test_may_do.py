@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from openexecutive.api.routes import may_do as route
 from openexecutive.delegation import handle_it, inbox, may_do, training
 from openexecutive.delegation.settings import set_enabled
-from openexecutive.memory import decision_ledger as ledger
 from openexecutive.memory import episodic
 from openexecutive.orchestrator import take_the_lead as ttl
 from openexecutive.people import registry as people_registry
@@ -191,52 +190,29 @@ def test_the_executive_section_is_the_owners_alone() -> None:
     assert section.available is False and section.rows == []
 
 
-def test_take_the_lead_off_is_one_row() -> None:
-    rows = may_do.as_the_executive(is_principal=True).rows
-    assert [r.id for r in rows] == ["lead"] and rows[0].outcome == "off"
-
-
-def test_ask_first_switches_and_meetings(ids: dict[str, int]) -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, ask_first={"money": False}, updated_by="t")
-    ttl.add_rule(ttl.SCOPE_COMPANY, "words", "discount", created_by="t")
-    section = may_do.as_the_executive(is_principal=True)
-    rows = _rows(section)
-    assert rows["lead"].outcome == "goes"
-    assert rows["kind:money"].outcome == "goes"
-    assert rows["kind:contracts"].outcome == "waits"
-    # What it thinks of itself never books on its own: the meeting gates need
-    # someone on a verified surface in the turn.
-    assert rows["meetings"].outcome == "always_waits"
-    assert rows["meetings_chat"].outcome == "waits"
-    assert rows["rules"].items == ("Words: discount",)
-    assert "Department levels don't apply" in section.footer
-
-
-def test_training_waits_until_something_is_allowed() -> None:
-    ttl.set_(ttl.SCOPE_EXECUTIVE, enabled=True, training=True, ask_first={"money": False}, updated_by="t")
-    rows = _rows(may_do.as_the_executive(is_principal=True))
-    assert rows["lead"].outcome == "waits"
-    assert rows["kind:money"].outcome == "waits" and rows["kind:money"].then == "Waits unless allowed"
-
-
-def test_meetings_asked_for_in_chat_follow_the_switch_and_operations(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(("mode", "outcome"), [("ask", "waits"), ("outsiders", "waits"), ("trust", "goes")])
+def test_approvals_decides_what_it_does_on_its_own(
+    monkeypatch: pytest.MonkeyPatch, mode: str, outcome: str,
 ) -> None:
-    from openexecutive.departments.models import AuthorityLevel
+    from openexecutive.orchestrator import outside_mode
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: mode)
+    rows = {r.id: r for r in may_do.as_the_executive(is_principal=True).rows}
+    assert list(rows) == ["lead", "to_you", "meetings_chat"]
+    assert rows["lead"].outcome == outcome and rows["lead"].setting == may_do.SETTING_APPROVALS
+    assert rows["to_you"].outcome == "goes"
+
+
+def test_meetings_asked_for_in_chat_follow_approvals(monkeypatch: pytest.MonkeyPatch) -> None:
     from openexecutive.memory import workspace_settings
+    from openexecutive.orchestrator import outside_mode
 
-    ledger.set_class_mode("meeting_scheduling", "auto_execute")
-    # Team workspace: Operations must act on its own too.
+    # Team workspace below Hands-off: the owner's book, a teammate's wait.
     assert may_do._meetings_in_chat().outcome == "waits"
-
-    class _State:
-        class config:  # noqa: N801 — a stand-in for DepartmentConfig
-            authority_level = AuthorityLevel.AUTO_EXECUTE
-
-    monkeypatch.setattr("openexecutive.departments.registry.get_state", lambda slug: _State())
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
     assert may_do._meetings_in_chat().outcome == "goes"
-    # Solo: the switch alone decides.
-    monkeypatch.setattr("openexecutive.departments.registry.get_state", lambda slug: None)
+    # Solo: what you ask for books at every level.
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.ASK)
     workspace_settings.set_workspace_mode("solo")
     assert may_do._meetings_in_chat().outcome == "goes"
 

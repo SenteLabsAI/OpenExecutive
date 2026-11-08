@@ -25,7 +25,6 @@ from openexecutive.departments.cadence import (
     reschedule_check_in,
 )
 from openexecutive.departments.models import (
-    AuthorityLevel,
     DepartmentCharter,
     DepartmentState,
     Goal,
@@ -67,7 +66,6 @@ class DepartmentCreate(BaseModel):
 class DepartmentPatch(BaseModel):
     title: str | None = None
     charter: DepartmentCharter | None = None
-    authority_level: AuthorityLevel | None = None
     head_person_id: int | None = None
     head_persona_slug: str | None = None
     cadences: dict[str, str] | None = None
@@ -113,9 +111,18 @@ class DepartmentDetail(DepartmentState):
     next_check_in_at: str | None = None
 
 
+def _with_level(state: DepartmentState) -> DepartmentState:
+    """``state`` showing the level its work runs at: Approvals
+    (``authority.department_level``), not the "How it acts" it once stored."""
+    from openexecutive.departments.authority import department_level
+
+    config = state.config.model_copy(update={"authority_level": department_level(state.config.slug)})
+    return state.model_copy(update={"config": config})
+
+
 def _detail(state: DepartmentState) -> DepartmentDetail:
     return DepartmentDetail(
-        **state.model_dump(),
+        **_with_level(state).model_dump(),
         next_check_in_at=next_check_in_at(state.config.slug),
     )
 
@@ -193,7 +200,7 @@ def list_departments() -> list[DepartmentState]:
     """List all departments with their Goals."""
     # Read straight through the store (not the cache) so the API view is always
     # fresh; the registry cache is for the per-turn prompt-block path only.
-    return store.list_departments()
+    return [_with_level(state) for state in store.list_departments()]
 
 
 @router.get("/departments/{slug}", response_model=DepartmentDetail)
@@ -273,7 +280,6 @@ def patch_department(slug: str, patch: DepartmentPatch) -> DepartmentDetail:
         slug,
         title=patch.title,
         charter=patch.charter,
-        authority_level=patch.authority_level,
         # Use _UNSET when the field was not present in the request so "not
         # provided" and "explicitly null (clear)" are distinguishable.
         head_person_id=patch.head_person_id if "head_person_id" in raw else _UNSET,
