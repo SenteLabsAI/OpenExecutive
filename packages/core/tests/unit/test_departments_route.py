@@ -49,7 +49,8 @@ def test_get_known_department(client: TestClient) -> None:
     data = resp.json()
     assert data["config"]["slug"] == "finance"
     assert data["config"]["specialist_key"] == "cfo"
-    assert data["config"]["authority_level"] == "propose_only"
+    # The level its work runs at: Approvals (the suite runs at Careful).
+    assert data["config"]["authority_level"] == "escalate"
     assert data["config"]["charter"]["mission"]
     assert data["goals"] == []
 
@@ -63,23 +64,20 @@ def test_get_unknown_department(client: TestClient) -> None:
 # Patch
 # --------------------------------------------------------------------------- #
 
-def test_patch_authority_and_headcount(client: TestClient) -> None:
+def test_how_it_acts_is_gone_and_approvals_shows(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openexecutive.orchestrator import outside_mode
+
     resp = client.patch(
         "/departments/finance",
         json={"authority_level": "auto_execute", "headcount": 3},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["config"]["authority_level"] == "auto_execute"
+    assert data["config"]["authority_level"] == "escalate"  # not stored: Approvals decides
     assert data["headcount"] == 3
-
-
-def test_patch_rejects_invalid_authority(client: TestClient) -> None:
-    resp = client.patch(
-        "/departments/finance",
-        json={"authority_level": "do_whatever"},
-    )
-    assert resp.status_code == 422
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    listed = {d["config"]["slug"]: d for d in client.get("/departments").json()}
+    assert listed["finance"]["config"]["authority_level"] == "auto_execute"
 
 
 def test_patch_watched_entities_cleans_and_validates(client: TestClient) -> None:
@@ -421,14 +419,14 @@ def test_patch_invalidates_registry_cache(client: TestClient) -> None:
 
     resp = client.patch(
         "/departments/finance",
-        json={"authority_level": "auto_execute"},
+        json={"headcount": 4},
     )
     assert resp.status_code == 200
     # Mutation must have cleared the cache, not just overwritten its value.
     assert registry._cache is None
 
-    after = {s.config.slug: s.config.authority_level.value for s in registry.list_states()}
-    assert after["finance"] == "auto_execute"
+    after = {s.config.slug: s.headcount for s in registry.list_states()}
+    assert after["finance"] == 4
 
 
 # --------------------------------------------------------------------------- #

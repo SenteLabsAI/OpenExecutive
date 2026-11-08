@@ -122,6 +122,9 @@ APP = "app"
 SENDER = "sender"
 # A read of one of the company's own Drive items (``vet_reads``).
 COMPANY = "company"
+# What the owner's own authenticated mail quotes or forwards: other people's
+# words, whoever passed them on (``integrations.email_poller._principal_email_text``).
+QUOTED = "quoted"
 # A read of the owner's own mailbox or notes (Act as me): checked like any
 # read (``check_mail_read``), but it decides the Act as me lockdown
 # (``delegation.lockdown.mail_lock_holds``), never ``TurnOutside.sources``.
@@ -190,6 +193,11 @@ _FETCH_TOOLS: dict[str, str] = {
 # How an attachment shows up in the message text (``delegation.settings``
 # ``_ATTACHMENT_MARK``): an inlined document's label or a note naming a file.
 _ATTACHMENT_MARK = re.compile(r"\[Attached: |\((?:Attached|Skipped|Could not)\b")
+
+# What the owner's own mail quotes or forwards, as the email poller labels it.
+_QUOTED_BLOCK = re.compile(
+    r'<untrusted_content source="email_quoted"[^>]*>(.*?)</untrusted_content>', re.DOTALL
+)
 
 # A Google or Microsoft 365 tool whose own name (after the server prefix)
 # starts with one of these writes rather than reads, so its result is no
@@ -288,8 +296,9 @@ def begin_turn(
     """Start a fresh record for a NEW turn: never the previous turn's.
 
     The message counts as outside content when it carries an attachment (an
-    image or PDF block, or a document's text inlined into it), and so does
-    the retrieved context when it quotes a synced folder. So does the whole
+    image or PDF block, or a document's text inlined into it) or the owner's
+    own mail quotes or forwards someone else's, and so does the retrieved
+    context when it quotes a synced folder. So does the whole
     turn when it answers mail from someone not in People
     (``Session.sender_off_team``)."""
     state = TurnOutside(
@@ -317,6 +326,11 @@ def begin_turn(
     synced = synced_sections(retrieved_context)
     if synced:
         _queue(state, SYNCED, synced)
+    # The owner's own mail counts as them, but what it quotes or forwards
+    # doesn't: it is checked like an attached file.
+    quoted = _QUOTED_BLOCK.findall(user_message or "")
+    if quoted:
+        _queue(state, QUOTED, "\n".join(quoted))
     key = _held_key(session, state)
     if key:
         stored = _HELD.pop(key, None)

@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from openexecutive.briefing.value_summary import ValueSummary
 from openexecutive.clients.cockpit import ClientCockpitCard, format_practice_for_today
+from openexecutive.departments import authority as dept_authority
 
 if TYPE_CHECKING:
     from openexecutive.alerts.models import Alert
@@ -955,7 +956,7 @@ def _build_today(
         )
 
     dept_items = [
-        _brief_row(ds.config.slug, ds.config.title, ds.config.authority_level.value, ds.goals)
+        _brief_row(ds.config.slug, ds.config.title, dept_authority.department_level(ds.config.slug).value, ds.goals)
         for ds in depts
     ]
     unassigned = [v.goal for v in views if not v.goal.department_slug]
@@ -1453,7 +1454,7 @@ def _build_activity(
     propose_only_depts = {
         d.config.slug
         for d in dept_store.list_departments()
-        if d.config.authority_level == "propose_only"
+        if dept_authority.department_level(d.config.slug) == "propose_only"
     }
 
     from openexecutive.alerts.models import is_private_alert, visible_alert

@@ -181,7 +181,9 @@ def _render_department_section(
     config = state.config
     goals = state.goals
 
-    authority_label = config.authority_level.value.replace("_", " ")
+    from openexecutive.departments.authority import department_level
+
+    authority_label = department_level(config.slug).value.replace("_", " ")
     specialist_label = (
         config.specialist_key.upper() if config.specialist_key else "INFORMATIONAL"
     )

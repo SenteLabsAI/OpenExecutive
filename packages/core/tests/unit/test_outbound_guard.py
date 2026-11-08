@@ -16,6 +16,7 @@ import asyncio
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -388,3 +389,78 @@ def test_discord_handler_suppresses_without_sending(monkeypatch: pytest.MonkeyPa
     assert json.loads(result)["status"] == "suppressed"
     send.assert_not_awaited()
     assert list_scheduled_actions(status="done", limit=100) == []
+
+
+def _asked_send(monkeypatch: pytest.MonkeyPatch, verdict: Any) -> tuple[str, AsyncMock, list[dict[str, Any]]]:
+    """A Telegram send someone asked for in the turn, with the guard's verdict
+    ``verdict(availability)``; returns the result, the send and the guard's calls."""
+    from openexecutive.orchestrator.session import Session
+
+    class _S:
+        telegram_bot_token = "tg-test"
+
+    calls: list[dict[str, Any]] = []
+
+    def _check(*_a: Any, **k: Any) -> Any:
+        calls.append(k)
+        return verdict(k.get("availability", True))
+
+    monkeypatch.setattr("openexecutive.config.get_settings", lambda: _S())
+    monkeypatch.setattr(
+        "openexecutive.people.store.find_person_by_telegram_chat_id", lambda _ref: object()
+    )
+    monkeypatch.setattr("openexecutive.orchestrator.outbound_guard.check_outbound_allowed", _check)
+    send = AsyncMock(return_value="42")
+    token = schedule_tools.current_session.set(Session(session_id="web:asked"))
+    try:
+        with patch("openexecutive.integrations.telegram_bot.send_message", new=send):
+            result = asyncio.run(
+                schedule_tools.handle_send_telegram_message({"chat_id": 55, "text": "ping"})
+            )
+    finally:
+        schedule_tools.current_session.reset(token)
+    return result, send, calls
+
+
+def test_a_send_someone_asked_for_skips_quiet_hours(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Quiet hours hold the Executive's own outreach, not what a person asks."""
+    result, send, calls = _asked_send(monkeypatch, lambda availability: "quiet hours" if availability else None)
+    assert calls and calls[0]["availability"] is False
+    assert json.loads(result).get("status") != "suppressed"
+    send.assert_awaited()
+
+
+def test_a_send_someone_asked_for_still_meets_the_loop_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The duplicate and rate checks stop a runaway loop whoever started the
+    turn: a stranger's mail could steer a burst of sends."""
+    result, send, _ = _asked_send(monkeypatch, lambda _availability: "duplicate suppressed")
+    assert json.loads(result)["status"] == "suppressed"
+    send.assert_not_awaited()
+
+
+def test_availability_off_still_checks_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_settings(monkeypatch, _Settings())
+    _record_done("slack_dm", "U1", "Board prep — please review the deck")
+    reason = outbound_guard.check_outbound_allowed(
+        "slack_dm", "U1", "Board prep — please review the deck", availability=False,
+    )
+    assert reason is not None and "near-identical" in reason
+
+
+def test_own_outreach_is_a_tagged_send_or_a_run_nobody_is_in() -> None:
+    from openexecutive.attunement.outcomes import tag_proactive
+    from openexecutive.orchestrator.session import Session
+
+    assert schedule_tools._own_outreach()
+    token = schedule_tools.current_session.set(Session(session_id="web:asked"))
+    try:
+        assert not schedule_tools._own_outreach()
+        with tag_proactive("nudge"):
+            assert schedule_tools._own_outreach()
+    finally:
+        schedule_tools.current_session.reset(token)
+    token = schedule_tools.current_session.set(Session(session_id="sched:x", unattended=True))
+    try:
+        assert schedule_tools._own_outreach()
+    finally:
+        schedule_tools.current_session.reset(token)

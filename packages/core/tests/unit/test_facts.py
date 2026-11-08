@@ -229,6 +229,18 @@ def test_remember_fact_needs_the_principals_own_words(principal: SimpleNamespace
     assert facts.list_facts(include_inactive=True) == []
 
 
+def test_on_hands_off_its_own_wording_is_kept(
+    principal: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openexecutive.orchestrator import levels
+
+    monkeypatch.setattr(levels, "relaxed", lambda: True)
+    out = _call(fact_tools.handle_remember_fact, subject="Units",
+                statement="Maple House has 50 units.", source_quote="")
+    assert "error" not in out, out
+    assert [f.statement for f in facts.list_facts()] == ["Maple House has 50 units."]
+
+
 def test_remember_fact_ignores_hydrated_backstory(principal: SimpleNamespace) -> None:
     """A reply on Slack or Discord is hydrated with the Executive's own DM and
     the alert or mail behind it; that text is not the principal's words."""

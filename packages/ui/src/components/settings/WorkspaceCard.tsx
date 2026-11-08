@@ -4,18 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 
 import AdvancedFold from "@/components/settings/AdvancedFold";
 import SettingsCard from "@/components/settings/SettingsCard";
-import Switch from "@/components/Switch";
 import Button from "@/components/ui/Button";
 import RoleFields from "@/components/workspace/RoleFields";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import {
-  getDecisionClassMode,
   getPeopleViewer,
   getWorkspace,
-  MEETING_SCHEDULING_CLASS,
-  setDecisionClassMode,
   updateWorkspace,
-  type DecisionClassMode,
   type WorkspaceMode,
 } from "@/lib/api";
 import { roleFormErrors, roleFormFrom, roleUpdate, type RoleForm } from "@/lib/principalRole";
@@ -359,71 +354,5 @@ function RoleSection() {
         {saved && !dirty && <span className="text-sm text-fg-muted">Saved.</span>}
       </div>
     </SettingsCard>
-  );
-}
-
-// Meetings someone asks for in chat, as a row of Take the lead's Always asks
-// first list: the meeting_scheduling decision class between "propose" (asks
-// first: each booking waits for a yes on Today) and "auto_execute". Hidden
-// when this backend has no such setting (404). It covers only bookings
-// someone asks for in chat: both meeting gates need a person on a verified
-// surface in the turn, so a booking Take the lead thinks of always waits
-// (calendar_tools), and with a team Operations must act on its own too.
-export function MeetingAskFirstRow() {
-  const [mode, setMode] = useState<DecisionClassMode | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "absent" | "error">("loading");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    getDecisionClassMode(MEETING_SCHEDULING_CLASS, controller.signal)
-      .then((setting) => {
-        if (!setting) {
-          setState("absent");
-          return;
-        }
-        setMode(setting.mode);
-        setState("ready");
-      })
-      .catch((err) => {
-        if ((err as Error)?.name === "AbortError") return;
-        setState("error");
-      });
-    return () => controller.abort();
-  }, []);
-
-  if (state === "absent" || state === "loading") return null;
-  const asks = mode !== "auto_execute";
-  const toggle = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await setDecisionClassMode(MEETING_SCHEDULING_CLASS, asks ? "auto_execute" : "propose");
-      setMode(next.mode);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the setting.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <li className="flex min-h-touch items-center justify-between gap-3 px-4 py-2">
-      <span className="min-w-0">
-        <span id="ask-first-meetings" className="block text-[15px]">
-          Meetings asked for in chat
-        </span>
-        <span className="mt-0.5 block text-[13px] leading-snug text-fg-muted">
-          {state === "error"
-            ? "Couldn't load this setting."
-            : error ??
-              "Meetings you or a teammate ask it to book (with a team, Operations must also act on its own). A meeting it thinks of itself always waits."}
-        </span>
-      </span>
-      {state === "ready" && (
-        <Switch checked={asks} onChange={() => void toggle()} disabled={busy} labelledBy="ask-first-meetings" />
-      )}
-    </li>
   );
 }

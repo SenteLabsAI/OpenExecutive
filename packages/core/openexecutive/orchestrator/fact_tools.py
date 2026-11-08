@@ -372,10 +372,27 @@ def _own_words(session: Any) -> str | None:
     return own_words(pin.speaker_text if pin is not None else "")
 
 
+def words_checked() -> bool:
+    """Whether a write must be in the speaker's own words this turn: below
+    Hands-off. On Hands-off (``levels.relaxed``) the owner trusts their
+    Executive to word it, and the checks below pass. Never raises: an error
+    checks."""
+    try:
+        from openexecutive.orchestrator import levels
+
+        return not levels.relaxed()
+    except Exception:
+        logger.warning("fact_tools: couldn't read the level — checking own words", exc_info=True)
+        return True
+
+
 def _quote_error(quote: str, session: Any) -> str | None:
-    """None when ``quote`` is really the principal's own words this turn."""
+    """None when ``quote`` is really the principal's own words this turn,
+    or on Hands-off (``words_checked``)."""
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
+    if not words_checked():
+        return None
     if not quote:
         return "source_quote is required: the speaker's exact words from this message."
     nq = _normalize_for_quote_match(quote)
@@ -396,9 +413,12 @@ def _quote_error(quote: str, session: Any) -> str | None:
 
 
 def _in_own_words(text: str, session: Any) -> bool:
-    """Whether ``text`` appears in the principal's own words this turn."""
+    """Whether ``text`` appears in the principal's own words this turn
+    (always, on Hands-off)."""
     from openexecutive.memory.episodic import _normalize_for_quote_match
 
+    if not words_checked():
+        return True
     spoken = _own_words(session)
     needle = _normalize_for_quote_match(text)
     return bool(needle) and spoken is not None and needle in _normalize_for_quote_match(spoken)
@@ -439,7 +459,9 @@ def _same(a: float, b: float) -> bool:
 def _number_in_own_words(value: float, session: Any) -> bool:
     """Whether ``value`` is a number the principal wrote this turn, compared
     at its magnitude: "$180k" and "180,000" match either way round, but
-    "180m" said never lets "$180k" through."""
+    "180m" said never lets "$180k" through. Always, on Hands-off."""
+    if not words_checked():
+        return True
     spoken = _own_words(session)
     if spoken is None:
         return False

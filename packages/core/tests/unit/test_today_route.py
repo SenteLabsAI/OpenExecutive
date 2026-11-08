@@ -22,6 +22,8 @@ from openexecutive.people import registry as people_registry
 from openexecutive.people import store as people_store
 from openexecutive.workflows import persistence as wf_persistence
 
+pytestmark = pytest.mark.usefixtures("stored_department_levels")
+
 
 def _setup_isolated_db(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Monkeypatch all store DB_PATHs to `db` and initialise schemas."""

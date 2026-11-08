@@ -187,3 +187,25 @@ def test_card_or_while_a_card_is_carried_out_keeps_the_error() -> None:
 
 def test_a_skill_that_runs_more_steps_is_not_relaxed_by_its_tap() -> None:
     assert {"run_workflow", "run_executive_research"} <= levels.NOT_RELAXED_SKILLS
+
+
+def test_the_owners_own_ai_app_follows_their_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Another AI app the owner is signed in to and allowed to act is them:
+    Hands-off runs what it asks, like the web app. Any other stays a card."""
+    from openexecutive.orchestrator import people_tools
+    from openexecutive.orchestrator.schedule_tools import current_session
+
+    monkeypatch.setattr(outside_mode, "get_mode", lambda **_: outside_mode.TRUST)
+    monkeypatch.setattr(people_tools, "is_principal_on_verified_surface", lambda _s: True)
+    own = Session(from_mcp_client=True, mcp_client_may_act=True, caller_person_id=1)
+    assert outside_mode.for_turn(own) == outside_mode.TRUST
+    token = current_session.set(own)
+    try:
+        assert levels.decide(levels.AI_APP, mode=outside_mode.TRUST) == levels.RUN
+        assert levels.decide(levels.AI_APP, mode=outside_mode.OUTSIDERS) == levels.CARD
+    finally:
+        current_session.reset(token)
+    read_only = Session(from_mcp_client=True, caller_person_id=1)
+    assert outside_mode.for_turn(read_only) == outside_mode.OUTSIDERS
+    monkeypatch.setattr(people_tools, "is_principal_on_verified_surface", lambda _s: False)
+    assert outside_mode.for_turn(own) == outside_mode.OUTSIDERS

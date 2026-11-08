@@ -1,8 +1,7 @@
 "use client";
 
-// A row of two to five buttons, one picked, read as a radio group: Off / In
-// training / On on Act as me's jobs, and Who it handles under Handle it for
-// me. `compact` drops to a dropdown on a phone when the labels won't fit.
+// A row of two to five buttons, one picked, read as a radio group, such as
+// Off / On for Handle it for me. `compact` drops to a dropdown on a phone when the labels won't fit.
 export default function ModePicker<T extends string>({
   options,
   value,

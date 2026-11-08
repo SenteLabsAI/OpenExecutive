@@ -675,7 +675,9 @@ def _assemble_artifact(
     assert isinstance(state, DepartmentState)
 
     title = state.config.title
-    authority = state.config.authority_level.value.replace("_", " ")
+    from openexecutive.departments.authority import department_level
+
+    authority = department_level(state.config.slug).value.replace("_", " ")
 
     action_lines: list[str] = []
     for a in gated_actions:

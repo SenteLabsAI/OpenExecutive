@@ -121,10 +121,10 @@ system:
     - Every chat turn says when it is. _build_messages opens the user turn with a <current_time> hint (_current_time_block - weekday, date, HH.MM, IANA zone and UTC offset, in workspace_settings.get_user_timezone, the briefs' zone). Without it a chat turn had no date and the model guessed one, e.g. from the newest record a tool returned. User turn, never a cached block, since it changes every turn.
     - The Executive never offers to loop in, DM, or notify the human it is currently talking to. Each chat turn carries a <current_speaker> hint in the user turn (resolved from the caller's person_id, principal-flagged) and the persona "Choosing Who to Tell" rule forbids routing to anyone already in the room — so the principal reading a brief is never told the Executive will "loop Jordan in."
     - Specialists run in parallel via route_parallel() for cross-domain questions.
-    - The untrusted-content policy (orchestrator.content_trust) is the one rule for text the principal did not write — inbound email, chat, attached files, watched pages. WHO SPEAKS - the principal only when the surface proved it (principal_speaking - web chat as the principal, CLI, their own Slack/Discord or secret-verified Telegram, their own address with Gmail dmarc=pass); an empty origin_channel is never read as trust. MEMORY - episodic extraction only then, and only on words outside <untrusted_content> blocks; peer memory and open loops are recorded under the speaker's own name, never as the principal's. TOOLS - writes on the principal's authority refuse others in their handlers; PRINCIPAL_ONLY_TOOLS (load_mcp_server - it connects the install to any URL; list_saved_tools and run_python_job - the principal's own automations and library files; run_script - it runs code the model just wrote, spending the turn's whole call budget) are not offered unless the principal is speaking on an interactive surface (email excluded, even authenticated), and a call emitted anyway is refused with a not_principal audit row. LABEL - outside text sits in the user turn inside <untrusted_content source author author_verified> with a fixed no-authority notice; NFKC folds compatibility forms, control characters are dropped and the tag's name is renamed wherever the text carries it (any case, spacing, entity-escaped), so the text cannot close its block. The principal's authenticated mail is theirs, but what it quotes or forwards still goes in a block (source email_quoted). A new inbound surface is an entry in this module, not a gate invented at its call site.
-    - Outside content (orchestrator.outside_content). Once a turn has read text from outside the team - any gateway read (a call_tool other than a Google or Microsoft 365 tool whose name starts with a write verb), an attachment on the message, a web search result, a synced Drive / OneDrive / Confluence / Notion excerpt (the retrieved context's synced headings, or retriever.retrieve returning one), read_document, run_executive_research, or an extension tool registered reads_outside (a vendor app) - for the rest of that turn the chat loop refuses what the Act as me lockdown refuses (mail_touched_withholds), every upsert_person but a contact the speaker named this message at an address they typed or one that sent the mail read (lockdown.speaker_named_contact, never on a SENDER turn; the refusal points to an add_contact card), and every call_tool but the reads in MCP_CLIENT_MCP_TOOLS and a OneDrive file read, so no mail, Docs, Sheets, Drive or calendar write. The company's own Drive is not outside text: before a round (and before each run_script call) vet_reads looks up the one item a Google read names by id (company_read_item and _COMPANY_READS - Drive file content and downloads, folder listings, Docs, Sheets, Slides and their comments; never searches, forms, mail or calendar, and never with a drive_id, query or URL argument), once per id a turn, through MCPGateway.company_drive_items; a read of an item that is the company's own (mcp_gateway._company_item) marks the turn COMPANY instead of GATEWAY. COMPANY holds the same calls (anyone who can edit a company file wrote its words), except that while every read so far is COMPANY a rename or move passes (_company_rename - update_drive_file with only file_id, name, add_parents, remove_parents; _company_only checks the round's pending reads too). The Executive's own files go through the same check, so one it shared outside is not the company's. A refusal tells the model a rename or move the person asked for can go on a drive_files approval card. A round that calls a read also holds that round's other such calls (they run together); the read itself runs and marks the turn once the round is done; a web search marks it as soon as the response arrives. Inside run_script each call is checked, and a read marks the turn for the calls after it. Handlers that reach outside re-check (lockdown.outside_reach_refusal), including the gateway's call_tool. The offered list never changes (the cached prefix stays the same) and the state lives in a context variable and on the session (session.turn_outside, found through current_session, because the web chat route resumes the generator in a fresh task per step), set by begin_turn and closed by end_turn, so nothing after the turn (the poller sending the reply) is held. Like the Act as me lockdown it lasts for the turn only; the next turn's history carries the reply, not what the tools returned. Mail to the Executive from someone not in People (a contact or a stranger) is outside text from its first word, so the email poller sets Session.sender_off_team, begin_turn marks the turn SENDER, and the whole turn is held; it may still raise an alert (create_alert), which is how that mail reaches the principal (private to them, routed to no one else, with the mail's real sender as its from), it may not send direct messages or remove watchlist entries (SENDER_WITHHELD_TOOLS), and a refusal on it tells the model to put the request in an alert rather than ask again. The poller's own audit rows still feed the brief. Separately, someone added to People this turn by upsert_person (or given a new address or chat account) is held until the next turn. _roster_allow_set leaves them out of the gateway's mail, calendar and Drive allow-list (the refusal says why, _block), and _guard_outbound, message_person and calendar attendees refuse them. What a turn held (outside_withheld_error and mail_touched_withheld_error call note_held) is kept in process, per conversation and speaker (never in a shared chat or a SENDER turn), for the next turn for HELD_TTL_SECONDS (an hour). When that message is a go (GO_RE - a short yes, or one opening with go, go ahead, do it or proceed as its own clause), begin_turn sets go_first, and the first round with a read has its reads (source_of, or a mailbox read tool) refused once with go_first_error, which names no tool and asks for nothing new (defers_read), so the approved writes run before a re-read holds them again; reads run from the next round. Nothing is replayed; the model makes the calls under every usual check. In the web chat the go is a tap - pending_held gives the held steps in plain words (step_words - only names it knows, else the app's generic label, as a tool name the model chose can carry planted words) to the chat stream's held_steps event and to the last reply in GET /sessions/{id}/messages, the UI shows Approve and Not now under the reply, and Approve sends Go ahead as the person's own message; a web turn's refusal (approve_hint, TurnOutside.web from Session.from_web_chat) points at Approve instead of asking for a typed go. Why - the owner asked for a tap instead of say go. A SENDER turn remembers nothing.
-    - Approvals, the one gate (orchestrator.levels). The owner picks one level for the company - Careful (ask), Balanced (outsiders, the default) or Hands-off (trust) - in Settings -> Approvals, and it applies the same way on every channel (web chat, email, Slack, Telegram, Google Chat, Discord, the phone, an AI app, a shared chat, scheduled work). The checks that notice why a step might wait (outside content, the owner's own mail read this turn, a private turn, a shared chat someone else wrote in, an AI app's turn, a tool that changes the install, an unattended run) only detect; levels.decide turns each into RUN or CARD. Hands-off runs it; Balanced and Careful put the exact call on an Approve card (levels.hold -> department_gate.hold with held=True, a department_action decision) shown under the reply in the web chat (action_taken chip with decision_id), on Today and in the owner's chat app (channel_cards); Approve runs it through take_the_lead.carry_out inside levels.approved(). A step that only messages the owner never waits (levels.only_to_owner). Hands-off is for the owner's own turns - a turn whose words may be someone else's (mail from someone not in People, a shared chat someone else wrote in since the owner, another AI app or host page, a teammate) runs at Balanced (outside_mode._someone_else); STRANGER, NOT_OWNER, SHARED and AI_APP are always a card, and a teammate's department authority range (department_gate) applies at every level. A step a tap can't carry out (a script, a new server) gets levels.not_carriable_error, never a silent drop. Under Hands-off or inside an approved card (levels.relaxed) the gateway skips the checks that only protect the owner from their own Executive (recipients, attendees, shared folders, URL fetches, mailed text); below Hands-off those become cards (levels.card_or), refused only with no turn behind them. Company Drive and OneDrive reads, searches and listings are never outside content. Nothing is hidden from the offered tool list for these reasons. Why - every feature had grown its own gate and most held steps were refused silently (a Hands-off owner's email reply was dropped with no card); the owner asked for three levels people choose, enforced in one place, with anything held shown as a card.
-    - Safety level, When should I check with you? (orchestrator.outside_mode, orchestrator.content_scan). The owner's level, one row in outside_content_mode with the company's one level for every channel (the channels JSON is kept empty), changed only by the principal (GET/PUT /executive/outside-content, Settings -> Your Executive), fixed per turn by begin_turn as TurnOutside.mode from the turn's channel (channel_of). Every outside read is checked at every level by content_scan - one small-model call (classifier_model) with no tools that reads the content as data and reports steers_assistant plus categories from a fixed list (CATEGORIES) - so no words of the content reach the person through the verdict; a failed call, an unreadable answer, content over MAX_CHARS or a turn past MAX_PER_TURN checks is unchecked; verdicts are cached by content hash. The check reads only the outside author's words (content_scan.checked_content, on every path) - our own words around a read are taken out first, every sentence-length string literal in the package's code (orchestrator.own_words, built from the source, so a new hint is covered without a list), with an app's own next-step notes (without_server_notes). It asks whether the content tries to turn the assistant against its owner or around its rules (ignore or reveal its rules, forward or reveal the owner's information, write to an address the owner didn't choose, pay, hand over a login, open a link on its own), never merely whether it talks to an assistant, so a person asking the Executive for work, one person asking another to forward or share, an app's usage notes and the Executive's own footer are not flags. A flag must quote the content (content_scan._quoted); one that doesn't is asked once more - a quoting second flag stands, a clean second answer drops it, and a second flag that quotes nothing either makes the read unchecked (holds nothing below Careful; the turn is told it couldn't be checked). Quotes match through JSON escapes, HTML tags and entities, Markdown emphasis, NFKC and invisible characters (content_scan._plain). An attachment's files can't be quoted, so its flag stands. Why - our own words (the untrusted-content label, a held step's status, empty-search hints, a synced folder's heading, the Executive's footer), apps' notes and people asking the Executive for work were all read as the content steering it, and fixing one phrase on one path at a time kept missing the next. Its test set is evals/content_scan_cases.yaml (python -m openexecutive.evals.content_scan, needs a model key). A search of the owner's own mail is checked entry by entry (content_scan.scan_list, items naming the flagged entries) - a flagged thread's subject and sender name are left out behind LEFT_OUT_NOTICE and the rest passes once a second check finds it clean, holding nothing below Careful; a flag naming no entry flags the whole list as before. A thread whose newest message the Executive itself sent is not checked - its own address, which the mail service authenticated on the search (ThreadSummary.sender_authenticated - Gmail's Authentication-Results, or Exchange's stamp on an Outlook search, the same proof as a message read; kept per turn in TurnDelegation.mail_verified), under a subject that is not a reply's or forward's, since those carry someone else's words (the Executive's own deal summary for a teammate was flagged as a forward request). A read whose text is in hand is checked in mark_read; an attachment or a synced excerpt is queued (mark_pending - the retriever runs in a thread) and checked by settle before each round's tools are dispatched and before each run_script call. ask (Careful) is the hold above - every read marks the turn. outsiders (Balanced, the default) marks it only when the check flags the read (Verdict.holds); a read it couldn't check reaches the model behind UNCHECKED_NOTICE and marks nothing (except content too big to read whole or read past the turn's MAX_PER_TURN checks, TOO_BIG, which marks like a flag, since padding or a pile of harmless reads is how content would dodge the check), and nor does a web search (its results arrive encrypted, so nothing checks them). Reads from the team are not even checked - a Gmail search showing only ids, a Gmail message read whose every sender is a teammate (not a contact) that Gmail authenticated (fact_confirmation.sender_authenticated on a raw read of each id, at most 10) with no other address in it, or a calendar read naming only the team where the Executive itself organized every event (a teammate's invite is outside, since an invite's organizer is what the mail that brought it says; Google get_events only when detailed or for one event; Microsoft 365 calendar reads) (from_the_team). trust (Hands-off) applies on every channel to the owner's own turns (outside_mode._someone_else), where no read marks the turn but an attachment or synced excerpt the check flagged (the model read it before its check), a round that reads holds none of its other calls, a result the check couldn't read reaches the model behind UNCHECKED_NOTICE, and reading their own mail locks nothing but posts to everyone and roster changes (delegation.lockdown.mail_lock_holds); anyone else gets Balanced. The owner's own mail is checked the same way (outside_content.check_mail_read after each round that reads the mailbox or notes, setting TurnDelegation.mail_held and mail_vetted) and the Act as me lockdown follows the level - Careful holds it after any mail read, Balanced only once a mail read was flagged or too big to check or while one is unchecked (the reading round holds its other calls), Hands-off not at all - while MAIL_PRIVATE_WITHHELD_TOOLS (broadcasts, department messages, alerts, roster and authority changes) and an upsert_person the speaker didn't name stay shut after any mail read at every level (lockdown.mail_turn_withholds, used at dispatch, in outside_reach_refusal and by app_control). Why - the owner asked for the mail hold to follow the same level after the per-channel level freed almost every other read-then-act request. At every level a flagged read's result reaches the model behind FLAG_NOTICE (data, not to be followed; never brought up in the reply), each flag is logged as content_flagged with which item it was (a mail's subject and sender, private to the person), and the flag is kept in plain words (flag_words - the module's own words around that item; pending_flags, an hour, in process, per conversation and speaker, each turn replacing the last's). The web chat shows it only when the turn also held steps, as their reason on the Approve / Not now card (the flags event with held_steps, and the last reply in GET /sessions/{id}/messages). A flag that held nothing is only logged. Why - nearly every flag shown on its own was a false alarm (a connected app's own notes to the assistant, a newsletter), and a warning that changes nothing the person sees teaches them to ignore it. Mail from someone not in People runs at Balanced at most; below Hands-off a send to someone outside People, or to someone added this turn, waits on an Approve card. An unreadable setting is Careful. Why - the hold stopped almost every read-then-act request, and the owner asked for one lever the person sets anywhere from careful to hands-off, per channel, that cuts that friction (so Balanced stops only on a real flag, and the check flags only clear instructions to an assistant), with the content always checked and flagged. The test suite pins get_mode to ask (tests/conftest.py) and every check to unchecked (content_scan.scan).
+    - The untrusted-content policy (orchestrator.content_trust) is the one rule for text the principal did not write — inbound email, chat, attached files, watched pages. WHO SPEAKS - the principal only when the surface proved it (principal_speaking - web chat as the principal, CLI, their own Slack/Discord or secret-verified Telegram, their own address with Gmail dmarc=pass); an empty origin_channel is never read as trust. MEMORY - episodic extraction only then, and only on words outside <untrusted_content> blocks; peer memory and open loops are recorded under the speaker's own name, never as the principal's. TOOLS - writes on the principal's authority refuse others in their handlers; PRINCIPAL_ONLY_TOOLS (load_mcp_server - it connects the install to any URL; list_saved_tools and run_python_job - the principal's own automations and library files; run_script - it runs code the model just wrote, spending the turn's whole call budget) are not offered unless the principal is speaking on a verified surface (their own mail counts once their mail service authenticated it, Session.email_authenticated - they are signed in there as anywhere, so Approvals decides), and a call emitted anyway is refused with a not_principal audit row. LABEL - outside text sits in the user turn inside <untrusted_content source author author_verified> with a fixed no-authority notice; NFKC folds compatibility forms, control characters are dropped and the tag's name is renamed wherever the text carries it (any case, spacing, entity-escaped), so the text cannot close its block. The principal's authenticated mail is theirs, but what it quotes or forwards still goes in a block (source email_quoted). A new inbound surface is an entry in this module, not a gate invented at its call site.
+    - Outside content (orchestrator.outside_content). Once a turn has read text from outside the team - any gateway read (a call_tool other than a Google or Microsoft 365 tool whose name starts with a write verb), an attachment on the message, a web search result, a synced Drive / OneDrive / Confluence / Notion excerpt (the retrieved context's synced headings, or retriever.retrieve returning one), read_document, run_executive_research, or an extension tool registered reads_outside (a vendor app) - for the rest of that turn the chat loop refuses what the Act as me lockdown refuses (mail_touched_withholds), every upsert_person but a contact the speaker named this message at an address they typed or one that sent the mail read (lockdown.speaker_named_contact, never on a SENDER turn; the refusal points to an add_contact card), and every call_tool but the reads in MCP_CLIENT_MCP_TOOLS and a OneDrive file read, so no mail, Docs, Sheets, Drive or calendar write. The company's own Drive is not outside text: before a round (and before each run_script call) vet_reads looks up the one item a Google read names by id (company_read_item and _COMPANY_READS - Drive file content and downloads, folder listings, Docs, Sheets, Slides and their comments; never searches, forms, mail or calendar, and never with a drive_id, query or URL argument), once per id a turn, through MCPGateway.company_drive_items; a read of an item that is the company's own (mcp_gateway._company_item) marks the turn COMPANY instead of GATEWAY. COMPANY holds the same calls (anyone who can edit a company file wrote its words), except that while every read so far is COMPANY a rename or move passes (_company_rename - update_drive_file with only file_id, name, add_parents, remove_parents; _company_only checks the round's pending reads too). The Executive's own files go through the same check, so one it shared outside is not the company's. A refusal tells the model a rename or move the person asked for can go on a drive_files approval card. A round that calls a read also holds that round's other such calls (they run together); the read itself runs and marks the turn once the round is done; a web search marks it as soon as the response arrives. Inside run_script each call is checked, and a read marks the turn for the calls after it. Handlers that reach outside re-check (lockdown.outside_reach_refusal), including the gateway's call_tool. The offered list never changes (the cached prefix stays the same) and the state lives in a context variable and on the session (session.turn_outside, found through current_session, because the web chat route resumes the generator in a fresh task per step), set by begin_turn and closed by end_turn, so nothing after the turn (the poller sending the reply) is held. Like the Act as me lockdown it lasts for the turn only; the next turn's history carries the reply, not what the tools returned. Mail to the Executive from someone not in People (a contact or a stranger) is outside text from its first word, so the email poller sets Session.sender_off_team, begin_turn marks the turn SENDER, and the whole turn is held; it may still raise an alert (create_alert), which is how that mail reaches the principal (private to them, routed to no one else, with the mail's real sender as its from), it may not send direct messages or remove watchlist entries (SENDER_WITHHELD_TOOLS), and a refusal on it tells the model to put the request in an alert rather than ask again. The poller's own audit rows still feed the brief. Separately, someone added to People this turn by upsert_person (or given a new address or chat account) is held until the next turn. _roster_allow_set leaves them out of the gateway's mail, calendar and Drive allow-list (the refusal says why, _block), and _guard_outbound, message_person and calendar attendees refuse them. What a turn held (outside_withheld_error and mail_touched_withheld_error call note_held) is kept in process, per conversation and speaker (never in a shared chat or a SENDER turn), for the next turn for HELD_TTL_SECONDS (an hour). When that message is a go (GO_RE - a short yes, or one opening with go, go ahead, do it or proceed as its own clause), begin_turn sets go_first, and the first round with a read has its reads (source_of, or a mailbox read tool) refused once with go_first_error, which names no tool and asks for nothing new (defers_read), so the approved writes run before a re-read holds them again; reads run from the next round. Nothing is replayed; the model makes the calls under every usual check. In the web chat the go is a tap - pending_held gives the held steps in plain words (step_words - only names it knows, else the app's generic label, as a tool name the model chose can carry planted words) to the chat stream's held_steps event and to the last reply in GET /sessions/{id}/messages, the UI shows Approve and Not now under the reply, and Approve sends Go ahead as the person's own message; a web turn's refusal (approve_hint, TurnOutside.web from Session.from_web_chat) points at Approve instead of asking for a typed go. Why - the owner asked for a tap instead of say go. A SENDER turn remembers nothing. What the owner's own authenticated mail quotes or forwards counts too - begin_turn queues its email_quoted block for the check like an attachment.
+    - Approvals, the one gate (orchestrator.levels). The owner picks one level for the company - Careful (ask), Balanced (outsiders, the default) or Hands-off (trust) - in Settings -> Approvals, and it applies the same way on every channel (web chat, email, Slack, Telegram, Google Chat, Discord, the phone, an AI app, a shared chat, scheduled work). The checks that notice why a step might wait (outside content, the owner's own mail read this turn, a private turn, a shared chat someone else wrote in, an AI app's turn, a tool that changes the install, an unattended run) only detect; levels.decide turns each into RUN or CARD. Hands-off runs it; Balanced and Careful put the exact call on an Approve card (levels.hold -> department_gate.hold with held=True, a department_action decision) shown under the reply in the web chat (action_taken chip with decision_id), on Today and in the owner's chat app (channel_cards); Approve runs it through take_the_lead.carry_out inside levels.approved(). A step that only messages the owner never waits (levels.only_to_owner). Hands-off is for the owner's own turns - a turn whose words may be someone else's (mail from someone not in People, a shared chat someone else wrote in since the owner, a host page, another AI app that isn't the owner's own, a teammate) runs at Balanced (outside_mode._someone_else); STRANGER, NOT_OWNER and SHARED are always a card, and AI_APP is too unless the AI app is the owner's own, signed in as them and allowed to act (outside_mode.owners_ai_app), which follows their level like the web app, and a teammate's department authority range (department_gate) applies at every level. A step a tap can't carry out (a script, a new server) gets levels.not_carriable_error, never a silent drop. Under Hands-off or inside an approved card (levels.relaxed) the gateway skips the checks that only protect the owner from their own Executive (recipients, attendees, shared folders, URL fetches, mailed text); below Hands-off those become cards (levels.card_or), refused only with no turn behind them. Company Drive and OneDrive reads, searches and listings are never outside content. Nothing is hidden from the offered tool list for these reasons. Why - every feature had grown its own gate and most held steps were refused silently (a Hands-off owner's email reply was dropped with no card); the owner asked for three levels people choose, enforced in one place, with anything held shown as a card.
+    - Safety level, When should I check with you? (orchestrator.outside_mode, orchestrator.content_scan). The owner's level, one row in outside_content_mode with the company's one level for every channel (the channels JSON is kept empty), changed only by the principal (GET/PUT /executive/outside-content, Settings -> Your Executive), fixed per turn by begin_turn as TurnOutside.mode from the turn's channel (channel_of). Every outside read is checked at every level by content_scan - one small-model call (classifier_model) with no tools that reads the content as data and reports steers_assistant plus categories from a fixed list (CATEGORIES) - so no words of the content reach the person through the verdict; a failed call, an unreadable answer, content over MAX_CHARS or a turn past MAX_PER_TURN checks is unchecked; verdicts are cached by content hash. The check reads only the outside author's words (content_scan.checked_content, on every path) - our own words around a read are taken out first, every sentence-length string literal in the package's code (orchestrator.own_words, built from the source, so a new hint is covered without a list), with an app's own next-step notes (without_server_notes). It asks whether the content tries to turn the assistant against its owner or around its rules (ignore or reveal its rules, forward or reveal the owner's information, write to an address the owner didn't choose, pay, hand over a login, open a link on its own), never merely whether it talks to an assistant, so a person asking the Executive for work, one person asking another to forward or share, an app's usage notes and the Executive's own footer are not flags. A flag must quote the content (content_scan._quoted); one that doesn't is asked once more - a quoting second flag stands, a clean second answer drops it, and a second flag that quotes nothing either makes the read unchecked (holds nothing below Careful; the turn is told it couldn't be checked). Quotes match through JSON escapes, HTML tags and entities, Markdown emphasis, NFKC and invisible characters (content_scan._plain). An attachment's files can't be quoted, so its flag stands. Why - our own words (the untrusted-content label, a held step's status, empty-search hints, a synced folder's heading, the Executive's footer), apps' notes and people asking the Executive for work were all read as the content steering it, and fixing one phrase on one path at a time kept missing the next. Its test set is evals/content_scan_cases.yaml (python -m openexecutive.evals.content_scan, needs a model key). A search of the owner's own mail is checked entry by entry (content_scan.scan_list, items naming the flagged entries) - a flagged thread's subject and sender name are left out behind LEFT_OUT_NOTICE and the rest passes once a second check finds it clean, holding nothing below Careful; a flag naming no entry flags the whole list as before. A thread whose newest message the Executive itself sent is not checked - its own address, which the mail service authenticated on the search (ThreadSummary.sender_authenticated - Gmail's Authentication-Results, or Exchange's stamp on an Outlook search, the same proof as a message read; kept per turn in TurnDelegation.mail_verified), under a subject that is not a reply's or forward's, since those carry someone else's words (the Executive's own deal summary for a teammate was flagged as a forward request). A read whose text is in hand is checked in mark_read; an attachment or a synced excerpt is queued (mark_pending - the retriever runs in a thread) and checked by settle before each round's tools are dispatched and before each run_script call. ask (Careful) is the hold above - every read marks the turn. outsiders (Balanced, the default) marks it only when the check flags the read (Verdict.holds); a read it couldn't check reaches the model behind UNCHECKED_NOTICE and marks nothing (except content too big to read whole or read past the turn's MAX_PER_TURN checks, TOO_BIG, which marks like a flag, since padding or a pile of harmless reads is how content would dodge the check), and nor does a web search (its results arrive encrypted, so nothing checks them). Reads from the team are not even checked - a Gmail search showing only ids, a Gmail message read whose every sender is a teammate (not a contact) that Gmail authenticated (fact_confirmation.sender_authenticated on a raw read of each id, at most 10) with no other address in it, or a calendar read naming only the team where the Executive itself organized every event (a teammate's invite is outside, since an invite's organizer is what the mail that brought it says; Google get_events only when detailed or for one event; Microsoft 365 calendar reads) (from_the_team). trust (Hands-off) applies on every channel to the owner's own turns (outside_mode._someone_else), where no read marks the turn but an attachment or synced excerpt the check flagged (the model read it before its check), a round that reads holds none of its other calls, a result the check couldn't read reaches the model behind UNCHECKED_NOTICE, and reading their own mail locks nothing (delegation.lockdown.mail_lock_holds); anyone else gets Balanced. The owner's own mail is checked the same way (outside_content.check_mail_read after each round that reads the mailbox or notes, setting TurnDelegation.mail_held and mail_vetted) and the Act as me lockdown follows the level - Careful holds it after any mail read, Balanced only once a mail read was flagged or too big to check or while one is unchecked (the reading round holds its other calls), Hands-off not at all - while MAIL_PRIVATE_WITHHELD_TOOLS (broadcasts, department messages, alerts, roster and authority changes) and an upsert_person the speaker didn't name stay shut after any mail read below Hands-off, even one the check cleared (lockdown.mail_turn_withholds, used at dispatch, in outside_reach_refusal and by app_control). Why - the owner asked for the mail hold to follow the same level after the per-channel level freed almost every other read-then-act request. At every level a flagged read's result reaches the model behind FLAG_NOTICE (data, not to be followed; never brought up in the reply), each flag is logged as content_flagged with which item it was (a mail's subject and sender, private to the person), and the flag is kept in plain words (flag_words - the module's own words around that item; pending_flags, an hour, in process, per conversation and speaker, each turn replacing the last's). The web chat shows it only when the turn also held steps, as their reason on the Approve / Not now card (the flags event with held_steps, and the last reply in GET /sessions/{id}/messages). A flag that held nothing is only logged. Why - nearly every flag shown on its own was a false alarm (a connected app's own notes to the assistant, a newsletter), and a warning that changes nothing the person sees teaches them to ignore it. Mail from someone not in People runs at Balanced at most; below Hands-off a send to someone outside People, or to someone added this turn, waits on an Approve card. An unreadable setting is Careful. Why - the hold stopped almost every read-then-act request, and the owner asked for one lever the person sets anywhere from careful to hands-off, per channel, that cuts that friction (so Balanced stops only on a real flag, and the check flags only clear instructions to an assistant), with the content always checked and flagged. The test suite pins get_mode to ask (tests/conftest.py) and every check to unchecked (content_scan.scan).
     - A go after a hold (orchestrator.outside_content.go_turn). On the turn that answers a go to what the last turn held, at Careful and Balanced alike, only a read the content check flags holds the turn again; a read that is merely unchecked or too big to check (a scanned PDF) does not, so a re-read no longer undoes the go. The Act as me mail lockdown (delegation.lockdown.mail_lock_holds) follows: on that turn it holds only for a flagged mail read or a round whose mail read still waits for its check.
     - A follow-up to yourself (orchestrator.schedule_tools._speakers_own_ref). schedule_followup and suggest_workflow refuse a channel_ref the session has not seen, except the turn's speaker's own address on that channel (their People email, Slack, Discord or Telegram id). Why - Google Chat seeds no addresses, so on 10-22 "tell me when Andrew's email arrives" was refused three times.
     - The workspace mode (memory.workspace_settings, `workspace_settings` table) is per install and defaults to team. Solo (one person using Open Executive just for themselves) runs no department check-ins anywhere — bootstrap_cadences and enqueue_next are no-ops and the runner cancels a stray dept_cadence row without running or chaining it — but department rows are kept, so switching back is instant. A Session may carry an explicit `workspace_mode` override (read via effective_workspace_mode) so a caller running several conversations on one Executive, such as evals, can pick the mode per session; otherwise the install-wide mode is read fresh at the start of each turn and pinned on the session for that turn only (Session.turn_workspace_mode, via pin_turn_workspace_mode), so every tool handler in the turn uses the mode its persona and tools were built in. The same row holds the principal's role (role_kind owner | in_house | independent | other, role_title, reports_to, remit, measured_on; all nullable) — solo is about who uses Open Executive, not the principal's level. Only solo mode reads it (the solo org block's role lines and the specialists' <principal_role> tag), and team output is byte-identical whether a role is stored or not. A Session may carry a `principal_role` override (effective_principal_role) for the same reason as the mode override.
@@ -2672,7 +2672,10 @@ memory:
         is shared — and then `private_used`), rendered before the
         quiet check and carried in `build_brief_fingerprint(teammate_changes=)`
         so a correction alone un-suppresses the brief.
-      - `source_quote` (at least 2 words / 8 chars) must appear, normalized
+      - On Hands-off (fact_tools.words_checked false, levels.relaxed) the
+        own-words checks below pass, for open loops too: the owner trusts
+        their Executive's wording (2026-11-08).
+      - Below Hands-off, `source_quote` (at least 2 words / 8 chars) must appear, normalized
         like the episodic quote gate, in the principal's own words this turn:
         `delegation.settings.own_words(TurnDelegation.speaker_text)` — the
         adapter-hydrated `<outbound_reply_context>` backstory stripped (first
@@ -5927,14 +5930,12 @@ audit:
     - delegation_reply_drafted — the inbox watcher saved a reply in someone's own Gmail and made its card. details carry person_id, thread_id, draft_id, decision_id, relation, kind and flags — never the email or the draft. Always private.
     - delegation_reply_dismissed — a reply card was dismissed. details carry person_id, decision_id and what happened to the draft (deleted, kept_edited, already_gone, not_connected, gmail_error). Always private.
     - delegation_reply_closed — the reconciler (or a Send that found it settled) closed a card Gmail settled. details carry person_id, decision_id and the reason (expired, sent_in_gmail, draft_deleted, draft_gone, you_replied, thread_gone). Always private.
-    - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id, enabled and mode. Always private.
+    - delegation_handle_it_changed — a person changed Handle it for me via PUT /delegation/handle-it (or it went off with the inbox watcher). actor "user"; details carry person_id and enabled. Always private.
     - delegation_reply_handled — Handle it for me sent an inbox reply on its own. details carry person_id, decision_id, thread_id, sent_message_id and recipient_count, or confirmed_later from the reconciler. Always private.
-    - delegation_reply_allowed — Send with the on-its-own-next-time tick, in training: the person allowed replies to a sender (or follow-ups to those people) after sending one. details carry person_id, decision_id, allowed_id and setting. Always private.
     - delegation_example_kept — Drafts in training: a reply the person changed in their mailbox and sent was kept as how they write to that person. details carry person_id, decision_id and allowed_id. Always private.
-    - delegation_actions_allowed / delegation_actions_handled / delegation_actions_held — Suggested actions in training: Approve with the tick allowed those actions; a card of allowed actions (or any card it may carry out with Suggested actions On) was carried out on its own (details.outcomes); or it waited after all (details.reason). Always private.
-    - delegation_training_changed — a person put Act as me settings in or out of training, or Suggested actions On or off (PUT /delegation/training). details carry person_id and each setting changed. Always private.
+    - delegation_actions_handled / delegation_actions_held — a suggested-actions card Handle it for me carried out on its own (details.outcomes), or one that waited after all (details.reason). Always private.
+    - delegation_training_changed — a person turned Learn from my edits on or off (PUT /delegation/training). details carry person_id and drafts. Always private.
     - delegation_learned_removed — a person removed something Act as me had learned (DELETE /delegation/learned/{id}). details carry person_id and allowed_id. Always private.
-    - take_the_lead_changed — a Take the lead switch, Ask first switch or company rule changed (PUT /take-the-lead, its rules, PUT /delegation/take-the-lead). actor "user"; details carry the scope and what changed.
     - delegation_reply_sent — the person tapped Send and their draft went, exactly as it was in Gmail. details carry person_id, decision_id, thread_id, sent_message_id, recipient_count and edited, or confirmed_later when the reconciler found an unconfirmed send had gone. Always private.
     - grounding — unattended prose that named people or figures its inputs don't hold (briefing/grounding.py). One row per brief or digest that held back lines or used its repair call (details — surface, kind, mode, repaired, cited, names_bad, figures_bad, up to 5 held-back lines cut to 200 chars), per refused outward tool call in the reflection (tool, names_bad, figures_bad, a 200-char preview), per reflection flag section filtered, and per triage / review rewrite it replaced. actor=executive; private when the brief read the principal's private rows or the alert is private. In `report` mode the rows are written and nothing is changed — the way to measure false positives before enforcing.
   turn_id: Set per Executive turn (`f"t-{uuid12}"`) and propagated automatically to retriever / specialist / tool / cache / committee emits via `openexecutive.audit.context` ContextVars. Groups every row in one user-assistant exchange under the same `turn_id`; the session view derives causal edges from this.
@@ -7110,7 +7111,12 @@ workflows:
     rejected, so the saved workflow is exactly what the user saw). Both tool
     schemas are fixed, so the cached tool list stays stable. The step-by-step
     advanced editor drives the `/workflows/custom` CRUD endpoints directly.
-    A definition with action (tool) steps saved from chat is stored
+    Approvals decides (2026-11-08): on Hands-off (workflow_change.hands_off,
+    levels.relaxed) the draft's note says to save at once, it is saved
+    switched on, replacing a switched-on one needs no card unless it reads
+    or sends as its creator, and a run's write to a new target runs
+    (action_step._hands_off, levels.decide UNATTENDED). Below Hands-off, a
+    definition with action (tool) steps saved from chat is stored
     is_active=False (applied after the token check), its cadence is not
     scheduled, and
     save_workflow returns status `saved_pending_review` + the /jobs/{name}
@@ -9990,21 +9996,17 @@ integrations:
         (briefing.context.render_and_trust) so ack_alert has its trusted set.
       - Outward actions go on an approval card: propose_actions
         (action_card_tools) is offered alone of Act as me's tools, its
-        speaker the verified caller with Act as me on. The card follows the
-        person's mode (action_cards.on_its_own_refusal follow_handle_it,
-        kept on the card's payload so run_on_its_own re-checks the same
-        rule): with Suggested actions not in training, it is carried out at
-        once when Handle it for me is on at a setting covering people they
-        know (every card recipient is on the roster as team or contact, and
-        each roster entry is at least action_cards.SETTLED_AFTER, 7 days,
-        old, so nobody added or planted lately is reached), no add_contact,
-        an invite never booked as approved (the meeting gate decides), and
-        the plain-code checks pass (Act as me on, signed callers or local
-        login, nothing sensitive, no link or amount, a message no longer
-        than the setting's replies and ON_ITS_OWN_MESSAGE_MAX, the daily
-        cap), and the turn read no outside text (outside_content.read_outside)
-        or mail. In training the training rule applies. Otherwise the card
-        waits for the person's tap on the web, as any card.
+        speaker the verified caller with Act as me on. The card is carried
+        out at once when action_cards.on_its_own_refusal passes (run_on_its_own
+        re-checks it): Act as me and Handle it for me on, Approvals above
+        Careful, signed callers or local login, no drive_files / save_files,
+        and below Hands-off every recipient settled on the roster (team or
+        contact, at least action_cards.SETTLED_AFTER, 7 days, old) with no
+        add_contact; at most ON_ITS_OWN_PER_DAY a day. An invite is never
+        booked as approved (the meeting gate decides). Below Hands-off a
+        turn that read outside text (outside_content.read_outside) or mail
+        also waits. Otherwise the card waits for the person's tap on the
+        web, as any card.
       - Every audit row the turn writes carries details.via = the MCP
         client's clientInfo.name, or "an AI app" (audit.via_app; FastMCP runs
         stateless, so a tool call usually has no initialize of its own); the
@@ -11111,13 +11113,10 @@ delegation:
     False on the card, 409 calendar_write_needed; GmailNotFound -> failed,
     409 gone; other GmailError -> release, 502 calendar_error (answering is
     idempotent). Reject answers nothing. On its own (invites.refusal, plain
-    code): Handle it for me on; relation in KNOWN_RELATIONS; Replies in
-    training -> training.allowed_inviter (key
-    act_as_me|person:<id>|invite_from|<address>, setting replies), else
-    Take the lead as you or the dial's level; signing_ok; clash None ->
-    calendar_unread, any clash -> clash; can_answer; not sensitive(title);
-    lead rules; handle_it.count_refusal (daily limit, once a day per
-    thread). Then gate auto_execute, claim, answer_invite(accept=True),
+    code): Handle it for me on; Approvals above Careful (level); below
+    Hands-off the sender is team or a contact (stranger); signing_ok; clash
+    None -> calendar_unread, any clash -> clash; can_answer;
+    handle_it.count_refusal (daily limit, once a day per thread). Then gate auto_execute, claim, answer_invite(accept=True),
     finish executed, record_handled; any failure releases and hands the
     card back. Never declines on its own. handle_it.handled includes them
     (source invite, summary "Accepted <first>'s <title>, <when>"), so GET
@@ -11784,30 +11783,35 @@ delegation:
   handle_it: |
     Handle it for me (delegation.handle_it): a third switch under Act as me,
     one row per person in delegation_handle_it (person_id PK, enabled,
-    mode, levels (legacy), updated_at, updated_by; absent = off). One
-    setting, mode careful | balanced (default) | bold (handle_it.RULES):
-    careful = known senders only, <= 400 chars, confidence >= 0.9;
-    balanced = known senders, <= 1200, >= 0.8; bold = strangers too,
-    <= 2000, >= 0.8, links/amounts allowed at >= 0.9. Known = team, contact
-    or correspondent. schema._add_handle_it_mode adds the column to an older
-    table (reply_known not handle -> turned off, since it sent nothing on its own before; else reply_stranger handle -> bold, else balanced). Set only by PUT /delegation/handle-it from a
-    caller delegation.verified.caller_refusal accepts (the rule Send uses:
-    403 not_yours, 409 caller_signing_required on shared secret alone);
+    mode and levels (no longer read), updated_at, updated_by; absent = off).
+    A switch, not a dial (owner's ask, 2026-11-08: Approvals is the one
+    gate): the company's Approvals level (outside_mode: ask Careful,
+    outsiders Balanced, trust Hands-off) decides what goes.
+    handle_it.approvals_hold() is True on Careful (and when unreadable);
+    Below Hands-off a reply to someone they don't know is refused
+    (stranger, like invites and levels.NEW_PERSON). Set only by PUT
+    /delegation/handle-it {enabled} from a caller
+    delegation.verified.caller_refusal accepts (the rule Send uses: 403
+    not_yours, 409 caller_signing_required on shared secret alone);
     enabling needs Act as me and the inbox watcher on (409 act_as_me_off /
     inbox_off); the inbox watcher going off turns it off.
     After compose, inbox._consider asks handle_it.refusal (plain code, any
     exception = refusal "uncountable"); None makes the card gate_mode
     auto_execute, else propose with handle_it_reason. Refusal codes, in
-    order: level (off, or a stranger below bold), signing_off (signing_on or local login needed),
-    sender_unverified, kind (question/request/scheduling/introduction/
-    follow_up), unsure (below the mode's min_confidence), recipients (subset of the
-    email's From/To/Cc less own and Executive addresses, sender included,
-    at most MAX_RECIPIENTS), sensitive (SENSITIVE words in subject, the
-    sender's new words, reply subject or body), amount, link (both allowed
-    on bold at details_confidence 0.9), long (over the mode's max_body_chars), flagged (any flag but others_on_thread / executive_on_thread),
-    thread_recent (one auto-send per thread per day, delegation_handled),
-    in_a_row (last own message in the thread was an auto-send),
-    daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY, default 20).
+    order: off, level (Approvals on Careful), signing_off (signing_on or
+    local login needed), sender_unverified, kind (question/request/
+    scheduling/introduction/follow_up), unsure (below MIN_CONFIDENCE 0.8),
+    recipients (subset of the email's From/To/Cc less own and Executive
+    addresses, sender included, at most MAX_RECIPIENTS), long (over
+    MAX_BODY_CHARS 4000), flagged (any flag but others_on_thread /
+    executive_on_thread), thread_recent (one auto-send per thread per day,
+    delegation_handled), in_a_row (last own message in the thread was an
+    auto-send), daily_limit (DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY,
+    default 20). Below Hands-off also stranger (not team, contact or past
+    correspondent), sensitive (SENSITIVE topics in the email, its subject or
+    the reply), link and amount (handle_it.content_hold, also on follow-ups
+    and, topic only, invite titles); Hands-off sends them. The per-mode
+    limits are gone.
     Only when it passes, a last look (delegation.injection_check.held_back:
     one tool-less classifier-model call reading the sender's new words as
     plain text in an <email> block, up to 20,000 chars) asks whether they
@@ -11826,8 +11830,8 @@ delegation:
     into _send, pinned by an AST test to delegation/inbox.py (the third,
     send_for_workflow, is pinned to delegation/workflow_email.py) — which runs
     every send-time check with no caller and adds: gate_mode auto_execute,
-    the switch on and the mode still allowing that sender (follows_up for
-    a follow-up card), signing_ok, and the draft
+    the switch on (handle_it_off), Approvals above Careful (level),
+    signing_ok, the counted rules again, and the draft
     unedited since saved (draft_changed otherwise: the person took it
     over). A refusal hands the card back (decision_ledger.hand_back:
     auto_execute -> propose, compare-and-set, with handle_it_reason), and
@@ -11839,8 +11843,8 @@ delegation:
     refusal or error leaves the card; the reconciler settles an
     unconfirmed auto-send as executed too. Runs inside the scan, so the
     pause gate stops it. GET /delegation/handled lists the caller's last 7
-    days (theirs alone); Settings → Act as me shows the switch, the
-    Careful / Balanced / Bold choice, sent_today and that list.
+    days (theirs alone); the Handle it for me tab shows Off / On,
+    sent_today and that list.
     Follow-ups as you (delegation.follow_ups): while on, inbox._scan calls
     follow_ups.look at most hourly (LOOK_EVERY): own sent mail 3-10 days
     old (AFTER / WITHIN) asking something ("?" in their new words), to
@@ -11848,70 +11852,38 @@ delegation:
     thread, never followed up before (its delegation_inbox_messages row);
     at most PER_LOOK 2 a look, within the drafts cap. Ghostwriter
     FOLLOW_UP_INTENT, draft to exactly the original To/Cc.
-    handle_it.follow_up_refusal: follow_up_level (Rules.follow_up_to:
-    careful none, balanced team+contact, bold + correspondent),
-    signing_off, recipients (must equal the original), sensitive, amount,
-    link, long (> FOLLOW_UP_MAX_CHARS 600), flagged, then count_refusal.
-    Card payload source follow_up (from_email = first recipient); the
-    reconciler closes it "answered" and deletes its unedited draft when
-    anyone else writes in the thread.
-    In training is per Act as me setting, not a dial step (owner's ask,
-    2026-10-09): delegation.training, one delegation_training row per
-    (person_id, setting), settings replies | follow_ups | actions | drafts,
-    PUT /delegation/training (putting replies/follow_ups in or actions out
-    is narrowing and needs no signed caller; anything else does). Every
-    allowance is a take_the_lead_allowed row, feature act_as_me, person_id
-    set, key act_as_me|person:<id>|<action>|<who>: reply|<address>,
-    follow_up|<sorted addresses>, message|person:<id>,
-    invite|people:<sorted ids, self left out>, style|<address> (a kept
-    example); training.setting_of(key) labels the one learned list. Theirs
-    alone, capped per person (ALLOWED_MAX), never in learned_note.
-    Replies in training: every reply waits (handle_it_reason training)
-    unless its sender was allowed with Send and the "on its own next time"
-    tick (POST /decisions/{id}/approve edits.allow; the tick replaced the
-    separate Send + allow / Approve + allow buttons, 2026-10); an allowed sender's reply goes on
-    its own only while Handle it is enabled, under the dial's Rules with
-    the stranger check skipped, every other refusal check, and again at
-    send time (removed since: handle_it_off). Follow-ups in training: the
-    same with follow_up_training and follow_up_refusal skipping the
-    relation check for exactly the allowed recipients. Take the lead as
-    you lifts nothing while either is in training (turned off when they go
-    in; PUT /delegation/take-the-lead answers 409 in_training). Suggested
-    actions in training: Approve with the tick (edits.allow) on a
-    delegation_actions card allows each message/invite that ran (never
-    add_contact); propose_actions then carries out a card whose every
-    action is allowed at once (action_cards.on_its_own_refusal: training
-    on, Act as me on, signing_ok, not sensitive, no link or amount, message
-    <= 1200 chars, at most ON_ITS_OWN_PER_DAY 10 actions a day, under one
-    lock; run_on_its_own claims it, gate_mode auto_execute, status
-    executed; a refusal there hand_back()s it to an ordinary card). An
-    invite run on its own skips calendar_tools.approved_by, so the meeting
-    gate decides (security review: a mail-chosen time must not be booked
-    unasked).
-    Guardrail (accepted tradeoff, review of PR 408): propose_actions runs
-    on turns that read untrusted mail, so a message carried out on its own
-    has model-written text nobody reads first. The allowance covers who
-    and what kind, never the words; the sensitive/link/amount/length
-    checks and the daily cap are what bound it, and only allowed roster
-    people can receive it.
-    Suggested actions On (training.ACTIONS_ON, row actions_on in
-    delegation_training, PUT /delegation/training {actions_on}; In training
-    wins when both are set and the route clears one when the other is set
-    true): a card is carried out with no allow under the same checks plus
+    handle_it.follow_up_refusal: off, level, signing_off, recipients (must
+    equal the original), long (MAX_BODY_CHARS), flagged, then
+    count_refusal. Card payload source follow_up (from_email = first
+    recipient); the reconciler closes it "answered" and deletes its
+    unedited draft when anyone else writes in the thread.
+    Invites (delegation.invites.refusal): off, level, stranger (relation
+    not team/contact, below Hands-off), signing_off, calendar_unread,
+    clash, calendar_write, then count_refusal. Never declines on its own.
+    Suggested actions (action_cards.on_its_own_refusal): Act as me on,
+    Handle it for me on, Approvals above Careful (level), signing_ok, no
+    drive_files / save_files (tap_only), below Hands-off
     _known_people_refusal (no add_contact, every recipient settled on the
-    roster for SETTLED_AFTER 7 days, as for cards from another AI app).
-    Nothing is learned under On. Handle it for me's web picker is Off / In
-    training / On: In training sets replies and follow_ups together, and the
-    dial's steps show under On only, because handle_it.refusal skips the
-    level check while Replies is in training (only enabled matters).
-    Drafts in training: on Send (ticked or not) with edits.example and a
-    draft edited in the mailbox, the sent text is kept as style|<address>;
-    training.example_for (style key first, then an older reply-key example)
-    feeds the ghostwriter's <writer_example> (style only, untrusted block)
-    for inbox replies, follow-ups and chat drafts to that one person. An
-    old dial row on mode training moves to balanced + replies and
-    follow_ups in training
-    (schema._move_training_off_the_dial).
+    roster for SETTLED_AFTER 7 days), at most ON_ITS_OWN_PER_DAY 10 actions
+    a day under one lock; run_on_its_own claims it, gate_mode auto_execute,
+    status executed; a refusal there hand_back()s it to an ordinary card.
+    From another AI app, below Hands-off, a turn that read outside text or
+    mail also waits. An invite run on its own skips
+    calendar_tools.approved_by, so the meeting gate decides (a mail-chosen
+    time must not be booked unasked).
+    Learn from my edits (delegation.training, setting drafts only; rows for
+    the old replies / follow_ups / actions / actions_on settings are
+    ignored): on Send with edits.example and a draft edited in the
+    mailbox, the sent text is kept as a take_the_lead_allowed row (feature
+    act_as_me, person_id set, key act_as_me|person:<id>|style|<address>);
+    training.example_for feeds the ghostwriter's <writer_example> (style
+    only, untrusted block) for inbox replies, follow-ups and chat drafts to
+    that one person. Theirs alone, never in learned_note. PUT
+    /delegation/training {drafts}: off needs no signed caller.
+    Removed (2026-11-08): the Easy ones / People I know / Most mail dial,
+    Take the lead as you (PUT /delegation/take-the-lead and its rules
+    routes), Replies / Follow-ups / Suggested actions training and their
+    "on its own next time" ticks (edits.allow), and Suggested actions On.
   prompt: |
     DELEGATION_ADDENDUM (prompts/executive_persona.py, a constant naming
     nobody) follows the unchanged identity addendum in block 0 while
@@ -11971,10 +11943,9 @@ delegation:
     second yes; 409 confirm / caller_signing_required / draft_gone /
     you_replied / inbox_off / client_slot / the Gmail codes, 429
     rate_limited, 502 gmail_error / send_unconfirmed); Dismiss is POST
-    /decisions/{id}/reject. PUT /delegation/handle-it {enabled?, mode?}
-    (422 bad_mode) and GET /delegation/handled ({replies: [...]}, each with
-    source), see handle_it; DelegationOut.handle_it is {enabled, mode,
-    available, sent_today}; reply cards carry source ("follow_up" or "").
+    /decisions/{id}/reject. PUT /delegation/handle-it {enabled} and GET
+    /delegation/handled ({replies: [...]}, each with source), see
+    handle_it; DelegationOut.handle_it is {enabled, available, sent_today}; reply cards carry source ("follow_up" or "").
   may_do: |
     What it does for you (delegation.may_do, GET /what-it-may-do) is
     read-only: with the viewer's settings right now, one row per thing that
@@ -11987,35 +11958,28 @@ delegation:
     changed rows for ten seconds. /delegate and /delegate/what-it-may-do
     open Act as me. It reads the same settings the gates read, so it cannot say
     something they don't do: As you from settings.is_enabled,
-    inbox.get_watch, handle_it.get / RULES / leading, training.get /
-    learned and the person's rules; As the Executive (principal only) from
-    take_the_lead.get, Lead.asks_first, the company's rules and the
-    meeting_scheduling class mode; Departments from the registry. Invariant:
-    a meeting Take the lead thinks of always waits, because both meeting
-    gates need someone on a verified surface in the turn; Always asks first
-    -> Meetings asked for in chat (meeting_scheduling's class mode: on is
-    propose, off is auto_execute) covers only meetings someone asks for in
-    chat (and in a team workspace also needs Operations on auto_execute). Department levels
-    never hold Take the lead's own actions; Always asks first and the
-    company's rules do. It writes nothing and reads no mail. 403 for a
+    inbox.get_watch, handle_it.get / approvals_hold and
+    action_cards.on_its_own_refusal; As the Executive (principal only) from
+    the Approvals level (take_the_lead._gated: Hands-off goes, otherwise an
+    Approve card) and Meetings asked for in chat (the owner asking books
+    it; a teammate's goes by Approvals); Departments from
+    departments.authority.department_level. It writes nothing and reads no mail. 403 for a
     contact, anyone not on People, or no caller outside local login.
   reach: |
     How far it goes as you (ReachCard, PUT /delegation/reach {step}) is one
     dial over the Act as me switches: off, when_asked (Write drafts as me),
-    inbox (Draft replies to my inbox), careful / balanced / bold (Handle it
-    for me and its mode) and everything (Take the lead as you, owner only).
+    inbox (Draft replies to my inbox) and handle_it (Handle it for me on;
+    Approvals decides what it sends).
     reach_of derives the step from the stored switches; nothing new is
     stored, so every gate reads exactly what it read before. Down turns the
     switches above the step off, highest first, so no switch is ever on
-    above one that's off; a lower sending mode is set directly and needs no
-    signed sign-in. Up calls each switch's own route in order, so the
-    mailbox, signed sign-ins, owner-only and not-in-training checks all
-    still apply, and the first refusal stops at a whole step. Training is
-    never changed by the dial. The UI shows it as two pickers
+    above one that's off. Up calls each switch's own route in order, so the
+    mailbox and signed sign-in checks still apply, and the first refusal
+    stops at a whole step. Learn from my edits is never changed by the dial. The UI shows it as two pickers
     (ReachCard.tsx): What it writes as you (WritesCard: off / when_asked /
     inbox, any sending step reads as inbox) on Delegate -> Act as me, and
     What it sends on its own (SendsCard: off saved as inbox, then the
-    sending steps, with In training and Your rules at everything) on
+    handle_it step) on
     Delegate -> Handle it for me, which opens only at inbox and says so
     otherwise. Moving Act as me below inbox says Handle it for me stops
     too. What it does for you links act_as_me rows to the first and handle_it
@@ -12067,96 +12031,40 @@ delegation:
     limit), DELEGATION_CLASSIFIER_MODEL (default ROUTING_MODEL),
     DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY (1-500, default 20).
   take_the_lead: |
-    Take the lead (orchestrator.take_the_lead): the Executive acts on its
-    own behind one gate. Two switches, off by default, rows in
-    take_the_lead keyed by scope. "executive" (principal only, PUT
-    /take-the-lead): unattended_toolkit and the chat loop's unattended path
-    keep solo's booking / run_workflow / unrestricted message_person and
-    wrap every acting tool (ACTING_TOOLS, and every MCP tool except a name
-    that plainly reads and says nothing about acting: mcp_tool_acts fails
-    closed) in the gate; UNATTENDED_WITHHELD_TOOLS stay
-    withheld and every guard inside a handler still applies, so department
-    approval levels hold. The reflection pass also gets the MCP gateway's
+    Take the lead (orchestrator.take_the_lead): the Executive's own
+    background work acts, and Approvals decides each step. There is no
+    switch, training or Ask first of its own (removed 2026-11-08;
+    executive_on() is always True). unattended_toolkit and the chat
+    loop's unattended path keep solo's booking / run_workflow /
+    unrestricted message_person and wrap every acting tool (ACTING_TOOLS,
+    and every MCP tool except a name that plainly reads and says nothing
+    about acting: mcp_tool_acts fails closed) in _gated;
+    UNATTENDED_WITHHELD_TOOLS stay withheld and every guard inside a
+    handler still applies. The reflection pass also gets the MCP gateway's
     search_tools and call_tool (executive_reflection._with_lead_tools;
-    call_tool behind the gate, load_mcp_server left out) so it can find
-    and use whatever the deployment has connected, with a user-turn note
-    telling it to act (_LEAD_NOTE, never the cached system prompt) and
+    call_tool behind _gated, load_mcp_server left out) with a user-turn
+    note telling it to act (_LEAD_NOTE, never the cached system prompt) and
     room for it: 10 iterations, 4000 tokens, tool results up to 4000
-    characters (execute_tool_calls result_chars). New mail or chat
-    (a turn with origin_channel) wakes the reflection early: one
-    take_the_lead_wake action 5 minutes out, none while one waits, at most
-    every 30 minutes; the pause holds it. "person:<id>" (owner only for
-    now, PUT /delegation/take-the-lead): the Handle it for me dial's top
-    step; handle_it.refusal drops the mode limits (strangers, confidence,
-    amounts, length up to 4000) for the added rules (lead_rule) and
-    keeps everything else Handle it always keeps; a reply with a link
-    still waits on a card (refusal link), since a link sent as the owner
-    is the shape a phish takes (owner's choice).
-    The gate (take_the_lead.check, plain code): six kinds, each with an Ask
-    first switch (the decision ledger's mode for take_the_lead_action:<kind>,
-    propose by default), all on to start: money, contracts, people_decisions,
-    delete_share, someone_new (not on the roster or contacts), big_send
-    (broadcast, department message, more than 5 people). Added rules
-    (take_the_lead_rules, scope company or person:<id>; kinds person,
-    domain, words, amount) always hold; unreadable rules hold the action.
-    Recipients are the addresses in the input plus, for tools that name a
-    person by id (message_person, assign_open_loop, the Slack / Telegram /
-    Discord DMs), that person's addresses and name (_targets); an id the
-    People list doesn't have counts as someone new. A name rule matches
-    whole words. A direct message (message_person or a Slack / Telegram /
-    Discord DM) whose only recipient is the principal skips the gate and is
-    sent (_only_to_principal): the principal is who it would wait for, so a
-    card would only ask them to approve a message to themselves. Anything
-    that reaches or acts on anyone else is checked; an unreadable roster is
-    not the principal.
-    Structured only: no model reads a rule. A held action is a
-    take_the_lead_action decision (principal_and_approver: only the
-    principal and its approver see or resolve it) with a Today card,
-    routed to the first non-principal teammate holding one of its People
-    approval ranges (take_the_lead.approval_ranges, plain code, closest
-    first: money spend_lt_2k / spend_lt_10k / spend_gt_10k by its largest
-    amount, a higher range approving a lower one, no amount = gt_10k, or
-    customer_credit for credit and terms; contracts vendor_onboarding then
-    legal_sign for vendors, else legal_sign; hiring hiring_signoff; anything
-    else about the board or investors board_comms; deletes and shares none;
-    Personal mode too), else the authority gate's _route_proposal fallback to
-    the principal. An action that reaches anyone off the team (a contact,
-    someone unknown) always goes to the principal (_team_only): only their
-    approval opens contact egress, and contacts are theirs alone. Approve
-    claims the row and runs the exact call once (carry_out); reject drops it.
-    take_the_lead_log feeds Recent activity (kind took_the_lead, named not
-    quoted); /today/activity adds the caller's own Handle it sends
-    (sent_as_you). No separate What I did list.
-    In training (the executive row's training column; Settings shows Off /
-    In training / On): an action check() lets through still waits as a
-    training hold (Hit kind "training", always the principal's, alert tag
-    take_the_lead:training) unless take_the_lead_allowed has its allowance
-    key: action + who, <feature>|message|person:<id> for any direct message
-    channel, |book|people:<ids> for exactly those attendees, |assign|,
-    |workflow|<id>, |department|<slug>, |mcp|<tool>|<file name>|<argument names> (none
-    for a connected tool with no file name or that reaches people: to/cc,
-    recipient keys, an argument named for sharing, links or access, any
-    address in it; a new argument is a different action); someone off the People list gives
-    no key (keeps asking). edits.input is the principal's alone (403). The card's payload carries
-    allow {key, label} and fields (editable_fields: message text; a
-    meeting's title, start, end, description; a task and due date).
-    /decisions/{id}/approve edits.input applies only those fields
-    (apply_edits, EditError → 422) and finishes approved_with_edit;
-    edits.allow on a training card (only) needs the principal on a provable
-    request (403) and stores the allowance with the changed fields as its
-    example (the wording fields only: text, title, description, task).
-    Owner's choice: an edit with "Do it like this next time" both
-    keeps the example and allows at once. learned_note() (training flag +
-    the examples, the principal's own edited text only) is appended to the
-    reflection and research user turns. suggestions(): training cards
-    approved unchanged SUGGEST_AFTER (3) times in 30 days and not allowed;
-    POST /take-the-lead/learned allows only a current suggestion, DELETE
-    removes one (tightening, no proof needed; the row keeps removed_at so
-    only approvals after it count toward suggesting it again). Leaving training while on is
-    loosening (provable owner). The allowed list is shared across features
-    (feature column, owner's choice: one list, a switch per feature); Act as
-    me is the second (feature act_as_me, per person, a training switch per
-    setting: see delegation).
+    characters. Under Hands-off, new mail or chat (a turn with
+    origin_channel) wakes the reflection early: one take_the_lead_wake
+    action 5 minutes out, none while one waits, at most every 30 minutes;
+    the pause holds it.
+    _gated (plain code): levels.decide(levels.UNATTENDED) — Hands-off runs
+    the call, any other level holds it as a take_the_lead_action decision
+    (Hit kind "level") with an Approve card on Today. A direct message
+    whose only recipient is the principal skips it and is sent
+    (_only_to_principal / _mail_only_to_principal): the principal is who
+    it would wait for. A held action goes to the first non-principal
+    teammate holding one of its People approval ranges
+    (take_the_lead.approval_ranges, closest first), else the principal;
+    one that reaches anyone off the team always goes to the principal
+    (_team_only). Approve claims the row and runs the exact call once
+    (carry_out); reject drops it. take_the_lead_log feeds Recent activity
+    (kind took_the_lead, named not quoted); /today/activity adds the
+    caller's own Handle it sends (sent_as_you).
+    The take_the_lead_allowed table keeps Learn from my edits' examples
+    (feature act_as_me, per person: see delegation). The older rule,
+    Ask first and training rows are no longer read.
   state: |
     delegation_settings, delegation_voice, delegation_voice_history,
     delegation_drafts, delegation_inbox_watch, delegation_inbox_messages,

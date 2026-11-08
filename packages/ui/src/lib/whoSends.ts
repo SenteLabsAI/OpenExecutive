@@ -1,13 +1,15 @@
 // The "Who writes and who sends" card in What it does for you: one
-// short scene per option of What it writes as you (Act as me), What it sends
-// on its own (Handle it for me) and Take the lead. Tapping an option plays
-// its scene; it changes no setting. Pure data; a test holds the option
-// labels to the ones the settings cards use (lib/reach.ts).
+// short scene per option of What it writes as you (Act as me), Handle it for
+// me at each Approvals level, and Take the lead at each Approvals level.
+// Tapping an option plays its scene; it changes no setting. Pure data; a
+// test holds the option labels to the ones the settings cards use
+// (lib/reach.ts).
 
-import type { SendStep, WriteStep } from "@/lib/reach";
+import type { WriteStep } from "@/lib/reach";
 
 export type Tab = "act" | "handle" | "lead";
-export type LeadStep = "off" | "training" | "on";
+// The Approvals levels (Settings → Your Executive).
+export type LevelStep = "careful" | "balanced" | "hands_off";
 export type Who = "you" | "exec" | "them";
 
 // One numbered step of a scene. Steps appear in turn and stay on screen.
@@ -40,19 +42,20 @@ export const WRITE_OPTIONS: { value: WriteStep; label: string }[] = [
   { value: "inbox", label: "Draft replies automatically" },
 ];
 
-export const SEND_OPTIONS: { value: SendStep; label: string }[] = [
-  { value: "off", label: "Off" },
-  { value: "careful", label: "Easy ones" },
-  { value: "balanced", label: "People I know" },
-  { value: "bold", label: "Most mail" },
-  { value: "everything", label: "Everything" },
+export const LEVEL_OPTIONS: { value: LevelStep; label: string }[] = [
+  { value: "careful", label: "Careful" },
+  { value: "balanced", label: "Balanced" },
+  { value: "hands_off", label: "Hands-off" },
 ];
 
-export const LEAD_OPTIONS: { value: LeadStep; label: string }[] = [
+// Handle it for me: Off, then on at each Approvals level.
+export const SEND_OPTIONS: { value: "off" | LevelStep; label: string }[] = [
   { value: "off", label: "Off" },
-  { value: "training", label: "In training" },
-  { value: "on", label: "On" },
+  ...LEVEL_OPTIONS,
 ];
+
+// Take the lead has no switch: Approvals decides each step.
+export const LEAD_OPTIONS = LEVEL_OPTIONS;
 
 export const TAB_NAMES: Record<Tab, string> = {
   act: "Act as me",
@@ -67,7 +70,7 @@ export const OPTIONS: Record<Tab, { value: string; label: string }[]> = {
 };
 
 // The option a tab opens on.
-export const FIRST: Record<Tab, string> = { act: "when_asked", handle: "balanced", lead: "training" };
+export const FIRST: Record<Tab, string> = { act: "when_asked", handle: "balanced", lead: "balanced" };
 
 // Handle it for me: the same five emails at every level, so the levels
 // compare. Ordered from the easiest to send to the one that always waits.
@@ -75,8 +78,8 @@ export const MAILS: { from: string; text: string; why: string }[] = [
   { from: "Dana, a contact", text: "See you Tuesday?", why: "Short reply" },
   { from: "Lee, a contact", text: "Can you send a summary of where the project stands?", why: "Longer reply" },
   { from: "Alex, someone new", text: "Are you the right person for partnerships?", why: "New sender" },
-  { from: "Kim, a contact", text: "What would 20 seats cost?", why: "Has an amount" },
-  { from: "Sam, a contact", text: "Can you sign the updated contract?", why: "Contracts always wait" },
+  { from: "Pat, you wrote to them once", text: "Invite: Pilot review, Wed 14:30", why: "Invite, not a contact" },
+  { from: "Kim, a contact", text: "Can you loop in your finance lead?", why: "New recipient always waits" },
 ];
 
 const dana: Step = { who: "them", name: "Dana", does: "Emails you", mail: { from: "From Dana", text: "Can we move to the 5th?" } };
@@ -125,40 +128,35 @@ export const SCENES: Scene[] = [
     line: "Every reply waits on Home for you to send.",
   },
   {
-    key: "sends:careful", tab: "handle", option: "Easy ones", sends: 1,
+    key: "sends:careful", tab: "handle", option: "Careful", answers: yours("The Executive"), sends: 0,
+    line: "Handle it for me is on, and Approvals is on Careful: every reply waits for you.",
+  },
+  {
+    key: "sends:balanced", tab: "handle", option: "Balanced", sends: 3,
     answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "Only short replies to people you know, when it's very sure.",
+    line: "Replies go when it's sure, to the people the email was already with. Invites go for your team and contacts.",
   },
   {
-    key: "sends:balanced", tab: "handle", option: "People I know", sends: 2,
+    key: "sends:hands_off", tab: "handle", option: "Hands-off", sends: 4,
     answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "Replies to people you know, short or long. Strangers and amounts wait for you.",
+    line: "The same, and invites from people you've written to go too. A new recipient still waits.",
   },
   {
-    key: "sends:bold", tab: "handle", option: "Most mail", sends: 3,
-    answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "Also people you don't know. Amounts and links only when it's very sure.",
+    key: "lead:careful", tab: "lead", option: "Careful",
+    answers: { writes: "The Executive", name: "The Executive's", sends: "You, with Approve on Home" },
+    line: "It writes in its own name, and each message waits for you to approve it.",
+    steps: [notices, writesToSam, { who: "you", name: "You", does: "Tap Approve on Home" }, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
   },
   {
-    key: "sends:everything", tab: "handle", option: "Everything", sends: 4,
-    answers: { writes: "The Executive", name: "Yours", sends: "It or you" },
-    line: "It decides what to send as you. Links, the topics that always wait and your rules still hold it back.",
+    key: "lead:balanced", tab: "lead", option: "Balanced",
+    answers: { writes: "The Executive", name: "The Executive's", sends: "You, with Approve on Home" },
+    line: "The same as Careful for what it does on its own: each message waits for you to approve it.",
+    steps: [notices, writesToSam, { who: "you", name: "You", does: "Tap Approve on Home" }, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
   },
   {
-    key: "lead:off", tab: "lead", option: "Off", answers: { writes: "You", name: "Yours", sends: "You" },
-    line: "It doesn't act in its own name. It tells you and you decide.",
-    steps: [notices, { who: "exec", name: "The Executive", does: "Tells you on Home" }, { who: "you", name: "You", does: "Decide what to do" }],
-  },
-  {
-    key: "lead:training", tab: "lead", option: "In training",
-    answers: { writes: "The Executive", name: "The Executive's", sends: "You, with a yes on Home" },
-    line: "It writes in its own name, and each message waits for your yes.",
-    steps: [notices, writesToSam, { who: "you", name: "You", does: "Tap Yes on Home" }, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
-  },
-  {
-    key: "lead:on", tab: "lead", option: "On",
+    key: "lead:hands_off", tab: "lead", option: "Hands-off",
     answers: { writes: "The Executive", name: "The Executive's", sends: "The Executive" },
-    line: "It acts in its own name without waiting for your yes on Home. Your company's rules and the Always asks first list still hold it back.",
+    line: "It acts in its own name without waiting for you.",
     steps: [notices, writesToSam, { who: "them", name: "Sam", does: "Gets it from the Executive" }],
   },
 ];
