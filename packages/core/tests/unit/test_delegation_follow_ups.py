@@ -106,6 +106,7 @@ def test_someone_they_only_wrote_to_gets_one_above_careful(owner: Any, models: d
 def test_someone_on_cc_gets_it_too(owner: Any, models: dict[str, Any]) -> None:
     _on(owner, "balanced")
     mailbox = FakeInbox()
+    mailbox.written_to.add(LEE)
     mailbox.add(_msg("s1", "t9", sender=OWNER, name="Olivia Owner", to=[DANA], cc=(LEE,), labels=("SENT",),
                      minutes_ago=4 * DAY, text="Hi Dana, could you send me the slides from Tuesday?"))
     result = _scan(owner, mailbox)
@@ -201,6 +202,13 @@ def test_what_a_follow_up_never_sends(owner: Any, reply: Any, code: str) -> None
     assert _check(owner, reply) == code
 
 
+def test_below_hands_off_a_follow_up_to_a_stranger_waits(owner: Any) -> None:
+    _on(owner, "balanced")
+    assert _check(owner, _nudge(), relation="stranger") == "stranger"
+    _on(owner, "hands_off")
+    assert _check(owner, _nudge(), relation="stranger") is None
+
+
 def test_a_follow_up_counts_toward_the_day(owner: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(owner, "hands_off")
     monkeypatch.setenv("DELEGATION_HANDLE_IT_MAX_SENDS_PER_DAY", "1")
@@ -221,6 +229,24 @@ def test_the_send_path_rechecks_the_setting(owner: Any, models: dict[str, Any]) 
         asyncio.run(send_on_its_own(type("C", (), {**card.__dict__, "gate_mode": "auto_execute"})(),
                                     gmail=mailbox, now=NOW))
     assert refused.value.code == "level" and mailbox.sent == []
+
+
+def test_the_send_path_rechecks_a_stranger(owner: Any, models: dict[str, Any]) -> None:
+    import json
+
+    from openexecutive.delegation.reply_send import SendRefused, send_on_its_own
+
+    _on(owner, "careful")
+    mailbox = FakeInbox()
+    mailbox.add(_asked())
+    _scan(owner, mailbox)
+    [card] = _cards()
+    _on(owner, "balanced")
+    payload = {**inbox.card_payload(card), "handled_as": "stranger"}
+    fake = type("C", (), {**card.__dict__, "gate_mode": "auto_execute", "proposed_payload_json": json.dumps(payload)})()
+    with pytest.raises(SendRefused) as refused:
+        asyncio.run(send_on_its_own(fake, gmail=mailbox, now=NOW))
+    assert refused.value.code == "stranger" and mailbox.sent == []
 
 
 def test_a_link_or_amount_goes(owner: Any) -> None:

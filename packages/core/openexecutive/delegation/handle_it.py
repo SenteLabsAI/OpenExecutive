@@ -384,6 +384,10 @@ def _follow_up_refusal(
         return "off"
     if approvals_hold(db_path=db_path):
         return "level"
+    # Below Hands-off, a follow-up to someone they don't know waits on a card,
+    # as a reply to one does.
+    if kind_for(relation) != KIND_REPLY_KNOWN and not hands_off(db_path=db_path):
+        return "stranger"
     if not signing_ok():
         return "signing_off"
     # Exactly the people their own email went to: nobody added, nobody left out.

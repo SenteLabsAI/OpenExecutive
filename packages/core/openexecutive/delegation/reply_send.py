@@ -255,6 +255,9 @@ async def _send_checked(
             raise SendRefused(409, "handle_it_off", "Handle it for me is off for this reply.")
         if handle_it.approvals_hold():
             raise SendRefused(409, "level", handle_it.REASONS["level"])
+        relation = str(payload.get("handled_as") or "stranger")
+        if handle_it.kind_for(relation) != handle_it.KIND_REPLY_KNOWN and not handle_it.hands_off():
+            raise SendRefused(409, "stranger", handle_it.REASONS["stranger"])
         if not handle_it.signing_ok():
             raise SendRefused(409, "caller_signing_required", handle_it.REASONS["signing_off"])
         counted = handle_it.count_refusal(person.id, str(payload.get("thread_id") or ""), now)
