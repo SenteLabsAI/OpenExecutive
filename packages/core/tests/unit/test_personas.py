@@ -42,7 +42,7 @@ def test_list_personas_includes_default(tmp_db: Path) -> None:
     metas = list_personas(db_path=tmp_db)
     slugs = {m.slug for m in metas}
     assert "default" in slugs
-    assert "jensen-huang" in slugs
+    assert "supportive" in slugs
 
 
 def test_default_persona_is_builtin(tmp_db: Path) -> None:
@@ -86,26 +86,26 @@ def test_get_active_body_unknown_slug_falls_back_to_default(tmp_db: Path) -> Non
 # ---------------------------------------------------------------------------
 
 def test_upsert_shadows_builtin(tmp_db: Path) -> None:
-    upsert_persona("jensen-huang", "Jensen Huang (edited)", "custom body", db_path=tmp_db)
-    p = get_persona("jensen-huang", db_path=tmp_db)
+    upsert_persona("supportive", "Supportive (edited)", "custom body", db_path=tmp_db)
+    p = get_persona("supportive", db_path=tmp_db)
     assert p is not None
     assert p.body == "custom body"
     assert p.is_builtin is True
     assert p.is_customized is True
 
     metas = list_personas(db_path=tmp_db)
-    jh = next(m for m in metas if m.slug == "jensen-huang")
-    assert jh.is_customized is True
+    sup = next(m for m in metas if m.slug == "supportive")
+    assert sup.is_customized is True
 
 
 def test_reset_restores_builtin(tmp_db: Path) -> None:
-    upsert_persona("jensen-huang", "Jensen Huang (edited)", "custom body", db_path=tmp_db)
-    restored = reset_persona("jensen-huang", db_path=tmp_db)
+    upsert_persona("supportive", "Supportive (edited)", "custom body", db_path=tmp_db)
+    restored = reset_persona("supportive", db_path=tmp_db)
     assert restored is not None
     assert restored.body != "custom body"
     assert restored.is_customized is False
 
-    p = get_persona("jensen-huang", db_path=tmp_db)
+    p = get_persona("supportive", db_path=tmp_db)
     assert p is not None
     assert p.is_customized is False
 
@@ -126,9 +126,9 @@ def test_delete_removes_custom_persona(tmp_db: Path) -> None:
 
 
 def test_delete_builtin_shadow_reveals_builtin(tmp_db: Path) -> None:
-    upsert_persona("jensen-huang", "JH", "custom body", db_path=tmp_db)
-    delete_persona("jensen-huang", db_path=tmp_db)
-    p = get_persona("jensen-huang", db_path=tmp_db)
+    upsert_persona("supportive", "Sup", "custom body", db_path=tmp_db)
+    delete_persona("supportive", db_path=tmp_db)
+    p = get_persona("supportive", db_path=tmp_db)
     assert p is not None
     assert p.is_customized is False
     assert p.body != "custom body"
@@ -204,13 +204,13 @@ def test_voice_persona_slug_round_trips_through_overrides(tmp_db: Path) -> None:
     initialize_overrides_db(db_path=tmp_db)
     set_override(
         "executive",
-        voice_persona_slug="jensen-huang",
+        voice_persona_slug="supportive",
         voice_persona_slug_set=True,
         db_path=tmp_db,
     )
     ov = get_override("executive", db_path=tmp_db)
     assert ov is not None
-    assert ov.voice_persona_slug == "jensen-huang"
+    assert ov.voice_persona_slug == "supportive"
 
     clear_override("executive", db_path=tmp_db)
     assert get_override("executive", db_path=tmp_db) is None
@@ -232,7 +232,7 @@ def test_voice_persona_slug_in_history(tmp_db: Path) -> None:
     )
     set_override(
         "executive",
-        voice_persona_slug="jensen-huang",
+        voice_persona_slug="supportive",
         voice_persona_slug_set=True,
         db_path=tmp_db,
     )
@@ -259,7 +259,7 @@ def test_rollback_restores_voice_persona_slug(tmp_db: Path) -> None:
     )
     set_override(
         "executive",
-        voice_persona_slug="tim-cook",
+        voice_persona_slug="analytical",
         voice_persona_slug_set=True,
         db_path=tmp_db,
     )

@@ -1026,12 +1026,7 @@ export default function CouncilPage() {
                           onChange={(e) => setDraft({ ...draft, voice_persona_slug: e.target.value === "default" ? null : e.target.value })}
                           className={`w-full ${FIELD} h-11 text-[15px]`}
                         >
-                          {personas.filter((p) => !p.is_legacy).map(personaOption)}
-                          {personas.some((p) => p.is_legacy) && (
-                            <optgroup label="Legacy voices">
-                              {personas.filter((p) => p.is_legacy).map(personaOption)}
-                            </optgroup>
-                          )}
+                          {personas.map(personaOption)}
                         </select>
                         <p className="text-[13px] text-fg-subtle mt-1">
                           Selection saves with Save at the bottom of this panel.

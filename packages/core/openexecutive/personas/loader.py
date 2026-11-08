@@ -9,12 +9,10 @@ when their DB row is removed.
 Active persona selection is stored on the agent_overrides row for "executive"
 as voice_persona_slug. NULL resolves to "default" (shown as "Direct").
 
-Three built-in voices are offered in the voice picker: Direct (``default``),
-Supportive and Analytical. The named-executive voices carry ``legacy: true``
-in their frontmatter: the picker hides them, but they still load, so an
-install that picked one keeps its voice. A built-in voice's frontmatter may
-also carry a one-line ``description`` and a short ``sample`` reply for the
-picker. Voice files hold disposition only; response-length rules live in
+Three built-in voices ship: Direct (``default``), Supportive and Analytical.
+A slug that names no voice (such as a removed one) falls back to Direct. A
+built-in voice's frontmatter may also carry a one-line ``description`` and a
+short ``sample`` reply for the picker. Voice files hold disposition only; response-length rules live in
 ``prompts/executive_persona.py``.
 """
 from __future__ import annotations
@@ -41,8 +39,6 @@ class PersonaMeta(BaseModel):
     display_name: str
     is_builtin: bool
     is_customized: bool
-    # Hidden from the voice picker but still loadable (built-in only).
-    is_legacy: bool = False
     # Picker copy from the built-in's frontmatter ("" for custom voices).
     description: str = ""
     sample: str = ""
@@ -55,7 +51,6 @@ class Persona(BaseModel):
     is_builtin: bool
     is_customized: bool
     source_notes: str = ""
-    is_legacy: bool = False
     description: str = ""
     sample: str = ""
 
@@ -84,7 +79,6 @@ def _load_builtins() -> dict[str, Persona]:
             is_builtin=True,
             is_customized=False,
             source_notes=data.get("source_notes", ""),
-            is_legacy=bool(data.get("legacy", False)),
             description=str(data.get("description", "")).strip(),
             sample=str(data.get("sample", "")).strip(),
         )
@@ -139,7 +133,6 @@ def list_personas(db_path: Path | None = None) -> list[PersonaMeta]:
             display_name=db_rows[slug]["display_name"] if slug in db_rows else builtin.display_name,
             is_builtin=True,
             is_customized=slug in db_rows,
-            is_legacy=builtin.is_legacy,
             description=builtin.description,
             sample=builtin.sample,
         ))
@@ -174,7 +167,6 @@ def get_persona(slug: str, db_path: Path | None = None) -> Persona | None:
             is_builtin=slug in builtins,
             is_customized=True,
             source_notes=builtin.source_notes if builtin else "",
-            is_legacy=builtin.is_legacy if builtin else False,
             description=builtin.description if builtin else "",
             sample=builtin.sample if builtin else "",
         )
