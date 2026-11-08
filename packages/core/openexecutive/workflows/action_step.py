@@ -1127,11 +1127,14 @@ def progress_line(name: str, arguments: Any) -> str:
         detail = tool_labels.detail_for(name, args, "")
         if detail:
             # The app's name stays last: "Creating contact: Ada · Hubspot".
+            # Only the detail is shortened, so the action and the app stay whole.
             base, sep, app = doing.partition(" · ")
-            base = f"{base} for {detail}" if detail.startswith('"') else f"{base}: {detail}"
-            doing = f"{base}{sep}{app}"
-    if len(doing) >= _PROGRESS_MAX:
-        doing = doing[: _PROGRESS_MAX - 1].rstrip()
+            joiner = " for " if detail.startswith('"') else ": "
+            room = _PROGRESS_MAX - len(base) - len(joiner) - len(sep) - len(app)
+            if len(detail) > room >= 8:
+                detail = detail[: room - 1].rstrip() + "…"
+            if len(detail) <= room:
+                doing = f"{base}{joiner}{detail}{sep}{app}"
     return f"{doing}…"
 
 

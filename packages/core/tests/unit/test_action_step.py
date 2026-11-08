@@ -596,5 +596,7 @@ def test_progress_says_what_a_tool_is_doing_in_plain_words() -> None:
     assert progress_line("oe__send_telegram_message", {"text": "hi"}) == "Sending a Telegram message…"
     assert progress_line("hubspot__create_contact", {"name": "Ada"}) == "Creating contact: Ada · Hubspot…"
     assert progress_line("run_script", {}) == "Running a script…"
+    long = progress_line("hubspot__create_contact", {"name": "Ada Lovelace " * 8})
+    assert long.startswith("Creating contact: Ada") and long.endswith("… · Hubspot…") and len(long) <= 81
     for line in (progress_line("acme__get_x", None), progress_line("oe__whatever_tool", {})):
         assert "__" not in line and line.endswith("…")
