@@ -20,10 +20,14 @@ import {
 } from "@/lib/api";
 import {
   SOURCE_LABELS,
+  acceptsDrop,
+  dragLeavesPanel,
+  dropLandsOnPanel,
   filterDocs,
   formatInterval,
   formatSize,
   mergeDocs,
+  showEmptyDropBox,
   type DocRow,
   type DocSource,
 } from "@/lib/companyDocs";
@@ -213,17 +217,20 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const empty = loaded && rows.length === 0;
   const dropHandlers = {
         onDragOver: (e: React.DragEvent) => {
+          if (!dropLandsOnPanel(e.currentTarget, e.target)) return;
           e.preventDefault();
           setDragOver(true);
         },
         onDragLeave: (e: React.DragEvent) => {
           // Only when the pointer leaves the panel, not when it crosses a child.
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false);
+          if (dragLeavesPanel(e.currentTarget, e.relatedTarget)) setDragOver(false);
         },
         onDrop: (e: React.DragEvent) => {
+          if (!dropLandsOnPanel(e.currentTarget, e.target)) return;
           e.preventDefault();
           setDragOver(false);
-          handleFiles(Array.from(e.dataTransfer.files));
+          const files = Array.from(e.dataTransfer.files);
+          if (acceptsDrop(uploadProgress !== null, files.length)) handleFiles(files);
         },
       };
 
@@ -278,7 +285,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
 
       {uploadProgress && <p className="text-[15px] text-accent animate-pulse">{uploadProgress}</p>}
 
-      {empty && !uploadProgress && (
+      {showEmptyDropBox({ loaded, count: rows.length, uploading: uploadProgress !== null }) && (
         <div
           className={`rounded-2xl border-2 border-dashed transition-colors text-center px-6 py-14 ${
             dragOver ? "border-accent bg-accent/5" : "border-line-strong/70"
