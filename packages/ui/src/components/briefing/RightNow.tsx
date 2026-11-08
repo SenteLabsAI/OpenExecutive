@@ -165,8 +165,11 @@ function DraftActions({
         }
         finish("✓ Sent from your mailbox.");
       } else {
-        await deleteChatDraft(draftId);
-        finish("✓ Deleted from your Drafts.");
+        const state = await deleteChatDraft(draftId);
+        if (state.status === "gone") finish("✓ Deleted from your Drafts.");
+        else if (state.status === "sent") finish("Already sent.");
+        else if (state.status === "replaced") finish("It isn't in your Drafts any more.");
+        else setOpen(true); // still there: the card says why
       }
     } catch (err) {
       const code = err instanceof ReplySendError ? err.code : "";
