@@ -42,9 +42,11 @@ export default function VoicePicker({ variant, onDone }: Props) {
     Promise.all([listPersonas(), getAgentDetail("executive")])
       .then(([all, exec]) => {
         if (cancelled) return;
-        const slug = exec.voice_persona_slug ?? DIRECT;
+        // A stored voice that no longer exists speaks as Direct, so show Direct.
+        const stored = exec.voice_persona_slug ?? DIRECT;
+        const active = all.find((p) => p.slug === stored);
+        const slug = active ? stored : DIRECT;
         const shown = generalVoices(all);
-        const active = all.find((p) => p.slug === slug);
         if (active && !shown.some((p) => p.slug === slug)) shown.push(active);
         setVoices(shown);
         setCurrent(slug);

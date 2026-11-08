@@ -1022,7 +1022,12 @@ export default function CouncilPage() {
                           Active persona
                         </label>
                         <select
-                          value={draft.voice_persona_slug ?? "default"}
+                          value={
+                            // A stored voice that no longer exists speaks as Direct.
+                            personas.some((p) => p.slug === draft.voice_persona_slug)
+                              ? (draft.voice_persona_slug as string)
+                              : "default"
+                          }
                           onChange={(e) => setDraft({ ...draft, voice_persona_slug: e.target.value === "default" ? null : e.target.value })}
                           className={`w-full ${FIELD} h-11 text-[15px]`}
                         >
