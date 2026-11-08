@@ -37,17 +37,18 @@ logger = logging.getLogger(__name__)
 LIST_OPEN_LOOPS_TOOL: dict[str, Any] = {
     "name": "list_open_loops",
     "description": (
-        "List open loops — concrete things people on the roster committed to "
+        "List tasks — concrete things people on the roster committed to "
         "or were asked for in conversation and haven't reported done. Use it "
         "for questions like 'what is Sara waiting on?' or 'what does the team "
-        "owe me?'. Overdue loops are already chased automatically."
+        "owe me?'. Overdue tasks are already chased automatically. Call them "
+        "tasks when you talk to the user, never open loops."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "person_id": {
                 "type": "integer",
-                "description": "Only loops this person owns. Omit for everyone.",
+                "description": "Only tasks this person owns. Omit for everyone.",
             },
         },
     },
@@ -56,7 +57,7 @@ LIST_OPEN_LOOPS_TOOL: dict[str, Any] = {
 CLOSE_OPEN_LOOP_TOOL: dict[str, Any] = {
     "name": "close_open_loop",
     "description": (
-        "Close an open loop the user says is done, no longer needed, or was "
+        "Close a task the user says is done, no longer needed, or was "
         "cancelled, so it stops being chased. Take the loop_id from "
         "list_open_loops."
     ),
@@ -76,7 +77,7 @@ CLOSE_OPEN_LOOP_TOOL: dict[str, Any] = {
 ASSIGN_OPEN_LOOP_TOOL: dict[str, Any] = {
     "name": "assign_open_loop",
     "description": (
-        "Assign a task to someone on the team as an open loop, when the user "
+        "Assign a task to someone on the team, when the user "
         "asks you to — 'ask Ben to send me the Q3 numbers by Friday', 'put "
         "Sara down for the vendor quote', 'track that I owe the board deck "
         "Monday'. It is tracked and they are followed up automatically once "
@@ -188,7 +189,7 @@ async def handle_list_open_loops(tool_input: dict[str, Any]) -> str:
         return json.dumps({
             "status": "refused",
             "detail": (
-                "open loops are visible to their owner, and to the principal in a "
+                "tasks are visible to their owner, and to the principal in a "
                 "private conversation"
             ),
         })
@@ -297,7 +298,7 @@ def _in_speakers_words(text: str, session: Any) -> bool | None:
 
 
 _ASSIGN_REFUSALS = {
-    "disabled": "open loops are turned off for this workspace",
+    "disabled": "tasks are turned off for this workspace",
     "unknown_owner": "no one on the roster has that person_id",
     "owner_is_contact": (
         "that person is one of the principal's contacts; tasks are assigned "
@@ -306,7 +307,7 @@ _ASSIGN_REFUSALS = {
     "owner_archived": "that person is archived",
     "unknown_assigner": "the person asking is not an active team member",
     "missing_text": "the task is empty",
-    "owner_at_cap": "that person already has as many open loops as they can carry; close some first",
+    "owner_at_cap": "that person already has as many tasks as they can carry; close some first",
     "duplicate": "that exact task is already open for them",
 }
 

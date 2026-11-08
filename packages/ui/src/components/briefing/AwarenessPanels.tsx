@@ -67,17 +67,6 @@ export function InFlightPanelBody({ inFlight }: { inFlight: InFlightItem[] }) {
   );
 }
 
-// The In flight tile's sub-line: overdue first, else when the next one runs.
-export function inFlightNext(inFlight: InFlightItem[]): string {
-  const overdue = inFlight.filter((f) => f.overdue).length;
-  if (overdue > 0) return `${overdue} overdue`;
-  const next = inFlight
-    .map((f) => Date.parse(f.run_at))
-    .filter((t) => !Number.isNaN(t))
-    .sort((a, b) => a - b)[0];
-  return next == null ? "scheduled" : `next ${formatFuture(new Date(next).toISOString())}`;
-}
-
 // Multi-client practice mode only: rollup rows for PARKED client slots so
 // the operator sees the whole practice from the active client's brief. The
 // backend sends [] for single-company installs, so the tile never shows there.

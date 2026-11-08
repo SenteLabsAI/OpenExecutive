@@ -611,13 +611,13 @@ class OpenLoopCreate(BaseModel):
 
 # Why an assignment was refused, as the People page shows it.
 _ASSIGN_REFUSED: dict[str, tuple[int, str]] = {
-    "disabled": (409, "Open loops are turned off for this workspace"),
+    "disabled": (409, "Tasks are turned off for this workspace"),
     "unknown_owner": (404, "Person not found"),
     "owner_is_contact": (409, "Tasks are assigned to team members, not contacts"),
     "owner_archived": (409, "This person is archived"),
     "unknown_assigner": (403, "Only someone on the team can assign a task"),
     "missing_text": (422, "Describe the task"),
-    "owner_at_cap": (409, "They already have as many open loops as they can carry — close some first"),
+    "owner_at_cap": (409, "They already have as many tasks as they can carry — close some first"),
     "duplicate": (409, "That task is already open for them"),
 }
 
@@ -683,7 +683,7 @@ def close_open_loop_route(loop_id: int, body: OpenLoopClose, request: Request) -
 
     loop = get_open_loop(loop_id)
     if loop is None:
-        raise HTTPException(status_code=404, detail="Open loop not found")
+        raise HTTPException(status_code=404, detail="Task not found")
     caller = _require_principal_or(loop.owner_person_id, request)
     close_open_loop(loop_id, reason=body.reason, closed_by_person_id=caller)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
