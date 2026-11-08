@@ -66,7 +66,11 @@ _NOT_A_FIGURE = re.compile(
 )
 # Read back from what the turn was shown (today's brief, a digest, memory
 # itself), not worked out: kept already where it came from.
-_SHOWN_SOURCE = re.compile(r"\b(?:brief|digest|standing facts?|worked out before)\b", re.IGNORECASE)
+_SHOWN_SOURCE = re.compile(
+    r"\b(?:(?:today'?s|morning|daily|evening) brief|(?:end-of-day|daily|weekly) digest|standing facts?"
+    r"|worked out before)\b",
+    re.IGNORECASE,
+)
 # Heard on a call (a meeting's transcript or notes): speech-to-text mishears
 # numbers, so such a figure says where it came from.
 _HEARD_SOURCE = re.compile(r"\b(?:transcripts?|meeting notes|call notes|on the call|said in the call)\b",
@@ -77,6 +81,10 @@ _ASIDE = re.compile(r"\([^)]*\)")
 # Two subjects name the same thing when the longer one only adds this many
 # words to the shorter one's.
 _SAME_EXTRA = 2
+# Words that make a different figure of the same thing: "Q3 revenue" and "Q3
+# revenue target" are two figures, never one replacing the other.
+_OTHER_KIND = ("target", "goal", "plan", "budget", "forecast", "project", "estimat", "quota", "actual", "limit",
+               "cap", "max", "min", "averag", "previous", "prior", "last", "next")
 # Tools that read the Executive's own tracking, which is always read live:
 # their numbers are status, not figures to keep.
 _STATUS_TOOLS = frozenset({
@@ -156,12 +164,16 @@ def _key(subject: str) -> str:
 def same_subject(a: str, b: str) -> bool:
     """Whether two subject keys name the same thing: equal, or the shorter
     one's words (two or more) all in the longer one, which adds at most
-    ``_SAME_EXTRA``. "Starter plan price" and "Growth plan price" differ, so
-    they stay two."""
+    ``_SAME_EXTRA``, none of them one that makes it another figure
+    (``_OTHER_KIND``: a target, a forecast). "Starter plan price" and "Growth
+    plan price" differ, so they stay two."""
     if a == b:
         return True
     short, long = sorted((set(a.split()), set(b.split())), key=len)
-    return len(short) >= 2 and short <= long and len(long - short) <= _SAME_EXTRA
+    extra = long - short
+    if any(word.startswith(_OTHER_KIND) for word in extra):
+        return False
+    return len(short) >= 2 and short <= long and len(extra) <= _SAME_EXTRA
 
 
 def _numbers(text: str) -> set[str]:

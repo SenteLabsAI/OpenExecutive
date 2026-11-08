@@ -320,6 +320,21 @@ def test_different_things_with_similar_names_stay_apart() -> None:
     assert len(wo.list_figures(1)) == 3
 
 
+def test_a_target_or_forecast_is_its_own_figure() -> None:
+    _keep(1, "Q3 revenue", "$1.2M", "Ledger")
+    _keep(1, "Q3 revenue target", "$1.5M", "Ledger")
+    _keep(1, "Headcount", "14", "People list")
+    _keep(1, "Headcount plan", "18", "People list")
+    assert sorted(f["figure"] for f in wo.list_figures(1)) == ["$1.2M", "$1.5M", "14", "18"]
+
+
+def test_a_document_called_a_brief_or_digest_is_still_a_source() -> None:
+    reply = "The creative brief puts the launch budget at $40,000."
+    fig = wo.check_figure(_raw(subject="Launch budget", figure="$40,000", source="Creative brief, Q3 launch doc"),
+                          reply=reply, read="[read_document]\nCreative brief: budget 40,000", today=TODAY)
+    assert fig is not None
+
+
 def test_a_longer_question_needs_more_than_one_word_in_common() -> None:
     _keep(1, "Starter plan monthly price", "$100", "Pricing doc")
     _keep(1, "Acme XL storage bin price", "$119.99", "Google search prices")
