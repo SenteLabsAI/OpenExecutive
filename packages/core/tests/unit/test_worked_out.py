@@ -425,3 +425,12 @@ def test_an_edit_onto_another_figures_subject_replaces_that_figure() -> None:
     assert [(f["id"], f["figure"]) for f in figures] == [(other, "$330,241")]
     assert older not in [f["id"] for f in figures]
     assert [f["figure"] for f in wo.list_figures(2)] == ["$12"]
+
+
+def test_only_the_apps_own_loops_are_status() -> None:
+    """"Open loops" and "5 loops" are the app's status; any other loop is a
+    real figure, kept and shown so the person can see and forget it."""
+    assert wo._status_like("Open loops overdue", "5", "")
+    assert wo._status_like("Overdue", "5 loops", "")
+    assert not wo._status_like("Feedback loops closed per sprint", "14", "sprint review")
+    assert not wo._status_like("Closed-loop test pass rate", "92%", "QA report")

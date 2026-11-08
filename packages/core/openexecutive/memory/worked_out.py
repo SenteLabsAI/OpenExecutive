@@ -57,8 +57,9 @@ _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # separator has no space after it; one "#" (an invoice, a unit, a rank) is a
 # figure's own name.
 _ID_LIST = re.compile(r"#?\b\d+\b(?:(?:,\s+|\s+(?:and|&)\s+|\s*&\s*)#?\b\d+\b){2,}|#\d+\b(?:,?\s+(?:and\s+)?)#\d+")
-# The app's own name for what people owe: status, and a word nobody uses.
-_INTERNAL = re.compile(r"\bloops?\b", re.IGNORECASE)
+# The app's own name for what people owe ("open loops", "5 loops"): status.
+# A loop by any other name ("feedback loops closed per sprint") is a figure.
+_INTERNAL = re.compile(r"\bopen loops?\b|\b\d+\s+loops?\b", re.IGNORECASE)
 # What is read live or is no figure at all: a way into a meeting, a clock
 # time, a count of watch suggestions or of an error's occurrences.
 _NOT_A_FIGURE = re.compile(
