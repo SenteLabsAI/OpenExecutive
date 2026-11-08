@@ -1,37 +1,21 @@
-"""Take the lead: the Executive acts on its own, behind one gate.
+"""Take the lead: the Executive acts on its own, and Approvals decides each step.
 
-Two switches, each off until someone turns it on:
+The unattended passes (reflection, research, the scheduler's proactive
+trigger) keep the acting tools they otherwise lose in solo mode (booking,
+starting a workflow, messaging teammates and not just the principal), and
+every acting call they make goes through ``_gated``: on Hands-off it runs,
+on any other level it waits as a ``take_the_lead_action`` decision with an
+Approve card on Today (``hold``). A message only to the principal skips it:
+they are who it would wait for (``_only_to_principal``). Approving carries
+the exact call out (``carry_out``); declining drops it. What goes out as a
+person (their replies and follow-ups) is Handle it for me's, decided by the
+same level (``delegation.handle_it``).
 
-- **As the Executive** (scope ``executive``, the principal's alone). The
-  unattended passes (reflection, research, the scheduler's proactive trigger)
-  keep the acting tools they otherwise lose in solo mode (booking, starting a
-  workflow, messaging teammates and not just the principal), and every acting
-  call they make goes through ``gate``.
-- What goes out as a person (their replies and follow-ups) is Handle it for
-  me's, decided by the same Approvals level (``delegation.handle_it``).
-
-**The gate** is plain code. Six kinds of action wait for someone first, each
-with its own Ask first switch (all on to start): money, contracts, people
-decisions, deleting or sharing, someone new, and big sends. On top of them
-the company (set by the principal) and each person (for their own As you)
-add rules: a person or address, a domain, words, or an amount. Added rules
-always hold. A message only to the principal skips the gate: they are who
-it would wait for (``_only_to_principal``). A held action becomes a ``take_the_lead_action`` decision for
-the person whose authority covers it (``people.store.find_approvers``, the
-same scopes the department approval levels use), else the principal, with a
-companion card on Today; approving it carries the exact call out
-(``carry_out``) and declining drops it.
-
-**In training** (the Executive's switch has three positions: Off, In
-training, On). In training, everything the gate would let through still
-waits, as a ``training`` card for the principal, unless the principal has
-allowed that action with that person or thing (``allowance``: "Message
-Priya Nair", "Book meetings with Priya Nair and Sam Lee"). Approving a card
-can allow it from then on, and editing one first can also keep the edit as
-an example of how they want it done (``learned_note``, read by the passes
-that act). Allowing only ever comes from the principal; the six kinds and
-the added rules hold whatever is allowed. After ``SUGGEST_AFTER`` approvals
-of the same action unchanged, Settings suggests allowing it (``suggestions``).
+There is no switch, training or Ask first list of its own any more. The
+rule, Ask first and training code below (``check``, ``list_rules``,
+``get`` / ``set_``, ``suggestions``) is no longer consulted by ``_gated``;
+``take_the_lead_allowed`` still holds Learn from my edits' examples
+(feature ``act_as_me``, ``delegation.training``).
 
 Pausing the Executive stops all of it: every pass above runs behind the
 scheduler's pause gate. A person approving a held action is their own act,
