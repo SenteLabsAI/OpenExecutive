@@ -205,7 +205,7 @@ def test_create_alert_chip() -> None:
         tool_result=json.dumps({"status": "alert_scheduled", "subject": "Burn trending high"}),
     )
     assert chip is not None
-    assert chip["summary"] == "Raised a card: Burn trending high"
+    assert chip["summary"] == "Flagged for review: Burn trending high"
     assert chip["target"] == "Burn trending high"
     assert chip["link"] == "/"
 
@@ -217,7 +217,17 @@ def test_create_alert_chip_without_subject_still_says_what_it_is() -> None:
         tool_result=json.dumps({"status": "alert_scheduled"}),
     )
     assert chip is not None
-    assert chip["summary"] == "Raised a card for review"
+    assert chip["summary"] == "Flagged for review"
+
+
+@pytest.mark.parametrize("status", ["ask_in_reply", "sender_has_open_card"])
+def test_create_alert_that_raised_nothing_gets_no_chip(status: str) -> None:
+    chip = summarize_action(
+        tool_name="create_alert",
+        tool_input={"subject": "Which plan?", "body": "Two plans.", "needs": "answer"},
+        tool_result=json.dumps({"status": status, "message": "Nothing was raised."}),
+    )
+    assert chip is None
 
 
 def test_remind_me_chip_shows_what_will_be_sent() -> None:

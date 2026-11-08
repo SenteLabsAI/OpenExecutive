@@ -573,10 +573,14 @@ def summarize_action(
         payload["target"] = str(tool_input.get("field") or "") or None
         payload["link"] = "/company-profile"
     elif tool_name == "create_alert":
-        # The tool's title field is "subject" (alert_tools.CREATE_ALERT_TOOL);
-        # the card lands in Needs you on Home.
+        # Only an alert handed to review gets a chip: "ask_in_reply" and
+        # "sender_has_open_card" raised nothing. Review may still drop it, so
+        # the chip doesn't promise a card. The tool's title field is
+        # "subject" (alert_tools.CREATE_ALERT_TOOL); kept cards land on Home.
+        if parsed is not None and parsed.get("status") != "alert_scheduled":
+            return None
         subject = " ".join(str(tool_input.get("subject") or "").split())[:80]
-        payload["summary"] = f"Raised a card: {subject}" if subject else "Raised a card for review"
+        payload["summary"] = f"Flagged for review: {subject}" if subject else "Flagged for review"
         payload["target"] = subject or None
         payload["link"] = "/"
     elif tool_name == "draft_artifact":
