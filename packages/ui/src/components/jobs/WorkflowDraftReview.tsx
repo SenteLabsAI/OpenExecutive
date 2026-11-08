@@ -15,11 +15,13 @@ import {
 } from "@/lib/api";
 import {
   addedTools,
-  describeCadence,
+  describeCadenceLocal,
   describeChanges,
   replyShapeLabel,
 } from "@/lib/workflowChanges";
-import ToolChips, { mayWrite, toolLabel, useToolInfo } from "./ToolChips";
+import { groupTools, stepApps } from "@/lib/workflowTools";
+import ToolAppIcon from "./ToolAppIcon";
+import { mayWrite, toolLabel, useToolInfo } from "./ToolChips";
 
 // Keyed by DYNAMIC_SPECIALISTS so adding a specialist there without a label
 // here fails the build instead of falling back to the raw key.
@@ -45,7 +47,7 @@ function personName(people: Person[], id: number | null | undefined): string {
   return people.find((p) => p.id === id)?.full_name ?? `person #${id}`;
 }
 
-function stepLine(step: DynamicStep, people: Person[]): { who: string; what: string } {
+function stepLine(step: DynamicStep, people: Person[]): { who: string | null; what: string } {
   if (step.kind === "specialist")
     return { who: specialistLabel(step.specialist), what: step.goal };
   if (step.kind === "approval_gate") {
@@ -58,11 +60,9 @@ function stepLine(step: DynamicStep, people: Person[]): { who: string; what: str
       what: step.question,
     };
   }
-  if (step.kind === "action")
-    return {
-      who: `Action · ${step.tools.length} ${step.tools.length === 1 ? "tool" : "tools"}`,
-      what: step.goal,
-    };
+  // An action step's apps show as icons by its title; its tools are listed
+  // once, by app, in "what it can do" below the steps.
+  if (step.kind === "action") return { who: null, what: step.goal };
   return {
     who: `Assemble · ${specialistLabel(step.specialist)}`,
     what: step.instructions || "Combines the steps above into the final deliverable.",
@@ -109,12 +109,13 @@ export default function WorkflowDraftReview({
   const toolInfo = useToolInfo(stepTools);
   // Editing: only the tools this revision adds need a fresh look.
   const reviewTools = edit ? addedTools(edit.original, def) : Array.from(new Set(stepTools));
-  const writeTools = reviewTools.filter((t) => mayWrite(t, toolInfo));
+  const toolGroups = groupTools(reviewTools, (t) => !mayWrite(t, toolInfo));
   const changes = edit
     ? describeChanges(edit.original, def, {
         person: (id) => personName(people, id),
         specialist: specialistLabel,
         tool: (t) => toolLabel(t).label,
+        cadence: (c) => describeCadenceLocal(c),
       })
     : [];
 
@@ -196,7 +197,7 @@ export default function WorkflowDraftReview({
         <div>
           <dt className="text-fg-subtle">Schedule</dt>
           <dd className="text-fg mt-0.5">
-            {describeCadence(def.cadence)}
+            {describeCadenceLocal(def.cadence)}
             {def.cadence && (
               <span className="text-fg-muted">
                 {" "}
@@ -216,10 +217,8 @@ export default function WorkflowDraftReview({
           </dd>
         </div>
         <div>
-          <dt className="text-fg-subtle">Section · time</dt>
-          <dd className="text-fg mt-0.5">
-            {def.section} · ~{def.estimated_minutes} min
-          </dd>
+          <dt className="text-fg-subtle">Takes about</dt>
+          <dd className="text-fg mt-0.5">{def.estimated_minutes} min</dd>
         </div>
       </dl>
 
@@ -233,16 +232,17 @@ export default function WorkflowDraftReview({
               </span>
               <div className="min-w-0">
                 <p className="text-fg">
-                  {step.title}{" "}
-                  <span className="text-xs text-fg-muted">· {who}</span>
+                  {step.kind === "action" &&
+                    stepApps(step.tools).map((app) => (
+                      <span key={app.label} className="mr-1.5 inline-flex align-[-1px]">
+                        <ToolAppIcon app={app} />
+                      </span>
+                    ))}
+                  {step.title}
+                  {who && <span className="text-xs text-fg-muted"> · {who}</span>}
                 </p>
                 {/* Unclamped: this card is the human check on every goal before it is saved. */}
                 <p className="text-xs text-fg-muted whitespace-pre-wrap break-words">{what}</p>
-                {step.kind === "action" && (
-                  <div className="mt-1.5">
-                    <ToolChips names={step.tools} info={toolInfo} />
-                  </div>
-                )}
               </div>
             </li>
           );
@@ -260,19 +260,60 @@ export default function WorkflowDraftReview({
         </div>
       )}
 
-      {!readOnly && writeTools.length > 0 && (
-        <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 text-xs">
-          <p className="text-fg">
-            {pending
-              ? "Turning this workflow on lets it use these tools"
-              : edit
-                ? "Saving these changes lets it use these new tools"
-                : "Creating this workflow lets it use these tools"}{" "}
-            on every run without asking again:
+      {toolGroups.length > 0 && (
+        <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 px-3 py-2.5 text-xs">
+          <p className="text-fg font-medium mb-1.5">
+            {readOnly
+              ? "What it can do on each run"
+              : pending
+                ? "Turning it on lets it do these on every run, without asking again"
+                : edit
+                  ? "Saving these changes lets it also do these on every run, without asking again"
+                  : "Creating it lets it do these on every run, without asking again"}
           </p>
-          <p className="mt-1 text-fg-muted">
-            {writeTools.map((t) => toolLabel(t).label).join(" · ")}
-          </p>
+          <ul className="space-y-1">
+            {toolGroups.map((g) => (
+              <li key={g.app.label} className="flex gap-3">
+                <span className="flex w-32 shrink-0 items-center gap-1.5 text-fg-muted">
+                  <ToolAppIcon app={g.app} />
+                  {g.app.label}
+                </span>
+                <span className="min-w-0 text-fg">
+                  {g.changes.length > 0 && (
+                    <>
+                      {g.changes.map((a, i) => (
+                        <span key={a.action}>
+                          {i === 0 ? a.action.charAt(0).toUpperCase() + a.action.slice(1) : a.action}
+                          {i < g.changes.length - 1 ? ", " : ""}
+                        </span>
+                      ))}{" "}
+                      <span className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-300">
+                        can change things
+                      </span>
+                    </>
+                  )}
+                  {g.changes.length > 0 && g.looks.length > 0 && (
+                    <span className="text-fg-subtle"> · </span>
+                  )}
+                  {g.looks.length > 0 && (
+                    <>
+                      {g.looks.map((a, i) => (
+                        <span key={a.action}>
+                          {i === 0 && g.changes.length === 0
+                            ? a.action.charAt(0).toUpperCase() + a.action.slice(1)
+                            : a.action}
+                          {i < g.looks.length - 1 ? ", " : ""}
+                        </span>
+                      ))}{" "}
+                      <span className="rounded bg-surface-overlay px-1 text-[10px] text-fg-muted">
+                        look only
+                      </span>
+                    </>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

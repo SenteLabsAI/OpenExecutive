@@ -402,7 +402,7 @@ async def test_each_call_reports_progress_as_it_happens(
     ])
     kinds = [(k, v) for k, v in out if k == "progress"]
     assert kinds[0] == ("progress", "Running a script…")
-    assert [v for _, v in kinds[1:]] == [f"Using {LIST}…"] + [f"Using {MOVE}…"] * 3
+    assert [v for _, v in kinds[1:]] == ["Listing items · Drive…"] + ["Moving file · Drive…"] * 3
 
 
 @pytest.mark.asyncio
