@@ -82,6 +82,8 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
   const [viewLoading, setViewLoading] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<Partial<Record<SyncedSourceId, string>>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Set before the first await, so two drops in one frame can't both start.
+  const uploadingRef = useRef(false);
 
   const loadSynced = useCallback(async (ids: SyncedSourceId[]) => {
     const lists = await Promise.all(
@@ -146,7 +148,8 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
 
   async function handleFiles(files: File[]) {
     // One batch at a time, from a drop or from Add documents.
-    if (!acceptsDrop(uploadProgress !== null, files.length)) return;
+    if (!acceptsDrop(uploadingRef.current, files.length)) return;
+    uploadingRef.current = true;
     setError(null);
     const failed: string[] = [];
     for (const [i, file] of files.entries()) {
@@ -160,6 +163,7 @@ export default function CompanyPanel({ onCountChange }: CompanyPanelProps) {
       }
     }
     setUploadProgress(null);
+    uploadingRef.current = false;
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (failed.length) setError(failed.join(" · "));
     try {
