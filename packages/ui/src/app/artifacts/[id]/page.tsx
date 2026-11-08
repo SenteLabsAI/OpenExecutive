@@ -13,6 +13,7 @@ import {
   restoreArtifact,
 } from "@/lib/api";
 import ArtifactViewer from "@/components/ArtifactViewer";
+import { usePageCrumb } from "@/components/shell/PageCrumb";
 import Button, { buttonClass } from "@/components/ui/Button";
 import OverflowMenu from "@/components/ui/OverflowMenu";
 import { Spinner } from "@/components/ui/Spinner";
@@ -36,6 +37,8 @@ export default function ArtifactDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The breadcrumb names the document, never its id from the URL.
+  usePageCrumb(art ? art.title : "Document");
 
   useEffect(() => {
     if (!id) return;
